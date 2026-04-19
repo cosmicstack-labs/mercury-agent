@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+memory/short-term/
+memory/long-term/
+memory/episodic/
+.DS_Store
+*.tsbuildinfo

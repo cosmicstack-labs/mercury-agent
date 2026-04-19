@@ -1,0 +1,7 @@
+{
+  "name": "template-skill",
+  "version": "0.1.0",
+  "description": "A template skill for Mercury",
+  "triggers": ["template"],
+  "capabilities": ["example"]
+}
