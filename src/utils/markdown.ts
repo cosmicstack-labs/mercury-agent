@@ -1,16 +1,132 @@
 import { Marked } from 'marked';
-import { markedTerminal } from 'marked-terminal';
-import type { MarkedExtension } from 'marked';
+import type { Tokens, MarkedExtension } from 'marked';
+import chalk from 'chalk';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const terminalRenderer = markedTerminal({ width: 80, text: ' ' } as any) as unknown as MarkedExtension;
+const cliExtension: MarkedExtension = {
+  renderer: {
+    heading({ text, depth }: Tokens.Heading) {
+      if (depth === 1) return `\n${chalk.bold.cyan(text)}\n`;
+      if (depth === 2) return `\n${chalk.bold.cyan(`  ■ ${text}`)}\n`;
+      return `\n${chalk.bold(`    ■ ${text}`)}\n`;
+    },
 
-const marked = new Marked(terminalRenderer);
+    paragraph({ tokens }: Tokens.Paragraph) {
+      const p = (this as any).parser;
+      if (p && tokens) return p.parseInline(tokens) + '\n';
+      return '' + '\n';
+    },
+
+    strong({ text }: Tokens.Strong) {
+      return chalk.bold(text);
+    },
+
+    em({ text }: Tokens.Em) {
+      return chalk.italic(text);
+    },
+
+    del({ text }: Tokens.Del) {
+      return chalk.dim.strikethrough(text);
+    },
+
+    codespan({ text }: Tokens.Codespan) {
+      return chalk.yellow(text);
+    },
+
+    code({ text, lang }: Tokens.Code) {
+      const lines = text
+        .split('\n')
+        .map((l) => `${chalk.dim('  ')}${chalk.yellow(l)}`)
+        .join('\n');
+      const langStr = lang ? chalk.dim(` [${lang}]`) : '';
+      return `\n${langStr}\n${lines}\n`;
+    },
+
+    list({ ordered, items }: Tokens.List) {
+      const p = (this as any).parser;
+      const lines: string[] = [];
+      items?.forEach((item, i) => {
+        const bullet = ordered ? `${i + 1}.` : '•';
+        let content = item.text;
+        if (p && item.tokens) content = p.parseInline(item.tokens);
+        lines.push(`  ${chalk.dim(bullet)} ${content}`);
+      });
+      return `\n${lines.join('\n')}\n`;
+    },
+
+    listitem({ text }: Tokens.ListItem) {
+      return text;
+    },
+
+    blockquote({ text, tokens }: Tokens.Blockquote) {
+      const p = (this as any).parser;
+      let content = text;
+      if (p && tokens) content = p.parseInline(tokens);
+      const lines = content
+        .split('\n')
+        .map((l) => `${chalk.dim('│ ')}${chalk.gray(l)}`)
+        .join('\n');
+      return `\n${lines}\n`;
+    },
+
+    hr() {
+      return chalk.dim('─'.repeat(50)) + '\n';
+    },
+
+    link({ text, href }: Tokens.Link) {
+      return `${chalk.blue.underline(text)} ${chalk.dim(`(${href})`)}`;
+    },
+
+    image({ href, title }: Tokens.Image) {
+      const label = title || href;
+      return chalk.blue(`🖼 ${label}`);
+    },
+
+    table({ header, rows }: Tokens.Table) {
+      const p = (this as any).parser;
+      const headers = header.map((h) => {
+        const text = h.tokens ? p?.parseInline(h.tokens) ?? h.text : h.text;
+        return chalk.bold(text);
+      });
+      const colWidths = header.map((h, i) => {
+        const contentWidths = rows.map((row) => {
+          const cell = row[i];
+          const t = typeof cell === 'object' && 'tokens' in cell
+            ? p?.parseInline(cell.tokens) ?? cell.text
+            : String(cell);
+          return t.length;
+        });
+        return Math.max(h.text.length, ...contentWidths) + 2;
+      });
+
+      const headerLine = headers
+        .map((h, i) => h.padEnd(colWidths[i]))
+        .join(chalk.dim(' │ '));
+      const separator = colWidths.map((w) => '─'.repeat(w)).join(chalk.dim('─┼─'));
+
+      const dataLines = rows.map((row) =>
+        row
+          .map((cell, i) => {
+            const t = typeof cell === 'object' && 'tokens' in cell
+              ? p?.parseInline(cell.tokens) ?? cell.text
+              : String(cell);
+            return t.padEnd(colWidths[i]);
+          })
+          .join(chalk.dim(' │ '))
+      );
+
+      return `\n${headerLine}\n${chalk.dim(separator)}\n${dataLines.join('\n')}\n`;
+    },
+  },
+};
+
+const cliMarked = new Marked(cliExtension);
 
 export function renderMarkdown(text: string): string {
   try {
-    const result = marked.parse(text);
-    if (typeof result === 'string') return result;
+    const result = cliMarked.parse(text, { async: false });
+    if (typeof result === 'string') {
+      return result.replace(/\n{3,}/g, '\n\n').trim();
+    }
     return text;
   } catch {
     return text;
