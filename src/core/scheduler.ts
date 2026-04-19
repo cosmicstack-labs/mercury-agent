@@ -15,10 +15,12 @@ export interface ScheduledTask {
 
 export interface ScheduledTaskManifest {
   id: string;
-  cron: string;
+  cron?: string;
   description: string;
   skillName?: string;
   prompt?: string;
+  delaySeconds?: number;
+  executeAt?: string;
   createdAt: string;
 }
 
@@ -52,6 +54,7 @@ export function saveSchedules(tasks: ScheduledTaskManifest[]): void {
 
 export class Scheduler {
   private tasks: Map<string, cron.ScheduledTask> = new Map();
+  private delayedTasks: Map<string, NodeJS.Timeout> = new Map();
   private taskManifests: Map<string, ScheduledTaskManifest> = new Map();
   private heartbeatIntervalMinutes: number;
   private heartbeatHandler?: () => Promise<void>;
@@ -113,7 +116,7 @@ export class Scheduler {
     this.taskManifests.set(manifest.id, manifest);
     this.addTask({
       id: manifest.id,
-      cron: manifest.cron,
+      cron: manifest.cron!,
       description: manifest.description,
       handler: async () => {
         logger.info({ task: manifest.id }, 'Scheduled task firing');
@@ -124,11 +127,39 @@ export class Scheduler {
     });
   }
 
+  addDelayedTask(manifest: ScheduledTaskManifest): void {
+    this.taskManifests.set(manifest.id, manifest);
+    const delayMs = (manifest.delaySeconds || 60) * 1000;
+
+    const timer = setTimeout(async () => {
+      try {
+        logger.info({ task: manifest.id }, 'Delayed task firing');
+        if (this.onScheduledTask) {
+          await this.onScheduledTask(manifest);
+        }
+      } catch (err) {
+        logger.error({ task: manifest.id, err }, 'Delayed task error');
+      } finally {
+        this.delayedTasks.delete(manifest.id);
+        this.taskManifests.delete(manifest.id);
+        this.persistSchedules();
+      }
+    }, delayMs);
+
+    this.delayedTasks.set(manifest.id, timer);
+    logger.info({ id: manifest.id, delaySeconds: manifest.delaySeconds }, 'Delayed task scheduled');
+  }
+
   removeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       task.stop();
       this.tasks.delete(id);
+    }
+    const timer = this.delayedTasks.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.delayedTasks.delete(id);
     }
     this.taskManifests.delete(id);
   }
@@ -140,10 +171,20 @@ export class Scheduler {
   restorePersistedTasks(): void {
     const persisted = loadSchedules();
     for (const manifest of persisted) {
-      if (cron.validate(manifest.cron)) {
+      if (manifest.delaySeconds) {
+        const executeAt = manifest.executeAt ? new Date(manifest.executeAt) : null;
+        const now = Date.now();
+        if (executeAt && executeAt.getTime() > now) {
+          const remainingMs = executeAt.getTime() - now;
+          manifest.delaySeconds = Math.ceil(remainingMs / 1000);
+          this.addDelayedTask(manifest);
+        } else {
+          logger.info({ id: manifest.id }, 'Delayed task already expired, skipping');
+        }
+      } else if (manifest.cron && cron.validate(manifest.cron)) {
         this.addPersistedTask(manifest);
       } else {
-        logger.warn({ id: manifest.id, cron: manifest.cron }, 'Skipping invalid cron expression');
+        logger.warn({ id: manifest.id, cron: manifest.cron }, 'Skipping invalid task');
       }
     }
     if (persisted.length > 0) {
@@ -160,7 +201,11 @@ export class Scheduler {
     for (const [, task] of this.tasks) {
       task.stop();
     }
+    for (const [, timer] of this.delayedTasks) {
+      clearTimeout(timer);
+    }
     this.tasks.clear();
+    this.delayedTasks.clear();
     this.taskManifests.clear();
   }
 }

@@ -125,6 +125,8 @@ export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
   private askHandler?: (prompt: string) => Promise<string>;
+  private autoApproveAll = false;
+  private elevatedCommands: Set<string> = new Set();
 
   constructor() {
     this.cwd = process.cwd();
@@ -133,6 +135,35 @@ export class PermissionManager {
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
     this.askHandler = handler;
+  }
+
+  setAutoApproveAll(value: boolean): void {
+    this.autoApproveAll = value;
+  }
+
+  elevateForSkill(allowedTools: string[]): void {
+    if (allowedTools.includes('run_command')) {
+      this.elevatedCommands.add('run_command');
+    }
+    if (allowedTools.includes('read_file') || allowedTools.includes('list_dir')) {
+      this.elevatedCommands.add('fs_read');
+    }
+    if (allowedTools.includes('write_file') || allowedTools.includes('create_file') || allowedTools.includes('delete_file')) {
+      this.elevatedCommands.add('fs_write');
+    }
+  }
+
+  clearElevation(): void {
+    this.elevatedCommands.clear();
+  }
+
+  isElevated(tool: string): boolean {
+    if (this.elevatedCommands.has(tool)) return true;
+    return false;
+  }
+
+  isShellElevated(): boolean {
+    return this.elevatedCommands.has('run_command');
   }
 
   private load(): PermissionsManifest {
@@ -162,7 +193,25 @@ export class PermissionManager {
     return this.manifest;
   }
 
+  addApprovedCommand(baseCommand: string): void {
+    const cmdName = baseCommand.trim().split(/\s+/)[0];
+    const pattern = `${cmdName} *`;
+    const shell = this.manifest.capabilities.shell;
+    if (!shell.autoApproved.includes(pattern) && !shell.autoApproved.includes(cmdName)) {
+      shell.autoApproved.push(pattern);
+      this.save();
+      logger.info({ pattern }, 'Shell command pattern auto-approved and saved');
+    }
+  }
+
   async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<{ allowed: boolean; reason?: string }> {
+    if (mode === 'read' && this.elevatedCommands.has('fs_read')) {
+      return { allowed: true };
+    }
+    if (mode === 'write' && this.elevatedCommands.has('fs_write')) {
+      return { allowed: true };
+    }
+
     const fs = this.manifest.capabilities.filesystem;
     if (!fs.enabled) {
       return { allowed: false, reason: 'Filesystem capability is disabled' };
@@ -181,6 +230,16 @@ export class PermissionManager {
   }
 
   async checkShellCommand(command: string): Promise<{ allowed: boolean; reason?: string; needsApproval: boolean }> {
+    if (this.autoApproveAll) {
+      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (auto-approve-all mode)');
+      return { allowed: true, needsApproval: false };
+    }
+
+    if (this.isShellElevated()) {
+      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (skill elevation)');
+      return { allowed: true, needsApproval: false };
+    }
+
     const shell = this.manifest.capabilities.shell;
     if (!shell.enabled) {
       return { allowed: false, reason: 'Shell capability is disabled', needsApproval: false };

@@ -103,6 +103,11 @@ export class Agent {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
 
+    const isInternal = msg.channelType === 'internal';
+    if (isInternal) {
+      this.capabilities.permissions.setAutoApproveAll(true);
+    }
+
     try {
       const provider = this.providers.getDefault();
       const systemPrompt = this.buildSystemPrompt();
@@ -200,6 +205,11 @@ export class Agent {
     } catch (err) {
       logger.error({ err }, 'Error handling message');
       this.lifecycle.transition('idle');
+    } finally {
+      if (isInternal) {
+        this.capabilities.permissions.setAutoApproveAll(false);
+      }
+      this.capabilities.permissions.clearElevation();
     }
   }
 

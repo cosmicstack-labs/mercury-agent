@@ -1,8 +1,9 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { SkillLoader } from '../../skills/loader.js';
+import type { PermissionManager } from '../permissions.js';
 
-export function createUseSkillTool(skillLoader: SkillLoader) {
+export function createUseSkillTool(skillLoader: SkillLoader, permissions: PermissionManager) {
   return tool({
     description: 'Load and invoke a skill by name. Returns the skill\'s full instructions which should be followed as guidance for the current task.',
     parameters: z.object({
@@ -12,6 +13,10 @@ export function createUseSkillTool(skillLoader: SkillLoader) {
       const skill = skillLoader.load(name);
       if (!skill) {
         return `Skill "${name}" not found. Use list_skills to see available skills.`;
+      }
+
+      if (skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
+        permissions.elevateForSkill(skill['allowed-tools']);
       }
 
       let result = `## Skill: ${skill.name}\n\n${skill.instructions}`;

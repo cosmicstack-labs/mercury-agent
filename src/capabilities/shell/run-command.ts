@@ -10,7 +10,7 @@ export function createRunCommandTool(permissions: PermissionManager) {
     description: `Run a shell command. Commands run in the current working directory unless an absolute path is given.
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
 Auto-approved commands (ls, cat, git status, etc.) run without asking.
-Other commands require user approval.`,
+Other commands require user approval (y/n/always). "always" saves the approval for future use.`,
     parameters: z.object({
       command: z.string().describe('The shell command to execute'),
     }),
@@ -57,8 +57,19 @@ async function askApproval(command: string, permissions: PermissionManager): Pro
   }
 
   const response = await handler(
-    `Mercury wants to run: ${command}\nAllow? (y/n): `
+    `Mercury wants to run: ${command}\nAllow? (y/n/always): `
   );
 
-  return response.toLowerCase() === 'y' || response.toLowerCase() === 'yes';
+  const normalized = response.toLowerCase().trim();
+
+  if (normalized === 'always') {
+    permissions.addApprovedCommand(command);
+    return true;
+  }
+
+  if (normalized === 'y' || normalized === 'yes') {
+    return true;
+  }
+
+  return false;
 }

@@ -49,7 +49,7 @@ export class CapabilityRegistry {
     if (this.skillLoader) {
       this.tools.install_skill = createInstallSkillTool(this.skillLoader);
       this.tools.list_skills = createListSkillsTool(this.skillLoader);
-      this.tools.use_skill = createUseSkillTool(this.skillLoader);
+      this.tools.use_skill = createUseSkillTool(this.skillLoader, this.permissions);
       logger.info('Skill tools registered');
     }
 
