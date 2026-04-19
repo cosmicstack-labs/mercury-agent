@@ -91,15 +91,17 @@ export class CLIChannel extends BaseChannel {
     this.showPrompt();
   }
 
-  async stream(content: AsyncIterable<string>, _targetId?: string): Promise<void> {
+  async stream(content: AsyncIterable<string>, _targetId?: string): Promise<string> {
+    console.log('');
     process.stdout.write(chalk.cyan(`  ${this.agentName}: `));
     let full = '';
     for await (const chunk of content) {
       process.stdout.write(chunk);
       full += chunk;
     }
-    process.stdout.write('\n\n');
+    console.log('\n');
     this.showPrompt();
+    return full;
   }
 
   async typing(_targetId?: string): Promise<void> {

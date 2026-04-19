@@ -1,4 +1,4 @@
-import { generateText } from 'ai';
+import { generateText, streamText } from 'ai';
 import type { ChannelMessage } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -174,27 +174,56 @@ export class Agent {
       let result: any = null;
       let usedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
+      let streamedText = '';
+
+      const canStream = msg.channelType === 'cli';
 
       for (const provider of fallbackIterator) {
         try {
-          logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS }, 'Generating agentic response');
+          logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
-          result = await generateText({
-            model: provider.getModelInstance(),
-            system: systemPrompt,
-            messages,
-            tools: this.capabilities.getTools(),
-            maxSteps: MAX_STEPS,
-            onStepFinish: async ({ toolCalls, text }) => {
-              if (toolCalls && toolCalls.length > 0) {
-                const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
-                logger.info({ tools: names }, 'Tool call step');
-                if (channel && msg.channelType !== 'internal') {
+          if (canStream && channel) {
+            const streamResult = streamText({
+              model: provider.getModelInstance(),
+              system: systemPrompt,
+              messages,
+              tools: this.capabilities.getTools(),
+              maxSteps: MAX_STEPS,
+              onStepFinish: async ({ toolCalls }) => {
+                if (toolCalls && toolCalls.length > 0) {
+                  const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
+                  logger.info({ tools: names }, 'Tool call step');
                   await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                 }
-              }
-            },
-          });
+              },
+            });
+
+            const fullText = await channel.stream(streamResult.textStream, msg.channelId);
+
+            const [usage] = await Promise.all([
+              streamResult.usage,
+            ]);
+
+            result = { text: fullText, usage };
+            streamedText = fullText;
+          } else {
+            result = await generateText({
+              model: provider.getModelInstance(),
+              system: systemPrompt,
+              messages,
+              tools: this.capabilities.getTools(),
+              maxSteps: MAX_STEPS,
+              onStepFinish: async ({ toolCalls, text }) => {
+                if (toolCalls && toolCalls.length > 0) {
+                  const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
+                  logger.info({ tools: names }, 'Tool call step');
+                  if (channel && msg.channelType !== 'internal') {
+                    await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
+                  }
+                }
+              },
+            });
+          }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
           this.providers.markSuccess(provider.name);
@@ -218,7 +247,7 @@ export class Agent {
         return;
       }
 
-      const finalText = result.text;
+      const finalText = streamedText || result.text;
 
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
@@ -257,9 +286,13 @@ export class Agent {
       }
 
       if (channel && msg.channelType !== 'internal') {
-        logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
         const elapsed = Date.now() - startTime;
-        await channel.send(finalText, msg.channelId, elapsed);
+        if (streamedText) {
+          logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
+        } else {
+          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
+          await channel.send(finalText, msg.channelId, elapsed);
+        }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
       }

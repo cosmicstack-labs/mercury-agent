@@ -128,9 +128,9 @@ export class TelegramChannel extends BaseChannel {
     }
   }
 
-  async stream(content: AsyncIterable<string>, targetId?: string): Promise<void> {
+  async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     const chatId = this.parseChatId(targetId);
-    if (!chatId || !this.bot) return;
+    if (!chatId || !this.bot) return '';
 
     let full = '';
     for await (const chunk of content) {
@@ -142,6 +142,7 @@ export class TelegramChannel extends BaseChannel {
     } catch (err: any) {
       await this.bot.api.sendMessage(chatId, this.stripHtml(html));
     }
+    return full;
   }
 
   async typing(targetId?: string): Promise<void> {
