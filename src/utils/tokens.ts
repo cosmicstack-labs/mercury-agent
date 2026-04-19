@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MercuryConfig } from './config.js';
-import { getMercuryHome } from './config.js';
+import { getMercuryHome, saveConfig } from './config.js';
 import { logger } from './logger.js';
 
 export interface TokenTracker {
@@ -25,11 +25,12 @@ const TOKEN_FILE = 'token-usage.json';
 
 export class TokenBudget {
   private dailyUsed = 0;
-  private readonly dailyBudget: number;
+  private dailyBudget: number;
   private lastResetDate: string;
   private requestLog: TokenLogEntry[] = [];
+  private forceNext = false;
 
-  constructor(config: MercuryConfig) {
+  constructor(private config: MercuryConfig) {
     this.dailyBudget = config.tokens.dailyBudget;
     this.lastResetDate = new Date().toISOString().split('T')[0];
     this.restore();
@@ -42,7 +43,40 @@ export class TokenBudget {
 
   isOverBudget(): boolean {
     this.resetIfNewDay();
+    if (this.forceNext) {
+      this.forceNext = false;
+      return false;
+    }
     return this.dailyUsed >= this.dailyBudget;
+  }
+
+  forceAllowNext(): void {
+    this.forceNext = true;
+    logger.info('Budget override: next request will proceed regardless of budget');
+  }
+
+  resetUsage(): void {
+    this.dailyUsed = 0;
+    this.requestLog = [];
+    this.persist();
+    logger.info('Token usage reset to zero');
+  }
+
+  setBudget(newBudget: number): void {
+    this.dailyBudget = newBudget;
+    this.config.tokens.dailyBudget = newBudget;
+    saveConfig(this.config);
+    this.persist();
+    logger.info({ newBudget }, 'Daily token budget updated');
+  }
+
+  getBudget(): number {
+    return this.dailyBudget;
+  }
+
+  getDailyUsed(): number {
+    this.resetIfNewDay();
+    return this.dailyUsed;
   }
 
   recordUsage(entry: Omit<TokenLogEntry, 'timestamp'>): void {

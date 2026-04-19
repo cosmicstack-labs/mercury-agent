@@ -109,13 +109,30 @@ export class Agent {
     }
 
     try {
+      const trimmed = msg.content.trim();
+      if (trimmed.startsWith('/budget')) {
+        const subcommand = trimmed.slice('/budget'.length).trim();
+        await this.handleBudgetCommand(subcommand || 'status', msg.channelType, msg.channelId);
+        this.lifecycle.transition('idle');
+        return;
+      }
+
       if (this.tokenBudget.isOverBudget()) {
         const channel = this.channels.getChannelForMessage(msg);
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(
-            `I've exceeded my daily token budget (${this.tokenBudget.getStatusText()}). I'll be able to respond again after the budget resets tomorrow.`,
-            msg.channelId,
-          );
+          if (msg.channelType === 'cli') {
+            if (['1', '2', '3', '4'].includes(trimmed)) {
+              await this.handleBudgetCommand(trimmed, msg.channelType, msg.channelId);
+              this.lifecycle.transition('idle');
+              return;
+            }
+            await this.handleBudgetOverrideCLI(channel, msg);
+          } else {
+            await channel.send(
+              `I've exceeded my daily token budget (${this.tokenBudget.getStatusText()}).\n\nYou can override this:\n• /budget override — allow one more request\n• /budget reset — reset usage to zero\n• /budget set <number> — change daily budget`,
+              msg.channelId,
+            );
+          }
         }
         this.lifecycle.transition('idle');
         return;
@@ -398,5 +415,43 @@ export class Agent {
   async shutdown(): Promise<void> {
     await this.sleep();
     logger.info('Mercury has shut down');
+  }
+
+  private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {
+    const status = this.tokenBudget.getStatusText();
+    await channel.send(
+      `Token budget exceeded! ${status}\n\nChoose an option:\n  1 — Override (allow this one request)\n  2 — Reset usage to zero\n  3 — Set a new daily budget (current: ${this.tokenBudget.getBudget().toLocaleString()})\n  4 — Cancel\n\nOr use /budget override, /budget reset, /budget set <number> anytime.`,
+      msg.channelId,
+    );
+  }
+
+  async handleBudgetCommand(subcommand: string, channelType: string, channelId: string): Promise<void> {
+    const channel = this.channels.get(channelType as any);
+    if (!channel) return;
+
+    const parts = subcommand.trim().split(/\s+/);
+    const action = parts[0]?.toLowerCase();
+
+    if (action === 'override' || action === '1') {
+      this.tokenBudget.forceAllowNext();
+      await channel.send('Budget override applied — your next request will proceed.', channelId);
+    } else if (action === 'reset' || action === '2') {
+      this.tokenBudget.resetUsage();
+      await channel.send(`Usage reset to zero. ${this.tokenBudget.getStatusText()}`, channelId);
+    } else if (action === 'set' || action === '3') {
+      const newBudget = parseInt(parts[1], 10);
+      if (isNaN(newBudget) || newBudget <= 0) {
+        await channel.send('Please specify the new budget. Usage: `/budget set 100000` or type e.g. `3 100000`', channelId);
+        return;
+      }
+      this.tokenBudget.setBudget(newBudget);
+      await channel.send(`Daily budget updated to ${newBudget.toLocaleString()} tokens. ${this.tokenBudget.getStatusText()}`, channelId);
+    } else if (action === 'cancel' || action === '4') {
+      await channel.send(`Cancelled. ${this.tokenBudget.getStatusText()}`, channelId);
+    } else if (!action || action === 'status') {
+      await channel.send(this.tokenBudget.getStatusText(), channelId);
+    } else {
+      await channel.send(`Unknown budget command "${action}". Available: /budget, /budget override, /budget reset, /budget set <number>, /budget status`, channelId);
+    }
   }
 }
