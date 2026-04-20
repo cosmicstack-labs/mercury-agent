@@ -276,23 +276,20 @@
             <tr>
               <th>Feature</th>
               <th class="highlight">Mercury</th>
-              <th>OpenClaw</th>
-              <th>Hermes</th>
-              <th>Generic Agent</th>
+              <th>Open Interpreter</th>
+              <th>Claude Code</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>Soul / Persona System</td>
               <td class="highlight">4 markdown files</td>
-              <td class="no">—</td>
-              <td class="no">—</td>
-              <td class="no">—</td>
+              <td class="partial">Custom instructions</td>
+              <td class="partial">CLAUDE.md</td>
             </tr>
             <tr>
               <td>Token Budget Enforcement</td>
               <td class="highlight">Daily budget + override</td>
-              <td class="partial">Cost tracking</td>
               <td class="no">—</td>
               <td class="no">—</td>
             </tr>
@@ -301,33 +298,28 @@
               <td class="highlight">Both + more coming</td>
               <td class="partial">CLI only</td>
               <td class="partial">CLI only</td>
-              <td class="partial">CLI only</td>
             </tr>
             <tr>
               <td>Skill System (Agent Skills spec)</td>
               <td class="highlight">Install, invoke, schedule</td>
-              <td class="partial">Plugin system</td>
               <td class="no">—</td>
-              <td class="partial">Varies</td>
+              <td class="no">—</td>
             </tr>
             <tr>
               <td>Cron + Delayed Scheduling</td>
               <td class="highlight">Persisted, auto-restore</td>
               <td class="no">—</td>
               <td class="no">—</td>
-              <td class="partial">Varies</td>
             </tr>
             <tr>
               <td>Permission Hardening</td>
               <td class="highlight">Blocklist + scope + approval</td>
-              <td class="partial">Basic allow/deny</td>
-              <td class="partial">Basic</td>
-              <td class="partial">Varies</td>
+              <td class="partial">Confirmation prompts</td>
+              <td class="partial">Permission prompts</td>
             </tr>
             <tr>
               <td>Proactive Notifications</td>
               <td class="highlight">Heartbeat + task alerts</td>
-              <td class="no">—</td>
               <td class="no">—</td>
               <td class="no">—</td>
             </tr>
@@ -335,36 +327,43 @@
               <td>Auto Fact Extraction</td>
               <td class="highlight">With dedup</td>
               <td class="no">—</td>
-              <td class="partial">Basic</td>
               <td class="no">—</td>
             </tr>
             <tr>
               <td>Provider Fallback</td>
               <td class="highlight">Auto with last-successful</td>
-              <td class="partial">Manual switch</td>
-              <td class="no">—</td>
-              <td class="partial">Varies</td>
+              <td class="partial">Manual config</td>
+              <td class="no">Anthropic only</td>
             </tr>
             <tr>
               <td>File Upload (Telegram)</td>
               <td class="highlight">Yes — auto type detection</td>
               <td class="no">—</td>
               <td class="no">—</td>
-              <td class="no">—</td>
             </tr>
             <tr>
               <td>Streaming Output (CLI)</td>
               <td class="highlight">Real-time text stream</td>
-              <td class="partial">Varies</td>
-              <td class="no">—</td>
-              <td class="partial">Varies</td>
+              <td class="highlight">Real-time text stream</td>
+              <td class="highlight">Real-time text stream</td>
             </tr>
             <tr>
               <td>Headless / 24-7 Mode</td>
               <td class="highlight">Built-in</td>
-              <td class="partial">Requires setup</td>
-              <td class="partial">Requires setup</td>
               <td class="no">—</td>
+              <td class="no">—</td>
+            </tr>
+            <tr>
+              <td>Language / Runtime</td>
+              <td class="highlight">TypeScript / Node.js</td>
+              <td class="highlight">Python</td>
+              <td class="highlight">TypeScript / Node.js</td>
+            </tr>
+            <tr>
+              <td>Open Source</td>
+              <td class="highlight">MIT</td>
+              <td class="partial">LGPL-2.1</td>
+              <td class="no">Source-available</td>
             </tr>
           </tbody>
         </table>

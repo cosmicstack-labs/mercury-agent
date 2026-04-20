@@ -1,12 +1,6 @@
-<h1 align="center">
-  <pre>
-   __  _____________  ________  ________  __
-  /  |/  / ____/ __ \/ ____/ / / / __ \ \/ /
- / /|_/ / __/ / /_/ / /   / / / / /_/ /\  /
-/ /  / / /___/ _, _/ /___/ /_/ / _, _/ / /
-/_/  /_/_____/_/ |_|\____/\____/_/ |_| /_/
-  </pre>
-</h1>
+<p align="center">
+  <img src="docs/card.png" alt="Mercury — Soul-Driven AI Agent" width="600">
+</p>
 
 <p align="center">
   <strong>Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access.</strong>
