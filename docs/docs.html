@@ -730,15 +730,13 @@
         <code>Example: hotheadhacker</code>
       </div>
 
-      <h4>2. GitHub email (for co-author)</h4>
-      <p>The email that appears in the <code>Co-authored-by</code> trailer on every Mercury-assisted commit. You can use
-        your real email, a GitHub no-reply email (<code>123456+username@users.noreply.github.com</code>), or
-        <code>mercury@cosmicstack.org</code> for Mercury's default.</p>
-      <div class="terminal-inline">
-        <code>Example: mercury@cosmicstack.org</code>
-      </div>
+      <h4>2. Co-authored-by (automatic)</h4>
+      <p>Every Mercury-assisted commit automatically includes a <code>Co-authored-by: Mercury &lt;mercury@cosmicstack.org&gt;</code>
+        trailer. No configuration needed — this is the default. Mercury's avatar will appear alongside yours on GitHub.</p>
+      <p>You can customize the email in <code>~/.mercury/.env</code> by setting <code>GITHUB_EMAIL</code> if you prefer a
+        different co-author address.</p>
 
-      <h4>3. GitHub PAT (Personal Access Token)</h4>
+      <h4>2. GitHub PAT (Personal Access Token)</h4>
       <p>You need a token so Mercury can authenticate with the GitHub API. <strong>Never share this token.</strong> It's
         stored locally in <code>~/.mercury/.env</code> and never sent anywhere except GitHub's API.</p>
 
@@ -770,7 +768,7 @@
         </ol>
       </div>
 
-      <h4>4. Default repo</h4>
+      <h4>3. Default repo (optional)</h4>
       <p>Set a default repository so you can say <code>"create an issue"</code> without specifying the repo every time.
         You can enter it in any of these formats:</p>
       <div class="terminal-inline">

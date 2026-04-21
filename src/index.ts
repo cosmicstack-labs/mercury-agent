@@ -223,10 +223,9 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   const ghUsername = await ask(chalk.white(`  1. Your GitHub username${ghUserCurrent}: `));
   if (ghUsername) config.github.username = ghUsername;
 
-  const ghEmailCurrent = isReconfig && config.github.email ? ` [${config.github.email}]` : '';
-  console.log(chalk.dim('     This appears in the Co-authored-by trailer on commits.'));
-  const ghEmail = await ask(chalk.white(`  2. GitHub email (for co-author)${ghEmailCurrent}: `));
-  if (ghEmail) config.github.email = ghEmail;
+  if (!config.github.email) {
+    config.github.email = 'mercury@cosmicstack.org';
+  }
 
   console.log('');
   console.log(chalk.dim('     You need a Personal Access Token (PAT) with repo access.'));
@@ -235,7 +234,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   console.log(chalk.dim('     Classic: github.com/settings/tokens/new'));
   console.log(chalk.dim('       → Scope: repo (full control)'));
   const ghTokenCurrent = process.env.GITHUB_TOKEN ? ` [${maskKey(process.env.GITHUB_TOKEN)}]` : '';
-  const ghToken = await ask(chalk.white(`  3. GitHub PAT${ghTokenCurrent}: `));
+  const ghToken = await ask(chalk.white(`  2. GitHub PAT${ghTokenCurrent}: `));
   if (ghToken) {
     appendToEnv('GITHUB_TOKEN', ghToken);
   }
@@ -247,7 +246,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     console.log(chalk.dim('     Example: hotheadhacker/mercury-agent'));
     console.log(chalk.dim('     Example: https://github.com/hotheadhacker/mercury-agent'));
     const ghOwnerCurrent = isReconfig && config.github.defaultOwner ? ` [${config.github.defaultOwner}/${config.github.defaultRepo}]` : '';
-    const ghRepoInput = await ask(chalk.white(`  4. Default repo${ghOwnerCurrent}: `));
+    const ghRepoInput = await ask(chalk.white(`  3. Default repo${ghOwnerCurrent}: `));
     if (ghRepoInput) {
       const parsed = parseGithubRepo(ghRepoInput);
       if (parsed) {

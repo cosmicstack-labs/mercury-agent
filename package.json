@@ -1,6 +1,6 @@
 {
   "name": "@cosmicstack/mercury-agent",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI or Telegram.",
   "type": "module",
   "main": "dist/index.js",

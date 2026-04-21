@@ -125,7 +125,7 @@ export function getDefaultConfig(): MercuryConfig {
     },
     github: {
       username: getEnv('GITHUB_USERNAME', ''),
-      email: getEnv('GITHUB_EMAIL', ''),
+      email: getEnv('GITHUB_EMAIL', 'mercury@cosmicstack.org'),
       defaultOwner: getEnv('GITHUB_DEFAULT_OWNER', ''),
       defaultRepo: getEnv('GITHUB_DEFAULT_REPO', ''),
     },
