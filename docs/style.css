@@ -335,3 +335,73 @@ footer {
   .compare-table { font-size: 0.8em; }
   .footer-inner { flex-direction: column; text-align: center; }
 }
+
+/* ── Provider Grid ── */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.provider-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  transition: all 0.3s;
+}
+
+.provider-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--cyan-dim);
+  transform: translateY(-2px);
+}
+
+.provider-logo {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cyan);
+}
+
+.provider-logo svg {
+  filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.25));
+}
+
+.provider-info h3 {
+  font-size: 1.05em;
+  margin-bottom: 4px;
+  color: var(--white);
+}
+
+.provider-info p {
+  color: var(--gray);
+  font-size: 0.9em;
+  margin-bottom: 0;
+  line-height: 1.5;
+}
+
+.provider-info code {
+  font-size: 0.85em;
+}
+
+.provider-note {
+  text-align: center;
+  color: var(--gray-dim);
+  font-size: 0.92em;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.provider-note p {
+  margin: 0;
+}

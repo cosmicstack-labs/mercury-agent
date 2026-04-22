@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mercury — Soul-Driven AI Agent with Permission Guardrails | Cosmic Stack</title>
   <meta name="description"
-    content="The AI agent that asks before it acts. Permission guardrails, token efficiency, full control, and GitHub companion. Runs 24/7 from CLI or Telegram. 26 built-in tools, skill system, scheduling.">
+    content="The AI agent that asks before it acts. Permission guardrails, token efficiency, full control, and GitHub companion. Runs 24/7 from CLI or Telegram. 31 built-in tools, skill system, scheduling.">
   <meta name="author" content="Cosmic Stack">
   <meta name="robots" content="index, follow">
   <meta name="keywords"
@@ -47,7 +47,7 @@
     "name": "Mercury",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Node.js 18+",
-    "description": "Soul-driven AI agent with permission guardrails, token budgets, and multi-channel access. Runs 24/7 from CLI or Telegram.",
+    "description": "Soul-driven AI agent with permission guardrails, token budgets, and multi-channel access. 31 built-in tools, skill system, GitHub companion. Runs 24/7 from CLI or Telegram.",
     "url": "https://mercury.cosmicstack.org",
     "offers": {
       "@type": "Offer",
@@ -104,7 +104,7 @@
 /_/  /_/_____/_/ |_|\____/\____/_/ |_| /_/
       </pre>
       <p class="hero-tagline">Soul-driven. Token-efficient. Always on.</p>
-      <p class="hero-sub">Your personal AI agent with 26 built-in tools, skill system, multi-channel access, GitHub companion, and
+      <p class="hero-sub">Your personal AI agent with 31 built-in tools, skill system, multi-channel access, GitHub companion, and
         hardened permissions. Runs 24/7 from your terminal or Telegram.</p>
       <div class="hero-actions">
         <a href="#how-it-works" class="btn btn-primary">Get Started</a>
@@ -217,7 +217,7 @@
 
   <section id="capabilities" class="section section-dark">
     <div class="container">
-      <h2 class="section-title">26 Built-In Tools</h2>
+      <h2 class="section-title">31 Built-In Tools</h2>
       <p class="section-sub">Plus extensible skills, scheduling, and memory.</p>
       <div class="caps-grid">
         <div class="cap-group" data-reveal>
@@ -234,10 +234,12 @@
           </ul>
         </div>
         <div class="cap-group" data-reveal>
-          <h3>🐚 Shell</h3>
+          <h3>🐚 Shell &amp; Messaging</h3>
           <ul>
             <li><code>run_command</code> — Execute shell commands</li>
+            <li><code>cd</code> — Change working directory (persists)</li>
             <li><code>approve_command</code> — Permanently approve a command</li>
+            <li><code>send_message</code> — Message paired Telegram chat</li>
           </ul>
         </div>
         <div class="cap-group" data-reveal>
@@ -518,11 +520,11 @@
           <div class="arch-value">Vercel AI SDK v4</div>
           <div class="arch-desc">streamText + generateText, 10-step agentic loop</div>
         </div>
-        <div class="arch-card" data-reveal>
-          <div class="arch-label">Providers</div>
-          <div class="arch-value">DeepSeek · OpenAI · Anthropic</div>
-          <div class="arch-desc">Fallback chain with last-successful tracking</div>
-        </div>
+          <div class="arch-card" data-reveal>
+            <div class="arch-label">Providers</div>
+            <div class="arch-value">DeepSeek · OpenAI · Anthropic · Grok · Ollama</div>
+            <div class="arch-desc">6 providers with fallback and last-successful tracking</div>
+          </div>
         <div class="arch-card" data-reveal>
           <div class="arch-label">Memory</div>
           <div class="arch-value">Flat-file JSONL/JSON</div>
@@ -538,6 +540,72 @@
           <div class="arch-value">~/.mercury/</div>
           <div class="arch-desc">Config, soul, memory, permissions, skills, schedules — all in your home dir</div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="providers" class="section">
+    <div class="container">
+      <h2 class="section-title">Supported Providers</h2>
+      <p class="section-sub">Pick one or stack them all. Mercury falls back automatically.</p>
+      <div class="provider-grid" data-reveal>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>DeepSeek</h3>
+            <p>Default provider. Cost-effective, strong reasoning. Uses <code>deepseek-chat</code>.</p>
+          </div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.98 4.18a5.985 5.985 0 0 0-3.498 3.46 6.046 6.046 0 0 0 .743 7.096 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.497-3.462 6.056 6.056 0 0 0-.742-7.11zm-9.49 13.19a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM4.887 19.386a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.037.064l-4.837 2.792a4.504 4.504 0 0 1-6.139-1.649zM2.44 10.308a4.498 4.498 0 0 1 2.366-3.284v5.678a.771.771 0 0 0 .39.681l5.808 3.356-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.44 10.308zm15.773 2.055L12.37 9.001l2.02-1.163a.076.076 0 0 1 .071 0l4.83 2.791a4.499 4.499 0 0 1-.68 5.06l-.001-5.326zM20.21 10.78l-.142-.085-4.778-2.781a.776.776 0 0 0-.787 0L8.66 11.279V8.947a.064.064 0 0 1 .028-.067l4.837-2.792a4.5 4.5 0 0 1 1.658 6.698l.026-.006zM7.636 13.08l-2.02-1.164a.08.08 0 0 1-.037-.064V6.27a4.499 4.499 0 0 1 7.383-3.5l-.141.08-4.778 2.758a.77.77 0 0 0-.393.681l-.014 6.791zm1.097-2.365l2.602-1.5 2.607 1.5v3.006l-2.597 1.5-2.607-1.5-.005-3.006z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>OpenAI</h3>
+            <p>GPT-4o-mini, GPT-4o, o3, and more. OpenAI-compatible endpoint.</p>
+          </div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M17.304 3.542l-4.897 8.983a.25.25 0 00.067.316l4.22 3.453a.25.25 0 00.326-.012l5.276-4.818a.75.75 0 00.061-1.039L18.46 3.46a.25.25 0 00-.422-.004l-.734.086zM6.46 3.762l-3.9 7.26a.25.25 0 00.04.292l3.737 3.958a.25.25 0 00.326.038l3.897-2.657a.25.25 0 00.075-.319L7.352 3.812a.25.25 0 00-.425-.05h-.468zM3.168 12.796L.086 17.925a.25.25 0 00.128.36l5.592 2.166a.25.25 0 00.327-.137l2.916-6.763a.25.25 0 00-.09-.3L5.23 10.3a.25.25 0 00-.338.062l-1.724 2.434z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>Anthropic</h3>
+            <p>Claude Sonnet, Haiku, and Opus models. Best for nuanced reasoning.</p>
+          </div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M12 2L1.5 20h21L12 2zm0 4l6.9 12H5.1L12 6z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>Grok (xAI)</h3>
+            <p>xAI's Grok models via OpenAI-compatible endpoint. Real-time awareness.</p>
+          </div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.32 3.08A15.4 15.4 0 0012 7a15.4 15.4 0 00-6.32.08A8 8 0 0112 4zm-7.44 4.83A17.3 17.3 0 0112 9c2.67 0 5.18.62 7.44 1.83A8 8 0 0112 20a8 8 0 01-7.44-11.17z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>Ollama Cloud</h3>
+            <p>Remote Ollama models via API key. No local setup required.</p>
+          </div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-logo">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M4 6a2 2 0 012-2h12a2 2 0 012 2v7a2 2 0 01-2 2H6a2 2 0 01-2-2V6z M2 19h20v1H2z M7 15h10v2H7z"/></svg>
+          </div>
+          <div class="provider-info">
+            <h3>Ollama Local</h3>
+            <p>Run models on your own machine. Zero API cost, fully private.</p>
+          </div>
+        </div>
+      </div>
+      <div class="provider-note">
+        <p>More providers on the way — Google Gemini, Mistral, and others. Mercury's OpenAI-compatible architecture also supports custom endpoints.</p>
       </div>
     </div>
   </section>
