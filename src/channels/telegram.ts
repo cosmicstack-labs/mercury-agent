@@ -21,6 +21,7 @@ import {
 } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { mdToTelegram } from '../utils/markdown.js';
+import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
@@ -35,8 +36,11 @@ export class TelegramChannel extends BaseChannel {
   private typingInterval: NodeJS.Timeout | null = null;
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
-  private permissionModeAsked = new Set<number>();
+  private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
+  private statusMessageIds = new Map<string, number>();
+  private stepCounters = new Map<string, number>();
+  private statusText = new Map<string, string>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -48,6 +52,10 @@ export class TelegramChannel extends BaseChannel {
 
   setOnPermissionMode(handler: (mode: PermissionMode, chatId: number) => void): void {
     this.onPermissionMode = handler;
+  }
+
+  getPermissionMode(chatId: number): PermissionMode {
+    return this.permissionModes.get(chatId) ?? 'ask-me';
   }
 
   async start(): Promise<void> {
@@ -103,10 +111,14 @@ export class TelegramChannel extends BaseChannel {
       this.lastActiveChatId = chatId;
       logger.info({ chatId, text: ctx.message.text?.slice(0, 50) }, 'Telegram message received');
 
-      if (!this.permissionModeAsked.has(chatId) && this.onPermissionMode) {
-        this.permissionModeAsked.add(chatId);
-        const mode = await this.askPermissionMode(`telegram:${chatId}`);
-        this.onPermissionMode(mode, chatId);
+      if (!this.permissionModes.has(chatId) && this.onPermissionMode) {
+        this.askPermissionMode(`telegram:${chatId}`).then((mode) => {
+          this.permissionModes.set(chatId, mode);
+          if (this.onPermissionMode) {
+            this.onPermissionMode(mode, chatId);
+          }
+        }).catch(() => {});
+        this.permissionModes.set(chatId, 'ask-me');
       }
 
       if (command === '/unpair') {
@@ -120,6 +132,16 @@ export class TelegramChannel extends BaseChannel {
           chatId,
           'Telegram access reset. New users can send /start to request access. The first request must be approved from the Mercury CLI.',
         );
+        return;
+      }
+
+      if (command === '/permissions') {
+        this.askPermissionMode(`telegram:${chatId}`).then((mode) => {
+          this.permissionModes.set(chatId, mode);
+          if (this.onPermissionMode) {
+            this.onPermissionMode(mode, chatId);
+          }
+        }).catch(() => {});
         return;
       }
 
@@ -217,6 +239,8 @@ export class TelegramChannel extends BaseChannel {
       { command: 'budget_set', description: 'Set new daily token budget' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
+      { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
+      { command: 'tasks', description: 'List scheduled tasks' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },
     ];
 
@@ -305,6 +329,8 @@ export class TelegramChannel extends BaseChannel {
     const chatIds = this.resolveTargetChatIds(targetId);
     if (chatIds.length === 0 || !this.bot) return '';
 
+    this.deleteStatusMessage(targetId);
+
     let full = '';
     for await (const chunk of content) {
       full += chunk;
@@ -318,6 +344,23 @@ export class TelegramChannel extends BaseChannel {
       }
     }
     return full;
+  }
+
+  async sendToolFeedback(toolName: string, args: Record<string, any>, targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    this.stepCounters.set(key, (this.stepCounters.get(key) || 0) + 1);
+    const step = this.stepCounters.get(key)!;
+    const label = formatToolStep(toolName, args);
+    await this.updateStatusMessage(`**Step ${step}.** ${label}`, targetId);
+  }
+
+  async sendStepDone(toolName: string, result: unknown, targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const step = this.stepCounters.get(key) || 0;
+    const summary = formatToolResult(toolName, result);
+    const current = this.statusText.get(key) || '';
+    const line = summary ? `✓ ${summary}` : '✓ done';
+    await this.updateStatusMessage(`${current}\n${line}`, targetId);
   }
 
   async typing(targetId?: string): Promise<void> {
@@ -888,6 +931,60 @@ export class TelegramChannel extends BaseChannel {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&amp;/g, '&');
+  }
+
+  private async updateStatusMessage(text: string, targetId?: string): Promise<void> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    if (chatIds.length === 0 || !this.bot) return;
+
+    const key = targetId || 'notification';
+    this.statusText.set(key, text);
+    const html = mdToTelegram(text);
+
+    for (const chatId of chatIds) {
+      const existingMsgId = this.statusMessageIds.get(key);
+      if (existingMsgId) {
+        try {
+          await this.bot.api.editMessageText(chatId, existingMsgId, html, { parse_mode: 'HTML' });
+          return;
+        } catch {
+          this.statusMessageIds.delete(key);
+        }
+      }
+
+      try {
+        const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+        this.statusMessageIds.set(key, msg.message_id);
+      } catch {
+        try {
+          const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html));
+          this.statusMessageIds.set(key, msg.message_id);
+        } catch {
+          logger.warn({ chatId }, 'Failed to send status message');
+        }
+      }
+    }
+  }
+
+  private async deleteStatusMessage(targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const msgId = this.statusMessageIds.get(key);
+    if (msgId && this.bot) {
+      const chatIds = this.resolveTargetChatIds(targetId);
+      for (const chatId of chatIds) {
+        await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
+      }
+      this.statusMessageIds.delete(key);
+      this.statusText.delete(key);
+      this.stepCounters.delete(key);
+    }
+  }
+
+  resetStepCounter(targetId?: string): void {
+    const key = targetId || 'notification';
+    this.stepCounters.delete(key);
+    this.statusText.delete(key);
+    this.deleteStatusMessage(targetId);
   }
 
   private isImageFile(ext: string): boolean {

@@ -13,6 +13,7 @@ import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
+import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import {
@@ -393,6 +394,11 @@ export class Agent {
 
       const canStream = msg.channelType === 'cli' || (msg.channelType === 'telegram' && this.telegramStreaming);
 
+      const tgChannel = this.channels.get('telegram');
+      if (msg.channelType === 'telegram' && tgChannel) {
+        (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
+      }
+
       for (const provider of fallbackIterator) {
         try {
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
@@ -463,6 +469,20 @@ export class Agent {
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
+                          }
+                        }
+                      }
+                    } else if (channel instanceof TelegramChannel) {
+                      const tgCh = channel as TelegramChannel;
+                      for (const tc of toolCalls) {
+                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch(() => {});
                           }
                         }
                       }
@@ -566,6 +586,20 @@ export class Agent {
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
+                          }
+                        }
+                      }
+                    } else if (channel instanceof TelegramChannel) {
+                      const tgCh = channel as TelegramChannel;
+                      for (const tc of toolCalls) {
+                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch(() => {});
                           }
                         }
                       }
