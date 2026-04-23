@@ -28,7 +28,7 @@ import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { Identity } from './soul/identity.js';
-import { ShortTermMemory, LongTermMemory, EpisodicMemory } from './memory/store.js';
+import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
@@ -867,6 +867,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const scheduler = new Scheduler(config);
 
   const identity = new Identity();
+  migrateLegacyMemory();
   const shortTerm = new ShortTermMemory(config);
   const longTerm = new LongTermMemory(config);
   const episodic = new EpisodicMemory(config);

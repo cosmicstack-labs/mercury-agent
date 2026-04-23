@@ -6,3 +6,4 @@ dist/
 *.tsbuildinfo
 config/
 soul/
+memory/

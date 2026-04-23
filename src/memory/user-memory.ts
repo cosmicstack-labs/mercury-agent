@@ -1,4 +1,5 @@
 import type { MercuryConfig } from '../utils/config.js';
+import { getMemoryDir } from '../utils/config.js';
 import { SecondBrainDB, type MemoryRow } from './second-brain-db.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
@@ -69,13 +70,12 @@ export class UserMemoryStore {
   private consolidateThrottleMs: number;
   private lastConsolidateAt: number = 0;
 
-  constructor(config: MercuryConfig, userKey: string = 'user:owner') {
+  constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
     this.maxRecords = config.memory.secondBrain?.maxRecords ?? 50;
-    this.consolidateThrottleMs = 5 * 60 * 1000; // 5 minutes
-    const dbPath = config.memory.secondBrain?.dbPath
-      ?? join(config.memory.dir, 'second-brain', 'second-brain.db');
-    this.db = new SecondBrainDB(dbPath);
+    this.consolidateThrottleMs = 5 * 60 * 1000;
+    const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'second-brain', 'second-brain.db');
+    this.db = new SecondBrainDB(resolvedDbPath);
     this.db.init();
   }
 

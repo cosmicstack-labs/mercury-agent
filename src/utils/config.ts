@@ -16,6 +16,10 @@ export function getMercuryHome(): string {
   return process.env.MERCURY_HOME || MERCURY_HOME;
 }
 
+export function getMemoryDir(): string {
+  return join(getMercuryHome(), 'memory');
+}
+
 export interface ProviderConfig {
   name: string;
   apiKey: string;
@@ -87,12 +91,10 @@ export interface MercuryConfig {
     defaultRepo: string;
   };
   memory: {
-    dir: string;
     shortTermMaxMessages: number;
     secondBrain: {
       enabled: boolean;
       maxRecords: number;
-      dbPath: string;
     };
   };
   heartbeat: {
@@ -194,12 +196,10 @@ export function getDefaultConfig(): MercuryConfig {
       defaultRepo: getEnv('GITHUB_DEFAULT_REPO', ''),
     },
     memory: {
-      dir: getEnv('MEMORY_DIR', join(home, 'memory')),
       shortTermMaxMessages: getEnvNum('SHORT_TERM_MAX_MESSAGES', 20),
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
         maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
-        dbPath: getEnv('SECOND_BRAIN_DB_PATH', join(home, 'memory', 'second-brain', 'second-brain.db')),
       },
     },
     heartbeat: {

@@ -1,7 +1,30 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, unlinkSync, cpSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { MercuryConfig } from '../utils/config.js';
+import { getMemoryDir, getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+
+export function migrateLegacyMemory(): void {
+  const legacyDir = resolve('memory');
+  const newDir = getMemoryDir();
+  if (!existsSync(legacyDir) || legacyDir === newDir) return;
+  if (!existsSync(join(legacyDir, 'short-term')) && !existsSync(join(legacyDir, 'long-term')) && !existsSync(join(legacyDir, 'episodic')) && !existsSync(join(legacyDir, 'second-brain'))) return;
+  logger.info({ from: legacyDir, to: newDir }, 'Migrating memory from legacy ./memory to ~/.mercury/memory');
+  mkdirSync(newDir, { recursive: true });
+  for (const sub of ['short-term', 'long-term', 'episodic', 'second-brain']) {
+    const src = join(legacyDir, sub);
+    const dest = join(newDir, sub);
+    if (existsSync(src)) {
+      cpSync(src, dest, { recursive: true });
+    }
+  }
+  try {
+    rmSync(legacyDir, { recursive: true, force: true });
+    logger.info('Legacy memory directory removed');
+  } catch {
+    logger.warn('Could not remove legacy memory directory — please delete ./memory manually');
+  }
+}
 
 export interface MemoryEntry {
   id: string;
@@ -35,7 +58,7 @@ export class ShortTermMemory {
   private conversations: Map<string, MemoryEntry[]> = new Map();
 
   constructor(config: MercuryConfig) {
-    this.dir = join(config.memory.dir, 'short-term');
+    this.dir = join(getMemoryDir(), 'short-term');
     this.maxMessages = config.memory.shortTermMaxMessages;
     mkdirSync(this.dir, { recursive: true });
   }
@@ -87,8 +110,8 @@ export class LongTermMemory {
   private facts: LongTermFact[] = [];
 
   constructor(config: MercuryConfig) {
-    this.filepath = join(config.memory.dir, 'long-term', 'facts.jsonl');
-    mkdirSync(join(config.memory.dir, 'long-term'), { recursive: true });
+    this.filepath = join(getMemoryDir(), 'long-term', 'facts.jsonl');
+    mkdirSync(join(getMemoryDir(), 'long-term'), { recursive: true });
     this.load();
   }
 
@@ -135,8 +158,8 @@ export class EpisodicMemory {
   private events: EpisodicEvent[] = [];
 
   constructor(config: MercuryConfig) {
-    this.filepath = join(config.memory.dir, 'episodic', 'events.jsonl');
-    mkdirSync(join(config.memory.dir, 'episodic'), { recursive: true });
+    this.filepath = join(getMemoryDir(), 'episodic', 'events.jsonl');
+    mkdirSync(join(getMemoryDir(), 'episodic'), { recursive: true });
     this.load();
   }
 
