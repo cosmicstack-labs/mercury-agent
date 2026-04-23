@@ -6,7 +6,6 @@ const { tmpdir } = require('os');
 
 const ROOT = resolve(__dirname, '..');
 const TMP = join(tmpdir(), `mercury-pv-${process.pid}`);
-const IS_WIN = process.platform === 'win32';
 
 let failed = false;
 
@@ -32,15 +31,7 @@ const tarball = execSync('npm pack', { cwd: ROOT, encoding: 'utf-8', stdio: ['pi
 const tarballPath = join(ROOT, tarball);
 console.log(`  Tarball: ${tarball}`);
 
-console.log('\n3/5 Extracting & installing...');
-mkdirSync(join(TMP, 'pack'), { recursive: true });
-if (IS_WIN) {
-  execSync(`tar -xzf "${tarballPath}" -C "${join(TMP, 'pack')}"`, { stdio: 'pipe' });
-} else {
-  execSync(`tar -xzf "${tarballPath}" -C "${join(TMP, 'pack')}"`, { stdio: 'pipe' });
-}
-const pkgDir = join(TMP, 'pack', 'package');
-
+console.log('\n3/5 Installing from tarball...');
 const installDir = join(TMP, 'install');
 mkdirSync(installDir, { recursive: true });
 writeFileSync(join(installDir, 'package.json'), '{}');

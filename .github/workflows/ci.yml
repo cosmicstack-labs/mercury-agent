@@ -62,7 +62,6 @@ jobs:
       - run: npm run build
 
       - name: Verify package integrity
-        shell: bash
         run: node scripts/verify-package.cjs
 
   publish:
