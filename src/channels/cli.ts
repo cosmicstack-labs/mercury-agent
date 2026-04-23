@@ -14,12 +14,9 @@ import {
 } from '../utils/arrow-select.js';
 
 const USER_PROMPT = '  You: ';
-const USER_PROMPT_VISIBLE_LEN = USER_PROMPT.length;
-const AGENT_PREFIX_LEN = USER_PROMPT_VISIBLE_LEN;
 
-function agentPrefix(name: string, suffix?: string): string {
-  const time = suffix ?? '';
-  return chalk.cyan(`  ${name}:`) + time;
+function agentName(name: string, suffix?: string): string {
+  return chalk.cyan(`  ${name}:`) + (suffix ?? '');
 }
 
 export class CLIChannel extends BaseChannel {
@@ -30,8 +27,7 @@ export class CLIChannel extends BaseChannel {
   private menuAbortController: AbortController | null = null;
   private outputInProgress = 0;
   private streamActive = false;
-  private streamToolLines = 0;
-  private lastUserInput = '';
+  private streamLines = 0;
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -53,11 +49,9 @@ export class CLIChannel extends BaseChannel {
       input: process.stdin,
       output: process.stdout,
     });
-    this.rl.setPrompt(chalk.yellow(USER_PROMPT));
-    (this.rl as any)._promptLength = USER_PROMPT_VISIBLE_LEN;
+    this.rl.setPrompt(USER_PROMPT);
 
     this.rl.on('line', (line) => {
-      this.lastUserInput = line.trim();
       const trimmed = line.trim();
       if (!trimmed) {
         this.showPrompt();
@@ -86,12 +80,12 @@ export class CLIChannel extends BaseChannel {
     this.closeActiveMenu();
     this.beginOutput();
     const timeStr = elapsedMs != null ? chalk.dim(` (${(elapsedMs / 1000).toFixed(1)}s)`) : '';
-    const rendered = renderMarkdown(content);
-    const indented = this.indent(rendered);
-    console.log('');
-    console.log(agentPrefix(this.agentName, timeStr));
-    console.log(indented);
-    console.log('');
+
+    const block = this.formatBlock(this.agentName, timeStr, content);
+    for (const line of block) {
+      console.log(line);
+    }
+
     this.endOutput();
   }
 
@@ -110,18 +104,22 @@ export class CLIChannel extends BaseChannel {
       : stat.size > 1024
         ? `${(stat.size / 1024).toFixed(1)}KB`
         : `${stat.size}B`;
-    console.log('');
-    console.log(agentPrefix(this.agentName, chalk.dim(' (file)')));
-    console.log(chalk.dim(`  path: ${resolved}`));
-    console.log(chalk.dim(`  size: ${sizeStr}`));
-    console.log('');
+
+    const block = this.formatBlock(this.agentName, chalk.dim(' (file)'), [
+      chalk.dim(`path: ${resolved}`),
+      chalk.dim(`size: ${sizeStr}`),
+    ].join('\n'));
+    for (const line of block) {
+      console.log(line);
+    }
+
     this.endOutput();
   }
 
   async sendToolFeedback(toolName: string, args: Record<string, any>): Promise<void> {
     const label = formatToolStep(toolName, args);
     if (this.streamActive) {
-      this.streamToolLines++;
+      this.streamLines += 2;
       process.stdout.write(chalk.dim(`\n  ${label}\n`));
     } else {
       console.log(chalk.dim(`  ${label}`));
@@ -132,7 +130,7 @@ export class CLIChannel extends BaseChannel {
     this.closeActiveMenu();
     this.beginOutput();
     this.streamActive = true;
-    this.streamToolLines = 0;
+    this.streamLines = 0;
 
     if (!process.stdout.isTTY) {
       process.stdout.write(chalk.cyan(`  ${this.agentName}: `));
@@ -146,8 +144,6 @@ export class CLIChannel extends BaseChannel {
       this.endOutput();
       return full;
     }
-
-    console.log(chalk.cyan(`  ${this.agentName}:`));
 
     let full = '';
     for await (const chunk of content) {
@@ -165,32 +161,35 @@ export class CLIChannel extends BaseChannel {
 
     const termWidth = process.stdout.columns || 80;
 
-    let textLineCount = 0;
+    // count how many screen lines the raw text occupied
+    let streamedScreenLines = 0;
     for (const line of full.split('\n')) {
       const visualLen = line.replace(/\x1b\[[0-9;]*m/g, '').length;
-      textLineCount += Math.max(1, Math.ceil((visualLen + 2) / termWidth));
+      streamedScreenLines += Math.max(1, Math.ceil(visualLen / termWidth));
     }
 
-    const totalLines = 1 + textLineCount + this.streamToolLines;
+    // +1 trailing newline after the streamed text
+    const totalRawLines = streamedScreenLines + this.streamLines + 1;
 
-    process.stdout.write(`\x1b[${totalLines}A`);
-    for (let i = 0; i < totalLines; i++) {
+    // move up and erase every line we wrote
+    process.stdout.write(`\x1b[${totalRawLines}A`);
+    for (let i = 0; i < totalRawLines; i++) {
       process.stdout.write('\x1b[2K\x1b[1B');
     }
-    process.stdout.write(`\x1b[${totalLines}A`);
+    process.stdout.write(`\x1b[${totalRawLines}A`);
 
-    const rendered = renderMarkdown(full);
-    const indented = this.indent(rendered);
-    console.log(agentPrefix(this.agentName));
-    console.log(indented);
-    console.log('');
+    // print the formatted block
+    const block = this.formatBlock(this.agentName, '', full);
+    for (const line of block) {
+      console.log(line);
+    }
 
     this.endOutput();
     return full;
   }
 
   async typing(_targetId?: string): Promise<void> {
-    process.stdout.write(chalk.dim(`  ${this.agentName} is thinking...\r`));
+    process.stdout.write(chalk.dim(`  ${this.agentName} is responding...\r`));
   }
 
   showPrompt(): void {
@@ -198,6 +197,15 @@ export class CLIChannel extends BaseChannel {
       process.stdout.write('\x1b[2K\r');
       process.stdout.write(chalk.yellow(USER_PROMPT));
     }
+  }
+
+  private formatBlock(name: string, suffix: string, content: string): string[] {
+    const header = agentName(name, suffix);
+    const body = renderMarkdown(content)
+      .split('\n')
+      .map((line: string) => `  ${line}`)
+      .join('\n');
+    return ['', header, '', body, ''];
   }
 
   async withMenu<T>(runner: (select: (title: string, options: ArrowSelectOption[]) => Promise<string>) => Promise<T>): Promise<T | undefined> {
@@ -255,13 +263,6 @@ export class CLIChannel extends BaseChannel {
   private resumePrompt(): void {
     if (!this.ready || this.rl) return;
     this.createInterface();
-  }
-
-  private indent(text: string): string {
-    return text
-      .split('\n')
-      .map((line: string) => `  ${line}`)
-      .join('\n');
   }
 
   async prompt(question: string): Promise<string> {
