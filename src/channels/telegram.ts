@@ -457,8 +457,6 @@ export class TelegramChannel extends BaseChannel {
       }
 
       return full;
-    } catch {
-      return '';
     } finally {
       this.stopTypingLoop();
     }
