@@ -16,6 +16,12 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/node/v/@cosmicstack/mercury-agent" alt="node"></a>
 </p>
 
+<p align="center">
+  <a href="https://railway.com/deploy/mercury-agent-railway?referralCode=u71AUL&utm_medium=integration&utm_source=template&utm_campaign=generic">
+    <img src="https://railway.com/button.svg" alt="Deploy on Railway">
+  </a>
+</p>
+
 ---
 
 ## Quick Start
