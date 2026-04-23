@@ -64,3 +64,20 @@
   - `forever` — officially deprecated by its own maintainers
   - Native detached only — no crash recovery, no boot startup
 - **Consequence**: Zero external dependencies for core daemonization. Boot services are user-level (no sudo on Mac/Linux). Windows gets background mode + documented PM2 path. Foreground mode unchanged — daemon mode is opt-in. In daemon mode, CLI becomes log-only; Telegram (or other remote channels) is the interactive interface.
+
+## ADR-010: Second Brain — SQLite-backed autonomous structured memory
+
+- **Context**: Mercury needs a persistent user model that learns from conversations over time. The previous LongTermMemory (flat JSONL) is too simple — keyword-only search, no structure, no merge, no conflict handling, no tiering. A second brain was partially implemented (second-brain-db.ts for SQLite, user-memory.ts for JSON) but both were disconnected dead code.
+- **Decision**: Build a unified second brain using SQLite (better-sqlite3) as the storage backend with the UserMemoryStore business logic layer. Key principles:
+  - **Autonomous**: No review queue, no user approval. Memories are stored, merged, and de-conflicted automatically via confidence scores. Weak memories survive with low scores and decay naturally.
+  - **Automatic conflict resolution**: When a polarity conflict is detected (e.g., "prefers X" vs "does not prefer X"), the higher-confidence memory wins silently. Equal confidence → newer wins.
+  - **Automatic tiering**: Memory types like goals and projects start as `active` (time-bound); identity and preferences start as `durable`. Memories reinforced 3+ times are promoted from active to durable.
+  - **Staleness pruning**: Active inferred memories not seen in 21 days are dismissed. Durable inferred memories with no reinforcement in 120 days have their confidence decayed; below 0.3 they are dismissed.
+  - **Invisible to the user**: Memory extraction runs as a fire-and-forget background process after the response is sent. No tool calls in the agentic loop, no status messages. The user never waits.
+  - **10 memory types**: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.
+  - **FTS5 full-text search** for the `/memory search` command.
+- **Alternatives considered**:
+  - JSON-only (UserMemoryStore as-is) — good logic but no search, scales poorly
+  - SQLite-only (SecondBrainDB as-is) — good storage but no merge/conflict/reflection logic
+  - Vector embeddings — overkill for current scale, adds heavy dependency
+- **Consequence**: SQLite with WAL mode gives fast reads for prompt injection (microseconds). FTS5 enables fast search. The business logic (merge, conflict, reflection, tiering, staleness) is inherited from UserMemoryStore. One native dependency (better-sqlite3). The user's only controls are: observe (overview, recent, search), pause/resume learning, and clear all.

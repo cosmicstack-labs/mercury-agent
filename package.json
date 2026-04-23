@@ -58,6 +58,7 @@
     "@ai-sdk/openai": "^1.3.0",
     "@grammyjs/auto-retry": "^2.0.2",
     "ai": "^4.3.0",
+    "better-sqlite3": "^12.9.0",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.7",
@@ -71,6 +72,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.0",
     "@types/node-cron": "^3.0.11",
     "@types/react": "^18.3.0",

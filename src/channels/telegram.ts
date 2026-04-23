@@ -24,6 +24,7 @@ import { mdToTelegram } from '../utils/markdown.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
+const MEMORY_ACTION_PREFIX = 'tg_memory';
 
 type ApprovalResolver = () => void;
 
@@ -90,6 +91,15 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/memory') {
+        if (!this.chatCommandContext) {
+          await this.sendDirectMessage(chatId, 'Memory not available.');
+          return;
+        }
+        await this.sendMemoryKeyboard(chatId);
+        return;
+      }
+
       this.lastActiveChatId = chatId;
       logger.info({ chatId, text: ctx.message.text?.slice(0, 50) }, 'Telegram message received');
 
@@ -133,6 +143,11 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
+        await this.handleMemoryCallback(ctx, data);
+        return;
+      }
+
       const resolver = this.pendingApprovals.get(data);
       if (!resolver) {
         await ctx.answerCallbackQuery({ text: 'Expired' });
@@ -167,7 +182,18 @@ export class TelegramChannel extends BaseChannel {
       }).catch((err: any) => {
         if (!settled) {
           settled = true;
-          reject(err);
+          const message = err?.description || err?.message || String(err);
+          if (err?.error_code === 401) {
+            reject(new Error(`Telegram bot token is invalid. Get a fresh token from @BotFather via /token.\n  Details: ${message}`));
+          } else if (err?.error_code === 404) {
+            reject(new Error(`Telegram bot not found — the token may be wrong or the bot was deleted. Verify with @BotFather.\n  Details: ${message}`));
+          } else if (err?.error_code === 429) {
+            reject(new Error(`Telegram is rate-limiting this bot. Wait a minute and try again.\n  Details: ${message}`));
+          } else if (err?.error_code === 403) {
+            reject(new Error(`Telegram bot lacks permission for this action. Check bot scopes with @BotFather.\n  Details: ${message}`));
+          } else {
+            reject(new Error(`Telegram bot failed to start: ${message}`));
+          }
           return;
         }
         logger.error({ err: err.message }, 'Telegram bot start loop failed after startup');
@@ -190,6 +216,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'budget_reset', description: 'Reset token usage to zero' },
       { command: 'budget_set', description: 'Set new daily token budget' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
+      { command: 'memory', description: 'View and manage second brain memory' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },
     ];
 
@@ -624,6 +651,144 @@ export class TelegramChannel extends BaseChannel {
         'Your Telegram access request was rejected. This bot is not available to you.',
       );
       await this.sendDirectMessage(actorChatId, `Rejected Telegram access for ${this.formatRequestLabel(request)}.`);
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: 'Unknown action' });
+  }
+
+  private async sendMemoryKeyboard(chatId: number): Promise<void> {
+    if (!this.bot || !this.chatCommandContext) return;
+
+    const summary = this.chatCommandContext.memorySummary();
+    const lines = [
+      `<b>Memory Overview</b>`,
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+    ];
+    if (summary.profileSummary) {
+      lines.push(`\n<i>Profile: ${this.escapeHtml(summary.profileSummary)}</i>`);
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('\n<b>By type:</b>');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+
+    const learningLabel = summary.learningPaused ? '▶ Resume' : '⏸ Pause';
+    const keyboard = new InlineKeyboard()
+      .text('📋 Overview', `${MEMORY_ACTION_PREFIX}:overview`)
+      .text('🔍 Recent', `${MEMORY_ACTION_PREFIX}:recent`)
+      .row()
+      .text(learningLabel, `${MEMORY_ACTION_PREFIX}:toggle_learning`)
+      .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`);
+
+    await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    }).catch(async () => {
+      await this.bot!.api.sendMessage(chatId, lines.join('\n'), { reply_markup: keyboard });
+    });
+  }
+
+  private async handleMemoryCallback(ctx: any, data: string): Promise<void> {
+    if (!this.bot || !this.chatCommandContext) {
+      await ctx.answerCallbackQuery({ text: 'Not available' });
+      return;
+    }
+
+    const action = data.slice(`${MEMORY_ACTION_PREFIX}:`.length);
+    const chatId = ctx.callbackQuery.message?.chat?.id;
+    if (!chatId) {
+      await ctx.answerCallbackQuery({ text: 'Error' });
+      return;
+    }
+
+    if (action === 'overview') {
+      await ctx.answerCallbackQuery({ text: 'Overview' });
+      const summary = this.chatCommandContext.memorySummary();
+      const lines = [
+        `<b>Memory Overview</b>`,
+        `Total memories: ${summary.total}`,
+        `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+      ];
+      if (summary.profileSummary) {
+        lines.push(`\n<i>Profile: ${this.escapeHtml(summary.profileSummary)}</i>`);
+      }
+      if (summary.activeSummary) {
+        lines.push(`<i>Active: ${this.escapeHtml(summary.activeSummary)}</i>`);
+      }
+      const typeEntries = Object.entries(summary.byType);
+      if (typeEntries.length > 0) {
+        lines.push('\n<b>By type:</b>');
+        for (const [type, count] of typeEntries) {
+          lines.push(`  ${type}: ${count}`);
+        }
+      }
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action === 'recent') {
+      await ctx.answerCallbackQuery({ text: 'Recent memories' });
+      const recent = this.chatCommandContext.memoryRecent(10);
+      if (recent.length === 0) {
+        await this.bot.api.sendMessage(chatId, 'No memories yet.').catch(() => {});
+        return;
+      }
+      const lines = ['<b>Recent Memories:</b>\n'];
+      for (const r of recent) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        lines.push(`${scope} [${r.type}] ${this.escapeHtml(r.summary)}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action === 'toggle_learning') {
+      const currentSummary = this.chatCommandContext.memorySummary();
+      const currentlyPaused = currentSummary.learningPaused;
+      this.chatCommandContext.memorySetLearningPaused(!currentlyPaused);
+      const label = currentlyPaused ? '▶ Learning resumed' : '⏸ Learning paused';
+      await ctx.answerCallbackQuery({ text: label });
+      await this.bot.api.sendMessage(chatId, currentlyPaused
+        ? 'Learning resumed. Mercury will remember new things from conversations.'
+        : 'Learning paused. Mercury will not store new memories until resumed.',
+      ).catch(() => {});
+      await this.sendMemoryKeyboard(chatId);
+      return;
+    }
+
+    if (action === 'clear_confirm') {
+      const keyboard = new InlineKeyboard()
+        .text('🗑 Yes, clear everything', `${MEMORY_ACTION_PREFIX}:clear_yes`)
+        .text('✖ Cancel', `${MEMORY_ACTION_PREFIX}:clear_no`);
+      await ctx.answerCallbackQuery({});
+      await this.bot.api.sendMessage(chatId, '⚠️ Are you sure you want to clear <b>all</b> memories? This cannot be undone.', {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, '⚠️ Are you sure you want to clear all memories?', { reply_markup: keyboard });
+      });
+      return;
+    }
+
+    if (action === 'clear_yes') {
+      const cleared = this.chatCommandContext.memoryClear();
+      await ctx.answerCallbackQuery({ text: `Cleared ${cleared} memories` });
+      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} memories.`).catch(() => {});
+      return;
+    }
+
+    if (action === 'clear_no') {
+      await ctx.answerCallbackQuery({ text: 'Cancelled' });
       return;
     }
 

@@ -3,6 +3,7 @@ import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
+import type { UserMemoryStore } from '../memory/user-memory.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
@@ -155,6 +156,7 @@ export class Agent {
     private shortTerm: ShortTermMemory,
     private longTerm: LongTermMemory,
     private episodic: EpisodicMemory,
+    private userMemory: UserMemoryStore | null,
     private channels: ChannelRegistry,
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
@@ -310,16 +312,53 @@ export class Agent {
 
       const systemPrompt = this.buildSystemPrompt();
       const recentMemory = this.shortTerm.getRecent(msg.channelId, 10);
-      const relevantFacts = this.longTerm.search(msg.content, 3);
 
       const messages: any[] = [];
 
-      if (relevantFacts.length > 0) {
-        messages.push({
-          role: 'user',
-          content: 'Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'),
-        });
-        messages.push({ role: 'assistant', content: 'Noted. I\'ll use these facts.' });
+      const recentSteps = this.shortTerm.getRecent(msg.channelId, 4);
+      let loopWarning: string | null = null;
+      if (recentSteps.length >= 3) {
+        const toolCallPattern = /\[Using: (.+?)\]/g;
+        const toolCalls: string[] = [];
+        for (const m of recentSteps) {
+          if (m.role === 'assistant') {
+            let match;
+            while ((match = toolCallPattern.exec(m.content)) !== null) {
+              toolCalls.push(match[1]);
+            }
+          }
+        }
+        if (toolCalls.length >= 3) {
+          const last3 = toolCalls.slice(-3);
+          if (last3[0] === last3[1] && last3[1] === last3[2]) {
+            loopWarning = `[SYSTEM WARNING] You have called ${last3[0]} 3+ times in a row with the same result. Stop repeating this call. Try a different approach — if you're failing on permissions, try a different path. If you're failing on git push auth, use github_api with PUT /repos/{owner}/{repo}/contents/{path} to push files directly through the API.`;
+          }
+        }
+      }
+
+      if (loopWarning) {
+        messages.push({ role: 'user', content: loopWarning });
+        messages.push({ role: 'assistant', content: 'Understood. I will try a different approach.' });
+      }
+
+      if (this.userMemory) {
+        const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
+        if (memoryContext.context) {
+          messages.push({
+            role: 'user',
+            content: memoryContext.context,
+          });
+          messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
+        }
+      } else {
+        const relevantFacts = this.longTerm.search(msg.content, 3);
+        if (relevantFacts.length > 0) {
+          messages.push({
+            role: 'user',
+            content: 'Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'),
+          });
+          messages.push({ role: 'assistant', content: 'Noted. I\'ll use these facts.' });
+        }
       }
 
       if (recentMemory.length > 0) {
@@ -607,8 +646,8 @@ export class Agent {
       });
 
       if (msg.channelType !== 'internal') {
-        this.extractFacts(msg.content, finalText).catch(err => {
-          logger.warn({ err }, 'Fact extraction failed');
+        this.extractMemory(msg.content, finalText).catch(err => {
+          logger.warn({ err }, 'Memory extraction failed');
         });
       }
 
@@ -730,6 +769,22 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       logger.info({ pruned }, 'Episodic memory pruned');
     }
 
+    if (this.userMemory) {
+      try {
+        const consolidation = this.userMemory.consolidate();
+        if (consolidation.profileUpdated || consolidation.reflectionCount > 0) {
+          logger.info({ consolidation }, 'Second brain consolidated');
+        }
+
+        const pruning = this.userMemory.prune();
+        if (pruning.activePruned > 0 || pruning.durablePruned > 0 || pruning.promoted > 0) {
+          logger.info({ pruning }, 'Second brain pruned');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Second brain heartbeat error');
+      }
+    }
+
     const notifications: string[] = [];
 
     const usagePct = this.tokenBudget.getUsagePercentage();
@@ -762,45 +817,25 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
   }
 
-  private async extractFacts(userMessage: string, agentResponse: string): Promise<void> {
+  private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
+    if (!this.userMemory) return;
+    if (this.userMemory.isLearningPaused()) return;
+
     const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
     if (trivial.test(userMessage.trim())) return;
 
-    if (!this.tokenBudget.canAfford(500)) return;
+    if (!this.tokenBudget.canAfford(800)) return;
 
     try {
       const provider = this.providers.getDefault();
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: 'You are a fact extractor. Read the conversation below and extract 1-3 important facts worth remembering long-term. Output each fact on a separate line, prefixed with "- ". Only extract facts that are specific, factual, and not obvious. If nothing is worth remembering, output nothing.',
+        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
-        maxTokens: 200,
+        maxTokens: 400,
       });
-
-      const text = result.text.trim();
-      if (!text) return;
-
-      const facts = text
-        .split('\n')
-        .map(l => l.replace(/^-\s*/, '').trim())
-        .filter(f => f.length > 10 && f.length < 200);
-
-      const existing = this.longTerm.getAll();
-      for (const fact of facts.slice(0, 3)) {
-        const isDupe = existing.some(e =>
-          e.fact.toLowerCase().includes(fact.toLowerCase().slice(0, 30))
-        );
-        if (!isDupe) {
-          this.longTerm.add({
-            topic: 'extracted',
-            fact,
-            source: 'conversation',
-          });
-          logger.info({ fact: fact.slice(0, 60) }, 'Fact extracted to long-term memory');
-        }
-      }
 
       this.tokenBudget.recordUsage({
         provider: provider.name,
@@ -810,8 +845,60 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
         channelType: 'internal',
       });
+
+      const text = result.text.trim();
+      if (!text) return;
+
+      let candidates: Array<{
+        type: string;
+        summary: string;
+        detail?: string;
+        evidenceKind?: string;
+        confidence: number;
+        importance: number;
+        durability: number;
+      }>;
+
+      try {
+        const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        candidates = JSON.parse(jsonStr);
+      } catch {
+        const facts = text
+          .split('\n')
+          .map(l => l.replace(/^-\s*/, '').trim())
+          .filter(f => f.length > 10 && f.length < 200);
+        candidates = facts.slice(0, 3).map(f => ({
+          type: 'preference',
+          summary: f,
+          confidence: 0.75,
+          importance: 0.7,
+          durability: 0.7,
+          evidenceKind: 'inferred',
+        }));
+      }
+
+      const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
+      const typed = candidates
+        .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+        .filter(c => validTypes.includes(c.type))
+        .map(c => ({
+          type: c.type as any,
+          summary: c.summary,
+          detail: c.detail,
+          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+        }));
+
+      if (typed.length > 0) {
+        const remembered = this.userMemory.remember(typed, 'conversation');
+        if (remembered.length > 0) {
+          logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+        }
+      }
     } catch (err) {
-      logger.warn({ err }, 'Fact extraction error');
+      logger.warn({ err }, 'Memory extraction error');
     }
   }
 
@@ -885,6 +972,21 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
       ];
       await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory') {
+      if (!this.userMemory) {
+        await channel.send('Second brain is not enabled.', channelId);
+        return true;
+      }
+
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        await this.openCliMemoryMenu(channel, channelId);
+        return true;
+      }
+
+      await this.sendMemoryOverview(channel, channelId);
       return true;
     }
 
@@ -1156,6 +1258,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },
+          { value: 'memory', label: 'Memory' },
           { value: 'telegram', label: 'Telegram' },
           { value: 'tools', label: 'Tools' },
           { value: 'skills', label: 'Skills' },
@@ -1170,6 +1273,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
         if (action === 'status') {
           await this.handleChatCommand('/status', 'cli', channelId);
+          continue;
+        }
+
+        if (action === 'memory') {
+          if (this.userMemory) {
+            await this.openCliMemoryMenu(channel, channelId, select);
+          } else {
+            await channel.send('Second brain is not enabled.', channelId);
+          }
           continue;
         }
 
@@ -1198,6 +1310,116 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
     });
+  }
+
+  private async sendMemoryOverview(channel: any, channelId: string): Promise<void> {
+    if (!this.userMemory) return;
+    const summary = this.userMemory.getSummary();
+    const lines = [
+      `**Memory Overview**`,
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+    ];
+    if (summary.profileSummary) {
+      lines.push(`Profile: ${summary.profileSummary}`);
+    }
+    if (summary.activeSummary) {
+      lines.push(`Active: ${summary.activeSummary}`);
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('');
+      lines.push('By type:');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+    await channel.send(lines.join('\n'), channelId);
+  }
+
+  private async openCliMemoryMenu(channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {
+    if (!this.userMemory) return;
+
+    const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
+      while (true) {
+        const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+        const action = await sel('Memory', [
+          { value: 'overview', label: 'Overview' },
+          { value: 'recent', label: 'Recent Memories' },
+          { value: 'search', label: 'Search' },
+          { value: 'toggle', label: learningLabel },
+          { value: 'clear', label: 'Clear All Memories' },
+          { value: 'back', label: 'Back' },
+        ]);
+
+        if (action === 'back') return;
+
+        if (action === 'overview') {
+          await this.sendMemoryOverview(channel, channelId);
+          continue;
+        }
+
+        if (action === 'recent') {
+          const recent = this.userMemory!.getRecent(10);
+          if (recent.length === 0) {
+            await channel.send('No memories yet.', channelId);
+            continue;
+          }
+          const lines = ['**Recent Memories:**', ''];
+          for (const r of recent) {
+            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
+            lines.push(`${scope} [${r.type}] ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'search') {
+          const query = await channel.prompt('Search memories: ');
+          if (!query) continue;
+          const results = this.userMemory!.search(query, 10);
+          if (results.length === 0) {
+            await channel.send(`No memories found matching "${query}".`, channelId);
+            continue;
+          }
+          const lines = [`**Search results for "${query}":**`, ''];
+          for (const r of results) {
+            const scope = r.scope === 'active' ? '⏳' : '📌';
+            lines.push(`${scope} [${r.type}] ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'toggle') {
+          const currentlyPaused = this.userMemory!.isLearningPaused();
+          this.userMemory!.setLearningPaused(!currentlyPaused);
+          await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
+          continue;
+        }
+
+        if (action === 'clear') {
+          const confirm = await sel('Clear all memories?', [
+            { value: 'cancel', label: 'Cancel' },
+            { value: 'confirm', label: 'Clear everything' },
+          ]);
+          if (confirm === 'confirm') {
+            const cleared = this.userMemory!.clear();
+            await channel.send(`Cleared ${cleared} memories.`, channelId);
+          }
+          continue;
+        }
+      }
+    };
+
+    if (select) {
+      await runMenu(select);
+    } else {
+      await channel.withMenu(runMenu);
+    }
   }
 
   private async openCliTelegramMenu(

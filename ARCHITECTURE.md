@@ -17,6 +17,7 @@ Mercury is a soul-driven, token-efficient AI agent that runs 24/7. It is an **or
 | Short-term memory | Working memory | `src/memory/store.ts` |
 | Episodic memory | Recent experiences | `src/memory/store.ts` |
 | Long-term memory | Life lessons | `src/memory/store.ts` |
+| Second brain | Structured long-term user model | `src/memory/user-memory.ts` + `src/memory/second-brain-db.ts` |
 | Providers | Senses | `src/providers/` |
 | Capabilities | Hands & tools | `src/capabilities/` |
 | Permissions | Boundaries | `src/capabilities/permissions.ts` |
@@ -52,7 +53,9 @@ src/
 │       ├── list-tasks.ts
 │       └── cancel-task.ts
 ├── memory/               # Persistence layer
-│   └── store.ts          # Short/long/episodic memory
+│   ├── store.ts          # Short/long/episodic memory
+│   ├── second-brain-db.ts # SQLite storage engine (FTS5)
+│   └── user-memory.ts    # Second brain: autonomous structured memory
 ├── providers/            # LLM APIs
 │   ├── base.ts           # Abstract provider + getModelInstance()
 │   ├── openai-compat.ts
@@ -153,7 +156,56 @@ All runtime data lives in `~/.mercury/` (not the project directory):
 - System prompt (soul + guardrails + persona): ~500 tokens per request
 - Short-term context: last 10 messages
 - Long-term facts: keyword-matched, ~3 facts injected
+- Second brain: relevant user memories injected via `retrieveRelevant()` (~900 chars)
 - Daily default: 50,000 tokens
+
+## Second Brain
+
+Mercury's second brain is an autonomous, persistent user model that learns from conversations over time. It is not a raw chat log and it is not a document dump. It stores compact, structured memories it believes may help in future conversations.
+
+### How It Learns (Background, Invisible)
+
+For each non-trivial conversation:
+1. Mercury responds to the user normally.
+2. After the response is sent, a background `extractMemory()` call extracts 0-3 typed memory candidates (preference, goal, project, etc.) using a separate LLM call (~800 tokens).
+3. Each candidate goes through `UserMemoryStore.remember()` which:
+   - Merges with existing memory if >= 74% overlap (strengthens evidence)
+   - Auto-resolves conflicts (higher confidence wins, equal confidence → newer wins)
+   - Auto-tiers: identity/preference → durable, goal/project → active
+   - Promotes active → durable after 3+ reinforcing observations
+   - Stores weak memories with low confidence — they decay naturally
+4. On each heartbeat, Mercury consolidates (re-synthesizes profile/active summaries, generates reflections) and prunes (dismisses stale memories, promotes reinforced ones).
+
+The user never sees or waits for this process. No tool calls are involved in the agentic loop.
+
+### What It Does Not Store
+
+- Greetings, small talk, filler
+- Low-signal one-off details (below 0.55 confidence minimum)
+- Speculative assistant guesses
+
+### `/memory` Command
+
+```
+/memory        → Opens arrow-key menu (CLI) or sends overview (Telegram)
+
+Menu:
+  Overview          — total memories, breakdown by type, learning status
+  Recent            — last 10 memories (type + summary + confidence)
+  Search            — full-text search across all memories
+  Pause Learning    — toggle: stop/resume storing new memories
+  Clear All         — confirm, then wipes all memories
+  Back
+```
+
+### User Controls
+
+The second brain is autonomous in learning and management. The user's only controls are:
+- **Pause/resume** learning (for sensitive conversations)
+- **Clear all** memories (start fresh)
+- **Observe** via overview, recent, and search
+
+No review queue. No manual pinning. No manual conflict resolution. No manual editing.
 
 ## Channels
 

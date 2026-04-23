@@ -43,6 +43,11 @@ export interface ChatCommandContext {
   config: () => import('../utils/config.js').MercuryConfig;
   tokenBudget: () => import('../utils/tokens.js').TokenBudget;
   manual: () => string;
+  memorySummary: () => import('../memory/user-memory.js').UserMemorySummary;
+  memoryRecent: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
+  memorySearch: (query: string, limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
+  memorySetLearningPaused: (paused: boolean) => void;
+  memoryClear: () => number;
 }
 
 export class CapabilityRegistry {

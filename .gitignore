@@ -5,5 +5,4 @@ dist/
 .DS_Store
 *.tsbuildinfo
 config/
-memory/
 soul/

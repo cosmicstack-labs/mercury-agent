@@ -29,6 +29,7 @@ import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory } from './memory/store.js';
+import { UserMemoryStore } from './memory/user-memory.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -489,7 +490,14 @@ async function completeInitialTelegramPairing(config: MercuryConfig): Promise<vo
   const telegram = new TelegramChannel(config);
   try {
     await telegram.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await telegram.stop();
+    return;
+  }
 
+  try {
     while (true) {
       const pairingCode = await ask(chalk.white('  Telegram Pairing Code: '));
       if (!pairingCode) {
@@ -863,6 +871,21 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const longTerm = new LongTermMemory(config);
   const episodic = new EpisodicMemory(config);
 
+  let userMemory: UserMemoryStore | null = null;
+  if (config.memory.secondBrain?.enabled !== false) {
+    try {
+      userMemory = new UserMemoryStore(config);
+      if (!isDaemon) {
+        console.log(chalk.dim(`  Second brain: enabled (${userMemory.getSummary().total} existing memories)`));
+      } else {
+        logger.info({ total: userMemory.getSummary().total }, 'Second brain loaded');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Second brain initialization failed, continuing without it');
+      userMemory = null;
+    }
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -872,6 +895,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     config: () => config,
     tokenBudget: () => tokenBudget,
     manual: () => getManual(),
+    memorySummary: () => userMemory ? userMemory.getSummary() : { total: 0, byType: {}, learningPaused: false },
+    memoryRecent: (limit?: number) => userMemory ? userMemory.getRecent(limit) : [],
+    memorySearch: (query: string, limit?: number) => userMemory ? userMemory.search(query, limit) : [],
+    memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
+    memoryClear: () => userMemory ? userMemory.clear() : 0,
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -914,7 +942,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.registerAll();
 
   const agent = new Agent(
-    config, providers, identity, shortTerm, longTerm, episodic, channels, tokenBudget, capabilities, scheduler,
+    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
   );
 
   await agent.birth();
@@ -922,6 +950,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
+
+  if (tgChannel) {
+    tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
@@ -974,6 +1006,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       console.log(chalk.dim(`  ${name} is shutting down...`));
     } else {
       logger.info('Mercury is shutting down (daemon mode)');
+    }
+    if (userMemory) {
+      try {
+        userMemory.consolidate();
+        userMemory.close();
+      } catch {}
     }
     await agent.shutdown();
     process.exit(0);

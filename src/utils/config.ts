@@ -89,6 +89,11 @@ export interface MercuryConfig {
   memory: {
     dir: string;
     shortTermMaxMessages: number;
+    secondBrain: {
+      enabled: boolean;
+      maxRecords: number;
+      dbPath: string;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -191,6 +196,11 @@ export function getDefaultConfig(): MercuryConfig {
     memory: {
       dir: getEnv('MEMORY_DIR', join(home, 'memory')),
       shortTermMaxMessages: getEnvNum('SHORT_TERM_MAX_MESSAGES', 20),
+      secondBrain: {
+        enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
+        maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
+        dbPath: getEnv('SECOND_BRAIN_DB_PATH', join(home, 'memory', 'second-brain', 'second-brain.db')),
+      },
     },
     heartbeat: {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),
