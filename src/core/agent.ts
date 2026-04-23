@@ -647,7 +647,7 @@ export class Agent {
         return;
       }
 
-      const finalText = streamedText || result.text;
+      const finalText = (streamedText || result.text || '').trim() || '(no text response)';
 
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
@@ -687,7 +687,7 @@ export class Agent {
 
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
-        if (streamedText) {
+        if (streamedText && streamedText.trim()) {
           logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
         } else {
           logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');

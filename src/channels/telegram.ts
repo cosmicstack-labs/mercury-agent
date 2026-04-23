@@ -267,6 +267,10 @@ export class TelegramChannel extends BaseChannel {
 
     const timeSuffix = elapsedMs != null ? `\n⏱ ${(elapsedMs / 1000).toFixed(1)}s` : '';
     const fullContent = content + timeSuffix;
+    if (!fullContent.trim()) {
+      logger.info({ targetId }, 'Telegram send: skipping empty message');
+      return;
+    }
     const html = mdToTelegram(fullContent);
     const chunks = this.splitMessage(html, MAX_MESSAGE_LENGTH);
 
@@ -436,16 +440,25 @@ export class TelegramChannel extends BaseChannel {
             // final edit failed
           }
         }
-      } else {
+      } else if (full.trim()) {
         const html = mdToTelegram(full);
+        const stripped = this.stripHtml(html);
         try {
           await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
         } catch {
-          await this.bot.api.sendMessage(chatId, this.stripHtml(html));
+          if (stripped.trim()) {
+            try {
+              await this.bot.api.sendMessage(chatId, stripped);
+            } catch {
+              // plain text send also failed
+            }
+          }
         }
       }
 
       return full;
+    } catch {
+      return '';
     } finally {
       this.stopTypingLoop();
     }

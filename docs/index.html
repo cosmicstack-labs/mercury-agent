@@ -172,7 +172,8 @@
   <section id="second-brain" class="section section-alt">
     <div class="container">
       <h2 class="section-title">🧠 Second Brain</h2>
-      <p class="section-subtitle">Mercury doesn't just chat — it <em>remembers</em>. A persistent, structured memory that grows with every conversation.</p>
+      <p class="section-subtitle">Most AI agents forget everything when you close the chat. Mercury <em>remembers</em> — automatically, privately, and with surgical precision.</p>
+
       <div class="brain-grid">
         <div class="brain-card" data-reveal>
           <h3>Learns Automatically</h3>
@@ -196,11 +197,46 @@
         </div>
         <div class="brain-card" data-reveal>
           <h3>You Stay in Control</h3>
-          <p><code>/memory</code> gives you overview, search, pause, and clear. Second Brain can be disabled entirely via config. All data stays on your machine in SQLite.</p>
+          <p><code>/memory</code> gives you overview, search, pause, and clear. Second Brain can be disabled entirely via config. All data stays on your machine in SQLite — nothing leaves your machine.</p>
         </div>
       </div>
+
+      <div class="brain-architecture" data-reveal>
+        <h3>How It Works</h3>
+        <div class="brain-flow">
+          <div class="brain-step">
+            <div class="brain-step-num">1</div>
+            <div class="brain-step-content">
+              <strong>Extract</strong>
+              <p>After every conversation, a dedicated extraction pass pulls 0–3 facts. Each fact gets a type, confidence score (0–1), importance, and durability rating. Below 0.55 confidence? Rejected.</p>
+            </div>
+          </div>
+          <div class="brain-step">
+            <div class="brain-step-num">2</div>
+            <div class="brain-step-content">
+              <strong>Store &amp; Merge</strong>
+              <p>Facts land in SQLite with FTS5 full-text search. If a similar fact already exists, Mercury merges — incrementing evidence count, updating confidence, and resolving contradictions. No duplicates.</p>
+            </div>
+          </div>
+          <div class="brain-step">
+            <div class="brain-step-num">3</div>
+            <div class="brain-step-content">
+              <strong>Recall</strong>
+              <p>Before each message, a FTS5 query retrieves the top 5 relevant memories within a 900-character budget. Only what matters enters context. Your token spend stays low.</p>
+            </div>
+          </div>
+          <div class="brain-step">
+            <div class="brain-step-num">4</div>
+            <div class="brain-step-content">
+              <strong>Consolidate &amp; Prune</strong>
+              <p>Every 60 minutes: profile synthesis, reflection generation, and active→durable promotion (3+ evidence). Auto-pruning dismisses stale active memories (21 days) and decays low-confidence durables (120 days).</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="brain-note" data-reveal>
-        <p>Enable/disable: <code>SECOND_BRAIN_ENABLED=false</code> env var or <code>memory.secondBrain.enabled: false</code> in <code>~/.mercury/mercury.yaml</code>. Enabled by default.</p>
+        <p><strong>Why it matters:</strong> This isn't a chat history dump. It's a structured knowledge graph that improves with every conversation — the more you use Mercury, the better it gets. And because it uses SQLite + FTS5 on your local machine, recall is instant, search is sub-millisecond, and your data never leaves <code>~/.mercury/</code>. Enable/disable: <code>SECOND_BRAIN_ENABLED=false</code> env var or <code>memory.secondBrain.enabled: false</code> in <code>~/.mercury/mercury.yaml</code>. Enabled by default.</p>
       </div>
     </div>
   </section>

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  Runs 24/7 from CLI or Telegram. 31 built-in tools. Extensible skills. Asks before it acts.
+  Remembers what matters. Asks before it acts. Runs 24/7 from CLI or Telegram. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
 </p>
 
 <p align="center">
@@ -41,12 +41,13 @@ mercury doctor
 
 ## Why Mercury?
 
-Every AI agent can read files, run commands, and fetch URLs. Most do it silently. **Mercury asks first.**
+Every AI agent can read files, run commands, and fetch URLs. Most do it silently. **Mercury asks first — and remembers what matters.**
 
-- **Permission-hardened** — Shell blocklist (`sudo`, `rm -rf /`, etc. never execute). Folder-level read/write scoping. Pending approval flow. Skill elevation with granular `allowed-tools`. No surprises.
+- **Permission-hardened** — Shell blocklist (`sudo`, `rm -rf /`, etc. never execute). Folder-level read/write scoping. Pending approval flow. Ask Me or Allow All per session. No surprises.
+- **Second Brain** — Persistent, structured memory with SQLite + FTS5 full-text search. 10 memory types, auto-extraction, conflict resolution, auto-consolidation. Mercury learns your preferences, goals, and habits without manual entry.
 - **Soul-driven** — Personality defined by markdown files you own (`soul.md`, `persona.md`, `taste.md`, `heartbeat.md`). No corporate wrapper.
 - **Token-aware** — Daily budget enforcement. Auto-concise when over 70%. `/budget` command to check, reset, or override.
-- **Multi-channel** — CLI with real-time streaming. Telegram with HTML formatting, file uploads, and typing indicators.
+- **Live streaming** — Real-time token streaming on CLI with cursor-save/restore and markdown re-rendering. Telegram streaming with editable status messages.
 - **Always on** — Run as a background daemon on any OS. Auto-restarts on crash. Starts on boot. Cron scheduling, heartbeat monitoring, and proactive notifications.
 - **Extensible** — Install community skills with a single command. Schedule skills as recurring tasks. Based on the [Agent Skills](https://agentskills.io) specification.
 
@@ -161,8 +162,8 @@ Type these during a conversation — they don't consume API tokens. Work on both
 
 | Channel | Features |
 |---------|----------|
-| **CLI** | Readline prompt, arrow-key command menus, real-time text streaming, markdown rendering, permission mode picker |
-| **Telegram** | HTML formatting, file uploads, typing indicators, multi-user access with admin/member roles, editable status messages |
+| **CLI** | Readline prompt, arrow-key command menus, real-time text streaming with markdown re-rendering, permission mode picker |
+| **Telegram** | HTML formatting, editable streaming messages, file uploads, typing indicators, multi-user access with admin/member roles |
 
 ### Telegram Access
 
@@ -196,7 +197,7 @@ Mercury builds a structured, persistent memory that grows with every conversatio
 - **User controls** — `/memory` for overview, search, pause, resume, and clear
 - **Disable** — `SECOND_BRAIN_ENABLED=false` env var or `memory.secondBrain.enabled: false` in config
 
-All data stays on your machine in `~/.mercury/memory/second-brain/second-brain.db` (SQLite + FTS5).
+All data stays on your machine in `~/.mercury/memory/second-brain/second-brain.db` (SQLite + FTS5). No cloud.
 
 ## Configuration
 
@@ -211,8 +212,10 @@ All runtime data lives in `~/.mercury/` — not in your project directory.
 | `~/.mercury/skills/` | Installed skills |
 | `~/.mercury/schedules.yaml` | Scheduled tasks |
 | `~/.mercury/token-usage.json` | Daily token usage tracking |
-| `~/.mercury/memory/` | Short-term, long-term, episodic memory |
-| `~/.mercury/memory/second-brain.db` | SQLite database for structured long-term memory (FTS5) |
+| `~/.mercury/memory/short-term/` | Per-conversation JSON files |
+| `~/.mercury/memory/long-term/` | Auto-extracted facts (JSONL) |
+| `~/.mercury/memory/episodic/` | Timestamped event log (JSONL) |
+| `~/.mercury/memory/second-brain/` | Structured memory database (SQLite + FTS5) |
 | `~/.mercury/daemon.pid` | Background process PID |
 | `~/.mercury/daemon.log` | Daemon mode logs |
 
@@ -237,8 +240,9 @@ When a provider fails, Mercury automatically tries the next one. It remembers th
 
 - **TypeScript + Node.js 18+** — ESM, tsup build
 - **Vercel AI SDK v4** — `generateText` + `streamText`, 10-step agentic loop, provider fallback
-- **grammY** — Telegram bot with typing indicators and file uploads
-- **SQLite + JSONL** — Second brain (SQLite with FTS5), short/long-term/episodic memory (JSONL)
+- **grammY** — Telegram bot with typing indicators, editable streaming, and file uploads
+- **SQLite + FTS5** — Second brain with full-text search, conflict resolution, auto-consolidation
+- **JSONL** — Short-term, long-term, and episodic conversation memory
 - **Daemon manager** — Background spawn + PID file + watchdog crash recovery
 - **System services** — macOS LaunchAgent, Linux systemd, Windows Task Scheduler
 

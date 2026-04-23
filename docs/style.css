@@ -625,3 +625,79 @@ footer {
 .brain-card p { color: var(--gray); font-size: 0.95em; line-height: 1.65; }
 .brain-note { margin-top: 32px; text-align: center; color: var(--gray-dim); font-size: 0.88em; }
 .brain-note code { background: var(--bg-card); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; color: var(--cyan); }
+
+/* ── Second Brain Architecture Flow ── */
+.brain-architecture {
+  margin-top: 56px;
+  padding: 40px 36px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.brain-architecture h3 {
+  font-size: 1.3em;
+  color: var(--white);
+  margin-bottom: 32px;
+  text-align: center;
+}
+.brain-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+}
+.brain-flow::before {
+  content: '';
+  position: absolute;
+  left: 28px;
+  top: 32px;
+  bottom: 32px;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--cyan), var(--cyan-dim), transparent);
+}
+.brain-step {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  padding: 20px 0;
+  position: relative;
+}
+.brain-step-num {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(0, 212, 255, 0.05));
+  border: 1px solid var(--cyan-dim);
+  border-radius: 50%;
+  font-family: var(--font);
+  font-size: 1.2em;
+  font-weight: 700;
+  color: var(--cyan);
+  position: relative;
+  z-index: 1;
+}
+.brain-step-content {
+  flex: 1;
+  padding-top: 4px;
+}
+.brain-step-content strong {
+  display: block;
+  font-size: 1.05em;
+  color: var(--white);
+  margin-bottom: 6px;
+}
+.brain-step-content p {
+  color: var(--gray);
+  font-size: 0.92em;
+  line-height: 1.65;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .brain-architecture { padding: 24px 16px; }
+  .brain-step-num { width: 40px; height: 40px; font-size: 1em; }
+  .brain-flow::before { left: 20px; }
+}
