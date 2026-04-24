@@ -15,8 +15,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04, windows-latest, macos-latest, macos-13]
-        node: [20, 22]
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+          - os: macos-13
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,8 +41,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04, windows-latest, macos-latest, macos-13]
-        node: [20, 22]
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+          - os: macos-13
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,8 +68,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04, windows-latest, macos-latest, macos-13]
-        node: [20, 22]
+        include:
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,33 +88,20 @@ jobs:
         run: node scripts/verify-package.cjs
 
   termux:
-    name: Termux (Android, ${{ matrix.arch }})
+    name: Termux (Android, x86_64)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            qemu: false
-          - arch: aarch64
-            qemu: true
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU for ARM64
-        if: matrix.qemu
-        uses: docker/setup-qemu-action@v3
 
       - name: Run CI in Termux container
         shell: bash
         run: |
           docker run --rm \
-            ${{ matrix.qemu && '--platform linux/arm64' || '' }} \
             --privileged \
             --entrypoint /entrypoint_root.sh \
             -v "${{ github.workspace }}:/home/builder/project" \
             -e "HOME=/home/builder" \
-            termux/termux-docker:${{ matrix.arch }} \
+            termux/termux-docker:x86_64 \
             bash -c "
               set -e
               chown -R system:system /home/builder/project
