@@ -386,8 +386,8 @@ footer {
   filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.25));
 }
 
-.provider-logo-openai { color: #412991; }
-.provider-logo-openai svg { filter: drop-shadow(0 0 6px rgba(65, 41, 145, 0.3)); }
+.provider-logo-openai { color: #ffffff; }
+.provider-logo-openai svg { filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.3)); }
 
 .provider-logo-anthropic { color: #d4a574; }
 .provider-logo-anthropic svg { filter: drop-shadow(0 0 6px rgba(212, 165, 116, 0.3)); }
@@ -395,8 +395,8 @@ footer {
 .provider-logo-xai { color: #f5f5f5; }
 .provider-logo-xai svg { filter: drop-shadow(0 0 6px rgba(245, 245, 245, 0.2)); }
 
-.provider-logo-ollama { color: #646cff; }
-.provider-logo-ollama svg { filter: drop-shadow(0 0 6px rgba(100, 108, 255, 0.3)); }
+.provider-logo-ollama { color: #ffffff; }
+.provider-logo-ollama svg { filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.3)); }
 
 .provider-info h3 {
   font-size: 1.05em;
