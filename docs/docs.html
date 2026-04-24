@@ -390,20 +390,21 @@
       <p>If Mercury is already running, <code>mercury up</code> just confirms it and shows the PID. If the service isn't
         installed yet, it installs it first, then starts the daemon.</p>
 
-      <h3>Foreground (interactive)</h3>
+      <h3>Start (background daemon)</h3>
       <div class="terminal-inline">
         <code>mercury start</code>
       </div>
-      <p>Runs in the foreground with a readline prompt. Press <code>Ctrl+C</code> to exit. All conversation happens in
-        your terminal with real-time text streaming and markdown rendering.</p>
+      <p>Starts Mercury as a background daemon by default. Telegram becomes your primary interface. Logs go to
+        <code>~/.mercury/daemon.log</code>. Stale PID files are auto-cleaned. Includes crash recovery with exponential
+        backoff.</p>
 
-      <h3>Background (daemon)</h3>
+      <h3>Foreground (interactive)</h3>
       <div class="terminal-inline">
-        <code>mercury start -d</code>
+        <code>mercury start --foreground</code>
       </div>
-      <p>Runs in the background. Telegram becomes your primary interface since there's no terminal for input. Logs go to
-        <code>~/.mercury/daemon.log</code>. The process includes built-in crash recovery with exponential backoff.</p>
-      <p>When running in daemon mode, you can stop it with:</p>
+      <p>Runs in the foreground with a readline prompt. Press <code>Ctrl+C</code> to exit. All conversation happens in
+        your terminal with real-time text streaming and markdown rendering. Shorthand: <code>mercury start -f</code>.</p>
+      <p>When running in background mode, you can stop it with:</p>
       <div class="terminal-inline">
         <code>mercury stop</code>
       </div>
@@ -433,11 +434,11 @@
           </tr>
           <tr>
             <td>mercury start</td>
-            <td>Start in foreground mode</td>
+            <td>Start as background daemon (default)</td>
           </tr>
           <tr>
-            <td>mercury start -d</td>
-            <td>Start in background (daemon mode)</td>
+            <td>mercury start --foreground</td>
+            <td>Start in foreground (interactive) mode. Shorthand: <code>-f</code></td>
           </tr>
           <tr>
             <td>mercury restart</td>
@@ -614,7 +615,23 @@
       </div>
 
       <h2 id="daemon">Daemon Mode</h2>
-      <p>Mercury can run in the background so Telegram and scheduled tasks keep working after you close the terminal.</p>
+      <p>Mercury runs as a background daemon by default. Telegram and scheduled tasks keep working after you close the
+        terminal.</p>
+
+      <h3>Start</h3>
+      <div class="terminal-inline">
+        <code>mercury start</code>
+      </div>
+      <p>Starts Mercury as a background daemon by default. Spawns a detached child process, writes a PID file to
+        <code>~/.mercury/daemon.pid</code>, and redirects output to <code>~/.mercury/daemon.log</code>. Stale PID files
+        are automatically cleaned up.</p>
+
+      <h3>Start in foreground</h3>
+      <div class="terminal-inline">
+        <code>mercury start --foreground</code>
+      </div>
+      <p>Runs Mercury attached to your terminal. Useful for debugging or when you want to see output directly. Shorthand:
+        <code>mercury start -f</code>.</p>
 
       <h3>The easy way: mercury up</h3>
       <div class="terminal-inline">
@@ -622,13 +639,6 @@
       </div>
       <p>This one command does everything: installs the system service if needed, starts the background daemon, and
         confirms Mercury is running. If it's already running, it just shows you the PID.</p>
-
-      <h3>Start in background</h3>
-      <div class="terminal-inline">
-        <code>mercury start -d</code>
-      </div>
-      <p>This spawns a detached child process, writes a PID file to <code>~/.mercury/daemon.pid</code>, and redirects
-        output to <code>~/.mercury/daemon.log</code>.</p>
 
       <h3>Stop</h3>
       <div class="terminal-inline">
@@ -658,9 +668,9 @@
 
       <div class="callout">
         <div class="callout-title">Crash recovery</div>
-        <p>When started with <code>--daemon</code> (internal flag used by <code>start -d</code> and system services),
-          Mercury wraps the agent in a watchdog. If it crashes, it restarts automatically with exponential backoff (1s,
-          1.25s, 1.56s...). After 10 crashes within 60 seconds, it exits to prevent crash loops.</p>
+        <p>Background mode includes a watchdog. If Mercury crashes, it restarts automatically with exponential backoff
+          (1s, 1.25s, 1.56s...). After 10 crashes within 60 seconds, it exits to prevent crash loops. Stale PID files
+          are auto-cleaned on startup to prevent "already running" false positives.</p>
       </div>
 
       <h2 id="service">System Service (Auto-Start on Boot)</h2>

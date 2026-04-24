@@ -145,7 +145,7 @@
         <div class="feature-card" data-reveal>
           <div class="feature-icon">♾</div>
           <h3>Always On</h3>
-          <p>Cron scheduling, delayed tasks, and a heartbeat system that monitors budget and upcoming tasks. Run as a background daemon on macOS, Linux, or Windows. Auto-starts on boot, auto-restarts on crash.</p>
+          <p>Background daemon by default. Cron scheduling, delayed tasks, and a heartbeat system that monitors budget and upcoming tasks. Auto-starts on boot, auto-restarts on crash. Use <code>--foreground</code> for attached mode.</p>
         </div>
         <div class="feature-card" data-reveal>
           <div class="feature-icon">📡</div>
@@ -267,7 +267,7 @@
           <div class="terminal-inline">
             <code>mercury start</code>
           </div>
-          <p>Mercury wakes up, loads your soul files, restores scheduled tasks, and is live. Start talking. Or use <code>mercury start -d</code> for background mode.</p>
+          <p>Mercury wakes up, loads your soul files, restores scheduled tasks, and runs as a background daemon. Start talking via Telegram or use <code>mercury start --foreground</code> for attached mode.</p>
         </div>
       </div>
     </div>
@@ -497,7 +497,7 @@
   <section id="daemon" class="section section-dark">
     <div class="container">
       <h2 class="section-title">Always On. Any Platform.</h2>
-      <p class="section-sub">Run Mercury as a background daemon. Auto-starts on boot. Auto-restarts on crash.</p>
+      <p class="section-sub">Daemon by default. Auto-starts on boot. Auto-restarts on crash.</p>
       <div class="terminal-window" style="max-width: 680px; margin: 0 auto 48px;">
         <div class="terminal-bar">
           <span class="terminal-dot red"></span>
@@ -506,9 +506,7 @@
           <span class="terminal-title">terminal</span>
         </div>
         <div class="terminal-body" style="min-height: auto; padding: 16px 24px;">
-          <p style="margin:0;color:var(--gray);">$ <span style="color:var(--cyan);">mercury up</span></p>
-          <p style="margin:0;color:var(--cyan);">Installing Mercury as a system service...</p>
-          <p style="margin:0;color:var(--green);">Mercury service installed (LaunchAgent)</p>
+          <p style="margin:0;color:var(--gray);">$ <span style="color:var(--cyan);">mercury start</span></p>
           <p style="margin:0;color:var(--cyan);">Starting Mercury in background...</p>
           <p style="margin:0;color:var(--white);">Mercury started in background (PID: 48291)</p>
           <p style="margin:0;color:var(--gray-dim);">Auto-starts on login. Auto-restarts on crash.</p>
@@ -518,8 +516,9 @@
         <div class="cap-group" data-reveal>
           <h3>Commands</h3>
           <ul>
+            <li><code>mercury start</code> — Start daemon (default)</li>
+            <li><code>mercury start --foreground</code> — Attached mode</li>
             <li><code>mercury up</code> — Install service + start daemon</li>
-            <li><code>mercury start</code> — Foreground mode</li>
             <li><code>mercury restart</code> — Restart background process</li>
             <li><code>mercury stop</code> — Stop background process</li>
             <li><code>mercury doctor</code> — Reconfigure (Enter keeps values)</li>
