@@ -27,6 +27,12 @@ const ANTHROPIC_PREFERRED_MODELS = [
   'claude-3-5-haiku-latest',
 ] as const;
 
+const CLAUDE_CLI_PREFERRED_MODELS = [
+  'opus',
+  'sonnet',
+  'haiku',
+] as const;
+
 const DEEPSEEK_PREFERRED_MODELS = [
   'deepseek-chat',
   'deepseek-reasoner',
@@ -151,6 +157,7 @@ function chooseRecommendedModel(
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
+    claudeCli: CLAUDE_CLI_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
@@ -184,6 +191,7 @@ export function buildModelCatalog(
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
+    claudeCli: CLAUDE_CLI_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,

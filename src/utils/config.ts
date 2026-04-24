@@ -49,6 +49,7 @@ export interface TelegramPendingRequest {
 export type ProviderName =
   | 'openai'
   | 'anthropic'
+  | 'claudeCli'
   | 'deepseek'
   | 'grok'
   | 'ollamaCloud'
@@ -64,6 +65,7 @@ export interface MercuryConfig {
     default: ProviderName;
     openai: ProviderConfig;
     anthropic: ProviderConfig;
+    claudeCli: ProviderConfig;
     deepseek: ProviderConfig;
     grok: ProviderConfig;
     ollamaCloud: ProviderConfig;
@@ -144,6 +146,15 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
         model: getEnv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
         enabled: getEnvBool('ANTHROPIC_ENABLED', true),
+      },
+      claudeCli: {
+        // Uses the local `claude` CLI and its OAuth session (Claude Max / Pro)
+        // instead of an API key. apiKey here is a dummy presence marker only.
+        name: 'claudeCli',
+        apiKey: getEnv('CLAUDE_CLI_APIKEY_MARKER', 'oauth'),
+        baseUrl: getEnv('CLAUDE_CLI_PATH', 'claude'),
+        model: getEnv('CLAUDE_CLI_MODEL', 'opus'),
+        enabled: getEnvBool('CLAUDE_CLI_ENABLED', false),
       },
       deepseek: {
         name: 'deepseek',
@@ -275,6 +286,10 @@ export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
 export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
   if (provider.name === 'ollamaLocal') {
+    return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'claudeCli') {
+    // Presence of CLI path + model is enough; auth comes from the CLI's own OAuth.
     return provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   return provider.apiKey.length > 0;
