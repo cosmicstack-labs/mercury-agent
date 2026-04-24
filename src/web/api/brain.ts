@@ -1,102 +1,30 @@
 import { Hono } from 'hono';
-import { loadConfig } from '../../utils/config.js';
+import { loadConfig, getMemoryDir } from '../../utils/config.js';
 import { isBetterSqlite3Available } from '../../memory/second-brain-db.js';
+import { UserMemoryStore } from '../../memory/user-memory.js';
+import { join } from 'node:path';
 
-let userMemory: any = null;
+let userMemory: UserMemoryStore | null = null;
 
-export function setUserMemory(mem: any): void {
+export function setUserMemory(mem: UserMemoryStore | null): void {
   userMemory = mem;
 }
 
-const brain = new Hono();
-
-brain.get('/api/brain/stats', (c) => {
-  if (!userMemory) {
-    return c.json({ error: 'Second brain not available', total: 0, byType: {}, learningPaused: false }, 200);
+function ensureMemory(): UserMemoryStore | null {
+  if (userMemory) return userMemory;
+  if (!isBetterSqlite3Available()) return null;
+  try {
+    const config = loadConfig();
+    const dbPath = join(getMemoryDir(), 'second-brain', 'second-brain.db');
+    userMemory = new UserMemoryStore(config, 'user:owner', dbPath);
+    return userMemory;
+  } catch {
+    return null;
   }
-  const summary = userMemory.getSummary();
-  return c.json(summary);
-});
+}
 
-brain.get('/api/brain/memory', (c) => {
-  if (!userMemory) {
-    return c.json({ error: 'Second brain not available', memories: [] });
-  }
-  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200);
-  const offset = parseInt(c.req.query('offset') || '0');
-  const type = c.req.query('type');
-  const query = c.req.query('q');
-
-  let records: any[];
-  if (query) {
-    records = userMemory.search(query, limit + offset);
-  } else if (type) {
-    records = userMemory.getByType(type);
-  } else {
-    records = userMemory.getRecent(limit + offset);
-  }
-
-  const total = records.length;
-  const page = records.slice(offset, offset + limit);
-
-  return c.json({
-    memories: page.map((r: any) => ({
-      id: r.id,
-      type: r.type,
-      summary: r.summary,
-      detail: r.detail || null,
-      scope: r.scope,
-      evidenceKind: r.evidenceKind,
-      source: r.source,
-      confidence: r.confidence,
-      importance: r.importance,
-      durability: r.durability,
-      evidenceCount: r.evidenceCount,
-      dismissed: r.dismissed,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      lastSeenAt: r.lastSeenAt,
-    })),
-    total,
-    limit,
-    offset,
-  });
-});
-
-brain.get('/api/brain/memory/search', (c) => {
-  if (!userMemory) {
-    return c.json({ memories: [], total: 0 });
-  }
-  const q = c.req.query('q') || '';
-  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 100);
-  const records = userMemory.search(q, limit);
-  return c.json({
-    memories: records.map((r: any) => ({
-      id: r.id,
-      type: r.type,
-      summary: r.summary,
-      detail: r.detail || null,
-      scope: r.scope,
-      confidence: r.confidence,
-      importance: r.importance,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    })),
-    total: records.length,
-  });
-});
-
-brain.get('/api/brain/memory/:id', (c) => {
-  if (!userMemory) {
-    return c.json({ error: 'Second brain not available' }, 404);
-  }
-  const id = c.req.param('id');
-  const record = userMemory.search(id, 1);
-  if (!record || record.length === 0) {
-    return c.json({ error: 'Memory not found' }, 404);
-  }
-  const r: any = record[0];
-  return c.json({
+function memToJson(r: any) {
+  return {
     id: r.id,
     type: r.type,
     summary: r.summary,
@@ -112,15 +40,83 @@ brain.get('/api/brain/memory/:id', (c) => {
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     lastSeenAt: r.lastSeenAt,
+  };
+}
+
+const brain = new Hono();
+
+brain.get('/api/brain/stats', (c) => {
+  const mem = ensureMemory();
+  if (!mem) {
+    return c.json({ error: 'Second brain not available', total: 0, byType: {}, learningPaused: false });
+  }
+  return c.json(mem.getSummary());
+});
+
+brain.get('/api/brain/memory', (c) => {
+  const mem = ensureMemory();
+  if (!mem) {
+    return c.json({ error: 'Second brain not available', memories: [], total: 0 });
+  }
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200);
+  const offset = parseInt(c.req.query('offset') || '0');
+  const type = c.req.query('type');
+  const query = c.req.query('q');
+
+  let records: any[];
+  if (query) {
+    records = mem.search(query, limit + offset);
+  } else if (type) {
+    records = mem.getByType(type as any);
+  } else {
+    records = mem.getRecent(limit + offset);
+  }
+
+  const total = records.length;
+  const page = records.slice(offset, offset + limit);
+
+  return c.json({
+    memories: page.map(memToJson),
+    total,
+    limit,
+    offset,
   });
 });
 
+brain.get('/api/brain/memory/search', (c) => {
+  const mem = ensureMemory();
+  if (!mem) {
+    return c.json({ memories: [], total: 0 });
+  }
+  const q = c.req.query('q') || '';
+  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 100);
+  const records = mem.search(q, limit);
+  return c.json({
+    memories: records.map(memToJson),
+    total: records.length,
+  });
+});
+
+brain.get('/api/brain/memory/:id', (c) => {
+  const mem = ensureMemory();
+  if (!mem) {
+    return c.json({ error: 'Second brain not available' }, 404);
+  }
+  const id = c.req.param('id');
+  const records = mem.search(id, 1);
+  if (!records || records.length === 0) {
+    return c.json({ error: 'Memory not found' }, 404);
+  }
+  return c.json(memToJson(records[0]));
+});
+
 brain.delete('/api/brain/memory/:id', (c) => {
-  if (!userMemory) {
+  const mem = ensureMemory();
+  if (!mem) {
     return c.json({ error: 'Second brain not available' }, 400);
   }
   const id = c.req.param('id');
-  const deleted = userMemory.softDeleteMemory?.(id);
+  const deleted = mem.softDeleteMemory(id);
   if (!deleted) {
     return c.json({ error: 'Memory not found' }, 404);
   }
@@ -128,7 +124,8 @@ brain.delete('/api/brain/memory/:id', (c) => {
 });
 
 brain.put('/api/brain/memory/:id', async (c) => {
-  if (!userMemory) {
+  const mem = ensureMemory();
+  if (!mem) {
     return c.json({ error: 'Second brain not available' }, 400);
   }
   const id = c.req.param('id');
@@ -140,7 +137,7 @@ brain.put('/api/brain/memory/:id', async (c) => {
   if (body.confidence !== undefined) updates.confidence = Number(body.confidence);
   if (body.scope !== undefined) updates.scope = body.scope;
 
-  const updated = userMemory.updateMemory?.(id, updates);
+  const updated = mem.updateMemory(id, updates);
   if (!updated) {
     return c.json({ error: 'Memory not found or update failed' }, 404);
   }
@@ -148,7 +145,8 @@ brain.put('/api/brain/memory/:id', async (c) => {
 });
 
 brain.post('/api/brain/memory', async (c) => {
-  if (!userMemory) {
+  const mem = ensureMemory();
+  if (!mem) {
     return c.json({ error: 'Second brain not available' }, 400);
   }
   const body = await c.req.json();
@@ -160,39 +158,31 @@ brain.post('/api/brain/memory', async (c) => {
     return c.json({ error: `Invalid type. Must be one of: ${validTypes.join(', ')}` }, 400);
   }
 
-  const record = userMemory.remember([{
+  const record = mem.remember([{
     type: body.type,
     summary: body.summary,
     detail: body.detail,
-    evidenceKind: 'manual',
+    evidenceKind: 'direct',
     confidence: body.confidence ?? 0.8,
     importance: body.importance ?? 0.7,
     durability: body.durability ?? 0.8,
-  }], 'manual');
+  }], 'system');
 
   if (!record || record.length === 0) {
     return c.json({ error: 'Failed to create memory' }, 500);
   }
 
   const r: any = record[0];
-  return c.json({
-    id: r.id,
-    type: r.type,
-    summary: r.summary,
-    detail: r.detail || null,
-    scope: r.scope,
-    confidence: r.confidence,
-    importance: r.importance,
-    createdAt: r.createdAt,
-  }, 201);
+  return c.json(memToJson(r), 201);
 });
 
 brain.get('/api/brain/graph', (c) => {
-  if (!userMemory) {
+  const mem = ensureMemory();
+  if (!mem) {
     return c.json({ nodes: [], edges: [] });
   }
 
-  const records: any[] = userMemory.getRecent(500);
+  const records: any[] = mem.getRecent(500);
   const typeColors: Record<string, string> = {
     identity: '#00d4ff',
     preference: '#febc2e',

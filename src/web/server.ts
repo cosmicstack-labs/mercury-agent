@@ -101,15 +101,15 @@ app.get('/settings', (c) => {
   return c.html(renderSettings(c, config, auth?.username || 'mercury'));
 });
 
-app.get('/brain/graph', (c) => {
+app.get('/second-brain/graph', (c) => {
   return c.html(renderGraph(c));
 });
 
-app.get('/brain/memory', (c) => {
+app.get('/second-brain/memory', (c) => {
   return c.html(renderMemory(c, {}));
 });
 
-app.get('/brain/goals', (c) => {
+app.get('/second-brain/goals', (c) => {
   return c.html(renderGoals(c));
 });
 

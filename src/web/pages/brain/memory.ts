@@ -1,33 +1,33 @@
 import { Context } from 'hono';
 import { renderLayout } from '../layout.js';
 
-const TYPE_LABELS: Record<string, string> = {
-  identity: 'Identity',
-  preference: 'Preference',
-  goal: 'Goal',
-  project: 'Project',
-  habit: 'Habit',
-  decision: 'Decision',
-  constraint: 'Constraint',
-  relationship: 'Relationship',
-  episode: 'Episode',
-  reflection: 'Reflection',
-};
-
-const TYPE_COLORS: Record<string, string> = {
-  identity: '#00d4ff',
-  preference: '#febc2e',
-  goal: '#28c840',
-  project: '#a855f7',
-  habit: '#f97316',
-  decision: '#3b82f6',
-  constraint: '#ef4444',
-  relationship: '#ec4899',
-  episode: '#6366f1',
-  reflection: '#14b8a6',
-};
-
 export function renderMemory(c: Context, stats: any): string {
+  const TYPE_LABELS: Record<string, string> = {
+    identity: 'Identity',
+    preference: 'Preference',
+    goal: 'Goal',
+    project: 'Project',
+    habit: 'Habit',
+    decision: 'Decision',
+    constraint: 'Constraint',
+    relationship: 'Relationship',
+    episode: 'Episode',
+    reflection: 'Reflection',
+  };
+
+  const TYPE_COLORS: Record<string, string> = {
+    identity: '#00d4ff',
+    preference: '#febc2e',
+    goal: '#28c840',
+    project: '#a855f7',
+    habit: '#f97316',
+    decision: '#3b82f6',
+    constraint: '#ef4444',
+    relationship: '#ec4899',
+    episode: '#6366f1',
+    reflection: '#14b8a6',
+  };
+
   const typeFilters = Object.entries(TYPE_LABELS).map(([key, label]) => `
     <label class="filter-chip" x-data="{ checked: true }">
       <input type="checkbox" :checked="checked" @change="filterMemories()" x-model="checked"

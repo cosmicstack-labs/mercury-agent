@@ -5,9 +5,10 @@ const NAV_ITEMS = [
   { href: '/', label: 'Status', icon: '⬡' },
   { href: '/chat', label: 'Chat', icon: '💬' },
   { separator: true },
-  { href: '/brain/graph', label: 'Graph', icon: '🧠' },
-  { href: '/brain/memory', label: 'Memory', icon: '💭' },
-  { href: '/brain/goals', label: 'Goals', icon: '🎯' },
+  { heading: 'Second Brain' },
+  { href: '/second-brain/memory', label: 'Memory', icon: '💭' },
+  { href: '/second-brain/goals', label: 'Goals', icon: '🎯' },
+  { href: '/second-brain/graph', label: 'Graph', icon: '🧠' },
   { separator: true },
   { href: '/providers', label: 'Keys', icon: '🔑' },
   { href: '/skills', label: 'Skills', icon: '🧩' },
@@ -23,6 +24,9 @@ export function renderLayout(c: Context, title: string, body: string): string {
   const navHtml = NAV_ITEMS.map(item => {
     if ('separator' in item) {
       return '<div class="nav-sep"></div>';
+    }
+    if ('heading' in item) {
+      return `<div class="nav-heading">${item.heading}</div>`;
     }
     const active = item.href === activePath || (item.href !== '/' && activePath.startsWith(item.href));
     const cls = active ? 'nav-item active' : 'nav-item';
