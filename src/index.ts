@@ -47,6 +47,8 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { startWebServer, updateStatus as updateWebStatus } from './web/server.js';
+import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -780,6 +782,32 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   saveConfig(config);
 
+  console.log('');
+  console.log(chalk.bold.white('  Web Dashboard'));
+  console.log('');
+  console.log(chalk.dim('  Mercury runs a web dashboard at http://localhost:6174'));
+
+  if (isWebAuthInitialized()) {
+    console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
+    const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
+    if (webPassword.trim()) {
+      setWebPassword(webPassword.trim());
+      console.log(chalk.green('  ✓ Web dashboard password updated.'));
+    } else {
+      console.log(chalk.dim('  Password unchanged.'));
+    }
+  } else {
+    console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+    console.log('');
+    const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
+    if (webPassword.trim()) {
+      setWebPassword(webPassword.trim());
+      console.log(chalk.green('  ✓ Web dashboard password set.'));
+    } else {
+      console.log(chalk.dim('  Using default password: Mercury@123'));
+    }
+  }
+
   const home = getMercuryHome();
   console.log('');
   console.log(chalk.green(`  ✓ Config saved to ${home}/mercury.yaml`));
@@ -1001,9 +1029,33 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     console.log('');
     console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));
     console.log(chalk.dim('  Ctrl+C to exit · /help for commands'));
+
+    startWebServer();
+    updateWebStatus({
+      running: true,
+      pid: process.pid,
+      state: 'idle',
+      defaultProvider: config.providers.default,
+      providers: Object.entries(config.providers)
+        .filter(([k]) => k !== 'default')
+        .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+      tokenBudget: config.tokens.dailyBudget,
+    });
+
     console.log('');
     cliChannel?.showPrompt();
   } else {
+    startWebServer();
+    updateWebStatus({
+      running: true,
+      pid: process.pid,
+      state: 'idle',
+      defaultProvider: config.providers.default,
+      providers: Object.entries(config.providers)
+        .filter(([k]) => k !== 'default')
+        .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+      tokenBudget: config.tokens.dailyBudget,
+    });
     logger.info({ channels: activeCh, tools: toolNames }, 'Mercury is live (daemon mode)');
   }
 
@@ -1480,6 +1532,26 @@ program
       console.log(chalk.dim('    npm rm -g @cosmicstack/mercury-agent && npm i -g @cosmicstack/mercury-agent'));
     }
 
+    console.log('');
+  });
+
+program
+  .command('web-reset-password')
+  .description('Reset the web dashboard password')
+  .argument('[password]', 'New password (prompted if omitted)')
+  .action(async (password?: string) => {
+    console.log('');
+    if (!password) {
+      password = await ask(chalk.white('  New web dashboard password: '));
+    }
+    if (!password) {
+      console.log(chalk.red('  Password cannot be empty.'));
+      console.log('');
+      process.exit(1);
+    }
+    setWebPassword(password);
+    console.log(chalk.green('  ✓ Web dashboard password updated.'));
+    console.log(chalk.dim('  Login at http://localhost:6174'));
     console.log('');
   });
 
