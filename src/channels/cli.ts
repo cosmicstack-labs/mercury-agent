@@ -214,23 +214,36 @@ export class CLIChannel extends BaseChannel {
       console.log(line);
     }
 
+    const indent = '  ';
     const cols = process.stdout.columns || 80;
+    const contentCols = Math.max(1, cols - indent.length);
     let visualLines = headerLines.length;
-    let lineBuf = '';
+    let pendingIndent = true;
+    let lineLen = 0;
 
     let full = '';
     for await (const chunk of content) {
-      process.stdout.write(chunk);
       full += chunk;
-      lineBuf += chunk;
-      const parts = lineBuf.split('\n');
-      for (let i = 0; i < parts.length - 1; i++) {
-        visualLines += Math.max(1, Math.ceil((parts[i].length || 1) / cols));
+      for (let i = 0; i < chunk.length; i++) {
+        const ch = chunk[i];
+        if (ch === '\n') {
+          visualLines += Math.max(1, Math.ceil((lineLen + indent.length) / cols));
+          process.stdout.write('\n');
+          lineLen = 0;
+          pendingIndent = true;
+        } else {
+          if (pendingIndent) {
+            process.stdout.write(indent);
+            pendingIndent = false;
+          }
+          process.stdout.write(ch);
+          lineLen++;
+        }
       }
-      lineBuf = parts[parts.length - 1];
     }
-    if (lineBuf.length > 0) {
-      visualLines += Math.max(1, Math.ceil(lineBuf.length / cols));
+    if (lineLen > 0) {
+      visualLines += Math.max(1, Math.ceil((lineLen + indent.length) / cols));
+      process.stdout.write('\n');
     } else {
       visualLines += 1;
     }
