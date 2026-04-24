@@ -9,10 +9,15 @@ import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
+import brainRoutes, { setUserMemory } from './api/brain.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
+import { renderMemory } from './pages/brain/memory.js';
+import { renderGoals } from './pages/brain/goals.js';
+import { renderGraph } from './pages/brain/graph.js';
 import { loadConfig } from '../utils/config.js';
+import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
 const app = new Hono();
 
@@ -37,6 +42,7 @@ app.route('/', authRoutes);
 app.route('/', statusRoutes);
 app.route('/', providerRoutes);
 app.route('/', configRoutes);
+app.route('/', brainRoutes);
 
 app.get('/static/style.css', (c) => {
   const filePath = join(staticDir, 'style.css');
@@ -95,7 +101,19 @@ app.get('/settings', (c) => {
   return c.html(renderSettings(c, config, auth?.username || 'mercury'));
 });
 
-export { updateStatus };
+app.get('/brain/graph', (c) => {
+  return c.html(renderGraph(c));
+});
+
+app.get('/brain/memory', (c) => {
+  return c.html(renderMemory(c, {}));
+});
+
+app.get('/brain/goals', (c) => {
+  return c.html(renderGoals(c));
+});
+
+export { updateStatus, setUserMemory };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

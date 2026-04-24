@@ -259,6 +259,18 @@ export class UserMemoryStore {
     return { profileUpdated, reflectionCount };
   }
 
+  softDeleteMemory(id: string): boolean {
+    return this.db.softDelete(id);
+  }
+
+  updateMemory(id: string, updates: Record<string, any>): UserMemoryRecord | null {
+    const existing = this.db.getById(id);
+    if (!existing) return null;
+    this.db.update({ id, ...updates, updated_at: Date.now() });
+    const updated = this.db.getById(id);
+    return updated ? this.toRecord(updated) : null;
+  }
+
   prune(): { activePruned: number; durablePruned: number; promoted: number } {
     const promoted = this.db.promoteToDurable(this.userKey);
     const { activePruned, durablePruned } = this.db.pruneStale(this.userKey);
