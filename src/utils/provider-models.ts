@@ -28,6 +28,8 @@ const ANTHROPIC_PREFERRED_MODELS = [
 ] as const;
 
 const DEEPSEEK_PREFERRED_MODELS = [
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
   'deepseek-chat',
   'deepseek-reasoner',
 ] as const;

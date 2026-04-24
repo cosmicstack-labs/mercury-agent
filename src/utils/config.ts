@@ -149,7 +149,7 @@ export function getDefaultConfig(): MercuryConfig {
         name: 'deepseek',
         apiKey: getEnv('DEEPSEEK_API_KEY', ''),
         baseUrl: getEnv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1'),
-        model: getEnv('DEEPSEEK_MODEL', 'deepseek-chat'),
+        model: getEnv('DEEPSEEK_MODEL', 'deepseek-v4-flash'),
         enabled: getEnvBool('DEEPSEEK_ENABLED', true),
       },
       grok: {

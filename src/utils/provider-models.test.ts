@@ -26,6 +26,30 @@ describe('buildModelCatalog', () => {
     expect(catalog.recommendedModel).toBe('llama3.2:latest');
   });
 
+  it('prefers deepseek-v4-flash for DeepSeek provider', () => {
+    const catalog = buildModelCatalog('deepseek', [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-chat',
+      'deepseek-reasoner',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('deepseek-v4-flash');
+    expect(catalog.models).toContain('deepseek-v4-pro');
+    expect(catalog.models).toContain('deepseek-chat');
+    expect(catalog.models).toContain('deepseek-reasoner');
+    expect(catalog.models).not.toContain('deepseek-v4-flash');
+  });
+
+  it('falls back to legacy DeepSeek models when v4 models are unavailable', () => {
+    const catalog = buildModelCatalog('deepseek', [
+      'deepseek-chat',
+      'deepseek-reasoner',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('deepseek-chat');
+  });
+
   it('limits the list of displayed models', () => {
     const catalog = buildModelCatalog('anthropic', [
       'claude-sonnet-4-20250514',
