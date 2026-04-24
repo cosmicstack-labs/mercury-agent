@@ -1,0 +1,1 @@
+declare module 'sql.js' { interface Database { exec(sql: string, params?: any[]): any[]; close(): void; } function initSqlJs(config?: any): Promise<{ Database: new (data?: ArrayLike<number | Buffer>) => Database; }>; export default initSqlJs; }

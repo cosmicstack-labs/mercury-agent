@@ -64,8 +64,11 @@ export function renderMemory(c: Context, stats: any): string {
     </div>
     <div class="card-body">
       <div x-show="loading" class="loading">Loading...</div>
-      <div x-show="!loading && memories.length === 0" class="empty-state">
-        No memories found. Start a conversation to build your second brain.
+      <div x-show="!loading && memories.length === 0 && available" class="empty-state">
+        No memories yet. Start a conversation with Mercury to build your second brain.
+      </div>
+      <div x-show="!loading && memories.length === 0 && !available" class="empty-state">
+        Second brain is not available. Make sure better-sqlite3 is installed or check your configuration.
       </div>
       <div class="memory-list">
         <template x-for="mem in memories" :key="mem.id">

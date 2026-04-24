@@ -16,5 +16,6 @@ export default defineConfig({
     "grammy",
     "better-sqlite3",
     "@hono/node-server",
+    "sql.js",
   ],
 });

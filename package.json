@@ -8,7 +8,7 @@
     "mercury": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup && mkdir -p dist/web/static/vendor && cp src/web/static/style.css src/web/static/app.js dist/web/static/ && cp src/web/static/vendor/* dist/web/static/vendor/",
+    "build": "tsup && mkdir -p dist/web/static/vendor && cp src/web/static/style.css src/web/static/app.js dist/web/static/ && cp src/web/static/vendor/* dist/web/static/vendor/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -71,6 +71,7 @@
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",
     "pino": "^9.6.0",
+    "sql.js": "^1.14.1",
     "yaml": "^2.7.0",
     "zod": "^3.25.76"
   },

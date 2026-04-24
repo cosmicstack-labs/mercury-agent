@@ -33,6 +33,7 @@ const MIME_TYPES: Record<string, string> = {
   woff2: 'font/woff2',
   html: 'text/html',
   json: 'application/json',
+  wasm: 'application/wasm',
 };
 
 app.use('*', errorHandler);

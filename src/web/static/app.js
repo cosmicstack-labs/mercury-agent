@@ -144,13 +144,23 @@ function memoryBrowser() {
   return {
     memories: [], loading: true, query: '', selectedMemory: null,
     showAddModal: false, newMemory: { type: 'preference', summary: '', detail: '' },
-    memoryTypes: MEMORY_TYPES, typeColors: TYPE_COLORS,
+    memoryTypes: MEMORY_TYPES, typeColors: TYPE_COLORS, available: true,
     getTypeColor(type) { return TYPE_COLORS[type] || '#888'; },
     async init() {
       this.loading = true;
       try {
+        const statsRes = await fetch('/api/brain/status');
+        if (statsRes.ok) {
+          const stats = await statsRes.json();
+          this.available = stats.available !== false;
+          if (!this.available) {
+            this.memories = [];
+            this.loading = false;
+            return;
+          }
+        }
         const res = await fetch('/api/brain/memory?limit=100');
-        if (res.ok) { const data = await res.json(); this.memories = data.memories || []; }
+        if (res.ok) { const data = await res.json(); this.memories = data.memories || []; this.available = data.available !== false; }
       } catch (e) { console.error(e); }
       this.loading = false;
     },
