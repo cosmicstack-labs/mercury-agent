@@ -795,7 +795,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
 function autoDaemonize(): void {
   const daemon = getDaemonStatus();
-  if (daemon.running) {
+  if (daemon.running && daemon.pid) {
     return;
   }
 
@@ -812,11 +812,11 @@ function autoDaemonize(): void {
   const ok = tryAutoDaemonize();
   if (ok) {
     const status = getDaemonStatus();
-    console.log(chalk.green(`  ✓ Mercury is running in background (PID: ${status.pid})`));
-    console.log(chalk.green('  ✓ Auto-starts on login. Auto-restarts on crash.'));
+    console.log(chalk.green(`  \u2713 Mercury is running in background (PID: ${status.pid})`));
+    console.log(chalk.green('  \u2713 Auto-starts on login. Auto-restarts on crash.'));
     console.log(chalk.dim('  Use `mercury stop` to stop. `mercury restart` to restart.'));
   } else {
-    console.log(chalk.dim('  Background mode not available. Run `mercury up` to set it up.'));
+    console.log(chalk.yellow('  Background mode not available. Run `mercury start` to set it up.'));
   }
   console.log('');
 }
@@ -1026,6 +1026,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  if (!isDaemon && process.platform !== 'win32') {
+    process.on('SIGHUP', () => {
+      logger.info('SIGHUP received — terminal closed. Daemonizing.');
+      try {
+        const result = tryAutoDaemonize();
+        if (result) {
+          logger.info(`Forked daemon. Foreground process exiting.`);
+        } else {
+          logger.warn('SIGHUP received but daemonization failed. Shutting down.');
+        }
+      } catch {
+        logger.warn('SIGHUP received but daemonization failed. Shutting down.');
+      }
+      process.exit(0);
+    });
+  }
 }
 
 const program = new Command();
@@ -1041,14 +1058,16 @@ program
       autoDaemonize();
       return;
     }
+    autoDaemonize();
     await runAgent();
   });
 
 program
   .command('start')
-  .description('Start Mercury agent')
+  .description('Start Mercury — runs as a daemon by default, use --foreground to attach to terminal')
   .option('-v, --verbose', 'Show debug logs')
-  .option('-d, --detached', 'Run in background (daemon mode)')
+  .option('-f, --foreground', 'Run in foreground (attached to terminal)')
+  .option('-d, --detached', 'Run in background (daemon mode) — same as default')
   .option('--daemon', 'Internal flag for daemon child process')
   .action(async (opts) => {
     if (opts.daemon) {
@@ -1056,16 +1075,18 @@ program
       return;
     }
 
-    if (opts.detached) {
-      startBackground();
+    if (!isSetupComplete()) {
+      await configure();
+      autoDaemonize();
       return;
     }
 
-    if (!isSetupComplete()) {
-      await configure();
+    if (opts.foreground) {
+      await runAgent();
       return;
     }
-    await runAgent();
+
+    startBackground();
   });
 
 program
@@ -1084,14 +1105,15 @@ program
 
 program
   .command('up')
-  .description('Ensure Mercury is running persistently — installs service if needed, starts daemon')
+  .description('Start Mercury as a persistent daemon (same as `mercury start`)')
   .action(async () => {
     if (!isSetupComplete()) {
       await configure();
+      autoDaemonize();
+      return;
     }
 
     const daemon = getDaemonStatus();
-
     if (daemon.running && daemon.pid) {
       console.log('');
       console.log(chalk.green(`  Mercury is already running (PID: ${daemon.pid})`));
@@ -1106,7 +1128,6 @@ program
       installService();
     }
 
-    console.log(chalk.cyan('  Starting Mercury in background...'));
     startBackground();
   });
 

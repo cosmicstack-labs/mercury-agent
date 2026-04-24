@@ -40,20 +40,18 @@ function isProcessRunning(pid: number): boolean {
 export function getDaemonStatus(): { running: boolean; pid: number | null; logPath: string } {
   const pid = readPid();
   if (!pid) return { running: false, pid: null, logPath: logPath() };
-  return { running: isProcessRunning(pid), pid, logPath: logPath() };
+  const running = isProcessRunning(pid);
+  if (!running) {
+    try { unlinkSync(pidPath()); } catch {}
+    return { running: false, pid: null, logPath: logPath() };
+  }
+  return { running, pid, logPath: logPath() };
 }
 
-export function startBackground(): void {
+export function ensureDaemonRunning(): { pid: number; fresh: boolean } {
   const status = getDaemonStatus();
   if (status.running && status.pid) {
-    console.log(chalk.yellow(`  Mercury is already running (PID: ${status.pid})`));
-    console.log(chalk.dim(`  Use \`mercury stop\` to stop it first.`));
-    console.log('');
-    process.exit(1);
-  }
-
-  if (status.pid && !status.running) {
-    try { unlinkSync(pidPath()); } catch {}
+    return { pid: status.pid, fresh: false };
   }
 
   const home = getMercuryHome();
@@ -74,14 +72,27 @@ export function startBackground(): void {
 
   child.unref();
 
-  writeFileSync(pidPath(), String(child.pid));
+  if (!child.pid) {
+    throw new Error('Failed to spawn daemon process');
+  }
 
-  console.log('');
-  console.log(chalk.green(`  Mercury started in background (PID: ${child.pid})`));
-  console.log(chalk.dim(`  Logs: ${logFile}`));
-  console.log(chalk.dim(`  Use \`mercury stop\` to stop.`));
-  console.log(chalk.dim(`  Use \`mercury logs\` to view logs.`));
-  console.log('');
+  writeFileSync(pidPath(), String(child.pid));
+  return { pid: child.pid, fresh: true };
+}
+
+export function startBackground(): void {
+  try {
+    const result = ensureDaemonRunning();
+    console.log('');
+    console.log(chalk.green(`  Mercury started in background (PID: ${result.pid})`));
+    console.log(chalk.dim(`  Logs: ${logPath()}`));
+    console.log(chalk.dim(`  Use \`mercury stop\` to stop.`));
+    console.log(chalk.dim(`  Use \`mercury logs\` to view logs.`));
+    console.log('');
+  } catch (err: any) {
+    console.log(chalk.red(`  Failed to start: ${err.message}`));
+    process.exit(1);
+  }
 }
 
 export function stopDaemon(): void {
@@ -131,8 +142,6 @@ export function restartDaemon(): void {
     }
     try { unlinkSync(pidPath()); } catch {}
     console.log(chalk.green('  Mercury stopped.'));
-  } else if (status.pid) {
-    try { unlinkSync(pidPath()); } catch {}
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));
@@ -147,45 +156,14 @@ export function showLogs(): void {
     return;
   }
   const content = readFileSync(logFile, 'utf-8');
-  const lines = content.split('\n').slice(-100);
+  const lines = content.split(/\r?\n/).slice(-100);
   console.log(lines.join('\n'));
 }
 
 export function tryAutoDaemonize(): boolean {
   try {
-    const status = getDaemonStatus();
-    if (status.running && status.pid) {
-      return true;
-    }
-
-    if (status.pid && !status.running) {
-      try { unlinkSync(pidPath()); } catch {}
-    }
-
-    const home = getMercuryHome();
-    if (!existsSync(home)) {
-      mkdirSync(home, { recursive: true });
-    }
-
-    const logFile = logPath();
-    const isWin = process.platform === 'win32';
-    const outFd = openSync(logFile, 'a');
-
-    const child = spawn(process.execPath, [process.argv[1], 'start', '--daemon'], {
-      detached: true,
-      stdio: ['ignore', outFd, outFd],
-      env: { ...process.env },
-      windowsHide: isWin,
-    });
-
-    child.unref();
-
-    if (!child.pid) {
-      return false;
-    }
-
-    writeFileSync(pidPath(), String(child.pid));
-    return true;
+    const result = ensureDaemonRunning();
+    return result.pid > 0;
   } catch {
     return false;
   }
