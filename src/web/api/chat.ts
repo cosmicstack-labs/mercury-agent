@@ -2,14 +2,9 @@ import { Hono } from 'hono';
 import type { WebChannel } from '../../channels/web.js';
 
 let webChannel: WebChannel | null = null;
-let messageHandler: ((msg: { content: string }) => void) | null = null;
 
 export function setWebChannel(ch: WebChannel): void {
   webChannel = ch;
-}
-
-export function setChatHandler(handler: (msg: { content: string }) => void): void {
-  messageHandler = handler;
 }
 
 const chat = new Hono();
@@ -65,11 +60,7 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Message content required' }, 400);
   }
 
-  if (!messageHandler) {
-    return c.json({ error: 'Agent not ready' }, 503);
-  }
-
-  messageHandler({ content: body.content.trim() });
+  webChannel.emitMessage(body.content.trim());
   return c.json({ sent: true });
 });
 

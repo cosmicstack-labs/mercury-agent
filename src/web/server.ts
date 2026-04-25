@@ -10,7 +10,7 @@ import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel, setChatHandler } from './api/chat.js';
+import chatRoutes, { setWebChannel } from './api/chat.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
@@ -121,7 +121,7 @@ app.get('/chat', (c) => {
   return c.html(renderChat(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel, setChatHandler };
+export { updateStatus, setUserMemory, setWebChannel };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

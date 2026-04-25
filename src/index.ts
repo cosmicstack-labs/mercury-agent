@@ -48,7 +48,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setChatHandler as setWebChatHandler } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -903,27 +903,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const episodic = new EpisodicMemory(config);
 
   let userMemory: UserMemoryStore | null = null;
-  if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
+  if (config.memory.secondBrain?.enabled !== false) {
     try {
       userMemory = new UserMemoryStore(config);
       setWebUserMemory(userMemory);
+      const backend = isBetterSqlite3Available() ? 'sqlite' : 'json-fallback';
       if (!isDaemon) {
-        console.log(chalk.dim(`  Second brain: enabled (${userMemory.getSummary().total} existing memories)`));
+        console.log(chalk.dim(`  Second brain: enabled (${userMemory.getSummary().total} existing memories) [${backend}]`));
       } else {
-        logger.info({ total: userMemory.getSummary().total }, 'Second brain loaded');
+        logger.info({ total: userMemory.getSummary().total, backend }, 'Second brain loaded');
       }
     } catch (err) {
       logger.warn({ err }, 'Second brain initialization failed, continuing without it');
       userMemory = null;
     }
-  } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
-    logger.warn(
-      'better-sqlite3 is not available — second brain memory is disabled. ' +
-      'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
-    );
   }
 
   const channels = new ChannelRegistry(config);
+  const webChannel = new WebChannel(config.identity.name);
+  channels.register('web', webChannel);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
   capabilities.setChatCommandContext({
@@ -988,17 +986,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
 
-  const webChannel = new WebChannel(config.identity.name);
-  channels.register('web', webChannel);
-
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
   setWebWebChannel(webChannel);
-  setWebChatHandler((msg: { content: string }) => {
-    webChannel.emitMessage(msg.content);
-  });
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
