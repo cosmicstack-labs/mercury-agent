@@ -76,7 +76,7 @@ export interface UserPersonRecord {
 }
 
 const MIN_CONFIDENCE = 0.55;
-const PERSON_INDEX_VERSION = '3';
+const PERSON_INDEX_VERSION = '5';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
@@ -598,28 +598,45 @@ export class UserMemoryStore {
 
 const USER_RELATION_ROLE_MAP: Record<string, string> = {
   wife: 'wife',
+  wives: 'wife',
   husband: 'husband',
+  husbands: 'husband',
   mother: 'mother',
+  mothers: 'mother',
   mom: 'mother',
+  moms: 'mother',
   father: 'father',
+  fathers: 'father',
   dad: 'father',
+  dads: 'father',
   brother: 'family',
+  brothers: 'family',
   sister: 'family',
+  sisters: 'family',
   son: 'family',
+  sons: 'family',
   daughter: 'family',
+  daughters: 'family',
   family: 'family',
+  families: 'family',
   cousin: 'family',
+  cousins: 'family',
   friend: 'friend',
+  friends: 'friend',
   colleague: 'colleague',
+  colleagues: 'colleague',
   coworker: 'colleague',
+  coworkers: 'colleague',
   teammate: 'colleague',
+  teammates: 'colleague',
 };
 
 const NON_PERSON_TERMS = new Set([
+  'User', 'Users',
   'I', 'The', 'This', 'That', 'Today', 'Tomorrow', 'Yesterday', 'Monday', 'Tuesday',
   'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'January', 'February',
   'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
-  'November', 'December', 'Mercury', 'Openai', 'Anthropic',
+  'November', 'December', 'Mercury', 'Openai', 'Anthropic', 'Kashmir', 'Article', 'Covid',
 ]);
 
 interface UserRelationMention {
@@ -629,7 +646,10 @@ interface UserRelationMention {
 
 function extractUserRelationshipMentions(text: string): UserRelationMention[] {
   const mentions = new Map<string, UserRelationMention>();
-  const rolePattern = Object.keys(USER_RELATION_ROLE_MAP).join('|');
+  const rolePattern = Object.keys(USER_RELATION_ROLE_MAP)
+    .sort((a, b) => b.length - a.length)
+    .map(r => r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
   const normalizedText = text.replace(/[\r\n]+/g, ' ').trim();
 
   const patterns = [
@@ -657,7 +677,47 @@ function extractUserRelationshipMentions(text: string): UserRelationMention[] {
     }
   }
 
+  const groupedPatterns = [
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s+(?:is|are|named|called)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(?:our|user(?:'s)?|users?)\\s+(${rolePattern})\\s+(?:is|are|named|called|include|includes)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(${rolePattern})\\s+(?:is|are|named|called|include|includes)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(?:i|we)\\s+have\\s+(${rolePattern})\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b([^.!?;]+?)\\s+(?:is|are)\\s+my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\b([^.!?;]+?)\\s+(?:is|are)\\s+(?:our|user(?:'s)?)\\s+(${rolePattern})\\b`, 'gi'),
+  ];
+
+  for (const pattern of groupedPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalizedText)) !== null) {
+      const first = match[1]?.trim();
+      const second = match[2]?.trim();
+      if (!first || !second) continue;
+
+      const firstRole = USER_RELATION_ROLE_MAP[first.toLowerCase()];
+      const roleToken = firstRole ? first.toLowerCase() : second.toLowerCase();
+      const namesSegment = firstRole ? second : first;
+      const relation = USER_RELATION_ROLE_MAP[roleToken];
+      if (!relation) continue;
+
+      for (const name of extractHumanNames(namesSegment)) {
+        const key = name.toLowerCase();
+        mentions.set(key, { name, relation });
+      }
+    }
+  }
+
   return [...mentions.values()];
+}
+
+function extractHumanNames(segment: string): string[] {
+  const found = new Set<string>();
+  const nameRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = nameRegex.exec(segment)) !== null) {
+    const name = match[1].trim();
+    if (isLikelyHumanName(name)) found.add(name);
+  }
+  return [...found.values()];
 }
 
 function isLikelyHumanName(name: string): boolean {
