@@ -9,11 +9,15 @@ import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
+import systemRoutes from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
 import chatRoutes, { setWebChannel } from './api/chat.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
+import { renderSkills } from './pages/skills.js';
+import { renderPermissions } from './pages/permissions.js';
+import { renderUsage } from './pages/usage.js';
 import { renderMemory } from './pages/brain/memory.js';
 import { renderPersons } from './pages/brain/persons.js';
 import { renderPerson } from './pages/brain/person.js';
@@ -47,6 +51,7 @@ app.route('/', authRoutes);
 app.route('/', statusRoutes);
 app.route('/', providerRoutes);
 app.route('/', configRoutes);
+app.route('/', systemRoutes);
 app.route('/', brainRoutes);
 app.route('/', chatRoutes);
 
@@ -105,6 +110,18 @@ app.get('/settings', (c) => {
   const config = loadConfig();
   const auth = loadWebAuth();
   return c.html(renderSettings(c, config, auth?.username || 'mercury'));
+});
+
+app.get('/skills', (c) => {
+  return c.html(renderSkills(c));
+});
+
+app.get('/permissions', (c) => {
+  return c.html(renderPermissions(c));
+});
+
+app.get('/usage', (c) => {
+  return c.html(renderUsage(c));
 });
 
 app.get('/second-brain/graph', (c) => {

@@ -122,6 +122,155 @@ function settings() {
   };
 }
 
+function skillsPage() {
+  return {
+    skills: [],
+    loading: true,
+    installUrl: '',
+    installing: false,
+    feedback: '',
+    async init() {
+      this.loading = true;
+      try {
+        const res = await fetch('/api/skills');
+        if (res.ok) {
+          const data = await res.json();
+          this.skills = data.skills || [];
+        }
+      } catch (e) {
+        console.error('Failed to load skills:', e);
+      }
+      this.loading = false;
+    },
+    async installFromUrl() {
+      if (!this.installUrl.trim()) return;
+      this.installing = true;
+      this.feedback = '';
+      try {
+        const res = await fetch('/api/skills/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: this.installUrl.trim() }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          this.feedback = `Installed ${data.name}`;
+          this.installUrl = '';
+          await this.init();
+        } else {
+          this.feedback = data.error || 'Install failed';
+        }
+      } catch (e) {
+        this.feedback = 'Install failed';
+      }
+      this.installing = false;
+      setTimeout(() => { this.feedback = ''; }, 3500);
+    },
+    async activateSkill(name) {
+      try {
+        const res = await fetch(`/api/skills/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+        const data = await res.json();
+        this.feedback = data.success ? `Activated ${name}` : (data.error || 'Activate failed');
+        if (data.success) await this.init();
+      } catch (e) {
+        this.feedback = 'Activate failed';
+      }
+      setTimeout(() => { this.feedback = ''; }, 3000);
+    },
+    async deactivateSkill(name) {
+      try {
+        const res = await fetch(`/api/skills/${encodeURIComponent(name)}/deactivate`, { method: 'POST' });
+        const data = await res.json();
+        this.feedback = data.success ? `Deactivated ${name}` : (data.error || 'Deactivate failed');
+        if (data.success) await this.init();
+      } catch (e) {
+        this.feedback = 'Deactivate failed';
+      }
+      setTimeout(() => { this.feedback = ''; }, 3000);
+    },
+    async deleteSkill(name) {
+      if (!confirm(`Delete skill "${name}"?`)) return;
+      try {
+        const res = await fetch(`/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await res.json();
+        this.feedback = data.success ? `Deleted ${name}` : (data.error || 'Delete failed');
+        if (data.success) await this.init();
+      } catch (e) {
+        this.feedback = 'Delete failed';
+      }
+      setTimeout(() => { this.feedback = ''; }, 3000);
+    },
+  };
+}
+
+function permissionsPage() {
+  return {
+    manifest: {
+      capabilities: {
+        filesystem: { enabled: true, scopes: [] },
+        shell: { enabled: true, cwdOnly: true, blocked: [], autoApproved: [], needsApproval: [] },
+        git: { enabled: true, autoApproveRead: true, approveWrite: true },
+      },
+    },
+    saving: false,
+    feedback: '',
+    async init() {
+      try {
+        const res = await fetch('/api/permissions');
+        if (res.ok) {
+          const data = await res.json();
+          this.manifest = data.manifest || this.manifest;
+        }
+      } catch (e) {
+        console.error('Failed to load permissions:', e);
+      }
+    },
+    async save() {
+      this.saving = true;
+      this.feedback = '';
+      try {
+        const res = await fetch('/api/permissions', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ capabilities: this.manifest.capabilities }),
+        });
+        const data = await res.json();
+        this.feedback = data.success ? 'Saved' : 'Failed';
+      } catch (e) {
+        this.feedback = 'Error saving';
+      }
+      this.saving = false;
+      setTimeout(() => { this.feedback = ''; }, 2500);
+    },
+  };
+}
+
+function usagePage() {
+  return {
+    data: {
+      dailyUsed: 0,
+      dailyBudget: 0,
+      remaining: 0,
+      lastResetDate: '',
+      byProvider: {},
+      byChannel: {},
+      requestLog: [],
+    },
+    formatNum(v) { return Number(v || 0).toLocaleString(); },
+    formatDate(ts) { return formatDate(ts); },
+    async init() {
+      try {
+        const res = await fetch('/api/usage');
+        if (res.ok) {
+          this.data = await res.json();
+        }
+      } catch (e) {
+        console.error('Failed to load usage:', e);
+      }
+    },
+  };
+}
+
 const TYPE_COLORS = {
   identity: '#00d4ff', preference: '#febc2e', goal: '#28c840', project: '#a855f7',
   habit: '#f97316', decision: '#3b82f6', constraint: '#ef4444', relationship: '#ec4899',

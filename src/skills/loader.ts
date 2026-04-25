@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
@@ -6,6 +6,7 @@ import type { SkillDiscovery, Skill, SkillMeta } from './types.js';
 import { logger } from '../utils/logger.js';
 
 const SKILL_FILE = 'SKILL.md';
+const DISABLED_FILE = '.disabled';
 
 function parseSkillMd(content: string): { meta: SkillMeta; instructions: string } | null {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
@@ -46,6 +47,8 @@ export class SkillLoader {
     const entries = readdirSync(this.skillsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+      const skillDir = join(this.skillsDir, entry.name);
+      if (existsSync(join(skillDir, DISABLED_FILE))) continue;
       const skillPath = join(this.skillsDir, entry.name, SKILL_FILE);
       if (!existsSync(skillPath)) continue;
       try {
@@ -71,6 +74,8 @@ export class SkillLoader {
 
     for (const entry of readdirSync(this.skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+      const skillDir = join(this.skillsDir, entry.name);
+      if (existsSync(join(skillDir, DISABLED_FILE))) continue;
       const skillPath = join(this.skillsDir, entry.name, SKILL_FILE);
       if (!existsSync(skillPath)) continue;
       try {
@@ -78,7 +83,6 @@ export class SkillLoader {
         const parsed = parseSkillMd(raw);
         if (!parsed || parsed.meta.name !== name) continue;
 
-        const skillDir = join(this.skillsDir, entry.name);
         const skill: Skill = {
           ...parsed.meta,
           instructions: parsed.instructions,
@@ -112,9 +116,99 @@ export class SkillLoader {
       mkdirSync(skillDir, { recursive: true });
     }
     writeFileSync(join(skillDir, SKILL_FILE), content, 'utf-8');
+    const disabledPath = join(skillDir, DISABLED_FILE);
+    if (existsSync(disabledPath)) {
+      unlinkSync(disabledPath);
+    }
     logger.info({ skill: name }, 'Skill saved');
     this.discover();
     return skillDir;
+  }
+
+  getAllSkills(): Array<SkillDiscovery & { active: boolean }> {
+    const list: Array<SkillDiscovery & { active: boolean }> = [];
+    if (!existsSync(this.skillsDir)) return list;
+
+    for (const entry of readdirSync(this.skillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+      const skillDir = join(this.skillsDir, entry.name);
+      const skillPath = join(skillDir, SKILL_FILE);
+      if (!existsSync(skillPath)) continue;
+      try {
+        const raw = readFileSync(skillPath, 'utf-8');
+        const parsed = parseSkillMd(raw);
+        if (!parsed) continue;
+        list.push({
+          name: parsed.meta.name,
+          description: parsed.meta.description,
+          active: !existsSync(join(skillDir, DISABLED_FILE)),
+        });
+      } catch (err) {
+        logger.warn({ err, dir: entry.name }, 'Failed to read skill metadata');
+      }
+    }
+
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  setSkillActive(name: string, active: boolean): boolean {
+    const entry = this.findSkillEntryByName(name);
+    if (!entry) return false;
+    const disabledPath = join(entry.skillDir, DISABLED_FILE);
+    if (active) {
+      if (existsSync(disabledPath)) unlinkSync(disabledPath);
+    } else {
+      writeFileSync(disabledPath, 'disabled\n', 'utf-8');
+    }
+    this.discover();
+    return true;
+  }
+
+  deleteSkill(name: string): boolean {
+    const entry = this.findSkillEntryByName(name);
+    if (!entry) return false;
+    rmSync(entry.skillDir, { recursive: true, force: true });
+    this.discover();
+    logger.info({ skill: name }, 'Skill deleted');
+    return true;
+  }
+
+  async installFromUrl(url: string): Promise<{ name: string; skillDir: string }> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch skill from URL: ${response.status} ${response.statusText}`);
+    }
+    const content = await response.text();
+    return this.installFromContent(content);
+  }
+
+  installFromContent(content: string): { name: string; skillDir: string } {
+    const parsed = parseSkillMd(content);
+    if (!parsed) {
+      throw new Error('Invalid SKILL.md: missing or malformed YAML frontmatter with name and description');
+    }
+    const skillDir = this.saveSkill(parsed.meta.name, content);
+    return { name: parsed.meta.name, skillDir };
+  }
+
+  private findSkillEntryByName(name: string): { skillDir: string } | null {
+    if (!existsSync(this.skillsDir)) return null;
+    for (const entry of readdirSync(this.skillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+      const skillDir = join(this.skillsDir, entry.name);
+      const skillPath = join(skillDir, SKILL_FILE);
+      if (!existsSync(skillPath)) continue;
+      try {
+        const raw = readFileSync(skillPath, 'utf-8');
+        const parsed = parseSkillMd(raw);
+        if (parsed?.meta.name === name) {
+          return { skillDir };
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
 
   private seedTemplate(): void {
