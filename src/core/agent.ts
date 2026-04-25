@@ -1259,7 +1259,12 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     if (cmd === '/memory') {
       if (!this.userMemory) {
-        await channel.send('Second brain is not enabled.', channelId);
+        const cfg = ctx.config();
+        if (cfg.memory.secondBrain?.enabled === false) {
+          await channel.send('Second brain is disabled in configuration.', channelId);
+        } else {
+          await channel.send('Second brain dependency issue: SQLite backend (better-sqlite3) is not available.', channelId);
+        }
         return true;
       }
 
@@ -1562,7 +1567,12 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           if (this.userMemory) {
             await this.openCliMemoryMenu(channel, channelId, select);
           } else {
-            await channel.send('Second brain is not enabled.', channelId);
+            const cfg = ctx.config();
+            if (cfg.memory.secondBrain?.enabled === false) {
+              await channel.send('Second brain is disabled in configuration.', channelId);
+            } else {
+              await channel.send('Second brain dependency issue: SQLite backend (better-sqlite3) is not available.', channelId);
+            }
           }
           continue;
         }

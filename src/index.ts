@@ -903,20 +903,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const episodic = new EpisodicMemory(config);
 
   let userMemory: UserMemoryStore | null = null;
-  if (config.memory.secondBrain?.enabled !== false) {
+  if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
     try {
       userMemory = new UserMemoryStore(config);
       setWebUserMemory(userMemory);
-      const backend = isBetterSqlite3Available() ? 'sqlite' : 'json-fallback';
       if (!isDaemon) {
-        console.log(chalk.dim(`  Second brain: enabled (${userMemory.getSummary().total} existing memories) [${backend}]`));
+        console.log(chalk.dim(`  Second brain: enabled (${userMemory.getSummary().total} existing memories)`));
       } else {
-        logger.info({ total: userMemory.getSummary().total, backend }, 'Second brain loaded');
+        logger.info({ total: userMemory.getSummary().total }, 'Second brain loaded');
       }
     } catch (err) {
       logger.warn({ err }, 'Second brain initialization failed, continuing without it');
       userMemory = null;
     }
+  } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
+    logger.warn(
+      'Second brain dependency issue: better-sqlite3 is not available. ' +
+      'Memory/brain features require SQLite via better-sqlite3. Install build tools and reinstall dependencies.'
+    );
   }
 
   const channels = new ChannelRegistry(config);
