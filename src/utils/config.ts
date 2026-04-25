@@ -54,6 +54,11 @@ export type ProviderName =
   | 'ollamaCloud'
   | 'ollamaLocal';
 
+export interface RelayConfig {
+  url: string;
+  enabled: boolean;
+}
+
 export interface MercuryConfig {
   identity: {
     name: string;
@@ -96,7 +101,12 @@ export interface MercuryConfig {
       enabled: boolean;
       maxRecords: number;
     };
+    sharedMemory?: {
+      enabled: boolean;
+      maxRecords: number;
+    };
   };
+  relay?: RelayConfig;
   heartbeat: {
     intervalMinutes: number;
   };
@@ -201,6 +211,14 @@ export function getDefaultConfig(): MercuryConfig {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
         maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
       },
+      sharedMemory: {
+        enabled: getEnvBool('SHARED_MEMORY_ENABLED', true),
+        maxRecords: getEnvNum('SHARED_MEMORY_MAX_RECORDS', 100),
+      },
+    },
+    relay: {
+      url: getEnv('RELAY_URL', 'https://relay.mercuryagent.com'),
+      enabled: getEnvBool('RELAY_ENABLED', true),
     },
     heartbeat: {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),

@@ -26,6 +26,7 @@ import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
 const MEMORY_ACTION_PREFIX = 'tg_memory';
+const FRIEND_ACTION_PREFIX = 'tg_friend';
 
 type ApprovalResolver = () => void;
 
@@ -108,6 +109,53 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/shared') {
+        if (!this.chatCommandContext?.sharedMemorySummary) {
+          await this.sendDirectMessage(chatId, 'Shared memory is not enabled.');
+          return;
+        }
+        const summary = this.chatCommandContext.sharedMemorySummary();
+        if (!summary) {
+          await this.sendDirectMessage(chatId, 'Shared memory is not enabled.');
+          return;
+        }
+        this.chatCommandContext.sharedMemorySetLearningPaused?.(!summary.learningPaused);
+        await this.sendDirectMessage(chatId, summary.learningPaused
+          ? 'Shared learning resumed. New memories will be stored in shared memory.'
+          : 'Shared learning paused. Memories will NOT be shared until resumed.'
+        );
+        return;
+      }
+
+      if (command === '/friend') {
+        const friendTgId = text.slice('/friend'.length).trim();
+        if (!friendTgId || !/^\d+$/.test(friendTgId)) {
+          await this.sendDirectMessage(chatId, 'Usage: /friend <TELEGRAM_USER_ID>\nExample: /friend 123456789');
+          return;
+        }
+        await this.sendDirectMessage(chatId, `Friend request for ${friendTgId} recorded. Use /listfriends to manage.`);
+        return;
+      }
+
+      if (command === '/listfriends') {
+        if (!this.chatCommandContext?.sharedMemorySummary) {
+          await this.sendDirectMessage(chatId, 'Shared memory is not enabled.');
+          return;
+        }
+        const friends = this.chatCommandContext.sharedMemoryGetFriends?.() ?? [];
+        if (friends.length === 0) {
+          await this.sendDirectMessage(chatId, 'No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.');
+          return;
+        }
+        await this.sendFriendsKeyboard(chatId, friends);
+        return;
+      }
+
+      if (command === '/exit' || command === '/quit') {
+        await this.sendDirectMessage(chatId, 'Goodbye! Shutting down Mercury...');
+        process.exit(0);
+      }
+
       this.lastActiveChatId = chatId;
       logger.info({ chatId, text: ctx.message.text?.slice(0, 50) }, 'Telegram message received');
 
@@ -167,6 +215,11 @@ export class TelegramChannel extends BaseChannel {
 
       if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
         await this.handleMemoryCallback(ctx, data);
+        return;
+      }
+
+      if (data.startsWith(`${FRIEND_ACTION_PREFIX}:`)) {
+        await this.handleFriendCallback(ctx, data);
         return;
       }
 
@@ -239,6 +292,10 @@ export class TelegramChannel extends BaseChannel {
       { command: 'budget_set', description: 'Set new daily token budget' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
+      { command: 'shared', description: 'Toggle shared learning on/off' },
+      { command: 'friend', description: 'Add a friend by Telegram user ID' },
+      { command: 'listfriends', description: 'View and manage shared memory friends' },
+      { command: 'exit', description: 'Shut down Mercury and exit' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
       { command: 'tasks', description: 'List scheduled tasks' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },
@@ -711,6 +768,65 @@ export class TelegramChannel extends BaseChannel {
     await ctx.answerCallbackQuery({ text: 'Unknown action' });
   }
 
+  private async sendFriendsKeyboard(chatId: number, friends: import('../memory/shared-memory-store.js').FriendInfo[]): Promise<void> {
+    if (!this.bot) return;
+
+    const lines = ['<b>Friends List</b>\n'];
+    const pending = friends.filter(f => f.status === 'pending');
+    const approved = friends.filter(f => f.status === 'approved');
+    const revoked = friends.filter(f => f.status === 'revoked');
+
+    if (pending.length > 0) {
+      lines.push('<b>Pending:</b>');
+      for (const f of pending) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId}) [Approve] [Reject]`);
+      }
+    }
+
+    if (approved.length > 0) {
+      lines.push('\n<b>Approved:</b>');
+      for (const f of approved) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+      }
+    }
+
+    if (revoked.length > 0) {
+      lines.push('\n<b>Revoked:</b>');
+      for (const f of revoked) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+      }
+    }
+
+    const keyboard = new InlineKeyboard();
+
+    if (pending.length > 0) {
+      for (const f of pending) {
+        const name = f.username ? `@${f.username}` : f.tgId;
+        keyboard
+          .text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:approve:${f.tgId}`)
+          .text(`❌ ${name}`, `${FRIEND_ACTION_PREFIX}:reject:${f.tgId}`)
+          .row();
+      }
+    }
+
+    if (approved.length > 0) {
+      for (const f of approved) {
+        const name = f.username ? `@${f.username}` : f.tgId;
+        keyboard.text(`🚫 Revoke ${name}`, `${FRIEND_ACTION_PREFIX}:revoke:${f.tgId}`).row();
+      }
+    }
+
+    await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    }).catch(async () => {
+      await this.bot!.api.sendMessage(chatId, lines.join('\n'), { reply_markup: keyboard });
+    });
+  }
+
   private async sendMemoryKeyboard(chatId: number): Promise<void> {
     if (!this.bot || !this.chatCommandContext) return;
 
@@ -720,6 +836,16 @@ export class TelegramChannel extends BaseChannel {
       `Total memories: ${summary.total}`,
       `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
     ];
+
+    const sharedSummary = this.chatCommandContext.sharedMemorySummary?.();
+    if (sharedSummary) {
+      lines.push(`Shared memory: ${sharedSummary.total} entries`);
+      lines.push(`Shared learning: ${sharedSummary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`);
+      lines.push(`Friends: ${sharedSummary.friendCount}`);
+    } else {
+      lines.push('Shared memory: disabled');
+    }
+
     if (summary.profileSummary) {
       lines.push(`\n<i>Profile: ${this.escapeHtml(summary.profileSummary)}</i>`);
     }
@@ -732,12 +858,28 @@ export class TelegramChannel extends BaseChannel {
     }
 
     const learningLabel = summary.learningPaused ? '▶ Resume' : '⏸ Pause';
+    const sharedLearningLabel = sharedSummary
+      ? (sharedSummary.learningPaused ? '▶ Shared ON' : '⏸ Shared OFF')
+      : null;
+
     const keyboard = new InlineKeyboard()
       .text('📋 Overview', `${MEMORY_ACTION_PREFIX}:overview`)
       .text('🔍 Recent', `${MEMORY_ACTION_PREFIX}:recent`)
       .row()
-      .text(learningLabel, `${MEMORY_ACTION_PREFIX}:toggle_learning`)
+      .text(learningLabel, `${MEMORY_ACTION_PREFIX}:toggle_learning`);
+
+    if (sharedLearningLabel) {
+      keyboard.text(sharedLearningLabel, `${MEMORY_ACTION_PREFIX}:toggle_shared_learning`);
+    }
+
+    keyboard.row()
       .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`);
+
+    if (sharedSummary) {
+      keyboard.row()
+        .text('📂 Shared Overview', `${MEMORY_ACTION_PREFIX}:shared_overview`)
+        .text('👥 Friends', `${FRIEND_ACTION_PREFIX}:list`);
+    }
 
     await this.bot.api.sendMessage(chatId, lines.join('\n'), {
       parse_mode: 'HTML',
@@ -781,6 +923,13 @@ export class TelegramChannel extends BaseChannel {
           lines.push(`  ${type}: ${count}`);
         }
       }
+      const sharedSummary = this.chatCommandContext.sharedMemorySummary?.();
+      if (sharedSummary) {
+        lines.push('\n<b>Shared Memory</b>');
+        lines.push(`  Entries: ${sharedSummary.total}`);
+        lines.push(`  Learning: ${sharedSummary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`);
+        lines.push(`  Friends: ${sharedSummary.friendCount}`);
+      }
       await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
         await this.bot!.api.sendMessage(chatId, lines.join('\n'));
       });
@@ -820,6 +969,54 @@ export class TelegramChannel extends BaseChannel {
       return;
     }
 
+    if (action === 'toggle_shared_learning') {
+      const sharedSummary = this.chatCommandContext.sharedMemorySummary?.();
+      if (!sharedSummary) {
+        await ctx.answerCallbackQuery({ text: 'Shared memory not available' });
+        return;
+      }
+      const currentlyPaused = sharedSummary.learningPaused;
+      this.chatCommandContext.sharedMemorySetLearningPaused?.(!currentlyPaused);
+      const label = currentlyPaused ? '▶ Shared learning ON' : '⏸ Shared learning OFF';
+      await ctx.answerCallbackQuery({ text: label });
+      await this.bot.api.sendMessage(chatId, currentlyPaused
+        ? 'Shared learning resumed. New memories will be stored in shared memory.'
+        : 'Shared learning paused. Memories will NOT be shared until resumed.',
+      ).catch(() => {});
+      await this.sendMemoryKeyboard(chatId);
+      return;
+    }
+
+    if (action === 'shared_overview') {
+      const sharedSummary = this.chatCommandContext.sharedMemorySummary?.();
+      if (!sharedSummary) {
+        await ctx.answerCallbackQuery({ text: 'Shared memory not available' });
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: 'Shared memory overview' });
+      const lines = [
+        '<b>Shared Memory Overview</b>',
+        `Entries: ${sharedSummary.total}`,
+        `Learning: ${sharedSummary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+        `Friends: ${sharedSummary.friendCount}`,
+      ];
+      if (sharedSummary.categories.length > 0) {
+        lines.push(`\n<b>Categories:</b>`);
+        lines.push(...sharedSummary.categories.map(c => `  ${this.escapeHtml(c)}`));
+      }
+      const byType = Object.entries(sharedSummary.byType);
+      if (byType.length > 0) {
+        lines.push('\n<b>By type:</b>');
+        for (const [type, count] of byType) {
+          lines.push(`  ${type}: ${count}`);
+        }
+      }
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
     if (action === 'clear_confirm') {
       const keyboard = new InlineKeyboard()
         .text('🗑 Yes, clear everything', `${MEMORY_ACTION_PREFIX}:clear_yes`)
@@ -847,6 +1044,88 @@ export class TelegramChannel extends BaseChannel {
     }
 
     await ctx.answerCallbackQuery({ text: 'Unknown action' });
+  }
+
+  private async handleFriendCallback(ctx: any, data: string): Promise<void> {
+    if (!this.bot || !this.chatCommandContext) {
+      await ctx.answerCallbackQuery({ text: 'Not available' });
+      return;
+    }
+
+    const action = data.slice(`${FRIEND_ACTION_PREFIX}:`.length);
+    const chatId = ctx.callbackQuery.message?.chat?.id;
+    if (!chatId) {
+      await ctx.answerCallbackQuery({ text: 'Error' });
+      return;
+    }
+
+    if (action === 'list') {
+      const friends = this.chatCommandContext.sharedMemoryGetFriends?.() ?? [];
+      await ctx.answerCallbackQuery({ text: 'Friends list' });
+
+      if (friends.length === 0) {
+        await this.bot.api.sendMessage(chatId, 'No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.').catch(() => {});
+        return;
+      }
+
+      const lines = ['<b>Friends List</b>\n'];
+      const pending = friends.filter(f => f.status === 'pending');
+      const approved = friends.filter(f => f.status === 'approved');
+      const revoked = friends.filter(f => f.status === 'revoked');
+
+      if (pending.length > 0) {
+        lines.push('<b>Pending:</b>');
+        for (const f of pending) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+        }
+      }
+
+      if (approved.length > 0) {
+        lines.push('\n<b>Approved:</b>');
+        for (const f of approved) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
+          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})${negList}`);
+        }
+      }
+
+      if (revoked.length > 0) {
+        lines.push('\n<b>Revoked:</b>');
+        for (const f of revoked) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+        }
+      }
+
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action.startsWith('approve:')) {
+      const tgId = action.slice('approve:'.length);
+      await ctx.answerCallbackQuery({ text: 'Approved — configure negative list via /listfriends' });
+      await this.bot!.api.sendMessage(chatId, `Approved friend ${tgId}. Use /listfriends to configure what they can access.`).catch(() => {});
+      return;
+    }
+
+    if (action.startsWith('reject:')) {
+      const tgId = action.slice('reject:'.length);
+      await ctx.answerCallbackQuery({ text: 'Rejected' });
+      await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${tgId}.`).catch(() => {});
+      return;
+    }
+
+    if (action.startsWith('revoke:')) {
+      const tgId = action.slice('revoke:'.length);
+      await ctx.answerCallbackQuery({ text: 'Access revoked' });
+      await this.bot!.api.sendMessage(chatId, `Revoked access for ${tgId}.`).catch(() => {});
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: 'Unknown friend action' });
   }
 
   private resolveTargetChatIds(targetId?: string): number[] {

@@ -1,17 +1,17 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { githubRequest } from '../../utils/github.js';
 
 export function createListIssuesTool() {
   return tool({
     description: 'List GitHub issues for a repository. Requires GITHUB_TOKEN.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       owner: z.string().describe('Repository owner (username or org)'),
       repo: z.string().describe('Repository name'),
       state: z.enum(['open', 'closed', 'all']).describe('Filter by issue state').default('open'),
       labels: z.string().describe('Comma-separated label names to filter by (optional)').optional(),
       limit: z.number().describe('Maximum number of issues to return').default(10),
-    }),
+    })),
     execute: async ({ owner, repo, state, labels, limit }) => {
       try {
         const params = new URLSearchParams();

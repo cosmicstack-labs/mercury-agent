@@ -1,16 +1,16 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { githubRequest } from '../../utils/github.js';
 
 export function createReviewPrTool() {
   return tool({
     description: 'Get details of a pull request including the diff. Reviews the PR and returns the title, body, changed files, and diff. Optionally post a review comment.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       owner: z.string().describe('Repository owner (username or org)'),
       repo: z.string().describe('Repository name'),
       number: z.number().describe('PR number'),
       comment: z.string().describe('Review comment to post on the PR (optional)').optional(),
-    }),
+    })),
     execute: async ({ owner, repo, number, comment }) => {
       try {
         const pr = await githubRequest(`/repos/${owner}/${repo}/pulls/${number}`);

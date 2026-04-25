@@ -209,57 +209,20 @@ export class CLIChannel extends BaseChannel {
       return full;
     }
 
-    const startTime = Date.now();
-    const headerLines = ['', chalk.cyan(`  ${this.agentName}:`), ''];
-    for (const line of headerLines) {
-      console.log(line);
-    }
-
-    const indent = '  ';
-    const cols = process.stdout.columns || 80;
-    const contentCols = Math.max(1, cols - indent.length);
-    let visualLines = headerLines.length;
-    let pendingIndent = true;
-    let lineLen = 0;
-
     let full = '';
     for await (const chunk of content) {
       full += chunk;
-      for (let i = 0; i < chunk.length; i++) {
-        const ch = chunk[i];
-        if (ch === '\n') {
-          visualLines += Math.max(1, Math.ceil((lineLen + indent.length) / cols));
-          process.stdout.write('\n');
-          lineLen = 0;
-          pendingIndent = true;
-        } else {
-          if (pendingIndent) {
-            process.stdout.write(indent);
-            pendingIndent = false;
-          }
-          process.stdout.write(ch);
-          lineLen++;
-        }
-      }
-    }
-    if (lineLen > 0) {
-      visualLines += Math.max(1, Math.ceil((lineLen + indent.length) / cols));
-      process.stdout.write('\n');
-    } else {
-      visualLines += 1;
     }
     this.streamActive = false;
 
-    process.stdout.write(`\x1b[${visualLines}A`);
-    process.stdout.write('\x1b[J');
+    if (!full.trim()) {
+      this.endOutput();
+      return full;
+    }
 
-    if (full.trim()) {
-      const block = this.formatBlock(this.agentName, '', full);
-      for (const line of block) {
-        console.log(line);
-      }
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(chalk.dim('  ' + '─'.repeat(50 - elapsed.length - 4) + ' ' + elapsed + 's'));
+    const block = this.formatBlock(this.agentName, '', full);
+    for (const line of block) {
+      console.log(line);
     }
 
     this.endOutput();
@@ -347,8 +310,11 @@ export class CLIChannel extends BaseChannel {
   }
 
   async prompt(question: string): Promise<string> {
+    if (!this.rl) {
+      this.createInterface();
+    }
     return new Promise((resolve) => {
-      this.rl?.question(question, (answer) => resolve(answer.trim()));
+      this.rl!.question(question, (answer) => resolve(answer.trim()));
     });
   }
 
@@ -395,20 +361,26 @@ export class CLIChannel extends BaseChannel {
   }
 
   async askPermission(prompt: string): Promise<string> {
+    if (!this.rl) {
+      this.createInterface();
+    }
     return new Promise((resolve) => {
       console.log('');
       console.log(chalk.yellow(`  ⚠ ${prompt}`));
-      this.rl?.question(chalk.yellow('  > '), (answer) => {
+      this.rl!.question(chalk.yellow('  > '), (answer) => {
         resolve(answer.trim());
       });
     });
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
+    if (!this.rl) {
+      this.createInterface();
+    }
     return new Promise((resolve) => {
       console.log('');
       console.log(chalk.yellow(`  ⚠ ${question}`));
-      this.rl?.question(chalk.yellow('  Continue? [y/N] '), (answer) => {
+      this.rl!.question(chalk.yellow('  Continue? [y/N] '), (answer) => {
         const val = answer.trim().toLowerCase();
         resolve(val === 'y' || val === 'yes');
       });

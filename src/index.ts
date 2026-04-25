@@ -30,7 +30,10 @@ import { logger } from './utils/logger.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { UserMemoryStore } from './memory/user-memory.js';
+import { SharedMemoryStore } from './memory/shared-memory-store.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
+import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
+import { RelayClient } from './relay/relay-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -893,6 +896,34 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     );
   }
 
+  let sharedMemory: SharedMemoryStore | null = null;
+  let relayClient: RelayClient | null = null;
+  if (config.memory.sharedMemory?.enabled !== false && isSharedMemoryDbAvailable()) {
+    try {
+      sharedMemory = new SharedMemoryStore(config);
+      if (!isDaemon) {
+        console.log(chalk.dim(`  Shared memory: enabled (${sharedMemory.getSummary().total} existing entries)`));
+      } else {
+        logger.info({ total: sharedMemory.getSummary().total }, 'Shared memory loaded');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Shared memory initialization failed, continuing without it');
+      sharedMemory = null;
+    }
+  }
+
+  if (config.relay?.enabled !== false && sharedMemory) {
+    try {
+      relayClient = new RelayClient(config.relay);
+      if (!isDaemon) {
+        console.log(chalk.dim(`  Relay: ${config.relay?.url ?? 'https://relay.mercuryagent.com'}`));
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Relay client initialization failed');
+      relayClient = null;
+    }
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -907,6 +938,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memorySearch: (query: string, limit?: number) => userMemory ? userMemory.search(query, limit) : [],
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
     memoryClear: () => userMemory ? userMemory.clear() : 0,
+    sharedMemorySummary: () => sharedMemory ? sharedMemory.getSummary() : undefined,
+    sharedMemorySetLearningPaused: (paused: boolean) => { if (sharedMemory) sharedMemory.setLearningPaused(paused); },
+    sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
+    sharedMemoryGetFriends: () => sharedMemory ? sharedMemory.getFriends() : [],
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -949,7 +984,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.registerAll();
 
   const agent = new Agent(
-    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
+    config, providers, identity, shortTerm, longTerm, episodic, userMemory, sharedMemory, channels, tokenBudget, capabilities, scheduler,
   );
 
   await agent.birth();
@@ -981,6 +1016,54 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
       }
     });
+  }
+
+  if (relayClient && sharedMemory) {
+    const adminUser = config.channels.telegram.admins[0];
+    if (adminUser) {
+      relayClient.register(adminUser.userId.toString(), adminUser.username).then((ok) => {
+        if (ok) {
+          relayClient!.startPollLoop(async (result) => {
+            for (const req of result.friendRequests) {
+              const existing = sharedMemory!.getFriend(req.fromTgId);
+              if (!existing) {
+                sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+              }
+            }
+
+            for (const resp of result.friendResponses) {
+              if (resp.approved) {
+                const existing = sharedMemory!.getFriend(resp.fromTgId);
+                if (existing && existing.status === 'pending') {
+                  sharedMemory!.approveFriend(resp.fromTgId, []);
+                }
+              }
+            }
+
+            for (const msg of result.messages) {
+              if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
+                try {
+                  const query = relayClient!.decryptMessage(msg.encryptedPayload);
+                  if (!query) continue;
+                  const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, query);
+                  const fromPublicKey = await relayClient!.getUserPublicKey(msg.fromTgId);
+                  if (fromPublicKey) {
+                    await relayClient!.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
+                  }
+                } catch (err) {
+                  logger.debug({ err }, 'Error processing shared memory query from relay');
+                }
+              }
+              if (msg.id) {
+                await relayClient!.acknowledgeMessage(msg.id);
+              }
+            }
+          });
+        }
+      }).catch((err) => {
+        logger.warn({ err }, 'Relay registration failed');
+      });
+    }
   }
 
   const activeCh = channels.getActiveChannels();
@@ -1019,6 +1102,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         userMemory.consolidate();
         userMemory.close();
       } catch {}
+    }
+    if (sharedMemory) {
+      try {
+        sharedMemory.close();
+      } catch {}
+    }
+    if (relayClient) {
+      relayClient.stopPollLoop();
     }
     await agent.shutdown();
     process.exit(0);

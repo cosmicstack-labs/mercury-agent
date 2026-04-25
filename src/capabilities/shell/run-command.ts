@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 import { resolve, isAbsolute } from 'node:path';
@@ -13,9 +13,9 @@ export function createRunCommandTool(permissions: PermissionManager, getCwd: () 
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
 Auto-approved commands (ls, cat, git status, curl, etc.) run without asking.
 Other commands require user approval.`,
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       command: z.string().describe('The shell command to execute'),
-    }),
+    })),
     execute: async ({ command }) => {
       const check = await permissions.checkShellCommand(command);
       if (!check.allowed) {

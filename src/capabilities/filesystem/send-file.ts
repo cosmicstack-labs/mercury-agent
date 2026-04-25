@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { existsSync, statSync } from 'node:fs';
 import { resolve, basename, isAbsolute } from 'node:path';
@@ -12,9 +12,9 @@ export function createSendFileTool(
   return tool({
     description:
       'Send a file to the user. On Telegram the file is uploaded as an attachment to the relevant approved recipients. On CLI the file path and size are displayed. The path must be within an allowed read scope.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       path: z.string().describe('Absolute or relative path to the file to send'),
-    }),
+    })),
     execute: async ({ path }) => {
       const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
       const check = await permissions.checkFsAccess(resolved, 'read');

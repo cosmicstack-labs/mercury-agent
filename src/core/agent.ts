@@ -1,14 +1,16 @@
-import { generateText, streamText } from 'ai';
+import { generateText, streamText, stepCountIs } from 'ai';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
+import type { SharedMemoryStore } from '../memory/shared-memory-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
+import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { logger } from '../utils/logger.js';
@@ -257,6 +259,7 @@ export class Agent {
     private longTerm: LongTermMemory,
     private episodic: EpisodicMemory,
     private userMemory: UserMemoryStore | null,
+    private sharedMemory: SharedMemoryStore | null,
     private channels: ChannelRegistry,
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
@@ -515,6 +518,10 @@ export class Agent {
 
       for (const provider of fallbackIterator) {
         try {
+          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
+            ? { deepseek: { thinking: { type: 'enabled' as const } } }
+            : undefined;
+
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
           if (canStream && channel) {
@@ -523,8 +530,9 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.capabilities.getTools(),
-              maxSteps: MAX_STEPS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
+              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
@@ -540,7 +548,7 @@ export class Agent {
                       resultStr.includes('Command failed') ||
                       resultStr.startsWith('Command exited with code')
                     );
-                    loopDetector.record(tc.toolName, tc.args as Record<string, any>, failed);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, failed);
                   }
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
@@ -595,7 +603,7 @@ export class Agent {
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.args as Record<string, any>).catch(() => {});
+                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -609,7 +617,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -676,7 +684,8 @@ export class Agent {
               streamResult.usage,
             ]);
 
-            result = { text: fullText, usage };
+            const streamReasoning = await streamResult.reasoning;
+            result = { text: fullText, usage, reasoning: streamReasoning };
             streamedText = fullText;
             loopDetector.recordStepText(fullText);
           } else {
@@ -685,8 +694,9 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.capabilities.getTools(),
-              maxSteps: MAX_STEPS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
+              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
@@ -702,7 +712,7 @@ export class Agent {
                       resultStr.includes('Command failed') ||
                       resultStr.startsWith('Command exited with code')
                     );
-                    loopDetector.record(tc.toolName, tc.args as Record<string, any>, failed);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, failed);
                   }
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
@@ -757,7 +767,7 @@ export class Agent {
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.args as Record<string, any>).catch(() => {});
+                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -771,7 +781,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -855,9 +865,9 @@ export class Agent {
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
         model: usedProvider!.model,
-        inputTokens: result.usage?.promptTokens ?? 0,
-        outputTokens: result.usage?.completionTokens ?? 0,
-        totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
       });
 
@@ -873,7 +883,8 @@ export class Agent {
         timestamp: Date.now(),
         role: 'assistant',
         content: finalText,
-        tokenCount: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+        reasoning: result.reasoning || undefined,
       });
 
       this.episodic.record({
@@ -1084,15 +1095,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
-        maxTokens: 400,
+        maxOutputTokens: 400,
       });
 
       this.tokenBudget.recordUsage({
         provider: provider.name,
         model: provider.getModel(),
-        inputTokens: result.usage?.promptTokens ?? 0,
-        outputTokens: result.usage?.completionTokens ?? 0,
-        totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
       });
 
@@ -1146,9 +1157,94 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         if (remembered.length > 0) {
           logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
         }
+
+        if (this.sharedMemory && !this.sharedMemory.isLearningPaused()) {
+          try {
+            const sharedCandidates = await this.extractSharedMemoryCandidates(userMessage, agentResponse, typed);
+            if (sharedCandidates.length > 0) {
+              const sharedRemembered = this.sharedMemory.remember(sharedCandidates, 'conversation');
+              if (sharedRemembered.length > 0) {
+                logger.info({ count: sharedRemembered.length }, 'Shared memory entries stored');
+              }
+            }
+          } catch (err) {
+            logger.debug({ err }, 'Shared memory extraction error (non-critical)');
+          }
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'Memory extraction error');
+    }
+  }
+
+  private async extractSharedMemoryCandidates(
+    userMessage: string,
+    agentResponse: string,
+    existingCandidates: Array<{ type: string; summary: string; detail?: string }>,
+  ): Promise<import('../memory/shared-memory-store.js').SharedMemoryCandidate[]> {
+    if (!this.sharedMemory) return [];
+
+    const existingCategories = this.sharedMemory.getSummary().categories;
+    const categoryList = existingCategories.length > 0
+      ? `Existing categories: ${existingCategories.join(', ')}. Check if a memory fits an existing category first before creating a new one.`
+      : 'No categories exist yet. Assign the most fitting category.';
+
+    try {
+      const provider = this.providers.getDefault();
+      const result = await generateText({
+        model: provider.getModelInstance(),
+        system: `You categorize memories for shared storage. Given the conversation and the extracted memories, assign a category to each memory. ${categoryList} Output a JSON array. Each object has: type (same as input), category (a short label like "health", "finance", "personal", "professional", "technology", etc.), summary (same as input, 12-220 chars), detail (optional), evidenceKind (direct or inferred), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Output pure JSON array, no markdown.`,
+        messages: [
+          { role: 'user', content: `Extracted memories:\n${JSON.stringify(existingCandidates)}\n\nConversation:\nUser: ${userMessage}\nAssistant: ${agentResponse}` },
+        ],
+        maxOutputTokens: 400,
+      });
+
+      this.tokenBudget.recordUsage({
+        provider: provider.name,
+        model: provider.getModel(),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+        channelType: 'internal',
+      });
+
+      const text = result.text.trim();
+      if (!text) return [];
+
+      const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+      const parsed = JSON.parse(jsonStr);
+
+      if (!Array.isArray(parsed)) return [];
+
+      const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
+      return parsed
+        .filter((c: any) => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+        .filter((c: any) => validTypes.includes(c.type))
+        .map((c: any) => ({
+          type: c.type as import('../memory/shared-memory-store.js').SharedMemoryType,
+          category: (c.category || 'general').toLowerCase().trim(),
+          summary: c.summary,
+          detail: c.detail,
+          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+        }));
+    } catch {
+      const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
+      return existingCandidates
+        .filter(c => validTypes.includes(c.type) && c.summary.length >= 12 && c.summary.length <= 220)
+        .map(c => ({
+          type: c.type as import('../memory/shared-memory-store.js').SharedMemoryType,
+          category: 'general',
+          summary: c.summary,
+          detail: c.detail,
+          evidenceKind: 'inferred' as const,
+          confidence: 0.7,
+          importance: 0.7,
+          durability: 0.7,
+        }));
     }
   }
 
@@ -1209,6 +1305,12 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/exit' || cmd === '/quit') {
+      await channel.send('Goodbye! Shutting down Mercury...', channelId);
+      this.shutdown();
+      return true;
+    }
+
     if (cmd === '/status') {
       const config = ctx.config();
       const budget = ctx.tokenBudget();
@@ -1237,6 +1339,82 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
 
       await this.sendMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    if (cmd === '/shared') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const isPaused = this.sharedMemory.isLearningPaused();
+      this.sharedMemory.setLearningPaused(!isPaused);
+      await channel.send(
+        isPaused
+          ? 'Shared learning resumed. New memories will be stored in shared memory.'
+          : 'Shared learning paused. Memories will NOT be stored in shared memory until resumed.',
+        channelId,
+      );
+      return true;
+    }
+
+    if (cmd.startsWith('/friend')) {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const friendTgId = trimmed.slice('/friend'.length).trim();
+      if (!friendTgId || !/^\d+$/.test(friendTgId)) {
+        await channel.send('Usage: /friend <TELEGRAM_USER_ID>\nExample: /friend 123456789', channelId);
+        return true;
+      }
+      const existing = this.sharedMemory.getFriend(friendTgId);
+      if (existing) {
+        await channel.send(`User ${friendTgId} is already in your friend list (status: ${existing.status}).`, channelId);
+        return true;
+      }
+      this.sharedMemory.addFriendRequest(friendTgId);
+      await channel.send(`Friend request for ${friendTgId} recorded locally. If relay is connected, it will be forwarded.`, channelId);
+      return true;
+    }
+
+    if (cmd === '/listfriends') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const friends = this.sharedMemory.getFriends();
+      if (friends.length === 0) {
+        await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
+        return true;
+      }
+      const lines = ['**Friends List**\n'];
+      const pending = friends.filter(f => f.status === 'pending');
+      const approved = friends.filter(f => f.status === 'approved');
+      const revoked = friends.filter(f => f.status === 'revoked');
+      if (pending.length > 0) {
+        lines.push('**Pending:**');
+        for (const f of pending) {
+          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+          lines.push(`  ${name} (ID: ${f.tgId})`);
+        }
+      }
+      if (approved.length > 0) {
+        lines.push('**Approved:**');
+        for (const f of approved) {
+          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+          const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
+          lines.push(`  ${name} (ID: ${f.tgId})${negList}`);
+        }
+      }
+      if (revoked.length > 0) {
+        lines.push('**Revoked:**');
+        for (const f of revoked) {
+          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+          lines.push(`  ${name} (ID: ${f.tgId})`);
+        }
+      }
+      await channel.send(lines.join('\n'), channelId);
       return true;
     }
 
@@ -1584,6 +1762,17 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         lines.push(`  ${type}: ${count}`);
       }
     }
+    if (this.sharedMemory) {
+      const sharedSummary = this.sharedMemory.getSummary();
+      lines.push('');
+      lines.push('**Shared Memory**');
+      lines.push(`  Entries: ${sharedSummary.total}`);
+      lines.push(`  Learning: ${sharedSummary.learningPaused ? 'PAUSED' : 'ACTIVE'}`);
+      lines.push(`  Friends: ${sharedSummary.friendCount}`);
+      if (sharedSummary.categories.length > 0) {
+        lines.push(`  Categories: ${sharedSummary.categories.join(', ')}`);
+      }
+    }
     await channel.send(lines.join('\n'), channelId);
   }
 
@@ -1593,14 +1782,30 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
         const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-        const action = await sel('Memory', [
+        const sharedLearningLabel = this.sharedMemory
+          ? (this.sharedMemory.isLearningPaused() ? '▶ Shared Learning ON' : '⏸ Shared Learning OFF')
+          : null;
+
+        const options: ArrowSelectOption[] = [
           { value: 'overview', label: 'Overview' },
           { value: 'recent', label: 'Recent Memories' },
           { value: 'search', label: 'Search' },
           { value: 'toggle', label: learningLabel },
+        ];
+
+        if (sharedLearningLabel) {
+          options.push({ value: 'shared_toggle', label: sharedLearningLabel });
+          options.push({ value: 'shared_overview', label: 'Shared Memory Overview' });
+          options.push({ value: 'shared_recent', label: 'Shared Recent Memories' });
+          options.push({ value: 'friends', label: 'Friends List' });
+        }
+
+        options.push(
           { value: 'clear', label: 'Clear All Memories' },
           { value: 'back', label: 'Back' },
-        ]);
+        );
+
+        const action = await sel('Memory', options);
 
         if (action === 'back') return;
 
@@ -1648,6 +1853,88 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           const currentlyPaused = this.userMemory!.isLearningPaused();
           this.userMemory!.setLearningPaused(!currentlyPaused);
           await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
+          continue;
+        }
+
+        if (action === 'shared_toggle' && this.sharedMemory) {
+          const currentlyPaused = this.sharedMemory.isLearningPaused();
+          this.sharedMemory.setLearningPaused(!currentlyPaused);
+          await channel.send(currentlyPaused
+            ? 'Shared learning resumed. New memories will be stored in shared memory.'
+            : 'Shared learning paused. Memories will NOT be shared until resumed.',
+            channelId);
+          continue;
+        }
+
+        if (action === 'shared_overview' && this.sharedMemory) {
+          const summary = this.sharedMemory.getSummary();
+          const lines = [
+            '**Shared Memory Overview**',
+            `Total entries: ${summary.total}`,
+            `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+            `Friends: ${summary.friendCount}`,
+          ];
+          if (summary.categories.length > 0) {
+            lines.push('', '**Categories:**');
+            lines.push(...summary.categories.map(c => `  ${c}`));
+          }
+          const byType = Object.entries(summary.byType);
+          if (byType.length > 0) {
+            lines.push('', '**By type:**');
+            for (const [type, count] of byType) {
+              lines.push(`  ${type}: ${count}`);
+            }
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'shared_recent' && this.sharedMemory) {
+          const recent = this.sharedMemory.getRecent(10);
+          if (recent.length === 0) {
+            await channel.send('No shared memories yet.', channelId);
+            continue;
+          }
+          const lines = ['**Recent Shared Memories:**', ''];
+          for (const r of recent) {
+            const scope = r.scope === 'active' ? '⏳' : '📌';
+            lines.push(`${scope} [${r.type}|${r.category}] ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'friends' && this.sharedMemory) {
+          const friends = this.sharedMemory.getFriends();
+          if (friends.length === 0) {
+            await channel.send('No friends yet. Use /friend <TELEGRAM_ID> to add someone.', channelId);
+            continue;
+          }
+          const lines = ['**Friends List**', ''];
+          const pending = friends.filter(f => f.status === 'pending');
+          const approved = friends.filter(f => f.status === 'approved');
+          const revoked = friends.filter(f => f.status === 'revoked');
+          if (pending.length > 0) {
+            lines.push('**Pending:**');
+            for (const f of pending) {
+              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})`);
+            }
+          }
+          if (approved.length > 0) {
+            lines.push('**Approved:**');
+            for (const f of approved) {
+              const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
+              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})${negList}`);
+            }
+          }
+          if (revoked.length > 0) {
+            lines.push('**Revoked:**');
+            for (const f of revoked) {
+              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})`);
+            }
+          }
+          await channel.send(lines.join('\n'), channelId);
           continue;
         }
 

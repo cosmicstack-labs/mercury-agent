@@ -1,14 +1,14 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 
 export function createGitLogTool(getCwd: () => string) {
   return tool({
     description: 'Show commit logs. Returns recent commit history with hash, author, date, and message.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       count: z.number().optional().describe('Number of commits to show (default 10)'),
       path: z.string().optional().describe('File or directory to show log for'),
-    }),
+    })),
     execute: async ({ count, path }) => {
       try {
         const n = count ?? 10;

@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { resolve, isAbsolute } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
@@ -6,9 +6,9 @@ import { existsSync, statSync } from 'node:fs';
 export function createCdTool(getCwd: () => string, setCwd: (dir: string) => void) {
   return tool({
     description: 'Change the current working directory. All subsequent file operations, shell commands, and git operations will use this directory. Use this before running commands in a specific project folder.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       path: z.string().describe('The directory to change to. Can be absolute or relative to the current directory.'),
-    }),
+    })),
     execute: async ({ path }) => {
       const cwd = getCwd();
       const resolved = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
