@@ -1,8 +1,12 @@
+import WebSocket from 'ws';
 import { getOrCreateKeyPair, encryptForRecipient, decryptFromSender, isE2EAvailable, type KeyPair } from './crypto.js';
 import { logger } from '../utils/logger.js';
 
 const DEFAULT_RELAY_URL = 'https://relay.mercuryagent.com';
 const POLL_INTERVAL_MS = 15_000;
+const WS_RECONNECT_BASE_MS = 1_000;
+const WS_RECONNECT_MAX_MS = 30_000;
+const WS_PING_INTERVAL_MS = 30_000;
 
 export interface RelayConfig {
   url: string;
@@ -25,6 +29,8 @@ export interface RelayPollResult {
   messages: RelayMessage[];
 }
 
+type OnResultCallback = (result: RelayPollResult) => void;
+
 export class RelayClient {
   private url: string;
   private apiKey: string | null = null;
@@ -34,10 +40,21 @@ export class RelayClient {
   private registered = false;
   private e2eAvailable: boolean;
 
+  private ws: WebSocket | null = null;
+  private wsReconnectAttempts = 0;
+  private wsReconnectTimer: NodeJS.Timeout | null = null;
+  private wsPingTimer: NodeJS.Timeout | null = null;
+  private onResultCallback: OnResultCallback | null = null;
+  private wsConnected = false;
+
   constructor(config?: RelayConfig) {
     this.url = config?.url || DEFAULT_RELAY_URL;
     this.keyPair = getOrCreateKeyPair() ?? { publicKey: new Uint8Array(0), privateKey: new Uint8Array(0), publicKeyBase64: '' };
     this.e2eAvailable = isE2EAvailable();
+  }
+
+  private get wsUrl(): string {
+    return this.url.replace(/^https?/, 'ws');
   }
 
   async register(tgUserId: string, username?: string, firstName?: string): Promise<boolean> {
@@ -309,26 +326,252 @@ export class RelayClient {
   }
 
   startPollLoop(onPollResult: (result: RelayPollResult) => void): void {
+    this.onResultCallback = onPollResult;
+
+    this.connectWebSocket();
+
+    if (!this.wsConnected) {
+      this.startHttpPoll();
+    }
+  }
+
+  stopPollLoop(): void {
+    this.disconnectWebSocket();
+    this.stopHttpPoll();
+    logger.info('Relay connection stopped');
+  }
+
+  private connectWebSocket(): void {
+    if (this.ws || !this.registered || !this.apiKey || !this.tgUserId) return;
+
+    try {
+      const url = `${this.wsUrl}/v1/ws?api_key=${encodeURIComponent(this.apiKey)}`;
+      this.ws = new WebSocket(url);
+
+      this.ws.on('open', () => {
+        logger.info({ tgUserId: this.tgUserId }, 'WebSocket connected to relay');
+        this.wsConnected = true;
+        this.wsReconnectAttempts = 0;
+        this.stopHttpPoll();
+        this.startWsPing();
+      });
+
+      this.ws.on('message', (data: WebSocket.Data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          this.handleWsMessage(msg);
+        } catch (err) {
+          logger.debug({ err }, 'WebSocket message parse error');
+        }
+      });
+
+      this.ws.on('close', (code: number, reason: Buffer) => {
+        logger.info({ code, reason: reason.toString() }, 'WebSocket disconnected from relay');
+        this.wsConnected = false;
+        this.ws = null;
+        this.stopWsPing();
+        this.startHttpPoll();
+        this.scheduleReconnect();
+      });
+
+      this.ws.on('error', (err: Error) => {
+        logger.debug({ err }, 'WebSocket error');
+        this.wsConnected = false;
+      });
+
+      this.ws.on('ping', () => {
+        this.ws?.pong();
+      });
+    } catch (err) {
+      logger.warn({ err }, 'Failed to connect WebSocket to relay');
+      this.startHttpPoll();
+    }
+  }
+
+  private handleWsMessage(msg: Record<string, unknown>): void {
+    if (!this.onResultCallback) return;
+
+    const type = msg.type as string;
+
+    if (type === 'auth_ok') {
+      logger.info({ tgUserId: msg.tg_user_id }, 'WebSocket authenticated with relay');
+      return;
+    }
+
+    if (type === 'initial_state') {
+      const result = this.parseWsInitialState(msg);
+      if (result && (result.friendRequests.length > 0 || result.friendResponses.length > 0 || result.messages.length > 0)) {
+        this.onResultCallback(result);
+      }
+      return;
+    }
+
+    if (type === 'friend_request') {
+      const result: RelayPollResult = {
+        friendRequests: [{
+          fromTgId: msg.from_tg_id as string,
+          fromUsername: (msg.from_username as string) ?? null,
+          fromFirstName: (msg.from_first_name as string) ?? null,
+          requestId: msg.request_id as string,
+        }],
+        friendResponses: [],
+        messages: [],
+      };
+      this.onResultCallback(result);
+      return;
+    }
+
+    if (type === 'friend_response') {
+      const result: RelayPollResult = {
+        friendRequests: [],
+        friendResponses: [{
+          fromTgId: msg.from_tg_id as string,
+          approved: msg.approved as boolean,
+          requestId: msg.request_id as string,
+        }],
+        messages: [],
+      };
+      this.onResultCallback(result);
+      return;
+    }
+
+    if (type === 'friend_revoked') {
+      const result: RelayPollResult = {
+        friendRequests: [],
+        friendResponses: [{
+          fromTgId: msg.from_tg_id as string,
+          approved: false,
+          requestId: '',
+        }],
+        messages: [],
+      };
+      this.onResultCallback(result);
+      return;
+    }
+
+    if (type === 'message') {
+      const result: RelayPollResult = {
+        friendRequests: [],
+        friendResponses: [],
+        messages: [{
+          id: msg.id as string,
+          fromTgId: msg.from_tg_id as string,
+          toTgId: msg.to_tg_id as string,
+          type: msg.message_type as RelayMessage['type'],
+          encryptedPayload: msg.encrypted_payload as string,
+          createdAt: msg.created_at as number,
+        }],
+      };
+      this.onResultCallback(result);
+
+      if (msg.id) {
+        this.ws?.send(JSON.stringify({ type: 'ack_message', message_id: msg.id }));
+      }
+      return;
+    }
+  }
+
+  private parseWsInitialState(msg: Record<string, unknown>): RelayPollResult | null {
+    try {
+      const friendRequests = ((msg.friend_requests as Array<Record<string, unknown>>) ?? []).map(r => ({
+        fromTgId: r.from_tg_id as string,
+        fromUsername: (r.from_username as string) ?? null,
+        fromFirstName: (r.from_first_name as string) ?? null,
+        requestId: r.request_id as string,
+      }));
+
+      const friendResponses = ((msg.friend_responses as Array<Record<string, unknown>>) ?? []).map(r => ({
+        fromTgId: r.from_tg_id as string,
+        approved: r.approved as boolean,
+        requestId: r.request_id as string,
+      }));
+
+      const messages = ((msg.messages as Array<Record<string, unknown>>) ?? []).map(m => ({
+        id: m.id as string,
+        fromTgId: m.from_tg_id as string,
+        toTgId: m.to_tg_id as string,
+        type: m.type as RelayMessage['type'],
+        encryptedPayload: m.encrypted_payload as string,
+        createdAt: m.created_at as number,
+      }));
+
+      return { friendRequests, friendResponses, messages };
+    } catch {
+      return null;
+    }
+  }
+
+  private startWsPing(): void {
+    this.stopWsPing();
+    this.wsPingTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.ping();
+      }
+    }, WS_PING_INTERVAL_MS);
+  }
+
+  private stopWsPing(): void {
+    if (this.wsPingTimer) {
+      clearInterval(this.wsPingTimer);
+      this.wsPingTimer = null;
+    }
+  }
+
+  private disconnectWebSocket(): void {
+    this.stopWsPing();
+    this.stopReconnect();
+    if (this.ws) {
+      this.ws.close(1000, 'Client disconnecting');
+      this.ws = null;
+    }
+    this.wsConnected = false;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.wsReconnectTimer) return;
+
+    const delay = Math.min(
+      WS_RECONNECT_BASE_MS * Math.pow(2, this.wsReconnectAttempts),
+      WS_RECONNECT_MAX_MS,
+    );
+    this.wsReconnectAttempts++;
+
+    logger.info({ delay, attempt: this.wsReconnectAttempts }, 'Scheduling WebSocket reconnect');
+
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      this.connectWebSocket();
+    }, delay);
+  }
+
+  private stopReconnect(): void {
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    this.wsReconnectAttempts = 0;
+  }
+
+  private startHttpPoll(): void {
     if (this.pollTimer) return;
 
     const poll = async () => {
-      if (!this.registered) return;
+      if (!this.registered || this.wsConnected) return;
       const result = await this.poll();
       if (result.friendRequests.length > 0 || result.friendResponses.length > 0 || result.messages.length > 0) {
-        onPollResult(result);
+        this.onResultCallback?.(result);
       }
     };
 
     this.pollTimer = setInterval(poll, POLL_INTERVAL_MS);
     poll();
-    logger.info('Relay poll loop started');
+    logger.info('HTTP poll fallback started (relay WebSocket unavailable)');
   }
 
-  stopPollLoop(): void {
+  private stopHttpPoll(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
-      logger.info('Relay poll loop stopped');
     }
   }
 
