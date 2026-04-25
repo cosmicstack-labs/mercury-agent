@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: '/skills', label: 'Skills', icon: '🧩' },
   { href: '/permissions', label: 'Perms', icon: '🔒' },
   { href: '/team', label: 'Team', icon: '👥' },
+  { href: '/schedules', label: 'Schedules', icon: '⏰' },
   { href: '/usage', label: 'Usage', icon: '📊' },
   { separator: true },
   { href: '/settings', label: 'Settings', icon: '⚙' },

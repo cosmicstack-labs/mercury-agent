@@ -9,7 +9,7 @@ import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
-import systemRoutes from './api/system.js';
+import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
 import chatRoutes, { setWebChannel } from './api/chat.js';
 import { renderDashboard } from './pages/dashboard.js';
@@ -18,6 +18,7 @@ import { renderSettings } from './pages/settings.js';
 import { renderSkills } from './pages/skills.js';
 import { renderPermissions } from './pages/permissions.js';
 import { renderUsage } from './pages/usage.js';
+import { renderSchedules } from './pages/schedules.js';
 import { renderMemory } from './pages/brain/memory.js';
 import { renderPersons } from './pages/brain/persons.js';
 import { renderPerson } from './pages/brain/person.js';
@@ -124,6 +125,10 @@ app.get('/usage', (c) => {
   return c.html(renderUsage(c));
 });
 
+app.get('/schedules', (c) => {
+  return c.html(renderSchedules(c));
+});
+
 app.get('/second-brain/graph', (c) => {
   return c.html(renderGraph(c));
 });
@@ -149,7 +154,7 @@ app.get('/chat', (c) => {
   return c.html(renderChat(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

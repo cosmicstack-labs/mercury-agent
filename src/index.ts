@@ -48,7 +48,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -895,6 +895,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const scheduler = new Scheduler(config);
+  setWebScheduler(scheduler);
 
   const identity = new Identity();
   migrateLegacyMemory();

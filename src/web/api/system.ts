@@ -4,8 +4,15 @@ import { join } from 'node:path';
 import { SkillLoader } from '../../skills/loader.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
+import type { Scheduler } from '../../core/scheduler.js';
+import cron from 'node-cron';
 
 const system = new Hono();
+let scheduler: Scheduler | null = null;
+
+export function setScheduler(s: Scheduler | null): void {
+  scheduler = s;
+}
 
 system.get('/api/skills', (c) => {
   const loader = new SkillLoader();
@@ -151,6 +158,71 @@ system.get('/api/usage', (c) => {
     byProvider,
     byChannel,
   });
+});
+
+system.get('/api/schedules', (c) => {
+  if (!scheduler) return c.json({ schedules: [], total: 0 });
+  const schedules = scheduler.getManifests().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  return c.json({ schedules, total: schedules.length });
+});
+
+system.put('/api/schedules/:id', async (c) => {
+  if (!scheduler) return c.json({ success: false, error: 'Scheduler unavailable' }, 503);
+  const id = c.req.param('id');
+  const existing = scheduler.getManifest(id);
+  if (!existing) return c.json({ success: false, error: 'Schedule not found' }, 404);
+
+  const body = await c.req.json();
+  const description = typeof body.description === 'string' && body.description.trim()
+    ? body.description.trim()
+    : existing.description;
+  const prompt = typeof body.prompt === 'string' ? body.prompt : existing.prompt;
+  const skillName = typeof body.skillName === 'string' ? body.skillName : existing.skillName;
+
+  let cronExpr: string | undefined = undefined;
+  let delaySeconds: number | undefined = undefined;
+
+  if (body.cron !== undefined && body.cron !== null && String(body.cron).trim() !== '') {
+    cronExpr = String(body.cron).trim();
+    if (!cron.validate(cronExpr)) {
+      return c.json({ success: false, error: 'Invalid cron expression' }, 400);
+    }
+  } else if (body.delaySeconds !== undefined && body.delaySeconds !== null && Number(body.delaySeconds) > 0) {
+    delaySeconds = Number(body.delaySeconds);
+  } else if (existing.cron) {
+    cronExpr = existing.cron;
+  } else if (existing.delaySeconds) {
+    delaySeconds = existing.delaySeconds;
+  }
+
+  if (!cronExpr && !delaySeconds) {
+    return c.json({ success: false, error: 'Provide cron or delaySeconds' }, 400);
+  }
+
+  const manifest = {
+    ...existing,
+    id,
+    description,
+    prompt,
+    skillName,
+    cron: cronExpr,
+    delaySeconds,
+    executeAt: delaySeconds ? new Date(Date.now() + delaySeconds * 1000).toISOString() : undefined,
+  };
+
+  scheduler.replaceManifest(manifest);
+  scheduler.persistSchedules();
+  return c.json({ success: true, schedule: scheduler.getManifest(id) });
+});
+
+system.delete('/api/schedules/:id', (c) => {
+  if (!scheduler) return c.json({ success: false, error: 'Scheduler unavailable' }, 503);
+  const id = c.req.param('id');
+  const existing = scheduler.getManifest(id);
+  if (!existing) return c.json({ success: false, error: 'Schedule not found' }, 404);
+  scheduler.removeTask(id);
+  scheduler.persistSchedules();
+  return c.json({ success: true });
 });
 
 export default system;

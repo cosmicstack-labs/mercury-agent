@@ -170,6 +170,24 @@ export class Scheduler {
     return [...this.taskManifests.values()];
   }
 
+  getManifest(id: string): ScheduledTaskManifest | null {
+    return this.taskManifests.get(id) || null;
+  }
+
+  replaceManifest(manifest: ScheduledTaskManifest): void {
+    this.removeTask(manifest.id);
+    if (manifest.delaySeconds) {
+      const delay = Math.max(1, manifest.delaySeconds);
+      manifest.delaySeconds = delay;
+      manifest.executeAt = new Date(Date.now() + delay * 1000).toISOString();
+      this.addDelayedTask(manifest);
+    } else if (manifest.cron) {
+      this.addPersistedTask(manifest);
+    } else {
+      throw new Error('Manifest requires cron or delaySeconds');
+    }
+  }
+
   restorePersistedTasks(): void {
     const persisted = loadSchedules();
     for (const manifest of persisted) {

@@ -271,6 +271,92 @@ function usagePage() {
   };
 }
 
+function schedulesPage() {
+  return {
+    loading: true,
+    saving: false,
+    feedback: '',
+    schedules: [],
+    selected: null,
+    form: { description: '', cron: '', delaySeconds: '', prompt: '' },
+
+    async init() {
+      this.loading = true;
+      try {
+        const res = await fetch('/api/schedules');
+        if (res.ok) {
+          const data = await res.json();
+          this.schedules = data.schedules || [];
+        }
+      } catch (e) {
+        console.error('Failed to load schedules:', e);
+      }
+      this.loading = false;
+    },
+
+    select(s) {
+      this.selected = s;
+      this.form = {
+        description: s.description || '',
+        cron: s.cron || '',
+        delaySeconds: s.delaySeconds || '',
+        prompt: s.prompt || '',
+      };
+    },
+
+    async save() {
+      if (!this.selected) return;
+      this.saving = true;
+      this.feedback = '';
+      try {
+        const payload = {
+          description: this.form.description,
+          prompt: this.form.prompt,
+          cron: this.form.cron ? this.form.cron.trim() : undefined,
+          delaySeconds: this.form.delaySeconds ? Number(this.form.delaySeconds) : undefined,
+        };
+        const res = await fetch(`/api/schedules/${encodeURIComponent(this.selected.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.success) {
+          this.feedback = 'Saved';
+          await this.init();
+          const updated = this.schedules.find(x => x.id === this.selected.id);
+          if (updated) this.select(updated);
+        } else {
+          this.feedback = data.error || 'Save failed';
+        }
+      } catch (e) {
+        this.feedback = 'Save failed';
+      }
+      this.saving = false;
+      setTimeout(() => { this.feedback = ''; }, 3000);
+    },
+
+    async removeSelected() {
+      if (!this.selected) return;
+      if (!confirm('Delete/cancel this scheduled event?')) return;
+      try {
+        const res = await fetch(`/api/schedules/${encodeURIComponent(this.selected.id)}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+          this.feedback = 'Deleted';
+          this.selected = null;
+          await this.init();
+        } else {
+          this.feedback = data.error || 'Delete failed';
+        }
+      } catch (e) {
+        this.feedback = 'Delete failed';
+      }
+      setTimeout(() => { this.feedback = ''; }, 3000);
+    },
+  };
+}
+
 const TYPE_COLORS = {
   identity: '#00d4ff', preference: '#febc2e', goal: '#28c840', project: '#a855f7',
   habit: '#f97316', decision: '#3b82f6', constraint: '#ef4444', relationship: '#ec4899',
