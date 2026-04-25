@@ -450,3 +450,263 @@ function brainGraph() {
     },
   };
 }
+
+function simpleMarkdown(md) {
+  if (!md) return '';
+  var html = md;
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="lang-$1">$2</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/^\- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\n{2,}/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+  html = '<p>' + html + '</p>';
+  html = html.replace(/<p><\/p>/g, '');
+  html = html.replace(/<p><(h[2-4]|ul|pre)/g, '<$1');
+  html = html.replace(/<\/(h[2-4]|ul|pre)><\/p>/g, '</$1>');
+  return html;
+}
+
+function chatScreen() {
+  return {
+    messages: [],
+    inputText: '',
+    waiting: false,
+    streamingText: '',
+    currentAssistantId: null,
+    provider: '',
+    model: '',
+    eventSource: null,
+    scrollCheckTimer: null,
+
+    renderMarkdown(md) { return simpleMarkdown(md); },
+
+    formatTime(ts) {
+      if (!ts) return '';
+      var d = new Date(ts);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    },
+
+    throttledScrollCheck() {
+      if (this.scrollCheckTimer) return;
+      var self = this;
+      this.scrollCheckTimer = setTimeout(function() { self.scrollCheckTimer = null; }, 100);
+    },
+
+    scrollToBottom() {
+      var el = this.$refs.messagesContainer;
+      if (el) {
+        requestAnimationFrame(function() { el.scrollTop = el.scrollHeight; });
+      }
+    },
+
+    init() {
+      this.connectSSE();
+      this.$refs.chatInput?.focus();
+    },
+
+    connectSSE() {
+      var self = this;
+      if (this.eventSource) { this.eventSource.close(); }
+      this.eventSource = new EventSource('/api/chat/events');
+      this.eventSource.addEventListener('message', function(e) {
+        try {
+          var evt = JSON.parse(e.data);
+          self.handleEvent(evt);
+        } catch (err) { console.error('SSE parse error:', err); }
+      });
+      this.eventSource.addEventListener('error', function() {
+        setTimeout(function() { self.connectSSE(); }, 3000);
+      });
+    },
+
+    handleEvent(evt) {
+      var self = this;
+      switch (evt.type) {
+        case 'thinking':
+          this.waiting = true;
+          this.scrollToBottom();
+          break;
+
+        case 'provider':
+          this.provider = evt.data.name || '';
+          this.model = evt.data.model || '';
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) { msg.provider = evt.data.name; msg.model = evt.data.model; }
+          }
+          break;
+
+        case 'step_start':
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              if (!msg.steps) msg.steps = [];
+              msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: false });
+            }
+          }
+          this.scrollToBottom();
+          break;
+
+        case 'step_done':
+          break;
+
+        case 'text_delta':
+          this.waiting = false;
+          this.streamingText += (evt.data.text || '');
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              msg.content = self.streamingText;
+              msg.streaming = true;
+            }
+          }
+          this.scrollToBottom();
+          break;
+
+        case 'text_done':
+          this.waiting = false;
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              if (evt.data.fullText && !msg.content) msg.content = evt.data.fullText;
+              msg.streaming = false;
+              msg.elapsedMs = evt.data.elapsedMs || msg.elapsedMs;
+              if (evt.data.provider) { msg.provider = evt.data.provider; msg.model = evt.data.model; }
+            }
+          }
+          this.streamingText = '';
+          this.currentAssistantId = null;
+          this.scrollToBottom();
+          break;
+
+        case 'permission_request':
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              if (!msg.permissions) msg.permissions = [];
+              msg.permissions.push({ id: evt.data.id, prompt: evt.data.prompt, options: evt.data.options, resolved: false, resolvedAction: '' });
+            }
+          }
+          this.scrollToBottom();
+          break;
+
+        case 'permission_continue':
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              if (!msg.permissions) msg.permissions = [];
+              msg.permissions.push({ id: evt.data.id, prompt: evt.data.question, options: evt.data.options, resolved: false, resolvedAction: '' });
+            }
+          }
+          this.scrollToBottom();
+          break;
+
+        case 'permission_mode':
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              if (!msg.permissions) msg.permissions = [];
+              msg.permissions.push({ id: evt.data.id, prompt: 'Choose permission mode', options: evt.data.options, resolved: false, resolvedAction: '' });
+            }
+          }
+          this.scrollToBottom();
+          break;
+
+        case 'loop_warning':
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              msg.content += '\\n\\n⚠ ' + (evt.data.message || 'Loop detected');
+            }
+          }
+          break;
+
+        case 'error':
+          this.waiting = false;
+          if (this.currentAssistantId) {
+            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg) {
+              msg.content = 'Error: ' + (evt.data.message || 'Unknown error');
+              msg.streaming = false;
+            }
+          } else {
+            this.messages.push({
+              id: 'err_' + Date.now(), role: 'assistant', content: 'Error: ' + (evt.data.message || 'Unknown error'),
+              timestamp: Date.now(), steps: [], permissions: [], streaming: false
+            });
+          }
+          break;
+
+        case 'connected':
+          break;
+      }
+    },
+
+    sendMessage() {
+      if (!this.inputText.trim() || this.waiting) return;
+      var text = this.inputText.trim();
+      this.inputText = '';
+      this.messages.push({
+        id: 'user_' + Date.now(), role: 'user', content: text,
+        timestamp: Date.now(), steps: [], permissions: []
+      });
+
+      this.currentAssistantId = 'asst_' + Date.now();
+      this.messages.push({
+        id: this.currentAssistantId, role: 'assistant', content: '',
+        timestamp: Date.now(), steps: [], permissions: [],
+        streaming: true, provider: this.provider, model: this.model,
+        prompt: text
+      });
+
+      this.waiting = true;
+      this.streamingText = '';
+      this.scrollToBottom();
+
+      var self = this;
+      fetch('/api/chat/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text })
+      }).catch(function(err) {
+        self.waiting = false;
+        var msg = self.messages.find(function(m) { return m.id === self.currentAssistantId; });
+        if (msg) { msg.content = 'Failed to send: ' + err.message; msg.streaming = false; }
+      });
+    },
+
+    resolvePermission(permId, action) {
+      var self = this;
+      this.messages.forEach(function(msg) {
+        if (msg.permissions) {
+          msg.permissions.forEach(function(perm) {
+            if (perm.id === permId) {
+              perm.resolved = true;
+              perm.resolvedAction = action;
+            }
+          });
+        }
+      });
+      fetch('/api/chat/permission/' + permId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: action })
+      }).catch(function(err) { console.error('Permission resolve error:', err); });
+    },
+
+    clearChat() {
+      this.messages = [];
+      this.streamingText = '';
+      this.currentAssistantId = null;
+      this.waiting = false;
+    },
+  };
+}

@@ -14,6 +14,7 @@ import { Scheduler } from './scheduler.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
+import { WebChannel } from '../channels/web.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import {
@@ -506,7 +507,7 @@ export class Agent {
       const loopAbortController = new AbortController();
       let loopWarningSent = false;
 
-      const canStream = msg.channelType === 'cli' || (msg.channelType === 'telegram' && this.telegramStreaming);
+      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming);
 
       const tgChannel = this.channels.get('telegram');
       if (msg.channelType === 'telegram' && tgChannel) {
@@ -620,14 +621,28 @@ export class Agent {
                           }
                         }
                       }
+                    } else if (channel instanceof WebChannel) {
+                      const webCh = channel as WebChannel;
+                      for (const tc of toolCalls) {
+                        webCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId);
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                          }
+                        }
+                      }
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
-                  const stepText = (toolResults as any)?.text ?? '';
-                  if (stepText) {
-                    loopDetector.recordStepText(String(stepText));
+                  const stepText_step = (toolResults as any)?.text ?? '';
+                  if (stepText_step) {
+                    loopDetector.recordStepText(String(stepText_step));
                   }
                   const noActionLoop = loopDetector.recordNoActionResult();
                   if (noActionLoop) {
@@ -782,14 +797,28 @@ export class Agent {
                           }
                         }
                       }
+                    } else if (channel instanceof WebChannel) {
+                      const webCh = channel as WebChannel;
+                      for (const tc of toolCalls) {
+                        webCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId);
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                          }
+                        }
+                      }
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
-                  const stepText = (toolResults as any)?.text ?? '';
-                  if (stepText) {
-                    loopDetector.recordStepText(String(stepText));
+                  const stepText_nostream = (toolResults as any)?.text ?? '';
+                  if (stepText_nostream) {
+                    loopDetector.recordStepText(String(stepText_nostream));
                   }
                   const noActionLoop = loopDetector.recordNoActionResult();
                   if (noActionLoop) {
@@ -816,6 +845,9 @@ export class Agent {
           }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
+          if (channel instanceof WebChannel) {
+            (channel as WebChannel).sendProviderInfo(usedProvider.name, usedProvider.model, msg.channelId);
+          }
           this.providers.markSuccess(provider.name);
           break;
         } catch (err: any) {

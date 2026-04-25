@@ -10,12 +10,14 @@ import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
+import chatRoutes, { setWebChannel, setChatHandler } from './api/chat.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
 import { renderMemory } from './pages/brain/memory.js';
 import { renderGoals } from './pages/brain/goals.js';
 import { renderGraph } from './pages/brain/graph.js';
+import { renderChat } from './pages/chat.js';
 import { loadConfig } from '../utils/config.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -44,6 +46,7 @@ app.route('/', statusRoutes);
 app.route('/', providerRoutes);
 app.route('/', configRoutes);
 app.route('/', brainRoutes);
+app.route('/', chatRoutes);
 
 app.get('/static/style.css', (c) => {
   const filePath = join(staticDir, 'style.css');
@@ -114,7 +117,11 @@ app.get('/second-brain/goals', (c) => {
   return c.html(renderGoals(c));
 });
 
-export { updateStatus, setUserMemory };
+app.get('/chat', (c) => {
+  return c.html(renderChat(c));
+});
+
+export { updateStatus, setUserMemory, setWebChannel, setChatHandler };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

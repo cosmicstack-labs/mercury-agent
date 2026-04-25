@@ -37,6 +37,7 @@ import { Scheduler } from './core/scheduler.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
@@ -47,7 +48,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setChatHandler as setWebChatHandler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -987,14 +988,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
 
+  const webChannel = new WebChannel(config.identity.name);
+  channels.register('web', webChannel);
+
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
+
+  setWebWebChannel(webChannel);
+  setWebChatHandler((msg: { content: string }) => {
+    webChannel.emitMessage(msg.content);
+  });
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
+    }
+    if (channelType === 'web' && webChannel) {
+      return webChannel.askPermission(prompt);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
