@@ -326,3 +326,9 @@ Mercury isn't just another open-source project — it's a **soul-driven agent** 
 ### Need Help?
 
 Open an issue or reach out at [mercury@cosmicstack.org](mailto:mercury@cosmicstack.org). We're friendly.
+
+---
+
+## Community
+
+1. **Discord** — [Join the Mercury Agent Discord](https://discord.gg/6bDuu5HBp) for real-time chat, support, and community discussions.
