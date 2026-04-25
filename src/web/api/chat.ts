@@ -60,8 +60,12 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Message content required' }, 400);
   }
 
-  webChannel.emitMessage(body.content.trim());
-  return c.json({ sent: true });
+  try {
+    webChannel.emitMessage(body.content.trim());
+    return c.json({ sent: true });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 chat.post('/api/chat/permission/:id', async (c) => {

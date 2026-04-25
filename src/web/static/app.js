@@ -235,6 +235,10 @@ function brainGraph() {
     canvas: null, ctx: null, pan: {x:0,y:0}, zoom: 1,
     dragging: false, dragNode: null, lastMouse: {x:0,y:0},
     positions: new Map(),
+    anchor: new Map(),       // anchor positions
+    velocity: new Map(),     // per-node velocity params
+    animationFrame: null,
+    animationTime: 0,
 
     getTypeColor(type) { return TYPE_COLORS[type] || '#888888'; },
     formatDate(ts) { return formatDate(ts); },
@@ -258,7 +262,7 @@ function brainGraph() {
         this.ctx = this.canvas.getContext('2d');
         this.resizeCanvas();
         window.addEventListener('resize', () => { this.resizeCanvas(); this.draw(); });
-        this.draw();
+        this.startAnimation();
       }
     },
 
@@ -273,10 +277,49 @@ function brainGraph() {
     initPositions() {
       const cx = 400, cy = 300;
       this.positions.clear();
+      this.anchor.clear();
+      this.velocity.clear();
       this.nodes.forEach((node, i) => {
         const angle = (i / this.nodes.length) * Math.PI * 2;
         const r = 150 + Math.random() * 100;
-        this.positions.set(node.id, { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        this.positions.set(node.id, { x, y });
+        this.anchor.set(node.id, { x, y });
+        // independent per-node motion seed — barely perceptible drift
+        this.velocity.set(node.id, {
+          seed: Math.random(),
+          freq: 0.00009 + Math.random() * 0.00007,
+          amp: 0.25 + Math.random() * 0.25,
+        });
+      });
+    },
+
+    startAnimation() {
+      if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+      const loop = (ts) => {
+        this.animationTime = ts;
+        this.updateMotion(ts);
+        this.draw();
+        this.animationFrame = requestAnimationFrame(loop);
+      };
+      this.animationFrame = requestAnimationFrame(loop);
+    },
+
+    updateMotion(ts) {
+      const t = ts || performance.now();
+      this.nodes.forEach(n => {
+        if (this.dragNode && this.dragNode.id === n.id) return;
+        const p = this.positions.get(n.id);
+        const a = this.anchor.get(n.id);
+        const v = this.velocity.get(n.id);
+        if (!p || !a || !v) return;
+
+        // barely perceptible drift: independent sine on each axis, different freq per node
+        const ox = Math.sin(t * v.freq + v.seed * 11.1) * v.amp;
+        const oy = Math.cos(t * v.freq * 0.87 + v.seed * 17.3) * v.amp;
+        p.x = a.x + ox;
+        p.y = a.y + oy;
       });
     },
 
@@ -290,7 +333,6 @@ function brainGraph() {
         const forces = new Map();
         this.nodes.forEach(n => forces.set(n.id, {fx:0, fy:0}));
 
-        // Repulsion
         for (let i = 0; i < this.nodes.length; i++) {
           for (let j = i+1; j < this.nodes.length; j++) {
             const pi = this.positions.get(this.nodes[i].id);
@@ -305,18 +347,15 @@ function brainGraph() {
             forces.get(this.nodes[j].id).fy -= (dy/dist)*f;
           }
         }
-        // Attraction
         this.edges.forEach(e => {
           const ps = this.positions.get(e.source), pt = this.positions.get(e.target);
           if (!ps || !pt) return;
           let dx = pt.x - ps.x, dy = pt.y - ps.y;
-          const dist = Math.sqrt(dx*dx+dy*dy);
           forces.get(e.source).fx += dx * attForce;
           forces.get(e.source).fy += dy * attForce;
           forces.get(e.target).fx -= dx * attForce;
           forces.get(e.target).fy -= dy * attForce;
         });
-        // Apply
         const damp = 0.1;
         this.nodes.forEach(n => {
           const f = forces.get(n.id);
@@ -326,6 +365,12 @@ function brainGraph() {
           p.y += f.fy * damp;
         });
       }
+      // sync anchor after layout settlement
+      this.nodes.forEach(n => {
+        const p = this.positions.get(n.id);
+        const a = this.anchor.get(n.id);
+        if (p && a) { a.x = p.x; a.y = p.y; }
+      });
       this.layoutRunning = false;
       this.draw();
     },
@@ -338,15 +383,46 @@ function brainGraph() {
       ctx.translate(this.pan.x, this.pan.y);
       ctx.scale(this.zoom, this.zoom);
 
-      // Edges
-      ctx.strokeStyle = 'var(--cyan-glow)' in ctx ? 'rgba(0,212,255,0.15)' : 'rgba(0,212,255,0.15)';
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-      ctx.strokeStyle = isDark ? 'rgba(0,212,255,0.12)' : 'rgba(0,136,170,0.12)';
-      ctx.lineWidth = 1 / this.zoom;
-      this.edges.forEach(e => {
+      const t = this.animationTime || performance.now();
+
+      // compute focus neighborhood
+      const focus = this.hoveredNode || this.selectedNode || null;
+      const neighbors = new Set();
+      const activeEdges = new Set();
+      if (focus) {
+        this.edges.forEach((e, i) => {
+          if (e.source === focus.id) { neighbors.add(e.target); activeEdges.add(i); }
+          if (e.target === focus.id) { neighbors.add(e.source); activeEdges.add(i); }
+        });
+        neighbors.add(focus.id);
+      }
+
+      // Edges
+      this.edges.forEach((e, i) => {
         const ps = this.positions.get(e.source), pt = this.positions.get(e.target);
         if (!ps || !pt) return;
-        ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+        const active = activeEdges.has(i);
+
+        if (active) {
+          ctx.strokeStyle = isDark ? 'rgba(0,212,255,0.7)' : 'rgba(0,136,170,0.6)';
+          ctx.lineWidth = 2 / this.zoom;
+        } else {
+          if (focus) {
+            ctx.strokeStyle = isDark ? 'rgba(0,212,255,0.06)' : 'rgba(0,136,170,0.05)';
+            ctx.lineWidth = 0.6 / this.zoom;
+          } else {
+            // very slow barely-perceptible pulse per edge (each edge offset by index)
+            const pulse = (Math.sin(t * 0.00022 + i * 1.3) + 1) * 0.5;
+            const alpha = (isDark ? 0.16 : 0.13) + pulse * 0.06;
+            ctx.strokeStyle = isDark ? `rgba(0,212,255,${alpha.toFixed(3)})` : `rgba(0,136,170,${alpha.toFixed(3)})`;
+            ctx.lineWidth = (0.7 + pulse * 0.3) / this.zoom;
+          }
+        }
+        ctx.beginPath();
+        ctx.moveTo(ps.x, ps.y);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
       });
 
       // Nodes
@@ -356,23 +432,45 @@ function brainGraph() {
         if (!p) return;
         const isHovered = this.hoveredNode && this.hoveredNode.id === n.id;
         const isSelected = this.selectedNode && this.selectedNode.id === n.id;
-        const isSearchMatch = searchQ && n.fullLabel.toLowerCase().includes(searchQ);
-        const r = (n.size || 6) * (isHovered || isSelected ? 1.5 : 1);
+        const isNeighbor = neighbors.has(n.id);
 
-        if (searchQ && !isSearchMatch) {
-          ctx.globalAlpha = 0.2;
-        } else {
-          ctx.globalAlpha = 1;
+        // Breathing radius: each node on its own slow sine (~1% range)
+        const v = this.velocity.get(n.id) || { seed: 0 };
+        const breathe = 1 + Math.sin(t * 0.00035 + v.seed * 11.7) * 0.010;
+        const r = (n.size || 6) * (isHovered || isSelected ? 1.5 : breathe);
+
+        // Dim non-focus nodes when hovering
+        let alpha = 1;
+        if (searchQ) {
+          const match = n.fullLabel.toLowerCase().includes(searchQ);
+          alpha = match ? 1 : 0.12;
+        } else if (focus) {
+          alpha = isHovered || isSelected || isNeighbor ? 1 : 0.18;
+        }
+        ctx.globalAlpha = alpha;
+
+        // Glow ring for hovered/selected
+        if (isHovered || isSelected) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 5 / this.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = isDark ? 'rgba(0,212,255,0.14)' : 'rgba(0,136,170,0.12)';
+          ctx.fill();
         }
 
+        // Node body
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = n.color || '#888888';
         ctx.fill();
 
-        if (isHovered || isSelected || isSearchMatch) {
+        // Stroke for focus/selection
+        if (isHovered || isSelected) {
           ctx.strokeStyle = isDark ? '#f0f0f0' : '#1a1a1a';
           ctx.lineWidth = 2 / this.zoom;
+          ctx.stroke();
+        } else if (isNeighbor && !focus?.id === n.id) {
+          ctx.strokeStyle = isDark ? 'rgba(0,212,255,0.65)' : 'rgba(0,136,170,0.55)';
+          ctx.lineWidth = 1.8 / this.zoom;
           ctx.stroke();
         }
         ctx.globalAlpha = 1;
@@ -409,11 +507,12 @@ function brainGraph() {
       const gp = this.screenToGraph(e.clientX - rect.left, e.clientY - rect.top);
       if (this.dragNode) {
         const p = this.positions.get(this.dragNode.id);
-        if (p) { p.x = gp.x; p.y = gp.y; this.draw(); }
+        const a = this.anchor.get(this.dragNode.id);
+        if (p) { p.x = gp.x; p.y = gp.y; }
+        if (a) { a.x = gp.x; a.y = gp.y; }
       } else if (this.dragging) {
         this.pan.x += e.clientX - this.lastMouse.x;
         this.pan.y += e.clientY - this.lastMouse.y;
-        this.draw();
       } else {
         const node = this.findNodeAt(gp.x, gp.y);
         if (node !== this.hoveredNode) {
@@ -421,7 +520,6 @@ function brainGraph() {
           const sr = rect.width > 0 ? e.clientX - rect.left + 10 : 0;
           const st = rect.height > 0 ? e.clientY - rect.top + 10 : 0;
           this.tooltipStyle = `top:${st}px;left:${sr}px;`;
-          this.draw();
         }
       }
       this.lastMouse = { x: e.clientX, y: e.clientY };
@@ -434,7 +532,6 @@ function brainGraph() {
       this.pan.x = mx - (mx - this.pan.x) * delta;
       this.pan.y = my - (my - this.pan.y) * delta;
       this.zoom *= delta;
-      this.draw();
     },
     onDblClick(e) {
       const rect = this.canvas.getBoundingClientRect();

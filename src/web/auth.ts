@@ -74,7 +74,11 @@ export function authenticate(username: string, password: string): boolean {
   const auth = loadWebAuth();
   if (!auth) return false;
   if (username !== auth.username) return false;
-  return compareSync(password, auth.password_hash);
+  try {
+    return compareSync(password, auth.password_hash);
+  } catch {
+    return false;
+  }
 }
 
 export function changePassword(currentPassword: string, newPassword: string): boolean {
