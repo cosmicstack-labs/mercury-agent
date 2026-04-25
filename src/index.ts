@@ -942,6 +942,34 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemorySetLearningPaused: (paused: boolean) => { if (sharedMemory) sharedMemory.setLearningPaused(paused); },
     sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
     sharedMemoryGetFriends: () => sharedMemory ? sharedMemory.getFriends() : [],
+    sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => sharedMemory ? sharedMemory.addFriendRequest(tgId, username, firstName) : null,
+    sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => sharedMemory ? sharedMemory.updateFriendInfo(tgId, username, firstName) : null,
+    sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.approveFriend(tgId, negativeTags, negativeRules) : null,
+    sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.rejectFriend(tgId) : false,
+    sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
+    sendFriendRequest: async (tgId: string) => {
+      if (!relayClient) return false;
+      return relayClient.sendFriendRequest(tgId);
+    },
+    approveFriendRequest: async (requestId: string, negativeTags: string[], negativeRules?: string) => {
+      if (!relayClient) return false;
+      return relayClient.approveFriendRequest(requestId, negativeTags, negativeRules);
+    },
+    rejectFriendRequest: async (requestId: string) => {
+      if (!relayClient) return false;
+      return relayClient.rejectFriendRequest(requestId);
+    },
+    revokeFriend: async (tgId: string) => {
+      if (!relayClient) return false;
+      return relayClient.revokeFriend(tgId);
+    },
+    resolveTelegramUser: async (tgId: string) => {
+      const telegram = channels.get('telegram') as TelegramChannel | undefined;
+      if (telegram) {
+        return telegram.resolveTelegramUser(tgId);
+      }
+      return null;
+    },
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -1021,7 +1049,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (relayClient && sharedMemory) {
     const adminUser = config.channels.telegram.admins[0];
     if (adminUser) {
-      relayClient.register(adminUser.userId.toString(), adminUser.username).then((ok) => {
+      relayClient.register(adminUser.userId.toString(), adminUser.username, adminUser.firstName).then((ok) => {
         if (ok) {
           relayClient!.startPollLoop(async (result) => {
             for (const req of result.friendRequests) {

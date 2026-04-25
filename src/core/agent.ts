@@ -1364,17 +1364,45 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         return true;
       }
       const friendTgId = trimmed.slice('/friend'.length).trim();
-      if (!friendTgId || !/^\d+$/.test(friendTgId)) {
+      if (!friendTgId) {
+        const friends = this.sharedMemory.getFriends();
+        const pending = friends.filter(f => f.status === 'pending');
+        const approved = friends.filter(f => f.status === 'approved');
+        const lines = ['**/friend — Send a friend request**\n'];
+        lines.push('Usage: /friend <TELEGRAM_USER_ID>');
+        lines.push('Example: /friend 123456789\n');
+        lines.push(`You have **${pending.length}** pending and **${approved.length}** approved friend(s).`);
+        lines.push('Use /listfriends to see full details.');
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+      if (!/^\d+$/.test(friendTgId)) {
         await channel.send('Usage: /friend <TELEGRAM_USER_ID>\nExample: /friend 123456789', channelId);
         return true;
       }
+      let username: string | null = null;
+      let firstName: string | null = null;
+      try {
+        const userInfo = await ctx.resolveTelegramUser(friendTgId);
+        if (userInfo) {
+          username = userInfo.username;
+          firstName = userInfo.firstName;
+        }
+      } catch {}
+      const displayName = username ? `@${username}` : firstName || friendTgId;
       const existing = this.sharedMemory.getFriend(friendTgId);
       if (existing) {
-        await channel.send(`User ${friendTgId} is already in your friend list (status: ${existing.status}).`, channelId);
+        const existingName = existing.username ? `@${existing.username}` : existing.firstName || friendTgId;
+        await channel.send(`${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`, channelId);
         return true;
       }
-      this.sharedMemory.addFriendRequest(friendTgId);
-      await channel.send(`Friend request for ${friendTgId} recorded locally. If relay is connected, it will be forwarded.`, channelId);
+      this.sharedMemory.addFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined);
+      const relayResult = await ctx.sendFriendRequest(friendTgId);
+      if (relayResult) {
+        await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`, channelId);
+      } else {
+        await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable — request will sync when relay reconnects.`, channelId);
+      }
       return true;
     }
 
@@ -1395,23 +1423,23 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       if (pending.length > 0) {
         lines.push('**Pending:**');
         for (const f of pending) {
-          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
-          lines.push(`  ${name} (ID: ${f.tgId})`);
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${name} (${f.tgId})`);
         }
       }
       if (approved.length > 0) {
         lines.push('**Approved:**');
         for (const f of approved) {
-          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
-          lines.push(`  ${name} (ID: ${f.tgId})${negList}`);
+          lines.push(`  ${name} (${f.tgId})${negList}`);
         }
       }
       if (revoked.length > 0) {
         lines.push('**Revoked:**');
         for (const f of revoked) {
-          const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
-          lines.push(`  ${name} (ID: ${f.tgId})`);
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${name} (${f.tgId})`);
         }
       }
       await channel.send(lines.join('\n'), channelId);
@@ -1908,7 +1936,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         if (action === 'friends' && this.sharedMemory) {
           const friends = this.sharedMemory.getFriends();
           if (friends.length === 0) {
-            await channel.send('No friends yet. Use /friend <TELEGRAM_ID> to add someone.', channelId);
+            await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
             continue;
           }
           const lines = ['**Friends List**', ''];
@@ -1918,20 +1946,23 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           if (pending.length > 0) {
             lines.push('**Pending:**');
             for (const f of pending) {
-              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})`);
+              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+              lines.push(`  ${name} (${f.tgId})`);
             }
           }
           if (approved.length > 0) {
             lines.push('**Approved:**');
             for (const f of approved) {
+              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
               const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
-              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})${negList}`);
+              lines.push(`  ${name} (${f.tgId})${negList}`);
             }
           }
           if (revoked.length > 0) {
             lines.push('**Revoked:**');
             for (const f of revoked) {
-              lines.push(`  ${f.username ? `@${f.username}` : f.firstName || 'Unknown'} (ID: ${f.tgId})`);
+              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+              lines.push(`  ${name} (${f.tgId})`);
             }
           }
           await channel.send(lines.join('\n'), channelId);

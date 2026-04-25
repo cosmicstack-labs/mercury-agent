@@ -129,11 +129,45 @@ export class TelegramChannel extends BaseChannel {
 
       if (command === '/friend') {
         const friendTgId = text.slice('/friend'.length).trim();
-        if (!friendTgId || !/^\d+$/.test(friendTgId)) {
+        if (!friendTgId) {
+          const friends = this.chatCommandContext?.sharedMemoryGetFriends?.() ?? [];
+          const pending = friends.filter(f => f.status === 'pending');
+          const approved = friends.filter(f => f.status === 'approved');
+          const lines = ['<b>/friend — Send a friend request</b>\n'];
+          lines.push('Usage: /friend &lt;TELEGRAM_USER_ID&gt;');
+          lines.push('Example: /friend 123456789\n');
+          lines.push(`You have <b>${pending.length}</b> pending and <b>${approved.length}</b> approved friend(s).`);
+          lines.push('Use /listfriends to see full details.');
+          await this.sendDirectMessage(chatId, lines.join('\n'));
+          return;
+        }
+        if (!/^\d+$/.test(friendTgId)) {
           await this.sendDirectMessage(chatId, 'Usage: /friend <TELEGRAM_USER_ID>\nExample: /friend 123456789');
           return;
         }
-        await this.sendDirectMessage(chatId, `Friend request for ${friendTgId} recorded. Use /listfriends to manage.`);
+        let username: string | null = null;
+        let firstName: string | null = null;
+        try {
+          const userInfo = await this.resolveTelegramUser(friendTgId);
+          if (userInfo) {
+            username = userInfo.username;
+            firstName = userInfo.firstName;
+          }
+        } catch {}
+        const displayName = username ? `@${username}` : firstName || friendTgId;
+        const existing = this.chatCommandContext?.sharedMemoryGetFriends?.()?.find(f => f.tgId === friendTgId);
+        if (existing) {
+          const existingName = existing.username ? `@${existing.username}` : existing.firstName || friendTgId;
+          await this.sendDirectMessage(chatId, `${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`);
+          return;
+        }
+        this.chatCommandContext?.sharedMemoryAddFriendRequest?.(friendTgId, username ?? undefined, firstName ?? undefined);
+        const relayResult = await this.chatCommandContext?.sendFriendRequest?.(friendTgId);
+        if (relayResult) {
+          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`);
+        } else {
+          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable — request will sync when relay reconnects.`);
+        }
         return;
       }
 
@@ -780,7 +814,7 @@ export class TelegramChannel extends BaseChannel {
       lines.push('<b>Pending:</b>');
       for (const f of pending) {
         const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId}) [Approve] [Reject]`);
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId}) [Approve] [Reject]`);
       }
     }
 
@@ -788,7 +822,7 @@ export class TelegramChannel extends BaseChannel {
       lines.push('\n<b>Approved:</b>');
       for (const f of approved) {
         const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
       }
     }
 
@@ -796,7 +830,7 @@ export class TelegramChannel extends BaseChannel {
       lines.push('\n<b>Revoked:</b>');
       for (const f of revoked) {
         const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-        lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
       }
     }
 
@@ -804,7 +838,7 @@ export class TelegramChannel extends BaseChannel {
 
     if (pending.length > 0) {
       for (const f of pending) {
-        const name = f.username ? `@${f.username}` : f.tgId;
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
         keyboard
           .text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:approve:${f.tgId}`)
           .text(`❌ ${name}`, `${FRIEND_ACTION_PREFIX}:reject:${f.tgId}`)
@@ -814,7 +848,7 @@ export class TelegramChannel extends BaseChannel {
 
     if (approved.length > 0) {
       for (const f of approved) {
-        const name = f.username ? `@${f.username}` : f.tgId;
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
         keyboard.text(`🚫 Revoke ${name}`, `${FRIEND_ACTION_PREFIX}:revoke:${f.tgId}`).row();
       }
     }
@@ -1077,7 +1111,7 @@ export class TelegramChannel extends BaseChannel {
         lines.push('<b>Pending:</b>');
         for (const f of pending) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
         }
       }
 
@@ -1086,7 +1120,7 @@ export class TelegramChannel extends BaseChannel {
         for (const f of approved) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
-          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})${negList}`);
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})${negList}`);
         }
       }
 
@@ -1094,7 +1128,7 @@ export class TelegramChannel extends BaseChannel {
         lines.push('\n<b>Revoked:</b>');
         for (const f of revoked) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${this.escapeHtml(name)} (ID: ${f.tgId})`);
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
         }
       }
 
@@ -1106,13 +1140,18 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('approve:')) {
       const tgId = action.slice('approve:'.length);
+      const approved = this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, []);
+      await this.chatCommandContext?.approveFriendRequest?.(tgId, []);
+      const name = approved?.username ? `@${approved.username}` : approved?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Approved — configure negative list via /listfriends' });
-      await this.bot!.api.sendMessage(chatId, `Approved friend ${tgId}. Use /listfriends to configure what they can access.`).catch(() => {});
+      await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}). Use /listfriends to configure what they can access.`).catch(() => {});
       return;
     }
 
     if (action.startsWith('reject:')) {
       const tgId = action.slice('reject:'.length);
+      this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
+      await this.chatCommandContext?.rejectFriendRequest?.(tgId);
       await ctx.answerCallbackQuery({ text: 'Rejected' });
       await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${tgId}.`).catch(() => {});
       return;
@@ -1120,12 +1159,30 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('revoke:')) {
       const tgId = action.slice('revoke:'.length);
+      const revoked = this.chatCommandContext.sharedMemoryRevokeFriend?.(tgId);
+      await this.chatCommandContext?.revokeFriend?.(tgId);
+      const name = revoked?.username ? `@${revoked.username}` : revoked?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Access revoked' });
-      await this.bot!.api.sendMessage(chatId, `Revoked access for ${tgId}.`).catch(() => {});
+      await this.bot!.api.sendMessage(chatId, `Revoked access for ${name} (${tgId}).`).catch(() => {});
       return;
     }
 
     await ctx.answerCallbackQuery({ text: 'Unknown friend action' });
+  }
+
+  async resolveTelegramUser(tgId: string): Promise<{ username: string | null; firstName: string | null } | null> {
+    if (!this.bot) return null;
+    try {
+      const chat = await this.bot.api.getChat(Number(tgId));
+      if (!chat) return null;
+      return {
+        username: ('username' in chat ? chat.username : null) ?? null,
+        firstName: ('first_name' in chat ? chat.first_name : null) ?? null,
+      };
+    } catch (err) {
+      logger.debug({ err, tgId }, 'Could not resolve Telegram user info');
+      return null;
+    }
   }
 
   private resolveTargetChatIds(targetId?: string): number[] {

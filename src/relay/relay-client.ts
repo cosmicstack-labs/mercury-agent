@@ -40,7 +40,7 @@ export class RelayClient {
     this.e2eAvailable = isE2EAvailable();
   }
 
-  async register(tgUserId: string, username?: string): Promise<boolean> {
+  async register(tgUserId: string, username?: string, firstName?: string): Promise<boolean> {
     this.tgUserId = tgUserId;
 
     try {
@@ -50,6 +50,7 @@ export class RelayClient {
         body: JSON.stringify({
           tg_user_id: tgUserId,
           username: username ?? null,
+          first_name: firstName ?? null,
           public_key: this.keyPair.publicKeyBase64,
           endpoint: null,
         }),
