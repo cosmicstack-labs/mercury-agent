@@ -225,6 +225,95 @@ function goalsBrowser() {
   };
 }
 
+function personsBrowser() {
+  return {
+    persons: [],
+    loading: true,
+    query: '',
+    available: true,
+
+    async init() {
+      this.loading = true;
+      try {
+        const statsRes = await fetch('/api/brain/status');
+        if (statsRes.ok) {
+          const stats = await statsRes.json();
+          this.available = stats.available !== false;
+          if (!this.available) {
+            this.persons = [];
+            this.loading = false;
+            return;
+          }
+        }
+        const res = await fetch('/api/brain/persons?limit=120');
+        if (res.ok) {
+          const data = await res.json();
+          this.persons = data.persons || [];
+          this.available = data.available !== false;
+        }
+      } catch (e) {
+        console.error('Failed to load persons:', e);
+      }
+      this.loading = false;
+    },
+
+    async search() {
+      this.loading = true;
+      try {
+        const url = this.query
+          ? `/api/brain/persons?q=${encodeURIComponent(this.query)}&limit=120`
+          : '/api/brain/persons?limit=120';
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          this.persons = data.persons || [];
+        }
+      } catch (e) {
+        console.error('Failed to search persons:', e);
+      }
+      this.loading = false;
+    },
+  };
+}
+
+function personDetail(personId) {
+  return {
+    personId,
+    person: null,
+    memories: [],
+    loading: true,
+    getTypeColor(type) { return TYPE_COLORS[type] || '#888'; },
+    formatDate(ts) { return formatDate(ts); },
+
+    async init() {
+      this.loading = true;
+      try {
+        const [personRes, memoriesRes] = await Promise.all([
+          fetch(`/api/brain/persons/${this.personId}`),
+          fetch(`/api/brain/persons/${this.personId}/memories?limit=100`),
+        ]);
+
+        if (personRes.ok) {
+          const personData = await personRes.json();
+          this.person = personData.person || null;
+        } else {
+          this.person = null;
+        }
+
+        if (memoriesRes.ok) {
+          const memData = await memoriesRes.json();
+          this.memories = memData.memories || [];
+        } else {
+          this.memories = [];
+        }
+      } catch (e) {
+        console.error('Failed to load person profile:', e);
+      }
+      this.loading = false;
+    },
+  };
+}
+
 function brainGraph() {
   return {
     nodes: [], edges: [], loading: true, layoutRunning: false,

@@ -1,6 +1,6 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { getMemoryDir } from '../utils/config.js';
-import { SecondBrainDB, type MemoryRow } from './second-brain-db.js';
+import { SecondBrainDB, type MemoryRow, type PersonListRow } from './second-brain-db.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
@@ -61,7 +61,22 @@ export interface RetrievedUserMemory {
   context: string;
 }
 
+export interface UserPersonRecord {
+  id: string;
+  name: string;
+  canonicalName: string;
+  relationshipToUser: string | null;
+  description: string | null;
+  confidence: number;
+  memoryCount: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 const MIN_CONFIDENCE = 0.55;
+const PERSON_INDEX_VERSION = '3';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
@@ -111,6 +126,37 @@ export class UserMemoryStore {
   getByType(type: UserMemoryType): UserMemoryRecord[] {
     const rows = this.db.getByType(this.userKey, type);
     return rows.map(row => this.toRecord(row));
+  }
+
+  listPersons(query?: string, limit: number = 100): UserPersonRecord[] {
+    this.ensurePersonsBackfilled();
+    const rows = this.db.listPersons(this.userKey, query, limit);
+    return rows.map(row => this.toPersonRecord(row));
+  }
+
+  getPerson(personId: string): UserPersonRecord | null {
+    this.ensurePersonsBackfilled();
+    const row = this.db.getPersonWithCount(this.userKey, personId);
+    if (!row) return null;
+    return this.toPersonRecord(row);
+  }
+
+  getPersonMemories(personId: string, limit: number = 50): UserMemoryRecord[] {
+    this.ensurePersonsBackfilled();
+    const rows = this.db.getMemoriesForPerson(this.userKey, personId, limit);
+    return rows.map(row => this.toRecord(row));
+  }
+
+  rebuildPersonsFromMemory(): number {
+    this.db.clearUserPersonGraph(this.userKey);
+    const rows = this.db.getRelationshipMemoryRows(this.userKey);
+    for (const row of rows) {
+      this.indexPersonsForMemoryRow(row);
+    }
+    this.db.deleteOrphanPersons(this.userKey);
+    this.db.setMeta(`${this.userKey}:persons_backfilled`, '1');
+    this.db.setMeta(`${this.userKey}:persons_backfilled_version`, PERSON_INDEX_VERSION);
+    return rows.length;
   }
 
   retrieveRelevant(
@@ -183,7 +229,10 @@ export class UserMemoryStore {
       const mergeTarget = this.db.findMergeCandidate(this.userKey, candidate.type, terms);
       if (mergeTarget && overlapScore(normalize(mergeTarget.summary), normalize(candidate.summary)) >= 0.74) {
         const merged = this.mergeRecord(mergeTarget, candidate);
-        if (merged) remembered.push(merged);
+        if (merged) {
+          remembered.push(merged);
+          this.indexPersonsForMemory(merged);
+        }
         continue;
       }
 
@@ -194,7 +243,10 @@ export class UserMemoryStore {
       }
 
       const record = this.insertRecord(candidate, source);
-      if (record) remembered.push(record);
+      if (record) {
+        remembered.push(record);
+        this.indexPersonsForMemory(record);
+      }
     }
 
     this.enforceMaxRecords();
@@ -268,7 +320,10 @@ export class UserMemoryStore {
     if (!existing) return null;
     this.db.update({ id, ...updates, updated_at: Date.now() });
     const updated = this.db.getById(id);
-    return updated ? this.toRecord(updated) : null;
+    if (!updated) return null;
+    const record = this.toRecord(updated);
+    this.indexPersonsForMemory(record);
+    return record;
   }
 
   prune(): { activePruned: number; durablePruned: number; promoted: number } {
@@ -454,6 +509,68 @@ export class UserMemoryStore {
       .map(r => r.row);
   }
 
+  private ensurePersonsBackfilled(): void {
+    const done = this.db.getMeta(`${this.userKey}:persons_backfilled`) === '1';
+    const version = this.db.getMeta(`${this.userKey}:persons_backfilled_version`);
+    if (done && version === PERSON_INDEX_VERSION) return;
+    this.rebuildPersonsFromMemory();
+  }
+
+  private toPersonRecord(row: PersonListRow): UserPersonRecord {
+    return {
+      id: row.id,
+      name: row.display_name,
+      canonicalName: row.canonical_name,
+      relationshipToUser: row.relationship_to_user,
+      description: row.description,
+      confidence: row.confidence,
+      memoryCount: row.memory_count,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private indexPersonsForMemory(memory: UserMemoryRecord): void {
+    const row = this.db.getById(memory.id);
+    if (row) this.indexPersonsForMemoryRow(row);
+  }
+
+  private indexPersonsForMemoryRow(memory: MemoryRow): void {
+    if (memory.dismissed === 1) return;
+    if (!['relationship', 'episode'].includes(memory.type)) return;
+
+    const text = `${memory.summary} ${memory.detail ?? ''}`.trim();
+    if (!text) return;
+
+    this.db.clearMemoryPersons(memory.id);
+    this.db.clearRelationshipsByMemory(memory.id);
+
+    if (memory.type === 'relationship') {
+      const relationMentions = extractUserRelationshipMentions(text);
+      for (const mention of relationMentions) {
+        const person = this.db.upsertPerson({
+          userKey: this.userKey,
+          name: mention.name,
+          relationshipToUser: mention.relation,
+          confidence: memory.confidence,
+        });
+        this.db.addPersonAlias(person.id, mention.name, 'memory');
+        this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+      }
+      return;
+    }
+
+    const knownPersons = this.db.listPersons(this.userKey, '', 300);
+    if (knownPersons.length === 0) return;
+    for (const person of knownPersons) {
+      if (mentionsPerson(text, person.display_name) || mentionsPerson(text, person.canonical_name)) {
+        this.db.linkMemoryPerson(memory.id, person.id, 'interaction', memory.confidence);
+      }
+    }
+  }
+
   private toRecord(row: MemoryRow): UserMemoryRecord {
     return {
       id: row.id,
@@ -477,6 +594,89 @@ export class UserMemoryStore {
       lastUsedQuery: row.last_used_query,
     };
   }
+}
+
+const USER_RELATION_ROLE_MAP: Record<string, string> = {
+  wife: 'wife',
+  husband: 'husband',
+  mother: 'mother',
+  mom: 'mother',
+  father: 'father',
+  dad: 'father',
+  brother: 'family',
+  sister: 'family',
+  son: 'family',
+  daughter: 'family',
+  family: 'family',
+  cousin: 'family',
+  friend: 'friend',
+  colleague: 'colleague',
+  coworker: 'colleague',
+  teammate: 'colleague',
+};
+
+const NON_PERSON_TERMS = new Set([
+  'I', 'The', 'This', 'That', 'Today', 'Tomorrow', 'Yesterday', 'Monday', 'Tuesday',
+  'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'January', 'February',
+  'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+  'November', 'December', 'Mercury', 'Openai', 'Anthropic',
+]);
+
+interface UserRelationMention {
+  name: string;
+  relation: string;
+}
+
+function extractUserRelationshipMentions(text: string): UserRelationMention[] {
+  const mentions = new Map<string, UserRelationMention>();
+  const rolePattern = Object.keys(USER_RELATION_ROLE_MAP).join('|');
+  const normalizedText = text.replace(/[\r\n]+/g, ' ').trim();
+
+  const patterns = [
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\b`, 'gi'),
+    new RegExp(`\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\s+is\\s+my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\s*,\\s*my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s*,\\s*([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\b`, 'gi'),
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalizedText)) !== null) {
+      const first = match[1]?.trim();
+      const second = match[2]?.trim();
+      if (!first || !second) continue;
+
+      const firstIsRole = USER_RELATION_ROLE_MAP[first.toLowerCase()];
+      const role = firstIsRole ? first.toLowerCase() : second.toLowerCase();
+      const name = firstIsRole ? second : first;
+      const relation = USER_RELATION_ROLE_MAP[role];
+      if (!relation || !isLikelyHumanName(name)) continue;
+
+      const key = name.toLowerCase();
+      mentions.set(key, { name, relation });
+    }
+  }
+
+  return [...mentions.values()];
+}
+
+function isLikelyHumanName(name: string): boolean {
+  if (!name || name.length < 2 || name.length > 48) return false;
+  if (NON_PERSON_TERMS.has(name)) return false;
+  const parts = name.split(' ').filter(Boolean);
+  if (parts.length === 1 && parts[0].length < 3) return false;
+  return parts.every(part => /^[A-Z][a-z]+$/.test(part));
+}
+
+function mentionsPerson(text: string, name: string): boolean {
+  if (!name) return false;
+  const escaped = name
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  if (!escaped) return false;
+  const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+  return regex.test(text);
 }
 
 function shouldStoreCandidate(candidate: UserMemoryCandidate): boolean {

@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { separator: true },
   { heading: 'Second Brain' },
   { href: '/second-brain/memory', label: 'Memory', icon: '💭' },
+  { href: '/second-brain/persons', label: 'Persons', icon: '🧑' },
   { href: '/second-brain/goals', label: 'Goals', icon: '🎯' },
   { href: '/second-brain/graph', label: 'Graph', icon: '🧠' },
   { separator: true },

@@ -46,6 +46,23 @@ function memToJson(r: any) {
   };
 }
 
+function personToJson(p: any) {
+  return {
+    id: p.id,
+    name: p.name,
+    canonicalName: p.canonicalName,
+    relationshipToUser: p.relationshipToUser,
+    description: p.description,
+    confidence: p.confidence,
+    memoryCount: p.memoryCount,
+    firstSeenAt: p.firstSeenAt,
+    lastSeenAt: p.lastSeenAt,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    connections: p.connections ?? [],
+  };
+}
+
 const brain = new Hono();
 
 brain.get('/api/brain/status', async (c) => {
@@ -146,6 +163,33 @@ brain.post('/api/brain/memory', async (c) => {
 
   if (!record || record.length === 0) return c.json({ error: 'Failed to create memory' }, 500);
   return c.json(memToJson(record[0]), 201);
+});
+
+brain.get('/api/brain/persons', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ persons: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const q = c.req.query('q') || '';
+  const limit = Math.min(parseInt(c.req.query('limit') || '100'), 200);
+  const persons = mem.listPersons(q, limit);
+  return c.json({ persons: persons.map(personToJson), total: persons.length, available: true });
+});
+
+brain.get('/api/brain/persons/:id', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const id = c.req.param('id');
+  const person = mem.getPerson(id);
+  if (!person) return c.json({ error: 'Person not found' }, 404);
+  return c.json({ person: personToJson(person), available: true });
+});
+
+brain.get('/api/brain/persons/:id/memories', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const id = c.req.param('id');
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
+  const memories = mem.getPersonMemories(id, limit);
+  return c.json({ memories: memories.map(memToJson), total: memories.length, available: true });
 });
 
 brain.get('/api/brain/graph', async (c) => {

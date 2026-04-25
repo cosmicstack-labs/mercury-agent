@@ -55,6 +55,31 @@ export interface MemoryRow {
   last_used_query: string | null;
 }
 
+export interface PersonRow {
+  id: string;
+  user_key: string;
+  canonical_name: string;
+  display_name: string;
+  relationship_to_user: string | null;
+  description: string | null;
+  confidence: number;
+  first_seen_at: number;
+  last_seen_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface PersonListRow extends PersonRow {
+  memory_count: number;
+}
+
+export interface PersonConnectionRow {
+  id: string;
+  display_name: string;
+  relation_type: string;
+  strength: number;
+}
+
 export class SecondBrainDB {
   private db: BetterSqlite3Database;
 
@@ -109,11 +134,70 @@ export class SecondBrainDB {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS persons (
+        id TEXT PRIMARY KEY,
+        user_key TEXT NOT NULL,
+        canonical_name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        relationship_to_user TEXT,
+        description TEXT,
+        confidence REAL NOT NULL DEFAULT 0.6,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(user_key, canonical_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS person_aliases (
+        id TEXT PRIMARY KEY,
+        person_id TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        normalized_alias TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'memory',
+        created_at INTEGER NOT NULL,
+        UNIQUE(person_id, normalized_alias),
+        FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_persons (
+        memory_id TEXT NOT NULL,
+        person_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'mentioned',
+        confidence REAL NOT NULL DEFAULT 0.7,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(memory_id, person_id),
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+        FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS person_relationships (
+        id TEXT PRIMARY KEY,
+        user_key TEXT NOT NULL,
+        source_person_id TEXT NOT NULL,
+        target_person_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        strength REAL NOT NULL DEFAULT 0.5,
+        evidence_memory_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(user_key, source_person_id, target_person_id, relation_type),
+        FOREIGN KEY (source_person_id) REFERENCES persons(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_person_id) REFERENCES persons(id) ON DELETE CASCADE,
+        FOREIGN KEY (evidence_memory_id) REFERENCES memories(id) ON DELETE SET NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_memories_user_type ON memories(user_key, type);
       CREATE INDEX IF NOT EXISTS idx_memories_user_dismissed ON memories(user_key, dismissed);
       CREATE INDEX IF NOT EXISTS idx_memories_user_updated ON memories(user_key, updated_at);
       CREATE INDEX IF NOT EXISTS idx_memories_user_scope ON memories(user_key, scope);
       CREATE INDEX IF NOT EXISTS idx_memories_user_evidence_kind ON memories(user_key, evidence_kind);
+      CREATE INDEX IF NOT EXISTS idx_persons_user_name ON persons(user_key, canonical_name);
+      CREATE INDEX IF NOT EXISTS idx_person_aliases_person ON person_aliases(person_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_persons_person ON memory_persons(person_id);
+      CREATE INDEX IF NOT EXISTS idx_person_relationships_source ON person_relationships(source_person_id);
+      CREATE INDEX IF NOT EXISTS idx_person_relationships_target ON person_relationships(target_person_id);
 
       CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
         INSERT INTO memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
@@ -339,6 +423,275 @@ export class SecondBrainDB {
     const durablePrunedResult = durablePruned.run(now, userKey, now - oneHundredTwentyDays);
 
     return { activePruned, durablePruned: durablePrunedResult.changes };
+  }
+
+  upsertPerson(params: {
+    userKey: string;
+    name: string;
+    relationshipToUser?: string | null;
+    confidence?: number;
+    description?: string | null;
+    personId?: string;
+  }): PersonRow {
+    const now = Date.now();
+    const normalized = this.normalizePersonName(params.name);
+    const existingStmt = this.db.prepare('SELECT * FROM persons WHERE user_key = ? AND canonical_name = ? LIMIT 1');
+    const existing = existingStmt.get(params.userKey, normalized) as PersonRow | undefined;
+
+    if (existing) {
+      const confidence = Math.max(existing.confidence, params.confidence ?? existing.confidence);
+      const relationshipToUser = params.relationshipToUser ?? existing.relationship_to_user;
+      const description = params.description ?? existing.description;
+      this.db.prepare(`
+        UPDATE persons
+        SET display_name = ?, relationship_to_user = ?, description = ?, confidence = ?, last_seen_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(params.name.trim(), relationshipToUser, description, confidence, now, now, existing.id);
+
+      const updated = this.getPersonById(existing.id);
+      if (!updated) throw new Error('Failed to update person record');
+      return updated;
+    }
+
+    const id = params.personId || `per_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const confidence = params.confidence ?? 0.7;
+    this.db.prepare(`
+      INSERT INTO persons (
+        id, user_key, canonical_name, display_name, relationship_to_user,
+        description, confidence, first_seen_at, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.userKey,
+      normalized,
+      params.name.trim(),
+      params.relationshipToUser ?? null,
+      params.description ?? null,
+      confidence,
+      now,
+      now,
+      now,
+      now,
+    );
+
+    const created = this.getPersonById(id);
+    if (!created) throw new Error('Failed to create person record');
+    return created;
+  }
+
+  getPersonById(id: string): PersonRow | undefined {
+    const stmt = this.db.prepare('SELECT * FROM persons WHERE id = ? LIMIT 1');
+    return stmt.get(id) as PersonRow | undefined;
+  }
+
+  addPersonAlias(personId: string, alias: string, source: string = 'memory'): void {
+    const normalizedAlias = this.normalizePersonName(alias);
+    if (!normalizedAlias) return;
+    const id = `pal_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO person_aliases (id, person_id, alias, normalized_alias, source, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, personId, alias.trim(), normalizedAlias, source, Date.now());
+  }
+
+  linkMemoryPerson(memoryId: string, personId: string, role: string = 'mentioned', confidence: number = 0.7): void {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      INSERT INTO memory_persons (memory_id, person_id, role, confidence, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(memory_id, person_id)
+      DO UPDATE SET role = excluded.role, confidence = excluded.confidence, updated_at = excluded.updated_at
+    `);
+    stmt.run(memoryId, personId, role, confidence, now, now);
+  }
+
+  clearMemoryPersons(memoryId: string): void {
+    const stmt = this.db.prepare('DELETE FROM memory_persons WHERE memory_id = ?');
+    stmt.run(memoryId);
+  }
+
+  clearRelationshipsByMemory(memoryId: string): void {
+    const stmt = this.db.prepare('DELETE FROM person_relationships WHERE evidence_memory_id = ?');
+    stmt.run(memoryId);
+  }
+
+  clearUserPersonGraph(userKey: string): void {
+    const deleteRelationships = this.db.prepare('DELETE FROM person_relationships WHERE user_key = ?');
+    deleteRelationships.run(userKey);
+
+    const deleteMemoryPersons = this.db.prepare(`
+      DELETE FROM memory_persons
+      WHERE person_id IN (SELECT id FROM persons WHERE user_key = ?)
+    `);
+    deleteMemoryPersons.run(userKey);
+  }
+
+  deleteOrphanPersons(userKey: string): void {
+    const stmt = this.db.prepare(`
+      DELETE FROM persons
+      WHERE user_key = ?
+        AND id NOT IN (SELECT DISTINCT person_id FROM memory_persons)
+    `);
+    stmt.run(userKey);
+  }
+
+  upsertPersonRelationship(params: {
+    userKey: string;
+    sourcePersonId: string;
+    targetPersonId: string;
+    relationType: string;
+    strength?: number;
+    evidenceMemoryId?: string | null;
+  }): void {
+    if (params.sourcePersonId === params.targetPersonId) return;
+    const now = Date.now();
+    const strength = params.strength ?? 0.6;
+    const relationType = params.relationType || 'related';
+
+    const existingStmt = this.db.prepare(`
+      SELECT * FROM person_relationships
+      WHERE user_key = ? AND source_person_id = ? AND target_person_id = ? AND relation_type = ?
+      LIMIT 1
+    `);
+    const existing = existingStmt.get(
+      params.userKey,
+      params.sourcePersonId,
+      params.targetPersonId,
+      relationType,
+    ) as { id: string; strength: number } | undefined;
+
+    if (existing) {
+      const stmt = this.db.prepare(`
+        UPDATE person_relationships
+        SET strength = ?, evidence_memory_id = ?, updated_at = ?
+        WHERE id = ?
+      `);
+      stmt.run(Math.max(existing.strength, strength), params.evidenceMemoryId ?? null, now, existing.id);
+      return;
+    }
+
+    const id = `rel_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO person_relationships (
+        id, user_key, source_person_id, target_person_id, relation_type,
+        strength, evidence_memory_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      id,
+      params.userKey,
+      params.sourcePersonId,
+      params.targetPersonId,
+      relationType,
+      strength,
+      params.evidenceMemoryId ?? null,
+      now,
+      now,
+    );
+  }
+
+  listPersons(userKey: string, query?: string, limit: number = 100): PersonListRow[] {
+    const cappedLimit = Math.min(Math.max(limit, 1), 300);
+    if (query && query.trim()) {
+      const q = `%${query.trim().toLowerCase()}%`;
+      const stmt = this.db.prepare(`
+        SELECT
+          p.*,
+          COUNT(DISTINCT mp.memory_id) AS memory_count
+        FROM persons p
+        LEFT JOIN memory_persons mp ON mp.person_id = p.id
+        LEFT JOIN memories m ON m.id = mp.memory_id
+        WHERE p.user_key = ?
+          AND (LOWER(p.display_name) LIKE ? OR LOWER(p.canonical_name) LIKE ?)
+          AND (m.id IS NULL OR m.dismissed = 0)
+        GROUP BY p.id
+        HAVING COUNT(DISTINCT mp.memory_id) > 0
+        ORDER BY memory_count DESC, p.updated_at DESC
+        LIMIT ?
+      `);
+      return stmt.all(userKey, q, q, cappedLimit) as PersonListRow[];
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT
+        p.*,
+        COUNT(DISTINCT mp.memory_id) AS memory_count
+      FROM persons p
+      LEFT JOIN memory_persons mp ON mp.person_id = p.id
+      LEFT JOIN memories m ON m.id = mp.memory_id
+      WHERE p.user_key = ?
+        AND (m.id IS NULL OR m.dismissed = 0)
+      GROUP BY p.id
+      HAVING COUNT(DISTINCT mp.memory_id) > 0
+      ORDER BY memory_count DESC, p.updated_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(userKey, cappedLimit) as PersonListRow[];
+  }
+
+  getPersonWithCount(userKey: string, personId: string): PersonListRow | undefined {
+    const stmt = this.db.prepare(`
+      SELECT
+        p.*,
+        COUNT(DISTINCT mp.memory_id) AS memory_count
+      FROM persons p
+      LEFT JOIN memory_persons mp ON mp.person_id = p.id
+      LEFT JOIN memories m ON m.id = mp.memory_id
+      WHERE p.user_key = ?
+        AND p.id = ?
+        AND (m.id IS NULL OR m.dismissed = 0)
+      GROUP BY p.id
+      LIMIT 1
+    `);
+    return stmt.get(userKey, personId) as PersonListRow | undefined;
+  }
+
+  getPersonConnections(userKey: string, personId: string, limit: number = 30): PersonConnectionRow[] {
+    const cappedLimit = Math.min(Math.max(limit, 1), 100);
+    const stmt = this.db.prepare(`
+      SELECT
+        p.id,
+        p.display_name,
+        pr.relation_type,
+        pr.strength
+      FROM person_relationships pr
+      JOIN persons p ON p.id = pr.target_person_id
+      WHERE pr.user_key = ? AND pr.source_person_id = ?
+      ORDER BY pr.strength DESC, p.display_name ASC
+      LIMIT ?
+    `);
+    return stmt.all(userKey, personId, cappedLimit) as PersonConnectionRow[];
+  }
+
+  getMemoriesForPerson(userKey: string, personId: string, limit: number = 50): MemoryRow[] {
+    const cappedLimit = Math.min(Math.max(limit, 1), 200);
+    const stmt = this.db.prepare(`
+      SELECT m.*
+      FROM memory_persons mp
+      JOIN memories m ON m.id = mp.memory_id
+      WHERE mp.person_id = ? AND m.user_key = ? AND m.dismissed = 0
+      ORDER BY m.updated_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(personId, userKey, cappedLimit) as MemoryRow[];
+  }
+
+  getRelationshipMemoryRows(userKey: string): MemoryRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM memories
+      WHERE user_key = ? AND dismissed = 0 AND type IN ('relationship', 'episode')
+      ORDER BY updated_at DESC
+    `);
+    return stmt.all(userKey) as MemoryRow[];
+  }
+
+  private normalizePersonName(input: string): string {
+    return input
+      .toLowerCase()
+      .replace(/[^a-z0-9@\s'-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   setMeta(key: string, value: string): void {

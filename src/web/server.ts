@@ -15,6 +15,8 @@ import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
 import { renderMemory } from './pages/brain/memory.js';
+import { renderPersons } from './pages/brain/persons.js';
+import { renderPerson } from './pages/brain/person.js';
 import { renderGoals } from './pages/brain/goals.js';
 import { renderGraph } from './pages/brain/graph.js';
 import { renderChat } from './pages/chat.js';
@@ -111,6 +113,15 @@ app.get('/second-brain/graph', (c) => {
 
 app.get('/second-brain/memory', (c) => {
   return c.html(renderMemory(c, {}));
+});
+
+app.get('/second-brain/persons', (c) => {
+  return c.html(renderPersons(c));
+});
+
+app.get('/second-brain/persons/:id', (c) => {
+  const id = c.req.param('id');
+  return c.html(renderPerson(c, id));
 });
 
 app.get('/second-brain/goals', (c) => {
