@@ -3,6 +3,7 @@ import { isProviderConfigured } from '../utils/config.js';
 import type { BaseProvider } from './base.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { AnthropicProvider } from './anthropic.js';
+import { ClaudeCliProvider } from './claude-cli.js';
 import { OllamaProvider } from './ollama.js';
 import { logger } from '../utils/logger.js';
 
@@ -18,6 +19,7 @@ export class ProviderRegistry {
       config.providers.deepseek,
       config.providers.openai,
       config.providers.anthropic,
+      config.providers.claudeCli,
       config.providers.grok,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
@@ -29,6 +31,8 @@ export class ProviderRegistry {
         let provider: BaseProvider;
         if (pc.name === 'anthropic') {
           provider = new AnthropicProvider(pc);
+        } else if (pc.name === 'claudeCli') {
+          provider = new ClaudeCliProvider(pc);
         } else if (pc.name === 'ollamaCloud' || pc.name === 'ollamaLocal') {
           provider = new OllamaProvider(pc);
         } else {
