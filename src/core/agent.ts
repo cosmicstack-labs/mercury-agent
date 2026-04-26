@@ -942,6 +942,7 @@ export class Agent {
       prompt += `\n\nSecond Brain is ENABLED. You have a persistent, structured memory of ${summary.total} facts about this user.`;
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
       prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
+      prompt += `\nCRITICAL: NEVER ask the user for permission to remember something. NEVER say "Want me to remember this?" or "Should I store this?" — memory extraction is automatic, silent, and runs in the background after every response. You do not need to offer or confirm. Simply reference relevant memories naturally when they apply.`;
       prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
       if (summary.learningPaused) {
         prompt += `\nLearning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
@@ -1091,7 +1092,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       const provider = this.providers.getDefault();
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
+        system: `You extract structured memory from conversations. Focus on what the USER said — extract facts the user stated or strongly implied, regardless of whether the assistant acknowledged or hedged. If the user reveals a preference, fact, relationship, or goal, extract it even if the assistant asked for confirmation instead of committing. Output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Do NOT skip extraction just because the assistant asked the user for confirmation. Output pure JSON array, no markdown.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
