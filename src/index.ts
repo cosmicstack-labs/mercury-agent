@@ -109,6 +109,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
+  { key: 'minimax', label: 'MiniMax' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -666,6 +667,24 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.ollamaLocal.model = result.model;
           config.providers.ollamaLocal.enabled = true;
         }
+        continue;
+      }
+
+      if (provider === 'minimax') {
+        const mask = isReconfig && config.providers.minimax.apiKey ? ` [${maskKey(config.providers.minimax.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'minimax',
+          'MiniMax',
+          chalk.white(`  MiniMax API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.minimax.apiKey = result.apiKey;
+          config.providers.minimax.model = result.model;
+          config.providers.minimax.enabled = true;
+        }
+        continue;
       }
     }
 
