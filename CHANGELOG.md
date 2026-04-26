@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Z.ai (GLM) provider** — first-class support for Z.ai's OpenAI-compatible API with opt-in GLM Coding Plan endpoint (`ZAI_CODING_PLAN_ENABLED`)
+- **Web Panel channel** — lightweight browser-based interface using Node.js built-in HTTP, defaulting to localhost with optional auth token for remote access
+- **Discord channel** — slash command bot with allowlist access control, deferred responses, and minimal Gateway intents
+- `docs/providers/zai.md` — Z.ai provider setup and Coding Plan compliance documentation
+- `docs/channels/web-panel.md` — Web Panel setup and security documentation
+- `docs/channels/discord.md` — Discord bot setup and access control documentation
+
 ## 1.0.0 — Second Brain
 
 This is a **major release** because it introduces the Second Brain — a persistent, structured memory system backed by SQLite with full-text search — alongside fundamental changes to how Mercury stores data and renders output.
