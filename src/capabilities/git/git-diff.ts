@@ -1,14 +1,14 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 
 export function createGitDiffTool(getCwd: () => string) {
   return tool({
     description: 'Show changes between commits, commit and working tree, etc. Shows what has been modified.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       path: z.string().optional().describe('File or directory to diff'),
       staged: z.boolean().optional().describe('Show staged changes (cached) instead of unstaged'),
-    }),
+    })),
     execute: async ({ path, staged }) => {
       try {
         let cmd = 'git diff';

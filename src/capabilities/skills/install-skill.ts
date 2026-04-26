@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { SkillLoader } from '../../skills/loader.js';
 import { parse as parseYaml } from 'yaml';
@@ -6,10 +6,10 @@ import { parse as parseYaml } from 'yaml';
 export function createInstallSkillTool(skillLoader: SkillLoader) {
   return tool({
     description: 'Install a new skill by providing SKILL.md markdown content or a URL. The content must have YAML frontmatter (---) with at least name and description fields.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       content: z.string().optional().describe('Raw SKILL.md markdown content with YAML frontmatter'),
       url: z.string().optional().describe('URL to fetch a SKILL.md from'),
-    }),
+    })),
     execute: async ({ content, url }) => {
       let skillContent: string;
 

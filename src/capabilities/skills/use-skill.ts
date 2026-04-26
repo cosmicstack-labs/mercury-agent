@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { SkillLoader } from '../../skills/loader.js';
 import type { PermissionManager } from '../permissions.js';
@@ -6,9 +6,9 @@ import type { PermissionManager } from '../permissions.js';
 export function createUseSkillTool(skillLoader: SkillLoader, permissions: PermissionManager) {
   return tool({
     description: 'Load and invoke a skill by name. Returns the skill\'s full instructions which should be followed as guidance for the current task.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       name: z.string().describe('Name of the skill to invoke'),
-    }),
+    })),
     execute: async ({ name }) => {
       const skill = skillLoader.load(name);
       if (!skill) {

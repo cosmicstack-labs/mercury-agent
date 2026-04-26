@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { githubRequest } from '../../utils/github.js';
 
@@ -41,11 +41,11 @@ Common operations you can perform:
 - Any other GitHub API v3 endpoint.
 
 IMPORTANT: When the user wants to push code or files to GitHub and git push fails (auth issues, no SSH key, etc.), use PUT /repos/{owner}/{repo}/contents/{path} to create or update files directly through the API. This bypasses local git and creates a commit with Mercury as co-author.`,
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       path: z.string().describe('Full API path (e.g., /repos/owner/repo/issues or /repos/owner/repo/contents/path/to/file)'),
       method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).describe('HTTP method').default('GET'),
       body: z.string().describe('JSON body for write requests (as a JSON string)').optional(),
-    }),
+    })),
     execute: async ({ path, method, body }) => {
       try {
         let parsedBody: any;

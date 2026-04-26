@@ -3,6 +3,7 @@ import { isProviderConfigured } from '../utils/config.js';
 import type { BaseProvider } from './base.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { AnthropicProvider } from './anthropic.js';
+import { DeepSeekProvider } from './deepseek.js';
 import { OllamaProvider } from './ollama.js';
 import { logger } from '../utils/logger.js';
 
@@ -29,6 +30,8 @@ export class ProviderRegistry {
         let provider: BaseProvider;
         if (pc.name === 'anthropic') {
           provider = new AnthropicProvider(pc);
+        } else if (pc.name === 'deepseek') {
+          provider = new DeepSeekProvider(pc);
         } else if (pc.name === 'ollamaCloud' || pc.name === 'ollamaLocal') {
           provider = new OllamaProvider(pc);
         } else {

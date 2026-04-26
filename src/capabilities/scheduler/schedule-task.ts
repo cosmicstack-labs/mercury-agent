@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import cron from 'node-cron';
 import type { Scheduler, ScheduledTaskManifest } from '../../core/scheduler.js';
@@ -6,13 +6,13 @@ import type { Scheduler, ScheduledTaskManifest } from '../../core/scheduler.js';
 export function createScheduleTaskTool(scheduler: Scheduler, getContext: () => { channelId: string; channelType: string }) {
   return tool({
     description: 'Schedule a task. Use "cron" for recurring tasks (e.g. "0 9 * * *" for daily at 9am) or "delay_seconds" for one-shot delayed tasks (e.g. 15 for "remind me in 15 seconds"). Provide exactly one of cron or delay_seconds.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       cron: z.string().optional().describe('Cron expression for recurring tasks (e.g. "0 9 * * *" for daily at 9am)'),
       delay_seconds: z.number().optional().describe('Delay in seconds for one-shot tasks (e.g. 15 for "remind me in 15 seconds")'),
       description: z.string().describe('Human-readable description of what this task does'),
       prompt: z.string().optional().describe('Prompt to send to the agent when the task fires'),
       skill_name: z.string().optional().describe('Name of a skill to invoke when the task fires'),
-    }),
+    })),
     execute: async ({ cron: cronExpr, delay_seconds, description, prompt, skill_name }) => {
       if (!cronExpr && !delay_seconds) {
         return 'Either cron or delay_seconds must be provided.';

@@ -32,6 +32,7 @@ export interface MemoryEntry {
   role: 'user' | 'assistant' | 'system';
   content: string;
   tokenCount?: number;
+  reasoning?: string;
   metadata?: Record<string, unknown>;
 }
 
