@@ -4,6 +4,7 @@ import type { BaseProvider } from './base.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { AnthropicProvider } from './anthropic.js';
 import { DeepSeekProvider } from './deepseek.js';
+import { MiniMaxProvider } from './minimax.js';
 import { OllamaProvider } from './ollama.js';
 import { logger } from '../utils/logger.js';
 
@@ -22,6 +23,7 @@ export class ProviderRegistry {
       config.providers.grok,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
+      config.providers.minimax,
     ];
 
     for (const pc of entries) {
@@ -34,6 +36,8 @@ export class ProviderRegistry {
           provider = new DeepSeekProvider(pc);
         } else if (pc.name === 'ollamaCloud' || pc.name === 'ollamaLocal') {
           provider = new OllamaProvider(pc);
+        } else if (pc.name === 'minimax') {
+          provider = new MiniMaxProvider(pc);
         } else {
           provider = new OpenAICompatProvider(pc);
         }
