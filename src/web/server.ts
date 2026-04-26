@@ -160,11 +160,19 @@ export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
   initWebAuth();
 
-  serve({
-    fetch: app.fetch,
-    port,
-    hostname: '127.0.0.1',
-  });
+  try {
+    serve({
+      fetch: app.fetch,
+      port,
+      hostname: '127.0.0.1',
+    });
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      console.log(`\n  ☿ Web dashboard already running: http://127.0.0.1:${port}`);
+      return { port, url: `http://127.0.0.1:${port}` };
+    }
+    throw err;
+  }
 
   console.log(`\n  ☿ Web dashboard: http://127.0.0.1:${port}`);
   console.log(`  Default login: mercury / Mercury@123\n`);

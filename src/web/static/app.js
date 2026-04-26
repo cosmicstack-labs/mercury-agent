@@ -898,14 +898,18 @@ function simpleMarkdown(md) {
 function chatScreen() {
   return {
     messages: [],
+    threads: [],
+    activeThreadId: '',
     inputText: '',
     waiting: false,
     streamingText: '',
     currentAssistantId: null,
+    currentThreadId: null,
     provider: '',
     model: '',
     eventSource: null,
     scrollCheckTimer: null,
+    settings: { bypassPermissions: false, restrictUser: false },
 
     renderMarkdown(md) { return simpleMarkdown(md); },
 
@@ -928,9 +932,144 @@ function chatScreen() {
       }
     },
 
+    saveThreadsToStorage() {
+      try {
+        localStorage.setItem('mercury-chat-threads', JSON.stringify(this.threads));
+        localStorage.setItem('mercury-chat-active-thread', this.activeThreadId || '');
+      } catch {}
+    },
+
+    loadThreadsFromStorage() {
+      try {
+        var raw = localStorage.getItem('mercury-chat-threads');
+        var active = localStorage.getItem('mercury-chat-active-thread');
+        this.threads = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(this.threads)) this.threads = [];
+        if (this.threads.length === 0) {
+          this.createThread(false);
+        } else {
+          this.activeThreadId = (active && this.threads.some(function(t) { return t.id === active; }))
+            ? active
+            : this.threads[0].id;
+        }
+        this.messages = this.activeMessages();
+      } catch {
+        this.threads = [];
+        this.createThread(false);
+      }
+    },
+
+    createThread(focusInput = true) {
+      var id = 'web:thread_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      var now = Date.now();
+      this.threads.unshift({ id: id, title: 'New Thread', createdAt: now, updatedAt: now, messages: [] });
+      this.activeThreadId = id;
+      this.messages = this.activeMessages();
+      this.saveThreadsToStorage();
+      if (focusInput) {
+        this.$nextTick(() => this.$refs.chatInput?.focus());
+      }
+    },
+
+    switchThread(id) {
+      this.activeThreadId = id;
+      this.messages = this.activeMessages();
+      this.waiting = false;
+      this.streamingText = '';
+      this.currentAssistantId = null;
+      this.currentThreadId = null;
+      this.saveThreadsToStorage();
+      this.$nextTick(() => {
+        this.$refs.chatInput?.focus();
+        this.scrollToBottom();
+      });
+    },
+
+    activeThread() {
+      return this.threads.find(t => t.id === this.activeThreadId) || null;
+    },
+
+    activeMessages() {
+      var t = this.activeThread();
+      return t ? (t.messages || []) : [];
+    },
+
+    activeThreadTitle() {
+      var t = this.activeThread();
+      return t ? t.title : 'Chat';
+    },
+
+    updateActiveThreadMeta() {
+      var t = this.activeThread();
+      if (!t) return;
+      t.updatedAt = Date.now();
+      var firstUser = (t.messages || []).find(m => m.role === 'user');
+      if (firstUser && firstUser.content) {
+        t.title = firstUser.content.length > 36 ? firstUser.content.slice(0, 33) + '...' : firstUser.content;
+      }
+      this.threads.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      this.saveThreadsToStorage();
+    },
+
+    async exportThread() {
+      var t = this.activeThread();
+      if (!t) return;
+      var payload = JSON.stringify({
+        id: t.id,
+        title: t.title,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        messages: t.messages || [],
+      }, null, 2);
+      var blob = new Blob([payload], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = (t.title || 'thread').replace(/[^a-z0-9-_]+/gi, '_').toLowerCase() + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    deleteThread() {
+      if (!this.activeThreadId) return;
+      if (!confirm('Delete this thread?')) return;
+      this.threads = this.threads.filter(t => t.id !== this.activeThreadId);
+      if (this.threads.length === 0) {
+        this.createThread(false);
+      } else {
+        this.activeThreadId = this.threads[0].id;
+      }
+      this.messages = this.activeMessages();
+      this.saveThreadsToStorage();
+      this.$nextTick(() => this.$refs.chatInput?.focus());
+    },
+
+    async loadSettings() {
+      try {
+        var res = await fetch('/api/chat/settings');
+        if (res.ok) {
+          this.settings = await res.json();
+        }
+      } catch {}
+    },
+
+    async saveSettings() {
+      try {
+        await fetch('/api/chat/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.settings),
+        });
+      } catch {}
+    },
+
     init() {
+      this.loadThreadsFromStorage();
       this.connectSSE();
-      this.$refs.chatInput?.focus();
+      this.loadSettings();
+      this.$nextTick(() => this.$refs.chatInput?.focus());
     },
 
     connectSSE() {
@@ -950,6 +1089,10 @@ function chatScreen() {
 
     handleEvent(evt) {
       var self = this;
+      var targetThread = evt?.data?.targetId || this.currentThreadId || this.activeThreadId;
+      if (targetThread && this.activeThreadId && targetThread !== this.activeThreadId) {
+        return;
+      }
       switch (evt.type) {
         case 'thinking':
           this.waiting = true;
@@ -960,19 +1103,20 @@ function chatScreen() {
           this.provider = evt.data.name || '';
           this.model = evt.data.model || '';
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) { msg.provider = evt.data.name; msg.model = evt.data.model; }
           }
           break;
 
         case 'step_start':
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.steps) msg.steps = [];
               msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: false });
             }
           }
+          this.saveThreadsToStorage();
           this.scrollToBottom();
           break;
 
@@ -983,19 +1127,20 @@ function chatScreen() {
           this.waiting = false;
           this.streamingText += (evt.data.text || '');
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               msg.content = self.streamingText;
               msg.streaming = true;
             }
           }
+          this.saveThreadsToStorage();
           this.scrollToBottom();
           break;
 
         case 'text_done':
           this.waiting = false;
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (evt.data.fullText && !msg.content) msg.content = evt.data.fullText;
               msg.streaming = false;
@@ -1005,65 +1150,73 @@ function chatScreen() {
           }
           this.streamingText = '';
           this.currentAssistantId = null;
+          this.currentThreadId = null;
+          this.updateActiveThreadMeta();
+          this.$nextTick(() => this.$refs.chatInput?.focus());
           this.scrollToBottom();
           break;
 
         case 'permission_request':
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.permissions) msg.permissions = [];
               msg.permissions.push({ id: evt.data.id, prompt: evt.data.prompt, options: evt.data.options, resolved: false, resolvedAction: '' });
             }
           }
+          this.saveThreadsToStorage();
           this.scrollToBottom();
           break;
 
         case 'permission_continue':
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.permissions) msg.permissions = [];
               msg.permissions.push({ id: evt.data.id, prompt: evt.data.question, options: evt.data.options, resolved: false, resolvedAction: '' });
             }
           }
+          this.saveThreadsToStorage();
           this.scrollToBottom();
           break;
 
         case 'permission_mode':
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.permissions) msg.permissions = [];
               msg.permissions.push({ id: evt.data.id, prompt: 'Choose permission mode', options: evt.data.options, resolved: false, resolvedAction: '' });
             }
           }
+          this.saveThreadsToStorage();
           this.scrollToBottom();
           break;
 
         case 'loop_warning':
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               msg.content += '\\n\\n⚠ ' + (evt.data.message || 'Loop detected');
             }
           }
+          this.saveThreadsToStorage();
           break;
 
         case 'error':
           this.waiting = false;
           if (this.currentAssistantId) {
-            var msg = this.messages.find(function(m) { return m.id === self.currentAssistantId; });
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               msg.content = 'Error: ' + (evt.data.message || 'Unknown error');
               msg.streaming = false;
             }
           } else {
-            this.messages.push({
+            this.activeMessages().push({
               id: 'err_' + Date.now(), role: 'assistant', content: 'Error: ' + (evt.data.message || 'Unknown error'),
               timestamp: Date.now(), steps: [], permissions: [], streaming: false
             });
           }
+          this.updateActiveThreadMeta();
           break;
 
         case 'connected':
@@ -1073,15 +1226,17 @@ function chatScreen() {
 
     sendMessage() {
       if (!this.inputText.trim() || this.waiting) return;
+      if (!this.activeThreadId) this.createThread(false);
       var text = this.inputText.trim();
       this.inputText = '';
-      this.messages.push({
+      this.activeMessages().push({
         id: 'user_' + Date.now(), role: 'user', content: text,
         timestamp: Date.now(), steps: [], permissions: []
       });
 
       this.currentAssistantId = 'asst_' + Date.now();
-      this.messages.push({
+      this.currentThreadId = this.activeThreadId;
+      this.activeMessages().push({
         id: this.currentAssistantId, role: 'assistant', content: '',
         timestamp: Date.now(), steps: [], permissions: [],
         streaming: true, provider: this.provider, model: this.model,
@@ -1090,32 +1245,40 @@ function chatScreen() {
 
       this.waiting = true;
       this.streamingText = '';
+      this.updateActiveThreadMeta();
       this.scrollToBottom();
+      this.$nextTick(() => this.$refs.chatInput?.focus());
 
       var self = this;
       fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text })
+        body: JSON.stringify({ content: text, threadId: this.activeThreadId })
       }).catch(function(err) {
         self.waiting = false;
-        var msg = self.messages.find(function(m) { return m.id === self.currentAssistantId; });
+        var msg = self.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
         if (msg) { msg.content = 'Failed to send: ' + err.message; msg.streaming = false; }
+        self.currentAssistantId = null;
+        self.currentThreadId = null;
+        self.updateActiveThreadMeta();
       });
     },
 
     resolvePermission(permId, action) {
       var self = this;
-      this.messages.forEach(function(msg) {
-        if (msg.permissions) {
-          msg.permissions.forEach(function(perm) {
-            if (perm.id === permId) {
-              perm.resolved = true;
-              perm.resolvedAction = action;
-            }
-          });
-        }
+      this.threads.forEach(function(thread) {
+        (thread.messages || []).forEach(function(msg) {
+          if (msg.permissions) {
+            msg.permissions.forEach(function(perm) {
+              if (perm.id === permId) {
+                perm.resolved = true;
+                perm.resolvedAction = action;
+              }
+            });
+          }
+        });
       });
+      this.saveThreadsToStorage();
       fetch('/api/chat/permission/' + permId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1124,10 +1287,18 @@ function chatScreen() {
     },
 
     clearChat() {
-      this.messages = [];
+      var t = this.activeThread();
+      if (!t) return;
+      t.messages = [];
+      t.title = 'New Thread';
+      t.updatedAt = Date.now();
+      this.messages = this.activeMessages();
       this.streamingText = '';
       this.currentAssistantId = null;
+      this.currentThreadId = null;
       this.waiting = false;
+      this.saveThreadsToStorage();
+      this.$nextTick(() => this.$refs.chatInput?.focus());
     },
   };
 }

@@ -42,6 +42,8 @@ export class WebChannel extends BaseChannel {
   private pendingPermModes: Map<string, ApprovalResolver> = new Map();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
+  private bypassPermissions = false;
+  private restrictUser = false;
 
   constructor(agentName: string) {
     super();
@@ -127,14 +129,15 @@ export class WebChannel extends BaseChannel {
   }
 
   async typing(_targetId?: string): Promise<void> {
-    this.broadcast({ type: 'thinking' });
+    this.broadcast({ type: 'thinking', data: { targetId: _targetId } });
   }
 
   async askPermission(prompt: string, _targetId?: string): Promise<string> {
+    if (this.bypassPermissions) return 'yes';
     const id = `perm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.broadcast({
       type: 'permission_request',
-      data: { id, prompt, options: ['yes', 'always', 'no'] },
+      data: { id, prompt, options: ['yes', 'always', 'no'], targetId: _targetId },
     });
 
     return new Promise((resolve) => {
@@ -155,10 +158,11 @@ export class WebChannel extends BaseChannel {
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
+    if (this.bypassPermissions) return true;
     const id = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.broadcast({
       type: 'permission_continue',
-      data: { id, question, options: ['yes', 'no'] },
+      data: { id, question, options: ['yes', 'no'], targetId: _targetId },
     });
 
     return new Promise((resolve) => {
@@ -176,6 +180,7 @@ export class WebChannel extends BaseChannel {
   }
 
   askPermissionMode(): Promise<'allow-all' | 'ask-me'> {
+    if (this.bypassPermissions) return Promise.resolve('allow-all');
     const id = `mode_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.broadcast({
       type: 'permission_mode',
@@ -248,9 +253,16 @@ export class WebChannel extends BaseChannel {
   }
 
   emitMessage(content: string): void {
+    this.emitMessageInThread(content, 'web:default');
+  }
+
+  emitMessageInThread(content: string, threadId: string): void {
+    if (this.restrictUser) {
+      throw new Error('Web user is restricted. Disable restrict mode to continue.');
+    }
     const msg: ChannelMessage = {
       id: `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      channelId: 'web:default',
+      channelId: threadId,
       channelType: 'web',
       senderId: 'web_user',
       senderName: 'You',
@@ -258,5 +270,17 @@ export class WebChannel extends BaseChannel {
       timestamp: Date.now(),
     };
     this.emit(msg);
+  }
+
+  setBypassPermissions(enabled: boolean): void {
+    this.bypassPermissions = enabled;
+  }
+
+  setRestrictUser(enabled: boolean): void {
+    this.restrictUser = enabled;
+  }
+
+  getSettings(): { bypassPermissions: boolean; restrictUser: boolean } {
+    return { bypassPermissions: this.bypassPermissions, restrictUser: this.restrictUser };
   }
 }

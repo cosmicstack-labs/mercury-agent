@@ -4,24 +4,45 @@ import { renderLayout } from './layout.js';
 export function renderChat(c: Context): string {
   const body = `
     <div x-data="chatScreen()" x-init="init()" class="chat-container">
+      <div class="chat-layout">
+        <aside class="chat-threads">
+          <div class="chat-threads-head">
+            <button class="btn btn-sm btn-primary btn-block" @click="createThread()">+ New Thread</button>
+          </div>
+          <div class="chat-thread-list">
+            <template x-for="t in threads" :key="t.id">
+              <div class="chat-thread-item" :class="{ 'active': t.id === activeThreadId }" @click="switchThread(t.id)">
+                <div class="chat-thread-title" x-text="t.title"></div>
+                <div class="chat-thread-meta" x-text="formatTime(t.updatedAt)"></div>
+              </div>
+            </template>
+          </div>
+          <div class="chat-threads-foot">
+            <button class="btn btn-sm btn-outline btn-block" @click="exportThread()" :disabled="!activeThreadId">Export Thread</button>
+            <button class="btn btn-sm btn-danger btn-block" @click="deleteThread()" :disabled="!activeThreadId">Delete Thread</button>
+          </div>
+        </aside>
+
+      <section class="chat-main">
       <div class="chat-header">
         <div class="chat-header-info">
-          <h1>Chat</h1>
+          <h1 x-text="activeThreadTitle()">Chat</h1>
           <span class="chat-provider" x-show="provider" x-text="'Using ' + provider + ' / ' + model"></span>
         </div>
         <div class="chat-header-actions">
-          <button class="btn btn-sm" @click="clearChat()" x-show="messages.length > 0">Clear</button>
+          <label class="radio-label"><input type="checkbox" x-model="settings.bypassPermissions" @change="saveSettings()"> Allow all</label>
+          <label class="radio-label"><input type="checkbox" x-model="settings.restrictUser" @change="saveSettings()"> Restrict user</label>
         </div>
       </div>
 
       <div class="chat-messages" x-ref="messagesContainer" @scroll="throttledScrollCheck()">
-        <div class="chat-empty" x-show="messages.length === 0 && !waiting">
+        <div class="chat-empty" x-show="activeMessages().length === 0 && !waiting">
           <div class="chat-empty-icon">☿</div>
           <p>Start a conversation with Mercury</p>
           <p class="chat-empty-hint">Messages are processed by the agent and streamed back in real time</p>
         </div>
 
-        <template x-for="(msg, idx) in messages" :key="msg.id">
+        <template x-for="(msg, idx) in activeMessages()" :key="msg.id">
           <div :class="msg.role === 'user' ? 'chat-msg chat-msg-user' : 'chat-msg chat-msg-assistant'">
             <div class="chat-msg-avatar" x-text="msg.role === 'user' ? 'You' : '☿'"></div>
             <div class="chat-msg-body">
@@ -94,7 +115,7 @@ export function renderChat(c: Context): string {
           @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
           @keydown.escape="inputText = ''"
           rows="1"
-          :disabled="waiting"
+          autofocus
         ></textarea>
         <button
           class="btn btn-primary chat-send-btn"
@@ -104,6 +125,8 @@ export function renderChat(c: Context): string {
           <span x-show="!waiting">Send</span>
           <span x-show="waiting" class="thinking-dots">Sending</span>
         </button>
+      </div>
+      </section>
       </div>
     </div>
   `;

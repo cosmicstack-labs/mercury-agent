@@ -1030,12 +1030,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
     hr();
 
-    const mode = cliChannel && await cliChannel.askPermissionMode?.();
-    if (mode === 'allow-all') {
-      capabilities.permissions.setAutoApproveAll(true);
-      capabilities.permissions.addTempScope('/', true, true);
-    }
-
     console.log('');
     console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));
     console.log(chalk.dim('  Ctrl+C to exit · /help for commands'));
@@ -1051,6 +1045,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
       tokenBudget: config.tokens.dailyBudget,
     });
+
+    // Keep CLI permission mode prompt, but do it after web server is live.
+    const mode = cliChannel && await cliChannel.askPermissionMode?.();
+    if (mode === 'allow-all') {
+      capabilities.permissions.setAutoApproveAll(true);
+      capabilities.permissions.addTempScope('/', true, true);
+    }
 
     console.log('');
     cliChannel?.showPrompt();
