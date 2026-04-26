@@ -52,7 +52,8 @@ export type ProviderName =
   | 'deepseek'
   | 'grok'
   | 'ollamaCloud'
-  | 'ollamaLocal';
+  | 'ollamaLocal'
+  | 'zai';
 
 export interface MercuryConfig {
   identity: {
@@ -68,6 +69,7 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
+    zai: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -82,6 +84,24 @@ export interface MercuryConfig {
       pairedUserId?: number;
       pairedChatId?: number;
       pairedUsername?: string;
+    };
+    webPanel: {
+      enabled: boolean;
+      host: string;
+      port: number;
+      authToken: string;
+      allowRemote: boolean;
+    };
+    discord: {
+      enabled: boolean;
+      botToken: string;
+      clientId: string;
+      guildId: string;
+      allowedUserIds: string[];
+      allowedChannelIds: string[];
+      adminUserIds: string[];
+      useGlobalCommands: boolean;
+      allowDms: boolean;
     };
   };
   github: {
@@ -173,6 +193,15 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('OLLAMA_LOCAL_MODEL', 'gpt-oss:20b'),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
       },
+      zai: {
+        name: 'zai',
+        apiKey: getEnv('ZAI_API_KEY', ''),
+        baseUrl: getEnv('ZAI_CODING_PLAN_ENABLED', 'false') === 'true'
+          ? getEnv('ZAI_CODING_PLAN_BASE_URL', 'https://api.z.ai/api/coding/paas/v4')
+          : getEnv('ZAI_BASE_URL', 'https://api.z.ai/api/paas/v4'),
+        model: getEnv('ZAI_MODEL', 'glm-5.1'),
+        enabled: getEnvBool('ZAI_ENABLED', true),
+      },
     },
     channels: {
       telegram: {
@@ -187,6 +216,24 @@ export function getDefaultConfig(): MercuryConfig {
         admins: [],
         members: [],
         pending: [],
+      },
+      webPanel: {
+        enabled: getEnvBool('WEB_PANEL_ENABLED', false),
+        host: getEnv('WEB_PANEL_HOST', '127.0.0.1'),
+        port: getEnvNum('WEB_PANEL_PORT', 3977),
+        authToken: getEnv('WEB_PANEL_AUTH_TOKEN', ''),
+        allowRemote: getEnvBool('WEB_PANEL_ALLOW_REMOTE', false),
+      },
+      discord: {
+        enabled: getEnvBool('DISCORD_ENABLED', false),
+        botToken: getEnv('DISCORD_BOT_TOKEN', ''),
+        clientId: getEnv('DISCORD_CLIENT_ID', ''),
+        guildId: getEnv('DISCORD_GUILD_ID', ''),
+        allowedUserIds: getEnv('DISCORD_ALLOWED_USER_IDS', '').split(',').filter(Boolean),
+        allowedChannelIds: getEnv('DISCORD_ALLOWED_CHANNEL_IDS', '').split(',').filter(Boolean),
+        adminUserIds: getEnv('DISCORD_ADMIN_USER_IDS', '').split(',').filter(Boolean),
+        useGlobalCommands: getEnvBool('DISCORD_USE_GLOBAL_COMMANDS', false),
+        allowDms: getEnvBool('DISCORD_ALLOW_DMS', false),
       },
     },
     github: {

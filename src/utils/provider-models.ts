@@ -51,6 +51,16 @@ const OLLAMA_LOCAL_PREFERRED_MODELS = [
   'gpt-oss:120b',
 ] as const;
 
+const ZAI_PREFERRED_MODELS = [
+  'glm-5.1',
+  'glm-5',
+  'glm-4-plus',
+  'glm-4-air',
+  'glm-4-flash',
+  'glm-4-long',
+  'glm-4',
+] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -154,6 +164,7 @@ function chooseRecommendedModel(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    zai: ZAI_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -187,6 +198,7 @@ export function buildModelCatalog(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    zai: ZAI_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
@@ -206,7 +218,7 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
         Authorization: `Bearer ${config.apiKey}`,
       },
     },
-    `Mercury could not fetch models for this ${provider === 'grok' ? 'Grok' : provider === 'deepseek' ? 'DeepSeek' : 'OpenAI'} key. Please re-enter it.`,
+    `Mercury could not fetch models for this ${provider === 'grok' ? 'Grok' : provider === 'deepseek' ? 'DeepSeek' : provider === 'zai' ? 'Z.ai' : 'OpenAI'} key. Please re-enter it.`,
   );
 
   const ids = (data.data ?? [])

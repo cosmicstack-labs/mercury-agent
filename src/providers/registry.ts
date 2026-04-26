@@ -21,6 +21,7 @@ export class ProviderRegistry {
       config.providers.grok,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
+      config.providers.zai,
     ];
 
     for (const pc of entries) {
