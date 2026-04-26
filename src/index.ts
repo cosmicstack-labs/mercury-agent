@@ -942,22 +942,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemorySetLearningPaused: (paused: boolean) => { if (sharedMemory) sharedMemory.setLearningPaused(paused); },
     sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
     sharedMemoryGetFriends: () => sharedMemory ? sharedMemory.getFriends() : [],
-    sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => sharedMemory ? sharedMemory.addFriendRequest(tgId, username, firstName) : null,
+    sharedMemoryGetFriend: (tgId: string) => sharedMemory ? sharedMemory.getFriend(tgId) : null,
+    sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => sharedMemory ? sharedMemory.addFriendRequest(tgId, username, firstName) : (() => { throw new Error('Shared memory not available'); })(),
     sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => sharedMemory ? sharedMemory.updateFriendInfo(tgId, username, firstName) : null,
     sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.approveFriend(tgId, negativeTags, negativeRules) : null,
     sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.rejectFriend(tgId) : false,
     sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
+    sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
     sendFriendRequest: async (tgId: string) => {
       if (!relayClient) return false;
       return relayClient.sendFriendRequest(tgId);
     },
-    approveFriendRequest: async (requestId: string, negativeTags: string[], negativeRules?: string) => {
+    approveFriendRequest: async (tgId: string, negativeTags: string[], negativeRules?: string) => {
       if (!relayClient) return false;
-      return relayClient.approveFriendRequest(requestId, negativeTags, negativeRules);
+      return relayClient.approveFriendRequest(tgId, negativeTags, negativeRules);
     },
-    rejectFriendRequest: async (requestId: string) => {
+    rejectFriendRequest: async (tgId: string) => {
       if (!relayClient) return false;
-      return relayClient.rejectFriendRequest(requestId);
+      return relayClient.rejectFriendRequest(tgId);
     },
     revokeFriend: async (tgId: string) => {
       if (!relayClient) return false;
@@ -1053,9 +1055,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         if (ok) {
           relayClient!.startPollLoop(async (result) => {
             for (const req of result.friendRequests) {
-              const existing = sharedMemory!.getFriend(req.fromTgId);
-              if (!existing) {
-                sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+              sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+
+              if (tgChannel) {
+                const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
+                tgChannel.send(`Incoming friend request from ${name} (${req.fromTgId}). Use /listfriends to approve or reject.`).catch(() => {});
               }
             }
 
@@ -1064,6 +1068,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 const existing = sharedMemory!.getFriend(resp.fromTgId);
                 if (existing && existing.status === 'pending') {
                   sharedMemory!.approveFriend(resp.fromTgId, []);
+                }
+                if (tgChannel) {
+                  const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
+                  tgChannel.send(`Friend request approved by ${name} (${resp.fromTgId}). They can now query your shared memory.`).catch(() => {});
+                }
+              } else {
+                const friend = sharedMemory!.getFriend(resp.fromTgId);
+                if (friend && friend.status === 'pending') {
+                  sharedMemory!.rejectFriend(resp.fromTgId);
+                }
+                if (tgChannel) {
+                  const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
+                  tgChannel.send(`Friend request from ${name} (${resp.fromTgId}) was rejected.`).catch(() => {});
                 }
               }
             }

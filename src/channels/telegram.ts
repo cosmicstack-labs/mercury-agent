@@ -155,7 +155,7 @@ export class TelegramChannel extends BaseChannel {
           }
         } catch {}
         const displayName = username ? `@${username}` : firstName || friendTgId;
-        const existing = this.chatCommandContext?.sharedMemoryGetFriends?.()?.find(f => f.tgId === friendTgId);
+        const existing = this.chatCommandContext?.sharedMemoryGetFriend?.(friendTgId);
         if (existing) {
           const existingName = existing.username ? `@${existing.username}` : existing.firstName || friendTgId;
           await this.sendDirectMessage(chatId, `${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`);
@@ -1150,8 +1150,8 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('reject:')) {
       const tgId = action.slice('reject:'.length);
-      this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
       await this.chatCommandContext?.rejectFriendRequest?.(tgId);
+      this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
       await ctx.answerCallbackQuery({ text: 'Rejected' });
       await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${tgId}.`).catch(() => {});
       return;

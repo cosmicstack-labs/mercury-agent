@@ -115,7 +115,7 @@ export class RelayClient {
     }
   }
 
-  async approveFriendRequest(requestId: string, negativeTags: string[], negativeRules?: string): Promise<boolean> {
+  async approveFriendRequest(friendTgId: string, negativeTags: string[], negativeRules?: string): Promise<boolean> {
     if (!this.ensureRegistered()) return false;
 
     try {
@@ -123,27 +123,27 @@ export class RelayClient {
         method: 'POST',
         headers: this.authHeaders(),
         body: JSON.stringify({
-          request_id: requestId,
-          from_tg_id: this.tgUserId,
+          from_tg_id: friendTgId,
+          to_tg_id: this.tgUserId,
           negative_tags: negativeTags,
           negative_rules: negativeRules ?? null,
         }),
       });
 
       if (!response.ok) {
-        logger.warn({ status: response.status, requestId }, 'Friend approval failed');
+        logger.warn({ status: response.status, friendTgId }, 'Friend approval failed');
         return false;
       }
 
-      logger.info({ requestId }, 'Friend request approved via relay');
+      logger.info({ friendTgId }, 'Friend request approved via relay');
       return true;
     } catch (err) {
-      logger.warn({ err, requestId }, 'Friend approval error');
+      logger.warn({ err, friendTgId }, 'Friend approval error');
       return false;
     }
   }
 
-  async rejectFriendRequest(requestId: string): Promise<boolean> {
+  async rejectFriendRequest(friendTgId: string): Promise<boolean> {
     if (!this.ensureRegistered()) return false;
 
     try {
@@ -151,14 +151,14 @@ export class RelayClient {
         method: 'POST',
         headers: this.authHeaders(),
         body: JSON.stringify({
-          request_id: requestId,
-          from_tg_id: this.tgUserId,
+          from_tg_id: friendTgId,
+          to_tg_id: this.tgUserId,
         }),
       });
 
       return response.ok;
     } catch (err) {
-      logger.warn({ err, requestId }, 'Friend rejection error');
+      logger.warn({ err, friendTgId }, 'Friend rejection error');
       return false;
     }
   }

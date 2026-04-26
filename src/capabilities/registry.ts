@@ -52,14 +52,16 @@ export interface ChatCommandContext {
   sharedMemorySetLearningPaused: (paused: boolean) => void;
   sharedMemoryClear: () => number;
   sharedMemoryGetFriends: () => import('../memory/shared-memory-store.js').FriendInfo[];
-  sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryGetFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => import('../memory/shared-memory-store.js').FriendInfo;
   sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryRejectFriend: (tgId: string) => boolean;
   sharedMemoryRevokeFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sendFriendRequest: (tgId: string) => Promise<boolean>;
-  approveFriendRequest: (requestId: string, negativeTags: string[], negativeRules?: string) => Promise<boolean>;
-  rejectFriendRequest: (requestId: string) => Promise<boolean>;
+  approveFriendRequest: (tgId: string, negativeTags: string[], negativeRules?: string) => Promise<boolean>;
+  rejectFriendRequest: (tgId: string) => Promise<boolean>;
   revokeFriend: (tgId: string) => Promise<boolean>;
   resolveTelegramUser: (tgId: string) => Promise<{ username: string | null; firstName: string | null } | null>;
 }

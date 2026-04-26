@@ -1359,13 +1359,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     if (cmd.startsWith('/friend')) {
-      if (!this.sharedMemory) {
+      if (!ctx.sharedMemoryGetFriends) {
         await channel.send('Shared memory is not enabled.', channelId);
         return true;
       }
       const friendTgId = trimmed.slice('/friend'.length).trim();
       if (!friendTgId) {
-        const friends = this.sharedMemory.getFriends();
+        const friends = ctx.sharedMemoryGetFriends();
         const pending = friends.filter(f => f.status === 'pending');
         const approved = friends.filter(f => f.status === 'approved');
         const lines = ['**/friend — Send a friend request**\n'];
@@ -1390,13 +1390,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       } catch {}
       const displayName = username ? `@${username}` : firstName || friendTgId;
-      const existing = this.sharedMemory.getFriend(friendTgId);
+      const existing = ctx.sharedMemoryGetFriend?.(friendTgId);
       if (existing) {
         const existingName = existing.username ? `@${existing.username}` : existing.firstName || friendTgId;
         await channel.send(`${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`, channelId);
         return true;
       }
-      this.sharedMemory.addFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined);
+      ctx.sharedMemoryAddFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined);
       const relayResult = await ctx.sendFriendRequest(friendTgId);
       if (relayResult) {
         await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`, channelId);
@@ -1407,11 +1407,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     if (cmd === '/listfriends') {
-      if (!this.sharedMemory) {
+      if (!ctx.sharedMemoryGetFriends) {
         await channel.send('Shared memory is not enabled.', channelId);
         return true;
       }
-      const friends = this.sharedMemory.getFriends();
+      const friends = ctx.sharedMemoryGetFriends();
       if (friends.length === 0) {
         await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
         return true;
