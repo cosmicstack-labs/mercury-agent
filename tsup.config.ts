@@ -15,5 +15,6 @@ export default defineConfig({
     "ink",
     "grammy",
     "better-sqlite3",
+    "discord.js",
   ],
 });

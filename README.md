@@ -168,6 +168,8 @@ Type these during a conversation — they don't consume API tokens. Work on both
 |---------|----------|
 | **CLI** | Readline prompt, arrow-key command menus, real-time text streaming with markdown re-rendering, permission mode picker |
 | **Telegram** | HTML formatting, editable streaming messages, file uploads, typing indicators, multi-user access with admin/member roles |
+| **Web Panel** | Browser-based chat, status dashboard, auth token support, localhost by default |
+| **Discord** | Slash commands, allowlist access control, deferred responses, minimal intents |
 
 ### Telegram Access
 
@@ -233,6 +235,7 @@ Configure multiple LLM providers. Mercury tries them in order and falls back aut
 | **OpenAI** | gpt-4o-mini | `OPENAI_API_KEY` | GPT-4o, o3, etc. |
 | **Anthropic** | claude-sonnet-4 | `ANTHROPIC_API_KEY` | Claude Sonnet, Haiku, Opus |
 | **Grok (xAI)** | grok-4 | `GROK_API_KEY` | OpenAI-compatible endpoint |
+| **Z.ai (GLM)** | glm-5.1 | `ZAI_API_KEY` | OpenAI-compatible, Coding Plan endpoint opt-in |
 | **Ollama Cloud** | gpt-oss:120b | `OLLAMA_CLOUD_API_KEY` | Remote Ollama via API |
 | **Ollama Local** | gpt-oss:20b | No key needed | Local Ollama instance |
 

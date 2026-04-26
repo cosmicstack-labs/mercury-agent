@@ -109,6 +109,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
+  { key: 'zai', label: 'Z.ai (GLM)' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -239,6 +240,12 @@ function validateApiKey(provider: ProviderName, value: string): string | null {
     return looksLikeToken(value)
       ? null
       : 'Grok keys must look like a real API token: long, no spaces, and not plain text.';
+  }
+
+  if (provider === 'zai') {
+    return looksLikeToken(value)
+      ? null
+      : 'Z.ai keys must look like a real API token: long, no spaces, and not plain text.';
   }
 
   if (provider === 'ollamaCloud') {
@@ -665,6 +672,22 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.ollamaLocal.baseUrl = result.baseUrl;
           config.providers.ollamaLocal.model = result.model;
           config.providers.ollamaLocal.enabled = true;
+        }
+      }
+
+      if (provider === 'zai') {
+        const mask = isReconfig && config.providers.zai.apiKey ? ` [${maskKey(config.providers.zai.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'zai',
+          'Z.ai (GLM)',
+          chalk.white(`  Z.ai API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.zai.apiKey = result.apiKey;
+          config.providers.zai.model = result.model;
+          config.providers.zai.enabled = true;
         }
       }
     }
@@ -1177,6 +1200,8 @@ program
     }
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    console.log(`  Web Panel: ${config.channels.webPanel.enabled ? chalk.green('enabled') : chalk.dim('disabled')}` + (config.channels.webPanel.enabled ? ` at http://${config.channels.webPanel.host}:${config.channels.webPanel.port}` : ''));
+    console.log(`  Discord: ${config.channels.discord.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);

@@ -2,6 +2,8 @@ import type { Channel } from './base.js';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import { CLIChannel } from './cli.js';
 import { TelegramChannel } from './telegram.js';
+import { WebPanelChannel } from './web-panel.js';
+import { DiscordChannel } from './discord.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -13,6 +15,14 @@ export class ChannelRegistry {
 
     if (config.channels.telegram.enabled && config.channels.telegram.botToken) {
       this.register('telegram', new TelegramChannel(config));
+    }
+
+    if (config.channels.webPanel.enabled) {
+      this.register('web-panel', new WebPanelChannel(config));
+    }
+
+    if (config.channels.discord.enabled && config.channels.discord.botToken) {
+      this.register('discord', new DiscordChannel(config));
     }
   }
 
