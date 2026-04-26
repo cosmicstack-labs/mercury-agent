@@ -7,6 +7,8 @@ import {
   EmbedBuilder,
   type Interaction,
   type ChatInputCommandInteraction,
+  type SlashCommandSubcommandBuilder,
+  type SlashCommandStringOption,
   MessageFlags,
 } from 'discord.js';
 import { BaseChannel } from './base.js';
@@ -70,7 +72,7 @@ export class DiscordChannel extends BaseChannel {
       }
     });
 
-    this.client.on('error', (err) => {
+    this.client.on('error', (err: Error) => {
       logger.error({ err }, 'Discord client error');
     });
 
@@ -169,19 +171,19 @@ export class DiscordChannel extends BaseChannel {
       new SlashCommandBuilder()
         .setName('mercury')
         .setDescription('Mercury Agent commands')
-        .addSubcommand((sub) =>
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) =>
           sub
             .setName('ask')
             .setDescription('Send a prompt to Mercury')
-            .addStringOption((opt) =>
+            .addStringOption((opt: SlashCommandStringOption) =>
               opt.setName('prompt').setDescription('Your prompt').setRequired(true)
             )
         )
-        .addSubcommand((sub) => sub.setName('status').setDescription('Show Mercury status'))
-        .addSubcommand((sub) => sub.setName('help').setDescription('Show available commands'))
-        .addSubcommand((sub) => sub.setName('budget').setDescription('Show token budget'))
-        .addSubcommand((sub) => sub.setName('memory').setDescription('Show memory overview'))
-        .addSubcommand((sub) =>
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) => sub.setName('status').setDescription('Show Mercury status'))
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) => sub.setName('help').setDescription('Show available commands'))
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) => sub.setName('budget').setDescription('Show token budget'))
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) => sub.setName('memory').setDescription('Show memory overview'))
+        .addSubcommand((sub: SlashCommandSubcommandBuilder) =>
           sub.setName('permissions').setDescription('Show permission mode')
         ),
     ].map((c) => c.toJSON());

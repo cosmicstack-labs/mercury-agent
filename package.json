@@ -71,7 +71,8 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^12.9.0"
+    "better-sqlite3": "^12.9.0",
+    "discord.js": "^14.18.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
