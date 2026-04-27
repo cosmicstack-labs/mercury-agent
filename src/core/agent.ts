@@ -9,6 +9,7 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
+import { SkillTracker, triggerSkillReview } from '../skills/review.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
@@ -249,6 +250,7 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private skillTracker: SkillTracker;
 
   constructor(
     private config: MercuryConfig,
@@ -267,6 +269,7 @@ export class Agent {
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.skillTracker = new SkillTracker({ nudgeInterval: 10 });
 
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
@@ -559,6 +562,11 @@ export class Agent {
                   if (toolCalls.some((tc: any) => tc.toolName === 'use_skill')) {
                     loopDetector.reset();
                   }
+                  // Track skill management actions to reset review counter
+                  if (toolCalls.some((tc: any) => tc.toolName === 'skill_manage')) {
+                    this.skillTracker.recordSkillAction();
+                    loopDetector.reset();
+                  }
                   const hardLoop = loopDetector.detectIdentical();
                   if (hardLoop) {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
@@ -722,6 +730,11 @@ export class Agent {
                     return;
                   }
                   if (toolCalls.some((tc: any) => tc.toolName === 'use_skill')) {
+                    loopDetector.reset();
+                  }
+                  // Track skill management actions to reset review counter
+                  if (toolCalls.some((tc: any) => tc.toolName === 'skill_manage')) {
+                    this.skillTracker.recordSkillAction();
                     loopDetector.reset();
                   }
                   const hardLoop = loopDetector.detectIdentical();
@@ -910,6 +923,24 @@ export class Agent {
         logger.debug('Internal prompt processed, no channel response needed');
       }
 
+      // Track iterations for skill review triggers
+      this.skillTracker.recordIteration();
+
+      // Trigger skill review after configured interval
+      if (this.skillTracker.shouldTriggerReview() && msg.channelType !== 'internal') {
+        const recentMessages = this.shortTerm.getRecent(msg.channelId, 8);
+        if (recentMessages.length > 2) {
+          triggerSkillReview(this.providers, this.shortTerm as any, recentMessages)
+            .then(suggestion => {
+              if (suggestion && channel) {
+                channel.send(`\n💡 Skill suggestion: ${suggestion}\n`, msg.channelId).catch(() => {});
+              }
+            })
+            .catch(() => {});
+          this.skillTracker.reset();
+        }
+      }
+
       this.lifecycle.transition('idle');
     } catch (err) {
       logger.error({ err }, 'Error handling message');
@@ -977,6 +1008,30 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
       prompt += githubHint;
     }
+
+    // Add skill management guidance
+    const skillTools = this.capabilities.getToolNames().filter(t => t.startsWith('skill_'));
+    if (skillTools.includes('skill_manage')) {
+      prompt += `
+
+## Self-Improving Skills
+You can create reusable skills from successful task patterns using skill_manage. Consider creating/updating skills when:
+- A complex task succeeded (5+ tool calls)
+- Errors were overcome through a specific approach
+- A user-corrected approach worked better than your initial plan
+- A non-trivial workflow was discovered
+- User asks you to remember a procedure
+
+Best practices:
+- Survey existing skills first (list_skills, then skill_view) before creating
+- Prefer patching existing skills over creating new ones
+- Skills should have clear trigger conditions and specific numbered steps
+- Confirm with user before creating/deleting skills
+- Good skill names: descriptive, lowercase, hyphenated (e.g., 'docker-debug', 'api-error-handling')
+
+Use skill_view to see skill format examples before creating new ones.`;
+    }
+
     return prompt;
   }
 

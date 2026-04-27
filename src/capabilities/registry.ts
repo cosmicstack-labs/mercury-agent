@@ -15,6 +15,8 @@ import { createApproveCommandTool } from './shell/approve-command.js';
 import { createInstallSkillTool } from './skills/install-skill.js';
 import { createListSkillsTool } from './skills/list-skills.js';
 import { createUseSkillTool } from './skills/use-skill.js';
+import { createSkillViewTool } from './skills/skill-view.js';
+import { createSkillManageTool } from './skills/skill-manage.js';
 import { createScheduleTaskTool } from './scheduler/schedule-task.js';
 import { createListTasksTool } from './scheduler/list-tasks.js';
 import { createCancelTaskTool } from './scheduler/cancel-task.js';
@@ -139,6 +141,8 @@ export class CapabilityRegistry {
       this.tools.install_skill = createInstallSkillTool(this.skillLoader);
       this.tools.list_skills = createListSkillsTool(this.skillLoader);
       this.tools.use_skill = createUseSkillTool(this.skillLoader, this.permissions);
+      this.tools.skill_view = createSkillViewTool(this.skillLoader);
+      this.tools.skill_manage = createSkillManageTool(this.skillLoader);
       logger.info('Skill tools registered');
     }
 
