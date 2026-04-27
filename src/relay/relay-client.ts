@@ -3,7 +3,6 @@ import { getOrCreateKeyPair, encryptForRecipient, decryptFromSender, isE2EAvaila
 import { logger } from '../utils/logger.js';
 
 const DEFAULT_RELAY_URL = 'https://mercury-relay.admin-5cc.workers.dev';
-const POLL_INTERVAL_MS = 15_000;
 const WS_RECONNECT_BASE_MS = 1_000;
 const WS_RECONNECT_MAX_MS = 30_000;
 const WS_PING_INTERVAL_MS = 30_000;
@@ -36,7 +35,6 @@ export class RelayClient {
   private apiKey: string | null = null;
   private tgUserId: string | null = null;
   private keyPair: KeyPair;
-  private pollTimer: NodeJS.Timeout | null = null;
   private registered = false;
   private e2eAvailable: boolean;
 
@@ -51,7 +49,6 @@ export class RelayClient {
     this.url = config?.url || DEFAULT_RELAY_URL;
     this.keyPair = getOrCreateKeyPair() ?? { publicKey: new Uint8Array(0), privateKey: new Uint8Array(0), publicKeyBase64: '' };
     this.e2eAvailable = isE2EAvailable();
-    console.log(`[RelayClient] url=${this.url} e2eAvailable=${this.e2eAvailable} publicKeyBase64=${this.keyPair.publicKeyBase64 ? this.keyPair.publicKeyBase64.substring(0, 20) + '...' : 'EMPTY'}`);
   }
 
   private get wsUrl(): string {
@@ -60,8 +57,6 @@ export class RelayClient {
 
   async register(tgUserId: string, username?: string, firstName?: string): Promise<boolean> {
     this.tgUserId = tgUserId;
-
-    console.log(`[RelayClient] Registering: userId=${tgUserId} publicKeyLen=${this.keyPair.publicKeyBase64.length} url=${this.url}`);
 
     try {
       const response = await fetch(`${this.url}/v1/register`, {
@@ -79,28 +74,22 @@ export class RelayClient {
       if (!response.ok) {
         const body = await response.text();
         console.error(`[RelayClient] Registration failed: status=${response.status} body=${body}`);
-        logger.warn({ status: response.status }, 'Relay registration failed');
         return false;
       }
 
       const data = await response.json() as { api_key: string };
       this.apiKey = data.api_key;
       this.registered = true;
-      console.log(`[RelayClient] Registration SUCCESS: userId=${tgUserId} apiKey=${this.apiKey.substring(0, 10)}...`);
       logger.info({ tgUserId }, 'Registered with relay server');
       return true;
     } catch (err) {
       console.error(`[RelayClient] Registration error:`, err);
-      logger.warn({ err }, 'Relay registration error');
       return false;
     }
   }
 
   async sendFriendRequest(toTgId: string): Promise<boolean> {
-    if (!this.ensureRegistered()) {
-      console.error(`[RelayClient] sendFriendRequest: not registered`);
-      return false;
-    }
+    if (!this.ensureRegistered()) return false;
 
     try {
       const response = await fetch(`${this.url}/v1/friend-request`, {
@@ -113,17 +102,13 @@ export class RelayClient {
       });
 
       if (!response.ok) {
-        const body = await response.text();
-        console.error(`[RelayClient] Friend request failed: status=${response.status} body=${body}`);
         logger.warn({ status: response.status, toTgId }, 'Friend request failed');
         return false;
       }
 
-      console.log(`[RelayClient] Friend request sent to ${toTgId}`);
       logger.info({ toTgId }, 'Friend request sent via relay');
       return true;
     } catch (err) {
-      console.error(`[RelayClient] Friend request error:`, err);
       logger.warn({ err, toTgId }, 'Friend request error');
       return false;
     }
@@ -326,9 +311,7 @@ export class RelayClient {
         method: 'DELETE',
         headers: this.authHeaders(),
       });
-    } catch {
-      // Silent — best effort
-    }
+    } catch {}
   }
 
   decryptMessage(encryptedPayload: string): string | null {
@@ -341,17 +324,11 @@ export class RelayClient {
 
   startPollLoop(onPollResult: (result: RelayPollResult) => void): void {
     this.onResultCallback = onPollResult;
-
     this.connectWebSocket();
-
-    if (!this.wsConnected) {
-      this.startHttpPoll();
-    }
   }
 
   stopPollLoop(): void {
     this.disconnectWebSocket();
-    this.stopHttpPoll();
     logger.info('Relay connection stopped');
   }
 
@@ -366,7 +343,6 @@ export class RelayClient {
         logger.info({ tgUserId: this.tgUserId }, 'WebSocket connected to relay');
         this.wsConnected = true;
         this.wsReconnectAttempts = 0;
-        this.stopHttpPoll();
         this.startWsPing();
       });
 
@@ -384,7 +360,6 @@ export class RelayClient {
         this.wsConnected = false;
         this.ws = null;
         this.stopWsPing();
-        this.startHttpPoll();
         this.scheduleReconnect();
       });
 
@@ -398,7 +373,7 @@ export class RelayClient {
       });
     } catch (err) {
       logger.warn({ err }, 'Failed to connect WebSocket to relay');
-      this.startHttpPoll();
+      this.scheduleReconnect();
     }
   }
 
@@ -566,29 +541,6 @@ export class RelayClient {
     this.wsReconnectAttempts = 0;
   }
 
-  private startHttpPoll(): void {
-    if (this.pollTimer) return;
-
-    const poll = async () => {
-      if (!this.registered || this.wsConnected) return;
-      const result = await this.poll();
-      if (result.friendRequests.length > 0 || result.friendResponses.length > 0 || result.messages.length > 0) {
-        this.onResultCallback?.(result);
-      }
-    };
-
-    this.pollTimer = setInterval(poll, POLL_INTERVAL_MS);
-    poll();
-    logger.info('HTTP poll fallback started (relay WebSocket unavailable)');
-  }
-
-  private stopHttpPoll(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-  }
-
   isRegistered(): boolean {
     return this.registered;
   }
@@ -603,7 +555,6 @@ export class RelayClient {
 
   private ensureRegistered(): boolean {
     if (!this.registered || !this.apiKey || !this.tgUserId) {
-      console.error(`[RelayClient] ensureRegistered: registered=${this.registered} apiKey=${this.apiKey ? 'present' : 'missing'} tgUserId=${this.tgUserId}`);
       logger.warn('Relay client not registered — skipping request');
       return false;
     }
