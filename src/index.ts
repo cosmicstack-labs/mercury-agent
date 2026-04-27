@@ -915,11 +915,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   let sharedMemoryQueryResolver: SharedMemoryQueryResolver | null = null;
 
-  if (config.relay?.enabled !== false && sharedMemory) {
+  if (sharedMemory) {
     try {
       relayClient = new RelayClient(config.relay);
       if (!isDaemon) {
-        console.log(chalk.dim(`  Relay: ${config.relay?.url ?? 'https://mercury-relay.admin-5cc.workers.dev'}`));
+        if (config.relay?.enabled !== false) {
+          console.log(chalk.dim(`  Relay: ${config.relay?.url ?? 'https://mercury-relay.admin-5cc.workers.dev'}`));
+        } else {
+          console.log(chalk.dim('  Relay: disabled — use /relay to connect'));
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'Relay client initialization failed');
@@ -959,19 +963,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
     sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
     sendFriendRequest: async (tgId: string) => {
-      if (!relayClient) return false;
+      if (!relayClient || !sharedMemory) return false;
+      if (!relayClient.isRegistered()) return false;
       return relayClient.sendFriendRequest(tgId);
     },
     approveFriendRequest: async (tgId: string, negativeTags: string[], negativeRules?: string) => {
-      if (!relayClient) return false;
+      if (!relayClient || !sharedMemory) return false;
+      if (!relayClient.isRegistered()) return false;
       return relayClient.approveFriendRequest(tgId, negativeTags, negativeRules);
     },
     rejectFriendRequest: async (tgId: string) => {
-      if (!relayClient) return false;
+      if (!relayClient || !sharedMemory) return false;
+      if (!relayClient.isRegistered()) return false;
       return relayClient.rejectFriendRequest(tgId);
     },
     revokeFriend: async (tgId: string) => {
-      if (!relayClient) return false;
+      if (!relayClient || !sharedMemory) return false;
+      if (!relayClient.isRegistered()) return false;
       return relayClient.revokeFriend(tgId);
     },
     resolveTelegramUser: async (tgId: string) => {
@@ -980,6 +988,107 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         return telegram.resolveTelegramUser(tgId);
       }
       return null;
+    },
+    relayStatus: () => {
+      if (!relayClient || !sharedMemory) {
+        return { registered: false, connected: false, url: '', userId: null };
+      }
+      return {
+        registered: relayClient.isRegistered(),
+        connected: relayClient.isConnected(),
+        url: relayClient.getUrl(),
+        userId: relayClient.getTgUserId(),
+      };
+    },
+    relayConnect: async () => {
+      if (!relayClient || !sharedMemory) return false;
+      const adminUser = config.channels.telegram.admins[0];
+      const relayUserId = adminUser
+        ? adminUser.userId.toString()
+        : config.relay?.userId || `cli_${config.identity.owner || 'default'}`;
+      const relayUsername = adminUser?.username || undefined;
+      const relayFirstName = adminUser?.firstName || config.identity.owner || undefined;
+
+      const relayOk = await relayClient.register(relayUserId, relayUsername, relayFirstName);
+      if (relayOk) {
+        relayClient.connect(async (result) => {
+          for (const req of result.friendRequests) {
+            sharedMemory.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+
+            if (tgChannel) {
+              const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
+              tgChannel.send(`Incoming friend request from ${name} (${req.fromTgId}). Use /listfriends to approve or reject.`).catch(() => {});
+            }
+          }
+
+          for (const resp of result.friendResponses) {
+            if (resp.approved) {
+              const existing = sharedMemory.getFriend(resp.fromTgId);
+              if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
+                sharedMemory.approveFriend(resp.fromTgId, []);
+              }
+              if (tgChannel) {
+                const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
+                tgChannel.send(`Friend request approved by ${name} (${resp.fromTgId}). They can now query your shared memory.`).catch(() => {});
+              }
+            } else {
+              const friend = sharedMemory.getFriend(resp.fromTgId);
+              if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
+                sharedMemory.rejectFriend(resp.fromTgId);
+              }
+              if (tgChannel) {
+                const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
+                tgChannel.send(`Friend request from ${name} (${resp.fromTgId}) was rejected.`).catch(() => {});
+              }
+            }
+          }
+
+          for (const msg of result.messages) {
+            if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
+              try {
+                const query = relayClient.decryptMessage(msg.encryptedPayload);
+                if (!query) continue;
+                const queryResult = sharedMemory.retrieveForFriend(msg.fromTgId, query);
+                const fromPublicKey = await relayClient.getUserPublicKey(msg.fromTgId);
+                if (fromPublicKey) {
+                  await relayClient.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
+                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing shared memory query from relay');
+              }
+            }
+
+            if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
+              try {
+                const responseText = relayClient.decryptMessage(msg.encryptedPayload);
+                if (responseText && sharedMemoryQueryResolver) {
+                  sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
+                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+          }
+        });
+        if (!config.relay) {
+          config.relay = { url: relayClient.getUrl(), enabled: true };
+        } else {
+          config.relay.enabled = true;
+        }
+        saveConfig(config);
+        return true;
+      }
+      return false;
+    },
+    relayDisconnect: () => {
+      if (!relayClient) return;
+      relayClient.resetForReconnect();
+      if (!config.relay) {
+        config.relay = { url: relayClient.getUrl(), enabled: false };
+      } else {
+        config.relay.enabled = false;
+      }
+      saveConfig(config);
     },
   });
 
@@ -1058,7 +1167,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     });
   }
 
-  if (relayClient && sharedMemory) {
+  if (relayClient && sharedMemory && config.relay?.enabled !== false) {
     const adminUser = config.channels.telegram.admins[0];
     const relayUserId = adminUser
       ? adminUser.userId.toString()
@@ -1066,10 +1175,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     const relayUsername = adminUser?.username || undefined;
     const relayFirstName = adminUser?.firstName || config.identity.owner || undefined;
 
-    console.log(`[Relay] Registering userId=${relayUserId} username=${relayUsername} firstName=${relayFirstName}`);
-
     const relayOk = await relayClient.register(relayUserId, relayUsername, relayFirstName).catch((err) => {
-      console.error(`[Relay] Registration catch:`, err);
       logger.warn({ err }, 'Relay registration failed');
       return false;
     });

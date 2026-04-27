@@ -66,6 +66,9 @@ export interface ChatCommandContext {
   rejectFriendRequest: (tgId: string) => Promise<boolean>;
   revokeFriend: (tgId: string) => Promise<boolean>;
   resolveTelegramUser: (tgId: string) => Promise<{ username: string | null; firstName: string | null } | null>;
+  relayStatus: () => { registered: boolean; connected: boolean; url: string; userId: string | null };
+  relayConnect: () => Promise<boolean>;
+  relayDisconnect: () => void;
 }
 
 export class CapabilityRegistry {

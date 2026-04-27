@@ -229,6 +229,29 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/relay') {
+        if (!this.chatCommandContext) {
+          await this.sendDirectMessage(chatId, 'Relay is not available.');
+          return;
+        }
+        const status = this.chatCommandContext.relayStatus();
+        if (status.registered && status.connected) {
+          this.chatCommandContext.relayDisconnect();
+          await this.sendDirectMessage(chatId, 'Relay disconnected. Use /relay to reconnect.');
+        } else if (!status.url) {
+          await this.sendDirectMessage(chatId, 'Relay is not available (shared memory disabled).');
+        } else {
+          await this.sendDirectMessage(chatId, 'Connecting to relay...');
+          const ok = await this.chatCommandContext.relayConnect();
+          if (ok) {
+            await this.sendDirectMessage(chatId, 'Relay connected. You can now send/receive friend requests and messages.');
+          } else {
+            await this.sendDirectMessage(chatId, 'Failed to connect to relay. Check your network and try again.');
+          }
+        }
+        return;
+      }
+
       const msg: ChannelMessage = {
         id: ctx.message.message_id.toString(),
         channelId: `telegram:${chatId}`,
@@ -333,6 +356,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'listfriends', description: 'View and manage shared memory friends' },
       { command: 'exit', description: 'Shut down Mercury and exit' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
+      { command: 'relay', description: 'Connect or disconnect from the relay server' },
       { command: 'tasks', description: 'List scheduled tasks' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },
     ];

@@ -219,7 +219,7 @@ export function getDefaultConfig(): MercuryConfig {
     },
     relay: {
       url: getEnv('RELAY_URL', 'https://mercury-relay.admin-5cc.workers.dev'),
-      enabled: getEnvBool('RELAY_ENABLED', true),
+      enabled: getEnvBool('RELAY_ENABLED', false),
     },
     heartbeat: {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),

@@ -1451,10 +1451,33 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/relay') {
+      const status = ctx.relayStatus();
+      if (status.registered && status.connected) {
+        ctx.relayDisconnect();
+        await channel.send('Relay disconnected. Use /relay to reconnect.', channelId);
+      } else if (!status.url) {
+        await channel.send('Relay is not available (shared memory disabled).', channelId);
+      } else {
+        await channel.send('Connecting to relay...', channelId);
+        const ok = await ctx.relayConnect();
+        if (ok) {
+          await channel.send('Relay connected. You can now send/receive friend requests and messages.', channelId);
+        } else {
+          await channel.send('Failed to connect to relay. Check your network and try again.', channelId);
+        }
+      }
+      return true;
+    }
+
     if (cmd.startsWith('/friend')) {
       if (!ctx.sharedMemoryGetFriends) {
         await channel.send('Shared memory is not enabled.', channelId);
         return true;
+      }
+      const relayStatus = ctx.relayStatus();
+      if (!relayStatus.registered && !relayStatus.connected && relayStatus.url) {
+        await channel.send('Relay not connected. Use /relay to connect first, so friend requests can be sent across instances.', channelId);
       }
       const friendTgId = trimmed.slice('/friend'.length).trim();
       if (!friendTgId) {
@@ -1874,6 +1897,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },
           { value: 'memory', label: 'Memory' },
+          { value: 'relay', label: 'Relay' },
           { value: 'telegram', label: 'Telegram' },
           { value: 'tools', label: 'Tools' },
           { value: 'skills', label: 'Skills' },
@@ -1902,6 +1926,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
         if (action === 'telegram') {
           await this.openCliTelegramMenu(channel, channelId, select);
+          continue;
+        }
+
+        if (action === 'relay') {
+          await this.handleChatCommand('/relay', 'cli', channelId);
           continue;
         }
 

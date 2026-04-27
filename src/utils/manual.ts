@@ -107,6 +107,7 @@ export function getManual(): string {
     ['/tools', 'List currently loaded tools'],
     ['/skills', 'List installed skills'],
     ['/permissions', 'Change permission mode (Ask Me / Allow All)'],
+    ['/relay', 'Connect to or disconnect from the relay server'],
     ['/tasks', 'List scheduled tasks'],
     ['/memory', 'View and manage second brain memory'],
     ['/stream', 'Toggle text streaming on/off (Telegram)'],

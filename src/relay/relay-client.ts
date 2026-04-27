@@ -281,6 +281,14 @@ export class RelayClient {
     logger.info('Relay connection stopped');
   }
 
+  resetForReconnect(): void {
+    this.disconnectWebSocket();
+    this.apiKey = null;
+    this.registered = false;
+    this.tgUserId = null;
+    this.wsReconnectAttempts = 0;
+  }
+
   private connectWebSocket(): void {
     if (this.ws || !this.registered || !this.apiKey || !this.tgUserId) return;
 
@@ -488,6 +496,18 @@ export class RelayClient {
 
   isRegistered(): boolean {
     return this.registered;
+  }
+
+  isConnected(): boolean {
+    return this.wsConnected;
+  }
+
+  getUrl(): string {
+    return this.url;
+  }
+
+  getTgUserId(): string | null {
+    return this.tgUserId;
   }
 
   getPublicKeyBase64(): string {
