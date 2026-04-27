@@ -2,7 +2,7 @@ import { compareSync, hashSync, genSaltSync } from 'bcryptjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { getMercuryHome } from '../utils/config.js';
+import { getMercuryHome, loadConfig } from '../utils/config.js';
 
 const SESSION_COOKIE = 'mercury_session';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
@@ -17,6 +17,14 @@ function getWebConfigPath(): string {
 }
 
 export function getWebPort(): number {
+  const envPort = parseInt(process.env.MERCURY_PORT || '', 10);
+  if (envPort > 0 && envPort < 65536) return envPort;
+  try {
+    const config = loadConfig();
+    if (config.web?.port && config.web.port > 0 && config.web.port < 65536) {
+      return config.web.port;
+    }
+  } catch {}
   return 6174;
 }
 

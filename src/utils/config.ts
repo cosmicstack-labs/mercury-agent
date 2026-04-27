@@ -103,6 +103,9 @@ export interface MercuryConfig {
   tokens: {
     dailyBudget: number;
   };
+  web: {
+    port: number;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -207,6 +210,9 @@ export function getDefaultConfig(): MercuryConfig {
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
+    },
+    web: {
+      port: getEnvNum('MERCURY_PORT', 6174),
     },
   };
 }

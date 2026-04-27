@@ -786,7 +786,20 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   console.log('');
   console.log(chalk.bold.white('  Web Dashboard'));
   console.log('');
-  console.log(chalk.dim('  Mercury runs a web dashboard at http://localhost:6174'));
+
+  const portPrompt = isReconfig
+    ? chalk.white(`  Web dashboard port [${config.web.port}]: `)
+    : chalk.white(`  Web dashboard port [${config.web.port}]: `);
+  const portStr = await ask(portPrompt);
+  if (portStr.trim()) {
+    const portNum = parseInt(portStr.trim(), 10);
+    if (portNum > 0 && portNum < 65536) {
+      config.web.port = portNum;
+    } else {
+      console.log(chalk.yellow('  Invalid port number. Keeping default.'));
+    }
+  }
+  console.log(chalk.dim(`  Mercury runs a web dashboard at http://localhost:${config.web.port}`));
 
   if (isWebAuthInitialized()) {
     console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
@@ -1562,7 +1575,7 @@ program
     }
     setWebPassword(password);
     console.log(chalk.green('  ✓ Web dashboard password updated.'));
-    console.log(chalk.dim('  Login at http://localhost:6174'));
+    console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
     console.log('');
   });
 

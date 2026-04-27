@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
+import { createAdaptorServer } from '@hono/node-server';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -160,22 +160,21 @@ export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
   initWebAuth();
 
-  try {
-    serve({
-      fetch: app.fetch,
-      port,
-      hostname: '127.0.0.1',
-    });
-  } catch (err: any) {
-    if (err?.code === 'EADDRINUSE') {
-      console.log(`\n  ☿ Web dashboard already running: http://127.0.0.1:${port}`);
-      return { port, url: `http://127.0.0.1:${port}` };
-    }
-    throw err;
-  }
+  const server = createAdaptorServer({ fetch: app.fetch });
 
-  console.log(`\n  ☿ Web dashboard: http://127.0.0.1:${port}`);
-  console.log(`  Default login: mercury / Mercury@123\n`);
+  server.on('error', (err: any) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.log(`\n  ☿ Port ${port} is already in use. Web dashboard unavailable.`);
+      console.log(`  Change the port with MERCURY_PORT or in mercury.yaml web.port.`);
+    } else {
+      console.error('Web server error:', err.message);
+    }
+  });
+
+  server.listen(port, '127.0.0.1', () => {
+    console.log(`\n  ☿ Web dashboard: http://127.0.0.1:${port}`);
+    console.log(`  Default login: mercury / Mercury@123\n`);
+  });
 
   return { port, url: `http://127.0.0.1:${port}` };
 }
