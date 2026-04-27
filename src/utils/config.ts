@@ -57,6 +57,7 @@ export type ProviderName =
 export interface RelayConfig {
   url: string;
   enabled: boolean;
+  userId?: string;
 }
 
 export interface MercuryConfig {
@@ -217,7 +218,7 @@ export function getDefaultConfig(): MercuryConfig {
       },
     },
     relay: {
-      url: getEnv('RELAY_URL', 'https://relay.mercuryagent.com'),
+      url: getEnv('RELAY_URL', 'https://mercury-relay.admin-5cc.workers.dev'),
       enabled: getEnvBool('RELAY_ENABLED', true),
     },
     heartbeat: {

@@ -13,7 +13,7 @@ const testConfig = {
   providers: { default: 'openai' as const, openai: { enabled: false, apiKey: '', model: '' }, anthropic: { enabled: false, apiKey: '', model: '' }, deepseek: { enabled: false, apiKey: '', model: '' }, grok: { enabled: false, apiKey: '', model: '' }, ollamaCloud: { enabled: false, apiKey: '', model: '' }, ollamaLocal: { enabled: false, baseUrl: '', model: '' } },
   channels: { telegram: { enabled: false, botToken: '', admins: [], members: [], pending: [] } },
   memory: { shortTermMaxMessages: 20, secondBrain: { enabled: true, maxRecords: 50 }, sharedMemory: { enabled: true, maxRecords: 100 } },
-  relay: { url: 'https://relay.mercuryagent.com', enabled: false },
+  relay: { url: 'https://mercury-relay.admin-5cc.workers.dev', enabled: false },
   heartbeat: { intervalMinutes: 60 },
   tokens: { dailyBudget: 1000000 },
 } as any;

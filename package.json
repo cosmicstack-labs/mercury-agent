@@ -64,6 +64,7 @@
     "dotenv": "^16.4.7",
     "grammy": "^1.42.0",
     "js-tiktoken": "^1.0.19",
+    "libsodium-wrappers": "^0.8.4",
     "marked": "^14.1.4",
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",

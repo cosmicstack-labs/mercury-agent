@@ -919,7 +919,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     try {
       relayClient = new RelayClient(config.relay);
       if (!isDaemon) {
-        console.log(chalk.dim(`  Relay: ${config.relay?.url ?? 'https://relay.mercuryagent.com'}`));
+        console.log(chalk.dim(`  Relay: ${config.relay?.url ?? 'https://mercury-relay.admin-5cc.workers.dev'}`));
       }
     } catch (err) {
       logger.warn({ err }, 'Relay client initialization failed');
@@ -1060,76 +1060,85 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (relayClient && sharedMemory) {
     const adminUser = config.channels.telegram.admins[0];
-    if (adminUser) {
-      relayClient.register(adminUser.userId.toString(), adminUser.username, adminUser.firstName).then((ok) => {
-        if (ok) {
-          relayClient!.startPollLoop(async (result) => {
-            for (const req of result.friendRequests) {
-              sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+    const relayUserId = adminUser
+      ? adminUser.userId.toString()
+      : config.relay?.userId || `cli_${config.identity.owner || 'default'}`;
+    const relayUsername = adminUser?.username || undefined;
+    const relayFirstName = adminUser?.firstName || config.identity.owner || undefined;
 
+    console.log(`[Relay] Registering userId=${relayUserId} username=${relayUsername} firstName=${relayFirstName}`);
+
+    const relayOk = await relayClient.register(relayUserId, relayUsername, relayFirstName).catch((err) => {
+      console.error(`[Relay] Registration catch:`, err);
+      logger.warn({ err }, 'Relay registration failed');
+      return false;
+    });
+    if (relayOk) {
+        relayClient.startPollLoop(async (result) => {
+          for (const req of result.friendRequests) {
+            sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
+
+            if (tgChannel) {
+              const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
+              tgChannel.send(`Incoming friend request from ${name} (${req.fromTgId}). Use /listfriends to approve or reject.`).catch(() => {});
+            }
+          }
+
+          for (const resp of result.friendResponses) {
+            if (resp.approved) {
+              const existing = sharedMemory!.getFriend(resp.fromTgId);
+              if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
+                sharedMemory!.approveFriend(resp.fromTgId, []);
+              }
               if (tgChannel) {
-                const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
-                tgChannel.send(`Incoming friend request from ${name} (${req.fromTgId}). Use /listfriends to approve or reject.`).catch(() => {});
+                const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
+                tgChannel.send(`Friend request approved by ${name} (${resp.fromTgId}). They can now query your shared memory.`).catch(() => {});
+              }
+            } else {
+              const friend = sharedMemory!.getFriend(resp.fromTgId);
+              if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
+                sharedMemory!.rejectFriend(resp.fromTgId);
+              }
+              if (tgChannel) {
+                const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
+                tgChannel.send(`Friend request from ${name} (${resp.fromTgId}) was rejected.`).catch(() => {});
+              }
+            }
+          }
+
+          for (const msg of result.messages) {
+            if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
+              try {
+                const query = relayClient!.decryptMessage(msg.encryptedPayload);
+                if (!query) continue;
+                const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, query);
+                const fromPublicKey = await relayClient!.getUserPublicKey(msg.fromTgId);
+                if (fromPublicKey) {
+                  await relayClient!.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
+                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing shared memory query from relay');
               }
             }
 
-            for (const resp of result.friendResponses) {
-              if (resp.approved) {
-                const existing = sharedMemory!.getFriend(resp.fromTgId);
-                if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
-                  sharedMemory!.approveFriend(resp.fromTgId, []);
+            if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
+              try {
+                const responseText = relayClient!.decryptMessage(msg.encryptedPayload);
+                if (responseText && sharedMemoryQueryResolver) {
+                  sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
                 }
-                if (tgChannel) {
-                  const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
-                  tgChannel.send(`Friend request approved by ${name} (${resp.fromTgId}). They can now query your shared memory.`).catch(() => {});
-                }
-              } else {
-                const friend = sharedMemory!.getFriend(resp.fromTgId);
-                if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
-                  sharedMemory!.rejectFriend(resp.fromTgId);
-                }
-                if (tgChannel) {
-                  const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
-                  tgChannel.send(`Friend request from ${name} (${resp.fromTgId}) was rejected.`).catch(() => {});
-                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing shared memory response from relay');
               }
             }
-
-            for (const msg of result.messages) {
-              if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
-                try {
-                  const query = relayClient!.decryptMessage(msg.encryptedPayload);
-                  if (!query) continue;
-                  const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, query);
-                  const fromPublicKey = await relayClient!.getUserPublicKey(msg.fromTgId);
-                  if (fromPublicKey) {
-                    await relayClient!.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
-                  }
-                } catch (err) {
-                  logger.debug({ err }, 'Error processing shared memory query from relay');
-                }
-              }
-
-              if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
-                try {
-                  const responseText = relayClient!.decryptMessage(msg.encryptedPayload);
-                  if (responseText && sharedMemoryQueryResolver) {
-                    sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
-                  }
-                } catch (err) {
-                  logger.debug({ err }, 'Error processing shared memory response from relay');
-                }
-              }
-              if (msg.id) {
-                await relayClient!.acknowledgeMessage(msg.id);
-              }
+            if (msg.id) {
+              await relayClient!.acknowledgeMessage(msg.id);
             }
-          });
-        }
-      }).catch((err) => {
-        logger.warn({ err }, 'Relay registration failed');
-      });
-    }
+          }
+        });
+      } else {
+        logger.warn('Relay registration failed — friend requests will be local only until relay reconnects');
+      }
   }
 
   const activeCh = channels.getActiveChannels();
