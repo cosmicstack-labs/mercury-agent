@@ -19,6 +19,8 @@ import { createScheduleTaskTool } from './scheduler/schedule-task.js';
 import { createListTasksTool } from './scheduler/list-tasks.js';
 import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
+import { createSaveMemoryTool } from './system/save-memory.js';
+import { createSearchMemoryTool } from './system/search-memory.js';
 import { createGitStatusTool } from './git/git-status.js';
 import { createGitDiffTool } from './git/git-diff.js';
 import { createGitLogTool } from './git/git-log.js';
@@ -35,6 +37,7 @@ import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
 import type { TokenBudget } from '../utils/tokens.js';
+import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatCommandContext {
@@ -56,6 +59,7 @@ export class CapabilityRegistry {
   private skillLoader?: SkillLoader;
   private scheduler?: Scheduler;
   private tokenBudget?: TokenBudget;
+  private userMemory?: UserMemoryStore;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private currentChannelId = 'cli';
@@ -63,11 +67,12 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
 
-  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget) {
+  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
+    this.userMemory = userMemory;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -152,6 +157,12 @@ export class CapabilityRegistry {
     if (this.tokenBudget) {
       this.tools.budget_status = createBudgetStatusTool(this.tokenBudget);
       logger.info('Budget tool registered');
+    }
+
+    if (this.userMemory) {
+      this.tools.save_memory = createSaveMemoryTool(this.userMemory);
+      this.tools.search_memory = createSearchMemoryTool(this.userMemory);
+      logger.info('Second Brain tools registered (save_memory, search_memory)');
     }
 
     if (manifest.capabilities.git?.enabled) {

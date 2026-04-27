@@ -927,7 +927,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const channels = new ChannelRegistry(config);
   const webChannel = new WebChannel(config.identity.name);
   channels.register('web', webChannel);
-  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
+  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget, userMemory ?? undefined);
 
   capabilities.setChatCommandContext({
     toolNames: () => capabilities.getToolNames(),
