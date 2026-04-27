@@ -908,7 +908,7 @@ function chatScreen() {
     provider: '',
     model: '',
     eventSource: null,
-    scrollCheckTimer: null,
+    isAtBottom: true,
     settings: { bypassPermissions: false, restrictUser: false },
 
     renderMarkdown(md) { return simpleMarkdown(md); },
@@ -919,17 +919,28 @@ function chatScreen() {
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
 
-    throttledScrollCheck() {
-      if (this.scrollCheckTimer) return;
-      var self = this;
-      this.scrollCheckTimer = setTimeout(function() { self.scrollCheckTimer = null; }, 100);
+    onScroll() {
+      var el = this.$refs.messagesContainer;
+      if (!el) return;
+      var threshold = 150;
+      this.isAtBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
     },
 
     scrollToBottom() {
       var el = this.$refs.messagesContainer;
       if (el) {
+        this.isAtBottom = true;
         requestAnimationFrame(function() { el.scrollTop = el.scrollHeight; });
       }
+    },
+
+    togglePermissions() {
+      this.settings.bypassPermissions = !this.settings.bypassPermissions;
+      this.saveSettings();
+    },
+
+    goHome() {
+      window.location.href = '/';
     },
 
     saveThreadsToStorage() {
@@ -1069,7 +1080,10 @@ function chatScreen() {
       this.loadThreadsFromStorage();
       this.connectSSE();
       this.loadSettings();
-      this.$nextTick(() => this.$refs.chatInput?.focus());
+      this.$nextTick(() => {
+        this.$refs.chatInput?.focus();
+        this.scrollToBottom();
+      });
     },
 
     connectSSE() {
@@ -1087,6 +1101,12 @@ function chatScreen() {
       });
     },
 
+    _smartScroll() {
+      if (this.isAtBottom) {
+        this.scrollToBottom();
+      }
+    },
+
     handleEvent(evt) {
       var self = this;
       var targetThread = evt?.data?.targetId || this.currentThreadId || this.activeThreadId;
@@ -1096,7 +1116,7 @@ function chatScreen() {
       switch (evt.type) {
         case 'thinking':
           this.waiting = true;
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'provider':
@@ -1113,14 +1133,31 @@ function chatScreen() {
             var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.steps) msg.steps = [];
-              msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: false });
+              msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: true, running: true, done: false, summary: '' });
             }
           }
           this.saveThreadsToStorage();
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'step_done':
+          if (this.currentAssistantId) {
+            var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
+            if (msg && msg.steps && msg.steps.length > 0) {
+              var toolName = evt.data.tool || '';
+              for (var i = msg.steps.length - 1; i >= 0; i--) {
+                if (msg.steps[i].tool === toolName && msg.steps[i].running) {
+                  msg.steps[i].running = false;
+                  msg.steps[i].done = true;
+                  msg.steps[i].open = false;
+                  msg.steps[i].summary = evt.data.summary || '';
+                  break;
+                }
+              }
+            }
+          }
+          this.saveThreadsToStorage();
+          this._smartScroll();
           break;
 
         case 'text_delta':
@@ -1134,7 +1171,7 @@ function chatScreen() {
             }
           }
           this.saveThreadsToStorage();
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'text_done':
@@ -1146,6 +1183,12 @@ function chatScreen() {
               msg.streaming = false;
               msg.elapsedMs = evt.data.elapsedMs || msg.elapsedMs;
               if (evt.data.provider) { msg.provider = evt.data.provider; msg.model = evt.data.model; }
+              if (msg.steps) {
+                msg.steps.forEach(function(s) {
+                  s.running = false;
+                  if (s.done === undefined) s.done = true;
+                });
+              }
             }
           }
           this.streamingText = '';
@@ -1153,7 +1196,7 @@ function chatScreen() {
           this.currentThreadId = null;
           this.updateActiveThreadMeta();
           this.$nextTick(() => this.$refs.chatInput?.focus());
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'permission_request':
@@ -1165,7 +1208,7 @@ function chatScreen() {
             }
           }
           this.saveThreadsToStorage();
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'permission_continue':
@@ -1177,7 +1220,7 @@ function chatScreen() {
             }
           }
           this.saveThreadsToStorage();
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'permission_mode':
@@ -1189,7 +1232,7 @@ function chatScreen() {
             }
           }
           this.saveThreadsToStorage();
-          this.scrollToBottom();
+          this._smartScroll();
           break;
 
         case 'loop_warning':

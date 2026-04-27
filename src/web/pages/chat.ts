@@ -26,16 +26,20 @@ export function renderChat(c: Context): string {
       <section class="chat-main">
       <div class="chat-header">
         <div class="chat-header-info">
+          <button class="chat-back-btn" @click="goHome()" title="Back to dashboard">←</button>
           <h1 x-text="activeThreadTitle()">Chat</h1>
           <span class="chat-provider" x-show="provider" x-text="'Using ' + provider + ' / ' + model"></span>
+          <span class="chat-perm-badge" :class="settings.bypassPermissions ? 'chat-perm-auto' : 'chat-perm-ask'" @click="togglePermissions()" :title="settings.bypassPermissions ? 'Auto-approve: tool calls run without asking' : 'Ask me: tool calls require your approval'">
+            <span x-show="settings.bypassPermissions">🔓 Auto</span>
+            <span x-show="!settings.bypassPermissions">🔒 Ask</span>
+          </span>
         </div>
         <div class="chat-header-actions">
-          <label class="radio-label"><input type="checkbox" x-model="settings.bypassPermissions" @change="saveSettings()"> Allow all</label>
-          <label class="radio-label"><input type="checkbox" x-model="settings.restrictUser" @change="saveSettings()"> Restrict user</label>
+          <button class="btn btn-sm btn-outline" @click="clearChat()">Clear</button>
         </div>
       </div>
 
-      <div class="chat-messages" x-ref="messagesContainer" @scroll="throttledScrollCheck()">
+      <div class="chat-messages" x-ref="messagesContainer" @scroll="onScroll()">
         <div class="chat-empty" x-show="activeMessages().length === 0 && !waiting">
           <div class="chat-empty-icon">☿</div>
           <p>Start a conversation with Mercury</p>
@@ -57,9 +61,13 @@ export function renderChat(c: Context): string {
               </div>
 
               <template x-for="(step, si) in (msg.steps || [])" :key="si">
-                <div class="chat-step">
+                <div class="chat-step" :class="{ 'chat-step-running': step.running, 'chat-step-done': step.done }">
                   <div class="chat-step-header" @click="step.open = !step.open">
+                    <span class="chat-step-status" x-show="step.running"><span class="step-spinner"></span></span>
+                    <span class="chat-step-status" x-show="!step.running && step.done">✓</span>
+                    <span class="chat-step-status" x-show="!step.running && step.done === false && step.error">✗</span>
                     <span class="chat-step-tool" x-text="'Step ' + (si + 1) + ': ' + step.tool"></span>
+                    <span class="chat-step-summary-inline" x-show="!step.open && step.summary" x-text="step.summary"></span>
                     <span class="chat-step-toggle" x-text="step.open ? '−' : '+'"></span>
                   </div>
                   <div class="chat-step-body" x-show="step.open" x-html="step.label"></div>
@@ -105,6 +113,8 @@ export function renderChat(c: Context): string {
           </div>
         </div>
       </div>
+
+      <button class="chat-scroll-bottom" x-show="!isAtBottom" @click="scrollToBottom()">↓</button>
 
       <div class="chat-input-area">
         <textarea
