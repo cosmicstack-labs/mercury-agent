@@ -52,7 +52,8 @@ export type ProviderName =
   | 'deepseek'
   | 'grok'
   | 'ollamaCloud'
-  | 'ollamaLocal';
+  | 'ollamaLocal'
+  | 'minimax';
 
 export interface MercuryConfig {
   identity: {
@@ -68,6 +69,7 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
+    minimax: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -172,6 +174,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/api'),
         model: getEnv('OLLAMA_LOCAL_MODEL', 'gpt-oss:20b'),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
+      },
+      minimax: {
+        name: 'minimax',
+        apiKey: getEnv('MINIMAX_API_KEY', ''),
+        baseUrl: getEnv('MINIMAX_BASE_URL', 'https://api.minimax.io/v1'),
+        model: getEnv('MINIMAX_MODEL', 'MiniMax-M2.7'),
+        enabled: getEnvBool('MINIMAX_ENABLED', true),
       },
     },
     channels: {

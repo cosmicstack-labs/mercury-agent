@@ -51,6 +51,13 @@ const OLLAMA_LOCAL_PREFERRED_MODELS = [
   'gpt-oss:120b',
 ] as const;
 
+const MINIMAX_PREFERRED_MODELS = [
+  'MiniMax-M2.7',
+  'MiniMax-M2.7-highspeed',
+  'MiniMax-M2.5',
+  'MiniMax-M2.1',
+] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -154,6 +161,7 @@ function chooseRecommendedModel(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -187,6 +195,7 @@ export function buildModelCatalog(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
@@ -206,7 +215,7 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
         Authorization: `Bearer ${config.apiKey}`,
       },
     },
-    `Mercury could not fetch models for this ${provider === 'grok' ? 'Grok' : provider === 'deepseek' ? 'DeepSeek' : 'OpenAI'} key. Please re-enter it.`,
+    `Mercury could not fetch models for this ${provider === 'grok' ? 'Grok' : provider === 'deepseek' ? 'DeepSeek' : provider === 'minimax' ? 'MiniMax' : 'OpenAI'} key. Please re-enter it.`,
   );
 
   const ids = (data.data ?? [])
@@ -214,6 +223,9 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     .filter((id) => {
       if (provider === 'deepseek') {
         return id.startsWith('deepseek-');
+      }
+      if (provider === 'minimax') {
+        return id.startsWith('MiniMax-');
       }
       return isOpenAIChatModel(id);
     });
@@ -295,6 +307,10 @@ export async function fetchProviderModelCatalog(
 
   if (provider === 'ollamaCloud' || provider === 'ollamaLocal') {
     return fetchOllamaModels(provider, config);
+  }
+
+  if (provider === 'minimax') {
+    return buildModelCatalog(provider, [...MINIMAX_PREFERRED_MODELS], config.model);
   }
 
   return fetchOpenAICompatModels(provider, config);
