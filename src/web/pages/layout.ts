@@ -23,6 +23,8 @@ const NAV_ITEMS = [
 
 export function renderLayout(c: Context, title: string, body: string): string {
   const activePath = new URL(c.req.url).pathname;
+  const isChat = activePath === '/chat';
+  const bodyClass = isChat ? 'chat-page' : '';
   const navHtml = NAV_ITEMS.map(item => {
     if ('separator' in item) {
       return '<div class="nav-sep"></div>';
@@ -52,7 +54,7 @@ export function renderLayout(c: Context, title: string, body: string): string {
     })();
   </script>
 </head>
-<body>
+<body class="${bodyClass}">
   <div class="app" x-data="{ sidebarOpen: window.innerWidth > 768 }" :class="{ 'sidebar-closed': !sidebarOpen }">
     <aside class="sidebar">
       <div class="sidebar-head">

@@ -541,6 +541,15 @@ textarea.form-input {
 }
 
 /* ── Chat ── */
+body.chat-page .sidebar,
+body.chat-page .sidebar-toggle {
+  display: none !important;
+}
+body.chat-page .main {
+  margin-left: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+}
 .chat-container {
   display: flex;
   flex-direction: column;
