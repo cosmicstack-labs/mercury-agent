@@ -151,7 +151,6 @@ export class PermissionManager {
   private askHandler?: (prompt: string) => Promise<string>;
   private autoApproveAll = false;
   private elevatedCommands: Set<string> = new Set();
-  private pendingApprovals: Set<string> = new Set();
   private currentChannelType: string = 'cli';
 
   private tempScopes: FileScope[] = [];
@@ -204,14 +203,6 @@ export class PermissionManager {
 
   isShellElevated(): boolean {
     return this.elevatedCommands.has('run_command');
-  }
-
-  addPendingApproval(baseCommand: string): void {
-    this.pendingApprovals.add(baseCommand);
-  }
-
-  clearPendingApprovals(): void {
-    this.pendingApprovals.clear();
   }
 
   private load(): PermissionsManifest {
@@ -281,6 +272,10 @@ export class PermissionManager {
       return { allowed: false, reason: `Permission denied: ${mode} access to ${path}` };
     }
 
+    if (!this.autoApproveAll && this.askHandler && this.currentChannelType !== 'internal') {
+      return this.requestScopeExternal(path, mode);
+    }
+
     return { allowed: false, reason: `Permission denied for ${mode} access to ${path}` };
   }
 
@@ -301,12 +296,7 @@ export class PermissionManager {
     }
 
     const trimmed = command.trim();
-
     const baseCmd = trimmed.split(/\s+/)[0];
-    if (this.pendingApprovals.has(baseCmd)) {
-      logger.info({ cmd: trimmed }, 'Shell command auto-approved (pending approval)');
-      return { allowed: true, needsApproval: false };
-    }
 
     for (const pattern of shell.blocked) {
       if (this.matchPattern(trimmed, pattern)) {
@@ -333,7 +323,7 @@ export class PermissionManager {
 
     for (const pattern of shell.needsApproval) {
       if (this.matchPattern(trimmed, pattern)) {
-        if (this.currentChannelType === 'telegram' && this.askHandler) {
+        if (this.askHandler && this.currentChannelType !== 'internal') {
           const result = await this.askHandler(`Run command: ${trimmed}`);
           if (result === 'yes') {
             return { allowed: true, needsApproval: false };
@@ -348,7 +338,7 @@ export class PermissionManager {
       }
     }
 
-    if (this.currentChannelType === 'telegram' && this.askHandler) {
+    if (this.askHandler && this.currentChannelType !== 'internal') {
       const result = await this.askHandler(`Run command: ${trimmed}`);
       if (result === 'yes') {
         return { allowed: true, needsApproval: false };
@@ -466,6 +456,12 @@ export class PermissionManager {
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {
+    const mergeArray = (existing: string[] | undefined, defaults: string[]): string[] => {
+      if (!existing) return [...defaults];
+      const combined = new Set([...defaults, ...existing]);
+      return [...combined];
+    };
+
     return {
       capabilities: {
         filesystem: {
@@ -474,9 +470,9 @@ export class PermissionManager {
         },
         shell: {
           enabled: parsed.capabilities?.shell?.enabled ?? DEFAULT_MANIFEST.capabilities.shell.enabled,
-          blocked: parsed.capabilities?.shell?.blocked ?? DEFAULT_MANIFEST.capabilities.shell.blocked,
-          autoApproved: parsed.capabilities?.shell?.autoApproved ?? DEFAULT_MANIFEST.capabilities.shell.autoApproved,
-          needsApproval: parsed.capabilities?.shell?.needsApproval ?? DEFAULT_MANIFEST.capabilities.shell.needsApproval,
+          blocked: mergeArray(parsed.capabilities?.shell?.blocked, DEFAULT_MANIFEST.capabilities.shell.blocked),
+          autoApproved: mergeArray(parsed.capabilities?.shell?.autoApproved, DEFAULT_MANIFEST.capabilities.shell.autoApproved),
+          needsApproval: mergeArray(parsed.capabilities?.shell?.needsApproval, DEFAULT_MANIFEST.capabilities.shell.needsApproval),
           cwdOnly: parsed.capabilities?.shell?.cwdOnly ?? DEFAULT_MANIFEST.capabilities.shell.cwdOnly,
         },
         git: {

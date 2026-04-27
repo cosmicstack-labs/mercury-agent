@@ -13,11 +13,6 @@ export function createGitPushTool(permissions: PermissionManager, getCwd: () => 
     execute: async ({ remote, branch }) => {
       const cmd = `git push ${remote || 'origin'} ${branch || ''}`.trim();
       const check = await permissions.checkShellCommand(cmd);
-      if (!check.allowed && check.needsApproval) {
-        const baseCmd = 'git';
-        permissions.addPendingApproval(baseCmd);
-        return `⚠ This command pushes to a remote: ${cmd}\nAsk the user for permission. If they approve, try again. If they say "always", use the approve_command tool.`;
-      }
       if (!check.allowed) {
         return `Error: ${check.reason}`;
       }

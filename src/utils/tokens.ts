@@ -23,6 +23,12 @@ export interface TokenLogEntry {
 
 const TOKEN_FILE = 'token-usage.json';
 
+function safeNumber(value: any): number {
+  if (value === null || value === undefined) return 0;
+  const n = Number(value);
+  return isNaN(n) ? 0 : n;
+}
+
 export class TokenBudget {
   private dailyUsed = 0;
   private dailyBudget: number;
@@ -38,7 +44,7 @@ export class TokenBudget {
 
   canAfford(estimatedTokens: number): boolean {
     this.resetIfNewDay();
-    return this.dailyUsed + estimatedTokens <= this.dailyBudget;
+    return safeNumber(this.dailyUsed) + estimatedTokens <= safeNumber(this.dailyBudget);
   }
 
   isOverBudget(): boolean {
@@ -47,7 +53,7 @@ export class TokenBudget {
       this.forceNext = false;
       return false;
     }
-    return this.dailyUsed >= this.dailyBudget;
+    return safeNumber(this.dailyUsed) >= safeNumber(this.dailyBudget);
   }
 
   forceAllowNext(): void {
@@ -81,20 +87,26 @@ export class TokenBudget {
 
   recordUsage(entry: Omit<TokenLogEntry, 'timestamp'>): void {
     this.resetIfNewDay();
-    const logEntry: TokenLogEntry = { ...entry, timestamp: Date.now() };
-    this.dailyUsed += entry.totalTokens;
+    const inputTokens = safeNumber(entry.inputTokens);
+    const outputTokens = safeNumber(entry.outputTokens);
+    const totalTokens = safeNumber(entry.totalTokens) || inputTokens + outputTokens;
+    const safeEntry = { ...entry, inputTokens, outputTokens, totalTokens };
+    const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
+    this.dailyUsed += totalTokens;
     this.requestLog.push(logEntry);
     this.persist();
   }
 
   getRemaining(): number {
     this.resetIfNewDay();
-    return Math.max(0, this.dailyBudget - this.dailyUsed);
+    return Math.max(0, safeNumber(this.dailyBudget) - safeNumber(this.dailyUsed));
   }
 
   getUsagePercentage(): number {
     this.resetIfNewDay();
-    return this.dailyBudget > 0 ? (this.dailyUsed / this.dailyBudget) * 100 : 0;
+    const budget = safeNumber(this.dailyBudget);
+    const used = safeNumber(this.dailyUsed);
+    return budget > 0 ? (used / budget) * 100 : 0;
   }
 
   getStatusText(): string {
@@ -137,8 +149,16 @@ export class TokenBudget {
       const data = JSON.parse(raw) as Partial<TokenTracker>;
       const today = new Date().toISOString().split('T')[0];
       if (data.lastResetDate === today) {
-        this.dailyUsed = data.dailyUsed ?? 0;
-        this.requestLog = data.requestLog ?? [];
+        const restored = safeNumber(data.dailyUsed);
+        if (!isNaN(restored)) {
+          this.dailyUsed = restored;
+        }
+        this.requestLog = (data.requestLog ?? []).map((entry: any) => ({
+          ...entry,
+          inputTokens: safeNumber(entry.inputTokens),
+          outputTokens: safeNumber(entry.outputTokens),
+          totalTokens: safeNumber(entry.totalTokens),
+        }));
       }
       this.lastResetDate = data.lastResetDate ?? today;
     } catch (err) {

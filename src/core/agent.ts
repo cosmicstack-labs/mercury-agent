@@ -1225,6 +1225,23 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/permissions') {
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        const mode = await channel.askPermissionMode?.();
+        if (mode === 'allow-all') {
+          this.capabilities.permissions.setAutoApproveAll(true);
+          this.capabilities.permissions.addTempScope('/', true, true);
+          await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
+        } else {
+          this.capabilities.permissions.setAutoApproveAll(false);
+          await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
+        }
+        return true;
+      }
+      await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
+      return true;
+    }
+
     if (cmd === '/status') {
       const config = ctx.config();
       const budget = ctx.tokenBudget();
@@ -1522,9 +1539,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     await channel.withMenu(async (select) => {
       while (true) {
         const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
+        const permLabel = this.capabilities.permissions.isAutoApproveAll() ? 'Switch to Ask Me' : 'Switch to Allow All';
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },
           { value: 'memory', label: 'Memory' },
+          { value: 'permissions', label: permLabel },
           { value: 'telegram', label: 'Telegram' },
           { value: 'tools', label: 'Tools' },
           { value: 'skills', label: 'Skills' },
@@ -1548,6 +1567,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           } else {
             await channel.send('Second brain is not enabled.', channelId);
           }
+          continue;
+        }
+
+        if (action === 'permissions') {
+          await this.handleChatCommand('/permissions', 'cli', channelId);
           continue;
         }
 
