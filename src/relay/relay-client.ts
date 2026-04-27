@@ -22,13 +22,13 @@ export interface RelayMessage {
   createdAt: number;
 }
 
-export interface RelayPollResult {
+export interface RelayEvent {
   friendRequests: Array<{ fromTgId: string; fromUsername: string | null; fromFirstName: string | null; requestId: string }>;
   friendResponses: Array<{ fromTgId: string; approved: boolean; requestId: string }>;
   messages: RelayMessage[];
 }
 
-type OnResultCallback = (result: RelayPollResult) => void;
+type OnEventCallback = (event: RelayEvent) => void;
 
 export class RelayClient {
   private url: string;
@@ -42,7 +42,7 @@ export class RelayClient {
   private wsReconnectAttempts = 0;
   private wsReconnectTimer: NodeJS.Timeout | null = null;
   private wsPingTimer: NodeJS.Timeout | null = null;
-  private onResultCallback: OnResultCallback | null = null;
+  private onEventCallback: OnEventCallback | null = null;
   private wsConnected = false;
 
   constructor(config?: RelayConfig) {
@@ -246,46 +246,6 @@ export class RelayClient {
     }
   }
 
-  async poll(): Promise<RelayPollResult> {
-    if (!this.ensureRegistered()) {
-      return { friendRequests: [], friendResponses: [], messages: [] };
-    }
-
-    try {
-      const response = await fetch(`${this.url}/v1/poll?user_id=${this.tgUserId}`, {
-        headers: this.authHeaders(),
-      });
-
-      if (!response.ok) {
-        return { friendRequests: [], friendResponses: [], messages: [] };
-      }
-
-      const data = await response.json() as {
-        friend_requests?: Array<{ from_tg_id: string; from_username?: string; from_first_name?: string; request_id: string }>;
-        friend_responses?: Array<{ from_tg_id: string; approved: boolean; request_id: string }>;
-        messages?: RelayMessage[];
-      };
-
-      return {
-        friendRequests: (data.friend_requests || []).map(r => ({
-          fromTgId: r.from_tg_id,
-          fromUsername: r.from_username ?? null,
-          fromFirstName: r.from_first_name ?? null,
-          requestId: r.request_id,
-        })),
-        friendResponses: (data.friend_responses || []).map(r => ({
-          fromTgId: r.from_tg_id,
-          approved: r.approved,
-          requestId: r.request_id,
-        })),
-        messages: data.messages || [],
-      };
-    } catch (err) {
-      logger.debug({ err }, 'Relay poll error');
-      return { friendRequests: [], friendResponses: [], messages: [] };
-    }
-  }
-
   async getUserPublicKey(tgUserId: string): Promise<string | null> {
     if (!this.ensureRegistered()) return null;
 
@@ -303,17 +263,6 @@ export class RelayClient {
     }
   }
 
-  async acknowledgeMessage(messageId: string): Promise<void> {
-    if (!this.ensureRegistered()) return;
-
-    try {
-      await fetch(`${this.url}/v1/message/${messageId}`, {
-        method: 'DELETE',
-        headers: this.authHeaders(),
-      });
-    } catch {}
-  }
-
   decryptMessage(encryptedPayload: string): string | null {
     if (!this.e2eAvailable) {
       logger.warn('E2E encryption not available — cannot decrypt message');
@@ -322,12 +271,12 @@ export class RelayClient {
     return decryptFromSender(encryptedPayload, this.keyPair);
   }
 
-  startPollLoop(onPollResult: (result: RelayPollResult) => void): void {
-    this.onResultCallback = onPollResult;
+  connect(onEvent: (event: RelayEvent) => void): void {
+    this.onEventCallback = onEvent;
     this.connectWebSocket();
   }
 
-  stopPollLoop(): void {
+  disconnect(): void {
     this.disconnectWebSocket();
     logger.info('Relay connection stopped');
   }
@@ -378,7 +327,7 @@ export class RelayClient {
   }
 
   private handleWsMessage(msg: Record<string, unknown>): void {
-    if (!this.onResultCallback) return;
+    if (!this.onEventCallback) return;
 
     const type = msg.type as string;
 
@@ -390,13 +339,13 @@ export class RelayClient {
     if (type === 'initial_state') {
       const result = this.parseWsInitialState(msg);
       if (result && (result.friendRequests.length > 0 || result.friendResponses.length > 0 || result.messages.length > 0)) {
-        this.onResultCallback(result);
+        this.onEventCallback(result);
       }
       return;
     }
 
     if (type === 'friend_request') {
-      const result: RelayPollResult = {
+      this.onEventCallback({
         friendRequests: [{
           fromTgId: msg.from_tg_id as string,
           fromUsername: (msg.from_username as string) ?? null,
@@ -405,13 +354,12 @@ export class RelayClient {
         }],
         friendResponses: [],
         messages: [],
-      };
-      this.onResultCallback(result);
+      });
       return;
     }
 
     if (type === 'friend_response') {
-      const result: RelayPollResult = {
+      this.onEventCallback({
         friendRequests: [],
         friendResponses: [{
           fromTgId: msg.from_tg_id as string,
@@ -419,13 +367,12 @@ export class RelayClient {
           requestId: msg.request_id as string,
         }],
         messages: [],
-      };
-      this.onResultCallback(result);
+      });
       return;
     }
 
     if (type === 'friend_revoked') {
-      const result: RelayPollResult = {
+      this.onEventCallback({
         friendRequests: [],
         friendResponses: [{
           fromTgId: msg.from_tg_id as string,
@@ -433,13 +380,12 @@ export class RelayClient {
           requestId: '',
         }],
         messages: [],
-      };
-      this.onResultCallback(result);
+      });
       return;
     }
 
     if (type === 'message') {
-      const result: RelayPollResult = {
+      this.onEventCallback({
         friendRequests: [],
         friendResponses: [],
         messages: [{
@@ -450,8 +396,7 @@ export class RelayClient {
           encryptedPayload: msg.encrypted_payload as string,
           createdAt: msg.created_at as number,
         }],
-      };
-      this.onResultCallback(result);
+      });
 
       if (msg.id) {
         this.ws?.send(JSON.stringify({ type: 'ack_message', message_id: msg.id }));
@@ -460,7 +405,7 @@ export class RelayClient {
     }
   }
 
-  private parseWsInitialState(msg: Record<string, unknown>): RelayPollResult | null {
+  private parseWsInitialState(msg: Record<string, unknown>): RelayEvent | null {
     try {
       const friendRequests = ((msg.friend_requests as Array<Record<string, unknown>>) ?? []).map(r => ({
         fromTgId: r.from_tg_id as string,

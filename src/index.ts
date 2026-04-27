@@ -1074,7 +1074,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return false;
     });
     if (relayOk) {
-        relayClient.startPollLoop(async (result) => {
+        relayClient.connect(async (result) => {
           for (const req of result.friendRequests) {
             sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined);
 
@@ -1131,9 +1131,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
               }
             }
-            if (msg.id) {
-              await relayClient!.acknowledgeMessage(msg.id);
-            }
           }
         });
       } else {
@@ -1184,7 +1181,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       } catch {}
     }
     if (relayClient) {
-      relayClient.stopPollLoop();
+      relayClient.disconnect();
     }
     await agent.shutdown();
     process.exit(0);
