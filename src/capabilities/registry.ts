@@ -56,6 +56,8 @@ export interface ChatCommandContext {
   sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => import('../memory/shared-memory-store.js').FriendInfo;
   sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemorySetFriendStatus: (tgId: string, status: import('../memory/shared-memory-store.js').FriendStatus) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryGetCategories: () => string[];
   sharedMemoryRejectFriend: (tgId: string) => boolean;
   sharedMemoryRevokeFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;

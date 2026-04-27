@@ -57,11 +57,13 @@ export interface SharedMemorySummary {
   friendCount: number;
 }
 
+export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'revoked';
+
 export interface FriendInfo {
   tgId: string;
   username: string | null;
   firstName: string | null;
-  status: 'pending' | 'approved' | 'revoked';
+  status: FriendStatus;
   negativeTags: string[];
   negativeRules: string | null;
   createdAt: number;
@@ -324,7 +326,7 @@ export class SharedMemoryStore {
 
   updateFriendNegativeList(tgId: string, negativeTags: string[], negativeRules?: string): FriendInfo | null {
     const friend = this.db.getFriend(tgId);
-    if (!friend || friend.status !== 'approved') return null;
+    if (!friend || (friend.status !== 'approved' && friend.status !== 'awaiting_negative_list')) return null;
 
     this.db.updateFriend(tgId, {
       negative_tags: JSON.stringify(negativeTags),
@@ -350,6 +352,17 @@ export class SharedMemoryStore {
   isFriendApproved(tgId: string): boolean {
     const friend = this.db.getFriend(tgId);
     return friend?.status === 'approved';
+  }
+
+  getCategories(): string[] {
+    return this.db.getCategories(this.userKey);
+  }
+
+  setFriendStatus(tgId: string, status: FriendStatus): FriendInfo | null {
+    const friend = this.db.getFriend(tgId);
+    if (!friend) return null;
+    this.db.updateFriend(tgId, { status });
+    return this.toFriendInfo(this.db.getFriend(tgId)!);
   }
 
   setLearningPaused(paused: boolean): void {

@@ -34,6 +34,7 @@ import { SharedMemoryStore } from './memory/shared-memory-store.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
 import { RelayClient } from './relay/relay-client.js';
+import { SharedMemoryQueryResolver } from './relay/shared-memory-resolver.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -912,6 +913,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   }
 
+  let sharedMemoryQueryResolver: SharedMemoryQueryResolver | null = null;
+
   if (config.relay?.enabled !== false && sharedMemory) {
     try {
       relayClient = new RelayClient(config.relay);
@@ -922,6 +925,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       logger.warn({ err }, 'Relay client initialization failed');
       relayClient = null;
     }
+  }
+
+  if (relayClient) {
+    sharedMemoryQueryResolver = new SharedMemoryQueryResolver();
   }
 
   const channels = new ChannelRegistry(config);
@@ -946,6 +953,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => sharedMemory ? sharedMemory.addFriendRequest(tgId, username, firstName) : (() => { throw new Error('Shared memory not available'); })(),
     sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => sharedMemory ? sharedMemory.updateFriendInfo(tgId, username, firstName) : null,
     sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.approveFriend(tgId, negativeTags, negativeRules) : null,
+    sharedMemorySetFriendStatus: (tgId: string, status: import('./memory/shared-memory-store.js').FriendStatus) => sharedMemory ? sharedMemory.setFriendStatus(tgId, status) : null,
+    sharedMemoryGetCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
     sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.rejectFriend(tgId) : false,
     sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
     sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
@@ -1015,6 +1024,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, sharedMemory, channels, tokenBudget, capabilities, scheduler,
+    sharedMemoryQueryResolver, relayClient,
   );
 
   await agent.birth();
@@ -1066,7 +1076,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             for (const resp of result.friendResponses) {
               if (resp.approved) {
                 const existing = sharedMemory!.getFriend(resp.fromTgId);
-                if (existing && existing.status === 'pending') {
+                if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
                   sharedMemory!.approveFriend(resp.fromTgId, []);
                 }
                 if (tgChannel) {
@@ -1075,7 +1085,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 }
               } else {
                 const friend = sharedMemory!.getFriend(resp.fromTgId);
-                if (friend && friend.status === 'pending') {
+                if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
                   sharedMemory!.rejectFriend(resp.fromTgId);
                 }
                 if (tgChannel) {
@@ -1097,6 +1107,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                   }
                 } catch (err) {
                   logger.debug({ err }, 'Error processing shared memory query from relay');
+                }
+              }
+
+              if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
+                try {
+                  const responseText = relayClient!.decryptMessage(msg.encryptedPayload);
+                  if (responseText && sharedMemoryQueryResolver) {
+                    sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
+                  }
+                } catch (err) {
+                  logger.debug({ err }, 'Error processing shared memory response from relay');
                 }
               }
               if (msg.id) {

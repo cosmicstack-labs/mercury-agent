@@ -10,6 +10,7 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
+import type { SharedMemoryQueryResolver } from '../relay/shared-memory-resolver.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
@@ -250,6 +251,8 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private sharedMemoryQueryResolver: SharedMemoryQueryResolver | null;
+  private relayClient: import('../relay/relay-client.js').RelayClient | null;
 
   constructor(
     private config: MercuryConfig,
@@ -264,11 +267,15 @@ export class Agent {
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
+    sharedMemoryQueryResolver?: SharedMemoryQueryResolver | null,
+    relayClient?: import('../relay/relay-client.js').RelayClient | null,
   ) {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.sharedMemoryQueryResolver = sharedMemoryQueryResolver ?? null;
+    this.relayClient = relayClient ?? null;
 
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
@@ -486,6 +493,15 @@ export class Agent {
             content: m.content,
           });
         }
+      }
+
+      const sharedMemoryContext = await this.retrieveSharedMemoryForMention(msg.content);
+      if (sharedMemoryContext) {
+        messages.push({
+          role: 'user',
+          content: sharedMemoryContext,
+        });
+        messages.push({ role: 'assistant', content: 'Noted. I\'ll incorporate this shared knowledge into my response.' });
       }
 
       messages.push({ role: 'user', content: msg.content });
@@ -944,6 +960,9 @@ export class Agent {
       prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
       prompt += `\nCRITICAL: NEVER ask the user for permission to remember something. NEVER say "Want me to remember this?" or "Should I store this?" — memory extraction is automatic, silent, and runs in the background after every response. You do not need to offer or confirm. Simply reference relevant memories naturally when they apply.`;
       prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
+      if (this.sharedMemory && this.sharedMemory.getFriends().some(f => f.status === 'approved')) {
+        prompt += `\n\nShared Memory: You have approved friends whose shared memory you can query. When a user mentions @username (e.g. "@Bob what projects is he working on?"), shared memory from that friend is retrieved and injected into the conversation. Reference it naturally, attributing the knowledge to the friend (e.g. "According to Bob's shared memory, he's working on..."). If no shared memory context appears, the friend may be unavailable or have no relevant memories.`;
+      }
       if (summary.learningPaused) {
         prompt += `\nLearning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
       }
@@ -1077,6 +1096,79 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
     }
+  }
+
+  private async retrieveSharedMemoryForMention(userMessage: string): Promise<string | null> {
+    if (!this.sharedMemory || !this.sharedMemoryQueryResolver || !this.relayClient) return null;
+
+    const mentionRegex = /@(\w+)/g;
+    let match: RegExpExecArray | null;
+    const friends = this.sharedMemory.getFriends();
+    const approvedFriends = friends.filter(f => f.status === 'approved');
+
+    const matchedFriends: Array<{ tgId: string; displayName: string }> = [];
+
+    while ((match = mentionRegex.exec(userMessage)) !== null) {
+      const mention = match[1].toLowerCase();
+      for (const friend of approvedFriends) {
+        if (friend.username && friend.username.toLowerCase() === mention) {
+          matchedFriends.push({ tgId: friend.tgId, displayName: friend.username });
+          break;
+        }
+      }
+    }
+
+    const tgIdRegex = /@(\d{5,})/g;
+    while ((match = tgIdRegex.exec(userMessage)) !== null) {
+      const potentialTgId = match[1];
+      const friend = approvedFriends.find(f => f.tgId === potentialTgId);
+      if (friend) {
+        const displayName = friend.username ? `@${friend.username}` : friend.firstName || friend.tgId;
+        matchedFriends.push({ tgId: friend.tgId, displayName });
+      }
+    }
+
+    const uniqueFriends = matchedFriends.filter((f, i, arr) => arr.findIndex(x => x.tgId === f.tgId) === i);
+
+    if (uniqueFriends.length === 0) return null;
+
+    const contextParts: string[] = [];
+
+    for (const friend of uniqueFriends) {
+      try {
+        const friendPublicKey = await this.relayClient!.getUserPublicKey(friend.tgId);
+        if (!friendPublicKey) {
+          contextParts.push(`[${friend.displayName}: shared memory unavailable — public key not found]`);
+          continue;
+        }
+
+        const localContext = this.sharedMemory.retrieveRelevant(userMessage.replace(/@\w+/g, '').trim(), { maxRecords: 5, maxChars: 500 });
+        const queryText = userMessage.replace(/@\w+/g, '').trim() || 'general';
+
+        const sent = await this.relayClient!.sendSharedMemoryQuery(friend.tgId, queryText, friendPublicKey);
+        if (!sent) {
+          contextParts.push(`[${friend.displayName}: shared memory query could not be sent]`);
+          continue;
+        }
+
+        const result = await this.sharedMemoryQueryResolver.register(friend.tgId);
+
+        if (result.timedOut) {
+          contextParts.push(`[${friend.displayName}: shared memory request timed out]`);
+          continue;
+        }
+
+        if (result.context) {
+          contextParts.push(`Shared knowledge from ${friend.displayName}:\n${result.context}`);
+        }
+      } catch (err) {
+        logger.warn({ err, friend: friend.displayName }, 'Error retrieving shared memory for mention');
+        contextParts.push(`[${friend.displayName}: shared memory unavailable]`);
+      }
+    }
+
+    if (contextParts.length === 0) return null;
+    return contextParts.join('\n\n');
   }
 
   private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
@@ -1419,6 +1511,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
       const lines = ['**Friends List**\n'];
       const pending = friends.filter(f => f.status === 'pending');
+      const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
       const approved = friends.filter(f => f.status === 'approved');
       const revoked = friends.filter(f => f.status === 'revoked');
       if (pending.length > 0) {
@@ -1426,6 +1519,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         for (const f of pending) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           lines.push(`  ${name} (${f.tgId})`);
+        }
+      }
+      if (awaiting.length > 0) {
+        lines.push('**Awaiting category selection:**');
+        for (const f of awaiting) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${name} (${f.tgId}) — use /approve <TgID> to complete`);
         }
       }
       if (approved.length > 0) {
@@ -1444,6 +1544,64 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
       await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/approve')) {
+      if (!ctx.sharedMemoryGetFriends) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const tgId = trimmed.slice('/approve'.length).trim();
+      if (!tgId) {
+        await channel.send('Usage: /approve <TELEGRAM_USER_ID>\nApprove a pending friend request and select categories to exclude from shared memory.', channelId);
+        return true;
+      }
+      const friend = ctx.sharedMemoryGetFriend?.(tgId);
+      if (!friend) {
+        await channel.send(`No friend found with ID ${tgId}.`, channelId);
+        return true;
+      }
+      if (friend.status !== 'pending' && friend.status !== 'awaiting_negative_list') {
+        await channel.send(`${friend.username ? `@${friend.username}` : friend.firstName || tgId} is already ${friend.status}.`, channelId);
+        return true;
+      }
+
+      const categories = ctx.sharedMemoryGetCategories?.() ?? [];
+      const displayName = friend.username ? `@${friend.username}` : friend.firstName || tgId;
+
+      ctx.sharedMemorySetFriendStatus?.(tgId, 'awaiting_negative_list');
+
+      if (categories.length === 0) {
+        ctx.sharedMemoryApproveFriend?.(tgId, []);
+        await ctx.approveFriendRequest?.(tgId, []);
+        await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access (no categories to exclude).`, channelId);
+        return true;
+      }
+
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        await this.openCliCategorySelection(channel, channelId, tgId, displayName, categories, ctx);
+      } else {
+        ctx.sharedMemoryApproveFriend?.(tgId, []);
+        await ctx.approveFriendRequest?.(tgId, []);
+        await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access. Use /listfriends to manage categories.`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd.startsWith('/reject')) {
+      if (!ctx.sharedMemoryGetFriends) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const tgId = trimmed.slice('/reject'.length).trim();
+      if (!tgId) {
+        await channel.send('Usage: /reject <TELEGRAM_USER_ID>', channelId);
+        return true;
+      }
+      await ctx.rejectFriendRequest?.(tgId);
+      ctx.sharedMemoryRejectFriend?.(tgId);
+      await channel.send(`Rejected friend request from ${tgId}.`, channelId);
       return true;
     }
 
@@ -1803,6 +1961,40 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
     }
     await channel.send(lines.join('\n'), channelId);
+  }
+
+  private async openCliCategorySelection(
+    channel: CLIChannel,
+    channelId: string,
+    tgId: string,
+    displayName: string,
+    categories: string[],
+    ctx: import('../capabilities/registry.js').ChatCommandContext,
+  ): Promise<void> {
+    await channel.send(`\nApprove ${displayName} (${tgId})\n\nSelect categories to EXCLUDE from shared memory.`, channelId);
+
+    const categoryList = categories.map((cat, i) => `  ${i + 1}. ${cat}`).join('\n');
+    await channel.send(`Categories:\n${categoryList}`, channelId);
+
+    const excludedNumbers = await channel.askPermission('Enter numbers to exclude (e.g. "1 3 5"), or press Enter for no exclusions');
+    const selectedExclusions = new Set<string>();
+
+    if (excludedNumbers && excludedNumbers.trim() !== '') {
+      const numbers = excludedNumbers.trim().split(/\s+/).map(n => parseInt(n, 10) - 1).filter(n => n >= 0 && n < categories.length);
+      for (const idx of numbers) {
+        selectedExclusions.add(categories[idx]);
+      }
+    }
+
+    const negativeTags = Array.from(selectedExclusions);
+    ctx.sharedMemoryApproveFriend?.(tgId, negativeTags);
+    await ctx.approveFriendRequest?.(tgId, negativeTags);
+
+    if (negativeTags.length > 0) {
+      await channel.send(`Approved ${displayName} (${tgId}).\nExcluded categories: ${negativeTags.join(', ')}`, channelId);
+    } else {
+      await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access.`, channelId);
+    }
   }
 
   private async openCliMemoryMenu(channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {

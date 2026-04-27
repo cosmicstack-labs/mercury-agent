@@ -60,11 +60,13 @@ export interface SharedMemoryRow {
   last_used_query: string | null;
 }
 
+export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'revoked';
+
 export interface FriendRow {
   tg_id: string;
   username: string | null;
   first_name: string | null;
-  status: 'pending' | 'approved' | 'revoked';
+  status: FriendStatus;
   negative_tags: string | null;
   negative_rules: string | null;
   created_at: number;

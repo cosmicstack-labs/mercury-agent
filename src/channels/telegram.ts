@@ -29,6 +29,7 @@ const MEMORY_ACTION_PREFIX = 'tg_memory';
 const FRIEND_ACTION_PREFIX = 'tg_friend';
 
 type ApprovalResolver = () => void;
+type NegativeListSelection = { tgId: string; excludedCategories: Set<string> };
 
 export class TelegramChannel extends BaseChannel {
   readonly type = 'telegram' as const;
@@ -37,6 +38,7 @@ export class TelegramChannel extends BaseChannel {
   private typingInterval: NodeJS.Timeout | null = null;
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
+  private pendingNegativeLists: Map<number, NegativeListSelection> = new Map();
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
@@ -807,6 +809,7 @@ export class TelegramChannel extends BaseChannel {
 
     const lines = ['<b>Friends List</b>\n'];
     const pending = friends.filter(f => f.status === 'pending');
+    const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
     const approved = friends.filter(f => f.status === 'approved');
     const revoked = friends.filter(f => f.status === 'revoked');
 
@@ -818,11 +821,20 @@ export class TelegramChannel extends BaseChannel {
       }
     }
 
+    if (awaiting.length > 0) {
+      lines.push('\n<b>Selecting categories:</b>');
+      for (const f of awaiting) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId}) [Continue]`);
+      }
+    }
+
     if (approved.length > 0) {
       lines.push('\n<b>Approved:</b>');
       for (const f of approved) {
         const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-        lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
+        const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId})${negList}`);
       }
     }
 
@@ -843,6 +855,13 @@ export class TelegramChannel extends BaseChannel {
           .text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:approve:${f.tgId}`)
           .text(`❌ ${name}`, `${FRIEND_ACTION_PREFIX}:reject:${f.tgId}`)
           .row();
+      }
+    }
+
+    if (awaiting.length > 0) {
+      for (const f of awaiting) {
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+        keyboard.text(`📋 Select categories for ${name}`, `${FRIEND_ACTION_PREFIX}:approve:${f.tgId}`).row();
       }
     }
 
@@ -1104,12 +1123,21 @@ export class TelegramChannel extends BaseChannel {
 
       const lines = ['<b>Friends List</b>\n'];
       const pending = friends.filter(f => f.status === 'pending');
+      const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
       const approved = friends.filter(f => f.status === 'approved');
       const revoked = friends.filter(f => f.status === 'revoked');
 
       if (pending.length > 0) {
         lines.push('<b>Pending:</b>');
         for (const f of pending) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
+        }
+      }
+
+      if (awaiting.length > 0) {
+        lines.push('\n<b>Awaiting category selection:</b>');
+        for (const f of awaiting) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
         }
@@ -1140,11 +1168,82 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('approve:')) {
       const tgId = action.slice('approve:'.length);
-      const approved = this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, []);
-      await this.chatCommandContext?.approveFriendRequest?.(tgId, []);
+      this.chatCommandContext.sharedMemorySetFriendStatus?.(tgId, 'awaiting_negative_list');
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      const name = friend?.username ? `@${friend.username}` : friend?.firstName || tgId;
+      const categories = this.chatCommandContext.sharedMemoryGetCategories?.() ?? [];
+      this.pendingNegativeLists.set(chatId, { tgId, excludedCategories: new Set() });
+
+      if (categories.length === 0) {
+        this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, []);
+        await this.chatCommandContext?.approveFriendRequest?.(tgId, []);
+        await ctx.answerCallbackQuery({ text: 'Approved — no categories to exclude' });
+        await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}) with full access (no shared memory categories to exclude yet).`).catch(() => {});
+        this.pendingNegativeLists.delete(chatId);
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Select categories to exclude' });
+      await this.sendNegativeListKeyboard(chatId, tgId, name, categories, new Set());
+      return;
+    }
+
+    if (action.startsWith('neg_toggle:')) {
+      const parts = action.slice('neg_toggle:'.length);
+      const tgId = parts.split(':')[0];
+      const category = parts.slice(tgId.length + 1);
+      const pending = this.pendingNegativeLists.get(chatId);
+      if (!pending || pending.tgId !== tgId) {
+        await ctx.answerCallbackQuery({ text: 'Session expired — use /listfriends to restart' });
+        return;
+      }
+
+      if (pending.excludedCategories.has(category)) {
+        pending.excludedCategories.delete(category);
+      } else {
+        pending.excludedCategories.add(category);
+      }
+
+      const categories = this.chatCommandContext.sharedMemoryGetCategories?.() ?? [];
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      const name = friend?.username ? `@${friend.username}` : friend?.firstName || tgId;
+
+      await ctx.answerCallbackQuery({ text: pending.excludedCategories.has(category) ? `Excluded: ${category}` : `Included: ${category}` });
+      await this.sendNegativeListKeyboard(chatId, tgId, name, categories, pending.excludedCategories);
+      return;
+    }
+
+    if (action.startsWith('neg_done:')) {
+      const tgId = action.slice('neg_done:'.length);
+      const pending = this.pendingNegativeLists.get(chatId);
+      if (!pending || pending.tgId !== tgId) {
+        await ctx.answerCallbackQuery({ text: 'Session expired — use /listfriends to restart' });
+        return;
+      }
+
+      const negativeTags = Array.from(pending.excludedCategories);
+      this.pendingNegativeLists.delete(chatId);
+
+      const approved = this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, negativeTags);
+      await this.chatCommandContext?.approveFriendRequest?.(tgId, negativeTags);
       const name = approved?.username ? `@${approved.username}` : approved?.firstName || tgId;
-      await ctx.answerCallbackQuery({ text: 'Approved — configure negative list via /listfriends' });
-      await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}). Use /listfriends to configure what they can access.`).catch(() => {});
+
+      if (negativeTags.length > 0) {
+        await ctx.answerCallbackQuery({ text: 'Approved with exclusions' });
+        await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}).\nExcluded categories: ${negativeTags.join(', ')}`).catch(() => {});
+      } else {
+        await ctx.answerCallbackQuery({ text: 'Approved' });
+        await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}) with full shared memory access.`).catch(() => {});
+      }
+      return;
+    }
+
+    if (action.startsWith('neg_cancel:')) {
+      const tgId = action.slice('neg_cancel:'.length);
+      this.pendingNegativeLists.delete(chatId);
+      this.chatCommandContext.sharedMemorySetFriendStatus?.(tgId, 'pending');
+      await ctx.answerCallbackQuery({ text: 'Cancelled' });
+      await this.bot!.api.sendMessage(chatId, 'Approval cancelled. The friend request remains pending — use /listfriends to try again.').catch(() => {});
       return;
     }
 
@@ -1168,6 +1267,43 @@ export class TelegramChannel extends BaseChannel {
     }
 
     await ctx.answerCallbackQuery({ text: 'Unknown friend action' });
+  }
+
+  private async sendNegativeListKeyboard(chatId: number, tgId: string, friendName: string, categories: string[], excluded: Set<string>): Promise<void> {
+    if (!this.bot) return;
+
+    const lines = [`<b>Select categories to EXCLUDE from ${this.escapeHtml(friendName)}</b>`];
+    lines.push('Tap a category to toggle exclusion. Excluded categories will be hidden from this friend.');
+    lines.push('\nCurrent selection:');
+
+    if (categories.length > 0) {
+      for (const cat of categories) {
+        const icon = excluded.has(cat) ? '🚫' : '✅';
+        const suffix = excluded.has(cat) ? ' — excluded' : ' — visible';
+        lines.push(`  ${icon} ${cat}${suffix}`);
+      }
+    }
+
+    lines.push('\nWhen done, press ✅ Confirm or ❌ Cancel.');
+
+    const keyboard = new InlineKeyboard();
+
+    for (const cat of categories) {
+      const icon = excluded.has(cat) ? '🚫' : '✅';
+      keyboard.text(`${icon} ${cat}`, `${FRIEND_ACTION_PREFIX}:neg_toggle:${tgId}:${cat}`).row();
+    }
+
+    keyboard
+      .text('✅ Confirm Approval', `${FRIEND_ACTION_PREFIX}:neg_done:${tgId}`)
+      .row()
+      .text('❌ Cancel', `${FRIEND_ACTION_PREFIX}:neg_cancel:${tgId}`);
+
+    await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    }).catch(async () => {
+      await this.bot!.api.sendMessage(chatId, lines.join('\n'), { reply_markup: keyboard });
+    });
   }
 
   async resolveTelegramUser(tgId: string): Promise<{ username: string | null; firstName: string | null } | null> {
