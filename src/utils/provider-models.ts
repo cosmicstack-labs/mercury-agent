@@ -53,6 +53,16 @@ const OLLAMA_LOCAL_PREFERRED_MODELS = [
   'gpt-oss:120b',
 ] as const;
 
+const MIMO_PREFERRED_MODELS = [
+  'mimo-v2.5-pro',
+  'mimo-v2.5',
+  'mimo-v2-pro',
+  'mimo-v2-omni',
+  'mimo-v2-flash',
+] as const;
+
+const MIMO_TOKEN_PLAN_PREFERRED_MODELS = MIMO_PREFERRED_MODELS;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -156,6 +166,8 @@ function chooseRecommendedModel(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    mimo: MIMO_PREFERRED_MODELS,
+    mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -189,6 +201,8 @@ export function buildModelCatalog(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    mimo: MIMO_PREFERRED_MODELS,
+    mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
@@ -283,6 +297,48 @@ async function fetchOllamaModels(provider: ProviderName, config: ProviderConfig)
   return buildModelCatalog(provider, ids, config.model);
 }
 
+async function fetchMiMoModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const data = await fetchJson<OpenAIModelResponse>(
+    `${trimTrailingSlash(config.baseUrl)}/models`,
+    {
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+    },
+    'Mercury could not fetch models for this MiMo key. Please re-enter it.',
+  );
+
+  const ids = (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => {
+      const lower = id.toLowerCase();
+      return lower.startsWith('mimo-') && !lower.includes('tts');
+    });
+
+  return buildModelCatalog('mimo', ids, config.model);
+}
+
+async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const data = await fetchJson<OpenAIModelResponse>(
+    `${trimTrailingSlash(config.baseUrl)}/models`,
+    {
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+    },
+    'Mercury could not fetch models for this MiMo Token Plan key. Please re-enter it.',
+  );
+
+  const ids = (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => {
+      const lower = id.toLowerCase();
+      return lower.startsWith('mimo-') && !lower.includes('tts');
+    });
+
+  return buildModelCatalog('mimoTokenPlan', ids, config.model);
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
@@ -297,6 +353,14 @@ export async function fetchProviderModelCatalog(
 
   if (provider === 'ollamaCloud' || provider === 'ollamaLocal') {
     return fetchOllamaModels(provider, config);
+  }
+
+  if (provider === 'mimo') {
+    return fetchMiMoModels(config);
+  }
+
+  if (provider === 'mimoTokenPlan') {
+    return fetchMiMoTokenPlanModels(config);
   }
 
   return fetchOpenAICompatModels(provider, config);

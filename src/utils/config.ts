@@ -52,7 +52,9 @@ export type ProviderName =
   | 'deepseek'
   | 'grok'
   | 'ollamaCloud'
-  | 'ollamaLocal';
+  | 'ollamaLocal'
+  | 'mimo'
+  | 'mimoTokenPlan';
 
 export interface MercuryConfig {
   identity: {
@@ -68,6 +70,8 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
+    mimo: ProviderConfig;
+    mimoTokenPlan: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -172,6 +176,20 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/api'),
         model: getEnv('OLLAMA_LOCAL_MODEL', 'gpt-oss:20b'),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
+      },
+      mimo: {
+        name: 'mimo',
+        apiKey: getEnv('MIMO_API_KEY', ''),
+        baseUrl: getEnv('MIMO_BASE_URL', 'https://api.xiaomimimo.com/v1'),
+        model: getEnv('MIMO_MODEL', 'mimo-v2.5-pro'),
+        enabled: getEnvBool('MIMO_ENABLED', true),
+      },
+      mimoTokenPlan: {
+        name: 'mimoTokenPlan',
+        apiKey: getEnv('MIMO_TOKEN_PLAN_API_KEY', ''),
+        baseUrl: getEnv('MIMO_TOKEN_PLAN_BASE_URL', 'https://token-plan-cn.xiaomimimo.com/v1'),
+        model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
+        enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
       },
     },
     channels: {

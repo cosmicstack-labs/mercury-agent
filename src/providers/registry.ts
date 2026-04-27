@@ -5,6 +5,7 @@ import { OpenAICompatProvider } from './openai-compat.js';
 import { AnthropicProvider } from './anthropic.js';
 import { DeepSeekProvider } from './deepseek.js';
 import { OllamaProvider } from './ollama.js';
+import { MiMoProvider } from './mimo.js';
 import { logger } from '../utils/logger.js';
 
 export class ProviderRegistry {
@@ -22,6 +23,8 @@ export class ProviderRegistry {
       config.providers.grok,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
+      config.providers.mimo,
+      config.providers.mimoTokenPlan,
     ];
 
     for (const pc of entries) {
@@ -34,6 +37,8 @@ export class ProviderRegistry {
           provider = new DeepSeekProvider(pc);
         } else if (pc.name === 'ollamaCloud' || pc.name === 'ollamaLocal') {
           provider = new OllamaProvider(pc);
+        } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
+          provider = new MiMoProvider(pc);
         } else {
           provider = new OpenAICompatProvider(pc);
         }

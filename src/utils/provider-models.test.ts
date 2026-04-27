@@ -66,4 +66,36 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toHaveLength(7);
     expect(catalog.models).not.toContain('claude-sonnet-4-20250514');
   });
+
+  it('prefers mimo-v2.5-pro for MiMo when available', () => {
+    const catalog = buildModelCatalog('mimo', [
+      'mimo-v2.5-pro',
+      'mimo-v2-flash',
+      'mimo-v2.5',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('mimo-v2.5-pro');
+    expect(catalog.models).toContain('mimo-v2.5');
+    expect(catalog.models).toContain('mimo-v2-flash');
+  });
+
+  it('falls back to the first MiMo model when no preferred default is available', () => {
+    const catalog = buildModelCatalog('mimo', [
+      'mimo-v2-flash',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('mimo-v2-flash');
+  });
+
+  it('prefers mimo-v2.5-pro for MiMo Token Plan when available', () => {
+    const catalog = buildModelCatalog('mimoTokenPlan', [
+      'mimo-v2.5-pro',
+      'mimo-v2-flash',
+      'mimo-v2.5',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('mimo-v2.5-pro');
+    expect(catalog.models).toContain('mimo-v2.5');
+    expect(catalog.models).toContain('mimo-v2-flash');
+  });
 });
