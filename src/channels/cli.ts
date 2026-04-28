@@ -250,14 +250,7 @@ export class CLIChannel extends BaseChannel {
     }
     this.streamActive = false;
 
-    process.stdout.write(`\x1b[${visualLines}A`);
-    process.stdout.write('\x1b[J');
-
     if (full.trim()) {
-      const block = this.formatBlock(this.agentName, '', full);
-      for (const line of block) {
-        console.log(line);
-      }
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(chalk.dim('  ' + '─'.repeat(50 - elapsed.length - 4) + ' ' + elapsed + 's'));
     }
