@@ -8,16 +8,16 @@ export type AgentState =
   | 'sleeping'
   | 'awakening';
 
-export type AgentMode = 'cli' | 'daemon' | 'hybrid';
+type AgentMode = 'cli' | 'daemon' | 'hybrid';
 
-export interface AgentIdentity {
+interface AgentIdentity {
   name: string;
   owner: string;
   createdAt: number;
   version: string;
 }
 
-export interface AgentContext {
+interface AgentContext {
   identity: AgentIdentity;
   state: AgentState;
   mode: AgentMode;
@@ -26,14 +26,14 @@ export interface AgentContext {
   tokenUsage: TokenUsage;
 }
 
-export interface TokenUsage {
+interface TokenUsage {
   dailyUsed: number;
   dailyBudget: number;
   lastRequestUsed: number;
   lastResetDate: string;
 }
 
-export interface HeartbeatState {
+interface HeartbeatState {
   lastBeat: number;
   intervalMinutes: number;
   tickCount: number;

@@ -1,4 +1,4 @@
-export interface TelegramAccessUser {
+interface TelegramAccessUser {
   userId: number;
   chatId: number;
   username?: string;
@@ -7,7 +7,7 @@ export interface TelegramAccessUser {
   approvedAt: string;
 }
 
-export interface TelegramPendingRequest {
+interface TelegramPendingRequest {
   userId: number;
   chatId: number;
   username?: string;
@@ -29,13 +29,13 @@ export interface ChannelMessage {
   metadata?: Record<string, unknown>;
 }
 
-export interface ChannelConfig {
+interface ChannelConfig {
   type: ChannelType;
   enabled: boolean;
   [key: string]: unknown;
 }
 
-export interface TelegramChannelConfig extends ChannelConfig {
+interface TelegramChannelConfig extends ChannelConfig {
   type: 'telegram';
   botToken: string;
   webhookUrl?: string;
@@ -49,6 +49,6 @@ export interface TelegramChannelConfig extends ChannelConfig {
   pairedUsername?: string;
 }
 
-export interface CLIChannelConfig extends ChannelConfig {
+interface CLIChannelConfig extends ChannelConfig {
   type: 'cli';
 }

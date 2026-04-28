@@ -16,7 +16,7 @@ export type SharedMemoryType =
   | 'relationship'
   | 'episode';
 
-export interface SharedMemoryRecord {
+interface SharedMemoryRecord {
   id: string;
   type: SharedMemoryType;
   category: string;
@@ -73,7 +73,7 @@ export interface FriendInfo {
   approvedAt: number | null;
 }
 
-export interface SharedMemoryQueryResult {
+interface SharedMemoryQueryResult {
   records: SharedMemoryRecord[];
   context: string;
   blocked: boolean;

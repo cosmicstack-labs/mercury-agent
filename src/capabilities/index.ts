@@ -1,5 +1,5 @@
 export { PermissionManager } from './permissions.js';
-export type { PermissionsManifest, FileScope, ShellPermissions, FsPermissions, GitPermissions } from './permissions.js';
+
 export { CapabilityRegistry } from './registry.js';
 export { createReadFileTool } from './filesystem/read-file.js';
 export { createWriteFileTool } from './filesystem/write-file.js';

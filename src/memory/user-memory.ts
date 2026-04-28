@@ -4,7 +4,7 @@ import { SecondBrainDB, type MemoryRow } from './second-brain-db.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
-export type UserMemoryType =
+type UserMemoryType =
   | 'identity'
   | 'preference'
   | 'goal'
@@ -38,7 +38,7 @@ export interface UserMemoryRecord {
   lastUsedQuery?: string | null;
 }
 
-export interface UserMemoryCandidate {
+interface UserMemoryCandidate {
   type: UserMemoryType;
   summary: string;
   detail?: string;
@@ -56,7 +56,7 @@ export interface UserMemorySummary {
   activeSummary?: string;
 }
 
-export interface RetrievedUserMemory {
+interface RetrievedUserMemory {
   records: UserMemoryRecord[];
   context: string;
 }

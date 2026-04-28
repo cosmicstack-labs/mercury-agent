@@ -26,7 +26,7 @@ export function migrateLegacyMemory(): void {
   }
 }
 
-export interface MemoryEntry {
+interface MemoryEntry {
   id: string;
   timestamp: number;
   role: 'user' | 'assistant' | 'system';
@@ -36,7 +36,7 @@ export interface MemoryEntry {
   metadata?: Record<string, unknown>;
 }
 
-export interface LongTermFact {
+interface LongTermFact {
   id: string;
   timestamp: number;
   topic: string;
@@ -44,7 +44,7 @@ export interface LongTermFact {
   source: string;
 }
 
-export interface EpisodicEvent {
+interface EpisodicEvent {
   id: string;
   timestamp: number;
   type: string;

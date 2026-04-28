@@ -5,13 +5,13 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
-export interface FileScope {
+interface FileScope {
   path: string;
   read: boolean;
   write: boolean;
 }
 
-export interface ShellPermissions {
+interface ShellPermissions {
   enabled: boolean;
   blocked: string[];
   autoApproved: string[];
@@ -19,18 +19,18 @@ export interface ShellPermissions {
   cwdOnly: boolean;
 }
 
-export interface FsPermissions {
+interface FsPermissions {
   enabled: boolean;
   scopes: FileScope[];
 }
 
-export interface GitPermissions {
+interface GitPermissions {
   enabled: boolean;
   autoApproveRead: boolean;
   approveWrite: boolean;
 }
 
-export interface PermissionsManifest {
+interface PermissionsManifest {
   capabilities: {
     filesystem: FsPermissions;
     shell: ShellPermissions;

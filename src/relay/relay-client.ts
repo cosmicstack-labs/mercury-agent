@@ -6,7 +6,7 @@ const WS_RECONNECT_BASE_MS = 1_000;
 const WS_RECONNECT_MAX_MS = 30_000;
 const WS_PING_INTERVAL_MS = 30_000;
 
-export interface RelayConfig {
+interface RelayConfig {
   url: string;
   enabled: boolean;
 }
@@ -33,7 +33,7 @@ export interface RelayFriendRequest {
   to_first_name: string | null;
 }
 
-export interface RelayMessage {
+interface RelayMessage {
   fromTgId: string;
   toTgId: string;
   type: 'shared-memory-query' | 'shared-memory-response' | 'ping';

@@ -4,14 +4,14 @@ import type { MercuryConfig } from './config.js';
 import { getMercuryHome, saveConfig } from './config.js';
 import { logger } from './logger.js';
 
-export interface TokenTracker {
+interface TokenTracker {
   dailyUsed: number;
   dailyBudget: number;
   lastResetDate: string;
   requestLog: TokenLogEntry[];
 }
 
-export interface TokenLogEntry {
+interface TokenLogEntry {
   timestamp: number;
   provider: string;
   model: string;
