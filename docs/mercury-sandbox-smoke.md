@@ -1,54 +1,61 @@
 # Mercury sandbox smoke test
 
-Smoke test reproducible para validar Mercury dentro del sandbox con `glm-5.1`, sin tocar la lógica del agente.
+This reproducible smoke test validates Mercury inside the sandbox with `glm-5.1` without changing agent logic.
 
-## Qué automatiza
+## What it automates
 
-- carga manualmente `sandbox/mercury-home/.env`
-- exporta `MERCURY_HOME`
-- fija el `cwd` al workspace del sandbox
-- arranca Mercury en foreground con PTY usando `node dist/index.js start --foreground`
-- selecciona `Ask Me` enviando `\r`
-- manda `Di solo OK y nada más.`
-- verifica que la respuesta útil del asistente sea únicamente `OK`
-- guarda transcript raw y transcript limpio sin ANSI
+- manually loads `mercury-home/.env`
+- exports `MERCURY_HOME`
+- sets the working directory to the sandbox workspace
+- starts Mercury in foreground mode with a PTY via `node dist/index.js start --foreground`
+- selects `Ask Me` by sending `\r`
+- sends `Reply with OK only.`
+- verifies that the useful assistant response is exactly `OK`
+- stores both a raw transcript and an ANSI-stripped transcript
 
-## Requisitos
+## Requirements
 
-- `dist/index.js` debe existir en el repo (`npm run build` si hace falta)
-- `python3` con `pexpect` disponible
-- sandbox existente en:
-  - `MERCURY_SANDBOX_HOME=/home/raul/dev/mercury-test/sandbox/mercury-home`
-  - `MERCURY_SANDBOX_WORKSPACE=/home/raul/dev/mercury-test/sandbox/workspace`
+- `dist/index.js` must exist in the repo (`npm run build` if needed)
+- `python3` with `pexpect` available
+- a sandbox with:
+  - `MERCURY_SANDBOX_HOME` pointing to your `mercury-home` directory
+  - `MERCURY_SANDBOX_WORKSPACE` pointing to your sandbox workspace
 
-## Uso
+By default, `scripts/run_mercury_sandbox_smoke.sh` derives sandbox paths from portable repo-relative locations:
 
-Desde el repo:
+- first choice: `$REPO_ROOT/sandbox/mercury-home` and `$REPO_ROOT/sandbox/workspace`
+- fallback convenience: `$REPO_ROOT/../sandbox/mercury-home` and `$REPO_ROOT/../sandbox/workspace`
+
+If your setup lives somewhere else, override the environment variables explicitly.
+
+## Usage
+
+From the repo root:
 
 ```bash
 ./scripts/run_mercury_sandbox_smoke.sh
 ```
 
-Opcionalmente puedes sobreescribir rutas o prompt:
+You can optionally override paths or the prompt:
 
 ```bash
-MERCURY_SANDBOX_HOME=/ruta/mercury-home \
-MERCURY_SANDBOX_WORKSPACE=/ruta/workspace \
-MERCURY_SMOKE_PROMPT='Di solo OK y nada más.' \
+MERCURY_SANDBOX_HOME=/path/to/mercury-home \
+MERCURY_SANDBOX_WORKSPACE=/path/to/workspace \
+MERCURY_SMOKE_PROMPT='Reply with OK only.' \
 ./scripts/run_mercury_sandbox_smoke.sh
 ```
 
-## Salida
+## Output
 
-Los transcripts se guardan en `tmp/mercury-smoke/`:
+Transcripts are written to `tmp/mercury-smoke/`:
 
-- `*.log`: salida raw de terminal
-- `*.clean.txt`: salida limpiada, sin secuencias ANSI
+- `*.log`: raw terminal output
+- `*.clean.txt`: cleaned output without ANSI sequences
 
-El script falla si:
+The script fails if:
 
-- no encuentra `.env`
-- no encuentra `dist/index.js`
-- el arranque no muestra `glm-5.1`
-- no logra pasar el menú de permisos
-- la respuesta del asistente no es exactamente `OK`
+- `.env` is missing
+- `dist/index.js` is missing
+- startup does not show `glm-5.1`
+- it cannot get past the permissions menu
+- the assistant response is not exactly `OK`

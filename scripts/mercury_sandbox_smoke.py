@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pexpect
 
-DEFAULT_PROMPT = "Di solo OK y nada más."
+DEFAULT_PROMPT = "Reply with OK only."
 DEFAULT_MODEL = "glm-5.1"
 DEFAULT_TIMEOUT = 180
 ANSI_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -92,11 +92,11 @@ def extract_assistant_payload(lines: list[str]) -> list[str]:
 
 def ensure_exists(path: Path, label: str) -> None:
     if not path.exists():
-        raise SystemExit(f"ERROR: {label} no existe: {path}")
+        raise SystemExit(f"ERROR: {label} does not exist: {path}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Smoke test reproducible para Mercury sandbox (glm-5.1).")
+    parser = argparse.ArgumentParser(description="Reproducible smoke test for Mercury sandbox (glm-5.1).")
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--mercury-home", required=True, type=Path)
     parser.add_argument("--entrypoint", required=True, type=Path)
@@ -118,8 +118,8 @@ def main() -> int:
 
     ensure_exists(workspace, "workspace")
     ensure_exists(mercury_home, "MERCURY_HOME")
-    ensure_exists(mercury_home / ".env", ".env del sandbox")
-    ensure_exists(entrypoint, "entrypoint de Mercury")
+    ensure_exists(mercury_home / ".env", "sandbox .env")
+    ensure_exists(entrypoint, "Mercury entrypoint")
 
     env = os.environ.copy()
     env["MERCURY_HOME"] = str(mercury_home)
@@ -149,7 +149,7 @@ def main() -> int:
         child.expect("Select permission mode:", timeout=args.startup_timeout)
         startup_lines = normalize_lines(transcript.text)
         if not any(args.expected_model in line for line in startup_lines):
-            raise AssertionError(f"No encontré el modelo esperado '{args.expected_model}' en el arranque.")
+            raise AssertionError(f"Expected model '{args.expected_model}' was not shown during startup.")
 
         child.send("\r")
         child.expect("Type a message and press Enter.", timeout=args.startup_timeout)
@@ -163,12 +163,12 @@ def main() -> int:
         response_segment = transcript.text[response_start:]
         payload = extract_assistant_payload(normalize_lines(response_segment))
         if not payload:
-            raise AssertionError("No pude extraer contenido de la respuesta del asistente.")
+            raise AssertionError("Could not extract assistant response content.")
         if any(line != "OK" for line in payload):
-            raise AssertionError(f"La respuesta no fue exclusivamente 'OK': {payload}")
+            raise AssertionError(f"Assistant response was not exclusively 'OK': {payload}")
 
         clean_transcript.write_text(strip_ansi(transcript.text).replace("\r", ""), encoding="utf-8")
-        print("[smoke] PASS Mercury respondió solo OK.")
+        print("[smoke] PASS Mercury replied with OK only.")
         print(f"[smoke] assistant_payload={payload}")
         print(f"[smoke] raw_transcript={raw_transcript}")
         print(f"[smoke] clean_transcript={clean_transcript}")
