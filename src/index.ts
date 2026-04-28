@@ -110,6 +110,8 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
+  { key: 'mimo', label: 'MiMo (Xiaomi)' },
+  { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -246,6 +248,18 @@ function validateApiKey(provider: ProviderName, value: string): string | null {
     return looksLikeToken(value)
       ? null
       : 'Ollama Cloud keys must look like a real API token: long, no spaces, and not plain text.';
+  }
+
+  if (provider === 'mimo') {
+    return /^sk-[A-Za-z0-9_-]{16,}$/i.test(value)
+      ? null
+      : 'MiMo keys must start with `sk-`.';
+  }
+
+  if (provider === 'mimoTokenPlan') {
+    return /^tp-[A-Za-z0-9_-]{16,}$/i.test(value)
+      ? null
+      : 'MiMo Token Plan keys must start with `tp-`.';
   }
 
   return null;
@@ -666,6 +680,40 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.ollamaLocal.baseUrl = result.baseUrl;
           config.providers.ollamaLocal.model = result.model;
           config.providers.ollamaLocal.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'mimo') {
+        const mask = isReconfig && config.providers.mimo.apiKey ? ` [${maskKey(config.providers.mimo.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'mimo',
+          'MiMo',
+          chalk.white(`  MiMo API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.mimo.apiKey = result.apiKey;
+          config.providers.mimo.model = result.model;
+          config.providers.mimo.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'mimoTokenPlan') {
+        const mask = isReconfig && config.providers.mimoTokenPlan.apiKey ? ` [${maskKey(config.providers.mimoTokenPlan.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'mimoTokenPlan',
+          'MiMo Token Plan',
+          chalk.white(`  MiMo Token Plan API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.mimoTokenPlan.apiKey = result.apiKey;
+          config.providers.mimoTokenPlan.model = result.model;
+          config.providers.mimoTokenPlan.enabled = true;
         }
       }
     }

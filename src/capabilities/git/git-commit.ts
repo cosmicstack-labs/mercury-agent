@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 import { writeFileSync, unlinkSync } from 'node:fs';
@@ -9,9 +9,9 @@ const CO_AUTHOR = 'Mercury <mercury@cosmicstack.org>';
 export function createGitCommitTool(getCwd: () => string) {
   return tool({
     description: 'Record changes to the repository. Creates a new commit with staged changes. Automatically includes a Co-authored-by trailer for attribution.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       message: z.string().describe('Commit message'),
-    }),
+    })),
     execute: async ({ message }) => {
       try {
         const fullMessage = `${message}\n\nCo-authored-by: ${CO_AUTHOR}`;

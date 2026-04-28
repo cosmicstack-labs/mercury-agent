@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 import { resolve, isAbsolute } from 'node:path';
@@ -12,18 +12,13 @@ export function createRunCommandTool(permissions: PermissionManager, getCwd: () 
     description: `Run a shell command in the current working directory. Use the cd tool to change directories first — cd commands within this tool only affect chained commands (e.g., "cd /path && ls"), not subsequent calls.
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
 Auto-approved commands (ls, cat, git status, curl, etc.) run without asking.
-Other commands require user approval.`,
-    parameters: z.object({
+Other commands prompt the user for approval before execution.`,
+    inputSchema: zodSchema(z.object({
       command: z.string().describe('The shell command to execute'),
-    }),
+    })),
     execute: async ({ command }) => {
       const check = await permissions.checkShellCommand(command);
       if (!check.allowed) {
-        if (check.needsApproval) {
-          const baseCmd = command.trim().split(/\s+/)[0];
-          permissions.addPendingApproval(baseCmd);
-          return `⚠ Command requires approval: ${command}\n\nTell the user what this command does and ask for permission. If they approve, try running it again. If they say "always", use the approve_command tool to permanently approve this command type.`;
-        }
         return `Error: ${check.reason}`;
       }
 

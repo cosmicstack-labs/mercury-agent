@@ -1,13 +1,13 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
 
 export function createGitStatusTool(getCwd: () => string) {
   return tool({
     description: 'Show the working tree status. Returns staged, unstaged, and untracked files.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       path: z.string().optional().describe('Path to check (defaults to current directory)'),
-    }),
+    })),
     execute: async ({ path }) => {
       try {
         const cmd = path ? `git -C "${path}" status --porcelain` : 'git status --porcelain';

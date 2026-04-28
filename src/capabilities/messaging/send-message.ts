@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 
 export function createSendMessageTool(
@@ -7,9 +7,9 @@ export function createSendMessageTool(
   return tool({
     description:
       'Send a message through the configured outbound channel. For Telegram this sends to the approved Telegram recipients. Use this only when the user explicitly asks you to send something to Telegram or asks for scheduled results to be sent there.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       content: z.string().describe('The message content to send to the approved Telegram recipients'),
-    }),
+    })),
     execute: async ({ content }) => {
       const trimmed = content.trim();
       if (!trimmed) {

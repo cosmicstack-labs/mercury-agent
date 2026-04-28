@@ -1,4 +1,4 @@
-import { generateText, streamText } from 'ai';
+import { generateText, streamText, stepCountIs } from 'ai';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -9,6 +9,7 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
+import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { logger } from '../utils/logger.js';
@@ -536,6 +537,10 @@ export class Agent {
 
       for (const provider of fallbackIterator) {
         try {
+          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
+            ? { deepseek: { thinking: { type: 'enabled' as const } } }
+            : undefined;
+
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
           if (canStream && channel) {
@@ -544,8 +549,9 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.capabilities.getTools(),
-              maxSteps: MAX_STEPS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
+              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
@@ -561,7 +567,7 @@ export class Agent {
                       resultStr.includes('Command failed') ||
                       resultStr.startsWith('Command exited with code')
                     );
-                    loopDetector.record(tc.toolName, tc.args as Record<string, any>, failed);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, failed);
                   }
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
@@ -616,7 +622,7 @@ export class Agent {
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.args as Record<string, any>).catch(() => {});
+                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -630,7 +636,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -697,7 +703,9 @@ export class Agent {
               streamResult.usage,
             ]);
 
-            result = { text: fullText, usage };
+            const streamReasoning = await streamResult.reasoning;
+
+            result = { text: fullText, usage, reasoning: streamReasoning };
             streamedText = fullText;
             loopDetector.recordStepText(fullText);
           } else {
@@ -706,8 +714,9 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.capabilities.getTools(),
-              maxSteps: MAX_STEPS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
+              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
@@ -723,7 +732,7 @@ export class Agent {
                       resultStr.includes('Command failed') ||
                       resultStr.startsWith('Command exited with code')
                     );
-                    loopDetector.record(tc.toolName, tc.args as Record<string, any>, failed);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, failed);
                   }
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
@@ -778,7 +787,7 @@ export class Agent {
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.args as Record<string, any>).catch(() => {});
+                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -792,7 +801,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.args as Record<string, any>, msg.channelId).catch(() => {});
+                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -876,9 +885,9 @@ export class Agent {
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
         model: usedProvider!.model,
-        inputTokens: result.usage?.promptTokens ?? 0,
-        outputTokens: result.usage?.completionTokens ?? 0,
-        totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
       });
 
@@ -894,7 +903,8 @@ export class Agent {
         timestamp: Date.now(),
         role: 'assistant',
         content: finalText,
-        tokenCount: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+        reasoning: result.reasoning || undefined,
       });
 
       this.episodic.record({
@@ -1105,15 +1115,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
-        maxTokens: 400,
+        maxOutputTokens: 400,
       });
 
       this.tokenBudget.recordUsage({
         provider: provider.name,
         model: provider.getModel(),
-        inputTokens: result.usage?.promptTokens ?? 0,
-        outputTokens: result.usage?.completionTokens ?? 0,
-        totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
       });
 
@@ -1227,6 +1237,29 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     if (cmd === '/help') {
       await channel.send(ctx.manual(), channelId);
+      return true;
+    }
+
+    if (cmd === '/exit' || cmd === '/quit') {
+      await channel.send('Goodbye! Shutting down Mercury...', channelId);
+      this.shutdown();
+      return true;
+    }
+
+    if (cmd === '/permissions') {
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        const mode = await channel.askPermissionMode?.();
+        if (mode === 'allow-all') {
+          this.capabilities.permissions.setAutoApproveAll(true);
+          this.capabilities.permissions.addTempScope('/', true, true);
+          await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
+        } else {
+          this.capabilities.permissions.setAutoApproveAll(false);
+          await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
+        }
+        return true;
+      }
+      await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
       return true;
     }
 
@@ -1527,9 +1560,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     await channel.withMenu(async (select) => {
       while (true) {
         const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
+        const permLabel = this.capabilities.permissions.isAutoApproveAll() ? 'Switch to Ask Me' : 'Switch to Allow All';
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },
           { value: 'memory', label: 'Memory' },
+          { value: 'permissions', label: permLabel },
           { value: 'telegram', label: 'Telegram' },
           { value: 'tools', label: 'Tools' },
           { value: 'skills', label: 'Skills' },
@@ -1553,6 +1588,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           } else {
             await channel.send('Second brain is not enabled.', channelId);
           }
+          continue;
+        }
+
+        if (action === 'permissions') {
+          await this.handleChatCommand('/permissions', 'cli', channelId);
           continue;
         }
 

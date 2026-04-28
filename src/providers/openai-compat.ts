@@ -32,9 +32,9 @@ export class OpenAICompatProvider extends BaseProvider {
 
     return {
       text: result.text,
-      inputTokens: result.usage?.promptTokens ?? 0,
-      outputTokens: result.usage?.completionTokens ?? 0,
-      totalTokens: (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0),
+      inputTokens: result.usage?.inputTokens ?? 0,
+      outputTokens: result.usage?.outputTokens ?? 0,
+      totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
       model: this.model,
       provider: this.name,
     };
@@ -57,7 +57,7 @@ export class OpenAICompatProvider extends BaseProvider {
     return this.config.apiKey.length > 0;
   }
 
-  getModelInstance() {
+  getModelInstance(): any {
     return this.modelInstance;
   }
 }

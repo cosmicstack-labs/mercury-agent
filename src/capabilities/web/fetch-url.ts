@@ -1,4 +1,4 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 
 const MAX_CONTENT_LENGTH = 15000;
@@ -44,10 +44,10 @@ function stripHtml(html: string): string {
 export function createFetchUrlTool() {
   return tool({
     description: 'Fetch a URL and return its content as text. Strips HTML to readable markdown-like format. Useful for reading documentation, APIs, or web pages.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       url: z.string().describe('The URL to fetch'),
       format: z.enum(['text', 'markdown']).optional().describe('Output format (default: markdown)'),
-    }),
+    })),
     execute: async ({ url, format }) => {
       const outputFormat = format ?? 'markdown';
 

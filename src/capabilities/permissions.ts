@@ -262,7 +262,6 @@ export class PermissionManager {
       channelType: session.channelType,
     };
   }
-
   private load(): PermissionsManifest {
     if (existsSync(PERMISSIONS_FILE)) {
       try {
@@ -330,6 +329,10 @@ export class PermissionManager {
       if (mode === 'read' && tempScope.read) return { allowed: true };
       if (mode === 'write' && tempScope.write) return { allowed: true };
       return { allowed: false, reason: `Permission denied: ${mode} access to ${path}` };
+    }
+
+    if (!session.autoApproveAll && this.askHandler && session.channelType !== 'internal') {
+      return this.requestScopeExternal(path, mode);
     }
 
     return { allowed: false, reason: `Permission denied for ${mode} access to ${path}` };
@@ -518,6 +521,12 @@ export class PermissionManager {
   }
 
   private mergeDefaults(parsed: Partial<PermissionsManifest>): PermissionsManifest {
+    const mergeArray = (existing: string[] | undefined, defaults: string[]): string[] => {
+      if (!existing) return [...defaults];
+      const combined = new Set([...defaults, ...existing]);
+      return [...combined];
+    };
+
     return {
       capabilities: {
         filesystem: {
@@ -526,9 +535,9 @@ export class PermissionManager {
         },
         shell: {
           enabled: parsed.capabilities?.shell?.enabled ?? DEFAULT_MANIFEST.capabilities.shell.enabled,
-          blocked: parsed.capabilities?.shell?.blocked ?? DEFAULT_MANIFEST.capabilities.shell.blocked,
-          autoApproved: parsed.capabilities?.shell?.autoApproved ?? DEFAULT_MANIFEST.capabilities.shell.autoApproved,
-          needsApproval: parsed.capabilities?.shell?.needsApproval ?? DEFAULT_MANIFEST.capabilities.shell.needsApproval,
+          blocked: mergeArray(parsed.capabilities?.shell?.blocked, DEFAULT_MANIFEST.capabilities.shell.blocked),
+          autoApproved: mergeArray(parsed.capabilities?.shell?.autoApproved, DEFAULT_MANIFEST.capabilities.shell.autoApproved),
+          needsApproval: mergeArray(parsed.capabilities?.shell?.needsApproval, DEFAULT_MANIFEST.capabilities.shell.needsApproval),
           cwdOnly: parsed.capabilities?.shell?.cwdOnly ?? DEFAULT_MANIFEST.capabilities.shell.cwdOnly,
         },
         git: {

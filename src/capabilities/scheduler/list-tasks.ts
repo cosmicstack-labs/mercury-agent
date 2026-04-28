@@ -1,11 +1,11 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { Scheduler, ScheduledTaskManifest } from '../../core/scheduler.js';
 
 export function createListTasksTool(scheduler: Scheduler) {
   return tool({
     description: 'List all scheduled tasks with their cron expressions and descriptions.',
-    parameters: z.object({}),
+    inputSchema: zodSchema(z.object({})),
     execute: async () => {
       const manifests = scheduler.getManifests();
       if (manifests.length === 0) {
