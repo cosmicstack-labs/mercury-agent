@@ -157,6 +157,7 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
 };
 
 const PERMISSIONS_FILE = join(getMercuryHome(), 'permissions.yaml');
+const MAX_SESSION_STATES = 100;
 
 export class PermissionManager {
   private manifest: PermissionsManifest;
@@ -244,10 +245,25 @@ export class PermissionManager {
         channelType: channelType ?? this.inferChannelType(channelId),
       };
       this.sessionStates.set(channelId, session);
-    } else if (channelType) {
-      session.channelType = channelType;
+      this.pruneSessionStates();
+    } else {
+      this.sessionStates.delete(channelId);
+      this.sessionStates.set(channelId, session);
+      if (channelType) {
+        session.channelType = channelType;
+      }
     }
     return session;
+  }
+
+  private pruneSessionStates(): void {
+    while (this.sessionStates.size > MAX_SESSION_STATES) {
+      const oldestChannelId = this.sessionStates.keys().next().value;
+      if (!oldestChannelId || oldestChannelId === this.currentChannelId) {
+        break;
+      }
+      this.sessionStates.delete(oldestChannelId);
+    }
   }
 
   private inferChannelType(channelId: string): string {

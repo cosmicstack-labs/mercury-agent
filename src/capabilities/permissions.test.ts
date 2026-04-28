@@ -114,4 +114,36 @@ describe('PermissionManager session isolation', () => {
       { channelId: 'telegram:42', channelType: 'telegram' },
     );
   });
+
+  it('bounds session state growth when many channels are seen', () => {
+    const permissions = createPermissionManager();
+
+    for (let index = 0; index < 200; index += 1) {
+      permissions.setCurrentChannel(`telegram:${index}`, 'telegram');
+    }
+
+    expect((permissions as unknown as { sessionStates: Map<string, unknown> }).sessionStates.size).toBeLessThanOrEqual(100);
+  });
+
+  it('evicts the oldest channel state while keeping the current one', () => {
+    const permissions = createPermissionManager();
+
+    permissions.setCurrentChannel('telegram:oldest', 'telegram');
+    permissions.setAutoApproveAll(true);
+
+    for (let index = 0; index < 99; index += 1) {
+      permissions.setCurrentChannel(`telegram:fill:${index}`, 'telegram');
+    }
+
+    permissions.setCurrentChannel('telegram:current', 'telegram');
+    permissions.setAutoApproveAll(true);
+
+    permissions.setCurrentChannel('telegram:overflow', 'telegram');
+
+    permissions.setCurrentChannel('telegram:oldest', 'telegram');
+    expect(permissions.isAutoApproveAll()).toBe(false);
+
+    permissions.setCurrentChannel('telegram:current', 'telegram');
+    expect(permissions.isAutoApproveAll()).toBe(true);
+  });
 });
