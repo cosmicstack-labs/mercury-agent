@@ -163,8 +163,8 @@ export class TelegramChannel extends BaseChannel {
           await this.sendDirectMessage(chatId, `${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`);
           return;
         }
-        this.chatCommandContext?.sharedMemoryAddFriendRequest?.(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
         const relayResult = await this.chatCommandContext?.sendFriendRequest?.(friendTgId);
+        this.chatCommandContext?.sharedMemoryUpsertFriend?.(friendTgId, relayResult?.requestId ?? '', 'sent', 'pending', username ?? undefined, firstName ?? undefined);
         if (relayResult?.requestId) {
           const onlineTag = relayResult.targetOnline ? ' [online]' : ' [offline]';
           await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) sent via relay.${onlineTag}`);
@@ -924,6 +924,20 @@ export class TelegramChannel extends BaseChannel {
       }
     }
 
+    if (rejected.length > 0) {
+      for (const f of rejected) {
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+        keyboard.text(`🗑 Delete ${name}`, `${FRIEND_ACTION_PREFIX}:delete:${f.tgId}`).row();
+      }
+    }
+
+    if (revoked.length > 0) {
+      for (const f of revoked) {
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+        keyboard.text(`🗑 Delete ${name}`, `${FRIEND_ACTION_PREFIX}:delete:${f.tgId}`).row();
+      }
+    }
+
     await this.bot.api.sendMessage(chatId, lines.join('\n'), {
       parse_mode: 'HTML',
       reply_markup: keyboard,
@@ -1362,6 +1376,19 @@ export class TelegramChannel extends BaseChannel {
       const name = removed?.username ? `@${removed.username}` : removed?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Friend removed' });
       await this.bot!.api.sendMessage(chatId, `Removed ${name} (${tgId}) from your friends.`).catch(() => {});
+      return;
+    }
+
+    if (action.startsWith('delete:')) {
+      const tgId = action.slice('delete:'.length);
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      if (friend?.requestId) {
+        await this.chatCommandContext?.deleteFriendRequest?.(friend.requestId);
+      }
+      this.chatCommandContext.sharedMemoryRemoveFriend?.(tgId);
+      const name = friend?.username ? `@${friend.username}` : friend?.firstName || tgId;
+      await ctx.answerCallbackQuery({ text: 'Deleted' });
+      await this.bot!.api.sendMessage(chatId, `Deleted friend request with ${name} (${tgId}).`).catch(() => {});
       return;
     }
 

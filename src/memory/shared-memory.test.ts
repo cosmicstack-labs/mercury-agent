@@ -4,6 +4,7 @@ import { SharedMemoryDB } from './shared-memory-db.js';
 import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { RelayFriendRequest } from '../relay/relay-client.js';
 
 let dbPath: string;
 let store: SharedMemoryStore;
@@ -41,82 +42,68 @@ describe('SharedMemoryDB', () => {
 });
 
 describe('SharedMemoryStore - Friends', () => {
-  it('should add a friend request', () => {
-    const friend = store.addFriendRequest('123456789', 'testuser', 'Test');
-    expect(friend.tgId).toBe('123456789');
-    expect(friend.status).toBe('pending');
-    expect(friend.username).toBe('testuser');
-    expect(friend.firstName).toBe('Test');
+  const LOCAL_TG_ID = 'me';
+
+  it('should sync friends from relay', () => {
+    const relayFriends: RelayFriendRequest[] = [
+      { id: 'fr_1', from_tg_id: LOCAL_TG_ID, to_tg_id: '123456789', status: 'pending', negative_tags: null, negative_rules: null, created_at: 1000, approved_at: null, from_username: 'me', from_first_name: 'Me', to_username: 'testuser', to_first_name: 'Test' },
+    ];
+    store.syncFriendsFromRelay(relayFriends, LOCAL_TG_ID);
+    const friends = store.getFriends();
+    expect(friends.length).toBe(1);
+    expect(friends[0].tgId).toBe('123456789');
+    expect(friends[0].status).toBe('pending');
+    expect(friends[0].direction).toBe('sent');
+    expect(friends[0].username).toBe('testuser');
   });
 
-  it('should return existing friend on duplicate addFriendRequest', () => {
-    store.addFriendRequest('123456789', 'testuser', 'Test');
-    const friend = store.addFriendRequest('123456789', 'testuser2', 'Test2');
-    expect(friend.tgId).toBe('123456789');
-    expect(friend.status).toBe('pending');
+  it('should upsert friend from relay event', () => {
+    store.upsertFriendFromRelayEvent('123456789', 'fr_1', 'received', 'pending', 'testuser', 'Test');
+    const friend = store.getFriend('123456789');
+    expect(friend).not.toBeNull();
+    expect(friend!.tgId).toBe('123456789');
+    expect(friend!.status).toBe('pending');
+    expect(friend!.username).toBe('testuser');
   });
 
-  it('should update name fields on duplicate addFriendRequest when previously null', () => {
-    store.addFriendRequest('123456789');
-    const friend = store.addFriendRequest('123456789', 'testuser', 'Test');
-    expect(friend.username).toBe('testuser');
-    expect(friend.firstName).toBe('Test');
-  });
-
-  it('should approve a friend', () => {
-    store.addFriendRequest('123456789', 'testuser', 'Test');
-    const approved = store.approveFriend('123456789', ['private']);
+  it('should approve a friend in cache', () => {
+    store.upsertFriendFromRelayEvent('123456789', 'fr_1', 'received', 'pending', 'testuser', 'Test');
+    const approved = store.approveFriendInCache('123456789', ['private']);
     expect(approved).not.toBeNull();
     expect(approved!.status).toBe('approved');
     expect(approved!.negativeTags).toEqual(['private']);
   });
 
-  it('should reject a friend (sets status to rejected)', () => {
-    store.addFriendRequest('123456789', 'testuser', 'Test');
-    const result = store.rejectFriend('123456789');
+  it('should update friend status in cache', () => {
+    store.upsertFriendFromRelayEvent('123456789', 'fr_1', 'received', 'pending', 'testuser', 'Test');
+    const result = store.updateFriendStatusInCache('123456789', 'rejected');
     expect(result).not.toBeNull();
     expect(result!.status).toBe('rejected');
-    const retrieved = store.getFriend('123456789');
-    expect(retrieved).not.toBeNull();
-    expect(retrieved!.status).toBe('rejected');
   });
 
-  it('should revoke a friend', () => {
-    store.addFriendRequest('123456789', 'testuser', 'Test');
-    store.approveFriend('123456789', []);
-    const revoked = store.revokeFriend('123456789');
-    expect(revoked).not.toBeNull();
-    expect(revoked!.status).toBe('revoked');
-  });
-
-  it('should update friend info', () => {
-    store.addFriendRequest('123456789');
-    const updated = store.updateFriendInfo('123456789', 'newuser', 'NewName');
-    expect(updated).not.toBeNull();
-    expect(updated!.username).toBe('newuser');
-    expect(updated!.firstName).toBe('NewName');
-  });
-
-  it('should list all friends', () => {
-    store.addFriendRequest('111', 'user1', 'One');
-    store.addFriendRequest('222', 'user2', 'Two');
-    store.addFriendRequest('333', 'user3', 'Three');
-    store.approveFriend('111', []);
-
-    const friends = store.getFriends();
-    expect(friends.length).toBe(3);
-
-    const approved = friends.filter(f => f.status === 'approved');
-    const pending = friends.filter(f => f.status === 'pending');
-    expect(approved.length).toBe(1);
-    expect(pending.length).toBe(2);
+  it('should remove friend from cache', () => {
+    store.upsertFriendFromRelayEvent('123456789', 'fr_1', 'received', 'pending', 'testuser', 'Test');
+    const removed = store.removeFriendFromCache('123456789');
+    expect(removed).not.toBeNull();
+    expect(store.getFriend('123456789')).toBeNull();
   });
 
   it('should check if friend is approved', () => {
-    store.addFriendRequest('123456789');
+    store.upsertFriendFromRelayEvent('123456789', 'fr_1', 'received', 'pending');
     expect(store.isFriendApproved('123456789')).toBe(false);
-    store.approveFriend('123456789', []);
+    store.approveFriendInCache('123456789', []);
     expect(store.isFriendApproved('123456789')).toBe(true);
+  });
+
+  it('should list friends by status', () => {
+    store.syncFriendsFromRelay([
+      { id: 'fr_1', from_tg_id: LOCAL_TG_ID, to_tg_id: '111', status: 'approved', negative_tags: null, negative_rules: null, created_at: 1000, approved_at: 1001, from_username: 'me', from_first_name: 'Me', to_username: 'user1', to_first_name: 'One' },
+      { id: 'fr_2', from_tg_id: '222', to_tg_id: LOCAL_TG_ID, status: 'pending', negative_tags: null, negative_rules: null, created_at: 1002, approved_at: null, from_username: 'user2', from_first_name: 'Two', to_username: 'me', to_first_name: 'Me' },
+    ], LOCAL_TG_ID);
+    const approved = store.getFriendsByStatus('approved');
+    const pending = store.getFriendsByStatus('pending');
+    expect(approved.length).toBe(1);
+    expect(pending.length).toBe(1);
   });
 });
 
@@ -157,8 +144,7 @@ describe('SharedMemoryStore - Memory', () => {
   });
 
   it('should retrieve relevant memories for a friend', () => {
-    store.addFriendRequest('999', 'frienduser', 'Friend');
-    store.approveFriend('999', []);
+    store.upsertFriendFromRelayEvent('999', 'fr_999', 'received', 'approved', 'frienduser', 'Friend');
     store.remember([
       { type: 'preference', category: 'food', summary: 'User loves spicy Thai food', confidence: 0.9, importance: 0.7, durability: 0.8 },
     ]);
@@ -168,7 +154,7 @@ describe('SharedMemoryStore - Memory', () => {
   });
 
   it('should block access for non-approved friends', () => {
-    store.addFriendRequest('888', 'pendinguser', 'Pending');
+    store.upsertFriendFromRelayEvent('888', 'fr_888', 'received', 'pending', 'pendinguser', 'Pending');
     const result = store.retrieveForFriend('888', 'food');
     expect(result.blocked).toBe(true);
   });

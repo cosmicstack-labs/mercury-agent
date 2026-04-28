@@ -18,6 +18,21 @@ export interface FriendRequestResult {
   error?: string;
 }
 
+export interface RelayFriendRequest {
+  id: string;
+  from_tg_id: string;
+  to_tg_id: string;
+  status: string;
+  negative_tags: string | null;
+  negative_rules: string | null;
+  created_at: number;
+  approved_at: number | null;
+  from_username: string | null;
+  from_first_name: string | null;
+  to_username: string | null;
+  to_first_name: string | null;
+}
+
 export interface RelayMessage {
   fromTgId: string;
   toTgId: string;
@@ -206,6 +221,43 @@ export class RelayClient {
       return response.ok;
     } catch (err) {
       logger.warn({ err, friendTgId }, 'Friend deletion error');
+      return false;
+    }
+  }
+
+  async fetchFriends(): Promise<RelayFriendRequest[]> {
+    if (!this.ensureRegistered()) return [];
+
+    try {
+      const response = await fetch(`${this.url}/v1/friends`, {
+        headers: this.authHeaders(),
+      });
+
+      if (!response.ok) {
+        logger.warn({ status: response.status }, 'Fetch friends failed');
+        return [];
+      }
+
+      const data = await response.json() as { friends: RelayFriendRequest[] };
+      return data.friends;
+    } catch (err) {
+      logger.warn({ err }, 'Fetch friends error');
+      return [];
+    }
+  }
+
+  async deleteFriendRequest(requestId: string): Promise<boolean> {
+    if (!this.ensureRegistered()) return false;
+
+    try {
+      const response = await fetch(`${this.url}/v1/friend-request/${requestId}`, {
+        method: 'DELETE',
+        headers: this.authHeaders(),
+      });
+
+      return response.ok;
+    } catch (err) {
+      logger.warn({ err, requestId }, 'Delete friend request error');
       return false;
     }
   }

@@ -954,15 +954,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
     sharedMemoryGetFriends: () => sharedMemory ? sharedMemory.getFriends() : [],
     sharedMemoryGetFriend: (tgId: string) => sharedMemory ? sharedMemory.getFriend(tgId) : null,
-    sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string, direction?: 'sent' | 'received') => sharedMemory ? sharedMemory.addFriendRequest(tgId, username, firstName, direction) : (() => { throw new Error('Shared memory not available'); })(),
-    sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => sharedMemory ? sharedMemory.updateFriendInfo(tgId, username, firstName) : null,
-    sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.approveFriend(tgId, negativeTags, negativeRules) : null,
-    sharedMemorySetFriendStatus: (tgId: string, status: import('./memory/shared-memory-store.js').FriendStatus) => sharedMemory ? sharedMemory.setFriendStatus(tgId, status) : null,
+    sharedMemoryUpsertFriend: (tgId: string, requestId: string, direction: 'sent' | 'received', status: import('./memory/shared-memory-store.js').FriendStatus, username?: string | null, firstName?: string | null) => sharedMemory ? sharedMemory.upsertFriendFromRelayEvent(tgId, requestId, direction, status, username, firstName) : (() => { throw new Error('Shared memory not available'); })(),
+    sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.approveFriendInCache(tgId, negativeTags, negativeRules) : null,
+    sharedMemorySetFriendStatus: (tgId: string, status: import('./memory/shared-memory-store.js').FriendStatus) => sharedMemory ? sharedMemory.updateFriendStatusInCache(tgId, status) : null,
     sharedMemoryGetCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
-    sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.rejectFriend(tgId) : null,
-    sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
-    sharedMemoryRemoveFriend: (tgId: string) => sharedMemory ? sharedMemory.removeFriend(tgId) : null,
-    sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
+    sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.updateFriendStatusInCache(tgId, 'rejected') : null,
+    sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.updateFriendStatusInCache(tgId, 'revoked') : null,
+    sharedMemoryRemoveFriend: (tgId: string) => sharedMemory ? sharedMemory.removeFriendFromCache(tgId) : null,
+    sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeListInCache(tgId, negativeTags, negativeRules) : null,
     sendFriendRequest: async (tgId: string) => {
       if (!relayClient || !sharedMemory) return { requestId: null, status: 'error', targetOnline: false, error: 'Relay not available' };
       if (!relayClient.isRegistered()) return { requestId: null, status: 'error', targetOnline: false, error: 'Not registered' };
@@ -991,6 +990,18 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (!relayClient || !sharedMemory) return false;
       if (!relayClient.isRegistered()) return false;
       return relayClient.deleteFriend(tgId);
+    },
+    deleteFriendRequest: async (requestId: string) => {
+      if (!relayClient || !relayClient.isRegistered()) return false;
+      return relayClient.deleteFriendRequest(requestId);
+    },
+    syncFriendsFromRelay: async () => {
+      if (!relayClient || !sharedMemory || !relayClient.isRegistered()) return;
+      const friends = await relayClient.fetchFriends();
+      const localTgId = relayClient.getTgUserId();
+      if (localTgId) {
+        sharedMemory.syncFriendsFromRelay(friends, localTgId);
+      }
     },
     resolveTelegramUser: async (tgId: string) => {
       const telegram = channels.get('telegram') as TelegramChannel | undefined;
@@ -1021,9 +1032,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       const relayOk = await relayClient.register(relayUserId, relayUsername, relayFirstName);
       if (relayOk) {
+        const friends = await relayClient.fetchFriends();
+        sharedMemory.syncFriendsFromRelay(friends, relayUserId);
+
         relayClient.connect(async (result) => {
           for (const req of result.friendRequests) {
-            sharedMemory.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined, 'received');
+            sharedMemory.upsertFriendFromRelayEvent(req.fromTgId, req.requestId, 'received', 'pending', req.fromUsername, req.fromFirstName);
 
             if (tgChannel) {
               const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
@@ -1035,7 +1049,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             if (resp.approved) {
               const existing = sharedMemory.getFriend(resp.fromTgId);
               if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
-                sharedMemory.setFriendStatus(resp.fromTgId, 'awaiting_negative_list');
+                sharedMemory.updateFriendStatusInCache(resp.fromTgId, 'awaiting_negative_list');
               }
               if (tgChannel) {
                 const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
@@ -1044,7 +1058,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             } else {
               const friend = sharedMemory.getFriend(resp.fromTgId);
               if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
-                sharedMemory.rejectFriend(resp.fromTgId);
+                sharedMemory.updateFriendStatusInCache(resp.fromTgId, 'rejected');
               }
               if (tgChannel) {
                 const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
@@ -1075,7 +1089,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
 
           if (result.friendDeleted) {
-            const deleted = sharedMemory.removeFriend(result.friendDeleted);
+            const deleted = sharedMemory.removeFriendFromCache(result.friendDeleted);
             if (deleted) {
               const name = deleted.username ? `@${deleted.username}` : deleted.firstName || result.friendDeleted;
               logger.info({ friendDeleted: result.friendDeleted }, 'Friend removed by other user');
@@ -1195,9 +1209,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return false;
     });
     if (relayOk) {
+        const friends = await relayClient.fetchFriends();
+        sharedMemory!.syncFriendsFromRelay(friends, relayUserId);
+
         relayClient.connect(async (result) => {
           for (const req of result.friendRequests) {
-            sharedMemory!.addFriendRequest(req.fromTgId, req.fromUsername ?? undefined, req.fromFirstName ?? undefined, 'received');
+            sharedMemory!.upsertFriendFromRelayEvent(req.fromTgId, req.requestId, 'received', 'pending', req.fromUsername, req.fromFirstName);
 
             if (tgChannel) {
               const name = req.fromUsername ? `@${req.fromUsername}` : req.fromFirstName || req.fromTgId;
@@ -1209,7 +1226,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             if (resp.approved) {
               const existing = sharedMemory!.getFriend(resp.fromTgId);
               if (existing && (existing.status === 'pending' || existing.status === 'awaiting_negative_list')) {
-                sharedMemory!.setFriendStatus(resp.fromTgId, 'awaiting_negative_list');
+                sharedMemory!.updateFriendStatusInCache(resp.fromTgId, 'awaiting_negative_list');
               }
               if (tgChannel) {
                 const name = existing?.username ? `@${existing.username}` : existing?.firstName || resp.fromTgId;
@@ -1218,7 +1235,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             } else {
               const friend = sharedMemory!.getFriend(resp.fromTgId);
               if (friend && (friend.status === 'pending' || friend.status === 'awaiting_negative_list')) {
-                sharedMemory!.rejectFriend(resp.fromTgId);
+                sharedMemory!.updateFriendStatusInCache(resp.fromTgId, 'rejected');
               }
               if (tgChannel) {
                 const name = friend?.username ? `@${friend.username}` : friend?.firstName || resp.fromTgId;
@@ -1249,7 +1266,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
 
           if (result.friendDeleted) {
-            const deleted = sharedMemory?.removeFriend(result.friendDeleted);
+            const deleted = sharedMemory?.removeFriendFromCache(result.friendDeleted);
             if (deleted) {
               const name = deleted.username ? `@${deleted.username}` : deleted.firstName || result.friendDeleted;
               logger.info({ friendDeleted: result.friendDeleted }, 'Friend removed by other user');

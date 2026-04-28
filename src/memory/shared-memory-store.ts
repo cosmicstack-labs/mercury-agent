@@ -1,6 +1,7 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { getMemoryDir } from '../utils/config.js';
-import { SharedMemoryDB, type SharedMemoryRow, type FriendRow } from './shared-memory-db.js';
+import { SharedMemoryDB, type SharedMemoryRow } from './shared-memory-db.js';
+import type { RelayFriendRequest } from '../relay/relay-client.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
@@ -61,6 +62,7 @@ export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | '
 
 export interface FriendInfo {
   tgId: string;
+  requestId: string;
   username: string | null;
   firstName: string | null;
   direction: 'sent' | 'received';
@@ -84,6 +86,8 @@ export class SharedMemoryStore {
   private db: SharedMemoryDB;
   private maxRecords: number;
   private userKey: string;
+  private friendsCache: Map<string, FriendInfo> = new Map();
+  private friendQueryCounts: Map<string, { count: number; resetAt: number }> = new Map();
 
   constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
@@ -95,13 +99,12 @@ export class SharedMemoryStore {
 
   getSummary(): SharedMemorySummary {
     const byType = this.db.countByType(this.userKey) as Partial<Record<SharedMemoryType, number>>;
-    const friends = this.db.getFriends();
     return {
       total: this.db.totalActive(this.userKey),
       byType,
       categories: this.db.getCategories(this.userKey),
       learningPaused: this.isLearningPaused(),
-      friendCount: friends.filter(f => f.status === 'approved').length,
+      friendCount: Array.from(this.friendsCache.values()).filter(f => f.status === 'approved').length,
     };
   }
 
@@ -156,12 +159,12 @@ export class SharedMemoryStore {
     query: string,
     options?: { maxRecords?: number; maxChars?: number },
   ): SharedMemoryQueryResult {
-    const friend = this.db.getFriend(friendTgId);
+    const friend = this.friendsCache.get(friendTgId);
     if (!friend || friend.status !== 'approved') {
       return { records: [], context: 'Access denied — friend not approved or not found.', blocked: true };
     }
 
-    const queryCount = this.db.incrementFriendQueryCount(friendTgId);
+    const queryCount = this.incrementFriendQueryCount(friendTgId);
     if (queryCount > MAX_QUERIES_PER_HOUR) {
       return {
         records: [],
@@ -173,8 +176,8 @@ export class SharedMemoryStore {
     const maxRecords = options?.maxRecords ?? 5;
     const maxChars = options?.maxChars ?? 900;
 
-    const negativeTags: string[] = friend.negative_tags ? JSON.parse(friend.negative_tags) : [];
-    const negativeRules = friend.negative_rules ?? null;
+    const negativeTags = friend.negativeTags;
+    const negativeRules = friend.negativeRules;
 
     let results = this.db.searchRelevantForFriend(
       this.userKey, query, negativeTags, Math.max(maxRecords * 2, 10)
@@ -262,119 +265,104 @@ export class SharedMemoryStore {
     return remembered;
   }
 
-  addFriendRequest(tgId: string, username?: string, firstName?: string, direction: 'sent' | 'received' = 'received'): FriendInfo {
-    const existing = this.db.getFriend(tgId);
-    if (existing) {
-      if (!existing.username && username) {
-        this.db.updateFriend(tgId, { username: username ?? null, first_name: firstName ?? null });
-      } else if (!existing.first_name && firstName) {
-        this.db.updateFriend(tgId, { first_name: firstName ?? null });
-      }
-      return this.toFriendInfo(this.db.getFriend(tgId)!);
+  syncFriendsFromRelay(relayFriends: RelayFriendRequest[], localTgId: string): void {
+    this.friendsCache.clear();
+    for (const rf of relayFriends) {
+      const isSender = rf.from_tg_id === localTgId;
+      const friendTgId = isSender ? rf.to_tg_id : rf.from_tg_id;
+      const friendInfo: FriendInfo = {
+        tgId: friendTgId,
+        requestId: rf.id,
+        username: isSender ? rf.to_username : rf.from_username,
+        firstName: isSender ? rf.to_first_name : rf.from_first_name,
+        direction: isSender ? 'sent' : 'received',
+        status: rf.status as FriendStatus,
+        negativeTags: rf.negative_tags ? JSON.parse(rf.negative_tags) : [],
+        negativeRules: rf.negative_rules,
+        createdAt: rf.created_at,
+        approvedAt: rf.approved_at,
+      };
+      this.friendsCache.set(friendTgId, friendInfo);
     }
-    this.db.addFriend({
-      tg_id: tgId,
-      username: username ?? null,
-      first_name: firstName ?? null,
+    logger.info({ count: this.friendsCache.size }, 'Friends cache synced from relay');
+  }
+
+  upsertFriendFromRelayEvent(
+    friendTgId: string,
+    requestId: string,
+    direction: 'sent' | 'received',
+    status: FriendStatus,
+    username?: string | null,
+    firstName?: string | null,
+  ): FriendInfo {
+    const existing = this.friendsCache.get(friendTgId);
+    const info: FriendInfo = {
+      tgId: friendTgId,
+      requestId: requestId || existing?.requestId || '',
+      username: username ?? existing?.username ?? null,
+      firstName: firstName ?? existing?.firstName ?? null,
       direction,
-      status: 'pending',
-      negative_tags: null,
-      negative_rules: null,
-      created_at: Date.now(),
-      approved_at: null,
-      query_count_reset: Date.now(),
-    });
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
-  }
-
-  updateFriendInfo(tgId: string, username?: string | null, firstName?: string | null): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    if (!friend) return null;
-    const updates: Partial<Pick<FriendRow, 'username' | 'first_name'>> = {};
-    if (username !== undefined) updates.username = username;
-    if (firstName !== undefined) updates.first_name = firstName;
-    if (Object.keys(updates).length > 0) {
-      this.db.updateFriend(tgId, updates);
-    }
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
-  }
-
-  approveFriend(tgId: string, negativeTags: string[], negativeRules?: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    if (!friend) return null;
-
-    this.db.updateFriend(tgId, {
-      status: 'approved',
-      negative_tags: JSON.stringify(negativeTags),
-      negative_rules: negativeRules ?? null,
-      approved_at: Date.now(),
-    });
-
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
-  }
-
-  rejectFriend(tgId: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    if (!friend) return null;
-    this.db.updateFriend(tgId, { status: 'rejected' });
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
-  }
-
-  removeFriend(tgId: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    if (!friend) return null;
-    const info = this.toFriendInfo(friend);
-    this.db.hardDeleteFriend(tgId);
+      status,
+      negativeTags: status === 'approved' ? (existing?.negativeTags ?? []) : [],
+      negativeRules: status === 'approved' ? (existing?.negativeRules ?? null) : null,
+      createdAt: existing?.createdAt ?? Date.now(),
+      approvedAt: status === 'approved' ? (existing?.approvedAt ?? Date.now()) : null,
+    };
+    this.friendsCache.set(friendTgId, info);
     return info;
   }
 
-  revokeFriend(tgId: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
+  removeFriendFromCache(tgId: string): FriendInfo | null {
+    const friend = this.friendsCache.get(tgId);
     if (!friend) return null;
-
-    this.db.updateFriend(tgId, { status: 'revoked' });
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
+    this.friendsCache.delete(tgId);
+    return friend;
   }
 
-  updateFriendNegativeList(tgId: string, negativeTags: string[], negativeRules?: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
+  updateFriendStatusInCache(tgId: string, status: FriendStatus): FriendInfo | null {
+    const friend = this.friendsCache.get(tgId);
+    if (!friend) return null;
+    friend.status = status;
+    return friend;
+  }
+
+  approveFriendInCache(tgId: string, negativeTags: string[], negativeRules?: string): FriendInfo | null {
+    const friend = this.friendsCache.get(tgId);
+    if (!friend) return null;
+    friend.status = 'approved';
+    friend.negativeTags = negativeTags;
+    friend.negativeRules = negativeRules ?? null;
+    friend.approvedAt = Date.now();
+    return friend;
+  }
+
+  updateFriendNegativeListInCache(tgId: string, negativeTags: string[], negativeRules?: string): FriendInfo | null {
+    const friend = this.friendsCache.get(tgId);
     if (!friend || (friend.status !== 'approved' && friend.status !== 'awaiting_negative_list')) return null;
-
-    this.db.updateFriend(tgId, {
-      negative_tags: JSON.stringify(negativeTags),
-      negative_rules: negativeRules ?? friend.negative_rules,
-    });
-
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
+    friend.negativeTags = negativeTags;
+    friend.negativeRules = negativeRules ?? friend.negativeRules;
+    return friend;
   }
 
   getFriends(): FriendInfo[] {
-    return this.db.getFriends().map(f => this.toFriendInfo(f));
+    return Array.from(this.friendsCache.values());
   }
 
-  getFriendsByStatus(status: FriendRow['status']): FriendInfo[] {
-    return this.db.getFriendsByStatus(status).map(f => this.toFriendInfo(f));
+  getFriendsByStatus(status: FriendStatus): FriendInfo[] {
+    return Array.from(this.friendsCache.values()).filter(f => f.status === status);
   }
 
   getFriend(tgId: string): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    return friend ? this.toFriendInfo(friend) : null;
+    return this.friendsCache.get(tgId) ?? null;
   }
 
   isFriendApproved(tgId: string): boolean {
-    const friend = this.db.getFriend(tgId);
+    const friend = this.friendsCache.get(tgId);
     return friend?.status === 'approved';
   }
 
   getCategories(): string[] {
     return this.db.getCategories(this.userKey);
-  }
-
-  setFriendStatus(tgId: string, status: FriendStatus): FriendInfo | null {
-    const friend = this.db.getFriend(tgId);
-    if (!friend) return null;
-    this.db.updateFriend(tgId, { status });
-    return this.toFriendInfo(this.db.getFriend(tgId)!);
   }
 
   setLearningPaused(paused: boolean): void {
@@ -554,18 +542,21 @@ export class SharedMemoryStore {
     };
   }
 
-  private toFriendInfo(row: FriendRow): FriendInfo {
-    return {
-      tgId: row.tg_id,
-      username: row.username,
-      firstName: row.first_name,
-      direction: row.direction as 'sent' | 'received',
-      status: row.status as FriendInfo['status'],
-      negativeTags: row.negative_tags ? JSON.parse(row.negative_tags) : [],
-      negativeRules: row.negative_rules,
-      createdAt: row.created_at,
-      approvedAt: row.approved_at,
-    };
+  private incrementFriendQueryCount(tgId: string): number {
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+    const entry = this.friendQueryCounts.get(tgId);
+    let count = 0;
+    let resetAt = now;
+
+    if (entry && now - entry.resetAt < oneHour) {
+      count = entry.count;
+      resetAt = entry.resetAt;
+    }
+
+    count += 1;
+    this.friendQueryCounts.set(tgId, { count, resetAt });
+    return count;
   }
 }
 

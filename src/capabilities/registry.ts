@@ -53,8 +53,7 @@ export interface ChatCommandContext {
   sharedMemoryClear: () => number;
   sharedMemoryGetFriends: () => import('../memory/shared-memory-store.js').FriendInfo[];
   sharedMemoryGetFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
-  sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string, direction?: 'sent' | 'received') => import('../memory/shared-memory-store.js').FriendInfo;
-  sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryUpsertFriend: (tgId: string, requestId: string, direction: 'sent' | 'received', status: import('../memory/shared-memory-store.js').FriendStatus, username?: string | null, firstName?: string | null) => import('../memory/shared-memory-store.js').FriendInfo;
   sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemorySetFriendStatus: (tgId: string, status: import('../memory/shared-memory-store.js').FriendStatus) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryGetCategories: () => string[];
@@ -68,6 +67,8 @@ export interface ChatCommandContext {
   rejectFriendRequest: (tgId: string) => Promise<boolean>;
   revokeFriend: (tgId: string) => Promise<boolean>;
   removeFriend: (tgId: string) => Promise<boolean>;
+  deleteFriendRequest: (requestId: string) => Promise<boolean>;
+  syncFriendsFromRelay: () => Promise<void>;
   resolveTelegramUser: (tgId: string) => Promise<{ username: string | null; firstName: string | null } | null>;
   relayStatus: () => { registered: boolean; connected: boolean; url: string; userId: string | null };
   relayConnect: () => Promise<boolean>;

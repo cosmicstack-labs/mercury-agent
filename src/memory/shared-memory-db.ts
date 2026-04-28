@@ -60,22 +60,6 @@ export interface SharedMemoryRow {
   last_used_query: string | null;
 }
 
-export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'rejected' | 'revoked';
-
-export interface FriendRow {
-  tg_id: string;
-  username: string | null;
-  first_name: string | null;
-  direction: 'sent' | 'received';
-  status: FriendStatus;
-  negative_tags: string | null;
-  negative_rules: string | null;
-  created_at: number;
-  approved_at: number | null;
-  query_count_hour: number;
-  query_count_reset: number | null;
-}
-
 export class SharedMemoryDB {
   private db: BetterSqlite3Database;
 
@@ -130,20 +114,6 @@ export class SharedMemoryDB {
         value TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS friends (
-        tg_id TEXT PRIMARY KEY,
-        username TEXT,
-        first_name TEXT,
-        direction TEXT NOT NULL DEFAULT 'received',
-        status TEXT NOT NULL DEFAULT 'pending',
-        negative_tags TEXT,
-        negative_rules TEXT,
-        created_at INTEGER NOT NULL,
-        approved_at INTEGER,
-        query_count_hour INTEGER NOT NULL DEFAULT 0,
-        query_count_reset INTEGER
-      );
-
       CREATE INDEX IF NOT EXISTS idx_shared_memories_user_type ON shared_memories(user_key, type);
       CREATE INDEX IF NOT EXISTS idx_shared_memories_user_dismissed ON shared_memories(user_key, dismissed);
       CREATE INDEX IF NOT EXISTS idx_shared_memories_user_updated ON shared_memories(user_key, updated_at);
@@ -162,10 +132,6 @@ export class SharedMemoryDB {
         INSERT INTO shared_memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
     `);
-
-    try {
-      this.db.exec(`ALTER TABLE friends ADD COLUMN direction TEXT NOT NULL DEFAULT 'received'`);
-    } catch {}
 
     this.db.pragma('foreign_keys = ON');
     logger.info('Shared memory database initialized');
@@ -397,109 +363,6 @@ export class SharedMemoryDB {
     }
 
     return bestMatch;
-  }
-
-  getFriends(): FriendRow[] {
-    const stmt = this.db.prepare('SELECT * FROM friends ORDER BY created_at DESC');
-    return stmt.all() as FriendRow[];
-  }
-
-  getFriend(tgId: string): FriendRow | undefined {
-    const stmt = this.db.prepare('SELECT * FROM friends WHERE tg_id = ?');
-    return stmt.get(tgId) as FriendRow | undefined;
-  }
-
-  getFriendsByStatus(status: FriendRow['status']): FriendRow[] {
-    const stmt = this.db.prepare('SELECT * FROM friends WHERE status = ? ORDER BY created_at DESC');
-    return stmt.all(status) as FriendRow[];
-  }
-
-  addFriend(friend: Omit<FriendRow, 'query_count_hour'>): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO friends (tg_id, username, first_name, direction, status, negative_tags, negative_rules, created_at, approved_at, query_count_hour, query_count_reset)
-      VALUES (@tg_id, @username, @first_name, @direction, @status, @negative_tags, @negative_rules, @created_at, @approved_at, 0, @query_count_reset)
-    `);
-    stmt.run({
-      tg_id: friend.tg_id,
-      username: friend.username ?? null,
-      first_name: friend.first_name ?? null,
-      direction: friend.direction ?? 'received',
-      status: friend.status,
-      negative_tags: friend.negative_tags ?? null,
-      negative_rules: friend.negative_rules ?? null,
-      created_at: friend.created_at,
-      approved_at: friend.approved_at ?? null,
-      query_count_reset: Date.now(),
-    });
-  }
-
-  updateFriend(tgId: string, updates: Partial<Pick<FriendRow, 'status' | 'username' | 'first_name' | 'negative_tags' | 'negative_rules' | 'approved_at'>>): void {
-    const fields: string[] = [];
-    const values: Record<string, unknown> = { tg_id: tgId };
-
-    if (updates.status !== undefined) {
-      fields.push('status = @status');
-      values.status = updates.status;
-    }
-    if (updates.username !== undefined) {
-      fields.push('username = @username');
-      values.username = updates.username;
-    }
-    if (updates.first_name !== undefined) {
-      fields.push('first_name = @first_name');
-      values.first_name = updates.first_name;
-    }
-    if (updates.negative_tags !== undefined) {
-      fields.push('negative_tags = @negative_tags');
-      values.negative_tags = updates.negative_tags;
-    }
-    if (updates.negative_rules !== undefined) {
-      fields.push('negative_rules = @negative_rules');
-      values.negative_rules = updates.negative_rules;
-    }
-    if (updates.approved_at !== undefined) {
-      fields.push('approved_at = @approved_at');
-      values.approved_at = updates.approved_at;
-    }
-
-    if (fields.length === 0) return;
-
-    const stmt = this.db.prepare(`UPDATE friends SET ${fields.join(', ')} WHERE tg_id = @tg_id`);
-    stmt.run(values);
-  }
-
-  removeFriend(tgId: string): boolean {
-    const stmt = this.db.prepare("UPDATE friends SET status = 'rejected' WHERE tg_id = ? AND status != 'rejected'");
-    const result = stmt.run(tgId);
-    return result.changes > 0;
-  }
-
-  hardDeleteFriend(tgId: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM friends WHERE tg_id = ?');
-    const result = stmt.run(tgId);
-    return result.changes > 0;
-  }
-
-  incrementFriendQueryCount(tgId: string): number {
-    const friend = this.getFriend(tgId);
-    if (!friend) return -1;
-
-    const now = Date.now();
-    const oneHour = 60 * 60 * 1000;
-    let count = friend.query_count_hour;
-    let resetTime = friend.query_count_reset ?? now;
-
-    if (now - resetTime >= oneHour) {
-      count = 0;
-      resetTime = now;
-    }
-
-    count += 1;
-
-    const stmt = this.db.prepare('UPDATE friends SET query_count_hour = @count, query_count_reset = @resetTime WHERE tg_id = @tg_id');
-    stmt.run({ count, resetTime, tg_id: tgId });
-
-    return count;
   }
 
   setMeta(key: string, value: string): void {

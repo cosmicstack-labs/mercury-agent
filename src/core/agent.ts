@@ -1519,8 +1519,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send(`${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`, channelId);
         return true;
       }
-      ctx.sharedMemoryAddFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
       const relayResult = await ctx.sendFriendRequest(friendTgId);
+      ctx.sharedMemoryUpsertFriend?.(friendTgId, relayResult?.requestId ?? '', 'sent', 'pending', username ?? undefined, firstName ?? undefined);
       if (relayResult.requestId) {
         const onlineTag = relayResult.targetOnline ? ' [online]' : ' [offline]';
         await channel.send(`Friend request for ${displayName} (${friendTgId}) sent via relay.${onlineTag}`, channelId);
@@ -2050,6 +2050,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       options.push({ value: 'reject', label: 'Reject' });
     } else if (friend.status === 'approved') {
       options.push({ value: 'remove', label: 'Remove Friend' });
+    } else if (friend.status === 'rejected' || friend.status === 'revoked') {
+      options.push({ value: 'delete', label: 'Delete Request' });
     }
     options.push({ value: 'back', label: 'Back' });
 
@@ -2105,6 +2107,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         return true;
       }
       return false;
+    }
+
+    if (action === 'delete') {
+      if (friend.requestId) {
+        await ctx.deleteFriendRequest?.(friend.requestId);
+      }
+      ctx.sharedMemoryRemoveFriend?.(friend.tgId);
+      await channel.send(`Deleted friend request with ${name}.`, channelId);
+      return true;
     }
 
     return false;
