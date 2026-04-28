@@ -64,7 +64,7 @@
     "dotenv": "^16.4.7",
     "grammy": "^1.42.0",
     "js-tiktoken": "^1.0.19",
-    "libsodium-wrappers": "^0.8.4",
+
     "marked": "^14.1.4",
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",
@@ -74,8 +74,7 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^12.9.0",
-    "tweetsodium": "^0.0.4"
+    "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

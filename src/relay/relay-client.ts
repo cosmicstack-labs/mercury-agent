@@ -1,5 +1,4 @@
 import WebSocket from 'ws';
-import { getOrCreateKeyPair, encryptForRecipient, decryptFromSender, isE2EAvailable, type KeyPair } from './crypto.js';
 import { logger } from '../utils/logger.js';
 
 const DEFAULT_RELAY_URL = 'https://mercury-relay.admin-5cc.workers.dev';
@@ -13,12 +12,10 @@ export interface RelayConfig {
 }
 
 export interface RelayMessage {
-  id: string;
   fromTgId: string;
   toTgId: string;
-  type: 'friend-request' | 'friend-response' | 'shared-memory-query' | 'shared-memory-response' | 'notification';
-  encryptedPayload?: string;
-  plainPayload?: Record<string, unknown>;
+  type: 'shared-memory-query' | 'shared-memory-response';
+  payload: string;
   createdAt: number;
 }
 
@@ -35,9 +32,7 @@ export class RelayClient {
   private url: string;
   private apiKey: string | null = null;
   private tgUserId: string | null = null;
-  private keyPair: KeyPair;
   private registered = false;
-  private e2eAvailable: boolean;
 
   private ws: WebSocket | null = null;
   private wsReconnectAttempts = 0;
@@ -48,8 +43,6 @@ export class RelayClient {
 
   constructor(config?: RelayConfig) {
     this.url = config?.url || DEFAULT_RELAY_URL;
-    this.keyPair = getOrCreateKeyPair() ?? { publicKey: new Uint8Array(0), privateKey: new Uint8Array(0), publicKeyBase64: '' };
-    this.e2eAvailable = isE2EAvailable();
   }
 
   private get wsUrl(): string {
@@ -67,8 +60,6 @@ export class RelayClient {
           tg_user_id: tgUserId,
           username: username ?? null,
           first_name: firstName ?? null,
-          public_key: this.keyPair.publicKeyBase64,
-          endpoint: null,
         }),
       });
 
@@ -203,93 +194,27 @@ export class RelayClient {
     }
   }
 
-  async sendSharedMemoryQuery(friendTgId: string, query: string, friendPublicKeyBase64: string): Promise<boolean> {
-    if (!this.ensureRegistered()) return false;
-    if (!this.e2eAvailable) {
-      logger.warn('E2E encryption not available — cannot send shared memory query');
+  sendViaWs(toTgId: string, messageType: string, payload: string): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      logger.warn({ toTgId, messageType }, 'Cannot send via WS — not connected');
       return false;
     }
 
+    const msg = JSON.stringify({
+      type: 'send_message',
+      to_tg_id: toTgId,
+      message_type: messageType,
+      payload,
+    });
+
     try {
-      const encryptedQuery = encryptForRecipient(query, friendPublicKeyBase64);
-      if (!encryptedQuery) return false;
-
-      const response = await fetch(`${this.url}/v1/message`, {
-        method: 'POST',
-        headers: this.authHeaders(),
-        body: JSON.stringify({
-          from_tg_id: this.tgUserId,
-          to_tg_id: friendTgId,
-          type: 'shared-memory-query',
-          encrypted_payload: encryptedQuery,
-        }),
-      });
-
-      if (!response.ok) {
-        logger.warn({ status: response.status, friendTgId }, 'Shared memory query failed');
-        return false;
-      }
-
-      logger.info({ friendTgId }, 'Shared memory query sent via relay');
+      this.ws.send(msg);
+      logger.info({ toTgId, messageType }, 'Message sent via WebSocket');
       return true;
     } catch (err) {
-      logger.warn({ err, friendTgId }, 'Shared memory query error');
+      logger.warn({ err, toTgId, messageType }, 'Failed to send message via WebSocket');
       return false;
     }
-  }
-
-  async sendSharedMemoryResponse(friendTgId: string, responseText: string, friendPublicKeyBase64: string): Promise<boolean> {
-    if (!this.ensureRegistered()) return false;
-    if (!this.e2eAvailable) {
-      logger.warn('E2E encryption not available — cannot send shared memory response');
-      return false;
-    }
-
-    try {
-      const encryptedResponse = encryptForRecipient(responseText, friendPublicKeyBase64);
-      if (!encryptedResponse) return false;
-
-      const resp = await fetch(`${this.url}/v1/message`, {
-        method: 'POST',
-        headers: this.authHeaders(),
-        body: JSON.stringify({
-          from_tg_id: this.tgUserId,
-          to_tg_id: friendTgId,
-          type: 'shared-memory-response',
-          encrypted_payload: encryptedResponse,
-        }),
-      });
-
-      return resp.ok;
-    } catch (err) {
-      logger.warn({ err, friendTgId }, 'Shared memory response error');
-      return false;
-    }
-  }
-
-  async getUserPublicKey(tgUserId: string): Promise<string | null> {
-    if (!this.ensureRegistered()) return null;
-
-    try {
-      const response = await fetch(`${this.url}/v1/user/${tgUserId}`, {
-        headers: this.authHeaders(),
-      });
-
-      if (!response.ok) return null;
-
-      const data = await response.json() as { public_key: string };
-      return data.public_key;
-    } catch {
-      return null;
-    }
-  }
-
-  decryptMessage(encryptedPayload: string): string | null {
-    if (!this.e2eAvailable) {
-      logger.warn('E2E encryption not available — cannot decrypt message');
-      return null;
-    }
-    return decryptFromSender(encryptedPayload, this.keyPair);
   }
 
   connect(onEvent: (event: RelayEvent) => void): void {
@@ -428,18 +353,13 @@ export class RelayClient {
         friendRequests: [],
         friendResponses: [],
         messages: [{
-          id: msg.id as string,
           fromTgId: msg.from_tg_id as string,
           toTgId: msg.to_tg_id as string,
           type: msg.message_type as RelayMessage['type'],
-          encryptedPayload: msg.encrypted_payload as string,
+          payload: msg.payload as string,
           createdAt: msg.created_at as number,
         }],
       });
-
-      if (msg.id) {
-        this.ws?.send(JSON.stringify({ type: 'ack_message', message_id: msg.id }));
-      }
       return;
     }
   }
@@ -460,11 +380,10 @@ export class RelayClient {
       }));
 
       const messages = ((msg.messages as Array<Record<string, unknown>>) ?? []).map(m => ({
-        id: m.id as string,
         fromTgId: m.from_tg_id as string,
         toTgId: m.to_tg_id as string,
-        type: m.type as RelayMessage['type'],
-        encryptedPayload: m.encrypted_payload as string,
+        type: m.message_type as RelayMessage['type'],
+        payload: m.payload as string,
         createdAt: m.created_at as number,
       }));
 
@@ -539,14 +458,6 @@ export class RelayClient {
 
   getTgUserId(): string | null {
     return this.tgUserId;
-  }
-
-  getPublicKeyBase64(): string {
-    return this.keyPair.publicKeyBase64;
-  }
-
-  isE2EAvailable(): boolean {
-    return this.e2eAvailable;
   }
 
   private ensureRegistered(): boolean {

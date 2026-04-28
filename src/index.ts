@@ -1050,25 +1050,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
 
           for (const msg of result.messages) {
-            if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
+            if (msg.type === 'shared-memory-query' && msg.payload) {
               try {
-                const query = relayClient.decryptMessage(msg.encryptedPayload);
-                if (!query) continue;
-                const queryResult = sharedMemory.retrieveForFriend(msg.fromTgId, query);
-                const fromPublicKey = await relayClient.getUserPublicKey(msg.fromTgId);
-                if (fromPublicKey) {
-                  await relayClient.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
-                }
+                const queryResult = sharedMemory.retrieveForFriend(msg.fromTgId, msg.payload);
+                relayClient.sendViaWs(msg.fromTgId, 'shared-memory-response', queryResult.context);
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory query from relay');
               }
             }
 
-            if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
+            if (msg.type === 'shared-memory-response' && msg.payload) {
               try {
-                const responseText = relayClient.decryptMessage(msg.encryptedPayload);
-                if (responseText && sharedMemoryQueryResolver) {
-                  sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
+                if (sharedMemoryQueryResolver) {
+                  sharedMemoryQueryResolver.resolve(msg.fromTgId, msg.payload);
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
@@ -1230,25 +1224,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
 
           for (const msg of result.messages) {
-            if (msg.type === 'shared-memory-query' && msg.encryptedPayload) {
+            if (msg.type === 'shared-memory-query' && msg.payload) {
               try {
-                const query = relayClient!.decryptMessage(msg.encryptedPayload);
-                if (!query) continue;
-                const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, query);
-                const fromPublicKey = await relayClient!.getUserPublicKey(msg.fromTgId);
-                if (fromPublicKey) {
-                  await relayClient!.sendSharedMemoryResponse(msg.fromTgId, queryResult.context, fromPublicKey);
-                }
+                const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, msg.payload);
+                relayClient!.sendViaWs(msg.fromTgId, 'shared-memory-response', queryResult.context);
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory query from relay');
               }
             }
 
-            if (msg.type === 'shared-memory-response' && msg.encryptedPayload) {
+            if (msg.type === 'shared-memory-response' && msg.payload) {
               try {
-                const responseText = relayClient!.decryptMessage(msg.encryptedPayload);
-                if (responseText && sharedMemoryQueryResolver) {
-                  sharedMemoryQueryResolver.resolve(msg.fromTgId, responseText);
+                if (sharedMemoryQueryResolver) {
+                  sharedMemoryQueryResolver.resolve(msg.fromTgId, msg.payload);
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');

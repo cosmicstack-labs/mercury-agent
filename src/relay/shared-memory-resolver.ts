@@ -9,9 +9,10 @@ export interface SharedMemoryQueryResult {
 type QueryResolver = {
   resolve: (result: SharedMemoryQueryResult) => void;
   timer: NodeJS.Timeout;
+  attempt: number;
 };
 
-const QUERY_TIMEOUT_MS = 15_000;
+const QUERY_TIMEOUT_MS = 60_000;
 
 export class SharedMemoryQueryResolver {
   private pending = new Map<string, QueryResolver>();
@@ -35,7 +36,7 @@ export class SharedMemoryQueryResolver {
         resolve({ friendTgId, context: '', timedOut: true });
       }, QUERY_TIMEOUT_MS);
 
-      this.pending.set(k, { resolve, timer });
+      this.pending.set(k, { resolve, timer, attempt: 1 });
     });
   }
 

@@ -1132,40 +1132,39 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     if (uniqueFriends.length === 0) return null;
 
-    const contextParts: string[] = [];
+    const _unused = this.sharedMemory.retrieveRelevant(userMessage.replace(/@\w+/g, '').trim(), { maxRecords: 5, maxChars: 500 });
 
-    for (const friend of uniqueFriends) {
-      try {
-        const friendPublicKey = await this.relayClient!.getUserPublicKey(friend.tgId);
-        if (!friendPublicKey) {
-          contextParts.push(`[${friend.displayName}: shared memory unavailable — public key not found]`);
-          continue;
+    const results = await Promise.allSettled(
+      uniqueFriends.map(async (friend) => {
+        try {
+          const queryText = userMessage.replace(/@\w+/g, '').trim() || 'general';
+
+          const sent = this.relayClient!.sendViaWs(friend.tgId, 'shared-memory-query', queryText);
+          if (!sent) {
+            return null;
+          }
+
+          const result = await this.sharedMemoryQueryResolver!.register(friend.tgId);
+
+          if (result.timedOut) {
+            return null;
+          }
+
+          if (result.context) {
+            return `Shared knowledge from ${friend.displayName}:\n${result.context}`;
+          }
+          return null;
+        } catch (err) {
+          logger.warn({ err, friend: friend.displayName }, 'Error retrieving shared memory for mention');
+          return null;
         }
+      }),
+    );
 
-        const localContext = this.sharedMemory.retrieveRelevant(userMessage.replace(/@\w+/g, '').trim(), { maxRecords: 5, maxChars: 500 });
-        const queryText = userMessage.replace(/@\w+/g, '').trim() || 'general';
-
-        const sent = await this.relayClient!.sendSharedMemoryQuery(friend.tgId, queryText, friendPublicKey);
-        if (!sent) {
-          contextParts.push(`[${friend.displayName}: shared memory query could not be sent]`);
-          continue;
-        }
-
-        const result = await this.sharedMemoryQueryResolver.register(friend.tgId);
-
-        if (result.timedOut) {
-          contextParts.push(`[${friend.displayName}: shared memory request timed out]`);
-          continue;
-        }
-
-        if (result.context) {
-          contextParts.push(`Shared knowledge from ${friend.displayName}:\n${result.context}`);
-        }
-      } catch (err) {
-        logger.warn({ err, friend: friend.displayName }, 'Error retrieving shared memory for mention');
-        contextParts.push(`[${friend.displayName}: shared memory unavailable]`);
-      }
-    }
+    const contextParts = results
+      .filter((r): r is PromiseFulfilledResult<string | null> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter((v): v is string => v !== null);
 
     if (contextParts.length === 0) return null;
     return contextParts.join('\n\n');
