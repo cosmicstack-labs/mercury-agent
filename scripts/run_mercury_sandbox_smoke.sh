@@ -34,6 +34,22 @@ fi
 
 mkdir -p "$TRANSCRIPTS_DIR"
 
+# Reset sandbox token budget so runs don't accumulate across the same day
+TOKEN_USAGE="$SANDBOX_HOME/token-usage.json"
+if [[ -f "$TOKEN_USAGE" ]]; then
+  TODAY="$(date +%Y-%m-%d)"
+  python3 - "$TOKEN_USAGE" "$TODAY" <<'PYEOF'
+import json, sys
+path, today = sys.argv[1], sys.argv[2]
+data = json.loads(open(path).read())
+data["dailyUsed"] = 0
+data["lastResetDate"] = today
+data["requestLog"] = []
+open(path, "w").write(json.dumps(data, indent=2))
+PYEOF
+  echo "[smoke] token budget reset for $TODAY"
+fi
+
 set -a
 # shellcheck disable=SC1090
 source "$SANDBOX_HOME/.env"

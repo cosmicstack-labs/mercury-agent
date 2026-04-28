@@ -10,7 +10,7 @@ This reproducible smoke test validates Mercury inside the sandbox with `glm-5.1`
 - starts Mercury in foreground mode with a PTY via `node dist/index.js start --foreground`
 - selects `Ask Me` by sending `\r`
 - sends `Reply with OK only.`
-- verifies that the useful assistant response is exactly `OK`
+- verifies that the useful assistant response is exactly one line: `OK` (duplicate streamed output fails)
 - stores both a raw transcript and an ANSI-stripped transcript
 
 ## Requirements
@@ -58,4 +58,4 @@ The script fails if:
 - `dist/index.js` is missing
 - startup does not show `glm-5.1`
 - it cannot get past the permissions menu
-- the assistant response is not exactly `OK`
+- the assistant response is not exactly one line `OK` (including duplicated `OK` output)

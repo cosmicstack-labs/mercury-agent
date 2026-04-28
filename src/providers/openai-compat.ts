@@ -20,7 +20,7 @@ export class OpenAICompatProvider extends BaseProvider {
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
     });
-    this.modelInstance = this.client(config.model);
+    this.modelInstance = this.client.chat(config.model);
   }
 
   async generateText(prompt: string, systemPrompt: string): Promise<LLMResponse> {

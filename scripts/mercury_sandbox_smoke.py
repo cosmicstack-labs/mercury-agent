@@ -90,6 +90,11 @@ def extract_assistant_payload(lines: list[str]) -> list[str]:
     return payload
 
 
+def validate_assistant_payload(payload: list[str]) -> None:
+    if payload != ["OK"]:
+        raise AssertionError(f"Assistant response was not exactly one line 'OK': {payload}")
+
+
 def ensure_exists(path: Path, label: str) -> None:
     if not path.exists():
         raise SystemExit(f"ERROR: {label} does not exist: {path}")
@@ -164,8 +169,7 @@ def main() -> int:
         payload = extract_assistant_payload(normalize_lines(response_segment))
         if not payload:
             raise AssertionError("Could not extract assistant response content.")
-        if any(line != "OK" for line in payload):
-            raise AssertionError(f"Assistant response was not exclusively 'OK': {payload}")
+        validate_assistant_payload(payload)
 
         clean_transcript.write_text(strip_ansi(transcript.text).replace("\r", ""), encoding="utf-8")
         print("[smoke] PASS Mercury replied with OK only.")
