@@ -202,12 +202,6 @@ export class PermissionManager {
     if (allowedTools.includes('run_command')) {
       session.elevatedCommands.add('run_command');
     }
-    if (allowedTools.includes('read_file') || allowedTools.includes('list_dir')) {
-      session.elevatedCommands.add('fs_read');
-    }
-    if (allowedTools.includes('write_file') || allowedTools.includes('create_file') || allowedTools.includes('delete_file')) {
-      session.elevatedCommands.add('fs_write');
-    }
   }
 
   clearElevation(): void {
@@ -318,13 +312,6 @@ export class PermissionManager {
 
   async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<{ allowed: boolean; reason?: string }> {
     const session = this.ensureCurrentSession();
-
-    if (mode === 'read' && session.elevatedCommands.has('fs_read')) {
-      return { allowed: true };
-    }
-    if (mode === 'write' && session.elevatedCommands.has('fs_write')) {
-      return { allowed: true };
-    }
 
     const fs = this.manifest.capabilities.filesystem;
     if (!fs.enabled) {

@@ -115,6 +115,58 @@ describe('PermissionManager session isolation', () => {
     );
   });
 
+  it('does not let read_file skill elevation bypass filesystem scopes', async () => {
+    const permissions = createPermissionManager();
+    const outsidePath = join(tmpdir(), 'outside-read-scope.txt');
+
+    permissions.setCurrentChannel('telegram:1', 'telegram');
+    permissions.elevateForSkill(['read_file']);
+
+    await expect(permissions.checkFsAccess(outsidePath, 'read')).resolves.toMatchObject({
+      allowed: false,
+      reason: `Permission denied for read access to ${outsidePath}`,
+    });
+  });
+
+  it('does not let write_file skill elevation bypass filesystem scopes', async () => {
+    const permissions = createPermissionManager();
+    const outsidePath = join(tmpdir(), 'outside-write-scope.txt');
+
+    permissions.setCurrentChannel('telegram:1', 'telegram');
+    permissions.elevateForSkill(['write_file']);
+
+    await expect(permissions.checkFsAccess(outsidePath, 'write')).resolves.toMatchObject({
+      allowed: false,
+      reason: `Permission denied for write access to ${outsidePath}`,
+    });
+  });
+
+  it('keeps direct filesystem checks outside scope blocked even in allow-all mode', async () => {
+    const permissions = createPermissionManager();
+    const outsidePath = join(tmpdir(), 'outside-allow-all.txt');
+
+    permissions.setCurrentChannel('telegram:1', 'telegram');
+    permissions.setAutoApproveAll(true);
+
+    await expect(permissions.checkFsAccess(outsidePath, 'write')).resolves.toMatchObject({
+      allowed: false,
+      reason: `Permission denied for write access to ${outsidePath}`,
+    });
+  });
+
+  it('still allows filesystem access inside an approved scope for elevated skills', async () => {
+    const permissions = createPermissionManager();
+    const scopedDir = join(tmpdir(), 'approved-skill-scope');
+    const scopedFile = join(scopedDir, 'note.txt');
+
+    permissions.setCurrentChannel('telegram:1', 'telegram');
+    permissions.addTempScope(scopedDir, true, true);
+    permissions.elevateForSkill(['read_file', 'write_file']);
+
+    await expect(permissions.checkFsAccess(scopedFile, 'read')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkFsAccess(scopedFile, 'write')).resolves.toMatchObject({ allowed: true });
+  });
+
   it('bounds session state growth when many channels are seen', () => {
     const permissions = createPermissionManager();
 

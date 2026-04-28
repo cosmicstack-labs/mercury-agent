@@ -257,6 +257,8 @@ allowed-tools:
 Instructions for Mercury to follow when this skill is invoked...
 ```
 
+`allowed-tools` make those tools available while the skill runs, but they do not bypass filesystem scopes or blocked shell commands.
+
 ### Progressive Disclosure
 
 - **Startup**: Only skill names + descriptions are loaded (token-efficient)

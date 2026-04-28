@@ -148,6 +148,7 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
 
 - Keep instructions concise to save tokens
 - List only the tools you need in allowed-tools
+- allowed-tools unlock tool usage, but they do not bypass filesystem scopes or blocked shell commands
 - The skill name must be unique among installed skills
 `;
 

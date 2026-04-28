@@ -1248,18 +1248,18 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     if (cmd === '/permissions') {
       if (channelType === 'cli' && channel instanceof CLIChannel) {
+        this.capabilities.permissions.setCurrentChannel(channelId, channelType);
         const mode = await channel.askPermissionMode?.();
         if (mode === 'allow-all') {
           this.capabilities.permissions.setAutoApproveAll(true);
-          this.capabilities.permissions.addTempScope('/', true, true);
-          await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
+          await channel.send('Allow All mode active for this session. Command approvals and loop prompts are auto-approved, but filesystem scopes and blocked shell commands still apply. Resets on restart.', channelId);
         } else {
           this.capabilities.permissions.setAutoApproveAll(false);
           await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
         }
         return true;
       }
-      await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
+      await channel.send('Use /permissions in CLI or Telegram to switch permission mode.', channelId);
       return true;
     }
 

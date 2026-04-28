@@ -593,7 +593,7 @@
           </tr>
           <tr>
             <td>/permissions</td>
-            <td>Change permission mode (Ask Me / Allow All) — Telegram only</td>
+            <td>Change permission mode (Ask Me / Allow All) on CLI or Telegram</td>
           </tr>
           <tr>
             <td>/tasks</td>
@@ -1379,17 +1379,17 @@
           permanently approve a command type</li>
       </ol>
       <p>Edit <code>~/.mercury/permissions.yaml</code> to customize. Skill elevation: skills with <code>allowed-tools
-      </code> in their SKILL.md get automatic approval for those tools during execution.</p>
+      </code> in their SKILL.md unlock those tools during execution, but filesystem scopes and shell blocklists still apply.</p>
 
       <h3>Permission Modes</h3>
       <p>At session start, Mercury asks you to choose a permission mode:</p>
       <ul>
         <li><strong>🔒 Ask Me</strong> — Mercury asks for confirmation before file writes, shell commands that need approval, and scope changes. Default on both CLI and Telegram.</li>
-        <li><strong>✅ Allow All</strong> — Mercury auto-approves all directory scopes, all shell commands (except blocked), and loop-continuation prompts. No interruptions during the session. Resets on restart.</li>
+        <li><strong>✅ Allow All</strong> — Mercury auto-approves shell commands that need confirmation (except blocked commands) and loop-continuation prompts. Filesystem scopes still apply and new paths can still require approval. Resets on restart.</li>
       </ul>
       <p>On <strong>CLI</strong>: an arrow-key menu appears at startup before the first prompt.</p>
       <p>On <strong>Telegram</strong>: inline keyboard buttons appear with the first message. Use <code>/permissions</code> to change mode at any time.</p>
-      <p><strong>Scheduled tasks</strong> always run in Allow All mode — filesystem access and shell commands are auto-approved. You receive a notification before each task executes.</p>
+      <p><strong>Scheduled tasks</strong> always run with command and loop auto-approval, but shell blocklists and filesystem scoping still apply. You receive a notification before each task executes.</p>
 
       <h2 id="second-brain">Second Brain</h2>
       <p>Mercury has a persistent, structured memory that grows with every conversation. When enabled, it automatically extracts, stores, and retrieves facts about you — your preferences, goals, projects, habits, and more.</p>
@@ -1562,7 +1562,7 @@
         <li>"Remind me daily at 9am to run the daily-digest skill"</li>
       </ul>
       <p>Skills follow the <a href="https://agentskills.io" target="_blank" rel="noopener">Agent Skills specification</a>.
-        They get elevated permissions via <code>allowed-tools</code> and are loaded with progressive disclosure to save
+        They declare tool access via <code>allowed-tools</code>, while Mercury still enforces filesystem scopes and shell safety boundaries, and loads them with progressive disclosure to save
         tokens.</p>
 
     </main>

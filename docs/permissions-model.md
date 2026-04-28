@@ -84,6 +84,20 @@ Relevant files:
 - `src/capabilities/registry.ts`
 - `src/core/agent.ts`
 
+## What skill allowed-tools do
+
+Skills can declare `allowed-tools` in `SKILL.md` to unlock specific tools while the skill is active.
+
+Important boundary:
+
+- `allowed-tools` do **not** bypass filesystem scopes
+- `allowed-tools` do **not** bypass blocked shell commands
+- filesystem access still requires an approved permanent or temporary scope
+
+So the correct model is:
+
+> Skills can unlock tool usage, but Mercury still enforces path boundaries and shell safety rules.
+
 ## What Allow All does not do
 
 `Allow All` should not be documented as unrestricted filesystem access.
