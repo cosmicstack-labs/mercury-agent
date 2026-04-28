@@ -11,6 +11,13 @@ export interface RelayConfig {
   enabled: boolean;
 }
 
+export interface FriendRequestResult {
+  requestId: string | null;
+  status: string;
+  targetOnline: boolean;
+  error?: string;
+}
+
 export interface RelayMessage {
   fromTgId: string;
   toTgId: string;
@@ -80,8 +87,8 @@ export class RelayClient {
     }
   }
 
-  async sendFriendRequest(toTgId: string): Promise<boolean> {
-    if (!this.ensureRegistered()) return false;
+  async sendFriendRequest(toTgId: string): Promise<FriendRequestResult> {
+    if (!this.ensureRegistered()) return { requestId: null, status: 'error', targetOnline: false, error: 'Not registered' };
 
     try {
       const response = await fetch(`${this.url}/v1/friend-request`, {
@@ -94,15 +101,24 @@ export class RelayClient {
       });
 
       if (!response.ok) {
-        logger.warn({ status: response.status, toTgId }, 'Friend request failed');
-        return false;
+        const body = await response.text();
+        if (response.status === 404) {
+          return { requestId: null, status: 'not_registered', targetOnline: false, error: 'Target user not registered on relay' };
+        }
+        logger.warn({ status: response.status, toTgId, body }, 'Friend request failed');
+        return { requestId: null, status: 'error', targetOnline: false, error: `Request failed: ${response.status}` };
       }
 
-      logger.info({ toTgId }, 'Friend request sent via relay');
-      return true;
+      const data = await response.json() as { request_id: string; status: string; target_online?: boolean };
+      logger.info({ toTgId, targetOnline: data.target_online ?? false }, 'Friend request sent via relay');
+      return {
+        requestId: data.request_id,
+        status: data.status,
+        targetOnline: data.target_online ?? false,
+      };
     } catch (err) {
       logger.warn({ err, toTgId }, 'Friend request error');
-      return false;
+      return { requestId: null, status: 'error', targetOnline: false, error: String(err) };
     }
   }
 
@@ -190,6 +206,23 @@ export class RelayClient {
       return response.ok;
     } catch (err) {
       logger.warn({ err, friendTgId }, 'Friend deletion error');
+      return false;
+    }
+  }
+
+  async checkUserOnline(tgUserId: string): Promise<boolean> {
+    if (!this.ensureRegistered()) return false;
+
+    try {
+      const response = await fetch(`${this.url}/v1/status/${tgUserId}`, {
+        headers: this.authHeaders(),
+      });
+
+      if (!response.ok) return false;
+
+      const data = await response.json() as { online: boolean };
+      return data.online;
+    } catch {
       return false;
     }
   }

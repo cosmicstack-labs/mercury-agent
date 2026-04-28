@@ -165,10 +165,13 @@ export class TelegramChannel extends BaseChannel {
         }
         this.chatCommandContext?.sharedMemoryAddFriendRequest?.(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
         const relayResult = await this.chatCommandContext?.sendFriendRequest?.(friendTgId);
-        if (relayResult) {
-          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`);
+        if (relayResult?.requestId) {
+          const onlineTag = relayResult.targetOnline ? ' [online]' : ' [offline]';
+          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) sent via relay.${onlineTag}`);
+        } else if (relayResult?.error === 'Target user not registered on relay') {
+          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) failed: user is not registered on the relay.`);
         } else {
-          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable — request will sync when relay reconnects.`);
+          await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable.`);
         }
         return;
       }

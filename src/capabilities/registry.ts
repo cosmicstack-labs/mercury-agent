@@ -62,7 +62,8 @@ export interface ChatCommandContext {
   sharedMemoryRemoveFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryRevokeFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
-  sendFriendRequest: (tgId: string) => Promise<boolean>;
+  sendFriendRequest: (tgId: string) => Promise<import('../relay/relay-client.js').FriendRequestResult>;
+  checkUserOnline: (tgId: string) => Promise<boolean>;
   approveFriendRequest: (tgId: string, negativeTags: string[], negativeRules?: string) => Promise<boolean>;
   rejectFriendRequest: (tgId: string) => Promise<boolean>;
   revokeFriend: (tgId: string) => Promise<boolean>;

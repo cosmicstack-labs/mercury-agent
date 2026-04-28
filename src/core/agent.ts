@@ -1139,15 +1139,23 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         try {
           const queryText = userMessage.replace(/@\w+/g, '').trim() || 'general';
 
+          const friendOnline = this.relayClient!.isConnected()
+            ? await this.relayClient!.checkUserOnline(friend.tgId).catch(() => false)
+            : false;
+
+          if (!this.relayClient!.isConnected()) {
+            return `[${friend.displayName}: relay not connected — shared memory unavailable]`;
+          }
+
           const sent = this.relayClient!.sendViaWs(friend.tgId, 'shared-memory-query', queryText);
           if (!sent) {
-            return null;
+            return `[${friend.displayName}: could not send shared memory query${friendOnline ? '' : ' (user appears offline)'}]`;
           }
 
           const result = await this.sharedMemoryQueryResolver!.register(friend.tgId);
 
           if (result.timedOut) {
-            return null;
+            return `[${friend.displayName}: shared memory request timed out${friendOnline ? ' (user was online)' : ' (user appears offline)'}]`;
           }
 
           if (result.context) {
@@ -1513,10 +1521,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
       ctx.sharedMemoryAddFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
       const relayResult = await ctx.sendFriendRequest(friendTgId);
-      if (relayResult) {
-        await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`, channelId);
+      if (relayResult.requestId) {
+        const onlineTag = relayResult.targetOnline ? ' [online]' : ' [offline]';
+        await channel.send(`Friend request for ${displayName} (${friendTgId}) sent via relay.${onlineTag}`, channelId);
+      } else if (relayResult.error === 'Target user not registered on relay') {
+        await channel.send(`Friend request for ${displayName} (${friendTgId}) failed: user is not registered on the relay.`, channelId);
       } else {
-        await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable — request will sync when relay reconnects.`, channelId);
+        await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded locally. Relay unavailable.`, channelId);
       }
       return true;
     }

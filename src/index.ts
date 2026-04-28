@@ -964,9 +964,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryRemoveFriend: (tgId: string) => sharedMemory ? sharedMemory.removeFriend(tgId) : null,
     sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
     sendFriendRequest: async (tgId: string) => {
-      if (!relayClient || !sharedMemory) return false;
-      if (!relayClient.isRegistered()) return false;
+      if (!relayClient || !sharedMemory) return { requestId: null, status: 'error', targetOnline: false, error: 'Relay not available' };
+      if (!relayClient.isRegistered()) return { requestId: null, status: 'error', targetOnline: false, error: 'Not registered' };
       return relayClient.sendFriendRequest(tgId);
+    },
+    checkUserOnline: async (tgId: string) => {
+      if (!relayClient || !relayClient.isRegistered()) return false;
+      return relayClient.checkUserOnline(tgId);
     },
     approveFriendRequest: async (tgId: string, negativeTags: string[], negativeRules?: string) => {
       if (!relayClient || !sharedMemory) return false;
