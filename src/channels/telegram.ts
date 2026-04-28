@@ -543,7 +543,7 @@ export class TelegramChannel extends BaseChannel {
       .text('🔒 Ask Me', `${id}:ask-me`)
       .text('✅ Allow All', `${id}:allow-all`);
 
-    const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
+    const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and permission escalations\n✅ <b>Allow All</b> — auto-approve commands, writes, and loops`;
 
     try {
       await this.bot.api.sendMessage(chatId, html, {

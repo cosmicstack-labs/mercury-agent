@@ -47,6 +47,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { applySessionPermissionMode } from './core/permission-mode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -962,10 +963,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
-  capabilities.permissions.onAsk(async (prompt: string) => {
-    const channelType = capabilities.permissions.getCurrentChannelType();
-    if (channelType === 'telegram' && tgChannel) {
-      return tgChannel.askPermission(prompt);
+  capabilities.permissions.onAsk(async (prompt: string, context) => {
+    if (context.channelType === 'telegram' && tgChannel) {
+      return tgChannel.askPermission(prompt, context.channelId);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
@@ -975,9 +975,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (tgChannel) {
     tgChannel.setOnPermissionMode((mode, chatId) => {
+      applySessionPermissionMode(mode, `telegram:${chatId}`, 'telegram', capabilities.permissions);
       if (mode === 'allow-all') {
-        capabilities.permissions.setAutoApproveAll(true);
-        capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
       }
     });
@@ -993,10 +992,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     hr();
 
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
-    if (mode === 'allow-all') {
-      capabilities.permissions.setAutoApproveAll(true);
-      capabilities.permissions.addTempScope('/', true, true);
-    }
+    applySessionPermissionMode(mode, 'cli:default', 'cli', capabilities.permissions);
 
     console.log('');
     console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));

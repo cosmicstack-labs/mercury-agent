@@ -2,8 +2,11 @@ node_modules/
 dist/
 .env
 *.log
+log
 .DS_Store
 *.tsbuildinfo
 config/
 soul/
 memory/
+.hermes/
+tmp/

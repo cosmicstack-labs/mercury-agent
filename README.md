@@ -47,7 +47,7 @@ mercury doctor
 
 Every AI agent can read files, run commands, and fetch URLs. Most do it silently. **Mercury asks first — and remembers what matters.**
 
-- **Permission-hardened** — Shell blocklist (`sudo`, `rm -rf /`, etc. never execute). Folder-level read/write scoping. Pending approval flow. Ask Me or Allow All per session. No surprises.
+- **Permission-hardened** — Shell blocklist (`sudo`, `rm -rf /`, etc. never execute). Folder-level read/write scoping. Pending approval flow. Ask Me or Allow All per session. `Allow All` auto-approves within the current session/channel, but does not grant root filesystem access.
 - **Second Brain** — Persistent, structured memory with SQLite + FTS5 full-text search. 10 memory types, auto-extraction, conflict resolution, auto-consolidation. Mercury learns your preferences, goals, and habits without manual entry.
 - **Soul-driven** — Personality defined by markdown files you own (`soul.md`, `persona.md`, `taste.md`, `heartbeat.md`). No corporate wrapper.
 - **Token-aware** — Daily budget enforcement. Auto-concise when over 70%. `/budget` command to check, reset, or override.
@@ -148,6 +148,14 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | `/tasks` | List scheduled tasks |
 | `/memory` | View and manage second brain memory |
 | `/unpair` | Telegram: reset all access |
+
+### Permission modes
+
+- **Ask Me** — prompts before risky shell commands, writes, and permission escalations.
+- **Allow All** — auto-approves within the current session/channel, but keeps the shell blocklist and filesystem scoping in force.
+- Permission state is isolated by session/channel, so one Telegram chat or CLI session does not silently unlock another.
+- System-triggered runs (internal flows and scheduled tasks) are auto-approved under the same restricted model — no extra root filesystem scope is added.
+- See `docs/permissions-model.md` for the live permission model and implementation notes.
 
 ## Built-in Tools
 

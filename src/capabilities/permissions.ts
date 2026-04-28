@@ -38,6 +38,19 @@ export interface PermissionsManifest {
   };
 }
 
+export interface PermissionAskContext {
+  channelId: string;
+  channelType: string;
+}
+
+interface SessionPermissionsState {
+  autoApproveAll: boolean;
+  elevatedCommands: Set<string>;
+  pendingApprovals: Set<string>;
+  tempScopes: FileScope[];
+  channelType: string;
+}
+
 const DEFAULT_MANIFEST: PermissionsManifest = {
   capabilities: {
     filesystem: {
@@ -148,70 +161,106 @@ const PERMISSIONS_FILE = join(getMercuryHome(), 'permissions.yaml');
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
-  private autoApproveAll = false;
-  private elevatedCommands: Set<string> = new Set();
-  private pendingApprovals: Set<string> = new Set();
-  private currentChannelType: string = 'cli';
-
-  private tempScopes: FileScope[] = [];
+  private askHandler?: (prompt: string, context: PermissionAskContext) => Promise<string>;
+  private readonly sessionStates: Map<string, SessionPermissionsState> = new Map();
+  private currentChannelId = 'cli:default';
 
   constructor() {
     this.cwd = process.cwd();
     this.manifest = this.load();
+    this.ensureSessionState(this.currentChannelId, 'cli');
+  }
+
+  setCurrentChannel(channelId: string, channelType: string): void {
+    this.currentChannelId = channelId;
+    this.ensureSessionState(channelId, channelType).channelType = channelType;
   }
 
   setCurrentChannelType(type: string): void {
-    this.currentChannelType = type;
+    this.ensureCurrentSession().channelType = type;
   }
 
   getCurrentChannelType(): string {
-    return this.currentChannelType;
+    return this.ensureCurrentSession().channelType;
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, context: PermissionAskContext) => Promise<string>): void {
     this.askHandler = handler;
   }
 
   setAutoApproveAll(value: boolean): void {
-    this.autoApproveAll = value;
+    this.ensureCurrentSession().autoApproveAll = value;
   }
 
   isAutoApproveAll(): boolean {
-    return this.autoApproveAll;
+    return this.ensureCurrentSession().autoApproveAll;
   }
 
   elevateForSkill(allowedTools: string[]): void {
+    const session = this.ensureCurrentSession();
     if (allowedTools.includes('run_command')) {
-      this.elevatedCommands.add('run_command');
+      session.elevatedCommands.add('run_command');
     }
     if (allowedTools.includes('read_file') || allowedTools.includes('list_dir')) {
-      this.elevatedCommands.add('fs_read');
+      session.elevatedCommands.add('fs_read');
     }
     if (allowedTools.includes('write_file') || allowedTools.includes('create_file') || allowedTools.includes('delete_file')) {
-      this.elevatedCommands.add('fs_write');
+      session.elevatedCommands.add('fs_write');
     }
   }
 
   clearElevation(): void {
-    this.elevatedCommands.clear();
+    this.ensureCurrentSession().elevatedCommands.clear();
   }
 
   isElevated(tool: string): boolean {
-    if (this.elevatedCommands.has(tool)) return true;
-    return false;
+    return this.ensureCurrentSession().elevatedCommands.has(tool);
   }
 
   isShellElevated(): boolean {
-    return this.elevatedCommands.has('run_command');
+    return this.ensureCurrentSession().elevatedCommands.has('run_command');
   }
 
   addPendingApproval(baseCommand: string): void {
-    this.pendingApprovals.add(baseCommand);
+    this.ensureCurrentSession().pendingApprovals.add(baseCommand);
   }
 
   clearPendingApprovals(): void {
-    this.pendingApprovals.clear();
+    this.ensureCurrentSession().pendingApprovals.clear();
+  }
+
+  private ensureCurrentSession(): SessionPermissionsState {
+    return this.ensureSessionState(this.currentChannelId);
+  }
+
+  private ensureSessionState(channelId: string, channelType?: string): SessionPermissionsState {
+    let session = this.sessionStates.get(channelId);
+    if (!session) {
+      session = {
+        autoApproveAll: false,
+        elevatedCommands: new Set<string>(),
+        pendingApprovals: new Set<string>(),
+        tempScopes: [],
+        channelType: channelType ?? this.inferChannelType(channelId),
+      };
+      this.sessionStates.set(channelId, session);
+    } else if (channelType) {
+      session.channelType = channelType;
+    }
+    return session;
+  }
+
+  private inferChannelType(channelId: string): string {
+    const [channelType] = channelId.split(':');
+    return channelType || 'cli';
+  }
+
+  private getCurrentAskContext(): PermissionAskContext {
+    const session = this.ensureCurrentSession();
+    return {
+      channelId: this.currentChannelId,
+      channelType: session.channelType,
+    };
   }
 
   private load(): PermissionsManifest {
@@ -253,10 +302,12 @@ export class PermissionManager {
   }
 
   async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<{ allowed: boolean; reason?: string }> {
-    if (mode === 'read' && this.elevatedCommands.has('fs_read')) {
+    const session = this.ensureCurrentSession();
+
+    if (mode === 'read' && session.elevatedCommands.has('fs_read')) {
       return { allowed: true };
     }
-    if (mode === 'write' && this.elevatedCommands.has('fs_write')) {
+    if (mode === 'write' && session.elevatedCommands.has('fs_write')) {
       return { allowed: true };
     }
 
@@ -285,28 +336,13 @@ export class PermissionManager {
   }
 
   async checkShellCommand(command: string): Promise<{ allowed: boolean; reason?: string; needsApproval: boolean }> {
-    if (this.autoApproveAll) {
-      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (auto-approve-all mode)');
-      return { allowed: true, needsApproval: false };
-    }
-
-    if (this.isShellElevated()) {
-      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (skill elevation)');
-      return { allowed: true, needsApproval: false };
-    }
-
+    const session = this.ensureCurrentSession();
     const shell = this.manifest.capabilities.shell;
     if (!shell.enabled) {
       return { allowed: false, reason: 'Shell capability is disabled', needsApproval: false };
     }
 
     const trimmed = command.trim();
-
-    const baseCmd = trimmed.split(/\s+/)[0];
-    if (this.pendingApprovals.has(baseCmd)) {
-      logger.info({ cmd: trimmed }, 'Shell command auto-approved (pending approval)');
-      return { allowed: true, needsApproval: false };
-    }
 
     for (const pattern of shell.blocked) {
       if (this.matchPattern(trimmed, pattern)) {
@@ -324,6 +360,22 @@ export class PermissionManager {
       }
     }
 
+    if (session.autoApproveAll) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (auto-approve-all mode)');
+      return { allowed: true, needsApproval: false };
+    }
+
+    if (this.isShellElevated()) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (skill elevation)');
+      return { allowed: true, needsApproval: false };
+    }
+
+    const baseCmd = trimmed.split(/\s+/)[0];
+    if (session.pendingApprovals.has(baseCmd)) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (pending approval)');
+      return { allowed: true, needsApproval: false };
+    }
+
     for (const pattern of shell.autoApproved) {
       if (this.matchPattern(trimmed, pattern)) {
         logger.info({ cmd: trimmed }, 'Shell command auto-approved');
@@ -333,8 +385,8 @@ export class PermissionManager {
 
     for (const pattern of shell.needsApproval) {
       if (this.matchPattern(trimmed, pattern)) {
-        if (this.currentChannelType === 'telegram' && this.askHandler) {
-          const result = await this.askHandler(`Run command: ${trimmed}`);
+        if (session.channelType === 'telegram' && this.askHandler) {
+          const result = await this.askHandler(`Run command: ${trimmed}`, this.getCurrentAskContext());
           if (result === 'yes') {
             return { allowed: true, needsApproval: false };
           }
@@ -348,8 +400,8 @@ export class PermissionManager {
       }
     }
 
-    if (this.currentChannelType === 'telegram' && this.askHandler) {
-      const result = await this.askHandler(`Run command: ${trimmed}`);
+    if (session.channelType === 'telegram' && this.askHandler) {
+      const result = await this.askHandler(`Run command: ${trimmed}`, this.getCurrentAskContext());
       if (result === 'yes') {
         return { allowed: true, needsApproval: false };
       }
@@ -405,7 +457,7 @@ export class PermissionManager {
     }
 
     const prompt = `Mercury needs ${mode} access to:\n${path}\n\nAllow access?`;
-    const response = await this.askHandler(prompt);
+    const response = await this.askHandler(prompt, this.getCurrentAskContext());
 
     if (response === 'always') {
       this.addScope(path, mode === 'read', mode === 'write');
@@ -422,12 +474,12 @@ export class PermissionManager {
 
   addTempScope(path: string, read: boolean, write: boolean): void {
     const resolved = resolve(path);
-    this.tempScopes.push({ path: resolved, read, write });
+    this.ensureCurrentSession().tempScopes.push({ path: resolved, read, write });
     logger.info({ path: resolved, read, write }, 'Temp permission scope added (session only)');
   }
 
   private findTempScope(resolvedPath: string): FileScope | undefined {
-    for (const scope of this.tempScopes) {
+    for (const scope of this.ensureCurrentSession().tempScopes) {
       const scopeResolved = resolve(scope.path.replace(/^~/, homedir()));
       if (resolvedPath === scopeResolved || resolvedPath.startsWith(scopeResolved + sep)) {
         return scope;
