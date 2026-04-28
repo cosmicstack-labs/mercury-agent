@@ -1334,12 +1334,9 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('reject:')) {
       const tgId = action.slice('reject:'.length);
-      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
-      const rejected = this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
-      if (friend?.direction === 'received') {
-        await this.chatCommandContext?.rejectFriendRequest?.(tgId);
-      }
-      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
+      const removed = this.chatCommandContext.sharedMemoryRemoveFriend?.(tgId);
+      await this.chatCommandContext?.removeFriend?.(tgId);
+      const name = removed?.username ? `@${removed.username}` : removed?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Rejected' });
       await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${name} (${tgId}).`).catch(() => {});
       return;
@@ -1347,12 +1344,9 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('cancel:')) {
       const tgId = action.slice('cancel:'.length);
-      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
-      const rejected = this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
-      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
-      if (friend?.direction === 'sent') {
-        await this.chatCommandContext?.rejectFriendRequest?.(tgId);
-      }
+      const removed = this.chatCommandContext.sharedMemoryRemoveFriend?.(tgId);
+      await this.chatCommandContext?.removeFriend?.(tgId);
+      const name = removed?.username ? `@${removed.username}` : removed?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Cancelled' });
       await this.bot!.api.sendMessage(chatId, `Cancelled friend request to ${name} (${tgId}).`).catch(() => {});
       return;

@@ -2047,17 +2047,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     if (action === 'back' || !action) return false;
 
     if (action === 'cancel') {
-      ctx.sharedMemoryRejectFriend?.(friend.tgId);
-      await ctx.rejectFriendRequest?.(friend.tgId);
+      ctx.sharedMemoryRemoveFriend?.(friend.tgId);
+      await ctx.removeFriend?.(friend.tgId);
       await channel.send(`Cancelled friend request to ${name}.`, channelId);
       return true;
     }
 
     if (action === 'reject') {
-      ctx.sharedMemoryRejectFriend?.(friend.tgId);
-      if (friend.direction === 'received') {
-        await ctx.rejectFriendRequest?.(friend.tgId);
-      }
+      ctx.sharedMemoryRemoveFriend?.(friend.tgId);
+      await ctx.removeFriend?.(friend.tgId);
       await channel.send(`Rejected friend request from ${name}.`, channelId);
       return true;
     }
