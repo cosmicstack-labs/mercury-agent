@@ -6,9 +6,6 @@ export function renderLoginPage(error?: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Login — Mercury</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script>
     (function() {
@@ -20,7 +17,7 @@ export function renderLoginPage(error?: string): string {
 </head>
 <body class="login-body">
   <div class="login-card">
-    <div class="login-logo">☿</div>
+    <div class="login-logo"><span class="login-logo-mark">☿</span><span>Mercury</span></div>
     <h1 class="login-title">Mercury</h1>
     <p class="login-subtitle">Sign in to your dashboard</p>
     <p class="login-hint">Default: mercury / Mercury@123</p>

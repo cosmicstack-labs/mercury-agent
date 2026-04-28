@@ -7,7 +7,7 @@ export function renderChat(c: Context): string {
       <div class="chat-layout">
         <aside class="chat-threads">
           <div class="chat-threads-head">
-            <button class="btn btn-sm btn-primary btn-block" @click="createThread()">+ New Thread</button>
+            <button class="btn btn-primary btn-sm btn-block" @click="createThread()">+ New Thread</button>
           </div>
           <div class="chat-thread-list">
             <template x-for="t in threads" :key="t.id">
@@ -18,8 +18,8 @@ export function renderChat(c: Context): string {
             </template>
           </div>
           <div class="chat-threads-foot">
-            <button class="btn btn-sm btn-outline btn-block" @click="exportThread()" :disabled="!activeThreadId">Export Thread</button>
-            <button class="btn btn-sm btn-danger btn-block" @click="deleteThread()" :disabled="!activeThreadId">Delete Thread</button>
+            <button class="btn btn-outline btn-sm btn-block" @click="exportThread()" :disabled="!activeThreadId">Export Thread</button>
+            <button class="btn btn-danger btn-sm btn-block" @click="deleteThread()" :disabled="!activeThreadId">Delete Thread</button>
           </div>
         </aside>
 
@@ -37,7 +37,7 @@ export function renderChat(c: Context): string {
           </span>
         </div>
         <div class="chat-header-actions">
-          <button class="btn btn-sm btn-outline" @click="clearChat()">Clear</button>
+          <button class="btn btn-ghost btn-sm" @click="clearChat()">Clear</button>
         </div>
       </div>
 
@@ -123,7 +123,7 @@ export function renderChat(c: Context): string {
       <div class="chat-input-area">
         <textarea
           x-ref="chatInput"
-          class="form-input chat-input"
+          class="chat-input"
           placeholder="Type a message..."
           x-model="inputText"
           @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
@@ -136,7 +136,7 @@ export function renderChat(c: Context): string {
           @click="sendMessage()"
           :disabled="waiting || !inputText.trim()"
         >
-          <span x-show="!waiting"><svg style="width:16px;height:16px"><use href="/vendor/icons.svg#send"/></svg></span>
+          <span x-show="!waiting"><svg style="width:14px;height:14px"><use href="/vendor/icons.svg#send"/></svg></span>
           <span x-show="waiting" class="thinking-dots">Sending</span>
         </button>
       </div>

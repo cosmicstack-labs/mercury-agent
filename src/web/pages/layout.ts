@@ -47,9 +47,6 @@ export function renderLayout(c: Context, title: string, body: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} — Mercury</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script defer src="/vendor/alpine.min.js"></script>
   <script>
@@ -64,7 +61,7 @@ export function renderLayout(c: Context, title: string, body: string): string {
   <div class="app" x-data="{ sidebarOpen: window.innerWidth > 768 }" :class="{ 'sidebar-closed': !sidebarOpen }">
     <aside class="sidebar">
       <div class="sidebar-head">
-        <a href="/" class="logo"><span class="logo-mark">☿</span> Mercury</a>
+        <a href="/" class="logo"><span class="logo-mark">☿</span><span>Mercury</span></a>
       </div>
       <nav class="sidebar-nav">${navHtml}</nav>
       <div class="sidebar-foot">

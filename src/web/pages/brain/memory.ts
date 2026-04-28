@@ -160,7 +160,7 @@ export function renderMemory(c: Context, stats: any): string {
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-outline btn-sm" style="color: var(--red);"
+            <button class="btn btn-danger btn-sm"
                     @click="deleteMemory(selectedMemory?.id)">Delete</button>
           </div>
         </div>

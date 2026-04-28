@@ -23,7 +23,7 @@ export function renderGoals(c: Context): string {
         <template x-for="goal in goals" :key="goal.id">
           <div class="memory-item" @click="selectedGoal = goal">
             <div class="memory-header">
-              <span class="memory-type" style="background: var(--green)" x-text="goal.type === 'project' ? 'Project' : 'Goal'"></span>
+              <span class="memory-type badge-develop" x-text="goal.type === 'project' ? 'Project' : 'Goal'"></span>
               <span class="memory-confidence" x-text="(goal.importance * 100).toFixed(0) + '%'"></span>
             </div>
             <div class="memory-summary" x-text="goal.summary"></div>
@@ -99,7 +99,7 @@ export function renderGoals(c: Context): string {
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-outline btn-sm" style="color: var(--red);"
+            <button class="btn btn-danger btn-sm"
                     @click="deleteGoal(selectedGoal?.id)">Delete</button>
           </div>
         </div>

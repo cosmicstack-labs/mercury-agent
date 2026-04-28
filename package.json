@@ -8,7 +8,7 @@
     "mercury": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup && mkdir -p dist/web/static/vendor && cp src/web/static/style.css src/web/static/app.js dist/web/static/ && cp src/web/static/vendor/* dist/web/static/vendor/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/",
+    "build": "tsup && cp -r src/web/static dist/web/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -64,6 +64,7 @@
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.7",
+    "geist": "^1.7.0",
     "grammy": "^1.42.0",
     "hono": "^4.12.15",
     "js-tiktoken": "^1.0.19",
