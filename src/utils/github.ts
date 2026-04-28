@@ -8,7 +8,7 @@ export function setGitHubToken(token: string): void {
   cachedToken = token;
 }
 
-export function getGitHubToken(): string | null {
+function getGitHubToken(): string | null {
   if (cachedToken) return cachedToken;
   return process.env.GITHUB_TOKEN || null;
 }

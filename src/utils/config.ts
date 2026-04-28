@@ -286,7 +286,7 @@ function deepMerge<T extends Record<string, any>>(target: T, source: Partial<T>)
   return result;
 }
 
-export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
+function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
   return Object.values(config.providers)
     .filter((p): p is ProviderConfig => typeof p === 'object' && isProviderConfigured(p));
 }
@@ -469,9 +469,6 @@ export function clearTelegramAccess(config: MercuryConfig): MercuryConfig {
   return config;
 }
 
-export function clearTelegramPairing(config: MercuryConfig): MercuryConfig {
-  return clearTelegramAccess(config);
-}
 
 export function migrateLegacyTelegramAccess(config: MercuryConfig): MercuryConfig {
   const telegram = config.channels.telegram;

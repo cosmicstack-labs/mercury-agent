@@ -70,6 +70,7 @@ export interface ChatCommandContext {
   deleteFriendRequest: (requestId: string) => Promise<boolean>;
   syncFriendsFromRelay: () => Promise<void>;
   resolveTelegramUser: (tgId: string) => Promise<{ username: string | null; firstName: string | null } | null>;
+  sendPing: (tgId: string) => Promise<{ sent: boolean; online: boolean; error?: string }>;
   relayStatus: () => { registered: boolean; connected: boolean; url: string; userId: string | null };
   relayConnect: () => Promise<boolean>;
   relayDisconnect: () => void;

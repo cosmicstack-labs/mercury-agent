@@ -190,6 +190,38 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/ping') {
+        const targetTgId = text.slice('/ping'.length).trim();
+        if (!targetTgId) {
+          await this.sendDirectMessage(chatId, 'Usage: /ping <TELEGRAM_USER_ID>\nExample: /ping 123456789\nSends a ping to verify message delivery via the relay.');
+          return;
+        }
+        if (!/^\d+$/.test(targetTgId)) {
+          await this.sendDirectMessage(chatId, 'Usage: /ping <TELEGRAM_USER_ID>\nExample: /ping 123456789');
+          return;
+        }
+        if (!this.chatCommandContext) {
+          await this.sendDirectMessage(chatId, 'Relay is not available.');
+          return;
+        }
+        let displayName: string = targetTgId;
+        try {
+          const userInfo = await this.resolveTelegramUser(targetTgId);
+          if (userInfo?.username) displayName = `@${userInfo.username}`;
+          else if (userInfo?.firstName) displayName = userInfo.firstName;
+        } catch {}
+        const result = await this.chatCommandContext.sendPing(targetTgId);
+        if (result.error) {
+          await this.sendDirectMessage(chatId, `Ping to ${displayName} (${targetTgId}) failed: ${result.error}`);
+        } else if (result.sent) {
+          const onlineTag = result.online ? ' [online]' : ' [offline]';
+          await this.sendDirectMessage(chatId, `Ping sent to ${displayName} (${targetTgId}) via relay.${onlineTag}\nIf they are connected, they will receive a notification.`);
+        } else {
+          await this.sendDirectMessage(chatId, `Ping to ${displayName} (${targetTgId}) could not be sent.`);
+        }
+        return;
+      }
+
       if (command === '/exit' || command === '/quit') {
         await this.sendDirectMessage(chatId, 'Goodbye! Shutting down Mercury...');
         process.exit(0);
@@ -355,6 +387,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
       { command: 'shared', description: 'Toggle shared learning on/off' },
+      { command: 'ping', description: 'Ping a friend via relay to debug message delivery' },
       { command: 'friend', description: 'Add a friend by Telegram user ID' },
       { command: 'listfriends', description: 'View and manage shared memory friends' },
       { command: 'exit', description: 'Shut down Mercury and exit' },

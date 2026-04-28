@@ -16,7 +16,7 @@ function logPath(): string {
   return join(getMercuryHome(), LOG_FILE);
 }
 
-export function readPid(): number | null {
+function readPid(): number | null {
   const path = pidPath();
   if (!existsSync(path)) return null;
   try {
@@ -48,7 +48,7 @@ export function getDaemonStatus(): { running: boolean; pid: number | null; logPa
   return { running, pid, logPath: logPath() };
 }
 
-export function ensureDaemonRunning(): { pid: number; fresh: boolean } {
+function ensureDaemonRunning(): { pid: number; fresh: boolean } {
   const status = getDaemonStatus();
   if (status.running && status.pid) {
     return { pid: status.pid, fresh: false };

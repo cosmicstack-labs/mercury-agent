@@ -1586,6 +1586,34 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd.startsWith('/ping')) {
+      const targetTgId = trimmed.slice('/ping'.length).trim();
+      if (!targetTgId) {
+        await channel.send('Usage: /ping <TELEGRAM_USER_ID>\nExample: /ping 123456789\nSends a ping to verify message delivery via the relay.', channelId);
+        return true;
+      }
+      if (!/^\d+$/.test(targetTgId)) {
+        await channel.send('Usage: /ping <TELEGRAM_USER_ID>\nExample: /ping 123456789', channelId);
+        return true;
+      }
+      let displayName: string = targetTgId;
+      try {
+        const userInfo = await ctx.resolveTelegramUser(targetTgId);
+        if (userInfo?.username) displayName = `@${userInfo.username}`;
+        else if (userInfo?.firstName) displayName = userInfo.firstName;
+      } catch {}
+      const result = await ctx.sendPing(targetTgId);
+      if (result.error) {
+        await channel.send(`Ping to ${displayName} (${targetTgId}) failed: ${result.error}`, channelId);
+      } else if (result.sent) {
+        const onlineTag = result.online ? ' [online]' : ' [offline]';
+        await channel.send(`Ping sent to ${displayName} (${targetTgId}) via relay.${onlineTag}\nIf they are connected, they will receive a notification.`, channelId);
+      } else {
+        await channel.send(`Ping to ${displayName} (${targetTgId}) could not be sent.`, channelId);
+      }
+      return true;
+    }
+
     if (cmd.startsWith('/telegram')) {
       if (channelType !== 'cli') {
         await channel.send('`/telegram` is only available from the Mercury CLI chat.', channelId);

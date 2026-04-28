@@ -32,7 +32,7 @@ function getSchedulesPath(): string {
   return join(getMercuryHome(), SCHEDULES_FILE);
 }
 
-export function loadSchedules(): ScheduledTaskManifest[] {
+function loadSchedules(): ScheduledTaskManifest[] {
   const path = getSchedulesPath();
   if (!existsSync(path)) return [];
   try {
@@ -45,7 +45,7 @@ export function loadSchedules(): ScheduledTaskManifest[] {
   }
 }
 
-export function saveSchedules(tasks: ScheduledTaskManifest[]): void {
+function saveSchedules(tasks: ScheduledTaskManifest[]): void {
   const path = getSchedulesPath();
   const dir = getMercuryHome();
   if (!existsSync(dir)) {

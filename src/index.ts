@@ -1010,6 +1010,22 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       }
       return null;
     },
+    sendPing: async (tgId: string) => {
+      if (!relayClient || !sharedMemory) {
+        return { sent: false, online: false, error: 'Relay not available' };
+      }
+      if (!relayClient.isRegistered()) {
+        return { sent: false, online: false, error: 'Not registered on relay' };
+      }
+      if (!relayClient.isConnected()) {
+        return { sent: false, online: false, error: 'Not connected to relay. Use /relay to connect.' };
+      }
+      const online = await relayClient.checkUserOnline(tgId).catch(() => false);
+      const senderFriend = sharedMemory.getFriend(tgId);
+      const senderName = senderFriend?.username || senderFriend?.firstName || null;
+      const sent = relayClient.sendViaWs(tgId, 'ping', JSON.stringify({ senderName }));
+      return { sent, online };
+    },
     relayStatus: () => {
       if (!relayClient || !sharedMemory) {
         return { registered: false, connected: false, url: '', userId: null };
@@ -1084,6 +1100,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+
+            if (msg.type === 'ping') {
+              try {
+                const senderFriend = sharedMemory.getFriend(msg.fromTgId);
+                const senderName = senderFriend?.username ? `@${senderFriend.username}` : senderFriend?.firstName || msg.fromTgId;
+                logger.info({ from: senderName, fromTgId: msg.fromTgId }, 'Ping received via relay');
+                if (tgChannel) {
+                  tgChannel.send(`🔔 Ping from ${senderName} (${msg.fromTgId})`).catch(() => {});
+                }
+                relayClient.sendViaWs(msg.fromTgId, 'shared-memory-response', `ping-ack:${senderName || msg.fromTgId}`);
+              } catch (err) {
+                logger.debug({ err }, 'Error processing ping from relay');
               }
             }
           }
@@ -1261,6 +1291,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+
+            if (msg.type === 'ping') {
+              try {
+                const senderFriend = sharedMemory!.getFriend(msg.fromTgId);
+                const senderName = senderFriend?.username ? `@${senderFriend.username}` : senderFriend?.firstName || msg.fromTgId;
+                logger.info({ from: senderName, fromTgId: msg.fromTgId }, 'Ping received via relay');
+                if (tgChannel) {
+                  tgChannel.send(`🔔 Ping from ${senderName} (${msg.fromTgId})`).catch(() => {});
+                }
+                relayClient!.sendViaWs(msg.fromTgId, 'shared-memory-response', `ping-ack:${senderName || msg.fromTgId}`);
+              } catch (err) {
+                logger.debug({ err }, 'Error processing ping from relay');
               }
             }
           }
