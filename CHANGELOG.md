@@ -37,7 +37,7 @@ Mercury has been in rapid development through 0.x releases. The Second Brain fea
 ### Permission Modes
 
 - **Ask Me** — confirm before file writes, shell commands that need approval, and scope changes (default on both CLI and Telegram)
-- **Allow All** — auto-approve everything for the session (scopes, commands, loop continuation). Resets on restart.
+- **Allow All** — auto-approve everything in the current session/channel while keeping the shell blocklist and filesystem scoping in force. Resets on restart.
 - CLI: arrow-key menu at session start. Telegram: inline keyboard on first message, `/permissions` to change.
 
 ### Step-by-Step Tool Feedback
@@ -54,7 +54,7 @@ Mercury has been in rapid development through 0.x releases. The Second Brain fea
 - **Model selection during onboarding** — after validating an API key, Mercury fetches available models and lets you choose
 - **Telegram editable status messages** — streaming updates use `editMessageText` for live response editing
 - **Scheduled task notifications** — Mercury notifies the originating channel when a scheduled task runs
-- **Full temporary scope for scheduled tasks** — tasks run in Allow All mode with auto-approved scopes
+- **Scheduled tasks follow the restricted auto-approval model** — tasks run with `Allow All` behavior inside their originating session/channel, without any extra root filesystem scope
 
 ### Breaking Changes
 

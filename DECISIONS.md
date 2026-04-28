@@ -47,8 +47,8 @@
 ## ADR-008: Scheduler with YAML persistence
 
 - **Context**: Mercury needs to set reminders, run periodic tasks, and trigger skills on a schedule.
-- **Decision**: Expose `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` as AI-callable tools. Persist scheduled tasks to `~/.mercury/schedules.yaml`. Restore on startup. Tasks fire as internal (non-channel) messages through the agent loop.
-- **Consequence**: Mercury can autonomously schedule work. Tasks survive restarts. Internal execution keeps scheduled tasks invisible to channels unless the agent explicitly sends output.
+- **Decision**: Expose `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` as AI-callable tools. Persist scheduled tasks to `~/.mercury/schedules.yaml`. Restore on startup. Tasks run as system messages through the agent loop, preserving `sourceChannelId` / `sourceChannelType` when available instead of forcing a separate non-channel execution path.
+- **Consequence**: Mercury can autonomously schedule work. Tasks survive restarts. Scheduled runs inherit channel context for delivery and session isolation when that context exists, while still using system-message auto-approval. This auto-approval does not grant root filesystem scope.
 
 ## ADR-009: Daemonization via Custom Hybrid Approach
 

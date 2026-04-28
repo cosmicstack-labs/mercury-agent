@@ -250,14 +250,7 @@ export class CLIChannel extends BaseChannel {
     }
     this.streamActive = false;
 
-    process.stdout.write(`\x1b[${visualLines}A`);
-    process.stdout.write('\x1b[J');
-
     if (full.trim()) {
-      const block = this.formatBlock(this.agentName, '', full);
-      for (const line of block) {
-        console.log(line);
-      }
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(chalk.dim('  ' + '─'.repeat(50 - elapsed.length - 4) + ' ' + elapsed + 's'));
     }
@@ -363,8 +356,8 @@ export class CLIChannel extends BaseChannel {
     console.log('');
 
     const options: ArrowSelectOption[] = [
-      { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
-      { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
+      { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and permission escalations' },
+      { value: 'allow-all', label: 'Allow All — auto-approve commands, writes, and loop continuation' },
     ];
 
     try {
@@ -375,8 +368,7 @@ export class CLIChannel extends BaseChannel {
       if (selected === 'allow-all') {
         console.log('');
         console.log(chalk.yellow('  ⚠ Allow All active for this session:'));
-        console.log(chalk.dim('     • All directory scopes auto-approved'));
-        console.log(chalk.dim('     • All shell commands auto-approved (except blocked)'));
+        console.log(chalk.dim('     • Shell commands and file writes auto-approved (except blocked commands)'));
         console.log(chalk.dim('     • Loop detection will auto-continue'));
         console.log(chalk.dim('     • Resets on restart'));
         console.log('');

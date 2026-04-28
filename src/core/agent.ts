@@ -31,6 +31,25 @@ import {
   saveConfig,
 } from '../utils/config.js';
 
+export interface MessagePermissionPolicy {
+  autoApproveAll: boolean;
+}
+
+export function getMessagePermissionPolicy(msg: Pick<ChannelMessage, 'channelType' | 'senderId'>): MessagePermissionPolicy {
+  const isInternal = msg.channelType === 'internal';
+  const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
+
+  if (isInternal || isScheduled) {
+    return {
+      autoApproveAll: true,
+    };
+  }
+
+  return {
+    autoApproveAll: false,
+  };
+}
+
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean }> = [];
   private totalCalls = 0;
@@ -333,12 +352,15 @@ export class Agent {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
 
-      const isInternal = msg.channelType === 'internal';
-      const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
-      if (isInternal || isScheduled) {
-        this.capabilities.permissions.setAutoApproveAll(true);
-        this.capabilities.permissions.addTempScope('/', true, true);
-      }
+    const permissionPolicy = getMessagePermissionPolicy(msg);
+    const isInternal = msg.channelType === 'internal';
+    const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
+
+    this.capabilities.permissions.setCurrentChannel(msg.channelId, msg.channelType);
+
+    if (permissionPolicy.autoApproveAll) {
+      this.capabilities.permissions.setAutoApproveAll(true);
+    }
 
     try {
       const trimmed = msg.content.trim();
@@ -496,7 +518,6 @@ export class Agent {
       }
 
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
-      this.capabilities.permissions.setCurrentChannelType(msg.channelType);
 
       const fallbackIterator = this.providers.getFallbackIterator();
       let result: any = null;

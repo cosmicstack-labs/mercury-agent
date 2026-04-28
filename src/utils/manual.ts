@@ -122,8 +122,9 @@ export function getManual(): string {
     'Say "always" when prompted to permanently approve a command type.',
     'Edit ~/.mercury/permissions.yaml to customize manually.',
     'File access is scoped — new paths need approval (y/n/always).',
-    'At session start, choose "Ask Me" (confirm each action) or "Allow All" (auto-approve everything).',
-    'Scheduled tasks always run in Allow All mode.',
+    'At session start, choose "Ask Me" (confirm each action) or "Allow All" (auto-approve within the current session/channel).',
+    'Allow All keeps the shell blocklist and filesystem scoping in force — it does not grant root filesystem access.',
+    'Scheduled tasks run as system messages with auto-approval, but still respect shell blocklist and file scoping.',
   ];
 
   for (const p of perms) {
