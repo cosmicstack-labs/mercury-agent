@@ -963,6 +963,11 @@ function chatScreen() {
             ? active
             : this.threads[0].id;
         }
+        this.threads.forEach(function(t) {
+          (t.messages || []).forEach(function(m) {
+            m.streaming = false;
+          });
+        });
         this.messages = this.activeMessages();
       } catch {
         this.threads = [];

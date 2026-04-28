@@ -26,7 +26,9 @@ export function renderChat(c: Context): string {
       <section class="chat-main">
       <div class="chat-header">
         <div class="chat-header-info">
-          <button class="chat-back-btn" @click="goHome()" title="Back to dashboard">←</button>
+          <button class="chat-back-btn" @click="goHome()" title="Back to dashboard">
+            <svg><use href="/vendor/icons.svg#arrow-left"/></svg>
+          </button>
           <h1 x-text="activeThreadTitle()">Chat</h1>
           <span class="chat-provider" x-show="provider" x-text="'Using ' + provider + ' / ' + model"></span>
           <span class="chat-perm-badge" :class="settings.bypassPermissions ? 'chat-perm-auto' : 'chat-perm-ask'" @click="togglePermissions()" :title="settings.bypassPermissions ? 'Auto-approve: tool calls run without asking' : 'Ask me: tool calls require your approval'">
@@ -114,7 +116,9 @@ export function renderChat(c: Context): string {
         </div>
       </div>
 
-      <button class="chat-scroll-bottom" x-show="!isAtBottom" @click="scrollToBottom()">↓</button>
+      <button class="chat-scroll-bottom" x-show="!isAtBottom" @click="scrollToBottom()">
+        <svg><use href="/vendor/icons.svg#chevron-down"/></svg>
+      </button>
 
       <div class="chat-input-area">
         <textarea
@@ -132,7 +136,7 @@ export function renderChat(c: Context): string {
           @click="sendMessage()"
           :disabled="waiting || !inputText.trim()"
         >
-          <span x-show="!waiting">Send</span>
+          <span x-show="!waiting"><svg style="width:16px;height:16px"><use href="/vendor/icons.svg#send"/></svg></span>
           <span x-show="waiting" class="thinking-dots">Sending</span>
         </button>
       </div>
