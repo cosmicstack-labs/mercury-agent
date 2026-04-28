@@ -57,12 +57,13 @@ export interface SharedMemorySummary {
   friendCount: number;
 }
 
-export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'revoked';
+export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'rejected' | 'revoked';
 
 export interface FriendInfo {
   tgId: string;
   username: string | null;
   firstName: string | null;
+  direction: 'sent' | 'received';
   status: FriendStatus;
   negativeTags: string[];
   negativeRules: string | null;
@@ -261,7 +262,7 @@ export class SharedMemoryStore {
     return remembered;
   }
 
-  addFriendRequest(tgId: string, username?: string, firstName?: string): FriendInfo {
+  addFriendRequest(tgId: string, username?: string, firstName?: string, direction: 'sent' | 'received' = 'received'): FriendInfo {
     const existing = this.db.getFriend(tgId);
     if (existing) {
       if (!existing.username && username) {
@@ -275,6 +276,7 @@ export class SharedMemoryStore {
       tg_id: tgId,
       username: username ?? null,
       first_name: firstName ?? null,
+      direction,
       status: 'pending',
       negative_tags: null,
       negative_rules: null,
@@ -311,9 +313,11 @@ export class SharedMemoryStore {
     return this.toFriendInfo(this.db.getFriend(tgId)!);
   }
 
-  rejectFriend(tgId: string): boolean {
-    this.db.removeFriend(tgId);
-    return true;
+  rejectFriend(tgId: string): FriendInfo | null {
+    const friend = this.db.getFriend(tgId);
+    if (!friend) return null;
+    this.db.updateFriend(tgId, { status: 'rejected' });
+    return this.toFriendInfo(this.db.getFriend(tgId)!);
   }
 
   revokeFriend(tgId: string): FriendInfo | null {
@@ -547,6 +551,7 @@ export class SharedMemoryStore {
       tgId: row.tg_id,
       username: row.username,
       firstName: row.first_name,
+      direction: row.direction as 'sent' | 'received',
       status: row.status as FriendInfo['status'],
       negativeTags: row.negative_tags ? JSON.parse(row.negative_tags) : [],
       negativeRules: row.negative_rules,

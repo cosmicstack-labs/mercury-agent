@@ -53,12 +53,12 @@ export interface ChatCommandContext {
   sharedMemoryClear: () => number;
   sharedMemoryGetFriends: () => import('../memory/shared-memory-store.js').FriendInfo[];
   sharedMemoryGetFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
-  sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string) => import('../memory/shared-memory-store.js').FriendInfo;
+  sharedMemoryAddFriendRequest: (tgId: string, username?: string, firstName?: string, direction?: 'sent' | 'received') => import('../memory/shared-memory-store.js').FriendInfo;
   sharedMemoryUpdateFriendInfo: (tgId: string, username?: string | null, firstName?: string | null) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryApproveFriend: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemorySetFriendStatus: (tgId: string, status: import('../memory/shared-memory-store.js').FriendStatus) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryGetCategories: () => string[];
-  sharedMemoryRejectFriend: (tgId: string) => boolean;
+  sharedMemoryRejectFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryRevokeFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sendFriendRequest: (tgId: string) => Promise<boolean>;

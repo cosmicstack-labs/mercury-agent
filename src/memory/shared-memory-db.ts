@@ -60,12 +60,13 @@ export interface SharedMemoryRow {
   last_used_query: string | null;
 }
 
-export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'revoked';
+export type FriendStatus = 'pending' | 'awaiting_negative_list' | 'approved' | 'rejected' | 'revoked';
 
 export interface FriendRow {
   tg_id: string;
   username: string | null;
   first_name: string | null;
+  direction: 'sent' | 'received';
   status: FriendStatus;
   negative_tags: string | null;
   negative_rules: string | null;
@@ -133,6 +134,7 @@ export class SharedMemoryDB {
         tg_id TEXT PRIMARY KEY,
         username TEXT,
         first_name TEXT,
+        direction TEXT NOT NULL DEFAULT 'received',
         status TEXT NOT NULL DEFAULT 'pending',
         negative_tags TEXT,
         negative_rules TEXT,
@@ -160,6 +162,10 @@ export class SharedMemoryDB {
         INSERT INTO shared_memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
     `);
+
+    try {
+      this.db.exec(`ALTER TABLE friends ADD COLUMN direction TEXT NOT NULL DEFAULT 'received'`);
+    } catch {}
 
     this.db.pragma('foreign_keys = ON');
     logger.info('Shared memory database initialized');
@@ -410,13 +416,14 @@ export class SharedMemoryDB {
 
   addFriend(friend: Omit<FriendRow, 'query_count_hour'>): void {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO friends (tg_id, username, first_name, status, negative_tags, negative_rules, created_at, approved_at, query_count_hour, query_count_reset)
-      VALUES (@tg_id, @username, @first_name, @status, @negative_tags, @negative_rules, @created_at, @approved_at, 0, @query_count_reset)
+      INSERT OR REPLACE INTO friends (tg_id, username, first_name, direction, status, negative_tags, negative_rules, created_at, approved_at, query_count_hour, query_count_reset)
+      VALUES (@tg_id, @username, @first_name, @direction, @status, @negative_tags, @negative_rules, @created_at, @approved_at, 0, @query_count_reset)
     `);
     stmt.run({
       tg_id: friend.tg_id,
       username: friend.username ?? null,
       first_name: friend.first_name ?? null,
+      direction: friend.direction ?? 'received',
       status: friend.status,
       negative_tags: friend.negative_tags ?? null,
       negative_rules: friend.negative_rules ?? null,
@@ -462,7 +469,7 @@ export class SharedMemoryDB {
   }
 
   removeFriend(tgId: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM friends WHERE tg_id = ?');
+    const stmt = this.db.prepare("UPDATE friends SET status = 'rejected' WHERE tg_id = ? AND status != 'rejected'");
     const result = stmt.run(tgId);
     return result.changes > 0;
   }

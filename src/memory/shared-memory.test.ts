@@ -71,11 +71,14 @@ describe('SharedMemoryStore - Friends', () => {
     expect(approved!.negativeTags).toEqual(['private']);
   });
 
-  it('should reject a friend (removes them)', () => {
+  it('should reject a friend (sets status to rejected)', () => {
     store.addFriendRequest('123456789', 'testuser', 'Test');
     const result = store.rejectFriend('123456789');
-    expect(result).toBe(true);
-    expect(store.getFriend('123456789')).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('rejected');
+    const retrieved = store.getFriend('123456789');
+    expect(retrieved).not.toBeNull();
+    expect(retrieved!.status).toBe('rejected');
   });
 
   it('should revoke a friend', () => {

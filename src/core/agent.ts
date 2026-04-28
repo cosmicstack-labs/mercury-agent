@@ -1512,7 +1512,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send(`${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`, channelId);
         return true;
       }
-      ctx.sharedMemoryAddFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined);
+      ctx.sharedMemoryAddFriendRequest(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
       const relayResult = await ctx.sendFriendRequest(friendTgId);
       if (relayResult) {
         await channel.send(`Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`, channelId);
@@ -1533,15 +1533,24 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         return true;
       }
       const lines = ['**Friends List**\n'];
-      const pending = friends.filter(f => f.status === 'pending');
+      const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
+      const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
       const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
       const approved = friends.filter(f => f.status === 'approved');
+      const rejected = friends.filter(f => f.status === 'rejected');
       const revoked = friends.filter(f => f.status === 'revoked');
-      if (pending.length > 0) {
-        lines.push('**Pending:**');
-        for (const f of pending) {
+      if (sentPending.length > 0) {
+        lines.push('**Sent requests:**');
+        for (const f of sentPending) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           lines.push(`  ${name} (${f.tgId})`);
+        }
+      }
+      if (receivedPending.length > 0) {
+        lines.push('**Received requests:**');
+        for (const f of receivedPending) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${name} (${f.tgId}) — use /approve <TgID> or /reject <TgID>`);
         }
       }
       if (awaiting.length > 0) {
@@ -1557,6 +1566,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
           lines.push(`  ${name} (${f.tgId})${negList}`);
+        }
+      }
+      if (rejected.length > 0) {
+        lines.push('**Rejected:**');
+        for (const f of rejected) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${name} (${f.tgId})`);
         }
       }
       if (revoked.length > 0) {
@@ -1596,9 +1612,21 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       ctx.sharedMemorySetFriendStatus?.(tgId, 'awaiting_negative_list');
 
       if (categories.length === 0) {
-        ctx.sharedMemoryApproveFriend?.(tgId, []);
-        await ctx.approveFriendRequest?.(tgId, []);
-        await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access (no categories to exclude).`, channelId);
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          await channel.send(`\nApprove ${displayName} (${tgId})\n\nNo shared memory categories exist yet.`, channelId);
+          const choice = await channel.askPermission('Share all future data? (y = share all, n = defer until categories exist)');
+          if (choice?.toLowerCase() === 'y' || choice?.toLowerCase() === 'yes') {
+            ctx.sharedMemoryApproveFriend?.(tgId, []);
+            await ctx.approveFriendRequest?.(tgId, []);
+            await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access.`, channelId);
+          } else {
+            ctx.sharedMemorySetFriendStatus?.(tgId, 'pending');
+            await channel.send(`Deferred approval for ${displayName} (${tgId}). You'll be asked again when categories are created.`, channelId);
+          }
+        } else {
+          ctx.sharedMemorySetFriendStatus?.(tgId, 'pending');
+          await channel.send(`No shared memory categories exist yet. Use /listfriends to approve ${displayName} when ready.`, channelId);
+        }
         return true;
       }
 
@@ -1622,9 +1650,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send('Usage: /reject <TELEGRAM_USER_ID>', channelId);
         return true;
       }
-      await ctx.rejectFriendRequest?.(tgId);
-      ctx.sharedMemoryRejectFriend?.(tgId);
-      await channel.send(`Rejected friend request from ${tgId}.`, channelId);
+      const friend = ctx.sharedMemoryGetFriend?.(tgId);
+      const rejected = ctx.sharedMemoryRejectFriend?.(tgId);
+      if (friend?.direction === 'received') {
+        await ctx.rejectFriendRequest?.(tgId);
+      }
+      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
+      await channel.send(`Rejected friend request from ${name} (${tgId}).`, channelId);
       return true;
     }
 

@@ -163,7 +163,7 @@ export class TelegramChannel extends BaseChannel {
           await this.sendDirectMessage(chatId, `${existingName} (${friendTgId}) is already in your friend list (status: ${existing.status}).`);
           return;
         }
-        this.chatCommandContext?.sharedMemoryAddFriendRequest?.(friendTgId, username ?? undefined, firstName ?? undefined);
+        this.chatCommandContext?.sharedMemoryAddFriendRequest?.(friendTgId, username ?? undefined, firstName ?? undefined, 'sent');
         const relayResult = await this.chatCommandContext?.sendFriendRequest?.(friendTgId);
         if (relayResult) {
           await this.sendDirectMessage(chatId, `Friend request for ${displayName} (${friendTgId}) recorded and forwarded via relay.`);
@@ -832,14 +832,24 @@ export class TelegramChannel extends BaseChannel {
     if (!this.bot) return;
 
     const lines = ['<b>Friends List</b>\n'];
-    const pending = friends.filter(f => f.status === 'pending');
+    const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
+    const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
     const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
     const approved = friends.filter(f => f.status === 'approved');
+    const rejected = friends.filter(f => f.status === 'rejected');
     const revoked = friends.filter(f => f.status === 'revoked');
 
-    if (pending.length > 0) {
-      lines.push('<b>Pending:</b>');
-      for (const f of pending) {
+    if (sentPending.length > 0) {
+      lines.push('<b>Sent requests:</b>');
+      for (const f of sentPending) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId}) [Cancel]`);
+      }
+    }
+
+    if (receivedPending.length > 0) {
+      lines.push('\n<b>Received requests:</b>');
+      for (const f of receivedPending) {
         const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
         lines.push(`  ${this.escapeHtml(name)} (${f.tgId}) [Approve] [Reject]`);
       }
@@ -862,6 +872,14 @@ export class TelegramChannel extends BaseChannel {
       }
     }
 
+    if (rejected.length > 0) {
+      lines.push('\n<b>Rejected:</b>');
+      for (const f of rejected) {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
+      }
+    }
+
     if (revoked.length > 0) {
       lines.push('\n<b>Revoked:</b>');
       for (const f of revoked) {
@@ -872,8 +890,15 @@ export class TelegramChannel extends BaseChannel {
 
     const keyboard = new InlineKeyboard();
 
-    if (pending.length > 0) {
-      for (const f of pending) {
+    if (sentPending.length > 0) {
+      for (const f of sentPending) {
+        const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
+        keyboard.text(`❌ Cancel ${name}`, `${FRIEND_ACTION_PREFIX}:cancel:${f.tgId}`).row();
+      }
+    }
+
+    if (receivedPending.length > 0) {
+      for (const f of receivedPending) {
         const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
         keyboard
           .text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:approve:${f.tgId}`)
@@ -1146,14 +1171,24 @@ export class TelegramChannel extends BaseChannel {
       }
 
       const lines = ['<b>Friends List</b>\n'];
-      const pending = friends.filter(f => f.status === 'pending');
+      const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
+      const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
       const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
       const approved = friends.filter(f => f.status === 'approved');
+      const rejected = friends.filter(f => f.status === 'rejected');
       const revoked = friends.filter(f => f.status === 'revoked');
 
-      if (pending.length > 0) {
-        lines.push('<b>Pending:</b>');
-        for (const f of pending) {
+      if (sentPending.length > 0) {
+        lines.push('<b>Sent requests:</b>');
+        for (const f of sentPending) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
+        }
+      }
+
+      if (receivedPending.length > 0) {
+        lines.push('\n<b>Received requests:</b>');
+        for (const f of receivedPending) {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
         }
@@ -1173,6 +1208,14 @@ export class TelegramChannel extends BaseChannel {
           const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
           const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
           lines.push(`  ${this.escapeHtml(name)} (${f.tgId})${negList}`);
+        }
+      }
+
+      if (rejected.length > 0) {
+        lines.push('\n<b>Rejected:</b>');
+        for (const f of rejected) {
+          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+          lines.push(`  ${this.escapeHtml(name)} (${f.tgId})`);
         }
       }
 
@@ -1199,11 +1242,8 @@ export class TelegramChannel extends BaseChannel {
       this.pendingNegativeLists.set(chatId, { tgId, excludedCategories: new Set() });
 
       if (categories.length === 0) {
-        this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, []);
-        await this.chatCommandContext?.approveFriendRequest?.(tgId, []);
-        await ctx.answerCallbackQuery({ text: 'Approved — no categories to exclude' });
-        await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}) with full access (no shared memory categories to exclude yet).`).catch(() => {});
-        this.pendingNegativeLists.delete(chatId);
+        await ctx.answerCallbackQuery({ text: 'Select sharing level' });
+        await this.sendZeroCategoryKeyboard(chatId, tgId, name);
         return;
       }
 
@@ -1271,12 +1311,50 @@ export class TelegramChannel extends BaseChannel {
       return;
     }
 
+    if (action.startsWith('zero_share_all:')) {
+      const tgId = action.slice('zero_share_all:'.length);
+      this.pendingNegativeLists.delete(chatId);
+      this.chatCommandContext.sharedMemoryApproveFriend?.(tgId, []);
+      await this.chatCommandContext?.approveFriendRequest?.(tgId, []);
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      const name = friend?.username ? `@${friend.username}` : friend?.firstName || tgId;
+      await ctx.answerCallbackQuery({ text: 'Approved with full access' });
+      await this.bot!.api.sendMessage(chatId, `Approved friend ${name} (${tgId}) with full shared memory access.`).catch(() => {});
+      return;
+    }
+
+    if (action.startsWith('zero_share_nothing:')) {
+      const tgId = action.slice('zero_share_nothing:'.length);
+      this.pendingNegativeLists.delete(chatId);
+      this.chatCommandContext.sharedMemorySetFriendStatus?.(tgId, 'pending');
+      await ctx.answerCallbackQuery({ text: 'Approval deferred' });
+      await this.bot!.api.sendMessage(chatId, `Deferred approval — no shared memory categories exist yet. You'll be asked again when categories are created. Use /listfriends to manage.`).catch(() => {});
+      return;
+    }
+
     if (action.startsWith('reject:')) {
       const tgId = action.slice('reject:'.length);
-      await this.chatCommandContext?.rejectFriendRequest?.(tgId);
-      this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      const rejected = this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
+      if (friend?.direction === 'received') {
+        await this.chatCommandContext?.rejectFriendRequest?.(tgId);
+      }
+      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
       await ctx.answerCallbackQuery({ text: 'Rejected' });
-      await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${tgId}.`).catch(() => {});
+      await this.bot!.api.sendMessage(chatId, `Rejected friend request from ${name} (${tgId}).`).catch(() => {});
+      return;
+    }
+
+    if (action.startsWith('cancel:')) {
+      const tgId = action.slice('cancel:'.length);
+      const friend = this.chatCommandContext.sharedMemoryGetFriend?.(tgId);
+      const rejected = this.chatCommandContext.sharedMemoryRejectFriend?.(tgId);
+      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
+      if (friend?.direction === 'sent') {
+        await this.chatCommandContext?.rejectFriendRequest?.(tgId);
+      }
+      await ctx.answerCallbackQuery({ text: 'Cancelled' });
+      await this.bot!.api.sendMessage(chatId, `Cancelled friend request to ${name} (${tgId}).`).catch(() => {});
       return;
     }
 
@@ -1291,6 +1369,28 @@ export class TelegramChannel extends BaseChannel {
     }
 
     await ctx.answerCallbackQuery({ text: 'Unknown friend action' });
+  }
+
+  private async sendZeroCategoryKeyboard(chatId: number, tgId: string, friendName: string): Promise<void> {
+    if (!this.bot) return;
+
+    const lines = [`<b>Approve ${this.escapeHtml(friendName)}?</b>`];
+    lines.push('No shared memory categories exist yet.');
+    lines.push('\nChoose:');
+
+    const keyboard = new InlineKeyboard()
+      .text('✅ Share all future data', `${FRIEND_ACTION_PREFIX}:zero_share_all:${tgId}`)
+      .row()
+      .text('⏸ Share nothing yet', `${FRIEND_ACTION_PREFIX}:zero_share_nothing:${tgId}`)
+      .row()
+      .text('❌ Cancel', `${FRIEND_ACTION_PREFIX}:neg_cancel:${tgId}`);
+
+    await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    }).catch(async () => {
+      await this.bot!.api.sendMessage(chatId, lines.join('\n'), { reply_markup: keyboard });
+    });
   }
 
   private async sendNegativeListKeyboard(chatId: number, tgId: string, friendName: string, categories: string[], excluded: Set<string>): Promise<void> {
