@@ -917,7 +917,7 @@ export class TelegramChannel extends BaseChannel {
     if (approved.length > 0) {
       for (const f of approved) {
         const name = f.username ? `@${f.username}` : f.firstName || f.tgId;
-        keyboard.text(`🚫 Revoke ${name}`, `${FRIEND_ACTION_PREFIX}:revoke:${f.tgId}`).row();
+        keyboard.text(`🗑 Remove ${name}`, `${FRIEND_ACTION_PREFIX}:revoke:${f.tgId}`).row();
       }
     }
 
@@ -1360,11 +1360,11 @@ export class TelegramChannel extends BaseChannel {
 
     if (action.startsWith('revoke:')) {
       const tgId = action.slice('revoke:'.length);
-      const revoked = this.chatCommandContext.sharedMemoryRevokeFriend?.(tgId);
-      await this.chatCommandContext?.revokeFriend?.(tgId);
-      const name = revoked?.username ? `@${revoked.username}` : revoked?.firstName || tgId;
-      await ctx.answerCallbackQuery({ text: 'Access revoked' });
-      await this.bot!.api.sendMessage(chatId, `Revoked access for ${name} (${tgId}).`).catch(() => {});
+      const removed = this.chatCommandContext.sharedMemoryRemoveFriend?.(tgId);
+      await this.chatCommandContext?.removeFriend?.(tgId);
+      const name = removed?.username ? `@${removed.username}` : removed?.firstName || tgId;
+      await ctx.answerCallbackQuery({ text: 'Friend removed' });
+      await this.bot!.api.sendMessage(chatId, `Removed ${name} (${tgId}) from your friends.`).catch(() => {});
       return;
     }
 

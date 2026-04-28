@@ -1532,131 +1532,47 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
         return true;
       }
-      const lines = ['**Friends List**\n'];
-      const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
-      const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
-      const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
-      const approved = friends.filter(f => f.status === 'approved');
-      const rejected = friends.filter(f => f.status === 'rejected');
-      const revoked = friends.filter(f => f.status === 'revoked');
-      if (sentPending.length > 0) {
-        lines.push('**Sent requests:**');
-        for (const f of sentPending) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${name} (${f.tgId})`);
-        }
-      }
-      if (receivedPending.length > 0) {
-        lines.push('**Received requests:**');
-        for (const f of receivedPending) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${name} (${f.tgId}) — use /approve <TgID> or /reject <TgID>`);
-        }
-      }
-      if (awaiting.length > 0) {
-        lines.push('**Awaiting category selection:**');
-        for (const f of awaiting) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${name} (${f.tgId}) — use /approve <TgID> to complete`);
-        }
-      }
-      if (approved.length > 0) {
-        lines.push('**Approved:**');
-        for (const f of approved) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
-          lines.push(`  ${name} (${f.tgId})${negList}`);
-        }
-      }
-      if (rejected.length > 0) {
-        lines.push('**Rejected:**');
-        for (const f of rejected) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${name} (${f.tgId})`);
-        }
-      }
-      if (revoked.length > 0) {
-        lines.push('**Revoked:**');
-        for (const f of revoked) {
-          const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-          lines.push(`  ${name} (${f.tgId})`);
-        }
-      }
-      await channel.send(lines.join('\n'), channelId);
-      return true;
-    }
-
-    if (cmd.startsWith('/approve')) {
-      if (!ctx.sharedMemoryGetFriends) {
-        await channel.send('Shared memory is not enabled.', channelId);
-        return true;
-      }
-      const tgId = trimmed.slice('/approve'.length).trim();
-      if (!tgId) {
-        await channel.send('Usage: /approve <TELEGRAM_USER_ID>\nApprove a pending friend request and select categories to exclude from shared memory.', channelId);
-        return true;
-      }
-      const friend = ctx.sharedMemoryGetFriend?.(tgId);
-      if (!friend) {
-        await channel.send(`No friend found with ID ${tgId}.`, channelId);
-        return true;
-      }
-      if (friend.status !== 'pending' && friend.status !== 'awaiting_negative_list') {
-        await channel.send(`${friend.username ? `@${friend.username}` : friend.firstName || tgId} is already ${friend.status}.`, channelId);
-        return true;
-      }
-
-      const categories = ctx.sharedMemoryGetCategories?.() ?? [];
-      const displayName = friend.username ? `@${friend.username}` : friend.firstName || tgId;
-
-      ctx.sharedMemorySetFriendStatus?.(tgId, 'awaiting_negative_list');
-
-      if (categories.length === 0) {
-        if (channelType === 'cli' && channel instanceof CLIChannel) {
-          await channel.send(`\nApprove ${displayName} (${tgId})\n\nNo shared memory categories exist yet.`, channelId);
-          const choice = await channel.askPermission('Share all future data? (y = share all, n = defer until categories exist)');
-          if (choice?.toLowerCase() === 'y' || choice?.toLowerCase() === 'yes') {
-            ctx.sharedMemoryApproveFriend?.(tgId, []);
-            await ctx.approveFriendRequest?.(tgId, []);
-            await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access.`, channelId);
-          } else {
-            ctx.sharedMemorySetFriendStatus?.(tgId, 'pending');
-            await channel.send(`Deferred approval for ${displayName} (${tgId}). You'll be asked again when categories are created.`, channelId);
-          }
-        } else {
-          ctx.sharedMemorySetFriendStatus?.(tgId, 'pending');
-          await channel.send(`No shared memory categories exist yet. Use /listfriends to approve ${displayName} when ready.`, channelId);
-        }
-        return true;
-      }
-
       if (channelType === 'cli' && channel instanceof CLIChannel) {
-        await this.openCliCategorySelection(channel, channelId, tgId, displayName, categories, ctx);
+        await channel.withMenu(async (sel) => {
+          await this.openCliFriendsMenu(channel, channelId, sel, ctx);
+        });
       } else {
-        ctx.sharedMemoryApproveFriend?.(tgId, []);
-        await ctx.approveFriendRequest?.(tgId, []);
-        await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access. Use /listfriends to manage categories.`, channelId);
+        const lines = ['**Friends List**\n'];
+        const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
+        const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
+        const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
+        const approved = friends.filter(f => f.status === 'approved');
+        if (sentPending.length > 0) {
+          lines.push('**Sent requests:**');
+          for (const f of sentPending) {
+            const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+            lines.push(`  ${name} (${f.tgId})`);
+          }
+        }
+        if (receivedPending.length > 0) {
+          lines.push('**Received requests:**');
+          for (const f of receivedPending) {
+            const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+            lines.push(`  ${name} (${f.tgId})`);
+          }
+        }
+        if (awaiting.length > 0) {
+          lines.push('**Awaiting category selection:**');
+          for (const f of awaiting) {
+            const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+            lines.push(`  ${name} (${f.tgId})`);
+          }
+        }
+        if (approved.length > 0) {
+          lines.push('**Approved:**');
+          for (const f of approved) {
+            const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+            const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
+            lines.push(`  ${name} (${f.tgId})${negList}`);
+          }
+        }
+        await channel.send(lines.join('\n'), channelId);
       }
-      return true;
-    }
-
-    if (cmd.startsWith('/reject')) {
-      if (!ctx.sharedMemoryGetFriends) {
-        await channel.send('Shared memory is not enabled.', channelId);
-        return true;
-      }
-      const tgId = trimmed.slice('/reject'.length).trim();
-      if (!tgId) {
-        await channel.send('Usage: /reject <TELEGRAM_USER_ID>', channelId);
-        return true;
-      }
-      const friend = ctx.sharedMemoryGetFriend?.(tgId);
-      const rejected = ctx.sharedMemoryRejectFriend?.(tgId);
-      if (friend?.direction === 'received') {
-        await ctx.rejectFriendRequest?.(tgId);
-      }
-      const name = rejected?.username ? `@${rejected.username}` : rejected?.firstName || tgId;
-      await channel.send(`Rejected friend request from ${name} (${tgId}).`, channelId);
       return true;
     }
 
@@ -2024,38 +1940,166 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     await channel.send(lines.join('\n'), channelId);
   }
 
-  private async openCliCategorySelection(
+  private async openCliFriendsMenu(
     channel: CLIChannel,
     channelId: string,
-    tgId: string,
-    displayName: string,
-    categories: string[],
+    sel: (title: string, options: ArrowSelectOption[]) => Promise<string>,
     ctx: import('../capabilities/registry.js').ChatCommandContext,
   ): Promise<void> {
-    await channel.send(`\nApprove ${displayName} (${tgId})\n\nSelect categories to EXCLUDE from shared memory.`, channelId);
+    while (true) {
+      const friends = ctx.sharedMemoryGetFriends();
+      if (friends.length === 0) {
+        await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
+        return;
+      }
 
-    const categoryList = categories.map((cat, i) => `  ${i + 1}. ${cat}`).join('\n');
-    await channel.send(`Categories:\n${categoryList}`, channelId);
+      const sentPending = friends.filter(f => f.status === 'pending' && f.direction === 'sent');
+      const receivedPending = friends.filter(f => f.status === 'pending' && f.direction === 'received');
+      const awaiting = friends.filter(f => f.status === 'awaiting_negative_list');
+      const approved = friends.filter(f => f.status === 'approved');
 
-    const excludedNumbers = await channel.askPermission('Enter numbers to exclude (e.g. "1 3 5"), or press Enter for no exclusions');
-    const selectedExclusions = new Set<string>();
+      const options: ArrowSelectOption[] = [];
+      if (sentPending.length > 0) options.push({ value: 'pending_sent', label: `Sent Requests (${sentPending.length})` });
+      if (receivedPending.length > 0) options.push({ value: 'pending_received', label: `Received Requests (${receivedPending.length})` });
+      if (awaiting.length > 0) options.push({ value: 'awaiting', label: `Awaiting Approval (${awaiting.length})` });
+      if (approved.length > 0) options.push({ value: 'approved', label: `Approved Friends (${approved.length})` });
+      options.push({ value: 'back', label: 'Back' });
 
-    if (excludedNumbers && excludedNumbers.trim() !== '') {
-      const numbers = excludedNumbers.trim().split(/\s+/).map(n => parseInt(n, 10) - 1).filter(n => n >= 0 && n < categories.length);
-      for (const idx of numbers) {
-        selectedExclusions.add(categories[idx]);
+      const category = await sel('Friends', options);
+      if (category === 'back' || !category) return;
+
+      let list: import('../memory/shared-memory-store.js').FriendInfo[] = [];
+      if (category === 'pending_sent') list = sentPending;
+      else if (category === 'pending_received') list = receivedPending;
+      else if (category === 'awaiting') list = awaiting;
+      else if (category === 'approved') list = approved;
+
+      if (list.length === 0) continue;
+
+      await this.openCliFriendList(channel, channelId, sel, list, category, ctx);
+    }
+  }
+
+  private async openCliFriendList(
+    channel: CLIChannel,
+    channelId: string,
+    sel: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+    friends: import('../memory/shared-memory-store.js').FriendInfo[],
+    category: string,
+    ctx: import('../capabilities/registry.js').ChatCommandContext,
+  ): Promise<void> {
+    while (true) {
+      const options: ArrowSelectOption[] = friends.map(f => {
+        const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
+        return { value: f.tgId, label: `${name} (${f.tgId})` };
+      });
+      options.push({ value: 'back', label: 'Back' });
+
+      const title = category === 'pending_sent' ? 'Sent Requests'
+        : category === 'pending_received' ? 'Received Requests'
+        : category === 'awaiting' ? 'Awaiting Approval'
+        : 'Approved Friends';
+
+      const selected = await sel(title, options);
+      if (selected === 'back' || !selected) return;
+
+      const friend = friends.find(f => f.tgId === selected);
+      if (!friend) return;
+
+      const shouldRefresh = await this.openCliFriendActions(channel, channelId, sel, friend, ctx);
+      if (shouldRefresh) {
+        const updatedFriend = ctx.sharedMemoryGetFriend?.(friend.tgId);
+        if (!updatedFriend) {
+          friends = friends.filter(f => f.tgId !== friend.tgId);
+          if (friends.length === 0) return;
+        } else {
+          const idx = friends.findIndex(f => f.tgId === friend.tgId);
+          if (idx >= 0) friends[idx] = updatedFriend;
+        }
       }
     }
+  }
 
-    const negativeTags = Array.from(selectedExclusions);
-    ctx.sharedMemoryApproveFriend?.(tgId, negativeTags);
-    await ctx.approveFriendRequest?.(tgId, negativeTags);
+  private async openCliFriendActions(
+    channel: CLIChannel,
+    channelId: string,
+    sel: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+    friend: import('../memory/shared-memory-store.js').FriendInfo,
+    ctx: import('../capabilities/registry.js').ChatCommandContext,
+  ): Promise<boolean> {
+    const name = friend.username ? `@${friend.username}` : friend.firstName || friend.tgId;
 
-    if (negativeTags.length > 0) {
-      await channel.send(`Approved ${displayName} (${tgId}).\nExcluded categories: ${negativeTags.join(', ')}`, channelId);
-    } else {
-      await channel.send(`Approved ${displayName} (${tgId}) with full shared memory access.`, channelId);
+    const options: ArrowSelectOption[] = [];
+    if (friend.status === 'pending' && friend.direction === 'sent') {
+      options.push({ value: 'cancel', label: 'Cancel Request' });
+    } else if (friend.status === 'pending' && friend.direction === 'received') {
+      options.push({ value: 'approve', label: 'Approve' });
+      options.push({ value: 'reject', label: 'Reject' });
+    } else if (friend.status === 'awaiting_negative_list') {
+      options.push({ value: 'approve', label: 'Approve with Full Access' });
+      options.push({ value: 'reject', label: 'Reject' });
+    } else if (friend.status === 'approved') {
+      options.push({ value: 'remove', label: 'Remove Friend' });
     }
+    options.push({ value: 'back', label: 'Back' });
+
+    const action = await sel(`${name} (${friend.tgId})`, options);
+    if (action === 'back' || !action) return false;
+
+    if (action === 'cancel') {
+      ctx.sharedMemoryRejectFriend?.(friend.tgId);
+      await ctx.rejectFriendRequest?.(friend.tgId);
+      await channel.send(`Cancelled friend request to ${name}.`, channelId);
+      return true;
+    }
+
+    if (action === 'reject') {
+      ctx.sharedMemoryRejectFriend?.(friend.tgId);
+      if (friend.direction === 'received') {
+        await ctx.rejectFriendRequest?.(friend.tgId);
+      }
+      await channel.send(`Rejected friend request from ${name}.`, channelId);
+      return true;
+    }
+
+    if (action === 'approve') {
+      const categories = ctx.sharedMemoryGetCategories?.() ?? [];
+      let negativeTags: string[] = [];
+
+      if (categories.length > 0) {
+        await channel.send(`\nApprove ${name} (${friend.tgId})\n\nCategories: ${categories.join(', ')}`, channelId);
+        const excludedInput = await channel.askPermission('Enter categories to EXCLUDE (space-separated), or press Enter for full access');
+        if (excludedInput && excludedInput.trim()) {
+          const words = excludedInput.trim().split(/\s+/);
+          negativeTags = categories.filter(c => words.some(w => c.toLowerCase().includes(w.toLowerCase())));
+        }
+      }
+
+      ctx.sharedMemoryApproveFriend?.(friend.tgId, negativeTags);
+      await ctx.approveFriendRequest?.(friend.tgId, negativeTags);
+      if (negativeTags.length > 0) {
+        await channel.send(`Approved ${name}. Excluded: ${negativeTags.join(', ')}`, channelId);
+      } else {
+        await channel.send(`Approved ${name} with full shared memory access.`, channelId);
+      }
+      return true;
+    }
+
+    if (action === 'remove') {
+      const confirm = await sel(`Remove ${name}?`, [
+        { value: 'cancel', label: 'Cancel' },
+        { value: 'confirm', label: `Remove ${name}` },
+      ]);
+      if (confirm === 'confirm') {
+        ctx.sharedMemoryRemoveFriend?.(friend.tgId);
+        await ctx.removeFriend?.(friend.tgId);
+        await channel.send(`Removed ${name} from your friends.`, channelId);
+        return true;
+      }
+      return false;
+    }
+
+    return false;
   }
 
   private async openCliMemoryMenu(channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {
@@ -2193,33 +2237,10 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
             await channel.send('No friends yet. Use /friend <TELEGRAM_USER_ID> to add someone.', channelId);
             continue;
           }
-          const lines = ['**Friends List**', ''];
-          const pending = friends.filter(f => f.status === 'pending');
-          const approved = friends.filter(f => f.status === 'approved');
-          const revoked = friends.filter(f => f.status === 'revoked');
-          if (pending.length > 0) {
-            lines.push('**Pending:**');
-            for (const f of pending) {
-              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-              lines.push(`  ${name} (${f.tgId})`);
-            }
+          const capabilities = this.capabilities.getChatCommandContext();
+          if (capabilities) {
+            await this.openCliFriendsMenu(channel, channelId, sel, capabilities);
           }
-          if (approved.length > 0) {
-            lines.push('**Approved:**');
-            for (const f of approved) {
-              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-              const negList = f.negativeTags.length > 0 ? ` [excluded: ${f.negativeTags.join(', ')}]` : '';
-              lines.push(`  ${name} (${f.tgId})${negList}`);
-            }
-          }
-          if (revoked.length > 0) {
-            lines.push('**Revoked:**');
-            for (const f of revoked) {
-              const name = f.username ? `@${f.username}` : f.firstName || 'Unknown';
-              lines.push(`  ${name} (${f.tgId})`);
-            }
-          }
-          await channel.send(lines.join('\n'), channelId);
           continue;
         }
 

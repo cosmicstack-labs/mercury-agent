@@ -961,6 +961,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryGetCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
     sharedMemoryRejectFriend: (tgId: string) => sharedMemory ? sharedMemory.rejectFriend(tgId) : null,
     sharedMemoryRevokeFriend: (tgId: string) => sharedMemory ? sharedMemory.revokeFriend(tgId) : null,
+    sharedMemoryRemoveFriend: (tgId: string) => sharedMemory ? sharedMemory.removeFriend(tgId) : null,
     sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => sharedMemory ? sharedMemory.updateFriendNegativeList(tgId, negativeTags, negativeRules) : null,
     sendFriendRequest: async (tgId: string) => {
       if (!relayClient || !sharedMemory) return false;
@@ -981,6 +982,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (!relayClient || !sharedMemory) return false;
       if (!relayClient.isRegistered()) return false;
       return relayClient.revokeFriend(tgId);
+    },
+    removeFriend: async (tgId: string) => {
+      if (!relayClient || !sharedMemory) return false;
+      if (!relayClient.isRegistered()) return false;
+      return relayClient.deleteFriend(tgId);
     },
     resolveTelegramUser: async (tgId: string) => {
       const telegram = channels.get('telegram') as TelegramChannel | undefined;
@@ -1066,6 +1072,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+          }
+
+          if (result.friendDeleted) {
+            const deleted = sharedMemory.removeFriend(result.friendDeleted);
+            if (deleted) {
+              const name = deleted.username ? `@${deleted.username}` : deleted.firstName || result.friendDeleted;
+              logger.info({ friendDeleted: result.friendDeleted }, 'Friend removed by other user');
+              if (tgChannel) {
+                tgChannel.send(`${name} (${result.friendDeleted}) has removed you from their friends.`).catch(() => {});
               }
             }
           }
@@ -1235,6 +1252,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+          }
+
+          if (result.friendDeleted) {
+            const deleted = sharedMemory?.removeFriend(result.friendDeleted);
+            if (deleted) {
+              const name = deleted.username ? `@${deleted.username}` : deleted.firstName || result.friendDeleted;
+              logger.info({ friendDeleted: result.friendDeleted }, 'Friend removed by other user');
+              if (tgChannel) {
+                tgChannel.send(`${name} (${result.friendDeleted}) has removed you from their friends.`).catch(() => {});
               }
             }
           }

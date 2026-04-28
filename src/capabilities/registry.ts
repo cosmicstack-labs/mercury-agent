@@ -59,12 +59,14 @@ export interface ChatCommandContext {
   sharedMemorySetFriendStatus: (tgId: string, status: import('../memory/shared-memory-store.js').FriendStatus) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryGetCategories: () => string[];
   sharedMemoryRejectFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
+  sharedMemoryRemoveFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryRevokeFriend: (tgId: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sharedMemoryUpdateFriendNegativeList: (tgId: string, negativeTags: string[], negativeRules?: string) => import('../memory/shared-memory-store.js').FriendInfo | null;
   sendFriendRequest: (tgId: string) => Promise<boolean>;
   approveFriendRequest: (tgId: string, negativeTags: string[], negativeRules?: string) => Promise<boolean>;
   rejectFriendRequest: (tgId: string) => Promise<boolean>;
   revokeFriend: (tgId: string) => Promise<boolean>;
+  removeFriend: (tgId: string) => Promise<boolean>;
   resolveTelegramUser: (tgId: string) => Promise<{ username: string | null; firstName: string | null } | null>;
   relayStatus: () => { registered: boolean; connected: boolean; url: string; userId: string | null };
   relayConnect: () => Promise<boolean>;

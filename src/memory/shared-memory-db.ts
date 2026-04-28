@@ -474,6 +474,12 @@ export class SharedMemoryDB {
     return result.changes > 0;
   }
 
+  hardDeleteFriend(tgId: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM friends WHERE tg_id = ?');
+    const result = stmt.run(tgId);
+    return result.changes > 0;
+  }
+
   incrementFriendQueryCount(tgId: string): number {
     const friend = this.getFriend(tgId);
     if (!friend) return -1;

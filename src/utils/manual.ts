@@ -93,7 +93,7 @@ export function getManual(): string {
     ['/quit', 'Shut down Mercury (same as /exit)'],
     ['/friend <ID>', 'Send a friend request by Telegram user ID'],
     ['/friend', 'Show friend request info and pending/approved counts'],
-    ['/listfriends', 'List all friends (pending, approved, revoked)'],
+    ['/listfriends', 'Manage friends interactively (approve, reject, remove)'],
     ['/shared', 'View and manage shared memory'],
     ['/telegram', 'CLI chat only: open the Telegram management menu'],
     ['/telegram pending', 'CLI chat only: list pending Telegram requests'],

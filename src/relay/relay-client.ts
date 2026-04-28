@@ -26,6 +26,7 @@ export interface RelayEvent {
   friendRequests: Array<{ fromTgId: string; fromUsername: string | null; fromFirstName: string | null; requestId: string }>;
   friendResponses: Array<{ fromTgId: string; approved: boolean; requestId: string }>;
   messages: RelayMessage[];
+  friendDeleted?: string;
 }
 
 type OnEventCallback = (event: RelayEvent) => void;
@@ -178,6 +179,26 @@ export class RelayClient {
       return response.ok;
     } catch (err) {
       logger.warn({ err, friendTgId }, 'Friend revocation error');
+      return false;
+    }
+  }
+
+  async deleteFriend(friendTgId: string): Promise<boolean> {
+    if (!this.ensureRegistered()) return false;
+
+    try {
+      const response = await fetch(`${this.url}/v1/delete-friend`, {
+        method: 'POST',
+        headers: this.authHeaders(),
+        body: JSON.stringify({
+          from_tg_id: this.tgUserId,
+          friend_tg_id: friendTgId,
+        }),
+      });
+
+      return response.ok;
+    } catch (err) {
+      logger.warn({ err, friendTgId }, 'Friend deletion error');
       return false;
     }
   }
@@ -388,6 +409,16 @@ export class RelayClient {
           requestId: '',
         }],
         messages: [],
+      });
+      return;
+    }
+
+    if (type === 'friend_deleted') {
+      this.onEventCallback({
+        friendRequests: [],
+        friendResponses: [],
+        messages: [],
+        friendDeleted: msg.from_tg_id as string,
       });
       return;
     }

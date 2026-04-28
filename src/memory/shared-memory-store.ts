@@ -320,6 +320,14 @@ export class SharedMemoryStore {
     return this.toFriendInfo(this.db.getFriend(tgId)!);
   }
 
+  removeFriend(tgId: string): FriendInfo | null {
+    const friend = this.db.getFriend(tgId);
+    if (!friend) return null;
+    const info = this.toFriendInfo(friend);
+    this.db.hardDeleteFriend(tgId);
+    return info;
+  }
+
   revokeFriend(tgId: string): FriendInfo | null {
     const friend = this.db.getFriend(tgId);
     if (!friend) return null;
