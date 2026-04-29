@@ -4,6 +4,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
+import type { SharedMemoryStore } from '../memory/shared-memory-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
@@ -258,6 +259,7 @@ export class Agent {
     private longTerm: LongTermMemory,
     private episodic: EpisodicMemory,
     private userMemory: UserMemoryStore | null,
+    private sharedMemory: SharedMemoryStore | null,
     private channels: ChannelRegistry,
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
@@ -949,6 +951,14 @@ export class Agent {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
     }
 
+    if (this.sharedMemory) {
+      const sharedSummary = this.sharedMemory.getSummary();
+      prompt += `\n\nShared Memory is ENABLED. You have ${sharedSummary.total} shared memories across ${sharedSummary.categories.length} categories.`;
+      if (sharedSummary.learningPaused) {
+        prompt += `\nShared learning is currently PAUSED — no new shared memories will be stored until resumed.`;
+      }
+    }
+
     const toolNames = this.capabilities.getToolNames();
     const githubTools = ['create_pr', 'review_pr', 'list_issues', 'create_issue', 'github_api'];
     const hasGitHub = githubTools.some(t => toolNames.includes(t));
@@ -1078,19 +1088,31 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   }
 
   private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
-    if (!this.userMemory) return;
-    if (this.userMemory.isLearningPaused()) return;
+    const canSecondBrain = this.userMemory && !this.userMemory.isLearningPaused();
+    const canSharedMemory = this.sharedMemory && !this.sharedMemory.isLearningPaused();
+    if (!canSecondBrain && !canSharedMemory) return;
 
     const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
     if (trivial.test(userMessage.trim())) return;
 
     if (!this.tokenBudget.canAfford(800)) return;
 
+    const existingCategories = this.sharedMemory ? this.sharedMemory.getCategories() : [];
+
     try {
       const provider = this.providers.getDefault();
+
+      let systemPrompt = `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0), category (the domain this memory belongs to — such as personal, professional, health, technical, financial, or another existing category. Only create a new category if the memory doesn't fit ANY existing category), shareable (true if appropriate to share with friends, false if private or sensitive).`;
+
+      if (existingCategories.length > 0) {
+        systemPrompt += `\n\nExisting categories to prefer: ${existingCategories.join(', ')}`;
+      }
+
+      systemPrompt += `\n\nExtract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array.`;
+
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
+        system: systemPrompt,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
@@ -1117,6 +1139,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         confidence: number;
         importance: number;
         durability: number;
+        category?: string;
+        shareable?: boolean;
       }>;
 
       try {
@@ -1134,27 +1158,58 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           importance: 0.7,
           durability: 0.7,
           evidenceKind: 'inferred',
+          category: 'general',
+          shareable: true,
         }));
       }
 
       const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
-      const typed = candidates
-        .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
-        .filter(c => validTypes.includes(c.type))
-        .map(c => ({
-          type: c.type as any,
-          summary: c.summary,
-          detail: c.detail,
-          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-        }));
 
-      if (typed.length > 0) {
-        const remembered = this.userMemory.remember(typed, 'conversation');
-        if (remembered.length > 0) {
-          logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+      // Second Brain candidates (no category/shareable fields)
+      if (canSecondBrain) {
+        const secondBrainCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+          }));
+
+        if (secondBrainCandidates.length > 0) {
+          const remembered = this.userMemory!.remember(secondBrainCandidates, 'conversation');
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+          }
+        }
+      }
+
+      // Shared Memory candidates (need category, shareable filter)
+      if (canSharedMemory) {
+        const sharedCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .filter(c => c.shareable !== false)
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+            category: (c.category || 'general'),
+          }));
+
+        if (sharedCandidates.length > 0) {
+          const remembered = this.sharedMemory!.remember(sharedCandidates);
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type), categories: remembered.map(r => r.category) }, 'Shared memories stored');
+          }
         }
       }
     } catch (err) {
@@ -1270,6 +1325,97 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
 
       await this.sendMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared' || cmd === '/memory shared overview') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      await this.sendSharedMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared pause') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      if (this.sharedMemory.isLearningPaused()) {
+        await channel.send('Shared learning is already paused.', channelId);
+        return true;
+      }
+      this.sharedMemory.setLearningPaused(true);
+      await channel.send('Shared learning paused. No new shared memories will be stored until resumed.', channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared resume') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      if (!this.sharedMemory.isLearningPaused()) {
+        await channel.send('Shared learning is already active.', channelId);
+        return true;
+      }
+      this.sharedMemory.setLearningPaused(false);
+      await channel.send('Shared learning resumed. New memories will be stored in shared memory.', channelId);
+      return true;
+    }
+
+    if (trimmed.toLowerCase().startsWith('/memory shared search')) {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const query = trimmed.slice('/memory shared search'.length).trim();
+      if (!query) {
+        await channel.send('Usage: /memory shared search <query>', channelId);
+        return true;
+      }
+      const results = this.sharedMemory.search(query, 10);
+      if (results.length === 0) {
+        await channel.send(`No shared memories found matching "${query}".`, channelId);
+        return true;
+      }
+      const lines = [`**Search results for "${query}":**`, ''];
+      for (const r of results) {
+        lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared categories') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const categories = this.sharedMemory.getCategories();
+      if (categories.length === 0) {
+        await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+        return true;
+      }
+      const summary = this.sharedMemory.getSummary();
+      const lines = ['**Shared Memory Categories:**', ''];
+      for (const cat of categories) {
+        const count = summary.byCategory[cat] ?? 0;
+        lines.push(`  ${cat}: ${count} memories`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared clear') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const cleared = this.sharedMemory.clear();
+      await channel.send(`Cleared ${cleared} shared memories.`, channelId);
       return true;
     }
 
@@ -1627,20 +1773,57 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     await channel.send(lines.join('\n'), channelId);
   }
 
+  private async sendSharedMemoryOverview(channel: any, channelId: string): Promise<void> {
+    if (!this.sharedMemory) return;
+    const summary = this.sharedMemory.getSummary();
+    const lines = [
+      `**Shared Memory Overview**`,
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+    ];
+    const catEntries = Object.entries(summary.byCategory);
+    if (catEntries.length > 0) {
+      lines.push('');
+      lines.push('By category:');
+      for (const [cat, count] of catEntries) {
+        lines.push(`  ${cat}: ${count}`);
+      }
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('');
+      lines.push('By type:');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+    lines.push('');
+    lines.push('Commands: /memory shared pause|resume|search <query>|categories|clear');
+    await channel.send(lines.join('\n'), channelId);
+  }
+
   private async openCliMemoryMenu(channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {
     if (!this.userMemory) return;
 
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
         const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-        const action = await sel('Memory', [
+        const hasSharedMemory = !!this.sharedMemory;
+        const sharedLabel = hasSharedMemory ? 'Shared Memory' : '';
+        const options: { value: string; label: string }[] = [
           { value: 'overview', label: 'Overview' },
           { value: 'recent', label: 'Recent Memories' },
           { value: 'search', label: 'Search' },
           { value: 'toggle', label: learningLabel },
+        ];
+        if (hasSharedMemory) {
+          options.push({ value: 'shared', label: sharedLabel });
+        }
+        options.push(
           { value: 'clear', label: 'Clear All Memories' },
           { value: 'back', label: 'Back' },
-        ]);
+        );
+        const action = await sel('Memory', options);
 
         if (action === 'back') return;
 
@@ -1702,6 +1885,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           }
           continue;
         }
+
+        if (action === 'shared') {
+          await this.openCliSharedMemoryMenu(channel, channelId, sel);
+          continue;
+        }
       }
     };
 
@@ -1709,6 +1897,127 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       await runMenu(select);
     } else {
       await channel.withMenu(runMenu);
+    }
+  }
+
+  private async openCliSharedMemoryMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+  ): Promise<void> {
+    if (!this.sharedMemory) return;
+
+    while (true) {
+      const summary = this.sharedMemory.getSummary();
+      const sharedLearningLabel = summary.learningPaused ? 'Resume Shared Learning' : 'Pause Shared Learning';
+      const action = await select('Shared Memory', [
+        { value: 'overview', label: `Overview (${summary.total} memories)` },
+        { value: 'recent', label: 'Recent' },
+        { value: 'search', label: 'Search' },
+        { value: 'categories', label: 'Categories' },
+        { value: 'toggle', label: sharedLearningLabel },
+        { value: 'clear', label: 'Clear All Shared Memories' },
+        { value: 'back', label: 'Back' },
+      ]);
+
+      if (action === 'back') return;
+
+      if (action === 'overview') {
+        const lines = [
+          '**Shared Memory Overview**',
+          `Total memories: ${summary.total}`,
+          `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+        ];
+        const catEntries = Object.entries(summary.byCategory);
+        if (catEntries.length > 0) {
+          lines.push('');
+          lines.push('By category:');
+          for (const [cat, count] of catEntries) {
+            lines.push(`  ${cat}: ${count}`);
+          }
+        }
+        const typeEntries = Object.entries(summary.byType);
+        if (typeEntries.length > 0) {
+          lines.push('');
+          lines.push('By type:');
+          for (const [type, count] of typeEntries) {
+            lines.push(`  ${type}: ${count}`);
+          }
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'recent') {
+        const recent = this.sharedMemory.getRecent(10);
+        if (recent.length === 0) {
+          await channel.send('No shared memories yet.', channelId);
+          continue;
+        }
+        const lines = ['**Recent Shared Memories:**', ''];
+        for (const r of recent) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'search') {
+        const query = await channel.prompt('Search shared memories: ');
+        if (!query) continue;
+        const results = this.sharedMemory.search(query, 10);
+        if (results.length === 0) {
+          await channel.send(`No shared memories found matching "${query}".`, channelId);
+          continue;
+        }
+        const lines = [`**Search results for "${query}":**`, ''];
+        for (const r of results) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'categories') {
+        const categories = this.sharedMemory.getCategories();
+        if (categories.length === 0) {
+          await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+          continue;
+        }
+        const lines = ['**Shared Memory Categories:**', ''];
+        for (const cat of categories) {
+          const count = summary.byCategory[cat] ?? 0;
+          lines.push(`  ${cat}: ${count} memories`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'toggle') {
+        const currentlyPaused = this.sharedMemory.isLearningPaused();
+        this.sharedMemory.setLearningPaused(!currentlyPaused);
+        await channel.send(
+          currentlyPaused
+            ? 'Shared learning resumed. New memories will be stored in shared memory.'
+            : 'Shared learning paused. No new shared memories will be stored until resumed.',
+          channelId,
+        );
+        continue;
+      }
+
+      if (action === 'clear') {
+        const confirm = await select('Clear all shared memories?', [
+          { value: 'cancel', label: 'Cancel' },
+          { value: 'confirm', label: 'Clear everything' },
+        ]);
+        if (confirm === 'confirm') {
+          const cleared = this.sharedMemory.clear();
+          await channel.send(`Cleared ${cleared} shared memories.`, channelId);
+        }
+        continue;
+      }
     }
   }
 

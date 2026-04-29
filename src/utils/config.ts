@@ -100,6 +100,10 @@ export interface MercuryConfig {
       enabled: boolean;
       maxRecords: number;
     };
+    sharedMemory: {
+      enabled: boolean;
+      learningPaused: boolean;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -218,6 +222,10 @@ export function getDefaultConfig(): MercuryConfig {
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
         maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
+      },
+      sharedMemory: {
+        enabled: getEnvBool('SHARED_MEMORY_ENABLED', true),
+        learningPaused: getEnvBool('SHARED_MEMORY_LEARNING_PAUSED', false),
       },
     },
     heartbeat: {

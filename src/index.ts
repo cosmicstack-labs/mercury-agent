@@ -31,6 +31,8 @@ import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
+import { SharedMemoryStore } from './memory/shared-memory-store.js';
+import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -941,6 +943,26 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     );
   }
 
+  let sharedMemory: SharedMemoryStore | null = null;
+  if (config.memory.sharedMemory?.enabled !== false && isSharedMemoryDbAvailable()) {
+    try {
+      sharedMemory = new SharedMemoryStore(config);
+      if (!isDaemon) {
+        console.log(chalk.dim(`  Shared memory: enabled (${sharedMemory.getSummary().total} existing memories)`));
+      } else {
+        logger.info({ total: sharedMemory.getSummary().total }, 'Shared memory loaded');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Shared memory initialization failed, continuing without it');
+      sharedMemory = null;
+    }
+  } else if (config.memory.sharedMemory?.enabled !== false && !isSharedMemoryDbAvailable()) {
+    logger.warn(
+      'better-sqlite3 is not available — shared memory is disabled. ' +
+      'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
+    );
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -955,6 +977,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memorySearch: (query: string, limit?: number) => userMemory ? userMemory.search(query, limit) : [],
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
     memoryClear: () => userMemory ? userMemory.clear() : 0,
+    sharedMemorySummary: () => sharedMemory ? sharedMemory.getSummary() : { total: 0, byType: {}, byCategory: {}, categories: [], learningPaused: true },
+    sharedMemoryRecent: (limit?: number) => sharedMemory ? sharedMemory.getRecent(limit) : [],
+    sharedMemorySearch: (query: string, limit?: number) => sharedMemory ? sharedMemory.search(query, limit) : [],
+    sharedMemorySetLearningPaused: (paused: boolean) => { if (sharedMemory) sharedMemory.setLearningPaused(paused); },
+    sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
+    sharedMemoryCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -997,7 +1025,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.registerAll();
 
   const agent = new Agent(
-    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
+    config, providers, identity, shortTerm, longTerm, episodic, userMemory, sharedMemory, channels, tokenBudget, capabilities, scheduler,
   );
 
   await agent.birth();
@@ -1066,6 +1094,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       try {
         userMemory.consolidate();
         userMemory.close();
+      } catch {}
+    }
+    if (sharedMemory) {
+      try {
+        sharedMemory.close();
       } catch {}
     }
     await agent.shutdown();
