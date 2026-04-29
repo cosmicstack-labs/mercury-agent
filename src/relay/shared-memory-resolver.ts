@@ -25,8 +25,14 @@ export class SharedMemoryQueryResolver {
     const k = this.key(friendTgId);
     const existing = this.pending.get(k);
     if (existing) {
-      clearTimeout(existing.timer);
-      existing.resolve({ friendTgId, context: '', timedOut: true });
+      return new Promise<SharedMemoryQueryResult>((resolve) => {
+        const origResolve = existing.resolve;
+        const patched = { ...existing, resolve: (result: SharedMemoryQueryResult) => {
+          origResolve(result);
+          resolve(result);
+        }};
+        this.pending.set(k, patched);
+      });
     }
 
     return new Promise<SharedMemoryQueryResult>((resolve) => {

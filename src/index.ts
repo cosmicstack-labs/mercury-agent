@@ -1093,13 +1093,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
               }
             }
 
-            if (msg.type === 'shared-memory-response' && msg.payload) {
+            if (msg.type === 'shared-memory-response' && msg.payload != null) {
               try {
                 if (sharedMemoryQueryResolver) {
                   sharedMemoryQueryResolver.resolve(msg.fromTgId, msg.payload);
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+
+            if (msg.type === 'ping-ack') {
+              try {
+                const senderName = msg.payload.replace(/^ping-ack:/, '');
+                logger.info({ from: senderName, fromTgId: msg.fromTgId }, 'Ping acknowledged via relay');
+                if (tgChannel) {
+                  tgChannel.send(`🔔 ${senderName} acknowledged ping`).catch(() => {});
+                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing ping-ack from relay');
               }
             }
 
@@ -1111,7 +1123,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 if (tgChannel) {
                   tgChannel.send(`🔔 Ping from ${senderName} (${msg.fromTgId})`).catch(() => {});
                 }
-                relayClient.sendViaWs(msg.fromTgId, 'shared-memory-response', `ping-ack:${senderName || msg.fromTgId}`);
+                relayClient.sendViaWs(msg.fromTgId, 'ping-ack', `${senderName || msg.fromTgId}`);
               } catch (err) {
                 logger.debug({ err }, 'Error processing ping from relay');
               }
@@ -1284,13 +1296,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
               }
             }
 
-            if (msg.type === 'shared-memory-response' && msg.payload) {
+            if (msg.type === 'shared-memory-response' && msg.payload != null) {
               try {
                 if (sharedMemoryQueryResolver) {
                   sharedMemoryQueryResolver.resolve(msg.fromTgId, msg.payload);
                 }
               } catch (err) {
                 logger.debug({ err }, 'Error processing shared memory response from relay');
+              }
+            }
+
+            if (msg.type === 'ping-ack') {
+              try {
+                const senderName = msg.payload.replace(/^ping-ack:/, '');
+                logger.info({ from: senderName, fromTgId: msg.fromTgId }, 'Ping acknowledged via relay');
+                if (tgChannel) {
+                  tgChannel.send(`🔔 ${senderName} acknowledged ping`).catch(() => {});
+                }
+              } catch (err) {
+                logger.debug({ err }, 'Error processing ping-ack from relay');
               }
             }
 
@@ -1302,7 +1326,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 if (tgChannel) {
                   tgChannel.send(`🔔 Ping from ${senderName} (${msg.fromTgId})`).catch(() => {});
                 }
-                relayClient!.sendViaWs(msg.fromTgId, 'shared-memory-response', `ping-ack:${senderName || msg.fromTgId}`);
+                relayClient!.sendViaWs(msg.fromTgId, 'ping-ack', `${senderName || msg.fromTgId}`);
               } catch (err) {
                 logger.debug({ err }, 'Error processing ping from relay');
               }

@@ -36,7 +36,7 @@ export interface RelayFriendRequest {
 interface RelayMessage {
   fromTgId: string;
   toTgId: string;
-  type: 'shared-memory-query' | 'shared-memory-response' | 'ping';
+  type: 'shared-memory-query' | 'shared-memory-response' | 'ping' | 'ping-ack';
   payload: string;
   createdAt: number;
 }

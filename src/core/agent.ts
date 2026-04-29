@@ -1139,23 +1139,19 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         try {
           const queryText = userMessage.replace(/@\w+/g, '').trim() || 'general';
 
-          const friendOnline = this.relayClient!.isConnected()
-            ? await this.relayClient!.checkUserOnline(friend.tgId).catch(() => false)
-            : false;
-
           if (!this.relayClient!.isConnected()) {
             return `[${friend.displayName}: relay not connected — shared memory unavailable]`;
           }
 
           const sent = this.relayClient!.sendViaWs(friend.tgId, 'shared-memory-query', queryText);
           if (!sent) {
-            return `[${friend.displayName}: could not send shared memory query${friendOnline ? '' : ' (user appears offline)'}]`;
+            return `[${friend.displayName}: could not reach user for shared memory]`;
           }
 
           const result = await this.sharedMemoryQueryResolver!.register(friend.tgId);
 
           if (result.timedOut) {
-            return `[${friend.displayName}: shared memory request timed out${friendOnline ? ' (user was online)' : ' (user appears offline)'}]`;
+            return `[${friend.displayName}: shared memory request timed out — could not retrieve shared memory]`;
           }
 
           if (result.context) {
