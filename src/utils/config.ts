@@ -237,7 +237,7 @@ export function getDefaultConfig(): MercuryConfig {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),
     },
     relay: {
-      enabled: getEnvBool('RELAY_ENABLED', false),
+      enabled: getEnvBool('RELAY_ENABLED', true),
       url: getEnv('RELAY_URL', 'wss://relay.cosmicstack.org/v1/ws'),
       apiKey: getEnv('RELAY_API_KEY', ''),
     },

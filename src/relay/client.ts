@@ -159,8 +159,8 @@ export class RelayClient {
 
     const res = await this.authedPost('/v1/friend-request', body);
     if (!res.ok) {
-      const err = await res.json() as { error: string; target_user?: TargetUser };
-      throw Object.assign(new Error(err.error), { target_user: err.target_user });
+      const err = await res.json() as { error: string; target_user?: TargetUser; tg_user_id?: string };
+      throw Object.assign(new Error(err.error), { target_user: err.target_user, tg_user_id: err.tg_user_id });
     }
     return await res.json() as FriendRequestResult;
   }
@@ -215,6 +215,35 @@ export class RelayClient {
       throw new Error('Failed to get user status');
     }
     return await res.json() as { tg_user_id: string; online: boolean };
+  }
+
+  async validateApiKey(): Promise<boolean> {
+    if (!this.apiKey) return false;
+    try {
+      const res = await this.authedGet('/v1/friends');
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  clearRegistration(): void {
+    this.apiKey = '';
+    const cfg = this.config();
+    cfg.relay.apiKey = '';
+    saveConfig(cfg);
+  }
+
+  async deregister(): Promise<void> {
+    if (this.ws) {
+      this.disconnect();
+    }
+    if (this.apiKey) {
+      try {
+        await this.authedDelete('/v1/deregister');
+      } catch {}
+    }
+    this.clearRegistration();
   }
 
   sendWsMessage(data: Record<string, unknown>): void {
@@ -290,6 +319,13 @@ export class RelayClient {
   private async authedGet(path: string): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
       method: 'GET',
+      headers: { 'X-API-Key': this.apiKey },
+    });
+  }
+
+  private async authedDelete(path: string): Promise<Response> {
+    return fetch(`${this.baseUrl}${path}`, {
+      method: 'DELETE',
       headers: { 'X-API-Key': this.apiKey },
     });
   }

@@ -1415,4 +1415,20 @@ export class TelegramChannel extends BaseChannel {
 
     await ctx.answerCallbackQuery({ text: 'Unknown action' });
   }
+
+  async resolveUser(tgUserId: string): Promise<string | null> {
+    if (!this.bot) return null;
+    try {
+      const chat = await this.bot.api.getChat(Number(tgUserId));
+      if ('first_name' in chat) {
+        const firstName = (chat as any).first_name as string | undefined;
+        const username = (chat as any).username as string | undefined;
+        if (username && firstName) return `@${username} (${firstName})`;
+        return username ? `@${username}` : (firstName ?? null);
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
 }

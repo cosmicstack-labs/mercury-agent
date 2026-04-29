@@ -1429,6 +1429,20 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/relay reset') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      try {
+        await this._relayClient.deregister();
+        await channel.send('🗑 Relay reset complete. All data removed. Use /relay to register again.', channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Relay reset failed: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
     if (cmd === '/relay') {
       if (!this._relayClient) {
         await channel.send('Relay is not configured.', channelId);
@@ -1439,26 +1453,39 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send('🔴 Disconnected from relay', channelId);
         return true;
       }
+      if (this._relayClient.isRegistered()) {
+        const valid = await this._relayClient.validateApiKey();
+        if (!valid) {
+          this._relayClient.clearRegistration();
+        }
+      }
       if (!this._relayClient.isRegistered()) {
+        const admins = this.config.channels.telegram.admins;
+        if (!admins || admins.length === 0) {
+          await channel.send('❌ Cannot register: No Telegram account configured. Set up Telegram first, then use /relay.', channelId);
+          return true;
+        }
+        const primaryAdmin = admins[0];
+        const tgUserId = String(primaryAdmin.userId);
         try {
-          const tgUserId = this.config.identity.owner || '';
-          if (!tgUserId) {
-            await channel.send('❌ Cannot register: owner (Telegram user ID) not set in config.', channelId);
-            return true;
-          }
           const result = await this._relayClient.register(
             tgUserId,
-            this.config.channels.telegram.admins[0]?.username,
-            this.config.channels.telegram.admins[0]?.firstName,
+            primaryAdmin.username || undefined,
+            primaryAdmin.firstName || undefined,
           );
+          const connected = await this._relayClient.connect();
           const displayName = result.user.first_name || result.user.username || result.user.tg_user_id;
-          await channel.send(`✅ Registered & connected to relay (${displayName})`, channelId);
+          if (connected) {
+            await channel.send(`✅ Registered & connected to relay (${displayName})`, channelId);
+          } else {
+            await channel.send(`✅ Registered as ${displayName}, but failed to connect. Try /relay again.`, channelId);
+          }
         } catch (err: any) {
           await channel.send(`❌ Registration failed: ${err.message}`, channelId);
         }
         return true;
       }
-      const connected = this._relayClient.connect();
+      const connected = await this._relayClient.connect();
       if (connected) {
         await channel.send('🟢 Connected to relay', channelId);
       } else {
@@ -1482,10 +1509,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         const name = result.target_user.first_name || result.target_user.username || result.target_user.tg_user_id;
         await channel.send(`✅ Friend request sent to ${name}`, channelId);
       } catch (err: any) {
-        const targetInfo = err.target_user;
-        if (targetInfo) {
-          const name = targetInfo.first_name || targetInfo.username || targetInfo.tg_user_id;
-          await channel.send(`❌ ${err.message}: ${name}`, channelId);
+        if (err.tg_user_id) {
+          const resolved = await this.resolveTelegramUser(err.tg_user_id);
+          if (resolved) {
+            await channel.send(`❌ ${resolved} (${err.tg_user_id}) is not registered on Mercury relay`, channelId);
+          } else {
+            await channel.send(`❌ User ${err.tg_user_id} is not registered on Mercury relay`, channelId);
+          }
         } else {
           await channel.send(`❌ ${err.message}`, channelId);
         }
@@ -2443,6 +2473,16 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           await channel.send(`❌ Failed: ${err.message}`, channelId);
         }
       }
+    }
+  }
+
+  private async resolveTelegramUser(tgUserId: string): Promise<string | null> {
+    const tgChannel = this.channels.get('telegram') as import('../channels/telegram.js').TelegramChannel | undefined;
+    if (!tgChannel) return null;
+    try {
+      return await tgChannel.resolveUser(tgUserId);
+    } catch {
+      return null;
     }
   }
 
