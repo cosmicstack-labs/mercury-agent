@@ -54,6 +54,7 @@ export interface ChatCommandContext {
   sharedMemorySetLearningPaused: (paused: boolean) => void;
   sharedMemoryClear: () => number;
   sharedMemoryCategories: () => string[];
+  relayClient: import('../relay/client.js').RelayClient | null;
 }
 
 export class CapabilityRegistry {

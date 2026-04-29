@@ -26,6 +26,7 @@ import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
 const MEMORY_ACTION_PREFIX = 'tg_memory';
+const FRIEND_ACTION_PREFIX = 'tg_friend';
 
 type ApprovalResolver = () => void;
 
@@ -108,6 +109,35 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/listfriends') {
+        await this.sendFriendsKeyboard(chatId);
+        return;
+      }
+
+      if (command === '/relay') {
+        this.emit({
+          id: `tg-relay-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: '/relay',
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      if (command.startsWith('/friend ')) {
+        this.emit({
+          id: `tg-friend-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: ctx.message.text || '',
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       this.lastActiveChatId = chatId;
       logger.info({ chatId, text: ctx.message.text?.slice(0, 50) }, 'Telegram message received');
 
@@ -167,6 +197,11 @@ export class TelegramChannel extends BaseChannel {
 
       if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
         await this.handleMemoryCallback(ctx, data);
+        return;
+      }
+
+      if (data.startsWith(`${FRIEND_ACTION_PREFIX}:`)) {
+        await this.handleFriendCallback(ctx, data);
         return;
       }
 
@@ -239,6 +274,9 @@ export class TelegramChannel extends BaseChannel {
       { command: 'budget_set', description: 'Set new daily token budget' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
+      { command: 'relay', description: 'Connect/disconnect from relay' },
+      { command: 'friend', description: 'Send a friend request: /friend @username' },
+      { command: 'listfriends', description: 'View and manage friends' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
       { command: 'tasks', description: 'List scheduled tasks' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },
@@ -1152,5 +1190,229 @@ export class TelegramChannel extends BaseChannel {
     } catch {
       await this.bot.api.sendMessage(chatId, content).catch(() => {});
     }
+  }
+
+  private async sendFriendsKeyboard(chatId: number): Promise<void> {
+    if (!this.bot) return;
+    const ctx = this.chatCommandContext;
+    if (!ctx) {
+      await this.sendDirectMessage(chatId, 'Friends not available.');
+      return;
+    }
+
+    const relayClient = (ctx as any).relayClient as import('../relay/client.js').RelayClient | null;
+    if (!relayClient || !relayClient.isConnected()) {
+      await this.sendDirectMessage(chatId, '❌ Not connected to relay. Use /relay to connect.');
+      return;
+    }
+
+    let data: import('../relay/client.js').FriendsResponse;
+    try {
+      data = await relayClient.getFriends();
+    } catch {
+      await this.sendDirectMessage(chatId, '❌ Failed to get friends.');
+      return;
+    }
+
+    const formatName = (u: { tg_user_id: string; username: string | null; first_name: string | null }) =>
+      u.first_name || u.username || u.tg_user_id;
+
+    const lines = ['<b>👥 Your Friends</b>', ''];
+    const keyboard = new InlineKeyboard();
+
+    if (data.friends.length > 0) {
+      lines.push('✅ <b>Friends:</b>');
+      let row = 0;
+      for (const f of data.friends) {
+        const name = formatName(f.target_user);
+        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+        keyboard.text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:approved`);
+        row++;
+        if (row % 2 === 0) keyboard.row();
+      }
+      if (row % 2 !== 0) keyboard.row();
+    }
+
+    if (data.pending_sent.length > 0) {
+      lines.push('');
+      lines.push('📤 <b>Pending sent:</b>');
+      for (const f of data.pending_sent) {
+        const name = formatName(f.target_user);
+        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+        keyboard.text(`📤 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:pending_sent`);
+        keyboard.row();
+      }
+    }
+
+    if (data.pending_received.length > 0) {
+      lines.push('');
+      lines.push('📥 <b>Pending received:</b>');
+      for (const f of data.pending_received) {
+        const name = formatName(f.target_user);
+        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+        keyboard.text(`📥 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:pending_received`);
+        keyboard.row();
+      }
+    }
+
+    if (data.friends.length === 0 && data.pending_sent.length === 0 && data.pending_received.length === 0) {
+      lines.push('No friends yet. Use /friend @username to send a request.');
+    }
+
+    try {
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch {
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), {
+        reply_markup: keyboard,
+      });
+    }
+  }
+
+  async sendFriendRequestNotification(chatId: number, fromTgId: string, fromUsername: string | null, fromFirstName: string | null): Promise<void> {
+    if (!this.bot) return;
+    const displayName = fromFirstName || fromUsername || fromTgId;
+    const keyboard = new InlineKeyboard()
+      .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${fromTgId}`)
+      .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${fromTgId}`);
+
+    try {
+      await this.bot.api.sendMessage(
+        chatId,
+        `🤝 ${displayName} wants to be your memory friend.`,
+        { reply_markup: keyboard },
+      );
+    } catch {}
+  }
+
+  private async handleFriendCallback(ctx: any, data: string): Promise<void> {
+    const parts = data.slice(`${FRIEND_ACTION_PREFIX}:`.length).split(':');
+    const action = parts[0];
+
+    const chatId = ctx.callbackQuery?.message?.chat?.id;
+    if (!chatId || !this.bot) {
+      await ctx.answerCallbackQuery({ text: 'Error' });
+      return;
+    }
+
+    const cmdCtx = this.chatCommandContext;
+    if (!cmdCtx) {
+      await ctx.answerCallbackQuery({ text: 'Not available' });
+      return;
+    }
+
+    const relayClient = (cmdCtx as any).relayClient as import('../relay/client.js').RelayClient | null;
+    if (!relayClient || !relayClient.isConnected()) {
+      await ctx.answerCallbackQuery({ text: 'Not connected to relay' });
+      return;
+    }
+
+    if (action === 'detail') {
+      const tgId = parts[1];
+      const status = parts[2];
+      await ctx.answerCallbackQuery({});
+
+      let keyboard: InstanceType<typeof InlineKeyboard>;
+
+      if (status === 'approved') {
+        keyboard = new InlineKeyboard()
+          .text('🗑 Remove Friend', `${FRIEND_ACTION_PREFIX}:remove:${tgId}`);
+      } else if (status === 'pending_sent') {
+        keyboard = new InlineKeyboard()
+          .text('✖ Cancel Request', `${FRIEND_ACTION_PREFIX}:cancel:${tgId}`);
+      } else if (status === 'pending_received') {
+        keyboard = new InlineKeyboard()
+          .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${tgId}`)
+          .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${tgId}`);
+      } else {
+        return;
+      }
+
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: keyboard });
+      } catch {
+        const friends = await relayClient.getFriends();
+        const all = [...friends.friends, ...friends.pending_sent, ...friends.pending_received];
+        const item = all.find(f => f.target_user.tg_user_id === tgId);
+        const name = item?.target_user?.first_name || item?.target_user?.username || tgId || 'Unknown';
+        await ctx.editMessageText(`${name} — select an action:`, { reply_markup: keyboard });
+      }
+      return;
+    }
+
+    if (action === 'accept') {
+      const tgId = parts[1];
+      try {
+        const result = await relayClient.approveRequest(tgId);
+        const name = result.target_user.first_name || result.target_user.username || tgId;
+        await ctx.answerCallbackQuery({ text: `Accepted ${name}` });
+        await ctx.editMessageText(`✅ You accepted ${name}'s friend request!`).catch(() => {});
+      } catch (err: any) {
+        await ctx.answerCallbackQuery({ text: err.message || 'Failed' });
+      }
+      return;
+    }
+
+    if (action === 'reject') {
+      const tgId = parts[1];
+      try {
+        const result = await relayClient.rejectRequest(tgId);
+        const name = result.target_user.first_name || result.target_user.username || tgId;
+        await ctx.answerCallbackQuery({ text: `Rejected` });
+        await ctx.editMessageText(`❌ You rejected ${name}'s friend request.`).catch(() => {});
+      } catch (err: any) {
+        await ctx.answerCallbackQuery({ text: err.message || 'Failed' });
+      }
+      return;
+    }
+
+    if (action === 'cancel') {
+      const tgId = parts[1];
+      try {
+        const result = await relayClient.cancelRequest(tgId);
+        const name = result.target_user.first_name || result.target_user.username || tgId;
+        await ctx.answerCallbackQuery({ text: `Cancelled` });
+        await ctx.editMessageText(`✖ Cancelled friend request to ${name}.`).catch(() => {});
+      } catch (err: any) {
+        await ctx.answerCallbackQuery({ text: err.message || 'Failed' });
+      }
+      return;
+    }
+
+    if (action === 'remove') {
+      const tgId = parts[1];
+      const friends = await relayClient.getFriends();
+      const friend = friends.friends.find(f => f.target_user.tg_user_id === tgId);
+      const name = friend?.target_user?.first_name || friend?.target_user?.username || tgId;
+      const keyboard = new InlineKeyboard()
+        .text('🗑 Confirm', `${FRIEND_ACTION_PREFIX}:remove_confirm:${tgId}`)
+        .text('← Cancel', `${FRIEND_ACTION_PREFIX}:remove_cancel`);
+      await ctx.answerCallbackQuery({});
+      await ctx.editMessageText(`⚠️ Remove ${name} as a friend?\nYou can always send a new friend request later.`, { reply_markup: keyboard }).catch(() => {});
+      return;
+    }
+
+    if (action === 'remove_confirm') {
+      const tgId = parts[1];
+      try {
+        const result = await relayClient.deleteFriend(tgId);
+        const name = result.target_user.first_name || result.target_user.username || tgId;
+        await ctx.answerCallbackQuery({ text: `Removed` });
+        await ctx.editMessageText(`🗑 ${name} has been removed from your friends.`).catch(() => {});
+      } catch (err: any) {
+        await ctx.answerCallbackQuery({ text: err.message || 'Failed' });
+      }
+      return;
+    }
+
+    if (action === 'remove_cancel') {
+      await ctx.answerCallbackQuery({ text: 'Cancelled' });
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: 'Unknown action' });
   }
 }

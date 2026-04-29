@@ -9,6 +9,7 @@ import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
+import type { RelayClient } from '../relay/client.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
@@ -250,6 +251,7 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private _relayClient: RelayClient | null = null;
 
   constructor(
     private config: MercuryConfig,
@@ -277,6 +279,14 @@ export class Agent {
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
     });
+  }
+
+  set relayClient(client: RelayClient | null) {
+    this._relayClient = client;
+  }
+
+  get relayClient(): RelayClient | null {
+    return this._relayClient;
   }
 
   private enqueueMessage(msg: ChannelMessage): void {
@@ -1419,6 +1429,119 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/relay') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (this._relayClient.isConnected()) {
+        this._relayClient.disconnect();
+        await channel.send('🔴 Disconnected from relay', channelId);
+        return true;
+      }
+      if (!this._relayClient.isRegistered()) {
+        try {
+          const tgUserId = this.config.identity.owner || '';
+          if (!tgUserId) {
+            await channel.send('❌ Cannot register: owner (Telegram user ID) not set in config.', channelId);
+            return true;
+          }
+          const result = await this._relayClient.register(
+            tgUserId,
+            this.config.channels.telegram.admins[0]?.username,
+            this.config.channels.telegram.admins[0]?.firstName,
+          );
+          const displayName = result.user.first_name || result.user.username || result.user.tg_user_id;
+          await channel.send(`✅ Registered & connected to relay (${displayName})`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Registration failed: ${err.message}`, channelId);
+        }
+        return true;
+      }
+      const connected = this._relayClient.connect();
+      if (connected) {
+        await channel.send('🟢 Connected to relay', channelId);
+      } else {
+        await channel.send('❌ Failed to connect to relay', channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/friend ')) {
+      if (!this._relayClient || !this._relayClient.isConnected()) {
+        await channel.send('❌ Not connected to relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/friend '.length).trim();
+      if (!input) {
+        await channel.send('Usage: /friend @username or /friend <tg_user_id>', channelId);
+        return true;
+      }
+      try {
+        const result = await this._relayClient.sendFriendRequest(input);
+        const name = result.target_user.first_name || result.target_user.username || result.target_user.tg_user_id;
+        await channel.send(`✅ Friend request sent to ${name}`, channelId);
+      } catch (err: any) {
+        const targetInfo = err.target_user;
+        if (targetInfo) {
+          const name = targetInfo.first_name || targetInfo.username || targetInfo.tg_user_id;
+          await channel.send(`❌ ${err.message}: ${name}`, channelId);
+        } else {
+          await channel.send(`❌ ${err.message}`, channelId);
+        }
+      }
+      return true;
+    }
+
+    if (cmd === '/listfriends') {
+      if (!this._relayClient || !this._relayClient.isConnected()) {
+        await channel.send('❌ Not connected to relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      try {
+        const data = await this._relayClient.getFriends();
+
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          await channel.withMenu(async (select) => {
+            await this.openCliFriendsMenu(channel, channelId, select, data);
+          });
+          return true;
+        }
+
+        const lines = ['**👥 Your Friends**', ''];
+        if (data.friends.length > 0) {
+          lines.push('✅ Friends:');
+          for (const f of data.friends) {
+            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
+            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+          }
+        }
+        if (data.pending_sent.length > 0) {
+          lines.push('');
+          lines.push('📤 Pending sent:');
+          for (const f of data.pending_sent) {
+            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
+            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+          }
+        }
+        if (data.pending_received.length > 0) {
+          lines.push('');
+          lines.push('📥 Pending received:');
+          for (const f of data.pending_received) {
+            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
+            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+          }
+        }
+        if (data.friends.length === 0 && data.pending_sent.length === 0 && data.pending_received.length === 0) {
+          lines.push('No friends yet. Use /friend @username to send a request.');
+        }
+        await channel.send(lines.join('\n'), channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Failed to get friends: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
     if (cmd.startsWith('/telegram')) {
       if (channelType !== 'cli') {
         await channel.send('`/telegram` is only available from the Mercury CLI chat.', channelId);
@@ -2218,6 +2341,132 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
         continue;
       }
+    }
+  }
+
+  private async openCliFriendsMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+    data: import('../relay/client.js').FriendsResponse,
+  ): Promise<void> {
+    const formatName = (u: { tg_user_id: string; username: string | null; first_name: string | null }) =>
+      u.first_name || u.username || u.tg_user_id;
+
+    const allOptions: ArrowSelectOption[] = [];
+
+    if (data.friends.length > 0) {
+      for (const f of data.friends) {
+        allOptions.push({ value: `friend:${f.target_user.tg_user_id}`, label: `✅ ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+      }
+    }
+    if (data.pending_sent.length > 0) {
+      for (const f of data.pending_sent) {
+        allOptions.push({ value: `sent:${f.target_user.tg_user_id}`, label: `📤 ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+      }
+    }
+    if (data.pending_received.length > 0) {
+      for (const f of data.pending_received) {
+        allOptions.push({ value: `received:${f.target_user.tg_user_id}`, label: `📥 ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+      }
+    }
+
+    if (allOptions.length === 0) {
+      await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+      return;
+    }
+
+    allOptions.push({ value: 'back', label: 'Back' });
+
+    const chosen = await select('👥 Friends', allOptions);
+    if (chosen === 'back') return;
+
+    const [type, tgId] = chosen.split(':');
+
+    if (type === 'friend') {
+      const friend = data.friends.find(f => f.target_user.tg_user_id === tgId);
+      if (!friend) return;
+      const name = formatName(friend.target_user);
+      const action = await select(name, [
+        { value: 'remove', label: 'Remove Friend' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'remove') {
+        const confirm = await select(`Remove ${name}?`, [
+          { value: 'confirm', label: 'Confirm' },
+          { value: 'cancel', label: 'Cancel' },
+        ]);
+        if (confirm === 'confirm' && this._relayClient) {
+          try {
+            await this._relayClient.deleteFriend(tgId);
+            await channel.send(`🗑 Removed ${name} from friends.`, channelId);
+          } catch (err: any) {
+            await channel.send(`❌ Failed: ${err.message}`, channelId);
+          }
+        }
+      }
+    } else if (type === 'sent') {
+      const req = data.pending_sent.find(f => f.target_user.tg_user_id === tgId);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'cancel', label: 'Cancel Request' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'cancel' && this._relayClient) {
+        try {
+          await this._relayClient.cancelRequest(tgId);
+          await channel.send(`✖ Cancelled friend request to ${name}.`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    } else if (type === 'received') {
+      const req = data.pending_received.find(f => f.target_user.tg_user_id === tgId);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'accept', label: 'Accept' },
+        { value: 'reject', label: 'Reject' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (this._relayClient) {
+        try {
+          if (action === 'accept') {
+            await this._relayClient.approveRequest(tgId);
+            await channel.send(`✅ Accepted ${name}'s friend request!`, channelId);
+          } else if (action === 'reject') {
+            await this._relayClient.rejectRequest(tgId);
+            await channel.send(`❌ Rejected ${name}'s friend request.`, channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    }
+  }
+
+  handleRelayPush(data: Record<string, unknown>, channelType: string, channelId: string): void {
+    const type = data.type as string;
+    const fromTgId = data.from_tg_id as string | undefined;
+    const fromUsername = data.from_username as string | null | undefined;
+    const fromFirstName = data.from_first_name as string | null | undefined;
+    const displayName = fromFirstName || fromUsername || fromTgId || 'Unknown';
+
+    const channel = this.channels.get(channelType as any);
+    if (!channel) return;
+
+    const messages: Record<string, string> = {
+      'FRIEND_REQUEST': `🤝 ${displayName} wants to be your memory friend.\nUse /listfriends to accept or reject.`,
+      'FRIEND_ACCEPT': `✅ ${displayName} accepted your friend request!`,
+      'FRIEND_REJECT': `❌ ${displayName} rejected your friend request.`,
+      'FRIEND_CANCEL': `⏳ ${displayName} cancelled their friend request.`,
+      'FRIEND_REMOVE': `🗑 ${displayName} removed you from their friends.`,
+    };
+
+    const msg = messages[type];
+    if (msg) {
+      channel.send(msg, channelId).catch(() => {});
     }
   }
 }

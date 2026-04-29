@@ -15,6 +15,7 @@ import {
   isProviderConfigured,
   getTelegramAccessSummary,
   getTelegramApprovedUsers,
+  getTelegramApprovedChatIds,
   getTelegramPendingRequests,
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -42,6 +43,7 @@ import { TelegramChannel } from './channels/telegram.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
+import { RelayClient } from './relay/client.js';
 import { getManual } from './utils/manual.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
@@ -966,6 +968,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
+  let relayClient: RelayClient | null = null;
+  if (config.relay?.enabled) {
+    relayClient = new RelayClient(() => config);
+  }
+
   capabilities.setChatCommandContext({
     toolNames: () => capabilities.getToolNames(),
     skillNames: () => skills.map(s => s.name),
@@ -983,6 +990,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemorySetLearningPaused: (paused: boolean) => { if (sharedMemory) sharedMemory.setLearningPaused(paused); },
     sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
     sharedMemoryCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
+    relayClient: relayClient as any,
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -1027,6 +1035,39 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, sharedMemory, channels, tokenBudget, capabilities, scheduler,
   );
+
+  agent.relayClient = relayClient;
+
+  if (relayClient) {
+    relayClient.on('friend_request', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        for (const chatId of chatIds) {
+          tgChannel.sendFriendRequestNotification(
+            chatId,
+            d.from_tg_id as string,
+            d.from_username as string | null,
+            d.from_first_name as string | null,
+          );
+        }
+      }
+      agent.handleRelayPush(d, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+
+    relayClient.on('friend_accept', (data: unknown) => {
+      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+    relayClient.on('friend_reject', (data: unknown) => {
+      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+    relayClient.on('friend_cancel', (data: unknown) => {
+      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+    relayClient.on('friend_remove', (data: unknown) => {
+      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+  }
 
   await agent.birth();
   await agent.wake();
@@ -1102,6 +1143,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       } catch {}
     }
     await agent.shutdown();
+    if (relayClient) {
+      relayClient.disconnect();
+    }
     process.exit(0);
   };
 

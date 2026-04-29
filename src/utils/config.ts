@@ -108,6 +108,11 @@ export interface MercuryConfig {
   heartbeat: {
     intervalMinutes: number;
   };
+  relay: {
+    enabled: boolean;
+    url: string;
+    apiKey: string;
+  };
   tokens: {
     dailyBudget: number;
   };
@@ -230,6 +235,11 @@ export function getDefaultConfig(): MercuryConfig {
     },
     heartbeat: {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),
+    },
+    relay: {
+      enabled: getEnvBool('RELAY_ENABLED', false),
+      url: getEnv('RELAY_URL', 'wss://relay.cosmicstack.org/v1/ws'),
+      apiKey: getEnv('RELAY_API_KEY', ''),
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
