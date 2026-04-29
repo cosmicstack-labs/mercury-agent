@@ -1086,6 +1086,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           for (const msg of result.messages) {
             if (msg.type === 'shared-memory-query' && msg.payload) {
               try {
+                const requesterFriend = sharedMemory.getFriend(msg.fromTgId);
+                const requesterName = requesterFriend?.username ? `@${requesterFriend.username}` : requesterFriend?.firstName || msg.fromTgId;
+                if (tgChannel) {
+                  tgChannel.send(`📡 Shared memory query from ${requesterName} (${msg.fromTgId}): "${msg.payload.slice(0, 100)}"`).catch(() => {});
+                }
                 const queryResult = sharedMemory.retrieveForFriend(msg.fromTgId, msg.payload);
                 relayClient.sendViaWs(msg.fromTgId, 'shared-memory-response', queryResult.context);
               } catch (err) {
@@ -1289,6 +1294,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           for (const msg of result.messages) {
             if (msg.type === 'shared-memory-query' && msg.payload) {
               try {
+                const requesterFriend = sharedMemory!.getFriend(msg.fromTgId);
+                const requesterName = requesterFriend?.username ? `@${requesterFriend.username}` : requesterFriend?.firstName || msg.fromTgId;
+                if (tgChannel) {
+                  tgChannel.send(`📡 Shared memory query from ${requesterName} (${msg.fromTgId}): "${msg.payload.slice(0, 100)}"`).catch(() => {});
+                }
                 const queryResult = sharedMemory!.retrieveForFriend(msg.fromTgId, msg.payload);
                 relayClient!.sendViaWs(msg.fromTgId, 'shared-memory-response', queryResult.context);
               } catch (err) {
