@@ -54,8 +54,12 @@ export class RelayClient {
   constructor(config: () => MercuryConfig) {
     this.config = config;
     const cfg = config();
-    this.url = cfg.relay.url;
     this.apiKey = cfg.relay.apiKey;
+
+    let url = cfg.relay.url.trim();
+    url = url.replace(/^https?:\/\//, (m) => m === 'https://' ? 'wss://' : 'ws://');
+    if (!url.endsWith('/v1/ws')) url = url.replace(/\/$/, '') + '/v1/ws';
+    this.url = url;
     this.baseUrl = this.url.replace(/\/v1\/ws$/, '').replace(/^wss?/, 'https');
   }
 
@@ -95,16 +99,25 @@ export class RelayClient {
     this.reconnectAttempts = 0;
 
     return new Promise((resolve) => {
+      let resolved = false;
       try {
         const fullUrl = `${this.url}?api_key=${this.apiKey}`;
         const ws = new WebSocket(fullUrl);
 
         const timeout = setTimeout(() => {
-          ws.close();
-          resolve(false);
-        }, 10000);
+          if (!resolved) {
+            resolved = true;
+            ws.close(1000, 'Connection timeout');
+            resolve(false);
+          }
+        }, 30000);
 
         ws.onopen = () => {
+          if (resolved) {
+            ws.close(1000, 'Stale connection');
+            return;
+          }
+          resolved = true;
           clearTimeout(timeout);
           this.ws = ws;
           this.reconnectAttempts = 0;
@@ -118,6 +131,7 @@ export class RelayClient {
           };
 
           ws.onclose = () => {
+            this.ws = null;
             this.emit('disconnected', null);
             if (!this.intentionalDisconnect) {
               this.scheduleReconnect();
@@ -130,11 +144,17 @@ export class RelayClient {
         };
 
         ws.onerror = () => {
-          clearTimeout(timeout);
-          resolve(false);
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            resolve(false);
+          }
         };
       } catch {
-        resolve(false);
+        if (!resolved) {
+          resolved = true;
+          resolve(false);
+        }
       }
     });
   }
@@ -298,7 +318,7 @@ export class RelayClient {
     this.reconnectAttempts++;
 
     this.reconnectTimer = setTimeout(() => {
-      this.connect();
+      this.connect().catch(() => {});
     }, delay);
   }
 
