@@ -1,0 +1,27 @@
+{
+  "id": "getting-started/setup",
+  "title": "First-Time Setup",
+  "description": "Run mercury for the first time. The onboarding wizard asks for:",
+  "source": "@site/docs/getting-started/setup.mdx",
+  "sourceDirName": "getting-started",
+  "slug": "/getting-started/setup",
+  "permalink": "/docs/getting-started/setup",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/getting-started/setup.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "setup",
+    "title": "First-Time Setup"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Installation",
+    "permalink": "/docs/"
+  },
+  "next": {
+    "title": "Starting Mercury",
+    "permalink": "/docs/getting-started/starting"
+  }
+}

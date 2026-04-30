@@ -1,0 +1,27 @@
+{
+  "id": "reference/scheduling",
+  "title": "Scheduling",
+  "description": "Mercury can schedule tasks using cron expressions or one-shot delays.",
+  "source": "@site/docs/reference/scheduling.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/scheduling",
+  "permalink": "/docs/reference/scheduling",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/scheduling.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "scheduling",
+    "title": "Scheduling"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Provider Fallback",
+    "permalink": "/docs/reference/provider-fallback"
+  },
+  "next": {
+    "title": "Skills",
+    "permalink": "/docs/reference/skills"
+  }
+}

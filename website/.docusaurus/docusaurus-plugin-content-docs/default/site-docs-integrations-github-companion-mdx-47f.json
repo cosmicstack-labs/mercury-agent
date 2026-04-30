@@ -1,0 +1,27 @@
+{
+  "id": "integrations/github-companion",
+  "title": "GitHub Companion",
+  "description": "Mercury can act as your GitHub companion — creating pull requests, reviewing PRs, managing issues, and making co-authored commits — all through natural conversation. When configured, five GitHub tools are registered alongside Mercury's built-in toolset, letting you manage repositories without leaving the terminal or Telegram.",
+  "source": "@site/docs/integrations/github-companion.mdx",
+  "sourceDirName": "integrations",
+  "slug": "/integrations/github-companion",
+  "permalink": "/docs/integrations/github-companion",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/integrations/github-companion.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "github-companion",
+    "title": "GitHub Companion"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Platform-Specific Guide",
+    "permalink": "/docs/daemon-mode/platform-guide"
+  },
+  "next": {
+    "title": "Telegram",
+    "permalink": "/docs/integrations/telegram"
+  }
+}

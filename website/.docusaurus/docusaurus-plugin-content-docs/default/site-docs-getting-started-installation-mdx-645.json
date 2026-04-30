@@ -1,0 +1,24 @@
+{
+  "id": "getting-started/installation",
+  "title": "Installation",
+  "description": "Mercury requires Node.js 20+. Install with npm:",
+  "source": "@site/docs/getting-started/installation.mdx",
+  "sourceDirName": "getting-started",
+  "slug": "/",
+  "permalink": "/docs/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/getting-started/installation.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "installation",
+    "title": "Installation",
+    "slug": "/"
+  },
+  "sidebar": "docsSidebar",
+  "next": {
+    "title": "First-Time Setup",
+    "permalink": "/docs/getting-started/setup"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "reference/configuration",
+  "title": "Configuration",
+  "description": "All runtime data lives in ~/.mercury/ — not in your project directory.",
+  "source": "@site/docs/reference/configuration.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/configuration",
+  "permalink": "/docs/reference/configuration",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/configuration.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "configuration",
+    "title": "Configuration"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Built-in Tools",
+    "permalink": "/docs/reference/built-in-tools"
+  },
+  "next": {
+    "title": "Permissions",
+    "permalink": "/docs/reference/permissions"
+  }
+}

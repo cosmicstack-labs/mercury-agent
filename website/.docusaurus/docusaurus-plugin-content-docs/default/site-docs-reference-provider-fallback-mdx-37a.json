@@ -1,0 +1,27 @@
+{
+  "id": "reference/provider-fallback",
+  "title": "Provider Fallback",
+  "description": "Configure multiple LLM providers. Mercury tries them in order and falls back automatically. When a provider fails, Mercury tries the next one and remembers the last successful provider.",
+  "source": "@site/docs/reference/provider-fallback.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/provider-fallback",
+  "permalink": "/docs/reference/provider-fallback",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/provider-fallback.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "provider-fallback",
+    "title": "Provider Fallback"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Second Brain",
+    "permalink": "/docs/reference/second-brain"
+  },
+  "next": {
+    "title": "Scheduling",
+    "permalink": "/docs/reference/scheduling"
+  }
+}

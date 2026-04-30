@@ -1,0 +1,23 @@
+{
+  "id": "reference/skills",
+  "title": "Skills",
+  "description": "Skills are markdown-based extensions that live in ~/.mercury/skills//SKILL.md.",
+  "source": "@site/docs/reference/skills.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/skills",
+  "permalink": "/docs/reference/skills",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/skills.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "skills",
+    "title": "Skills"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Scheduling",
+    "permalink": "/docs/reference/scheduling"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "cli-commands/cli-commands",
+  "title": "Full Command Reference",
+  "description": "| Command | Description |",
+  "source": "@site/docs/cli-commands/commands.mdx",
+  "sourceDirName": "cli-commands",
+  "slug": "/cli-commands/cli-commands",
+  "permalink": "/docs/cli-commands/cli-commands",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/cli-commands/commands.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "cli-commands",
+    "title": "Full Command Reference"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Starting Mercury",
+    "permalink": "/docs/getting-started/starting"
+  },
+  "next": {
+    "title": "Doctor (Reconfigure)",
+    "permalink": "/docs/cli-commands/doctor"
+  }
+}

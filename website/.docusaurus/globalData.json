@@ -1,0 +1,118 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/docs",
+          "mainDocId": "getting-started/installation",
+          "docs": [
+            {
+              "id": "cli-commands/cli-commands",
+              "path": "/docs/cli-commands/cli-commands",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli-commands/doctor",
+              "path": "/docs/cli-commands/doctor",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli-commands/in-chat-commands",
+              "path": "/docs/cli-commands/in-chat-commands",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "daemon-mode/daemon-mode",
+              "path": "/docs/daemon-mode/daemon-mode",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "daemon-mode/platform-guide",
+              "path": "/docs/daemon-mode/platform-guide",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "daemon-mode/system-service",
+              "path": "/docs/daemon-mode/system-service",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started/installation",
+              "path": "/docs/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started/setup",
+              "path": "/docs/getting-started/setup",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started/starting",
+              "path": "/docs/getting-started/starting",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "integrations/github-companion",
+              "path": "/docs/integrations/github-companion",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "integrations/telegram",
+              "path": "/docs/integrations/telegram",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/built-in-tools",
+              "path": "/docs/reference/built-in-tools",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/configuration",
+              "path": "/docs/reference/configuration",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/permissions",
+              "path": "/docs/reference/permissions",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/provider-fallback",
+              "path": "/docs/reference/provider-fallback",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/scheduling",
+              "path": "/docs/reference/scheduling",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/second-brain",
+              "path": "/docs/reference/second-brain",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/skills",
+              "path": "/docs/reference/skills",
+              "sidebar": "docsSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docsSidebar": {
+              "link": {
+                "path": "/docs/",
+                "label": "getting-started/installation"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

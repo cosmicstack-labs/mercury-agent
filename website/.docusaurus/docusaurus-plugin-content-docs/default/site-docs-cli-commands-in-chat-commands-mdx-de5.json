@@ -1,0 +1,27 @@
+{
+  "id": "cli-commands/in-chat-commands",
+  "title": "In-Chat Commands",
+  "description": "Type these during a conversation with Mercury. Most work in both CLI and Telegram unless marked otherwise. They do not consume API tokens.",
+  "source": "@site/docs/cli-commands/in-chat-commands.mdx",
+  "sourceDirName": "cli-commands",
+  "slug": "/cli-commands/in-chat-commands",
+  "permalink": "/docs/cli-commands/in-chat-commands",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/cli-commands/in-chat-commands.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "in-chat-commands",
+    "title": "In-Chat Commands"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Doctor (Reconfigure)",
+    "permalink": "/docs/cli-commands/doctor"
+  },
+  "next": {
+    "title": "Daemon Mode",
+    "permalink": "/docs/daemon-mode/daemon-mode"
+  }
+}

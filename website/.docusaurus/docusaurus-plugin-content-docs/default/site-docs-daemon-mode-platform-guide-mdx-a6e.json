@@ -1,0 +1,27 @@
+{
+  "id": "daemon-mode/platform-guide",
+  "title": "Platform-Specific Guide",
+  "description": "mercury service install creates a LaunchAgent at ~/Library/LaunchAgents/com.cosmicstack.mercury.plist.",
+  "source": "@site/docs/daemon-mode/platform-guide.mdx",
+  "sourceDirName": "daemon-mode",
+  "slug": "/daemon-mode/platform-guide",
+  "permalink": "/docs/daemon-mode/platform-guide",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/daemon-mode/platform-guide.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "platform-guide",
+    "title": "Platform-Specific Guide"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "System Service (Auto-Start on Boot)",
+    "permalink": "/docs/daemon-mode/system-service"
+  },
+  "next": {
+    "title": "GitHub Companion",
+    "permalink": "/docs/integrations/github-companion"
+  }
+}

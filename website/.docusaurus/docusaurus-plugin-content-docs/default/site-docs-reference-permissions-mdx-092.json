@@ -1,0 +1,27 @@
+{
+  "id": "reference/permissions",
+  "title": "Permissions",
+  "description": "Mercury has a three-tier permission system for shell commands:",
+  "source": "@site/docs/reference/permissions.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/permissions",
+  "permalink": "/docs/reference/permissions",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/permissions.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "permissions",
+    "title": "Permissions"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Configuration",
+    "permalink": "/docs/reference/configuration"
+  },
+  "next": {
+    "title": "Second Brain",
+    "permalink": "/docs/reference/second-brain"
+  }
+}

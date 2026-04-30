@@ -1,0 +1,27 @@
+{
+  "id": "reference/second-brain",
+  "title": "Second Brain",
+  "description": "Mercury has a persistent, structured memory that grows with every conversation. When enabled, it automatically extracts, stores, and retrieves facts about you — your preferences, goals, projects, habits, and more.",
+  "source": "@site/docs/reference/second-brain.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/second-brain",
+  "permalink": "/docs/reference/second-brain",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/second-brain.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "second-brain",
+    "title": "Second Brain"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Permissions",
+    "permalink": "/docs/reference/permissions"
+  },
+  "next": {
+    "title": "Provider Fallback",
+    "permalink": "/docs/reference/provider-fallback"
+  }
+}

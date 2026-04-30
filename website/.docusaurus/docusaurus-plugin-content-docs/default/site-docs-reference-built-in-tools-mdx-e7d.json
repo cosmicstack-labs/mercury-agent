@@ -1,0 +1,27 @@
+{
+  "id": "reference/built-in-tools",
+  "title": "Built-in Tools",
+  "description": "Mercury has a built-in toolset it can use during conversations. These are not CLI commands — the agent decides when to call them.",
+  "source": "@site/docs/reference/built-in-tools.mdx",
+  "sourceDirName": "reference",
+  "slug": "/reference/built-in-tools",
+  "permalink": "/docs/reference/built-in-tools",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/reference/built-in-tools.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "built-in-tools",
+    "title": "Built-in Tools"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Telegram",
+    "permalink": "/docs/integrations/telegram"
+  },
+  "next": {
+    "title": "Configuration",
+    "permalink": "/docs/reference/configuration"
+  }
+}

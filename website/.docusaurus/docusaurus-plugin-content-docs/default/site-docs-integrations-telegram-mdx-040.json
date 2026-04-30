@@ -1,0 +1,27 @@
+{
+  "id": "integrations/telegram",
+  "title": "Telegram",
+  "description": "Mercury connects to Telegram via a bot token, providing a mobile-first interface with streaming, file uploads, and inline approval keyboards.",
+  "source": "@site/docs/integrations/telegram.mdx",
+  "sourceDirName": "integrations",
+  "slug": "/integrations/telegram",
+  "permalink": "/docs/integrations/telegram",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/integrations/telegram.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "telegram",
+    "title": "Telegram"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "GitHub Companion",
+    "permalink": "/docs/integrations/github-companion"
+  },
+  "next": {
+    "title": "Built-in Tools",
+    "permalink": "/docs/reference/built-in-tools"
+  }
+}

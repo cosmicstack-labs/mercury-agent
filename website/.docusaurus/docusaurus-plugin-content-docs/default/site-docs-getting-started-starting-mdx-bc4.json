@@ -1,0 +1,27 @@
+{
+  "id": "getting-started/starting",
+  "title": "Starting Mercury",
+  "description": "The easiest way to run Mercury persistently. Installs the system service if needed, starts the daemon, and ensures it's running.",
+  "source": "@site/docs/getting-started/starting.mdx",
+  "sourceDirName": "getting-started",
+  "slug": "/getting-started/starting",
+  "permalink": "/docs/getting-started/starting",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/getting-started/starting.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "starting",
+    "title": "Starting Mercury"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "First-Time Setup",
+    "permalink": "/docs/getting-started/setup"
+  },
+  "next": {
+    "title": "Full Command Reference",
+    "permalink": "/docs/cli-commands/cli-commands"
+  }
+}

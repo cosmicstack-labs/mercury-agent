@@ -1,0 +1,27 @@
+{
+  "id": "cli-commands/doctor",
+  "title": "Doctor (Reconfigure)",
+  "description": "mercury doctor re-runs the setup wizard with your current values pre-filled. Press Enter on any field to keep it unchanged, or type a new value to replace it.",
+  "source": "@site/docs/cli-commands/doctor.mdx",
+  "sourceDirName": "cli-commands",
+  "slug": "/cli-commands/doctor",
+  "permalink": "/docs/cli-commands/doctor",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/website/docs/cli-commands/doctor.mdx",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "doctor",
+    "title": "Doctor (Reconfigure)"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Full Command Reference",
+    "permalink": "/docs/cli-commands/cli-commands"
+  },
+  "next": {
+    "title": "In-Chat Commands",
+    "permalink": "/docs/cli-commands/in-chat-commands"
+  }
+}
