@@ -48,6 +48,7 @@ export class RelayClient {
   private config: () => MercuryConfig;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private intentionalDisconnect = false;
 
@@ -69,6 +70,10 @@ export class RelayClient {
 
   isRegistered(): boolean {
     return this.apiKey.length > 0;
+  }
+
+  isReconnecting(): boolean {
+    return !this.intentionalDisconnect && this.reconnectTimer !== null;
   }
 
   async register(tgUserId: string, username?: string, firstName?: string): Promise<{ apiKey: string; user: TargetUser }> {
@@ -96,7 +101,6 @@ export class RelayClient {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
 
     this.intentionalDisconnect = false;
-    this.reconnectAttempts = 0;
 
     return new Promise((resolve) => {
       let resolved = false;
@@ -121,9 +125,11 @@ export class RelayClient {
           clearTimeout(timeout);
           this.ws = ws;
           this.reconnectAttempts = 0;
+          this.startPing();
           this.emit('connected', null);
 
           ws.onmessage = (event) => {
+            if (event.data === 'pong') return;
             try {
               const msg = JSON.parse(event.data as string);
               this.handleMessage(msg);
@@ -132,6 +138,7 @@ export class RelayClient {
 
           ws.onclose = () => {
             this.ws = null;
+            this.stopPing();
             this.emit('disconnected', null);
             if (!this.intentionalDisconnect) {
               this.scheduleReconnect();
@@ -161,6 +168,7 @@ export class RelayClient {
 
   disconnect(): void {
     this.intentionalDisconnect = true;
+    this.stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -283,6 +291,22 @@ export class RelayClient {
   sendWsMessage(data: Record<string, unknown>): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  private startPing(): void {
+    this.stopPing();
+    this.pingInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send('ping');
+      }
+    }, 30000);
+  }
+
+  private stopPing(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
   }
 

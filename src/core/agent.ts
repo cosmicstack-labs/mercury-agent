@@ -1495,8 +1495,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     if (trimmed.startsWith('/friend ')) {
-      if (!this._relayClient || !this._relayClient.isConnected()) {
-        await channel.send('❌ Not connected to relay. Use /relay to connect.', channelId);
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
         return true;
       }
       const input = trimmed.slice('/friend '.length).trim();
@@ -1524,8 +1524,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     if (cmd === '/listfriends') {
-      if (!this._relayClient || !this._relayClient.isConnected()) {
-        await channel.send('❌ Not connected to relay. Use /relay to connect.', channelId);
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
         return true;
       }
       try {

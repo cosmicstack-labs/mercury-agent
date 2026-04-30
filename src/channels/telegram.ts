@@ -1201,8 +1201,8 @@ export class TelegramChannel extends BaseChannel {
     }
 
     const relayClient = (ctx as any).relayClient as import('../relay/client.js').RelayClient | null;
-    if (!relayClient || !relayClient.isConnected()) {
-      await this.sendDirectMessage(chatId, '❌ Not connected to relay. Use /relay to connect.');
+    if (!relayClient || !relayClient.isRegistered()) {
+      await this.sendDirectMessage(chatId, '❌ Not registered on relay. Use /relay to connect.');
       return;
     }
 
@@ -1306,8 +1306,8 @@ export class TelegramChannel extends BaseChannel {
     }
 
     const relayClient = (cmdCtx as any).relayClient as import('../relay/client.js').RelayClient | null;
-    if (!relayClient || !relayClient.isConnected()) {
-      await ctx.answerCallbackQuery({ text: 'Not connected to relay' });
+    if (!relayClient || !relayClient.isRegistered()) {
+      await ctx.answerCallbackQuery({ text: 'Not registered on relay' });
       return;
     }
 
