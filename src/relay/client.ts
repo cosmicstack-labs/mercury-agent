@@ -87,42 +87,56 @@ export class RelayClient {
     return { apiKey: data.api_key, user: data.user };
   }
 
-  connect(): boolean {
-    if (!this.apiKey) return false;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return true;
+  connect(): Promise<boolean> {
+    if (!this.apiKey) return Promise.resolve(false);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
 
     this.intentionalDisconnect = false;
     this.reconnectAttempts = 0;
 
-    try {
-      const fullUrl = `${this.url}?api_key=${this.apiKey}`;
-      this.ws = new WebSocket(fullUrl);
+    return new Promise((resolve) => {
+      try {
+        const fullUrl = `${this.url}?api_key=${this.apiKey}`;
+        const ws = new WebSocket(fullUrl);
 
-      this.ws.onopen = () => {
-        this.reconnectAttempts = 0;
-        this.emit('connected', null);
-      };
+        const timeout = setTimeout(() => {
+          ws.close();
+          resolve(false);
+        }, 10000);
 
-      this.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data as string);
-          this.handleMessage(msg);
-        } catch {}
-      };
+        ws.onopen = () => {
+          clearTimeout(timeout);
+          this.ws = ws;
+          this.reconnectAttempts = 0;
+          this.emit('connected', null);
 
-      this.ws.onclose = () => {
-        this.emit('disconnected', null);
-        if (!this.intentionalDisconnect) {
-          this.scheduleReconnect();
-        }
-      };
+          ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data as string);
+              this.handleMessage(msg);
+            } catch {}
+          };
 
-      this.ws.onerror = () => {};
+          ws.onclose = () => {
+            this.emit('disconnected', null);
+            if (!this.intentionalDisconnect) {
+              this.scheduleReconnect();
+            }
+          };
 
-      return true;
-    } catch {
-      return false;
-    }
+          ws.onerror = () => {};
+
+          resolve(true);
+        };
+
+        ws.onerror = () => {
+          clearTimeout(timeout);
+          resolve(false);
+        };
+      } catch {
+        resolve(false);
+      }
+    });
   }
 
   disconnect(): void {
