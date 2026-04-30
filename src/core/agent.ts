@@ -2494,10 +2494,12 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     const displayName = fromFirstName || fromUsername || fromTgId || 'Unknown';
 
     const channel = this.channels.get(channelType as any);
-    if (!channel) return;
+    if (!channel) {
+      console.error(`[Agent] Relay push: channel '${channelType}' not found`);
+      return;
+    }
 
     const messages: Record<string, string> = {
-      'FRIEND_REQUEST': `🤝 ${displayName} wants to be your memory friend.\nUse /listfriends to accept or reject.`,
       'FRIEND_ACCEPT': `✅ ${displayName} accepted your friend request!`,
       'FRIEND_REJECT': `❌ ${displayName} rejected your friend request.`,
       'FRIEND_CANCEL': `⏳ ${displayName} cancelled their friend request.`,
@@ -2506,7 +2508,9 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     const msg = messages[type];
     if (msg) {
-      channel.send(msg, channelId).catch(() => {});
+      channel.send(msg, channelId).catch((err: unknown) => {
+        console.error('[Agent] Relay push notification failed:', err);
+      });
     }
   }
 }

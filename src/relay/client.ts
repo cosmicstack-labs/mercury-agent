@@ -326,7 +326,7 @@ export class RelayClient {
     const handlers = this.handlers.get(event);
     if (handlers) {
       for (const handler of handlers) {
-        try { handler(data); } catch {}
+        try { handler(data); } catch (err) { console.error(`[Relay] Event handler error for '${event}':`, err); }
       }
     }
   }

@@ -1284,7 +1284,9 @@ export class TelegramChannel extends BaseChannel {
         `🤝 ${displayName} wants to be your memory friend.`,
         { reply_markup: keyboard },
       );
-    } catch {}
+    } catch (err) {
+      console.error('[Telegram] Friend request notification failed:', err);
+    }
   }
 
   private async handleFriendCallback(ctx: any, data: string): Promise<void> {

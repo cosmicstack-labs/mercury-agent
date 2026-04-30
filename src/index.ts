@@ -1039,6 +1039,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   agent.relayClient = relayClient;
 
   if (relayClient) {
+    const notifyAllApproved = (message: string) => {
+      const channel = channels.get('telegram');
+      if (!channel) {
+        logger.warn('Relay notification: Telegram channel not available');
+        return;
+      }
+      channel.send(message).catch((err: unknown) => {
+        logger.error({ err }, 'Relay notification: Telegram send failed');
+      });
+    };
+
     relayClient.on('friend_request', (data: unknown) => {
       const d = data as Record<string, unknown>;
       if (tgChannel) {
@@ -1052,20 +1063,51 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           );
         }
       }
-      agent.handleRelayPush(d, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+    });
+
+    relayClient.on('initial_state', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const requests = d.friend_requests as Array<{ from_tg_id: string; request_id: string; from_username: string | null; from_first_name: string | null }> | undefined;
+      if (!requests || requests.length === 0) return;
+      if (!tgChannel) {
+        logger.warn('Relay initial_state: Telegram channel not available');
+        return;
+      }
+      const chatIds = getTelegramApprovedChatIds(config);
+      for (const req of requests) {
+        for (const chatId of chatIds) {
+          tgChannel.sendFriendRequestNotification(
+            chatId,
+            req.from_tg_id,
+            req.from_username,
+            req.from_first_name,
+          );
+        }
+      }
     });
 
     relayClient.on('friend_accept', (data: unknown) => {
-      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+      const d = data as Record<string, unknown>;
+      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
+      notifyAllApproved(`✅ ${displayName} accepted your friend request!`);
     });
+
     relayClient.on('friend_reject', (data: unknown) => {
-      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+      const d = data as Record<string, unknown>;
+      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
+      notifyAllApproved(`❌ ${displayName} rejected your friend request.`);
     });
+
     relayClient.on('friend_cancel', (data: unknown) => {
-      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+      const d = data as Record<string, unknown>;
+      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
+      notifyAllApproved(`⏳ ${displayName} cancelled their friend request.`);
     });
+
     relayClient.on('friend_remove', (data: unknown) => {
-      agent.handleRelayPush(data as Record<string, unknown>, 'telegram', config.channels.telegram.admins[0]?.chatId?.toString() || '');
+      const d = data as Record<string, unknown>;
+      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
+      notifyAllApproved(`🗑 ${displayName} removed you from their friends.`);
     });
   }
 
