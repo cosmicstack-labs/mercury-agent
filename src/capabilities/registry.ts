@@ -31,6 +31,7 @@ import { createListIssuesTool } from './github/list-issues.js';
 import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
+import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
@@ -190,6 +191,9 @@ export class CapabilityRegistry {
       this.tools.stop_agent = createStopAgentTool(this.supervisor);
       logger.info('Sub-agent tools registered');
     }
+
+    this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
+    logger.info('Interaction tools registered');
   }
 
   getTools(): Record<string, Tool> {

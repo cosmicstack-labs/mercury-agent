@@ -6,3 +6,4 @@ export { SubAgentSupervisor } from './supervisor.js';
 export { FileLockManager } from './file-lock.js';
 export { TaskBoard } from './task-board.js';
 export { ResourceManager } from './resource-manager.js';
+export { ProgrammingMode } from './programming-mode.js';

@@ -39,6 +39,7 @@ export function getManual(): string {
     ['delegate_task', 'Delegate a task to a sub-agent', 'task, workingDirectory?, priority?, allowedTools?'],
     ['list_agents', 'List active sub-agents', '—'],
     ['stop_agent', 'Stop a sub-agent (or all)', 'agentId ("a1" or "all")'],
+    ['ask_user', 'Ask user a question with choices', 'question, choices[]'],
   ];
 
   for (const [name, desc, params] of tools) {
@@ -115,6 +116,11 @@ export function getManual(): string {
     ['/agents resume <id>', 'Resume a paused sub-agent'],
     ['/agents config', 'Show sub-agent resource allocation'],
     ['/agents set max <n>', 'Set max concurrent sub-agents'],
+    ['/code', 'Show programming mode status'],
+    ['/code plan', 'Switch to plan mode (analyze, present options, no coding)'],
+    ['/code execute', 'Switch to execute mode (implement plan step by step)'],
+    ['/code off', 'Exit programming mode'],
+    ['/code toggle', 'Cycle through: off → plan → execute → off'],
     ['/halt', 'Emergency: stop all agents + clear queue'],
     ['/stop', 'Stop all agents + clear queue + release locks + clear task board'],
     ['/reset', 'Full reset: stop all + clear context (requires confirmation)'],

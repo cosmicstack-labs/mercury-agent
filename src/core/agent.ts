@@ -12,11 +12,13 @@ import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
+import { ProgrammingMode } from './programming-mode.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
+import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -250,6 +252,7 @@ export class Agent {
   private processing = false;
   private telegramStreaming: boolean;
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
+  readonly programmingMode: ProgrammingMode;
 
   constructor(
     private config: MercuryConfig,
@@ -268,6 +271,7 @@ export class Agent {
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.programmingMode = new ProgrammingMode();
 
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
@@ -275,6 +279,10 @@ export class Agent {
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
+    });
+
+    setAskUserHandler(async (question, choices, channelId, channelType) => {
+      return this.presentChoice(question, choices, channelId, channelType);
     });
   }
 
@@ -939,6 +947,10 @@ export class Agent {
     if (skillContext) {
       prompt += '\n\n' + skillContext;
     }
+    const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
+    if (programmingSuffix) {
+      prompt += programmingSuffix;
+    }
     const budgetStatus = this.tokenBudget.getStatusText();
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
@@ -1176,6 +1188,77 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   async shutdown(): Promise<void> {
     await this.sleep();
     logger.info('Mercury has shut down');
+  }
+
+  async presentChoice(question: string, choices: string[], channelId: string, channelType: string): Promise<string> {
+    const channel = this.channels.get(channelType as any);
+
+    if (channelType === 'cli' && channel instanceof CLIChannel) {
+      const options: ArrowSelectOption[] = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
+
+      try {
+        const selected = await channel.withMenu(async (select) => {
+          return select(question, options);
+        });
+        if (selected === undefined) return choices[0];
+        const index = parseInt(selected, 10);
+        return isNaN(index) ? choices[0] : choices[index];
+      } catch {
+        return choices[0];
+      }
+    }
+
+    if (channelType === 'telegram' && channel instanceof TelegramChannel) {
+      const { InlineKeyboard } = await import('grammy');
+      const kb = new InlineKeyboard();
+      for (let i = 0; i < choices.length; i++) {
+        const callbackData = `choice_${Date.now()}_${i}`;
+        kb.text(choices[i].slice(0, 60), callbackData);
+        if (i < choices.length - 1 && (i + 1) % 2 === 0) {
+          kb.row();
+        }
+      }
+
+      return new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => {
+          (channel as any).pendingApprovals?.delete(`choice_timeout_${question}`);
+          resolve(choices[0]);
+        }, 120000);
+
+        channel.send(question, channelId).catch(() => {});
+
+        const tgBot = (channel as any).bot;
+        if (tgBot) {
+          const chatId = channelId.startsWith('telegram:')
+            ? Number(channelId.split(':')[1])
+            : Number(channelId);
+
+          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch(() => {});
+
+          const handler = async (ctx: any) => {
+            const data = ctx.callbackQuery?.data;
+            if (!data || !data.startsWith('choice_')) return;
+            const parts = data.split('_');
+            if (parts.length < 3) return;
+            const index = parseInt(parts[2], 10);
+            if (isNaN(index)) return;
+            clearTimeout(timeout);
+            try { await ctx.answerCallbackQuery(); } catch {}
+            resolve(choices[index]);
+          };
+
+          if ((channel as any).pendingCallbacks) {
+            (channel as any).pendingCallbacks.push(handler);
+          }
+        }
+      });
+    }
+
+    await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch(() => {});
+    return choices[0];
   }
 
   private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {
@@ -1509,6 +1592,43 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         ];
         await channel.send(lines.join('\n'), channelId);
       }
+      return true;
+    }
+
+    if (cmd.startsWith('/code')) {
+      const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
+
+      if (!rawArgs || rawArgs === 'status') {
+        await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs === 'plan') {
+        this.programmingMode.setPlan();
+        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` to switch to execution.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'execute' || rawArgs === 'exec') {
+        this.programmingMode.setExecute();
+        await channel.send('Programming mode: **Execute**\nI will implement the plan step by step, verifying with builds/tests. Use `/code off` to exit.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'off' || rawArgs === 'exit') {
+        this.programmingMode.setOff();
+        await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'toggle') {
+        const newState = this.programmingMode.toggle();
+        const labels: Record<string, string> = { off: 'Off', plan: 'Plan', execute: 'Execute' };
+        await channel.send(`Programming mode: **${labels[newState]}**`, channelId);
+        return true;
+      }
+
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code off, /code toggle', channelId);
       return true;
     }
 

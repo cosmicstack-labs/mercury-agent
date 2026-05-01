@@ -382,6 +382,24 @@ The `delegating` state covers when the main agent hands off a task to a sub-agen
 | `/stop` | Stop all agents + clear queue + release locks + clear task board |
 | `/reset` | Full reset: stop all + clear context (requires confirmation) |
 
+### Programming Mode
+
+Mercury has a built-in programming mode (activated via `/code plan`) that optimizes it for IDE-grade coding tasks. It operates in two states:
+
+**Plan Mode** (`/code plan`): Mercury explores the codebase, analyzes problems, presents multiple approaches via `ask_user`, and outlines a step-by-step implementation plan — without writing code.
+
+**Execute Mode** (`/code execute`): Mercury implements the approved plan step by step, running builds/tests after changes, committing at checkpoints, and delegating independent subtasks to sub-agents.
+
+| Command | Description |
+|---|---|
+| `/code` | Show current programming mode status |
+| `/code plan` | Switch to plan mode (analyze, present options, no coding) |
+| `/code execute` | Switch to execute mode (implement plan step by step) |
+| `/code off` | Exit programming mode |
+| `/code toggle` | Cycle: off → plan → execute → off |
+
+The `ask_user` tool enables Mercury to present choices (approaches, libraries, strategies) using arrow-key menus in CLI and inline keyboards in Telegram.
+
 ### File Lock Semantics
 
 - **Read locks**: Multiple sub-agents can read the same file simultaneously
