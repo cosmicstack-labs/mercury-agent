@@ -9,13 +9,13 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
-import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep } from '../utils/tool-label.js';
+import { getReasoningProviderOptions } from '../utils/provider-options.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import {
   approveTelegramPendingRequest,
@@ -516,9 +516,7 @@ export class Agent {
 
       for (const provider of fallbackIterator) {
         try {
-          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
-            ? { deepseek: { thinking: { type: 'enabled' as const } } }
-            : undefined;
+          const deepseekProviderOptions = getReasoningProviderOptions(provider);
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
