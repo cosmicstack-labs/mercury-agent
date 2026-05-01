@@ -421,3 +421,75 @@ subagents:
 ```
 
 Environment overrides: `SUBAGENTS_ENABLED`, `SUBAGENTS_MAX_CONCURRENT`, `SUBAGENTS_MODE`
+## Spotify Integration
+
+Mercury can control the user's Spotify playback remotely via the Spotify Web API. Music plays on the user's own devices (phone, web, desktop, TV, speakers) — not locally.
+
+### Setup
+
+1. Create a Spotify app at https://developer.spotify.com/dashboard
+2. Set the redirect URI to `http://127.0.0.1:8888/callback`
+3. Set `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env`
+4. Run `/spotify auth` in Mercury — this opens a browser for OAuth authorization
+5. Tokens are stored in `~/.mercury/mercury.yaml` and auto-refreshed
+
+### Device Selection
+
+Spotify's device API lists all active devices the user is logged into. Mercury sends play/pause/skip commands to whichever device the user selects — it never plays audio locally.
+
+### DJ Skill
+
+The `spotify` skill (`/skills/spotify/SKILL.md`) activates DJ mode:
+- Searches Spotify based on mood/genre/activity
+- Presents choices via `ask_user` (arrow keys on CLI, inline buttons on Telegram)
+- Manages playback, queues, likes, and playlists
+- Creates curated playlists from user's taste
+
+### Player UI
+
+**CLI**: `/spotify player` opens an interactive arrow-key menu:
+```
+  ▶  Play / Resume
+  ⏸  Pause
+  ⏭  Next Track
+  ⏮  Previous Track
+  🔀 Toggle Shuffle
+  🔁 Cycle Repeat
+  🎵 Now Playing
+  📱 Devices
+  🔍 Search & Play
+  🔊 Set Volume
+  📋 Add to Queue
+  ❤️  Like Current Track
+  ✕  Exit Player
+```
+
+**Telegram**: Playback controls as inline keyboard buttons.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/spotify` | Show connection status |
+| `/spotify auth` | Start OAuth flow (opens browser) |
+| `/spotify player` | Interactive player (CLI only) |
+| `/spotify devices` | List active Spotify devices |
+| `/spotify device <id>` | Set active device |
+| `/spotify now` | Show currently playing track |
+
+### Config
+
+```yaml
+spotify:
+  enabled: true
+  clientId: ...
+  clientSecret: ...
+  redirectUri: http://127.0.0.1:8888/callback
+  accessToken: ...
+  refreshToken: ...
+  expiresAt: ...
+  scopes: [...]
+  deviceId: ...
+```
+
+Environment overrides: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`

@@ -40,6 +40,20 @@ export function getManual(): string {
     ['list_agents', 'List active sub-agents', '—'],
     ['stop_agent', 'Stop a sub-agent (or all)', 'agentId ("a1" or "all")'],
     ['ask_user', 'Ask user a question with choices', 'question, choices[]'],
+    ['spotify_search', 'Search Spotify for tracks/artists/albums/playlists', 'query, type?, limit?'],
+    ['spotify_play', 'Play a track/album/playlist on Spotify', 'uri?, deviceId?'],
+    ['spotify_pause', 'Pause Spotify playback', 'deviceId?'],
+    ['spotify_next', 'Skip to next track', '—'],
+    ['spotify_previous', 'Skip to previous track', '—'],
+    ['spotify_now_playing', 'Show currently playing track info', '—'],
+    ['spotify_devices', 'List available Spotify devices', '—'],
+    ['spotify_queue', 'Add track to playback queue', 'uri'],
+    ['spotify_like', 'Like (save) a track to library', 'trackId'],
+    ['spotify_volume', 'Set playback volume', 'percent (0-100)'],
+    ['spotify_shuffle', 'Toggle shuffle on/off', 'state (boolean)'],
+    ['spotify_repeat', 'Set repeat mode', 'state (off/track/context)'],
+    ['spotify_top_tracks', 'Get user\'s top tracks', 'timeRange?, limit?'],
+    ['spotify_playlists', 'Get user\'s playlists', '—'],
   ];
 
   for (const [name, desc, params] of tools) {
@@ -124,6 +138,13 @@ export function getManual(): string {
     ['/halt', 'Emergency: stop all agents + clear queue'],
     ['/stop', 'Stop all agents + clear queue + release locks + clear task board'],
     ['/reset', 'Full reset: stop all + clear context (requires confirmation)'],
+    ['/spotify', 'Show Spotify connection status'],
+    ['/spotify auth', 'Connect Spotify (browser or manual code flow)'],
+    ['/spotify code <code>', 'Complete auth with a pasted authorization code (for SSH/Telegram)'],
+    ['/spotify player', 'Interactive music player (CLI only: arrow-key controls, search, queue)'],
+    ['/spotify devices', 'List available Spotify devices'],
+    ['/spotify device <id>', 'Set active Spotify device'],
+    ['/spotify now', 'Show what is currently playing'],
     ['/unpair', 'Reset all Telegram access for this Mercury instance (admins only)'],
   ];
 

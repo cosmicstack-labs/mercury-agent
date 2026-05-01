@@ -19,6 +19,8 @@ import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
+import type { SpotifyClient } from '../spotify/client.js';
+import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -253,6 +255,7 @@ export class Agent {
   private telegramStreaming: boolean;
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
+  private spotifyClient?: SpotifyClient;
 
   constructor(
     private config: MercuryConfig,
@@ -1190,6 +1193,10 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     logger.info('Mercury has shut down');
   }
 
+  setSpotifyClient(client: SpotifyClient): void {
+    this.spotifyClient = client;
+  }
+
   async presentChoice(question: string, choices: string[], channelId: string, channelType: string): Promise<string> {
     const channel = this.channels.get(channelType as any);
 
@@ -1629,6 +1636,177 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
 
       await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code off, /code toggle', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/spotify')) {
+      if (!this.spotifyClient) {
+        await channel.send('Spotify is not connected. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your config, then run /spotify auth.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/spotify'.length).trim().toLowerCase();
+
+      if (!rawArgs || rawArgs === 'status') {
+        const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
+        const device = this.spotifyClient.getDeviceId() || 'none';
+        await channel.send(`Spotify: **${auth}**\nDevice: ${device !== 'none' ? device : 'none selected'}`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'auth') {
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          try {
+            const choice = await channel.withMenu(async (select) => {
+              return select('Spotify Authorization', [
+                { value: 'browser', label: 'Open browser (recommended)' },
+                { value: 'manual', label: 'Paste authorization code manually' },
+                { value: 'cancel', label: 'Cancel' },
+              ]);
+            });
+            if (!choice || choice === 'cancel') {
+              await channel.send('Spotify auth cancelled.', channelId);
+              return true;
+            }
+            if (choice === 'manual') {
+              const authUrl = this.spotifyClient.getAuthUrl();
+              await channel.send('1. Open this URL in your browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — it may show an error page, that is OK.\n3. Copy the `code` parameter from the URL in your browser address bar.\n4. Paste it below:', channelId);
+              const code = await channel.prompt('Authorization code: ');
+              if (!code || !code.trim()) {
+                await channel.send('No code provided. Auth cancelled.', channelId);
+                return true;
+              }
+              await this.spotifyClient.authenticateWithCode(code.trim());
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            } else {
+              await channel.send('Opening browser for Spotify authorization...', channelId);
+              await this.spotifyClient.authenticate();
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            }
+          } catch (err: any) {
+            await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+          }
+        } else {
+          const authUrl = this.spotifyClient.getAuthUrl();
+          await channel.send(
+            '**Connect Spotify**\n\n1. Open this URL on any device with a browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — that page may show an error, that is OK.\n3. Copy the `code` from the URL, then type:\n`/spotify code <paste-code-here>`',
+            channelId
+          );
+        }
+        return true;
+      }
+
+      if (rawArgs.startsWith('code ')) {
+        const code = rawArgs.slice('code '.length).trim();
+        if (!code) {
+          await channel.send('Usage: /spotify code <authorization-code>', channelId);
+          return true;
+        }
+        try {
+          await this.spotifyClient.authenticateWithCode(code);
+          await channel.send('Spotify connected successfully! Try: play some music', channelId);
+        } catch (err: any) {
+          await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+        }
+        return true;
+      }
+
+      if (rawArgs === 'devices') {
+        try {
+          const data = await this.spotifyClient.getDevices();
+          if (!data?.devices?.length) { await channel.send('No active devices. Open Spotify on a device first.', channelId); return true; }
+          const lines = ['**Spotify Devices:**\n'];
+          for (const d of data.devices) {
+            lines.push(`${d.is_active ? '▶' : '○'} **${d.name}** (${d.type}) — \`${d.id}\`${d.is_active ? ' [active]' : ''}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      if (rawArgs.startsWith('device ')) {
+        const id = rawArgs.slice('device '.length).trim();
+        this.spotifyClient.setDevice(id);
+        await channel.send(`Active device set to: ${id}`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'player' && channelType === 'cli' && channel instanceof CLIChannel) {
+        await channel.withMenu(async (select) => {
+          while (true) {
+            try {
+              const np = await this.spotifyClient!.getCurrentlyPlaying();
+              if (np) {
+                await channel.send(formatNowPlaying(np), channelId);
+              }
+            } catch {}
+            const action = await select('Spotify Player', PLAYER_CONTROLS);
+            if (action === 'exit' || !action) return;
+            if (action === 'search') {
+              const query = await channel.prompt('Search: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results found.', channelId); continue; }
+                const trackOptions = tracks.map((t: any, i: number) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Play which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.play([picked]);
+                }
+              } catch (err: any) { await channel.send(`Search failed: ${err.message}`, channelId); }
+              continue;
+            }
+            if (action === 'volume') {
+              const vol = await channel.prompt('Volume (0-100): ');
+              const n = parseInt(vol, 10);
+              if (!isNaN(n) && n >= 0 && n <= 100) {
+                await this.spotifyClient!.setVolume(n);
+                await channel.send(`Volume: ${n}%`, channelId);
+              }
+              continue;
+            }
+            if (action === 'queue') {
+              const query = await channel.prompt('Search track to queue: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results.', channelId); continue; }
+                const trackOptions = tracks.map((t: any) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Queue which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.addToQueue(picked);
+                  await channel.send('Added to queue.', channelId);
+                }
+              } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+              continue;
+            }
+            try {
+              const result = await handlePlayerAction(action, this.spotifyClient!);
+              await channel.send(result, channelId);
+            } catch (err: any) {
+              await channel.send(`Failed: ${err.message}`, channelId);
+            }
+          }
+        });
+        return true;
+      }
+
+      if (rawArgs === 'now' || rawArgs === 'playing' || rawArgs === 'np') {
+        try {
+          const text = await this.spotifyClient.getNowPlayingText();
+          await channel.send(text, channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      await channel.send('Unknown /spotify command. Available: /spotify, /spotify auth, /spotify code <code>, /spotify player, /spotify devices, /spotify device <id>, /spotify now', channelId);
       return true;
     }
 

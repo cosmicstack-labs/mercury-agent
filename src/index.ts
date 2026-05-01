@@ -35,6 +35,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
 import { SubAgentSupervisor } from './core/supervisor.js';
+import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
@@ -822,45 +823,86 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   console.log(chalk.bold.white('  GitHub Integration (optional)'));
   console.log(chalk.dim('  Connect Mercury to GitHub so it can create PRs, manage issues,'));
   console.log(chalk.dim('  review code, and co-author commits on your behalf.'));
-  console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+  console.log(chalk.dim('  You can add it later with mercury doctor.'));
   console.log('');
 
-  const ghUserCurrent = isReconfig && config.github.username ? ` [${config.github.username}]` : '';
-  const ghUsername = await ask(chalk.white(`  1. Your GitHub username${ghUserCurrent}: `));
-  if (ghUsername) config.github.username = ghUsername;
+  const ghSetup = await ask(chalk.white('  Configure GitHub? (y/N): '));
+  if (ghSetup.toLowerCase() === 'y' || ghSetup.toLowerCase() === 'yes') {
+    const ghUserCurrent = isReconfig && config.github.username ? ` [${config.github.username}]` : '';
+    const ghUsername = await ask(chalk.white(`  1. Your GitHub username${ghUserCurrent}: `));
+    if (ghUsername) config.github.username = ghUsername;
 
-  if (!config.github.email) {
-    config.github.email = 'mercury@cosmicstack.org';
-  }
+    if (!config.github.email) {
+      config.github.email = 'mercury@cosmicstack.org';
+    }
 
-  console.log('');
-  console.log(chalk.dim('     You need a Personal Access Token (PAT) with repo access.'));
-  console.log(chalk.dim('     Fine-grained (recommended): github.com/settings/personal-access-tokens/new'));
-  console.log(chalk.dim('       → Permissions: Contents (R/W), Pull requests (R/W), Issues (R/W)'));
-  console.log(chalk.dim('     Classic: github.com/settings/tokens/new'));
-  console.log(chalk.dim('       → Scope: repo (full control)'));
-  const ghTokenCurrent = process.env.GITHUB_TOKEN ? ` [${maskKey(process.env.GITHUB_TOKEN)}]` : '';
-  const ghToken = await ask(chalk.white(`  2. GitHub PAT${ghTokenCurrent}: `));
-  if (ghToken) {
-    appendToEnv('GITHUB_TOKEN', ghToken);
-  }
-
-  if (config.github.username || process.env.GITHUB_TOKEN) {
     console.log('');
-    console.log(chalk.dim('     Set a default repo so you can say "create an issue" without'));
-    console.log(chalk.dim('     specifying the repo every time. Enter owner/name or a full URL.'));
-    console.log(chalk.dim('     Example: hotheadhacker/mercury-agent'));
-    console.log(chalk.dim('     Example: https://github.com/hotheadhacker/mercury-agent'));
-    const ghOwnerCurrent = isReconfig && config.github.defaultOwner ? ` [${config.github.defaultOwner}/${config.github.defaultRepo}]` : '';
-    const ghRepoInput = await ask(chalk.white(`  3. Default repo${ghOwnerCurrent}: `));
-    if (ghRepoInput) {
-      const parsed = parseGithubRepo(ghRepoInput);
-      if (parsed) {
-        config.github.defaultOwner = parsed.owner;
-        config.github.defaultRepo = parsed.repo;
-      } else {
-        console.log(chalk.yellow('  Could not parse repo. Use format: owner/repo or a GitHub URL.'));
+    console.log(chalk.dim('     You need a Personal Access Token (PAT) with repo access.'));
+    console.log(chalk.dim('     Fine-grained (recommended): github.com/settings/personal-access-tokens/new'));
+    console.log(chalk.dim('       → Permissions: Contents (R/W), Pull requests (R/W), Issues (R/W)'));
+    console.log(chalk.dim('     Classic: github.com/settings/tokens/new'));
+    console.log(chalk.dim('       → Scope: repo (full control)'));
+    const ghTokenCurrent = process.env.GITHUB_TOKEN ? ` [${maskKey(process.env.GITHUB_TOKEN)}]` : '';
+    const ghToken = await ask(chalk.white(`  2. GitHub PAT${ghTokenCurrent}: `));
+    if (ghToken) {
+      appendToEnv('GITHUB_TOKEN', ghToken);
+    }
+
+    if (config.github.username || process.env.GITHUB_TOKEN) {
+      console.log('');
+      console.log(chalk.dim('     Set a default repo so you can say "create an issue" without'));
+      console.log(chalk.dim('     specifying the repo every time. Enter owner/name or a full URL.'));
+      console.log(chalk.dim('     Example: hotheadhacker/mercury-agent'));
+      console.log(chalk.dim('     Example: https://github.com/hotheadhacker/mercury-agent'));
+      const ghOwnerCurrent = isReconfig && config.github.defaultOwner ? ` [${config.github.defaultOwner}/${config.github.defaultRepo}]` : '';
+      const ghRepoInput = await ask(chalk.white(`  3. Default repo${ghOwnerCurrent}: `));
+      if (ghRepoInput) {
+        const parsed = parseGithubRepo(ghRepoInput);
+        if (parsed) {
+          config.github.defaultOwner = parsed.owner;
+          config.github.defaultRepo = parsed.repo;
+        } else {
+          console.log(chalk.yellow('  Could not parse repo. Use format: owner/repo or a GitHub URL.'));
+        }
       }
+    }
+  }
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Spotify Integration (optional)'));
+  console.log(chalk.dim('  Connect Mercury to your Spotify so it can play music,'));
+  console.log(chalk.dim('  manage playlists, and act as your DJ on any of your devices.'));
+  console.log(chalk.dim('  You can add it later with mercury doctor.'));
+  console.log('');
+
+  const spotifySetup = await ask(chalk.white('  Configure Spotify? (y/N): '));
+  if (spotifySetup.toLowerCase() === 'y' || spotifySetup.toLowerCase() === 'yes') {
+    console.log('');
+    console.log(chalk.dim('     1. Go to developer.spotify.com/dashboard'));
+    console.log(chalk.dim('     2. Click "Create app" — set name: Mercury'));
+    console.log(chalk.dim('     3. Set redirect URI: http://127.0.0.1:8888/callback'));
+    console.log(chalk.dim('     4. Copy the Client ID and Client Secret'));
+    console.log('');
+
+    const spotifyIdCurrent = isReconfig && config.spotify.clientId ? ` [${maskKey(config.spotify.clientId)}]` : '';
+    const spotifyClientId = await ask(chalk.white(`  1. Spotify Client ID${spotifyIdCurrent}: `));
+    if (spotifyClientId) {
+      config.spotify.clientId = spotifyClientId;
+      appendToEnv('SPOTIFY_CLIENT_ID', spotifyClientId);
+    }
+
+    const spotifySecretCurrent = isReconfig && config.spotify.clientSecret ? ` [${maskKey(config.spotify.clientSecret)}]` : '';
+    const spotifyClientSecret = await ask(chalk.white(`  2. Spotify Client Secret${spotifySecretCurrent}: `));
+    if (spotifyClientSecret) {
+      config.spotify.clientSecret = spotifyClientSecret;
+      appendToEnv('SPOTIFY_CLIENT_SECRET', spotifyClientSecret);
+    }
+
+    if (spotifyClientId || spotifyClientSecret) {
+      config.spotify.enabled = true;
+      console.log('');
+      console.log(chalk.dim('     After Mercury starts, run /spotify auth to connect your account.'));
     }
   }
 
@@ -890,6 +932,9 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   console.log(chalk.green(`  ✓ Memory stored in ${home}/memory/`));
   console.log(chalk.green(`  ✓ Permissions seeded in ${home}/permissions.yaml`));
   console.log(chalk.green(`  ✓ Skills directory ready in ${home}/skills/`));
+  if (config.spotify.clientId) {
+    console.log(chalk.green(`  ✓ Spotify configured — run /spotify auth to connect your account`));
+  }
   console.log('');
   console.log(chalk.cyan(`  ${config.identity.name} is ready. Run \`mercury start\` to chat.`));
   console.log(chalk.dim('  mercury.cosmicstack.org'));
@@ -1084,6 +1129,18 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
+  }
+
+  if (config.spotify.clientId && config.spotify.clientSecret) {
+    const spotifyClient = new SpotifyClient(config);
+    capabilities.setSpotifyClient(spotifyClient);
+    agent.setSpotifyClient(spotifyClient);
+
+    if (spotifyClient.isAuthenticated()) {
+      logger.info('Spotify connected (token available)');
+    } else if (!isDaemon) {
+      console.log(chalk.dim('  Spotify: not connected — run /spotify auth to link your account'));
+    }
   }
 
   await agent.birth();
