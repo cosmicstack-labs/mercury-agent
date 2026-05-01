@@ -134,6 +134,25 @@ export class CapabilityRegistry {
     this.spotifyClient = client;
   }
 
+  registerSpotifyTools(): void {
+    if (!this.spotifyClient) return;
+    this.tools.spotify_search = createSpotifySearchTool(this.spotifyClient);
+    this.tools.spotify_play = createSpotifyPlayTool(this.spotifyClient);
+    this.tools.spotify_pause = createSpotifyPauseTool(this.spotifyClient);
+    this.tools.spotify_next = createSpotifyNextTool(this.spotifyClient);
+    this.tools.spotify_previous = createSpotifyPreviousTool(this.spotifyClient);
+    this.tools.spotify_now_playing = createSpotifyNowPlayingTool(this.spotifyClient);
+    this.tools.spotify_devices = createSpotifyDevicesTool(this.spotifyClient);
+    this.tools.spotify_queue = createSpotifyQueueTool(this.spotifyClient);
+    this.tools.spotify_like = createSpotifyLikeTool(this.spotifyClient);
+    this.tools.spotify_volume = createSpotifyVolumeTool(this.spotifyClient);
+    this.tools.spotify_shuffle = createSpotifyShuffleTool(this.spotifyClient);
+    this.tools.spotify_repeat = createSpotifyRepeatTool(this.spotifyClient);
+    this.tools.spotify_top_tracks = createSpotifyTopTracksTool(this.spotifyClient);
+    this.tools.spotify_playlists = createSpotifyPlaylistsTool(this.spotifyClient);
+    logger.info('Spotify tools registered');
+  }
+
   registerAll(): void {
     const manifest = this.permissions.getManifest();
 
@@ -216,24 +235,6 @@ export class CapabilityRegistry {
 
     this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
     logger.info('Interaction tools registered');
-
-    if (this.spotifyClient) {
-      this.tools.spotify_search = createSpotifySearchTool(this.spotifyClient);
-      this.tools.spotify_play = createSpotifyPlayTool(this.spotifyClient);
-      this.tools.spotify_pause = createSpotifyPauseTool(this.spotifyClient);
-      this.tools.spotify_next = createSpotifyNextTool(this.spotifyClient);
-      this.tools.spotify_previous = createSpotifyPreviousTool(this.spotifyClient);
-      this.tools.spotify_now_playing = createSpotifyNowPlayingTool(this.spotifyClient);
-      this.tools.spotify_devices = createSpotifyDevicesTool(this.spotifyClient);
-      this.tools.spotify_queue = createSpotifyQueueTool(this.spotifyClient);
-      this.tools.spotify_like = createSpotifyLikeTool(this.spotifyClient);
-      this.tools.spotify_volume = createSpotifyVolumeTool(this.spotifyClient);
-      this.tools.spotify_shuffle = createSpotifyShuffleTool(this.spotifyClient);
-      this.tools.spotify_repeat = createSpotifyRepeatTool(this.spotifyClient);
-      this.tools.spotify_top_tracks = createSpotifyTopTracksTool(this.spotifyClient);
-      this.tools.spotify_playlists = createSpotifyPlaylistsTool(this.spotifyClient);
-      logger.info('Spotify tools registered');
-    }
   }
 
   getTools(): Record<string, Tool> {

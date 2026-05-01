@@ -1134,6 +1134,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.spotify.clientId && config.spotify.clientSecret) {
     const spotifyClient = new SpotifyClient(config);
     capabilities.setSpotifyClient(spotifyClient);
+    capabilities.registerSpotifyTools();
     agent.setSpotifyClient(spotifyClient);
 
     if (spotifyClient.isAuthenticated()) {
