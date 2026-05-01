@@ -10,6 +10,7 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { RelayClient } from '../relay/client.js';
+import { validateUsernameLocal } from '../relay/client.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
@@ -252,6 +253,7 @@ export class Agent {
   private processing = false;
   private telegramStreaming: boolean;
   private _relayClient: RelayClient | null = null;
+  private _awaitingUsernameInput: boolean = false;
 
   constructor(
     private config: MercuryConfig,
@@ -1460,29 +1462,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
       if (!this._relayClient.isRegistered()) {
-        const admins = this.config.channels.telegram.admins;
-        if (!admins || admins.length === 0) {
-          await channel.send('❌ Cannot register: No Telegram account configured. Set up Telegram first, then use /relay.', channelId);
+        if (this._awaitingUsernameInput) {
           return true;
         }
-        const primaryAdmin = admins[0];
-        const tgUserId = String(primaryAdmin.userId);
-        try {
-          const result = await this._relayClient.register(
-            tgUserId,
-            primaryAdmin.username || undefined,
-            primaryAdmin.firstName || undefined,
-          );
-          const connected = await this._relayClient.connect();
-          const displayName = result.user.first_name || result.user.username || result.user.tg_user_id;
-          if (connected) {
-            await channel.send(`✅ Registered & connected to relay (${displayName})`, channelId);
-          } else {
-            await channel.send(`✅ Registered as ${displayName}, but failed to connect. Try /relay again.`, channelId);
-          }
-        } catch (err: any) {
-          await channel.send(`❌ Registration failed: ${err.message}`, channelId);
-        }
+        await channel.send('Choose a unique relay username (3-20 chars, lowercase letters, numbers, underscores):', channelId);
+        this._awaitingUsernameInput = true;
         return true;
       }
       const connected = await this._relayClient.connect();
@@ -1494,6 +1478,56 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (this._awaitingUsernameInput && !this._relayClient?.isRegistered()) {
+      const username = trimmed.toLowerCase().trim();
+      if (username.startsWith('/')) {
+        this._awaitingUsernameInput = false;
+        return false;
+      }
+      const validation = validateUsernameLocal(username);
+      if (!validation.valid) {
+        await channel.send(`❌ ${validation.error}. Try another:`, channelId);
+        return true;
+      }
+      try {
+        const available = await this._relayClient!.checkUsername(username);
+        if (!available.available) {
+          await channel.send(`❌ Username '${username}' is taken. Try another:`, channelId);
+          return true;
+        }
+      } catch {
+        await channel.send('❌ Could not check username availability. Try again:', channelId);
+        return true;
+      }
+      const channels: Array<{ type: string; id: string }> = [];
+      const tgAdmins = this.config.channels.telegram.admins;
+      if (tgAdmins && tgAdmins.length > 0) {
+        channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+      }
+      if (channelType === 'cli') {
+        channels.push({ type: 'cli', id: 'cli' });
+      }
+      try {
+        const result = await this._relayClient!.register(
+          username,
+          this.config.identity.owner || undefined,
+          channels,
+        );
+        this._awaitingUsernameInput = false;
+        const connected = await this._relayClient!.connect();
+        const displayName = result.user.display_name || result.user.username;
+        if (connected) {
+          await channel.send(`✅ Registered & connected to relay as @${displayName}`, channelId);
+        } else {
+          await channel.send(`✅ Registered as @${displayName}, but failed to connect. Try /relay again.`, channelId);
+        }
+      } catch (err: any) {
+        await channel.send(`❌ Registration failed: ${err.message}`, channelId);
+        this._awaitingUsernameInput = false;
+      }
+      return true;
+    }
+
     if (trimmed.startsWith('/friend ')) {
       if (!this._relayClient || !this._relayClient.isRegistered()) {
         await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
@@ -1501,24 +1535,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
       const input = trimmed.slice('/friend '.length).trim();
       if (!input) {
-        await channel.send('Usage: /friend @username or /friend <tg_user_id>', channelId);
+        await channel.send('Usage: /friend @username', channelId);
         return true;
       }
       try {
         const result = await this._relayClient.sendFriendRequest(input);
-        const name = result.target_user.first_name || result.target_user.username || result.target_user.tg_user_id;
-        await channel.send(`✅ Friend request sent to ${name}`, channelId);
+        const name = result.target_user.display_name || result.target_user.username;
+        await channel.send(`✅ Friend request sent to @${name}`, channelId);
       } catch (err: any) {
-        if (err.tg_user_id) {
-          const resolved = await this.resolveTelegramUser(err.tg_user_id);
-          if (resolved) {
-            await channel.send(`❌ ${resolved} (${err.tg_user_id}) is not registered on Mercury relay`, channelId);
-          } else {
-            await channel.send(`❌ User ${err.tg_user_id} is not registered on Mercury relay`, channelId);
-          }
-        } else {
-          await channel.send(`❌ ${err.message}`, channelId);
-        }
+        await channel.send(`❌ ${err.message}`, channelId);
       }
       return true;
     }
@@ -1542,24 +1567,24 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         if (data.friends.length > 0) {
           lines.push('✅ Friends:');
           for (const f of data.friends) {
-            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
-            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
           }
         }
         if (data.pending_sent.length > 0) {
           lines.push('');
           lines.push('📤 Pending sent:');
           for (const f of data.pending_sent) {
-            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
-            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
           }
         }
         if (data.pending_received.length > 0) {
           lines.push('');
           lines.push('📥 Pending received:');
           for (const f of data.pending_received) {
-            const name = f.target_user.first_name || f.target_user.username || f.target_user.tg_user_id;
-            lines.push(`  ${name} (@${f.target_user.username || '—'})`);
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
           }
         }
         if (data.friends.length === 0 && data.pending_sent.length === 0 && data.pending_received.length === 0) {
@@ -2380,24 +2405,24 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
     data: import('../relay/client.js').FriendsResponse,
   ): Promise<void> {
-    const formatName = (u: { tg_user_id: string; username: string | null; first_name: string | null }) =>
-      u.first_name || u.username || u.tg_user_id;
+    const formatName = (u: { username: string; display_name: string | null }) =>
+      u.display_name || u.username;
 
     const allOptions: ArrowSelectOption[] = [];
 
     if (data.friends.length > 0) {
       for (const f of data.friends) {
-        allOptions.push({ value: `friend:${f.target_user.tg_user_id}`, label: `✅ ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+        allOptions.push({ value: `friend:${f.target_user.username}`, label: `✅ ${formatName(f.target_user)} (@${f.target_user.username})` });
       }
     }
     if (data.pending_sent.length > 0) {
       for (const f of data.pending_sent) {
-        allOptions.push({ value: `sent:${f.target_user.tg_user_id}`, label: `📤 ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+        allOptions.push({ value: `sent:${f.target_user.username}`, label: `📤 ${formatName(f.target_user)} (@${f.target_user.username})` });
       }
     }
     if (data.pending_received.length > 0) {
       for (const f of data.pending_received) {
-        allOptions.push({ value: `received:${f.target_user.tg_user_id}`, label: `📥 ${formatName(f.target_user)} (@${f.target_user.username || '—'})` });
+        allOptions.push({ value: `received:${f.target_user.username}`, label: `📥 ${formatName(f.target_user)} (@${f.target_user.username})` });
       }
     }
 
@@ -2411,10 +2436,10 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     const chosen = await select('👥 Friends', allOptions);
     if (chosen === 'back') return;
 
-    const [type, tgId] = chosen.split(':');
+    const [type, targetUsername] = chosen.split(':');
 
     if (type === 'friend') {
-      const friend = data.friends.find(f => f.target_user.tg_user_id === tgId);
+      const friend = data.friends.find(f => f.target_user.username === targetUsername);
       if (!friend) return;
       const name = formatName(friend.target_user);
       const action = await select(name, [
@@ -2428,7 +2453,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         ]);
         if (confirm === 'confirm' && this._relayClient) {
           try {
-            await this._relayClient.deleteFriend(tgId);
+            await this._relayClient.deleteFriend(targetUsername);
             await channel.send(`🗑 Removed ${name} from friends.`, channelId);
           } catch (err: any) {
             await channel.send(`❌ Failed: ${err.message}`, channelId);
@@ -2436,7 +2461,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
     } else if (type === 'sent') {
-      const req = data.pending_sent.find(f => f.target_user.tg_user_id === tgId);
+      const req = data.pending_sent.find(f => f.target_user.username === targetUsername);
       if (!req) return;
       const name = formatName(req.target_user);
       const action = await select(name, [
@@ -2445,14 +2470,14 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       ]);
       if (action === 'cancel' && this._relayClient) {
         try {
-          await this._relayClient.cancelRequest(tgId);
+          await this._relayClient.cancelRequest(targetUsername);
           await channel.send(`✖ Cancelled friend request to ${name}.`, channelId);
         } catch (err: any) {
           await channel.send(`❌ Failed: ${err.message}`, channelId);
         }
       }
     } else if (type === 'received') {
-      const req = data.pending_received.find(f => f.target_user.tg_user_id === tgId);
+      const req = data.pending_received.find(f => f.target_user.username === targetUsername);
       if (!req) return;
       const name = formatName(req.target_user);
       const action = await select(name, [
@@ -2463,10 +2488,10 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       if (this._relayClient) {
         try {
           if (action === 'accept') {
-            await this._relayClient.approveRequest(tgId);
+            await this._relayClient.approveRequest(targetUsername);
             await channel.send(`✅ Accepted ${name}'s friend request!`, channelId);
           } else if (action === 'reject') {
-            await this._relayClient.rejectRequest(tgId);
+            await this._relayClient.rejectRequest(targetUsername);
             await channel.send(`❌ Rejected ${name}'s friend request.`, channelId);
           }
         } catch (err: any) {
@@ -2476,22 +2501,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
   }
 
-  private async resolveTelegramUser(tgUserId: string): Promise<string | null> {
-    const tgChannel = this.channels.get('telegram') as import('../channels/telegram.js').TelegramChannel | undefined;
-    if (!tgChannel) return null;
-    try {
-      return await tgChannel.resolveUser(tgUserId);
-    } catch {
-      return null;
-    }
-  }
-
   handleRelayPush(data: Record<string, unknown>, channelType: string, channelId: string): void {
     const type = data.type as string;
-    const fromTgId = data.from_tg_id as string | undefined;
-    const fromUsername = data.from_username as string | null | undefined;
-    const fromFirstName = data.from_first_name as string | null | undefined;
-    const displayName = fromFirstName || fromUsername || fromTgId || 'Unknown';
+    const fromUser = data.from_user as string | undefined;
+    const fromDisplayName = data.from_display_name as string | null | undefined;
+    const displayName = fromDisplayName || fromUser || 'Unknown';
 
     const channel = this.channels.get(channelType as any);
     if (!channel) {
@@ -2500,10 +2514,10 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     const messages: Record<string, string> = {
-      'FRIEND_ACCEPT': `✅ ${displayName} accepted your friend request!`,
-      'FRIEND_REJECT': `❌ ${displayName} rejected your friend request.`,
-      'FRIEND_CANCEL': `⏳ ${displayName} cancelled their friend request.`,
-      'FRIEND_REMOVE': `🗑 ${displayName} removed you from their friends.`,
+      'FRIEND_ACCEPT': `✅ @${displayName} accepted your friend request!`,
+      'FRIEND_REJECT': `❌ @${displayName} rejected your friend request.`,
+      'FRIEND_CANCEL': `⏳ @${displayName} cancelled their friend request.`,
+      'FRIEND_REMOVE': `🗑 @${displayName} removed you from their friends.`,
     };
 
     const msg = messages[type];

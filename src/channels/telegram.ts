@@ -26,7 +26,7 @@ import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
 const MEMORY_ACTION_PREFIX = 'tg_memory';
-const FRIEND_ACTION_PREFIX = 'tg_friend';
+const FRIEND_ACTION_PREFIX = 'relay_friend';
 
 type ApprovalResolver = () => void;
 
@@ -1214,8 +1214,8 @@ export class TelegramChannel extends BaseChannel {
       return;
     }
 
-    const formatName = (u: { tg_user_id: string; username: string | null; first_name: string | null }) =>
-      u.first_name || u.username || u.tg_user_id;
+    const formatName = (u: { username: string; display_name: string | null }) =>
+      u.display_name || u.username;
 
     const lines = ['<b>👥 Your Friends</b>', ''];
     const keyboard = new InlineKeyboard();
@@ -1225,8 +1225,8 @@ export class TelegramChannel extends BaseChannel {
       let row = 0;
       for (const f of data.friends) {
         const name = formatName(f.target_user);
-        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
-        keyboard.text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:approved`);
+        lines.push(`  ${name} (@${f.target_user.username})`);
+        keyboard.text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:approved`);
         row++;
         if (row % 2 === 0) keyboard.row();
       }
@@ -1238,8 +1238,8 @@ export class TelegramChannel extends BaseChannel {
       lines.push('📤 <b>Pending sent:</b>');
       for (const f of data.pending_sent) {
         const name = formatName(f.target_user);
-        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
-        keyboard.text(`📤 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:pending_sent`);
+        lines.push(`  ${name} (@${f.target_user.username})`);
+        keyboard.text(`📤 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:pending_sent`);
         keyboard.row();
       }
     }
@@ -1249,8 +1249,8 @@ export class TelegramChannel extends BaseChannel {
       lines.push('📥 <b>Pending received:</b>');
       for (const f of data.pending_received) {
         const name = formatName(f.target_user);
-        lines.push(`  ${name} (@${f.target_user.username || '—'})`);
-        keyboard.text(`📥 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.tg_user_id}:pending_received`);
+        lines.push(`  ${name} (@${f.target_user.username})`);
+        keyboard.text(`📥 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:pending_received`);
         keyboard.row();
       }
     }
@@ -1271,12 +1271,12 @@ export class TelegramChannel extends BaseChannel {
     }
   }
 
-  async sendFriendRequestNotification(chatId: number, fromTgId: string, fromUsername: string | null, fromFirstName: string | null): Promise<void> {
+  async sendFriendRequestNotification(chatId: number, fromUser: string, fromDisplayName: string | null): Promise<void> {
     if (!this.bot) return;
-    const displayName = fromFirstName || fromUsername || fromTgId;
+    const displayName = fromDisplayName || fromUser;
     const keyboard = new InlineKeyboard()
-      .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${fromTgId}`)
-      .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${fromTgId}`);
+      .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${fromUser}`)
+      .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${fromUser}`);
 
     try {
       await this.bot.api.sendMessage(
@@ -1312,7 +1312,7 @@ export class TelegramChannel extends BaseChannel {
     }
 
     if (action === 'detail') {
-      const tgId = parts[1];
+      const username = parts[1];
       const status = parts[2];
       await ctx.answerCallbackQuery({});
 
@@ -1320,14 +1320,14 @@ export class TelegramChannel extends BaseChannel {
 
       if (status === 'approved') {
         keyboard = new InlineKeyboard()
-          .text('🗑 Remove Friend', `${FRIEND_ACTION_PREFIX}:remove:${tgId}`);
+          .text('🗑 Remove Friend', `${FRIEND_ACTION_PREFIX}:remove:${username}`);
       } else if (status === 'pending_sent') {
         keyboard = new InlineKeyboard()
-          .text('✖ Cancel Request', `${FRIEND_ACTION_PREFIX}:cancel:${tgId}`);
+          .text('✖ Cancel Request', `${FRIEND_ACTION_PREFIX}:cancel:${username}`);
       } else if (status === 'pending_received') {
         keyboard = new InlineKeyboard()
-          .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${tgId}`)
-          .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${tgId}`);
+          .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${username}`)
+          .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${username}`);
       } else {
         return;
       }
@@ -1337,18 +1337,18 @@ export class TelegramChannel extends BaseChannel {
       } catch {
         const friends = await relayClient.getFriends();
         const all = [...friends.friends, ...friends.pending_sent, ...friends.pending_received];
-        const item = all.find(f => f.target_user.tg_user_id === tgId);
-        const name = item?.target_user?.first_name || item?.target_user?.username || tgId || 'Unknown';
+        const item = all.find(f => f.target_user.username === username);
+        const name = item?.target_user?.display_name || item?.target_user?.username || username || 'Unknown';
         await ctx.editMessageText(`${name} — select an action:`, { reply_markup: keyboard });
       }
       return;
     }
 
     if (action === 'accept') {
-      const tgId = parts[1];
+      const username = parts[1];
       try {
-        const result = await relayClient.approveRequest(tgId);
-        const name = result.target_user.first_name || result.target_user.username || tgId;
+        const result = await relayClient.approveRequest(username);
+        const name = result.target_user.display_name || result.target_user.username;
         await ctx.answerCallbackQuery({ text: `Accepted ${name}` });
         await ctx.editMessageText(`✅ You accepted ${name}'s friend request!`).catch(() => {});
       } catch (err: any) {
@@ -1358,10 +1358,10 @@ export class TelegramChannel extends BaseChannel {
     }
 
     if (action === 'reject') {
-      const tgId = parts[1];
+      const username = parts[1];
       try {
-        const result = await relayClient.rejectRequest(tgId);
-        const name = result.target_user.first_name || result.target_user.username || tgId;
+        const result = await relayClient.rejectRequest(username);
+        const name = result.target_user.display_name || result.target_user.username;
         await ctx.answerCallbackQuery({ text: `Rejected` });
         await ctx.editMessageText(`❌ You rejected ${name}'s friend request.`).catch(() => {});
       } catch (err: any) {
@@ -1371,10 +1371,10 @@ export class TelegramChannel extends BaseChannel {
     }
 
     if (action === 'cancel') {
-      const tgId = parts[1];
+      const username = parts[1];
       try {
-        const result = await relayClient.cancelRequest(tgId);
-        const name = result.target_user.first_name || result.target_user.username || tgId;
+        const result = await relayClient.cancelRequest(username);
+        const name = result.target_user.display_name || result.target_user.username;
         await ctx.answerCallbackQuery({ text: `Cancelled` });
         await ctx.editMessageText(`✖ Cancelled friend request to ${name}.`).catch(() => {});
       } catch (err: any) {
@@ -1384,12 +1384,12 @@ export class TelegramChannel extends BaseChannel {
     }
 
     if (action === 'remove') {
-      const tgId = parts[1];
+      const username = parts[1];
       const friends = await relayClient.getFriends();
-      const friend = friends.friends.find(f => f.target_user.tg_user_id === tgId);
-      const name = friend?.target_user?.first_name || friend?.target_user?.username || tgId;
+      const friend = friends.friends.find(f => f.target_user.username === username);
+      const name = friend?.target_user?.display_name || friend?.target_user?.username || username;
       const keyboard = new InlineKeyboard()
-        .text('🗑 Confirm', `${FRIEND_ACTION_PREFIX}:remove_confirm:${tgId}`)
+        .text('🗑 Confirm', `${FRIEND_ACTION_PREFIX}:remove_confirm:${username}`)
         .text('← Cancel', `${FRIEND_ACTION_PREFIX}:remove_cancel`);
       await ctx.answerCallbackQuery({});
       await ctx.editMessageText(`⚠️ Remove ${name} as a friend?\nYou can always send a new friend request later.`, { reply_markup: keyboard }).catch(() => {});
@@ -1397,10 +1397,10 @@ export class TelegramChannel extends BaseChannel {
     }
 
     if (action === 'remove_confirm') {
-      const tgId = parts[1];
+      const username = parts[1];
       try {
-        const result = await relayClient.deleteFriend(tgId);
-        const name = result.target_user.first_name || result.target_user.username || tgId;
+        const result = await relayClient.deleteFriend(username);
+        const name = result.target_user.display_name || result.target_user.username;
         await ctx.answerCallbackQuery({ text: `Removed` });
         await ctx.editMessageText(`🗑 ${name} has been removed from your friends.`).catch(() => {});
       } catch (err: any) {

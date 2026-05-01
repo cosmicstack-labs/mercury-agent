@@ -52,3 +52,8 @@ export interface TelegramChannelConfig extends ChannelConfig {
 export interface CLIChannelConfig extends ChannelConfig {
   type: 'cli';
 }
+
+export interface RelayChannel {
+  type: ChannelType;
+  id: string;
+}

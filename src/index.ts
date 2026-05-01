@@ -1057,9 +1057,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         for (const chatId of chatIds) {
           tgChannel.sendFriendRequestNotification(
             chatId,
-            d.from_tg_id as string,
-            d.from_username as string | null,
-            d.from_first_name as string | null,
+            d.from_user as string,
+            d.from_display_name as string | null,
           );
         }
       }
@@ -1067,7 +1066,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     relayClient.on('initial_state', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const requests = d.friend_requests as Array<{ from_tg_id: string; request_id: string; from_username: string | null; from_first_name: string | null }> | undefined;
+      const requests = d.friend_requests as Array<{ from_user: string; request_id: string; from_display_name: string | null }> | undefined;
       if (!requests || requests.length === 0) return;
       if (!tgChannel) {
         logger.warn('Relay initial_state: Telegram channel not available');
@@ -1078,9 +1077,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         for (const chatId of chatIds) {
           tgChannel.sendFriendRequestNotification(
             chatId,
-            req.from_tg_id,
-            req.from_username,
-            req.from_first_name,
+            req.from_user,
+            req.from_display_name,
           );
         }
       }
@@ -1088,26 +1086,26 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     relayClient.on('friend_accept', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
-      notifyAllApproved(`✅ ${displayName} accepted your friend request!`);
+      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
+      notifyAllApproved(`✅ @${displayName} accepted your friend request!`);
     });
 
     relayClient.on('friend_reject', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
-      notifyAllApproved(`❌ ${displayName} rejected your friend request.`);
+      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
+      notifyAllApproved(`❌ @${displayName} rejected your friend request.`);
     });
 
     relayClient.on('friend_cancel', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
-      notifyAllApproved(`⏳ ${displayName} cancelled their friend request.`);
+      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
+      notifyAllApproved(`⏳ @${displayName} cancelled their friend request.`);
     });
 
     relayClient.on('friend_remove', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_first_name as string | null) || (d.from_username as string | null) || (d.from_tg_id as string) || 'Unknown';
-      notifyAllApproved(`🗑 ${displayName} removed you from their friends.`);
+      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
+      notifyAllApproved(`🗑 @${displayName} removed you from their friends.`);
     });
   }
 

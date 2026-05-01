@@ -3,41 +3,56 @@ import { saveConfig } from '../utils/config.js';
 
 type EventHandler = (data: unknown) => void;
 
+export interface RelayUser {
+  username: string;
+  display_name: string | null;
+}
+
 export interface FriendsResponse {
   friends: Array<{
     request_id: string;
     status: string;
     created_at: number;
     approved_at: number | null;
-    target_user: { tg_user_id: string; username: string | null; first_name: string | null };
+    target_user: RelayUser;
   }>;
   pending_sent: Array<{
     request_id: string;
     status: string;
     created_at: number;
     approved_at: number | null;
-    target_user: { tg_user_id: string; username: string | null; first_name: string | null };
+    target_user: RelayUser;
   }>;
   pending_received: Array<{
     request_id: string;
     status: string;
     created_at: number;
     approved_at: number | null;
-    target_user: { tg_user_id: string; username: string | null; first_name: string | null };
+    target_user: RelayUser;
   }>;
-}
-
-export interface TargetUser {
-  tg_user_id: string;
-  username: string | null;
-  first_name: string | null;
 }
 
 export interface FriendRequestResult {
   request_id: string;
   status: string;
   target_online: boolean;
-  target_user: TargetUser;
+  target_user: RelayUser;
+}
+
+export const USERNAME_REGEX = /^[a-z0-9_]+$/;
+
+export function validateUsernameLocal(username: string): { valid: boolean; error?: string } {
+  const normalized = username.toLowerCase().trim();
+  if (!normalized || normalized.length < 3) {
+    return { valid: false, error: 'Username must be at least 3 characters' };
+  }
+  if (normalized.length > 20) {
+    return { valid: false, error: 'Username must be at most 20 characters' };
+  }
+  if (!USERNAME_REGEX.test(normalized)) {
+    return { valid: false, error: 'Username can only contain lowercase letters, numbers, and underscores' };
+  }
+  return { valid: true };
 }
 
 export class RelayClient {
@@ -76,21 +91,33 @@ export class RelayClient {
     return !this.intentionalDisconnect && this.reconnectTimer !== null;
   }
 
-  async register(tgUserId: string, username?: string, firstName?: string): Promise<{ apiKey: string; user: TargetUser }> {
+  async checkUsername(username: string): Promise<{ available: boolean; error?: string }> {
+    const normalized = username.toLowerCase().trim();
+    const res = await this.httpPost('/v1/check-username', { username: normalized });
+    if (!res.ok) {
+      const err = await res.json() as { error: string };
+      return { available: false, error: err.error };
+    }
+    const data = await res.json() as { available: boolean };
+    return { available: data.available };
+  }
+
+  async register(username: string, displayName?: string, channels?: Array<{ type: string; id: string }>): Promise<{ apiKey: string; user: RelayUser }> {
     const res = await this.httpPost('/v1/register', {
-      tg_user_id: tgUserId,
-      username: username || undefined,
-      first_name: firstName || undefined,
+      username: username.toLowerCase().trim(),
+      display_name: displayName || undefined,
+      channels: channels || undefined,
     });
     if (!res.ok) {
       const err = await res.json() as { error: string };
       throw new Error(err.error || 'Registration failed');
     }
-    const data = await res.json() as { api_key: string; user: TargetUser };
+    const data = await res.json() as { api_key: string; user: RelayUser };
     this.apiKey = data.api_key;
 
     const cfg = this.config();
     cfg.relay.apiKey = data.api_key;
+    cfg.relay.username = username.toLowerCase().trim();
     saveConfig(cfg);
 
     return { apiKey: data.api_key, user: data.user };
@@ -191,56 +218,51 @@ export class RelayClient {
     this.handlers.get(event)?.delete(handler);
   }
 
-  async sendFriendRequest(input: string): Promise<FriendRequestResult> {
-    const body: Record<string, string> = {};
-    if (input.startsWith('@')) {
-      body.username = input.slice(1);
-    } else {
-      body.to_tg_id = input;
-    }
+  async sendFriendRequest(username: string): Promise<FriendRequestResult> {
+    const target = username.toLowerCase().trim().replace(/^@/, '');
 
-    const res = await this.authedPost('/v1/friend-request', body);
+    const res = await this.authedPost('/v1/friend-request', { to_user: target });
     if (!res.ok) {
-      const err = await res.json() as { error: string; target_user?: TargetUser; tg_user_id?: string };
-      throw Object.assign(new Error(err.error), { target_user: err.target_user, tg_user_id: err.tg_user_id });
+      const err = await res.json() as { error: string; target_user?: RelayUser };
+      throw Object.assign(new Error(err.error), { target_user: err.target_user });
     }
     return await res.json() as FriendRequestResult;
   }
 
-  async approveRequest(fromTgId: string): Promise<{ status: string; target_user: TargetUser }> {
-    const res = await this.authedPost('/v1/approve-request', { from_tg_id: fromTgId });
+  async approveRequest(fromUser: string): Promise<{ status: string; target_user: RelayUser }> {
+    const res = await this.authedPost('/v1/approve-request', { from_user: fromUser });
     if (!res.ok) {
       const err = await res.json() as { error: string };
       throw new Error(err.error);
     }
-    return await res.json() as { status: string; target_user: TargetUser };
+    return await res.json() as { status: string; target_user: RelayUser };
   }
 
-  async rejectRequest(fromTgId: string): Promise<{ status: string; target_user: TargetUser }> {
-    const res = await this.authedPost('/v1/reject-request', { from_tg_id: fromTgId });
+  async rejectRequest(fromUser: string): Promise<{ status: string; target_user: RelayUser }> {
+    const res = await this.authedPost('/v1/reject-request', { from_user: fromUser });
     if (!res.ok) {
       const err = await res.json() as { error: string };
       throw new Error(err.error);
     }
-    return await res.json() as { status: string; target_user: TargetUser };
+    return await res.json() as { status: string; target_user: RelayUser };
   }
 
-  async cancelRequest(toTgId: string): Promise<{ status: string; target_user: TargetUser }> {
-    const res = await this.authedPost('/v1/cancel-request', { to_tg_id: toTgId });
+  async cancelRequest(toUser: string): Promise<{ status: string; target_user: RelayUser }> {
+    const res = await this.authedPost('/v1/cancel-request', { to_user: toUser });
     if (!res.ok) {
       const err = await res.json() as { error: string };
       throw new Error(err.error);
     }
-    return await res.json() as { status: string; target_user: TargetUser };
+    return await res.json() as { status: string; target_user: RelayUser };
   }
 
-  async deleteFriend(friendTgId: string): Promise<{ status: string; target_user: TargetUser }> {
-    const res = await this.authedPost('/v1/delete-friend', { friend_tg_id: friendTgId });
+  async deleteFriend(friendUser: string): Promise<{ status: string; target_user: RelayUser }> {
+    const res = await this.authedPost('/v1/delete-friend', { friend_user: friendUser });
     if (!res.ok) {
       const err = await res.json() as { error: string };
       throw new Error(err.error);
     }
-    return await res.json() as { status: string; target_user: TargetUser };
+    return await res.json() as { status: string; target_user: RelayUser };
   }
 
   async getFriends(): Promise<FriendsResponse> {
@@ -251,12 +273,12 @@ export class RelayClient {
     return await res.json() as FriendsResponse;
   }
 
-  async getUserStatus(tgId: string): Promise<{ tg_user_id: string; online: boolean }> {
-    const res = await this.authedGet(`/v1/status/${tgId}`);
+  async getUserStatus(username: string): Promise<{ username: string; online: boolean }> {
+    const res = await this.authedGet(`/v1/status/${username}`);
     if (!res.ok) {
       throw new Error('Failed to get user status');
     }
-    return await res.json() as { tg_user_id: string; online: boolean };
+    return await res.json() as { username: string; online: boolean };
   }
 
   async validateApiKey(): Promise<boolean> {
@@ -273,6 +295,7 @@ export class RelayClient {
     this.apiKey = '';
     const cfg = this.config();
     cfg.relay.apiKey = '';
+    cfg.relay.username = '';
     saveConfig(cfg);
   }
 

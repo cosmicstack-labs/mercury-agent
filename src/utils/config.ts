@@ -112,6 +112,7 @@ export interface MercuryConfig {
     enabled: boolean;
     url: string;
     apiKey: string;
+    username: string;
   };
   tokens: {
     dailyBudget: number;
@@ -240,6 +241,7 @@ export function getDefaultConfig(): MercuryConfig {
       enabled: getEnvBool('RELAY_ENABLED', true),
       url: getEnv('RELAY_URL', 'wss://mercury-relay.admin-5cc.workers.dev/v1/ws'),
       apiKey: getEnv('RELAY_API_KEY', ''),
+      username: getEnv('RELAY_USERNAME', ''),
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
