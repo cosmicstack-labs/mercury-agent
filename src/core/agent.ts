@@ -479,6 +479,17 @@ export class Agent {
 
       if (recentMemory.length > 0) {
         for (const m of recentMemory) {
+          if (m.role === 'assistant' && m.reasoning) {
+            messages.push({
+              role: 'assistant',
+              content: [
+                { type: 'reasoning', text: m.reasoning },
+                { type: 'text', text: m.content },
+              ],
+            });
+            continue;
+          }
+
           messages.push({
             role: m.role === 'user' ? 'user' : 'assistant',
             content: m.content,
