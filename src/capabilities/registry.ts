@@ -55,6 +55,7 @@ export interface ChatCommandContext {
   sharedMemoryClear: () => number;
   sharedMemoryCategories: () => string[];
   relayClient: import('../relay/client.js').RelayClient | null;
+  notificationsStore: import('../memory/notifications-store.js').NotificationsStore | null;
 }
 
 export class CapabilityRegistry {

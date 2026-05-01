@@ -34,6 +34,8 @@ import { UserMemoryStore } from './memory/user-memory.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { SharedMemoryStore } from './memory/shared-memory-store.js';
 import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
+import { NotificationsStore } from './memory/notifications-store.js';
+import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -965,6 +967,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     );
   }
 
+  let notifications: NotificationsStore | null = null;
+  if (isNotificationsDbAvailable()) {
+    try {
+      notifications = new NotificationsStore();
+      logger.info({ unread: notifications.getSummary().unread }, 'Notifications store loaded');
+    } catch (err) {
+      logger.warn({ err }, 'Notifications initialization failed, continuing without it');
+      notifications = null;
+    }
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -991,6 +1004,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryClear: () => sharedMemory ? sharedMemory.clear() : 0,
     sharedMemoryCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
     relayClient: relayClient as any,
+    notificationsStore: notifications,
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -1039,73 +1053,84 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   agent.relayClient = relayClient;
 
   if (relayClient) {
-    const notifyAllApproved = (message: string) => {
-      const channel = channels.get('telegram');
-      if (!channel) {
-        logger.warn('Relay notification: Telegram channel not available');
-        return;
+    const storeNotification = (
+      type: 'friend_request' | 'friend_accept' | 'friend_reject' | 'friend_cancel' | 'friend_remove',
+      message: string,
+      sourceUser?: string,
+      data?: Record<string, unknown>,
+    ) => {
+      if (!notifications) return;
+      const record = notifications.add(type, message, sourceUser, data);
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        let pushSucceeded = false;
+        if (type === 'friend_request') {
+          for (const chatId of chatIds) {
+            tgChannel.sendFriendRequestNotification(
+              chatId,
+              sourceUser || 'unknown',
+              null,
+            ).then(() => {
+              if (!pushSucceeded) {
+                pushSucceeded = true;
+                notifications.markRead(record.id);
+              }
+            }).catch(() => {});
+          }
+        } else {
+          const telegram = channels.get('telegram');
+          for (const chatId of chatIds) {
+            if (telegram) {
+              telegram.send(message, chatId.toString()).then(() => {
+                if (!pushSucceeded) {
+                  pushSucceeded = true;
+                  notifications.markRead(record.id);
+                }
+              }).catch(() => {});
+            }
+          }
+        }
       }
-      channel.send(message).catch((err: unknown) => {
-        logger.error({ err }, 'Relay notification: Telegram send failed');
-      });
     };
 
     relayClient.on('friend_request', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      if (tgChannel) {
-        const chatIds = getTelegramApprovedChatIds(config);
-        for (const chatId of chatIds) {
-          tgChannel.sendFriendRequestNotification(
-            chatId,
-            d.from_user as string,
-            d.from_display_name as string | null,
-          );
-        }
-      }
+      const fromUser = d.from_user as string;
+      const requestId = d.request_id as string;
+      storeNotification('friend_request', `@${fromUser} wants to be your memory friend`, fromUser, { request_id: requestId });
     });
 
     relayClient.on('initial_state', (data: unknown) => {
       const d = data as Record<string, unknown>;
       const requests = d.friend_requests as Array<{ from_user: string; request_id: string; from_display_name: string | null }> | undefined;
       if (!requests || requests.length === 0) return;
-      if (!tgChannel) {
-        logger.warn('Relay initial_state: Telegram channel not available');
-        return;
-      }
-      const chatIds = getTelegramApprovedChatIds(config);
       for (const req of requests) {
-        for (const chatId of chatIds) {
-          tgChannel.sendFriendRequestNotification(
-            chatId,
-            req.from_user,
-            req.from_display_name,
-          );
-        }
+        storeNotification('friend_request', `@${req.from_user} wants to be your memory friend`, req.from_user, { request_id: req.request_id });
       }
     });
 
     relayClient.on('friend_accept', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
-      notifyAllApproved(`✅ @${displayName} accepted your friend request!`);
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_accept', `✅ @${fromUser} accepted your friend request!`, fromUser);
     });
 
     relayClient.on('friend_reject', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
-      notifyAllApproved(`❌ @${displayName} rejected your friend request.`);
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_reject', `❌ @${fromUser} rejected your friend request.`, fromUser);
     });
 
     relayClient.on('friend_cancel', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
-      notifyAllApproved(`⏳ @${displayName} cancelled their friend request.`);
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_cancel', `⏳ @${fromUser} cancelled their friend request.`, fromUser);
     });
 
     relayClient.on('friend_remove', (data: unknown) => {
       const d = data as Record<string, unknown>;
-      const displayName = (d.from_display_name as string | null) || (d.from_user as string) || 'Unknown';
-      notifyAllApproved(`🗑 @${displayName} removed you from their friends.`);
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_remove', `🗑 @${fromUser} removed you from their friends.`, fromUser);
     });
   }
 

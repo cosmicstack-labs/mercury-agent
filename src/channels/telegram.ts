@@ -114,6 +114,18 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/notifications' || command === '/notification' || text.toLowerCase().startsWith('/notifications') || text.toLowerCase().startsWith('/notification')) {
+        this.emit({
+          id: `tg-notif-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: text,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       if (command === '/relay') {
         this.emit({
           id: `tg-relay-${Date.now()}`,
@@ -1273,7 +1285,6 @@ export class TelegramChannel extends BaseChannel {
 
   async sendFriendRequestNotification(chatId: number, fromUser: string, fromDisplayName: string | null): Promise<void> {
     if (!this.bot) return;
-    const displayName = fromDisplayName || fromUser;
     const keyboard = new InlineKeyboard()
       .text('✅ Accept', `${FRIEND_ACTION_PREFIX}:accept:${fromUser}`)
       .text('❌ Reject', `${FRIEND_ACTION_PREFIX}:reject:${fromUser}`);
@@ -1281,7 +1292,7 @@ export class TelegramChannel extends BaseChannel {
     try {
       await this.bot.api.sendMessage(
         chatId,
-        `🤝 ${displayName} wants to be your memory friend.`,
+        `🤝 @${fromUser} wants to be your memory friend.`,
         { reply_markup: keyboard },
       );
     } catch (err) {
@@ -1416,21 +1427,5 @@ export class TelegramChannel extends BaseChannel {
     }
 
     await ctx.answerCallbackQuery({ text: 'Unknown action' });
-  }
-
-  async resolveUser(tgUserId: string): Promise<string | null> {
-    if (!this.bot) return null;
-    try {
-      const chat = await this.bot.api.getChat(Number(tgUserId));
-      if ('first_name' in chat) {
-        const firstName = (chat as any).first_name as string | undefined;
-        const username = (chat as any).username as string | undefined;
-        if (username && firstName) return `@${username} (${firstName})`;
-        return username ? `@${username}` : (firstName ?? null);
-      }
-      return null;
-    } catch {
-      return null;
-    }
   }
 }

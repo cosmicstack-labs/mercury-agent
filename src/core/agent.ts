@@ -1597,6 +1597,46 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/notifications' || cmd === '/notification' || cmd.startsWith('/notifications ') || cmd.startsWith('/notification ')) {
+      const notifStore = (ctx as any).notificationsStore as import('../memory/notifications-store.js').NotificationsStore | null;
+      if (!notifStore) {
+        await channel.send('❌ Notifications not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('read all') || cmd.endsWith('read')) {
+        const marked = notifStore.markAllRead();
+        await channel.send(`✅ Marked ${marked} notification${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('clear')) {
+        const cleared = notifStore.clearRead();
+        await channel.send(`🗑 Cleared ${cleared} read notification${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      const summary = notifStore.getSummary();
+      const all = notifStore.getAll(50);
+
+      if (all.length === 0) {
+        await channel.send('📭 No notifications.', channelId);
+        return true;
+      }
+
+      const lines = [`📬 Notifications (${summary.unread} unread)`, ''];
+      for (const n of all) {
+        const icon = n.read ? '⚪' : '🔵';
+        const timeAgo = formatTimeAgo(n.createdAt);
+        lines.push(`${icon} ${n.message} (${timeAgo})`);
+      }
+      lines.push('');
+      lines.push('Use /notifications read all to mark as read, /notifications clear to remove read ones.');
+
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
     if (cmd.startsWith('/telegram')) {
       if (channelType !== 'cli') {
         await channel.send('`/telegram` is only available from the Mercury CLI chat.', channelId);
@@ -2527,4 +2567,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       });
     }
   }
+}
+
+function formatTimeAgo(unixTimestamp: number): string {
+  const seconds = Math.floor(Date.now() / 1000) - unixTimestamp;
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(unixTimestamp * 1000).toLocaleDateString();
 }
