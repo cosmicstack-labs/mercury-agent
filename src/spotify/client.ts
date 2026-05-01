@@ -31,6 +31,7 @@ export class SpotifyClient {
   private refreshToken: string;
   private expiresAt: number;
   private deviceId: string;
+  private isPremium: boolean | null = null;
 
   constructor(config: MercuryConfig) {
     this.config = config;
@@ -105,6 +106,13 @@ export class SpotifyClient {
             res.end(`<!DOCTYPE html><html><head><title>Mercury — Spotify Connected</title><style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#1a1a2e;color:#eee;text-align:center;}h1{color:#1db954;font-size:2em;}p{color:#aaa;max-width:400px;margin:0 auto;}.logo{font-size:3em;margin-bottom:0.3em;}</style></head><body><div><div class="logo">&#x266B;</div><h1>Mercury x Spotify</h1><p>Your Spotify account is now connected!</p><p>You can close this tab and return to Mercury.</p><p style="margin-top:2em;color:#666;">Try saying: "play some chill music"</p></div></body></html>`);
             server.close();
             logger.info('Spotify authentication successful');
+
+            this.checkPremium().then((premium) => {
+              if (!premium) {
+                logger.warn('Spotify account is not Premium — playback control will be unavailable');
+              }
+            }).catch(() => {});
+
             resolve(this.accessToken);
           } catch (err) {
             res.writeHead(500, { 'Content-Type': 'text/html' });
@@ -164,6 +172,13 @@ export class SpotifyClient {
     saveConfig(this.config);
 
     logger.info('Spotify authentication successful (manual code)');
+
+    this.checkPremium().then((premium) => {
+      if (!premium) {
+        logger.warn('Spotify account is not Premium — playback control will be unavailable');
+      }
+    }).catch(() => {});
+
     return this.accessToken;
   }
 
@@ -256,6 +271,14 @@ export class SpotifyClient {
     if (response.status === 401) {
       this.accessToken = '';
       throw new Error('Spotify token expired. Retrying...');
+    }
+    if (response.status === 403) {
+      const isPlaybackEndpoint = endpoint.includes('/me/player') && !endpoint.includes('/me/player/devices') && !endpoint.includes('/me/player/currently-playing') && !endpoint.includes('/me/player/queue');
+      if (isPlaybackEndpoint) {
+        throw new Error('Spotify Premium is required for playback control (play, pause, skip, volume, etc.). Read-only features like search, playlists, and liked songs work on free accounts.');
+      }
+      const text = await response.text();
+      throw new Error(`Spotify API error 403: ${text.slice(0, 200)}`);
     }
     if (!response.ok) {
       const text = await response.text();
@@ -407,6 +430,21 @@ export class SpotifyClient {
 
   async getMe(): Promise<any> {
     return this.apiRequest('/me');
+  }
+
+  async checkPremium(): Promise<boolean> {
+    if (this.isPremium !== null) return this.isPremium;
+    try {
+      const me = await this.getMe();
+      this.isPremium = me.product === 'premium';
+      return this.isPremium;
+    } catch {
+      return false;
+    }
+  }
+
+  getPremiumStatus(): boolean | null {
+    return this.isPremium;
   }
 
   setDevice(deviceId: string): void {

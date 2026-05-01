@@ -1649,7 +1649,9 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       if (!rawArgs || rawArgs === 'status') {
         const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
         const device = this.spotifyClient.getDeviceId() || 'none';
-        await channel.send(`Spotify: **${auth}**\nDevice: ${device !== 'none' ? device : 'none selected'}`, channelId);
+        const premium = this.spotifyClient.getPremiumStatus();
+        const premiumLabel = premium === null ? '' : premium ? ' | Premium' : ' | Free (no playback control)';
+        await channel.send(`Spotify: **${auth}**${premiumLabel}\nDevice: ${device !== 'none' ? device : 'none selected'}`, channelId);
         return true;
       }
 
