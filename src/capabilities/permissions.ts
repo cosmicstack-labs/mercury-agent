@@ -145,6 +145,141 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
 
 const PERMISSIONS_FILE = join(getMercuryHome(), 'permissions.yaml');
 
+// Split a command into shell-segment strings so each pipeline/chain/substitution
+// is checked separately. Without this, a single auto-approved base command
+// (e.g. "echo *") would auto-approve the entire string including chained
+// or substituted destructive commands like `echo $(rm -rf ~)` or `ls; reboot`.
+// We are deliberately conservative: any segment we cannot fully decompose
+// is returned as-is so the regular pattern checks decide its fate.
+export function splitShellSegments(command: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let i = 0;
+  let single = false;
+  let double = false;
+  let backtick = false;
+
+  const flush = () => {
+    const seg = buf.trim();
+    if (seg.length > 0) out.push(seg);
+    buf = '';
+  };
+
+  while (i < command.length) {
+    const ch = command[i];
+    const next = command[i + 1];
+
+    if (single) {
+      buf += ch;
+      if (ch === "'") single = false;
+      i++;
+      continue;
+    }
+    if (double) {
+      if (ch === '\\' && next !== undefined) {
+        buf += ch + next;
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        buf += ch;
+        double = false;
+        i++;
+        continue;
+      }
+      // Inside double quotes, bash still expands $(...) and `...` —
+      // pull them out as their own segments so a covering "echo *" can't
+      // launder a substituted destructive command.
+      if (ch === '$' && next === '(') {
+        i += 2;
+        let depth = 1;
+        let inner = '';
+        while (i < command.length && depth > 0) {
+          const c = command[i];
+          if (c === '(') depth++;
+          else if (c === ')') { depth--; if (depth === 0) break; }
+          inner += c;
+          i++;
+        }
+        i++;
+        for (const seg of splitShellSegments(inner)) out.push(seg);
+        continue;
+      }
+      if (ch === '`') {
+        i++;
+        let inner = '';
+        while (i < command.length && command[i] !== '`') {
+          inner += command[i];
+          i++;
+        }
+        i++;
+        for (const seg of splitShellSegments(inner)) out.push(seg);
+        continue;
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+    if (backtick) {
+      if (ch === '`') {
+        backtick = false;
+        if (buf.trim().length > 0) {
+          for (const inner of splitShellSegments(buf)) out.push(inner);
+          buf = '';
+        }
+        i++;
+        continue;
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") { single = true; buf += ch; i++; continue; }
+    if (ch === '"') { double = true; buf += ch; i++; continue; }
+    if (ch === '`') {
+      flush();
+      backtick = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '$' && next === '(') {
+      flush();
+      i += 2;
+      let depth = 1;
+      let inner = '';
+      while (i < command.length && depth > 0) {
+        const c = command[i];
+        if (c === '(') depth++;
+        else if (c === ')') { depth--; if (depth === 0) break; }
+        inner += c;
+        i++;
+      }
+      i++;
+      for (const seg of splitShellSegments(inner)) out.push(seg);
+      continue;
+    }
+
+    // Subshell ( ... ) and brace block { ... ; } both execute their contents,
+    // so treat the boundaries as segment breaks rather than opaque text.
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') { flush(); i++; continue; }
+
+    if (ch === ';' || ch === '\n') { flush(); i++; continue; }
+    if (ch === '|' && next === '|') { flush(); i += 2; continue; }
+    if (ch === '&' && next === '&') { flush(); i += 2; continue; }
+    if (ch === '|') { flush(); i++; continue; }
+    if (ch === '&') { flush(); i++; continue; }
+
+    buf += ch;
+    i++;
+  }
+
+  flush();
+  if (out.length === 0) out.push(command.trim());
+  return out;
+}
+
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
@@ -338,29 +473,39 @@ export class PermissionManager {
 
     const trimmed = command.trim();
     const baseCmd = trimmed.split(/\s+/)[0];
+    const segments = splitShellSegments(trimmed);
 
-    // Always block dangerous commands
-    for (const pattern of shell.blocked) {
-      if (this.matchPattern(trimmed, pattern)) {
-        return { allowed: false, reason: `Blocked command: matches "${pattern}"`, needsApproval: false };
-      }
-    }
-
-    if (shell.cwdOnly) {
-      const hasPathTraversal = this.hasPathBeyondCwd(trimmed);
-      if (hasPathTraversal) {
-        const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
-        if (!scopeCheck.allowed) {
-          return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+    // Always block dangerous commands — check each segment so an
+    // auto-approved base command can't launder a chained destructive one
+    // (e.g. `echo *; rm -rf ~`).
+    for (const segment of segments) {
+      for (const pattern of shell.blocked) {
+        if (this.matchPattern(segment, pattern)) {
+          return { allowed: false, reason: `Blocked command: matches "${pattern}"`, needsApproval: false };
         }
       }
     }
 
-    // In ask-me mode: only auto-approve safe read-only commands
-    // Everything else must be prompted
-    const isSafeRead = PermissionManager.SAFE_READ_PATTERNS.some(p => this.matchPattern(trimmed, p));
-    if (isSafeRead) {
-      logger.info({ cmd: trimmed }, 'Shell command auto-approved (safe read-only)');
+    if (shell.cwdOnly) {
+      for (const segment of segments) {
+        const hasPathTraversal = this.hasPathBeyondCwd(segment);
+        if (hasPathTraversal) {
+          const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
+          if (!scopeCheck.allowed) {
+            return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+          }
+        }
+      }
+    }
+
+    // In ask-me mode: only auto-approve when EVERY segment is a safe read.
+    // Matching the full trimmed string would let `cat foo; rm -rf ~` slip
+    // through because `cat *` matches the entire concatenation.
+    const allSegmentsSafeRead = segments.length > 0 && segments.every((segment) =>
+      PermissionManager.SAFE_READ_PATTERNS.some((p) => this.matchPattern(segment, p))
+    );
+    if (allSegmentsSafeRead) {
+      logger.info({ cmd: trimmed, segments: segments.length }, 'Shell command auto-approved (safe read-only)');
       return { allowed: true, needsApproval: false };
     }
 
