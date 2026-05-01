@@ -109,6 +109,11 @@ export interface MercuryConfig {
   tokens: {
     dailyBudget: number;
   };
+  subagents: {
+    enabled: boolean;
+    maxConcurrent: number;
+    mode: 'auto' | 'manual';
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -234,6 +239,11 @@ export function getDefaultConfig(): MercuryConfig {
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
+    },
+    subagents: {
+      enabled: getEnvBool('SUBAGENTS_ENABLED', true),
+      maxConcurrent: getEnvNum('SUBAGENTS_MAX_CONCURRENT', 0),
+      mode: (process.env.SUBAGENTS_MODE as 'auto' | 'manual') || 'auto',
     },
   };
 }

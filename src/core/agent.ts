@@ -249,6 +249,7 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
 
   constructor(
     private config: MercuryConfig,
@@ -274,6 +275,16 @@ export class Agent {
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
+    });
+  }
+
+  setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
+    this.supervisor = supervisor;
+    supervisor.setNotifyCallback(async (channelType, channelId, message) => {
+      const channel = this.channels.get(channelType as any);
+      if (channel) {
+        await channel.send(message, channelId).catch(() => {});
+      }
     });
   }
 
@@ -1526,6 +1537,154 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     if (cmd === '/stream off') {
       this.telegramStreaming = false;
       await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/agents')) {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/agents'.length).trim();
+
+      if (!rawArgs) {
+        const agents = this.supervisor.getActiveAgents();
+        const resourceInfo = this.supervisor.getResourceUsage();
+        if (agents.length === 0) {
+          await channel.send(`No active sub-agents.\nMax concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`, channelId);
+          return true;
+        }
+        const statusIcons: Record<string, string> = { pending: '🔵', running: '🟢', paused: '🟡', completed: '✅', failed: '❌', halted: '⛔' };
+        const lines = [`**Sub-Agents** (${agents.length})`, ''];
+        for (const agent of agents) {
+          const icon = statusIcons[agent.status] || '❓';
+          const taskPreview = agent.task.length > 40 ? agent.task.slice(0, 40) + '...' : agent.task;
+          lines.push(`${icon} **${agent.id}**  ${taskPreview}`);
+          if (agent.progress) lines.push(`   ${agent.progress}`);
+        }
+        lines.push('');
+        lines.push(`Max concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`);
+        lines.push(`Active: ${resourceInfo.activeAgents} | Queued: ${resourceInfo.queuedAgents}`);
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const parts = rawArgs.split(/\s+/);
+      const action = parts[0]?.toLowerCase();
+
+      if (action === 'stop') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents stop <id> or /agents stop all', channelId);
+          return true;
+        }
+        if (target === 'all') {
+          await this.supervisor.haltAll();
+          await channel.send('All sub-agents halted. They will finish their current tool step before stopping.', channelId);
+        } else {
+          const halted = await this.supervisor.halt(target);
+          if (!halted) {
+            await channel.send(`No active agent found with ID "${target}".`, channelId);
+          } else {
+            await channel.send(`Agent ${target} halt signal sent. It will finish its current step then stop.`, channelId);
+          }
+        }
+        return true;
+      }
+
+      if (action === 'pause') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents pause <id>', channelId);
+          return true;
+        }
+        const paused = await this.supervisor.pause(target);
+        await channel.send(paused ? `Agent ${target} paused. Use /agents resume ${target} to continue.` : `No running agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'resume') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents resume <id>', channelId);
+          return true;
+        }
+        const resumed = await this.supervisor.resume(target);
+        await channel.send(resumed ? `Agent ${target} resumed.` : `No paused agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'config') {
+        const info = this.supervisor.getResourceUsage();
+        const lines = [
+          '**Sub-Agent Configuration**',
+          `CPU cores: ${info.cpuCores}`,
+          `System RAM: ${info.systemMemoryMB}MB`,
+          `Available RAM: ${info.availableMemoryMB}MB`,
+          `Max concurrent: ${info.maxConcurrentAgents}`,
+          `Active agents: ${info.activeAgents}`,
+          `Queued agents: ${info.queuedAgents}`,
+          `Token budget remaining: ${info.tokenBudgetRemaining.toLocaleString()}`,
+        ];
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      if (action === 'set' && parts[1]?.toLowerCase() === 'max') {
+        const n = parseInt(parts[2], 10);
+        if (isNaN(n) || n < 1) {
+          await channel.send('Usage: /agents set max <number>', channelId);
+          return true;
+        }
+        this.supervisor.setMaxConcurrent(n);
+        await channel.send(`Max concurrent sub-agents set to ${n}.`, channelId);
+        return true;
+      }
+
+      await channel.send(`Unknown /agents command "${action}". Available: /agents, /agents stop <id|all>, /agents pause <id>, /agents resume <id>, /agents config, /agents set max <n>`, channelId);
+      return true;
+    }
+
+    if (cmd === '/halt') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      await channel.send('All sub-agents halted and queue cleared.', channelId);
+      return true;
+    }
+
+    if (cmd === '/stop') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      this.supervisor.clearTaskBoard();
+      this.lifecycle.transition('idle');
+      await channel.send('All sub-agents stopped, queue cleared, locks released, task board cleared. Short-term memory preserved.', channelId);
+      return true;
+    }
+
+    if (cmd === '/reset') {
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        const confirmed = await channel.askToContinue(
+          '⚠ /reset will halt ALL agents, clear queues, release locks, clear task board, and wipe conversation context. Continue? (y/n)',
+          channelId,
+        ).catch(() => false);
+        if (!confirmed) {
+          await channel.send('Reset cancelled.', channelId);
+          return true;
+        }
+      }
+      if (this.supervisor) {
+        await this.supervisor.haltAll();
+        this.supervisor.clearTaskBoard();
+      }
+      this.shortTerm.clearAll();
+      this.lifecycle.transition('idle');
+      await channel.send('Mercury reset. All agents stopped, all state cleared. Long-term memory preserved. Ready for a fresh start.', channelId);
       return true;
     }
 

@@ -35,6 +35,8 @@ import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
 import type { TokenBudget } from '../utils/tokens.js';
+import type { SubAgentSupervisor } from '../core/supervisor.js';
+import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatCommandContext {
@@ -56,6 +58,7 @@ export class CapabilityRegistry {
   private skillLoader?: SkillLoader;
   private scheduler?: Scheduler;
   private tokenBudget?: TokenBudget;
+  private supervisor?: SubAgentSupervisor;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private currentChannelId = 'cli';
@@ -63,11 +66,12 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
 
-  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget) {
+  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor) {
     this.permissions = new PermissionManager();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
+    this.supervisor = supervisor;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -101,6 +105,10 @@ export class CapabilityRegistry {
 
   setSendMessageHandler(handler: (content: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
+  }
+
+  setSupervisor(supervisor: SubAgentSupervisor): void {
+    this.supervisor = supervisor;
   }
 
   registerAll(): void {
@@ -175,6 +183,13 @@ export class CapabilityRegistry {
 
     this.tools.fetch_url = createFetchUrlTool();
     logger.info('Web fetch tool registered');
+
+    if (this.supervisor) {
+      this.tools.delegate_task = createDelegateTaskTool(this.supervisor);
+      this.tools.list_agents = createListAgentsTool(this.supervisor);
+      this.tools.stop_agent = createStopAgentTool(this.supervisor);
+      logger.info('Sub-agent tools registered');
+    }
   }
 
   getTools(): Record<string, Tool> {

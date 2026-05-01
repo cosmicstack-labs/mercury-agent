@@ -90,6 +90,14 @@ export class ShortTermMemory {
     if (existsSync(filepath)) unlinkSync(filepath);
   }
 
+  clearAll(): void {
+    for (const conversationId of this.conversations.keys()) {
+      const filepath = join(this.dir, `${conversationId}.json`);
+      if (existsSync(filepath)) unlinkSync(filepath);
+    }
+    this.conversations.clear();
+  }
+
   private loadFromDisk(conversationId: string): MemoryEntry[] {
     const filepath = join(this.dir, `${conversationId}.json`);
     if (!existsSync(filepath)) return [];

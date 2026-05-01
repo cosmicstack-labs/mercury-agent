@@ -36,6 +36,9 @@ export function getManual(): string {
     ['list_scheduled_tasks', 'List all scheduled tasks', '—'],
     ['cancel_scheduled_task', 'Cancel a scheduled task', 'id'],
     ['budget_status', 'Check token budget', '—'],
+    ['delegate_task', 'Delegate a task to a sub-agent', 'task, workingDirectory?, priority?, allowedTools?'],
+    ['list_agents', 'List active sub-agents', '—'],
+    ['stop_agent', 'Stop a sub-agent (or all)', 'agentId ("a1" or "all")'],
   ];
 
   for (const [name, desc, params] of tools) {
@@ -106,6 +109,15 @@ export function getManual(): string {
     ['/stream', 'Toggle text streaming on/off (Telegram)'],
     ['/stream on', 'Enable streaming (live text updates)'],
     ['/stream off', 'Disable streaming (single message)'],
+    ['/agents', 'List all sub-agents and their status'],
+    ['/agents stop <id|all>', 'Stop a sub-agent or all sub-agents'],
+    ['/agents pause <id>', 'Pause a running sub-agent'],
+    ['/agents resume <id>', 'Resume a paused sub-agent'],
+    ['/agents config', 'Show sub-agent resource allocation'],
+    ['/agents set max <n>', 'Set max concurrent sub-agents'],
+    ['/halt', 'Emergency: stop all agents + clear queue'],
+    ['/stop', 'Stop all agents + clear queue + release locks + clear task board'],
+    ['/reset', 'Full reset: stop all + clear context (requires confirmation)'],
     ['/unpair', 'Reset all Telegram access for this Mercury instance (admins only)'],
   ];
 

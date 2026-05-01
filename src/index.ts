@@ -34,6 +34,7 @@ import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
+import { SubAgentSupervisor } from './core/supervisor.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
@@ -1005,6 +1006,26 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
+  let supervisor: SubAgentSupervisor | undefined;
+  if (config.subagents.enabled) {
+    supervisor = new SubAgentSupervisor({
+      agentConfig: config,
+      providers,
+      identity,
+      shortTerm,
+      longTerm,
+      episodic,
+      userMemory,
+      capabilities,
+      tokenBudget,
+      channels,
+    });
+    if (config.subagents.mode === 'manual' && config.subagents.maxConcurrent > 0) {
+      supervisor.setMaxConcurrent(config.subagents.maxConcurrent);
+    }
+    capabilities.setSupervisor(supervisor);
+  }
+
   capabilities.setChatCommandContext({
     toolNames: () => capabilities.getToolNames(),
     skillNames: () => skills.map(s => s.name),
@@ -1060,6 +1081,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
   );
+
+  if (supervisor) {
+    agent.setSupervisor(supervisor);
+  }
 
   await agent.birth();
   await agent.wake();
