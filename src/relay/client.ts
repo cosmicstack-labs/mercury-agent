@@ -8,28 +8,29 @@ export interface RelayUser {
   display_name: string | null;
 }
 
+export interface FriendInfo {
+  username: string;
+  display_name: string | null;
+  friends_since: number;
+}
+
+export interface PendingRequestInfo {
+  request_id: string;
+  created_at: number;
+  target_user: RelayUser;
+}
+
 export interface FriendsResponse {
-  friends: Array<{
-    request_id: string;
-    status: string;
-    created_at: number;
-    approved_at: number | null;
-    target_user: RelayUser;
-  }>;
-  pending_sent: Array<{
-    request_id: string;
-    status: string;
-    created_at: number;
-    approved_at: number | null;
-    target_user: RelayUser;
-  }>;
-  pending_received: Array<{
-    request_id: string;
-    status: string;
-    created_at: number;
-    approved_at: number | null;
-    target_user: RelayUser;
-  }>;
+  friends: FriendInfo[];
+  pending_sent: PendingRequestInfo[];
+  pending_received: PendingRequestInfo[];
+}
+
+export interface MessageResult {
+  delivered: boolean;
+  sent_at?: number;
+  to_user?: RelayUser;
+  error?: string;
 }
 
 export interface FriendRequestResult {
@@ -265,6 +266,15 @@ export class RelayClient {
     return await res.json() as { status: string; target_user: RelayUser };
   }
 
+  async sendMessage(toUser: string, content: string): Promise<MessageResult> {
+    const res = await this.authedPost('/v1/message', { to_user: toUser, content });
+    const data = await res.json() as MessageResult & { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send message');
+    }
+    return data;
+  }
+
   async getFriends(): Promise<FriendsResponse> {
     const res = await this.authedGet('/v1/friends');
     if (!res.ok) {
@@ -349,6 +359,7 @@ export class RelayClient {
       'FRIEND_REJECT': 'friend_reject',
       'FRIEND_CANCEL': 'friend_cancel',
       'FRIEND_REMOVE': 'friend_remove',
+      'MESSAGE': 'message',
     };
 
     const eventType = eventMap[msg.type as string];

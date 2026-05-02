@@ -1567,8 +1567,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         if (data.friends.length > 0) {
           lines.push('✅ Friends:');
           for (const f of data.friends) {
-            const name = f.target_user.display_name || f.target_user.username;
-            lines.push(`  ${name} (@${f.target_user.username})`);
+            const name = f.display_name || f.username;
+            lines.push(`  ${name} (@${f.username})`);
           }
         }
         if (data.pending_sent.length > 0) {
@@ -2452,17 +2452,20 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
     if (data.friends.length > 0) {
       for (const f of data.friends) {
-        allOptions.push({ value: `friend:${f.target_user.username}`, label: `✅ ${formatName(f.target_user)} (@${f.target_user.username})` });
+        const name = f.display_name || f.username;
+        allOptions.push({ value: `friend:${f.username}`, label: `✅ ${name} (@${f.username})` });
       }
     }
     if (data.pending_sent.length > 0) {
       for (const f of data.pending_sent) {
-        allOptions.push({ value: `sent:${f.target_user.username}`, label: `📤 ${formatName(f.target_user)} (@${f.target_user.username})` });
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `sent:${f.target_user.username}`, label: `📤 ${name} (@${f.target_user.username})` });
       }
     }
     if (data.pending_received.length > 0) {
       for (const f of data.pending_received) {
-        allOptions.push({ value: `received:${f.target_user.username}`, label: `📥 ${formatName(f.target_user)} (@${f.target_user.username})` });
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `received:${f.target_user.username}`, label: `📥 ${name} (@${f.target_user.username})` });
       }
     }
 
@@ -2479,9 +2482,9 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     const [type, targetUsername] = chosen.split(':');
 
     if (type === 'friend') {
-      const friend = data.friends.find(f => f.target_user.username === targetUsername);
+      const friend = data.friends.find(f => f.username === targetUsername);
       if (!friend) return;
-      const name = formatName(friend.target_user);
+      const name = friend.display_name || friend.username;
       const action = await select(name, [
         { value: 'remove', label: 'Remove Friend' },
         { value: 'back', label: 'Back' },

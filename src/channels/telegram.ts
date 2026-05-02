@@ -1236,9 +1236,9 @@ export class TelegramChannel extends BaseChannel {
       lines.push('✅ <b>Friends:</b>');
       let row = 0;
       for (const f of data.friends) {
-        const name = formatName(f.target_user);
-        lines.push(`  ${name} (@${f.target_user.username})`);
-        keyboard.text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:approved`);
+        const name = f.display_name || f.username;
+        lines.push(`  ${name} (@${f.username})`);
+        keyboard.text(`✅ ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.username}:approved`);
         row++;
         if (row % 2 === 0) keyboard.row();
       }
@@ -1249,7 +1249,7 @@ export class TelegramChannel extends BaseChannel {
       lines.push('');
       lines.push('📤 <b>Pending sent:</b>');
       for (const f of data.pending_sent) {
-        const name = formatName(f.target_user);
+        const name = f.target_user.display_name || f.target_user.username;
         lines.push(`  ${name} (@${f.target_user.username})`);
         keyboard.text(`📤 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:pending_sent`);
         keyboard.row();
@@ -1260,7 +1260,7 @@ export class TelegramChannel extends BaseChannel {
       lines.push('');
       lines.push('📥 <b>Pending received:</b>');
       for (const f of data.pending_received) {
-        const name = formatName(f.target_user);
+        const name = f.target_user.display_name || f.target_user.username;
         lines.push(`  ${name} (@${f.target_user.username})`);
         keyboard.text(`📥 ${name}`, `${FRIEND_ACTION_PREFIX}:detail:${f.target_user.username}:pending_received`);
         keyboard.row();
@@ -1347,9 +1347,9 @@ export class TelegramChannel extends BaseChannel {
         await ctx.editMessageReplyMarkup({ reply_markup: keyboard });
       } catch {
         const friends = await relayClient.getFriends();
-        const all = [...friends.friends, ...friends.pending_sent, ...friends.pending_received];
-        const item = all.find(f => f.target_user.username === username);
-        const name = item?.target_user?.display_name || item?.target_user?.username || username || 'Unknown';
+        const friendItem = friends.friends.find(f => f.username === username);
+        const pendingItem = [...friends.pending_sent, ...friends.pending_received].find(f => f.target_user.username === username);
+        const name = friendItem?.display_name || friendItem?.username || pendingItem?.target_user?.display_name || pendingItem?.target_user?.username || username;
         await ctx.editMessageText(`${name} — select an action:`, { reply_markup: keyboard });
       }
       return;
@@ -1397,8 +1397,8 @@ export class TelegramChannel extends BaseChannel {
     if (action === 'remove') {
       const username = parts[1];
       const friends = await relayClient.getFriends();
-      const friend = friends.friends.find(f => f.target_user.username === username);
-      const name = friend?.target_user?.display_name || friend?.target_user?.username || username;
+      const friend = friends.friends.find(f => f.username === username);
+      const name = friend?.display_name || friend?.username || username;
       const keyboard = new InlineKeyboard()
         .text('🗑 Confirm', `${FRIEND_ACTION_PREFIX}:remove_confirm:${username}`)
         .text('← Cancel', `${FRIEND_ACTION_PREFIX}:remove_cancel`);
