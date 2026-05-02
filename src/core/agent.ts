@@ -1548,6 +1548,110 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (trimmed.startsWith('/message ')) {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/message '.length).trim();
+      const match = input.match(/^@?([a-z0-9_]{3,20})\s+(.+)$/i);
+      if (!match) {
+        await channel.send('Usage: /message @username your message here', channelId);
+        return true;
+      }
+      const targetUser = match[1].toLowerCase();
+      const content = match[2];
+      try {
+        const result = await this._relayClient.sendMessage(targetUser, content);
+        if (result.delivered) {
+          const name = result.to_user?.display_name || targetUser;
+          await channel.send(`✅ Message delivered to @${name}`, channelId);
+        } else {
+          await channel.send(`⚠ @${targetUser} is currently offline. Message not delivered.`, channelId);
+        }
+        const messagesStore = (ctx as any).messagesStore as import('../memory/messages-store.js').MessagesStore | null;
+        if (messagesStore) {
+          messagesStore.addOutbound(targetUser, result.to_user?.display_name ?? null, content, result.sent_at ?? Math.floor(Date.now() / 1000));
+        }
+      } catch (err: any) {
+        await channel.send(`❌ ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/messages' || cmd.startsWith('/messages ')) {
+      const messagesStore = (ctx as any).messagesStore as import('../memory/messages-store.js').MessagesStore | null;
+      if (!messagesStore) {
+        await channel.send('❌ Messages not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      const sub = trimmed.slice('/messages'.length).trim().toLowerCase();
+
+      if (sub.endsWith('read all') || sub === 'read') {
+        const marked = messagesStore.markAllRead();
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('read ')) {
+        const peer = sub.slice('read '.length).trim().replace(/^@/, '').toLowerCase();
+        if (!peer) {
+          await channel.send('Usage: /messages read @username', channelId);
+          return true;
+        }
+        const marked = messagesStore.markAllReadForPeer(peer);
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} from @${peer} as read.`, channelId);
+        return true;
+      }
+
+      if (sub === 'clear') {
+        const cleared = messagesStore.clearAll();
+        await channel.send(`🗑 Cleared ${cleared} message${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('@') || (sub.length >= 3 && !sub.startsWith('read') && sub !== 'clear' && sub !== '')) {
+        const peer = sub.replace(/^@/, '').toLowerCase();
+        const conversation = messagesStore.getConversation(peer, 20);
+        if (conversation.length === 0) {
+          await channel.send(`No messages with @${peer}.`, channelId);
+          return true;
+        }
+        conversation.sort((a, b) => a.sentAt - b.sentAt);
+        const lines = [`**Messages with @${peer}:**`, ''];
+        for (const msg of conversation) {
+          const icon = msg.direction === 'inbound' ? '←' : '→';
+          const time = formatTimeAgo(msg.sentAt);
+          lines.push(`${icon} ${msg.content} (${time})`);
+        }
+        lines.push('');
+        lines.push('Use /messages read @' + peer + ' to mark as read.');
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const conversations = messagesStore.getConversations();
+      if (conversations.length === 0) {
+        await channel.send('📭 No messages yet. Use /message @username to send a message.', channelId);
+        return true;
+      }
+      const summary = messagesStore.getSummary();
+      const lines = [`📬 Conversations (${summary.unread} unread)`, ''];
+      for (const conv of conversations) {
+        const name = conv.peerDisplayName || conv.peerUser;
+        const icon = conv.unreadCount > 0 ? '🔵' : '⚪';
+        const time = formatTimeAgo(conv.lastSentAt);
+        lines.push(`${icon} @${conv.peerUser} (${name}) — ${conv.lastMessage.slice(0, 40)}${conv.lastMessage.length > 40 ? '...' : ''} (${time})`);
+      }
+      lines.push('');
+      lines.push('Use /messages @username to see a conversation.');
+      lines.push('Use /messages read all to mark all as read.');
+      lines.push('Use /messages clear to delete all messages.');
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
     if (cmd === '/listfriends') {
       if (!this._relayClient || !this._relayClient.isRegistered()) {
         await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);

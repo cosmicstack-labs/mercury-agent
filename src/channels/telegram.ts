@@ -126,6 +126,30 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command.startsWith('/message ')) {
+        this.emit({
+          id: `tg-msg-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: text,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      if (command === '/messages' || text.toLowerCase().startsWith('/messages ') || command === '/msgs' || text.toLowerCase().startsWith('/msgs ')) {
+        this.emit({
+          id: `tg-msgs-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: text.toLowerCase().startsWith('/msgs') ? text.replace(/^\/msgs/i, '/messages') : text,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       if (command === '/relay') {
         this.emit({
           id: `tg-relay-${Date.now()}`,
@@ -289,6 +313,8 @@ export class TelegramChannel extends BaseChannel {
       { command: 'relay', description: 'Connect/disconnect from relay' },
       { command: 'friend', description: 'Send a friend request: /friend @username' },
       { command: 'listfriends', description: 'View and manage friends' },
+      { command: 'message', description: 'Send a message to a friend: /message @username text' },
+      { command: 'messages', description: 'View conversations and messages' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
       { command: 'tasks', description: 'List scheduled tasks' },
       { command: 'unpair', description: 'Reset all Telegram access for this Mercury instance' },

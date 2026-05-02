@@ -73,6 +73,7 @@ export class NotificationsDB {
 
       CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read, created_at);
       CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(type, source_user);
     `);
 
     this.db.pragma('foreign_keys = ON');
@@ -81,7 +82,7 @@ export class NotificationsDB {
 
   add(row: Omit<NotificationRow, 'rowid'> & { rowid?: never }): string {
     const stmt = this.db.prepare(`
-      INSERT INTO notifications (id, type, source_user, message, data, read, created_at)
+      INSERT OR IGNORE INTO notifications (id, type, source_user, message, data, read, created_at)
       VALUES (@id, @type, @source_user, @message, @data, @read, @created_at)
     `);
     stmt.run({

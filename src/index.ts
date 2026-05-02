@@ -36,6 +36,8 @@ import { SharedMemoryStore } from './memory/shared-memory-store.js';
 import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
 import { NotificationsStore } from './memory/notifications-store.js';
 import { isNotificationsDbAvailable } from './memory/notifications-db.js';
+import { MessagesStore } from './memory/messages-store.js';
+import { isMessagesDbAvailable } from './memory/messages-db.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -978,6 +980,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   }
 
+  let messages: MessagesStore | null = null;
+  if (isMessagesDbAvailable()) {
+    try {
+      messages = new MessagesStore();
+      logger.info({ conversations: messages.getSummary().conversations }, 'Messages store loaded');
+    } catch (err) {
+      logger.warn({ err }, 'Messages initialization failed, continuing without it');
+      messages = null;
+    }
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -1005,6 +1018,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     sharedMemoryCategories: () => sharedMemory ? sharedMemory.getCategories() : [],
     relayClient: relayClient as any,
     notificationsStore: notifications,
+    messagesStore: messages,
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
@@ -1132,6 +1146,30 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       const fromUser = (d.from_user as string) || 'Unknown';
       storeNotification('friend_remove', `🗑 @${fromUser} removed you from their friends.`, fromUser);
     });
+
+    relayClient.on('message', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      const fromDisplayName = (d.from_display_name as string | null) ?? null;
+      const content = (d.content as string) || '';
+      const sentAt = (d.sent_at as number) || Math.floor(Date.now() / 1000);
+
+      if (messages) {
+        messages.addInbound(fromUser, fromDisplayName, content, sentAt);
+      }
+
+      const displayName = fromDisplayName || fromUser;
+      const formattedMessage = `💬 @${displayName}: ${content}`;
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        for (const chatId of chatIds) {
+          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+        }
+      }
+      if (cliChannel) {
+        cliChannel.send(formattedMessage);
+      }
+    });
   }
 
   await agent.birth();
@@ -1205,6 +1243,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (sharedMemory) {
       try {
         sharedMemory.close();
+      } catch {}
+    }
+    if (messages) {
+      try {
+        messages.close();
       } catch {}
     }
     await agent.shutdown();
