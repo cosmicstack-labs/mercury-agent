@@ -176,7 +176,7 @@ export function getDefaultConfig(): MercuryConfig {
         name: 'ollamaLocal',
         apiKey: '',
         baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/api'),
-        model: getEnv('OLLAMA_LOCAL_MODEL', 'gpt-oss:20b'),
+        model: getEnv('OLLAMA_LOCAL_MODEL', ''),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
       },
       openaiCompat: {

@@ -373,40 +373,85 @@ async function promptApiKeyWithModelSelection(
     } catch (error) {
       const message = error instanceof ProviderModelFetchError
         ? error.message
-        : `Mercury could not fetch models for ${providerLabel}. Please re-enter the key.`;
-      console.log(chalk.red(`  ${message}`));
+        : `Mercury could not fetch models for ${providerLabel}.`;
+      console.log(chalk.yellow(`  ${message}`));
+      console.log(chalk.dim('  The API key looks valid but Mercury could not reach the provider.'));
+      console.log(chalk.dim(`  You can enter a model name manually, or skip ${providerLabel} for now.`));
+
+      const manualModel = await ask(chalk.white(`  ${providerLabel} model name (Enter to skip ${providerLabel} for now): `));
+      if (!manualModel) {
+        if (isReconfig && existingConfig.apiKey) {
+          return { apiKey: existingConfig.apiKey, model: existingConfig.model, skipped: true };
+        }
+        return { skipped: true };
+      }
+
+      const modelError = validateModelName(manualModel);
+      if (modelError) {
+        console.log(chalk.red(`  ${modelError}`));
+        continue;
+      }
+
+      return { apiKey: value, model: manualModel, skipped: false };
     }
   }
 }
 
-async function promptOllamaLocalModelSelection(config: MercuryConfig): Promise<{ baseUrl?: string; model?: string; skipped: boolean }> {
+async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig: boolean): Promise<{ baseUrl?: string; model?: string; skipped: boolean }> {
   const existingConfig = config.providers.ollamaLocal;
 
-  while (true) {
-    const baseUrl = (await promptValidatedValue(
-      chalk.white(`  Ollama Local base URL [${existingConfig.baseUrl}]: `),
-      validateBaseUrl,
-      existingConfig.baseUrl,
-    ))!;
-
-    console.log(chalk.dim('  Fetching Ollama Local models...'));
-    try {
-      const catalog = await fetchProviderModelCatalog('ollamaLocal', {
-        ...existingConfig,
-        baseUrl,
-      });
-      const model = await chooseProviderModel(
-        'Ollama Local',
-        catalog.recommendedModel,
-        catalog.models,
-      );
-      return { baseUrl, model, skipped: false };
-    } catch (error) {
-      const message = error instanceof ProviderModelFetchError
-        ? error.message
-        : 'Mercury could not fetch Ollama Local models. Please check the base URL and try again.';
-      console.log(chalk.red(`  ${message}`));
+  const baseUrlPrompt = isReconfig && existingConfig.baseUrl
+    ? chalk.white(`  Ollama Local base URL [${existingConfig.baseUrl}]: `)
+    : chalk.white('  Ollama Local base URL (Enter to skip, or "none" to skip): ');
+  const baseUrlInput = await ask(baseUrlPrompt);
+  if (!baseUrlInput || baseUrlInput.toLowerCase() === 'none') {
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
     }
+    return { skipped: true };
+  }
+  const baseUrlError = validateBaseUrl(baseUrlInput);
+  if (baseUrlError) {
+    console.log(chalk.red(`  ${baseUrlError}`));
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
+    }
+    return { skipped: true };
+  }
+  const baseUrl = baseUrlInput;
+
+  console.log(chalk.dim('  Fetching Ollama Local models...'));
+  try {
+    const catalog = await fetchProviderModelCatalog('ollamaLocal', {
+      ...existingConfig,
+      baseUrl,
+    });
+    const model = await chooseProviderModel(
+      'Ollama Local',
+      catalog.recommendedModel,
+      catalog.models,
+    );
+    return { baseUrl, model, skipped: false };
+  } catch (error) {
+    const message = error instanceof ProviderModelFetchError
+      ? error.message
+      : 'Mercury could not fetch Ollama Local models.';
+    console.log(chalk.yellow(`  ${message}`));
+    console.log(chalk.dim('  Make sure Ollama is running locally, or enter the model name manually.'));
+    console.log(chalk.dim('  You can run `mercury doctor` later to configure Ollama after starting it.'));
+
+    const manualModel = await ask(chalk.white(`  Ollama Local model name (Enter to skip Ollama Local for now): `));
+    if (!manualModel) {
+      return { skipped: true };
+    }
+
+    const modelError = validateModelName(manualModel);
+    if (modelError) {
+      console.log(chalk.red(`  ${modelError}`));
+      return { skipped: true };
+    }
+
+    return { baseUrl, model: manualModel, skipped: false };
   }
 }
 
@@ -620,7 +665,8 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   if (isReconfig) {
     console.log(chalk.dim('  Choose which providers to configure now. Existing values are shown where available.'));
   } else {
-    console.log(chalk.dim('  Choose one or more providers. Press Enter to configure DeepSeek by default.'));
+    console.log(chalk.dim('  Choose one or more providers. You can skip any provider by pressing Enter.'));
+    console.log(chalk.dim('  Press Enter to configure DeepSeek by default (free at platform.deepseek.com).'));
   }
   console.log('');
 
@@ -715,7 +761,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       }
 
       if (provider === 'ollamaLocal') {
-        const result = await promptOllamaLocalModelSelection(config);
+        const result = await promptOllamaLocalModelSelection(config, isReconfig);
         if (!result.skipped && result.baseUrl && result.model) {
           config.providers.ollamaLocal.baseUrl = result.baseUrl;
           config.providers.ollamaLocal.model = result.model;
@@ -773,8 +819,27 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
     const configuredProviders = getConfiguredProviderNames(config);
     if (configuredProviders.length === 0) {
-      console.log(chalk.red('  You need to configure at least one LLM provider to continue.'));
-      console.log(chalk.dim('  Let’s try that step again.'));
+      console.log('');
+      console.log(chalk.yellow('  No LLM providers were configured.'));
+      console.log(chalk.dim('  Mercury needs at least one provider to work.'));
+      console.log(chalk.dim('  DeepSeek offers a free API key at platform.deepseek.com'));
+      console.log('');
+      console.log(chalk.white('  Options:'));
+      console.log(chalk.white('    1. Try again — choose a provider and enter an API key'));
+      console.log(chalk.white('    2. Skip for now — you can run `mercury doctor` later'));
+      console.log('');
+
+      const skipChoice = await ask(chalk.white('  Press Enter to try again, or type "skip" to exit setup: '));
+      if (skipChoice.toLowerCase() === 'skip') {
+        saveConfig(config);
+        const home = getMercuryHome();
+        console.log('');
+        console.log(chalk.green(`  ✓ Config saved to ${home}/mercury.yaml`));
+        console.log(chalk.yellow('  No providers configured yet. Run `mercury doctor` when ready.'));
+        console.log('');
+        process.exit(0);
+      }
+
       console.log('');
       continue;
     }

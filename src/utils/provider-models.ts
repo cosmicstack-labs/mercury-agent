@@ -47,8 +47,16 @@ const OLLAMA_CLOUD_PREFERRED_MODELS = [
 ] as const;
 
 const OLLAMA_LOCAL_PREFERRED_MODELS = [
-  'gpt-oss:20b',
-  'gpt-oss:120b',
+  'llama3.2',
+  'llama3.1',
+  'llama3',
+  'mistral',
+  'codellama',
+  'gemma2',
+  'phi3',
+  'qwen2',
+  'deepseek-r1',
+  'deepseek-coder-v2',
 ] as const;
 
 const MIMO_PREFERRED_MODELS = [
