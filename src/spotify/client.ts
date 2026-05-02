@@ -107,6 +107,7 @@ export class SpotifyClient {
             server.close();
             logger.info('Spotify authentication successful');
 
+            this.saveAccountInfo().catch(() => {});
             this.checkPremium().then((premium) => {
               if (!premium) {
                 logger.warn('Spotify account is not Premium — playback control will be unavailable');
@@ -173,6 +174,7 @@ export class SpotifyClient {
 
     logger.info('Spotify authentication successful (manual code)');
 
+    this.saveAccountInfo().catch(() => {});
     this.checkPremium().then((premium) => {
       if (!premium) {
         logger.warn('Spotify account is not Premium — playback control will be unavailable');
@@ -432,14 +434,17 @@ export class SpotifyClient {
     return this.apiRequest('/me');
   }
 
-  async checkPremium(): Promise<boolean> {
+  async checkPremium(): Promise<boolean | null> {
     if (this.isPremium !== null) return this.isPremium;
     try {
       const me = await this.getMe();
       this.isPremium = me.product === 'premium';
+      this.config.spotify.product = me.product || '';
+      saveConfig(this.config);
       return this.isPremium;
-    } catch {
-      return false;
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Failed to check Spotify premium status');
+      return null;
     }
   }
 
@@ -455,6 +460,50 @@ export class SpotifyClient {
 
   getDeviceId(): string {
     return this.deviceId;
+  }
+
+  async saveAccountInfo(): Promise<void> {
+    try {
+      const me = await this.getMe();
+      this.config.spotify.accountName = me.display_name || '';
+      this.config.spotify.accountId = me.id || '';
+      this.config.spotify.product = me.product || '';
+      this.isPremium = me.product === 'premium';
+      saveConfig(this.config);
+    } catch {
+      logger.warn('Could not fetch Spotify account info');
+    }
+  }
+
+  getAccountName(): string {
+    return this.config.spotify.accountName;
+  }
+
+  getAccountId(): string {
+    return this.config.spotify.accountId;
+  }
+
+  getProduct(): string {
+    return this.config.spotify.product;
+  }
+
+  logout(): void {
+    this.accessToken = '';
+    this.refreshToken = '';
+    this.expiresAt = 0;
+    this.isPremium = null;
+    this.deviceId = '';
+    this.config.spotify.accessToken = '';
+    this.config.spotify.refreshToken = '';
+    this.config.spotify.expiresAt = '';
+    this.config.spotify.scopes = [];
+    this.config.spotify.deviceId = '';
+    this.config.spotify.accountName = '';
+    this.config.spotify.accountId = '';
+    this.config.spotify.product = '';
+    this.config.spotify.enabled = false;
+    saveConfig(this.config);
+    logger.info('Spotify logged out');
   }
 
   async getNowPlayingText(): Promise<string> {

@@ -1003,6 +1003,46 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
       prompt += githubHint;
     }
+
+    const spotifyTools = ['spotify_search', 'spotify_play', 'spotify_pause', 'spotify_next', 'spotify_previous', 'spotify_now_playing', 'spotify_devices', 'spotify_queue', 'spotify_like', 'spotify_volume', 'spotify_shuffle', 'spotify_repeat', 'spotify_top_tracks', 'spotify_playlists'];
+    const hasSpotify = spotifyTools.some(t => toolNames.includes(t));
+    if (hasSpotify && this.spotifyClient) {
+      const authed = this.spotifyClient.isAuthenticated();
+      const accountName = this.spotifyClient.getAccountName();
+      const product = this.spotifyClient.getProduct();
+      const premium = this.spotifyClient.getPremiumStatus();
+
+      let spotifyHint = '\n\nSpotify companion is active.';
+      if (accountName) spotifyHint += ` Connected as: ${accountName}.`;
+      if (product) spotifyHint += ` Plan: ${product}.`;
+
+      spotifyHint += `
+
+Available Spotify tools and when to use them:
+- spotify_search: Search for tracks, artists, albums, playlists. Always use this before playing anything the user asks for.
+- spotify_play: Play a track, album, or playlist on the user's Spotify devices. Requires Spotify Premium.
+- spotify_pause, spotify_next, spotify_previous: Playback controls. Requires Spotify Premium.
+- spotify_now_playing: Check what's currently playing. Works on free accounts.
+- spotify_devices: List available Spotify devices (phone, desktop, TV, etc). Use before playing to find an active device.
+- spotify_queue: Add a track to the playback queue. Requires Spotify Premium.
+- spotify_like: Save the current track to the user's library.
+- spotify_volume, spotify_shuffle, spotify_repeat: Playback settings. Requires Spotify Premium.
+- spotify_top_tracks: Get the user's top tracks — use to understand their taste or play their favorites.
+- spotify_playlists: Get the user's playlists — use to play their existing playlists.`;
+
+      if (authed) {
+        if (premium === false) {
+          spotifyHint += '\n\nIMPORTANT: The user has a free Spotify account. Playback control tools (play, pause, next, previous, volume, shuffle, repeat, queue) will return 403 errors. Read-only tools (search, now_playing, devices, top_tracks, playlists, like) still work. When the user asks to play music, tell them Premium is required for playback control.';
+        } else if (premium === true) {
+          spotifyHint += '\n\nThe user has Spotify Premium — all playback and read-only tools are available.';
+        }
+      } else {
+        spotifyHint += '\n\nSpotify is NOT authenticated. Tell the user to run /spotify auth to connect their account.';
+      }
+
+      prompt += spotifyHint;
+    }
+
     return prompt;
   }
 
@@ -1649,9 +1689,41 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       if (!rawArgs || rawArgs === 'status') {
         const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
         const device = this.spotifyClient.getDeviceId() || 'none';
-        const premium = this.spotifyClient.getPremiumStatus();
-        const premiumLabel = premium === null ? '' : premium ? ' | Premium' : ' | Free (no playback control)';
-        await channel.send(`Spotify: **${auth}**${premiumLabel}\nDevice: ${device !== 'none' ? device : 'none selected'}`, channelId);
+
+        let accountName = this.spotifyClient.getAccountName();
+        let accountId = this.spotifyClient.getAccountId();
+        let product = this.spotifyClient.getProduct();
+        let accountError = '';
+
+        if (!accountName) {
+          try {
+            await this.spotifyClient.saveAccountInfo();
+            accountName = this.spotifyClient.getAccountName();
+            accountId = this.spotifyClient.getAccountId();
+            product = this.spotifyClient.getProduct();
+          } catch (err: any) {
+            accountError = err.message;
+            logger.warn({ err: err.message }, 'Failed to fetch Spotify account info');
+          }
+        }
+
+        let premium = this.spotifyClient.getPremiumStatus();
+        if (premium === null) {
+          premium = await this.spotifyClient.checkPremium();
+        }
+
+        let status = `Spotify: **${auth}**`;
+        if (accountName) status += `\nAccount: **${accountName}**`;
+        if (accountId) status += `\nUser ID: ${accountId}`;
+        if (product) status += `\nPlan: ${product}`;
+        if (premium === true) {
+          status += ' — all features available';
+        } else if (premium === false) {
+          status += ' — playback control requires Premium';
+        }
+        if (accountError) status += `\n⚠ Could not verify account: ${accountError}`;
+        status += `\nDevice: ${device !== 'none' ? device : 'none selected'}`;
+        await channel.send(status, channelId);
         return true;
       }
 
@@ -1808,7 +1880,13 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         return true;
       }
 
-      await channel.send('Unknown /spotify command. Available: /spotify, /spotify auth, /spotify code <code>, /spotify player, /spotify devices, /spotify device <id>, /spotify now', channelId);
+      if (rawArgs === 'logout') {
+        this.spotifyClient.logout();
+        await channel.send('Spotify disconnected. Run `/spotify auth` to reconnect.', channelId);
+        return true;
+      }
+
+      await channel.send('Unknown /spotify command. Available: /spotify, /spotify auth, /spotify code <code>, /spotify logout, /spotify player, /spotify devices, /spotify device <id>, /spotify now', channelId);
       return true;
     }
 

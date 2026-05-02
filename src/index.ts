@@ -1138,7 +1138,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     agent.setSpotifyClient(spotifyClient);
 
     if (spotifyClient.isAuthenticated()) {
-      logger.info('Spotify connected (token available)');
+      if (!spotifyClient.getAccountName()) {
+        spotifyClient.saveAccountInfo().catch(() => {});
+      }
+      spotifyClient.checkPremium().catch(() => {});
+
+      const accountName = spotifyClient.getAccountName();
+      const label = accountName ? ` as ${accountName}` : '';
+      logger.info(`Spotify connected${label} (token available)`);
+      if (!isDaemon) {
+        console.log(chalk.green(`  Spotify: connected${label}`));
+      }
     } else if (!isDaemon) {
       console.log(chalk.dim('  Spotify: not connected — run /spotify auth to link your account'));
     }
@@ -1372,6 +1382,18 @@ program
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
+    const spotify = config.spotify;
+    if (spotify.clientId && spotify.clientSecret) {
+      if (spotify.enabled && (spotify.accessToken || spotify.refreshToken)) {
+        const label = spotify.accountName ? ` as ${spotify.accountName}` : '';
+        const plan = spotify.product ? ` (${spotify.product})` : '';
+        console.log(`  Spotify:  ${chalk.green(`connected${label}`)}${plan}`);
+      } else {
+        console.log(`  Spotify:  ${chalk.dim('not connected')} — run /spotify auth`);
+      }
+    } else {
+      console.log(`  Spotify:  ${chalk.dim('not configured')}`);
+    }
     console.log(`  Setup:    ${isSetupComplete() ? chalk.green('complete') : chalk.red('not done')}`);
     console.log(`  Daemon:   ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
     console.log(`  Home:     ${chalk.dim(home)}`);

@@ -145,6 +145,7 @@ export function getManual(): string {
     ['/spotify devices', 'List available Spotify devices'],
     ['/spotify device <id>', 'Set active Spotify device'],
     ['/spotify now', 'Show what is currently playing'],
+    ['/spotify logout', 'Disconnect Spotify and clear saved tokens'],
     ['/unpair', 'Reset all Telegram access for this Mercury instance (admins only)'],
   ];
 

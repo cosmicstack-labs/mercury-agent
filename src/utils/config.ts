@@ -124,6 +124,9 @@ export interface MercuryConfig {
     expiresAt: string;
     scopes: string[];
     deviceId: string;
+    accountName: string;
+    accountId: string;
+    product: string;
   };
 }
 
@@ -266,6 +269,9 @@ export function getDefaultConfig(): MercuryConfig {
       expiresAt: '',
       scopes: [],
       deviceId: '',
+      accountName: '',
+      accountId: '',
+      product: '',
     },
   };
 }
