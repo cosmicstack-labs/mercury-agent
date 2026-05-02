@@ -73,7 +73,8 @@ export class NotificationsDB {
 
       CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read, created_at);
       CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(type, source_user);
+      DROP INDEX IF EXISTS idx_notifications_dedup;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(type, source_user, message);
     `);
 
     this.db.pragma('foreign_keys = ON');

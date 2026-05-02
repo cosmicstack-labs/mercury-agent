@@ -1193,7 +1193,35 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         importance: r.importance,
       }));
 
-      relayClient.sendMemoryResponse(fromUser, requestId, query, items).catch(() => {});
+      relayClient.sendMemoryResponse(fromUser, requestId, query, items)
+        .then((result) => {
+          if (!result.delivered) {
+            logger.warn({ fromUser, query, error: result.error }, 'Memory response delivery failed');
+            const failMsg = `⚠ Failed to send memory response to @${displayName}: ${result.error || 'Recipient offline'}`;
+            if (tgChannel) {
+              const chatIds = getTelegramApprovedChatIds(config);
+              for (const chatId of chatIds) {
+                tgChannel.send(failMsg, chatId.toString()).catch(() => {});
+              }
+            }
+            if (cliChannel) {
+              cliChannel.send(failMsg);
+            }
+          }
+        })
+        .catch((err) => {
+          logger.warn({ fromUser, query, err }, 'Memory response send failed');
+          const failMsg = `⚠ Failed to send memory response to @${displayName}: ${err.message || 'Unknown error'}`;
+          if (tgChannel) {
+            const chatIds = getTelegramApprovedChatIds(config);
+            for (const chatId of chatIds) {
+              tgChannel.send(failMsg, chatId.toString()).catch(() => {});
+            }
+          }
+          if (cliChannel) {
+            cliChannel.send(failMsg);
+          }
+        });
 
       const displayName = fromDisplayName || fromUser;
       const resultCount = items.length;
