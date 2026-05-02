@@ -296,3 +296,177 @@ When a scheduled task fires:
 - `schedule_task`: Create a cron task with prompt or skill_name
 - `list_scheduled_tasks`: Show all scheduled tasks
 - `cancel_scheduled_task`: Remove a scheduled task
+
+## Sub-Agents
+
+Mercury can spawn parallel AI agents to handle tasks concurrently. This is the core of what makes Mercury an **orchestrator**, not just a single chatbot — it can delegate work to specialized sub-agents while continuing its own conversation.
+
+### Why Sub-Agents Are Revolutionary
+
+Traditional AI agents are single-threaded — one conversation, one task, one context window. Mercury's sub-agent system breaks this bottleneck:
+
+- **Parallel execution** — Mercury can delegate multiple tasks to different sub-agents running simultaneously. While one agent researches a topic, another can write code, and a third can review documentation.
+- **Isolated context windows** — Each sub-agent has its own conversation history and token budget. This means a long-running research task won't crowd out the main agent's context.
+- **Intelligent delegation** — The LLM itself decides when to delegate based on task complexity, not hard-coded heuristics. It recognizes "this would benefit from parallel execution" and spawns agents accordingly.
+- **Same-process efficiency** — Sub-agents run as async coroutines in the same Node.js process, not child processes. Zero overhead for spawning, shared memory for communication, instant notification when tasks complete.
+- **File locking** — Multiple agents writing to the same codebase? Reader-writer locks with deadlock detection prevent conflicts. Agents coordinate naturally through the lock system.
+- **Resource-aware concurrency** — Max concurrent agents is auto-detected from system resources (CPU cores and available RAM). No configuration needed.
+
+### Architecture
+
+```
+User message → Main Agent (orchestrator)
+                 ├─ delegate_task("research X")  → Sub-Agent a1
+                 ├─ delegate_task("implement Y")  → Sub-Agent a2
+                 └─ continues conversation        → responds to user
+                         │
+                    a1 completes → notification → main agent
+                    a2 completes → notification → main agent
+```
+
+- **Supervisor** (`SubAgentSupervisor`): Manages the agent pool, queues tasks when at capacity, handles halting/cancellation
+- **Sub-Agent** (`SubAgent`): Isolated agentic loop with its own `generateText()` call, abort controller, and progress reporting
+- **Task Board** (`TaskBoard`): Persistent task state stored at `~/.mercury/memory/task-board.json` — survives restarts
+- **File Locks** (`FileLockManager`): Reader-writer locks preventing concurrent write conflicts
+
+### Sub-Agent Tools
+
+| Tool | Description |
+|---|---|
+| `delegate_task` | Spawn a sub-agent with a task description and optional context |
+| `list_agents` | Show all sub-agents (running and completed) |
+| `stop_agent` | Halt a running sub-agent by ID |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/agents` | List all sub-agents and their status |
+| `/halt` | Emergency stop — halt all agents and clear queue |
+| `/stop` | Full reset — halt agents, clear queue, release locks, clear task board |
+
+### Configuration
+
+```yaml
+# ~/.mercury/mercury.yaml
+subagents:
+  enabled: true
+  maxConcurrent: auto  # auto-detected from CPU/RAM, or set manually
+  mode: auto           # "auto" (LLM decides) or "manual" (user controls)
+```
+
+Environment overrides: `SUBAGENTS_ENABLED`, `SUBAGENTS_MAX_CONCURRENT`, `SUBAGENTS_MODE`
+
+## Programming Mode
+
+Programming mode enforces a plan-first workflow for code changes. Instead of writing code immediately, Mercury analyzes the task, presents a plan, and only implements after approval.
+
+### Modes
+
+| Mode | Behavior |
+|---|---|
+| **Off** | Normal conversation — no special workflow |
+| **Plan** | Mercury analyzes and presents a plan, but does NOT write code or make changes |
+| **Execute** | Mercury implements the plan step by step, verifying with builds/tests |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/code plan` | Switch to plan mode |
+| `/code execute` | Switch to execute mode |
+| `/code off` | Exit programming mode |
+| `/code toggle` | Cycle through modes |
+| `/code status` | Show current mode |
+
+### `ask_user` Tool
+
+When in programming mode, Mercury uses the `ask_user` tool to present choices:
+- **CLI**: Arrow-key selection menu
+- **Telegram**: Inline keyboard with callback buttons
+
+This lets Mercury present approach options ("Which strategy? A, B, or C?") and get explicit user direction before proceeding.
+
+## Spotify Integration
+
+Mercury connects to your Spotify account to control playback, search music, manage playlists, and act as your DJ — all through natural conversation.
+
+### Setup
+
+1. Run `mercury doctor` or `mercury setup`
+2. When prompted for Spotify, choose **Yes**
+3. Enter your Spotify Developer app Client ID and Client Secret
+   - Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+   - Set the redirect URI to `http://127.0.0.1:8888/callback`
+4. Start Mercury and run `/spotify auth` to connect your account
+
+### Connecting Spotify
+
+| Method | How |
+|---|---|
+| **Browser (recommended)** | `/spotify auth` → opens browser for OAuth |
+| **Manual code** | `/spotify auth` → choose "Paste code" → copy the `code` param from the redirect URL |
+| **SSH/Telegram** | `/spotify auth` → gives you the auth URL → authorize in any browser → `/spotify code <code>` |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/spotify` | Show connection status, account name, plan (Premium/Free), active device |
+| `/spotify auth` | Start OAuth flow (browser or manual code) |
+| `/spotify code <code>` | Complete auth with a pasted authorization code |
+| `/spotify logout` | Disconnect Spotify and clear saved tokens |
+| `/spotify player` | Interactive player with arrow-key controls (CLI only) |
+| `/spotify devices` | List available Spotify devices |
+| `/spotify device <id>` | Set active device |
+| `/spotify now` | Show what is currently playing |
+
+### Tools
+
+| Tool | Premium Required | Description |
+|---|---|---|
+| `spotify_search` | No | Search tracks, artists, albums, playlists |
+| `spotify_now_playing` | No | Show what is currently playing |
+| `spotify_devices` | No | List available Spotify devices |
+| `spotify_top_tracks` | No | Get your top tracks |
+| `spotify_playlists` | No | Get your playlists |
+| `spotify_like` | No | Save track to library |
+| `spotify_play` | Yes | Play a track, album, or playlist |
+| `spotify_pause` | Yes | Pause playback |
+| `spotify_next` | Yes | Skip to next track |
+| `spotify_previous` | Yes | Skip to previous track |
+| `spotify_volume` | Yes | Set volume (0-100) |
+| `spotify_shuffle` | Yes | Toggle shuffle |
+| `spotify_repeat` | Yes | Set repeat mode |
+| `spotify_queue` | Yes | Add track to queue |
+
+### DJ Mode Skill
+
+When invoked, the Spotify skill enters **DJ Mode** — Mercury takes on the persona of a DJ who:
+- Reads your taste via `spotify_top_tracks` and `spotify_playlists`
+- Searches music by mood, genre, or activity
+- Presents options via `ask_user` before playing
+- Controls playback on your devices (phone, desktop, TV, speaker)
+- Creates playlists and manages queues
+
+Plays on **your devices** through the Spotify Web API — Mercury never plays audio locally.
+
+### Architecture
+
+```
+User: "play chill music"
+  → Agent sees spotify_search, spotify_devices, spotify_play in tools
+  → System prompt includes Spotify companion section with tool descriptions
+  → spotify_search("lo-fi chill", "track")
+  → spotify_devices() → finds "Salman's iPhone"
+  → spotify_play(uris, device_id="iphone")
+  → User's iPhone starts playing
+```
+
+Key implementation details:
+- **OAuth2 flow** — Local HTTP server on port 8888 for browser auth, manual code paste for SSH/Telegram
+- **Token persistence** — Access token, refresh token, and expiry saved to `~/.mercury/mercury.yaml`
+- **Auto-refresh** — Tokens refresh automatically before expiry via Spotify's token endpoint
+- **Account info** — After auth, display name, user ID, and plan (Premium/Free) are fetched and persisted
+- **Dynamic tool registration** — Spotify tools are registered after the client is initialized, not at startup
+- **System prompt injection** — When Spotify tools are available, the system prompt includes detailed descriptions, Premium restrictions, and current connection status

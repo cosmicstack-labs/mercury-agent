@@ -44,6 +44,68 @@ export function getManual(): string {
   }
 
   sections.push('');
+  sections.push(chalk.bold.white('  GitHub Tools'));
+  sections.push(chalk.dim('  Available when GitHub is configured (mercury doctor).'));
+  sections.push('');
+
+  const githubTools = [
+    ['create_pr', 'Create a pull request on GitHub', 'owner, repo, title, head, base, body?'],
+    ['review_pr', 'Get PR details and post review comments', 'owner, repo, number'],
+    ['list_issues', 'List repository issues', 'owner, repo, state?, labels?'],
+    ['create_issue', 'Create a GitHub issue', 'owner, repo, title, body?, labels?'],
+    ['github_api', 'Raw GitHub API access for any endpoint', 'method, endpoint, body?'],
+  ];
+
+  for (const [name, desc, params] of githubTools) {
+    sections.push(`  ${chalk.cyan(name.padEnd(24))} ${desc}`);
+    sections.push(`  ${' '.repeat(24)} ${chalk.dim(params)}`);
+  }
+
+  sections.push('');
+  sections.push(chalk.bold.white('  Spotify Tools'));
+  sections.push(chalk.dim('  Control playback, search music, manage playlists. Requires Spotify connection.'));
+  sections.push(chalk.dim('  Playback control (play, pause, skip, volume) requires Spotify Premium.'));
+  sections.push('');
+
+  const spotifyTools = [
+    ['spotify_search', 'Search tracks, artists, albums, playlists', 'query, type?, limit?'],
+    ['spotify_play', 'Play a track, album, or playlist on a device', 'uris?, context_uri?, device_id?'],
+    ['spotify_pause', 'Pause playback', 'device_id?'],
+    ['spotify_next', 'Skip to next track', 'device_id?'],
+    ['spotify_previous', 'Skip to previous track', 'device_id?'],
+    ['spotify_now_playing', 'Show what is currently playing', '—'],
+    ['spotify_devices', 'List available Spotify devices', '—'],
+    ['spotify_queue', 'Add a track to the playback queue', 'uri, device_id?'],
+    ['spotify_like', 'Save the current track to your library', 'track_id'],
+    ['spotify_volume', 'Set playback volume (0-100)', 'percent, device_id?'],
+    ['spotify_shuffle', 'Toggle shuffle on/off', 'state (boolean), device_id?'],
+    ['spotify_repeat', 'Set repeat mode (off/track/context)', 'state, device_id?'],
+    ['spotify_top_tracks', 'Get your top tracks', 'time_range?, limit?'],
+    ['spotify_playlists', 'Get your playlists', 'limit?'],
+  ];
+
+  for (const [name, desc, params] of spotifyTools) {
+    sections.push(`  ${chalk.cyan(name.padEnd(24))} ${desc}`);
+    sections.push(`  ${' '.repeat(24)} ${chalk.dim(params)}`);
+  }
+
+  sections.push('');
+  sections.push(chalk.bold.white('  Sub-Agent Tools'));
+  sections.push(chalk.dim('  Delegate tasks to parallel agents. Use /agents to monitor.'));
+  sections.push('');
+
+  const agentTools = [
+    ['delegate_task', 'Spawn a sub-agent to handle a task', 'task (description), context?'],
+    ['list_agents', 'List all running and completed sub-agents', '—'],
+    ['stop_agent', 'Stop a running sub-agent', 'agent_id'],
+  ];
+
+  for (const [name, desc, params] of agentTools) {
+    sections.push(`  ${chalk.cyan(name.padEnd(24))} ${desc}`);
+    sections.push(`  ${' '.repeat(24)} ${chalk.dim(params)}`);
+  }
+
+  sections.push('');
   sections.push(chalk.bold.white('  CLI Commands'));
   sections.push(chalk.dim('  Run these from your terminal (no API calls consumed).'));
   sections.push('');
@@ -112,6 +174,59 @@ export function getManual(): string {
 
   for (const [cmd, desc] of chat) {
     sections.push(`  ${chalk.white(cmd.padEnd(16))} ${desc}`);
+  }
+
+  sections.push('');
+  sections.push(chalk.bold.white('  Sub-Agent Commands'));
+  sections.push(chalk.dim('  Manage parallel AI agents spawned by the delegate_task tool.'));
+  sections.push('');
+
+  const subagentCmds = [
+    ['/agents', 'List all sub-agents (running and completed)'],
+    ['/halt', 'Emergency: halt all sub-agents and clear the task queue'],
+    ['/stop', 'Halt all agents, clear queue, release file locks, reset task board'],
+  ];
+
+  for (const [cmd, desc] of subagentCmds) {
+    sections.push(`  ${chalk.white(cmd.padEnd(16))} ${desc}`);
+  }
+
+  sections.push('');
+  sections.push(chalk.bold.white('  Programming Mode'));
+  sections.push(chalk.dim('  Plan-first workflow for code changes. Mercury analyzes before writing.'));
+  sections.push('');
+
+  const codeCmds = [
+    ['/code plan', 'Analyze the task and present a plan (no code changes)'],
+    ['/code execute', 'Implement the plan step by step'],
+    ['/code off', 'Exit programming mode (back to normal)'],
+    ['/code toggle', 'Cycle through modes (off → plan → execute → off)'],
+    ['/code status', 'Show current programming mode'],
+  ];
+
+  for (const [cmd, desc] of codeCmds) {
+    sections.push(`  ${chalk.white(cmd.padEnd(16))} ${desc}`);
+  }
+
+  sections.push('');
+  sections.push(chalk.bold.white('  Spotify Commands'));
+  sections.push(chalk.dim('  Control Spotify playback and manage your connection.'));
+  sections.push(chalk.dim('  Playback control requires Spotify Premium. Read-only works on free accounts.'));
+  sections.push('');
+
+  const spotifyCmds = [
+    ['/spotify', 'Show connection status, account, and plan'],
+    ['/spotify auth', 'Connect Spotify (browser or manual code flow)'],
+    ['/spotify code <code>', 'Complete auth with a pasted authorization code (for SSH/Telegram)'],
+    ['/spotify logout', 'Disconnect Spotify and clear saved tokens'],
+    ['/spotify player', 'Interactive music player (CLI only: arrow-key controls, search, queue)'],
+    ['/spotify devices', 'List available Spotify devices'],
+    ['/spotify device <id>', 'Set active Spotify device'],
+    ['/spotify now', 'Show what is currently playing'],
+  ];
+
+  for (const [cmd, desc] of spotifyCmds) {
+    sections.push(`  ${chalk.white(cmd.padEnd(24))} ${desc}`);
   }
 
   sections.push('');

@@ -36,6 +36,9 @@ mercury doctor
 - **实时流式输出**：CLI 支持实时 Token 流和 Markdown 重渲染，Telegram 支持可编辑状态消息。
 - **持续运行**：可作为后台守护进程运行，崩溃后自动重启，并支持开机自启、定时任务和主动通知。
 - **可扩展**：支持安装社区 Skill、调度 Skill 定时运行，并兼容 [Agent Skills](https://agentskills.io) 规范。
+- **子代理**：生成并行 AI 代理并发执行任务。LLM 自动决定何时委托，同进程异步协程，零开销，文件锁保障并发安全。
+- **编程模式**：计划优先的工作流，先分析再执行，每一步都有用户确认。
+- **Spotify 集成**：通过自然对话控制播放、搜索音乐、管理播放列表。免费账户支持只读功能，播放控制需要 Premium。
 
 ## 守护进程模式
 
@@ -113,6 +116,22 @@ mercury status       # 查看运行状态
 | `/tasks` | 列出定时任务 |
 | `/memory` | 查看和管理 Second Brain 记忆 |
 | `/unpair` | Telegram：重置所有访问 |
+| `/agents` | 列出所有子代理（运行中和已完成） |
+| `/halt` | 紧急停止：终止所有子代理并清空队列 |
+| `/stop` | 终止所有代理、清空队列、释放锁、重置任务板 |
+| `/code plan` | 编程模式：仅分析和规划，不作代码修改 |
+| `/code execute` | 编程模式：逐步执行计划 |
+| `/code off` | 退出编程模式 |
+| `/code toggle` | 切换编程模式（关闭 → 规划 → 执行） |
+| `/code status` | 显示当前编程模式 |
+| `/spotify` | 显示 Spotify 连接状态、账户和订阅计划 |
+| `/spotify auth` | 连接 Spotify（浏览器或手动代码） |
+| `/spotify code <code>` | 使用授权码完成认证（适用于 SSH/Telegram） |
+| `/spotify logout` | 断开 Spotify 并清除保存的令牌 |
+| `/spotify player` | 交互式音乐播放器（CLI 方向键控制） |
+| `/spotify devices` | 列出可用的 Spotify 设备 |
+| `/spotify device <id>` | 设置活跃设备 |
+| `/spotify now` | 显示当前正在播放的内容 |
 
 ## 内置工具
 
@@ -122,10 +141,14 @@ mercury status       # 查看运行状态
 | Shell | `run_command`, `cd`, `approve_command` |
 | 消息 | `send_message` |
 | Git | `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_push` |
+| GitHub | `create_pr`, `review_pr`, `list_issues`, `create_issue`, `github_api` |
 | Web | `fetch_url` |
 | Skills | `install_skill`, `list_skills`, `use_skill` |
 | 调度 | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
-| 系统 | `budget_status` |
+| 预算 | `budget_status` |
+| 子代理 | `delegate_task`, `list_agents`, `stop_agent` |
+| 交互 | `ask_user` |
+| Spotify | `spotify_search`, `spotify_play`, `spotify_pause`, `spotify_next`, `spotify_previous`, `spotify_now_playing`, `spotify_devices`, `spotify_queue`, `spotify_like`, `spotify_volume`, `spotify_shuffle`, `spotify_repeat`, `spotify_top_tracks`, `spotify_playlists` |
 
 ## 渠道
 
@@ -166,6 +189,78 @@ Mercury 默认启用结构化持久记忆，并会在对话后自动提取、存
 
 所有数据都保存在本机 `~/.mercury/memory/second-brain/second-brain.db`，不会上传到云端。
 
+## 子代理（Sub-Agents）
+
+Mercury 不仅仅是一个聊天机器人——它是一个**编排器**。它可以生成并行的 AI 代理来同时处理多个任务，同时继续自己的对话。
+
+### 为什么这很重要
+
+传统 AI 代理是单线程的：一个上下文窗口，一次一个任务。子代理打破了这种限制：
+
+- **并行执行** — 研究、编码和审查同时在隔离的上下文窗口中运行
+- **LLM 驱动的委托** — 模型自身根据任务复杂度决定何时委托
+- **同进程协程** — 零启动开销，共享内存，任务完成时即时通知
+- **文件锁** — 读写锁防止代理之间的并发写入冲突
+- **资源感知** — 最大并发代理数根据 CPU/RAM 自动检测，无需配置
+
+### 工作原理
+
+```
+你: "帮我建一个 REST API 并写测试"
+  Mercury 决定委托:
+  ├─ delegate_task("构建 REST API 端点")  → 代理 a1
+  └─ delegate_task("编写集成测试")        → 代理 a2（排队等待）
+  
+  结果:
+  ✓ a1 已完成: "REST API 已构建，5 个端点"
+  ✓ a2 已完成: "12 个集成测试全部通过"
+```
+
+使用 `/agents` 监控，紧急停止用 `/halt` 或 `/stop`。
+
+## 编程模式
+
+一种计划优先的工作流，强制 Mercury 在写代码之前先进行分析。
+
+| 模式 | 行为 |
+|------|------|
+| **Off（关闭）** | 正常对话 |
+| **Plan（规划）** | Mercury 分析并提出计划——不做代码修改 |
+| **Execute（执行）** | Mercury 逐步执行计划并验证 |
+
+```
+/code plan      → Mercury 读取你的代码库并提出计划
+/code execute   → Mercury 实施计划，验证构建/测试
+/code off       → 回到普通对话
+```
+
+`ask_user` 工具让 Mercury 在决策点展示选项，CLI 中是方向键菜单，Telegram 中是内联按钮。
+
+## Spotify 集成
+
+通过自然对话控制你的 Spotify。播放音乐、管理播放列表、跳过曲目、调整音量——全部在你的设备上操作。
+
+### 设置
+
+1. 在 [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) 创建一个 Spotify 应用
+2. 将重定向 URI 设置为 `http://127.0.0.1:8888/callback`
+3. 运行 `mercury doctor` → Spotify 选择**是** → 输入 Client ID 和 Secret
+4. 启动 Mercury 并运行 `/spotify auth`
+
+### 免费版与 Premium 功能对比
+
+| 功能 | 免费版 | Premium |
+|------|--------|---------|
+| 搜索曲目、艺人、专辑 | ✅ | ✅ |
+| 查看正在播放 | ✅ | ✅ |
+| 列出设备 | ✅ | ✅ |
+| 你的热门曲目和播放列表 | ✅ | ✅ |
+| 喜欢/保存曲目 | ✅ | ✅ |
+| 播放/暂停/跳过/音量 | ❌ | ✅ |
+| 队列、随机播放、重复 | ❌ | ✅ |
+
+直接说"播放一些轻松的音乐"或"我的热门曲目是什么？"——Mercury 会处理其余的。
+
 ## 配置位置
 
 运行时数据保存在 `~/.mercury/`，不会写入你的项目目录。
@@ -203,8 +298,10 @@ Mercury 可以配置多个 LLM 提供商，并按顺序自动尝试。如果某�
 
 - TypeScript + Node.js 20+
 - Vercel AI SDK v4，支持 `generateText`、`streamText` 和多步 Agent 循环
+- 子代理编排：同进程异步协程、文件锁、资源感知并发
 - grammY Telegram Bot
 - SQLite + FTS5 Second Brain
+- Spotify Web API：OAuth2 浏览器+手动认证、令牌刷新、14 个播放和库工具
 - JSONL 短期、长期和情景记忆
 - 后台守护进程、PID 文件和崩溃恢复
 - macOS、Linux、Windows 系统服务

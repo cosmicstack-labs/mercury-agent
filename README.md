@@ -58,6 +58,9 @@ Every AI agent can read files, run commands, and fetch URLs. Most do it silently
 - **Live streaming** — Real-time token streaming on CLI with cursor-save/restore and markdown re-rendering. Telegram streaming with editable status messages.
 - **Always on** — Run as a background daemon on any OS. Auto-restarts on crash. Starts on boot. Cron scheduling, heartbeat monitoring, and proactive notifications.
 - **Extensible** — Install community skills with a single command. Schedule skills as recurring tasks. Based on the [Agent Skills](https://agentskills.io) specification.
+- **Sub-Agents** — Spawn parallel AI agents for concurrent task execution. The LLM decides when to delegate. Same-process async coroutines, zero spawn overhead, file locks for safe concurrent writes.
+- **Programming Mode** — Plan-first workflow for code changes. Analyze, present a plan, then execute step-by-step with user confirmation at every decision point.
+- **Spotify Integration** — Control playback, search music, manage playlists, and DJ on your devices through natural conversation. Read-only features work on free accounts; playback control requires Premium.
 
 ## Daemon Mode
 
@@ -152,6 +155,22 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | `/tasks` | List scheduled tasks |
 | `/memory` | View and manage second brain memory |
 | `/unpair` | Telegram: reset all access |
+| `/agents` | List all sub-agents (running and completed) |
+| `/halt` | Emergency: halt all sub-agents and clear queue |
+| `/stop` | Halt all agents, clear queue, release locks, reset task board |
+| `/code plan` | Programming mode: analyze and plan (no code changes) |
+| `/code execute` | Programming mode: implement plan step-by-step |
+| `/code off` | Exit programming mode |
+| `/code toggle` | Cycle programming mode (off → plan → execute) |
+| `/code status` | Show current programming mode |
+| `/spotify` | Show Spotify connection status, account, and plan |
+| `/spotify auth` | Connect Spotify (browser or manual code flow) |
+| `/spotify code <code>` | Complete auth with a pasted authorization code |
+| `/spotify logout` | Disconnect Spotify and clear saved tokens |
+| `/spotify player` | Interactive music player (CLI: arrow-key controls) |
+| `/spotify devices` | List available Spotify devices |
+| `/spotify device <id>` | Set active Spotify device |
+| `/spotify now` | Show what is currently playing |
 
 ## Built-in Tools
 
@@ -161,10 +180,14 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | **Shell** | `run_command`, `cd`, `approve_command` |
 | **Messaging** | `send_message` |
 | **Git** | `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_push` |
+| **GitHub** | `create_pr`, `review_pr`, `list_issues`, `create_issue`, `github_api` |
 | **Web** | `fetch_url` |
 | **Skills** | `install_skill`, `list_skills`, `use_skill` |
 | **Scheduler** | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
-| **System** | `budget_status` |
+| **Budget** | `budget_status` |
+| **Sub-Agents** | `delegate_task`, `list_agents`, `stop_agent` |
+| **Interaction** | `ask_user` |
+| **Spotify** | `spotify_search`, `spotify_play`, `spotify_pause`, `spotify_next`, `spotify_previous`, `spotify_now_playing`, `spotify_devices`, `spotify_queue`, `spotify_like`, `spotify_volume`, `spotify_shuffle`, `spotify_repeat`, `spotify_top_tracks`, `spotify_playlists` |
 
 ## Channels
 
@@ -207,6 +230,91 @@ Mercury builds a structured, persistent memory that grows with every conversatio
 
 All data stays on your machine in `~/.mercury/memory/second-brain/second-brain.db` (SQLite + FTS5). No cloud.
 
+## Sub-Agents
+
+Mercury isn't just a chatbot — it's an **orchestrator**. It can spawn parallel AI agents to handle tasks concurrently while continuing its own conversation.
+
+### Why This Matters
+
+Traditional AI agents are single-threaded: one context window, one task at a time. If you ask Mercury to "research this topic AND write the code AND review the docs," it has to do them sequentially. Sub-agents break this bottleneck:
+
+- **Parallel execution** — Research, coding, and review run simultaneously across isolated context windows
+- **LLM-driven delegation** — The model itself decides when to delegate based on task complexity, not hard-coded rules
+- **Same-process coroutines** — Zero spawn overhead, shared memory, instant notification when tasks complete
+- **File locks** — Reader-writer locks prevent concurrent write conflicts between agents
+- **Resource-aware** — Max concurrent agents auto-detected from CPU/RAM. No configuration needed
+
+### How It Works
+
+```
+You: "Build me a REST API and write tests for it"
+  Mercury decides to delegate:
+  ├─ delegate_task("Build REST API endpoints")  → Agent a1
+  └─ delegate_task("Write integration tests")   → Agent a2 (waits for queue)
+  
+  Results appear as:
+  ✓ a1 completed: "REST API built with 5 endpoints"
+  ✓ a2 completed: "12 integration tests passing"
+```
+
+Monitor with `/agents`. Emergency stop with `/halt` or `/stop`.
+
+## Programming Mode
+
+A plan-first workflow that forces Mercury to analyze before writing code.
+
+| Mode | Behavior |
+|------|----------|
+| **Off** | Normal conversation |
+| **Plan** | Mercury analyzes and presents a plan — no code changes |
+| **Execute** | Mercury implements the plan step by step with verification |
+
+```
+/code plan      → Mercury reads your codebase and presents a plan
+/code execute   → Mercury implements the plan, checking builds/tests
+/code off       → Back to normal chat
+```
+
+The `ask_user` tool lets Mercury present choices at decision points — strategy options, file locations, naming — before proceeding. On CLI this is an arrow-key menu; on Telegram it's inline buttons.
+
+## Spotify
+
+Control your Spotify through natural conversation. Play music, manage playlists, skip tracks, adjust volume — all on your own devices.
+
+### Setup
+
+1. Create a Spotify app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+2. Set redirect URI to `http://127.0.0.1:8888/callback`
+3. Run `mercury doctor` → choose **Yes** for Spotify → enter your Client ID and Secret
+4. Start Mercury and run `/spotify auth`
+
+### What Works on Free vs. Premium
+
+| Feature | Free | Premium |
+|---------|------|---------|
+| Search tracks, artists, albums | ✅ | ✅ |
+| See what's playing | ✅ | ✅ |
+| List devices | ✅ | ✅ |
+| Your top tracks & playlists | ✅ | ✅ |
+| Like/save tracks | ✅ | ✅ |
+| Play/pause/skip/volume | ❌ | ✅ |
+| Queue, shuffle, repeat | ❌ | ✅ |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/spotify` | Show connection status, account, and plan |
+| `/spotify auth` | Connect Spotify (browser or paste code) |
+| `/spotify code <code>` | Complete auth with a code (for SSH/Telegram) |
+| `/spotify logout` | Disconnect Spotify and clear tokens |
+| `/spotify player` | Interactive player with arrow-key controls (CLI) |
+| `/spotify devices` | List available Spotify devices |
+| `/spotify device <id>` | Set active device |
+| `/spotify now` | Show what's currently playing |
+
+Just say things like "play some chill music" or "what are my top tracks?" — Mercury handles the rest.
+
 ## Configuration
 
 All runtime data lives in `~/.mercury/` — not in your project directory.
@@ -248,8 +356,10 @@ When a provider fails, Mercury automatically tries the next one. It remembers th
 
 - **TypeScript + Node.js 18+** — ESM, tsup build
 - **Vercel AI SDK v4** — `generateText` + `streamText`, 10-step agentic loop, provider fallback
+- **Sub-Agent orchestration** — Same-process async coroutines, file locks, resource-aware concurrency
 - **grammY** — Telegram bot with typing indicators, editable streaming, and file uploads
 - **SQLite + FTS5** — Second brain with full-text search, conflict resolution, auto-consolidation
+- **Spotify Web API** — OAuth2 browser + manual auth, token refresh, 14 playback & library tools
 - **JSONL** — Short-term, long-term, and episodic conversation memory
 - **Daemon manager** — Background spawn + PID file + watchdog crash recovery
 - **System services** — macOS LaunchAgent, Linux systemd, Windows Task Scheduler
