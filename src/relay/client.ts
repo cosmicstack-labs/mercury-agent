@@ -33,6 +33,43 @@ export interface MessageResult {
   error?: string;
 }
 
+export interface MemoryQueryResult {
+  forwarded: boolean;
+  request_id?: string;
+  error?: string;
+}
+
+export interface MemoryResponseResult {
+  delivered: boolean;
+  error?: string;
+}
+
+export interface MemoryResultItem {
+  type: string;
+  category: string;
+  summary: string;
+  detail?: string | null;
+  confidence: number;
+  importance: number;
+}
+
+export interface MemoryQueryEvent {
+  type: 'MEMORY_QUERY';
+  from_user: string;
+  from_display_name: string | null;
+  request_id: string;
+  query: string;
+}
+
+export interface MemoryResponseEvent {
+  type: 'MEMORY_RESPONSE';
+  from_user: string;
+  from_display_name: string | null;
+  request_id: string;
+  query: string;
+  results: MemoryResultItem[];
+}
+
 export interface FriendRequestResult {
   request_id: string;
   status: string;
@@ -275,6 +312,26 @@ export class RelayClient {
     return data;
   }
 
+  async sendMemoryQuery(toUser: string, query: string): Promise<MemoryQueryResult> {
+    const target = toUser.toLowerCase().trim().replace(/^@/, '');
+    const res = await this.authedPost('/v1/memory-query', { to_user: target, query });
+    const data = await res.json() as MemoryQueryResult & { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send memory query');
+    }
+    return data;
+  }
+
+  async sendMemoryResponse(toUser: string, requestId: string, query: string, results: MemoryResultItem[]): Promise<MemoryResponseResult> {
+    const target = toUser.toLowerCase().trim().replace(/^@/, '');
+    const res = await this.authedPost('/v1/memory-response', { to_user: target, request_id: requestId, query, results });
+    const data = await res.json() as MemoryResponseResult & { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send memory response');
+    }
+    return data;
+  }
+
   async getFriends(): Promise<FriendsResponse> {
     const res = await this.authedGet('/v1/friends');
     if (!res.ok) {
@@ -360,6 +417,8 @@ export class RelayClient {
       'FRIEND_CANCEL': 'friend_cancel',
       'FRIEND_REMOVE': 'friend_remove',
       'MESSAGE': 'message',
+      'MEMORY_QUERY': 'memory_query',
+      'MEMORY_RESPONSE': 'memory_response',
     };
 
     const eventType = eventMap[msg.type as string];

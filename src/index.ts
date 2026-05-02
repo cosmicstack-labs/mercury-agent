@@ -47,7 +47,7 @@ import { TelegramChannel } from './channels/telegram.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
-import { RelayClient } from './relay/client.js';
+import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
 import { getManual } from './utils/manual.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
@@ -1160,6 +1160,100 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       const displayName = fromDisplayName || fromUser;
       const formattedMessage = `💬 @${displayName}: ${content}`;
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        for (const chatId of chatIds) {
+          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+        }
+      }
+      if (cliChannel) {
+        cliChannel.send(formattedMessage);
+      }
+    });
+
+    relayClient.on('memory_query', (data: unknown) => {
+      const d = data as MemoryQueryEvent;
+      const fromUser = d.from_user || 'Unknown';
+      const fromDisplayName = d.from_display_name ?? null;
+      const requestId = d.request_id;
+      const query = d.query;
+
+      if (!sharedMemory) {
+        relayClient.sendMemoryResponse(fromUser, requestId, query, []).catch(() => {});
+        return;
+      }
+
+      const results = sharedMemory.search(query, 10);
+      const items: MemoryResultItem[] = results.map(r => ({
+        type: r.type,
+        category: r.category,
+        summary: r.summary.length > 220 ? r.summary.slice(0, 220) : r.summary,
+        detail: r.detail ? (r.detail.length > 500 ? r.detail.slice(0, 500) : r.detail) : null,
+        confidence: r.confidence,
+        importance: r.importance,
+      }));
+
+      relayClient.sendMemoryResponse(fromUser, requestId, query, items).catch(() => {});
+
+      const displayName = fromDisplayName || fromUser;
+      const resultCount = items.length;
+      const localMessage = `🧠 @${displayName} queried your memory for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
+
+      if (notifications) {
+        const record = notifications.add('memory_query', localMessage, fromUser, { request_id: requestId, query });
+        if (record) {
+          if (tgChannel) {
+            const chatIds = getTelegramApprovedChatIds(config);
+            let pushSucceeded = false;
+            for (const chatId of chatIds) {
+              tgChannel.send(localMessage, chatId.toString()).then(() => {
+                if (!pushSucceeded) {
+                  pushSucceeded = true;
+                  notifications.markRead(record.id);
+                }
+              }).catch(() => {});
+            }
+          }
+          if (cliChannel) {
+            cliChannel.send(localMessage);
+            notifications.markRead(record.id);
+          }
+        }
+      } else {
+        if (tgChannel) {
+          const chatIds = getTelegramApprovedChatIds(config);
+          for (const chatId of chatIds) {
+            tgChannel.send(localMessage, chatId.toString()).catch(() => {});
+          }
+        }
+        if (cliChannel) {
+          cliChannel.send(localMessage);
+        }
+      }
+    });
+
+    relayClient.on('memory_response', (data: unknown) => {
+      const d = data as MemoryResponseEvent;
+      const fromUser = d.from_user || 'Unknown';
+      const fromDisplayName = d.from_display_name ?? null;
+      const query = d.query;
+      const results = d.results || [];
+      const displayName = fromDisplayName || fromUser;
+
+      let formattedMessage: string;
+      if (results.length === 0) {
+        formattedMessage = `🧠 @${displayName}'s memory for "${query}":\nNo shared memories found.`;
+      } else {
+        const lines = [`🧠 @${displayName}'s memory for "${query}":`, ''];
+        for (const r of results) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          if (r.detail) {
+            lines.push(`   ${r.detail}`);
+          }
+        }
+        formattedMessage = lines.join('\n');
+      }
+
       if (tgChannel) {
         const chatIds = getTelegramApprovedChatIds(config);
         for (const chatId of chatIds) {

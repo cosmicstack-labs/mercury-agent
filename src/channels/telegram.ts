@@ -100,6 +100,18 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/memory' && text.toLowerCase().match(/^\/memory\s+@\S/i)) {
+        this.emit({
+          id: `tg-mem-${Date.now()}`,
+          channelId: chatId.toString(),
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          content: text,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
       if (command === '/memory') {
         if (!this.chatCommandContext) {
           await this.sendDirectMessage(chatId, 'Memory not available.');

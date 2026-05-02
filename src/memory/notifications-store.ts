@@ -9,7 +9,8 @@ export type NotificationType =
   | 'friend_reject'
   | 'friend_cancel'
   | 'friend_remove'
-  | 'message';
+  | 'message'
+  | 'memory_query';
 
 export interface NotificationRecord {
   id: string;

@@ -956,6 +956,7 @@ export class Agent {
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
       prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
       prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
+      prompt += `\nUsers can query a friend's shared memory with: /memory @username <query> (relay must be connected).`;
       if (summary.learningPaused) {
         prompt += `\nLearning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
       }
@@ -1337,6 +1338,49 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
 
       await this.sendMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    if (trimmed.match(/^\/memory\s+@\S+/i)) {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured. Use /relay to connect.', channelId);
+        return true;
+      }
+      if (!this._relayClient.isConnected()) {
+        await channel.send('Not connected to relay. Use /relay to connect.', channelId);
+        return true;
+      }
+
+      const args = trimmed.slice('/memory'.length).trim();
+      const atMatch = args.match(/^@(\S+)\s+(.+)$/s);
+      if (!atMatch) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      const targetUser = atMatch[1].toLowerCase().replace(/^@/, '');
+      const query = atMatch[2].trim();
+
+      if (!query) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      if (!this._relayClient.isRegistered()) {
+        await channel.send('Not registered on relay. Use /relay to register.', channelId);
+        return true;
+      }
+
+      await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
+
+      try {
+        const result = await this._relayClient.sendMemoryQuery(targetUser, query);
+        if (!result.forwarded) {
+          await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
+        }
+      } catch (err: any) {
+        await channel.send(`⚠ ${err.message || 'Failed to query memory'}`, channelId);
+      }
       return true;
     }
 
@@ -2120,7 +2164,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       }
     }
     lines.push('');
-    lines.push('Commands: /memory shared pause|resume|search <query>|categories|clear');
+    lines.push('Commands: /memory @<friend> <query> | /memory shared pause|resume|search <query>|categories|clear');
     await channel.send(lines.join('\n'), channelId);
   }
 

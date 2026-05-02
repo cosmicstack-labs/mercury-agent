@@ -103,6 +103,7 @@ export function getManual(): string {
     ['/permissions', 'Change permission mode (Ask Me / Allow All)'],
     ['/tasks', 'List scheduled tasks'],
     ['/memory', 'View and manage second brain memory'],
+    ['/memory @username <query>', "Query a friend's shared memory via relay"],
     ['/stream', 'Toggle text streaming on/off (Telegram)'],
     ['/stream on', 'Enable streaming (live text updates)'],
     ['/stream off', 'Disable streaming (single message)'],
