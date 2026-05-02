@@ -31,10 +31,30 @@ import { createListIssuesTool } from './github/list-issues.js';
 import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
+import {
+  createSpotifySearchTool,
+  createSpotifyPlayTool,
+  createSpotifyPauseTool,
+  createSpotifyNextTool,
+  createSpotifyPreviousTool,
+  createSpotifyNowPlayingTool,
+  createSpotifyDevicesTool,
+  createSpotifyQueueTool,
+  createSpotifyLikeTool,
+  createSpotifyVolumeTool,
+  createSpotifyShuffleTool,
+  createSpotifyRepeatTool,
+  createSpotifyTopTracksTool,
+  createSpotifyPlaylistsTool,
+} from './spotify/index.js';
+import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
 import type { TokenBudget } from '../utils/tokens.js';
+import type { SubAgentSupervisor } from '../core/supervisor.js';
+import type { SpotifyClient } from '../spotify/client.js';
+import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatCommandContext {
@@ -56,6 +76,8 @@ export class CapabilityRegistry {
   private skillLoader?: SkillLoader;
   private scheduler?: Scheduler;
   private tokenBudget?: TokenBudget;
+  private supervisor?: SubAgentSupervisor;
+  private spotifyClient?: SpotifyClient;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private currentChannelId = 'cli';
@@ -63,11 +85,12 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
 
-  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget) {
+  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor) {
     this.permissions = new PermissionManager();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
+    this.supervisor = supervisor;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -101,6 +124,33 @@ export class CapabilityRegistry {
 
   setSendMessageHandler(handler: (content: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
+  }
+
+  setSupervisor(supervisor: SubAgentSupervisor): void {
+    this.supervisor = supervisor;
+  }
+
+  setSpotifyClient(client: SpotifyClient): void {
+    this.spotifyClient = client;
+  }
+
+  registerSpotifyTools(): void {
+    if (!this.spotifyClient) return;
+    this.tools.spotify_search = createSpotifySearchTool(this.spotifyClient);
+    this.tools.spotify_play = createSpotifyPlayTool(this.spotifyClient);
+    this.tools.spotify_pause = createSpotifyPauseTool(this.spotifyClient);
+    this.tools.spotify_next = createSpotifyNextTool(this.spotifyClient);
+    this.tools.spotify_previous = createSpotifyPreviousTool(this.spotifyClient);
+    this.tools.spotify_now_playing = createSpotifyNowPlayingTool(this.spotifyClient);
+    this.tools.spotify_devices = createSpotifyDevicesTool(this.spotifyClient);
+    this.tools.spotify_queue = createSpotifyQueueTool(this.spotifyClient);
+    this.tools.spotify_like = createSpotifyLikeTool(this.spotifyClient);
+    this.tools.spotify_volume = createSpotifyVolumeTool(this.spotifyClient);
+    this.tools.spotify_shuffle = createSpotifyShuffleTool(this.spotifyClient);
+    this.tools.spotify_repeat = createSpotifyRepeatTool(this.spotifyClient);
+    this.tools.spotify_top_tracks = createSpotifyTopTracksTool(this.spotifyClient);
+    this.tools.spotify_playlists = createSpotifyPlaylistsTool(this.spotifyClient);
+    logger.info('Spotify tools registered');
   }
 
   registerAll(): void {
@@ -175,6 +225,16 @@ export class CapabilityRegistry {
 
     this.tools.fetch_url = createFetchUrlTool();
     logger.info('Web fetch tool registered');
+
+    if (this.supervisor) {
+      this.tools.delegate_task = createDelegateTaskTool(this.supervisor);
+      this.tools.list_agents = createListAgentsTool(this.supervisor);
+      this.tools.stop_agent = createStopAgentTool(this.supervisor);
+      logger.info('Sub-agent tools registered');
+    }
+
+    this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
+    logger.info('Interaction tools registered');
   }
 
   getTools(): Record<string, Tool> {

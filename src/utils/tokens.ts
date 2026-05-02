@@ -19,6 +19,7 @@ export interface TokenLogEntry {
   outputTokens: number;
   totalTokens: number;
   channelType: string;
+  agentId?: string;
 }
 
 const TOKEN_FILE = 'token-usage.json';
@@ -35,6 +36,7 @@ export class TokenBudget {
   private lastResetDate: string;
   private requestLog: TokenLogEntry[] = [];
   private forceNext = false;
+  private perAgentUsage: Map<string, number> = new Map();
 
   constructor(private config: MercuryConfig) {
     this.dailyBudget = config.tokens.dailyBudget;
@@ -64,6 +66,7 @@ export class TokenBudget {
   resetUsage(): void {
     this.dailyUsed = 0;
     this.requestLog = [];
+    this.perAgentUsage.clear();
     this.persist();
     logger.info('Token usage reset to zero');
   }
@@ -94,7 +97,20 @@ export class TokenBudget {
     const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
     this.dailyUsed += totalTokens;
     this.requestLog.push(logEntry);
+
+    if (entry.agentId) {
+      const agentUsed = this.perAgentUsage.get(entry.agentId) ?? 0;
+      this.perAgentUsage.set(entry.agentId, agentUsed + totalTokens);
+    }
+
     this.persist();
+  }
+
+  getUsageByAgent(agentId: string): { used: number; percentage: number } {
+    this.resetIfNewDay();
+    const used = this.perAgentUsage.get(agentId) ?? 0;
+    const budget = safeNumber(this.dailyBudget);
+    return { used, percentage: budget > 0 ? (used / budget) * 100 : 0 };
   }
 
   getRemaining(): number {
@@ -121,6 +137,7 @@ export class TokenBudget {
       this.dailyUsed = 0;
       this.lastResetDate = today;
       this.requestLog = [];
+      this.perAgentUsage.clear();
       this.persist();
       logger.info('Token budget reset for new day');
     }

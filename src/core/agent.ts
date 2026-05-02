@@ -12,11 +12,15 @@ import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
+import { ProgrammingMode } from './programming-mode.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
+import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
+import type { SpotifyClient } from '../spotify/client.js';
+import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -249,6 +253,9 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
+  readonly programmingMode: ProgrammingMode;
+  private spotifyClient?: SpotifyClient;
 
   constructor(
     private config: MercuryConfig,
@@ -267,6 +274,7 @@ export class Agent {
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.programmingMode = new ProgrammingMode();
 
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
@@ -274,6 +282,20 @@ export class Agent {
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
+    });
+
+    setAskUserHandler(async (question, choices, channelId, channelType) => {
+      return this.presentChoice(question, choices, channelId, channelType);
+    });
+  }
+
+  setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
+    this.supervisor = supervisor;
+    supervisor.setNotifyCallback(async (channelType, channelId, message) => {
+      const channel = this.channels.get(channelType as any);
+      if (channel) {
+        await channel.send(message, channelId).catch(() => {});
+      }
     });
   }
 
@@ -928,6 +950,10 @@ export class Agent {
     if (skillContext) {
       prompt += '\n\n' + skillContext;
     }
+    const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
+    if (programmingSuffix) {
+      prompt += programmingSuffix;
+    }
     const budgetStatus = this.tokenBudget.getStatusText();
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
@@ -1165,6 +1191,81 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   async shutdown(): Promise<void> {
     await this.sleep();
     logger.info('Mercury has shut down');
+  }
+
+  setSpotifyClient(client: SpotifyClient): void {
+    this.spotifyClient = client;
+  }
+
+  async presentChoice(question: string, choices: string[], channelId: string, channelType: string): Promise<string> {
+    const channel = this.channels.get(channelType as any);
+
+    if (channelType === 'cli' && channel instanceof CLIChannel) {
+      const options: ArrowSelectOption[] = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
+
+      try {
+        const selected = await channel.withMenu(async (select) => {
+          return select(question, options);
+        });
+        if (selected === undefined) return choices[0];
+        const index = parseInt(selected, 10);
+        return isNaN(index) ? choices[0] : choices[index];
+      } catch {
+        return choices[0];
+      }
+    }
+
+    if (channelType === 'telegram' && channel instanceof TelegramChannel) {
+      const { InlineKeyboard } = await import('grammy');
+      const kb = new InlineKeyboard();
+      for (let i = 0; i < choices.length; i++) {
+        const callbackData = `choice_${Date.now()}_${i}`;
+        kb.text(choices[i].slice(0, 60), callbackData);
+        if (i < choices.length - 1 && (i + 1) % 2 === 0) {
+          kb.row();
+        }
+      }
+
+      return new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => {
+          (channel as any).pendingApprovals?.delete(`choice_timeout_${question}`);
+          resolve(choices[0]);
+        }, 120000);
+
+        channel.send(question, channelId).catch(() => {});
+
+        const tgBot = (channel as any).bot;
+        if (tgBot) {
+          const chatId = channelId.startsWith('telegram:')
+            ? Number(channelId.split(':')[1])
+            : Number(channelId);
+
+          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch(() => {});
+
+          const handler = async (ctx: any) => {
+            const data = ctx.callbackQuery?.data;
+            if (!data || !data.startsWith('choice_')) return;
+            const parts = data.split('_');
+            if (parts.length < 3) return;
+            const index = parseInt(parts[2], 10);
+            if (isNaN(index)) return;
+            clearTimeout(timeout);
+            try { await ctx.answerCallbackQuery(); } catch {}
+            resolve(choices[index]);
+          };
+
+          if ((channel as any).pendingCallbacks) {
+            (channel as any).pendingCallbacks.push(handler);
+          }
+        }
+      });
+    }
+
+    await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch(() => {});
+    return choices[0];
   }
 
   private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {
@@ -1501,6 +1602,216 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd.startsWith('/code')) {
+      const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
+
+      if (!rawArgs || rawArgs === 'status') {
+        await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs === 'plan') {
+        this.programmingMode.setPlan();
+        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` to switch to execution.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'execute' || rawArgs === 'exec') {
+        this.programmingMode.setExecute();
+        await channel.send('Programming mode: **Execute**\nI will implement the plan step by step, verifying with builds/tests. Use `/code off` to exit.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'off' || rawArgs === 'exit') {
+        this.programmingMode.setOff();
+        await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'toggle') {
+        const newState = this.programmingMode.toggle();
+        const labels: Record<string, string> = { off: 'Off', plan: 'Plan', execute: 'Execute' };
+        await channel.send(`Programming mode: **${labels[newState]}**`, channelId);
+        return true;
+      }
+
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code off, /code toggle', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/spotify')) {
+      if (!this.spotifyClient) {
+        await channel.send('Spotify is not connected. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your config, then run /spotify auth.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/spotify'.length).trim().toLowerCase();
+
+      if (!rawArgs || rawArgs === 'status') {
+        const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
+        const device = this.spotifyClient.getDeviceId() || 'none';
+        const premium = this.spotifyClient.getPremiumStatus();
+        const premiumLabel = premium === null ? '' : premium ? ' | Premium' : ' | Free (no playback control)';
+        await channel.send(`Spotify: **${auth}**${premiumLabel}\nDevice: ${device !== 'none' ? device : 'none selected'}`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'auth') {
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          try {
+            const choice = await channel.withMenu(async (select) => {
+              return select('Spotify Authorization', [
+                { value: 'browser', label: 'Open browser (recommended)' },
+                { value: 'manual', label: 'Paste authorization code manually' },
+                { value: 'cancel', label: 'Cancel' },
+              ]);
+            });
+            if (!choice || choice === 'cancel') {
+              await channel.send('Spotify auth cancelled.', channelId);
+              return true;
+            }
+            if (choice === 'manual') {
+              const authUrl = this.spotifyClient.getAuthUrl();
+              await channel.send('1. Open this URL in your browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — it may show an error page, that is OK.\n3. Copy the `code` parameter from the URL in your browser address bar.\n4. Paste it below:', channelId);
+              const code = await channel.prompt('Authorization code: ');
+              if (!code || !code.trim()) {
+                await channel.send('No code provided. Auth cancelled.', channelId);
+                return true;
+              }
+              await this.spotifyClient.authenticateWithCode(code.trim());
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            } else {
+              await channel.send('Opening browser for Spotify authorization...', channelId);
+              await this.spotifyClient.authenticate();
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            }
+          } catch (err: any) {
+            await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+          }
+        } else {
+          const authUrl = this.spotifyClient.getAuthUrl();
+          await channel.send(
+            '**Connect Spotify**\n\n1. Open this URL on any device with a browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — that page may show an error, that is OK.\n3. Copy the `code` from the URL, then type:\n`/spotify code <paste-code-here>`',
+            channelId
+          );
+        }
+        return true;
+      }
+
+      if (rawArgs.startsWith('code ')) {
+        const code = rawArgs.slice('code '.length).trim();
+        if (!code) {
+          await channel.send('Usage: /spotify code <authorization-code>', channelId);
+          return true;
+        }
+        try {
+          await this.spotifyClient.authenticateWithCode(code);
+          await channel.send('Spotify connected successfully! Try: play some music', channelId);
+        } catch (err: any) {
+          await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+        }
+        return true;
+      }
+
+      if (rawArgs === 'devices') {
+        try {
+          const data = await this.spotifyClient.getDevices();
+          if (!data?.devices?.length) { await channel.send('No active devices. Open Spotify on a device first.', channelId); return true; }
+          const lines = ['**Spotify Devices:**\n'];
+          for (const d of data.devices) {
+            lines.push(`${d.is_active ? '▶' : '○'} **${d.name}** (${d.type}) — \`${d.id}\`${d.is_active ? ' [active]' : ''}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      if (rawArgs.startsWith('device ')) {
+        const id = rawArgs.slice('device '.length).trim();
+        this.spotifyClient.setDevice(id);
+        await channel.send(`Active device set to: ${id}`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'player' && channelType === 'cli' && channel instanceof CLIChannel) {
+        await channel.withMenu(async (select) => {
+          while (true) {
+            try {
+              const np = await this.spotifyClient!.getCurrentlyPlaying();
+              if (np) {
+                await channel.send(formatNowPlaying(np), channelId);
+              }
+            } catch {}
+            const action = await select('Spotify Player', PLAYER_CONTROLS);
+            if (action === 'exit' || !action) return;
+            if (action === 'search') {
+              const query = await channel.prompt('Search: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results found.', channelId); continue; }
+                const trackOptions = tracks.map((t: any, i: number) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Play which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.play([picked]);
+                }
+              } catch (err: any) { await channel.send(`Search failed: ${err.message}`, channelId); }
+              continue;
+            }
+            if (action === 'volume') {
+              const vol = await channel.prompt('Volume (0-100): ');
+              const n = parseInt(vol, 10);
+              if (!isNaN(n) && n >= 0 && n <= 100) {
+                await this.spotifyClient!.setVolume(n);
+                await channel.send(`Volume: ${n}%`, channelId);
+              }
+              continue;
+            }
+            if (action === 'queue') {
+              const query = await channel.prompt('Search track to queue: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results.', channelId); continue; }
+                const trackOptions = tracks.map((t: any) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Queue which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.addToQueue(picked);
+                  await channel.send('Added to queue.', channelId);
+                }
+              } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+              continue;
+            }
+            try {
+              const result = await handlePlayerAction(action, this.spotifyClient!);
+              await channel.send(result, channelId);
+            } catch (err: any) {
+              await channel.send(`Failed: ${err.message}`, channelId);
+            }
+          }
+        });
+        return true;
+      }
+
+      if (rawArgs === 'now' || rawArgs === 'playing' || rawArgs === 'np') {
+        try {
+          const text = await this.spotifyClient.getNowPlayingText();
+          await channel.send(text, channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      await channel.send('Unknown /spotify command. Available: /spotify, /spotify auth, /spotify code <code>, /spotify player, /spotify devices, /spotify device <id>, /spotify now', channelId);
+      return true;
+    }
+
     if (cmd === '/stream on') {
       this.telegramStreaming = true;
       await channel.send('Telegram streaming enabled. Responses will appear progressively.', channelId);
@@ -1526,6 +1837,154 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     if (cmd === '/stream off') {
       this.telegramStreaming = false;
       await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/agents')) {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/agents'.length).trim();
+
+      if (!rawArgs) {
+        const agents = this.supervisor.getActiveAgents();
+        const resourceInfo = this.supervisor.getResourceUsage();
+        if (agents.length === 0) {
+          await channel.send(`No active sub-agents.\nMax concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`, channelId);
+          return true;
+        }
+        const statusIcons: Record<string, string> = { pending: '🔵', running: '🟢', paused: '🟡', completed: '✅', failed: '❌', halted: '⛔' };
+        const lines = [`**Sub-Agents** (${agents.length})`, ''];
+        for (const agent of agents) {
+          const icon = statusIcons[agent.status] || '❓';
+          const taskPreview = agent.task.length > 40 ? agent.task.slice(0, 40) + '...' : agent.task;
+          lines.push(`${icon} **${agent.id}**  ${taskPreview}`);
+          if (agent.progress) lines.push(`   ${agent.progress}`);
+        }
+        lines.push('');
+        lines.push(`Max concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`);
+        lines.push(`Active: ${resourceInfo.activeAgents} | Queued: ${resourceInfo.queuedAgents}`);
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const parts = rawArgs.split(/\s+/);
+      const action = parts[0]?.toLowerCase();
+
+      if (action === 'stop') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents stop <id> or /agents stop all', channelId);
+          return true;
+        }
+        if (target === 'all') {
+          await this.supervisor.haltAll();
+          await channel.send('All sub-agents halted. They will finish their current tool step before stopping.', channelId);
+        } else {
+          const halted = await this.supervisor.halt(target);
+          if (!halted) {
+            await channel.send(`No active agent found with ID "${target}".`, channelId);
+          } else {
+            await channel.send(`Agent ${target} halt signal sent. It will finish its current step then stop.`, channelId);
+          }
+        }
+        return true;
+      }
+
+      if (action === 'pause') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents pause <id>', channelId);
+          return true;
+        }
+        const paused = await this.supervisor.pause(target);
+        await channel.send(paused ? `Agent ${target} paused. Use /agents resume ${target} to continue.` : `No running agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'resume') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents resume <id>', channelId);
+          return true;
+        }
+        const resumed = await this.supervisor.resume(target);
+        await channel.send(resumed ? `Agent ${target} resumed.` : `No paused agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'config') {
+        const info = this.supervisor.getResourceUsage();
+        const lines = [
+          '**Sub-Agent Configuration**',
+          `CPU cores: ${info.cpuCores}`,
+          `System RAM: ${info.systemMemoryMB}MB`,
+          `Available RAM: ${info.availableMemoryMB}MB`,
+          `Max concurrent: ${info.maxConcurrentAgents}`,
+          `Active agents: ${info.activeAgents}`,
+          `Queued agents: ${info.queuedAgents}`,
+          `Token budget remaining: ${info.tokenBudgetRemaining.toLocaleString()}`,
+        ];
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      if (action === 'set' && parts[1]?.toLowerCase() === 'max') {
+        const n = parseInt(parts[2], 10);
+        if (isNaN(n) || n < 1) {
+          await channel.send('Usage: /agents set max <number>', channelId);
+          return true;
+        }
+        this.supervisor.setMaxConcurrent(n);
+        await channel.send(`Max concurrent sub-agents set to ${n}.`, channelId);
+        return true;
+      }
+
+      await channel.send(`Unknown /agents command "${action}". Available: /agents, /agents stop <id|all>, /agents pause <id>, /agents resume <id>, /agents config, /agents set max <n>`, channelId);
+      return true;
+    }
+
+    if (cmd === '/halt') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      await channel.send('All sub-agents halted and queue cleared.', channelId);
+      return true;
+    }
+
+    if (cmd === '/stop') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      this.supervisor.clearTaskBoard();
+      this.lifecycle.transition('idle');
+      await channel.send('All sub-agents stopped, queue cleared, locks released, task board cleared. Short-term memory preserved.', channelId);
+      return true;
+    }
+
+    if (cmd === '/reset') {
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        const confirmed = await channel.askToContinue(
+          '⚠ /reset will halt ALL agents, clear queues, release locks, clear task board, and wipe conversation context. Continue? (y/n)',
+          channelId,
+        ).catch(() => false);
+        if (!confirmed) {
+          await channel.send('Reset cancelled.', channelId);
+          return true;
+        }
+      }
+      if (this.supervisor) {
+        await this.supervisor.haltAll();
+        this.supervisor.clearTaskBoard();
+      }
+      this.shortTerm.clearAll();
+      this.lifecycle.transition('idle');
+      await channel.send('Mercury reset. All agents stopped, all state cleared. Long-term memory preserved. Ready for a fresh start.', channelId);
       return true;
     }
 

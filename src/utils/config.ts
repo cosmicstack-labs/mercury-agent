@@ -109,6 +109,22 @@ export interface MercuryConfig {
   tokens: {
     dailyBudget: number;
   };
+  subagents: {
+    enabled: boolean;
+    maxConcurrent: number;
+    mode: 'auto' | 'manual';
+  };
+  spotify: {
+    enabled: boolean;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: string;
+    scopes: string[];
+    deviceId: string;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -234,6 +250,22 @@ export function getDefaultConfig(): MercuryConfig {
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
+    },
+    subagents: {
+      enabled: getEnvBool('SUBAGENTS_ENABLED', true),
+      maxConcurrent: getEnvNum('SUBAGENTS_MAX_CONCURRENT', 0),
+      mode: (process.env.SUBAGENTS_MODE as 'auto' | 'manual') || 'auto',
+    },
+    spotify: {
+      enabled: getEnvBool('SPOTIFY_ENABLED', false),
+      clientId: getEnv('SPOTIFY_CLIENT_ID'),
+      clientSecret: getEnv('SPOTIFY_CLIENT_SECRET'),
+      redirectUri: getEnv('SPOTIFY_REDIRECT_URI', 'http://127.0.0.1:8888/callback'),
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: '',
+      scopes: [],
+      deviceId: '',
     },
   };
 }
