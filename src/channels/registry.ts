@@ -1,6 +1,7 @@
 import type { Channel } from './base.js';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import { CLIChannel } from './cli.js';
+import { FeishuChannel } from './feishu.js';
 import { TelegramChannel } from './telegram.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -13,6 +14,10 @@ export class ChannelRegistry {
 
     if (config.channels.telegram.enabled && config.channels.telegram.botToken) {
       this.register('telegram', new TelegramChannel(config));
+    }
+
+    if (config.channels.feishu.enabled && config.channels.feishu.appId && config.channels.feishu.appSecret) {
+      this.register('feishu', new FeishuChannel(config));
     }
   }
 

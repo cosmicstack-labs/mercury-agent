@@ -71,6 +71,8 @@ const MIMO_TOKEN_PLAN_PREFERRED_MODELS = MIMO_PREFERRED_MODELS;
 
 const OPENAI_COMPAT_PREFERRED_MODELS = [] as const;
 
+const MINIMAX_PREFERRED_MODELS = [] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -177,6 +179,7 @@ function chooseRecommendedModel(
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -213,6 +216,7 @@ export function buildModelCatalog(
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
@@ -374,6 +378,25 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
   return buildModelCatalog('mimoTokenPlan', ids, config.model);
 }
 
+async function fetchMiniMaxModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const data = await fetchJson<AnthropicModelResponse>(
+    'https://api.minimaxi.com/anthropic/v1/models',
+    {
+      headers: {
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    },
+    'Mercury could not fetch models for this MiniMax key. Please re-enter it.',
+  );
+
+  const ids = (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => id.startsWith('MiniMax-'));
+
+  return buildModelCatalog('minimax', ids, config.model);
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
@@ -404,6 +427,10 @@ export async function fetchProviderModelCatalog(
 
   if (provider === 'mimoTokenPlan') {
     return fetchMiMoTokenPlanModels(config);
+  }
+
+  if (provider === 'minimax') {
+    return fetchMiniMaxModels(config);
   }
 
   return fetchOpenAICompatModels(provider, config);

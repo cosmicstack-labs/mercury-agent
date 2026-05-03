@@ -46,6 +46,21 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
+export interface FeishuAccessUser {
+  openId: string;
+  chatId: string;
+  displayName?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface FeishuPendingRequest {
+  openId: string;
+  chatId: string;
+  displayName?: string;
+  requestedAt: string;
+}
+
 export type ProviderName =
   | 'openai'
   | 'anthropic'
@@ -55,7 +70,8 @@ export type ProviderName =
   | 'ollamaLocal'
   | 'openaiCompat'
   | 'mimo'
-  | 'mimoTokenPlan';
+  | 'mimoTokenPlan'
+  | 'minimax';
 
 export interface MercuryConfig {
   identity: {
@@ -74,6 +90,7 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    minimax: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -88,6 +105,15 @@ export interface MercuryConfig {
       pairedUserId?: number;
       pairedChatId?: number;
       pairedUsername?: string;
+    };
+    feishu: {
+      enabled: boolean;
+      appId: string;
+      appSecret: string;
+      allowedUserIds: string[];
+      admins: FeishuAccessUser[];
+      members: FeishuAccessUser[];
+      pending: FeishuPendingRequest[];
     };
   };
   github: {
@@ -216,6 +242,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
       },
+      minimax: {
+        name: 'minimax',
+        apiKey: getEnv('MINIMAX_API_KEY', ''),
+        baseUrl: getEnv('MINIMAX_BASE_URL', 'https://api.minimax.io/anthropic/v1'),
+        model: getEnv('MINIMAX_MODEL', ''),
+        enabled: getEnvBool('MINIMAX_ENABLED', true),
+      },
     },
     channels: {
       telegram: {
@@ -227,6 +260,18 @@ export function getDefaultConfig(): MercuryConfig {
           .filter(Boolean)
           .map(Number),
         streaming: getEnvBool('TELEGRAM_STREAMING', true),
+        admins: [],
+        members: [],
+        pending: [],
+      },
+      feishu: {
+        enabled: getEnvBool('FEISHU_ENABLED', false),
+        appId: getEnv('FEISHU_APP_ID', ''),
+        appSecret: getEnv('FEISHU_APP_SECRET', ''),
+        allowedUserIds: getEnv('FEISHU_ALLOWED_USER_IDS', '')
+          .split(',')
+          .filter(Boolean)
+          .map((value) => value.trim()),
         admins: [],
         members: [],
         pending: [],
@@ -514,6 +559,155 @@ export function clearTelegramAccess(config: MercuryConfig): MercuryConfig {
   delete config.channels.telegram.pairedUserId;
   delete config.channels.telegram.pairedChatId;
   delete config.channels.telegram.pairedUsername;
+  return config;
+}
+
+// Feishu access helpers
+
+/** Return the approved Feishu users. */
+export function getFeishuApprovedUsers(config: MercuryConfig): FeishuAccessUser[] {
+  return [...config.channels.feishu.admins, ...config.channels.feishu.members];
+}
+
+/** Return the Feishu admins. */
+export function getFeishuAdmins(config: MercuryConfig): FeishuAccessUser[] {
+  return config.channels.feishu.admins;
+}
+
+/** Return the pending Feishu requests. */
+export function getFeishuPendingRequests(config: MercuryConfig): FeishuPendingRequest[] {
+  return config.channels.feishu.pending;
+}
+
+/** Find an approved Feishu user by openId. */
+export function findFeishuApprovedUser(config: MercuryConfig, openId: string): FeishuAccessUser | undefined {
+  return getFeishuApprovedUsers(config).find((user) => user.openId === openId);
+}
+
+/** Find a pending Feishu request by openId. */
+export function findFeishuPendingRequest(config: MercuryConfig, openId: string): FeishuPendingRequest | undefined {
+  return config.channels.feishu.pending.find((request) => request.openId === openId);
+}
+
+/** Check whether the config already has a Feishu admin. */
+export function hasFeishuAdmins(config: MercuryConfig): boolean {
+  return config.channels.feishu.admins.length > 0;
+}
+
+/** Check whether a Feishu openId is auto-allowed. */
+export function isFeishuAutoAllowed(config: MercuryConfig, openId: string): boolean {
+  return config.channels.feishu.allowedUserIds.includes(openId);
+}
+
+/** Summarize Feishu access state. */
+export function getFeishuAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.feishu.admins.length} admin${config.channels.feishu.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.feishu.members.length} member${config.channels.feishu.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.feishu.pending.length} pending`;
+}
+
+/** Add a Feishu pending request. */
+export function addFeishuPendingRequest(
+  config: MercuryConfig,
+  request: Omit<FeishuPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): FeishuPendingRequest {
+  const existing = findFeishuPendingRequest(config, request.openId);
+  if (existing) {
+    existing.chatId = request.chatId;
+    existing.displayName = request.displayName || existing.displayName;
+    return existing;
+  }
+
+  const created: FeishuPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.feishu.pending.push(created);
+  return created;
+}
+
+/** Approve a Feishu pending request. */
+export function approveFeishuPendingRequest(
+  config: MercuryConfig,
+  openId: string,
+  role: 'admin' | 'member' = 'member',
+): FeishuAccessUser | null {
+  const request = findFeishuPendingRequest(config, openId);
+  if (!request) return null;
+
+  const approvedUser: FeishuAccessUser = {
+    openId: request.openId,
+    chatId: request.chatId,
+    displayName: request.displayName,
+    requestedAt: request.requestedAt,
+    approvedAt: new Date().toISOString(),
+  };
+
+  config.channels.feishu.pending = config.channels.feishu.pending.filter((entry) => entry.openId !== openId);
+  config.channels.feishu.admins = config.channels.feishu.admins.filter((entry) => entry.openId !== openId);
+  config.channels.feishu.members = config.channels.feishu.members.filter((entry) => entry.openId !== openId);
+
+  if (role === 'admin') {
+    config.channels.feishu.admins.push(approvedUser);
+  } else {
+    config.channels.feishu.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+/** Reject a Feishu pending request. */
+export function rejectFeishuPendingRequest(config: MercuryConfig, openId: string): FeishuPendingRequest | null {
+  const request = findFeishuPendingRequest(config, openId);
+  if (!request) return null;
+  config.channels.feishu.pending = config.channels.feishu.pending.filter((entry) => entry.openId !== openId);
+  return request;
+}
+
+/** Remove a Feishu user from approved access. */
+export function removeFeishuUser(config: MercuryConfig, openId: string): FeishuAccessUser | null {
+  const admin = config.channels.feishu.admins.find((entry) => entry.openId === openId);
+  if (admin) {
+    config.channels.feishu.admins = config.channels.feishu.admins.filter((entry) => entry.openId !== openId);
+    return admin;
+  }
+
+  const member = config.channels.feishu.members.find((entry) => entry.openId === openId);
+  if (member) {
+    config.channels.feishu.members = config.channels.feishu.members.filter((entry) => entry.openId !== openId);
+    return member;
+  }
+
+  return null;
+}
+
+/** Promote a Feishu member to admin. */
+export function promoteFeishuUserToAdmin(config: MercuryConfig, openId: string): FeishuAccessUser | null {
+  const member = config.channels.feishu.members.find((entry) => entry.openId === openId);
+  if (!member) return null;
+  config.channels.feishu.members = config.channels.feishu.members.filter((entry) => entry.openId !== openId);
+  config.channels.feishu.admins.push(member);
+  return member;
+}
+
+/** Demote a Feishu admin to member. */
+export function demoteFeishuAdmin(config: MercuryConfig, openId: string): FeishuAccessUser | null {
+  if (config.channels.feishu.admins.length <= 1) {
+    return null;
+  }
+
+  const admin = config.channels.feishu.admins.find((entry) => entry.openId === openId);
+  if (!admin) return null;
+  config.channels.feishu.admins = config.channels.feishu.admins.filter((entry) => entry.openId !== openId);
+  config.channels.feishu.members.push(admin);
+  return admin;
+}
+
+/** Clear all Feishu access state. */
+export function clearFeishuAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.feishu.admins = [];
+  config.channels.feishu.members = [];
+  config.channels.feishu.pending = [];
   return config;
 }
 

@@ -21,6 +21,7 @@ export class SubAgentSupervisor {
   private fileLockManager: FileLockManager;
   private taskBoard: TaskBoard;
   private resourceManager: ResourceManager;
+  private scheduleLock = false;
 
   private agentConfig: MercuryConfig;
   private providers: ProviderRegistry;
@@ -177,6 +178,7 @@ export class SubAgentSupervisor {
       this.activeAgents.delete(config.id);
       this.fileLockManager.releaseAll(config.id);
       this.pausedAgents.delete(config.id);
+      this.scheduleLock = false;
       await this.processWaitQueue();
     });
   }
@@ -208,13 +210,19 @@ export class SubAgentSupervisor {
   }
 
   private async processWaitQueue(): Promise<void> {
-    while (this.waitQueue.length > 0) {
-      const running = this.getRunningCount();
-      if (running >= this.resourceManager.getMaxConcurrent()) break;
+    if (this.scheduleLock) return;
+    this.scheduleLock = true;
+    try {
+      while (this.waitQueue.length > 0) {
+        const running = this.getRunningCount();
+        if (running >= this.resourceManager.getMaxConcurrent()) break;
 
-      const nextConfig = this.waitQueue.shift()!;
-      this.taskBoard.update(nextConfig.id, { status: 'running', progress: 'Starting...' });
-      this.startAgentInBackground(nextConfig);
+        const nextConfig = this.waitQueue.shift()!;
+        this.taskBoard.update(nextConfig.id, { status: 'running', progress: 'Starting...' });
+        this.startAgentInBackground(nextConfig);
+      }
+    } finally {
+      this.scheduleLock = false;
     }
   }
 

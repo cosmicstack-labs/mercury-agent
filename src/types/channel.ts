@@ -16,7 +16,7 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
-export type ChannelType = 'cli' | 'telegram' | 'internal' | 'signal' | 'discord' | 'slack' | 'whatsapp';
+export type ChannelType = 'cli' | 'telegram' | 'feishu' | 'internal' | 'signal' | 'discord' | 'slack' | 'whatsapp';
 
 export interface ChannelMessage {
   id: string;

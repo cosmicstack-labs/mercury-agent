@@ -12,6 +12,7 @@ import {
   getMercuryHome,
   ensureCreatorField,
   clearTelegramAccess,
+  clearFeishuAccess,
   isProviderConfigured,
   getTelegramAccessSummary,
   getTelegramApprovedUsers,
@@ -23,6 +24,7 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getFeishuAccessSummary,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -114,6 +116,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
+  { key: 'minimax', label: 'MiniMax' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -262,6 +265,12 @@ function validateApiKey(provider: ProviderName, value: string): string | null {
     return /^tp-[A-Za-z0-9_-]{16,}$/i.test(value)
       ? null
       : 'MiMo Token Plan keys must start with `tp-`.';
+  }
+
+  if (provider === 'minimax') {
+    return looksLikeToken(value)
+      ? null
+      : 'MiniMax keys must look like a real API token: long, no spaces, and not plain text.';
   }
 
   return null;
@@ -817,6 +826,32 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.mimoTokenPlan.enabled = true;
         }
       }
+
+      if (provider === 'minimax') {
+        const mask = isReconfig && config.providers.minimax.apiKey ? ` [${maskKey(config.providers.minimax.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'minimax',
+          'MiniMax',
+          chalk.white(`  MiniMax API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.minimax.apiKey = result.apiKey;
+          config.providers.minimax.model = result.model;
+          // Let user choose endpoint
+          console.log(chalk.white('  MiniMax endpoint:'));
+          console.log(chalk.white('    1. International  - https://api.minimax.io/anthropic/v1'));
+          console.log(chalk.white('    2. China (Mainland) - https://api.minimaxi.com/anthropic/v1'));
+          const endpointChoice = await ask(chalk.white('  Choose endpoint (1 or 2): '));
+          if (endpointChoice === '2') {
+            config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic/v1';
+          } else {
+            config.providers.minimax.baseUrl = 'https://api.minimax.io/anthropic/v1';
+          }
+          config.providers.minimax.enabled = true;
+        }
+      }
     }
 
     const configuredProviders = getConfiguredProviderNames(config);
@@ -882,6 +917,44 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialTelegramPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Feishu (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+    console.log(chalk.dim('  To set up a Feishu bot:'));
+    console.log(chalk.dim('    1. Go to https://open.feishu.cn/app and create an app'));
+    console.log(chalk.dim('    2. Enable "Bot" capability and "Subscribe to messages"'));
+    console.log(chalk.dim('    3. Get App ID and App Secret from the app credentials page'));
+    console.log(chalk.dim('  After setup, users send a message to request access.'));
+    console.log(chalk.dim('  Approve access from the CLI with: mercury feishu approve <openId>'));
+  }
+  console.log('');
+
+  const fsMask = isReconfig && config.channels.feishu.appId ? ` [${maskKey(config.channels.feishu.appId)}]` : '';
+  const feishuAppId = await ask(chalk.white(`  Feishu App ID${fsMask}: `));
+  if (isReconfig && feishuAppId.toLowerCase() === 'none') {
+    config.channels.feishu.enabled = false;
+    config.channels.feishu.appId = '';
+    config.channels.feishu.appSecret = '';
+    clearFeishuAccess(config);
+  } else if (feishuAppId) {
+    if (feishuAppId !== config.channels.feishu.appId) {
+      clearFeishuAccess(config);
+    }
+    config.channels.feishu.appId = feishuAppId;
+    const feishuAppSecret = await ask(chalk.white('  Feishu App Secret: '));
+    config.channels.feishu.appSecret = feishuAppSecret;
+    config.channels.feishu.enabled = true;
+
+    const feishuAllowed = await ask(chalk.white('  Auto-allowed User IDs (comma-separated, optional): '));
+    if (feishuAllowed) {
+      config.channels.feishu.allowedUserIds = feishuAllowed.split(',').map((id) => id.trim()).filter(Boolean);
+    }
+  }
 
   hr();
   console.log('');

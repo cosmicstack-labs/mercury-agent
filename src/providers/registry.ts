@@ -6,6 +6,7 @@ import { AnthropicProvider } from './anthropic.js';
 import { DeepSeekProvider } from './deepseek.js';
 import { OllamaProvider } from './ollama.js';
 import { MiMoProvider } from './mimo.js';
+import { MiniMaxProvider } from './minimax.js';
 import { logger } from '../utils/logger.js';
 
 export class ProviderRegistry {
@@ -26,6 +27,7 @@ export class ProviderRegistry {
       config.providers.openaiCompat,
       config.providers.mimo,
       config.providers.mimoTokenPlan,
+      config.providers.minimax,
     ];
 
     for (const pc of entries) {
@@ -44,6 +46,8 @@ export class ProviderRegistry {
           provider = new OpenAICompatProvider(pc, { useChatApi: true });
         } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
           provider = new MiMoProvider(pc);
+        } else if (pc.name === 'minimax') {
+          provider = new MiniMaxProvider(pc);
         } else {
           provider = new OpenAICompatProvider(pc);
         }

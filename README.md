@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  Remembers what matters. Asks before it acts. Runs 24/7 from CLI or Telegram. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
+  Remembers what matters. Asks before it acts. Runs 24/7 from CLI, Telegram, or Feishu. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@ npm i -g @cosmicstack/mercury-agent
 mercury
 ```
 
-First run triggers the setup wizard — enter your name, an API key, and optionally a Telegram bot token. Takes 30 seconds.
+First run triggers the setup wizard — enter your name, an API key, and optionally Telegram/Feishu tokens. Takes 30 seconds.
 
 To reconfigure later (change keys, name, settings):
 
@@ -127,6 +127,13 @@ In daemon mode, Telegram becomes your primary channel — CLI is log-only since 
 | `mercury telegram promote <id>` | Promote a Telegram member to admin |
 | `mercury telegram demote <id>` | Demote a Telegram admin to member |
 | `mercury telegram reset` | Clear all Telegram access and start fresh |
+| `mercury feishu list` | List approved and pending Feishu users |
+| `mercury feishu approve <openId>` | Approve a pending Feishu access request |
+| `mercury feishu reject <openId>` | Reject a pending Feishu access request |
+| `mercury feishu remove <openId>` | Remove an approved Feishu user |
+| `mercury feishu promote <openId>` | Promote a Feishu member to admin |
+| `mercury feishu demote <openId>` | Demote a Feishu admin to member |
+| `mercury feishu reset` | Clear all Feishu access and start fresh |
 | `mercury service install` | Install as system service (auto-start on boot) |
 | `mercury service uninstall` | Uninstall system service |
 | `mercury service status` | Show system service status |
@@ -172,6 +179,7 @@ Type these during a conversation — they don't consume API tokens. Work on both
 |---------|----------|
 | **CLI** | Readline prompt, arrow-key command menus, real-time text streaming with markdown re-rendering, permission mode picker |
 | **Telegram** | HTML formatting, editable streaming messages, file uploads, typing indicators, multi-user access with admin/member roles |
+| **Feishu** | Private chat support, auto-allowed user list, multi-user access with admin/member roles |
 
 ### Telegram Access
 
@@ -184,6 +192,18 @@ Mercury uses an **organization access model** with admins and members.
 - Private chats only — group messages are always ignored.
 
 CLI commands: `mercury telegram list|approve|reject|remove|promote|demote|reset`
+
+### Feishu Access
+
+Feishu uses the same **organization access model** with admins and members.
+
+- **First-time setup:** During `mercury setup`, enter your Feishu App ID and App Secret. Optionally add comma-separated user IDs to auto-allow.
+- **Additional users:** Users send a message to your Feishu bot. Admins approve or reject from the CLI with `mercury feishu approve <openId>`.
+- **Roles:** Admins can approve/reject requests, promote/demote users, and reset access. Members can chat with Mercury.
+- **Reset:** Run `mercury feishu reset` in the CLI to clear all access and start fresh.
+- Private chats only — group messages are not supported in MVP.
+
+CLI commands: `mercury feishu list|approve|reject|remove|promote|demote|reset`
 
 ## Scheduler
 
@@ -236,6 +256,7 @@ Configure multiple LLM providers. Mercury tries them in order and falls back aut
 | **DeepSeek** | deepseek-chat | `DEEPSEEK_API_KEY` | Default, cost-effective |
 | **OpenAI** | gpt-4o-mini | `OPENAI_API_KEY` | GPT-4o, o3, etc. |
 | **Anthropic** | claude-sonnet-4 | `ANTHROPIC_API_KEY` | Claude Sonnet, Haiku, Opus |
+| **MiniMax** | (dynamic) | `MINIMAX_API_KEY` | Anthropic-compatible, dynamic model fetch |
 | **Grok (xAI)** | grok-4 | `GROK_API_KEY` | OpenAI-compatible endpoint |
 | **Ollama Cloud** | gpt-oss:120b | `OLLAMA_CLOUD_API_KEY` | Remote Ollama via API |
 | **Ollama Local** | gpt-oss:20b | No key needed | Local Ollama instance |
