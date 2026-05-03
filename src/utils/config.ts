@@ -218,6 +218,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
       },
+      minimax: {
+        name: 'minimax',
+        apiKey: getEnv('MINIMAX_API_KEY', ''),
+        baseUrl: getEnv('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic'),
+        model: getEnv('MINIMAX_MODEL', ''),
+        enabled: getEnvBool('MINIMAX_ENABLED', true),
+      },
     },
     channels: {
       telegram: {
