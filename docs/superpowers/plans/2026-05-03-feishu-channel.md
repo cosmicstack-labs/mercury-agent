@@ -489,6 +489,8 @@ function createFeishuTransport(config: MercuryConfig): FeishuTransport {
 }
 ```
 
+Before coding, verify the exact `@larksuiteoapi/node-sdk` shapes for `WSClient.start`, `EventDispatcher.register`, and `client.im.v1.message.create` in the official docs, then keep this wrapper thin and match those documented parameter names exactly.
+
 Wire it into the registry and exports:
 
 ```ts
@@ -537,7 +539,6 @@ describe('pickOutboundChannelType', () => {
     expect(
       pickOutboundChannelType({
         currentChannelType: 'feishu',
-        currentChannelId: 'feishu:oc_1',
         readyChannels: ['cli', 'feishu'],
         fallbackChannel: 'cli',
       }),
@@ -548,7 +549,6 @@ describe('pickOutboundChannelType', () => {
     expect(
       pickOutboundChannelType({
         currentChannelType: 'feishu',
-        currentChannelId: 'feishu:oc_1',
         readyChannels: ['cli'],
         fallbackChannel: 'cli',
       }),
@@ -571,7 +571,6 @@ import type { ChannelType } from '../types/channel.js';
 
 export interface OutboundChannelContext {
   currentChannelType: ChannelType;
-  currentChannelId: string;
   readyChannels: ChannelType[];
   fallbackChannel: ChannelType;
 }
@@ -594,7 +593,6 @@ capabilities.setSendFileHandler(async (filePath: string) => {
   const { channelId, channelType } = capabilities.getChannelContext();
   const targetType = pickOutboundChannelType({
     currentChannelType: channelType as ChannelType,
-    currentChannelId: channelId,
     readyChannels: channels.getActiveChannels(),
     fallbackChannel: 'cli',
   });
@@ -610,7 +608,6 @@ capabilities.setSendMessageHandler(async (content: string) => {
   const { channelId, channelType } = capabilities.getChannelContext();
   const targetType = pickOutboundChannelType({
     currentChannelType: channelType as ChannelType,
-    currentChannelId: channelId,
     readyChannels: channels.getActiveChannels(),
     fallbackChannel: 'cli',
   });
@@ -638,14 +635,105 @@ Add a Feishu command group that mirrors Telegram access management:
 
 ```ts
 const feishuCmd = program.command('feishu').description('Manage Feishu access approvals and admins');
-feishuCmd.command('list').description('Show approved Feishu users and pending requests');
-feishuCmd.command('approve <openId>').description('Approve a pending Feishu access request by openId');
-feishuCmd.command('reject <openId>').description('Reject a pending Feishu access request');
-feishuCmd.command('remove <openId>').description('Remove an approved Feishu admin or member');
-feishuCmd.command('promote <openId>').description('Promote a Feishu member to admin');
-feishuCmd.command('demote <openId>').description('Demote a Feishu admin to member');
-feishuCmd.command('reset').description('Clear all Feishu access state');
+feishuCmd.command('list')
+  .description('Show approved Feishu users and pending requests')
+  .action(() => {
+    const config = loadConfig();
+    console.log('');
+    console.log(`  Feishu Access: ${chalk.white(getFeishuAccessSummary(config))}`);
+    console.log(`  Admins:        ${config.channels.feishu.admins.length > 0 ? chalk.green(getFeishuAdmins(config).map(formatFeishuUser).join(', ')) : chalk.dim('none')}`);
+    console.log(`  Members:       ${config.channels.feishu.members.length > 0 ? chalk.green(getFeishuApprovedUsers(config).filter((user) => !config.channels.feishu.admins.some((admin) => admin.openId === user.openId)).map(formatFeishuUser).join(', ')) : chalk.dim('none')}`);
+    console.log(`  Pending:       ${config.channels.feishu.pending.length > 0 ? chalk.yellow(getFeishuPendingRequests(config).map(formatFeishuPending).join(', ')) : chalk.dim('none')}`);
+    console.log('');
+  });
+
+feishuCmd.command('approve <openId>').description('Approve a pending Feishu access request by openId').action((openId: string) => {
+  const config = loadConfig();
+  const approved = approveFeishuPendingRequest(config, openId, hasFeishuAdmins(config) ? 'member' : 'admin');
+  if (!approved) {
+    console.log('');
+    console.log(chalk.red(`  No pending Feishu request found for openId ${openId}.`));
+    console.log('');
+    return;
+  }
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green(`  ✓ Approved Feishu ${formatFeishuUser(approved)}.`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
+feishuCmd.command('reject <openId>').description('Reject a pending Feishu access request').action((openId: string) => {
+  const config = loadConfig();
+  const rejected = rejectFeishuPendingRequest(config, openId);
+  if (!rejected) {
+    console.log('');
+    console.log(chalk.red(`  No pending Feishu request found for openId ${openId}.`));
+    console.log('');
+    return;
+  }
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green(`  ✓ Rejected Feishu request for ${formatFeishuPending(rejected)}.`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
+feishuCmd.command('remove <openId>').description('Remove an approved Feishu admin or member').action((openId: string) => {
+  const config = loadConfig();
+  const removed = removeFeishuUser(config, openId);
+  if (!removed) {
+    console.log('');
+    console.log(chalk.red(`  No approved Feishu user found for openId ${openId}.`));
+    console.log('');
+    return;
+  }
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green(`  ✓ Removed Feishu access for ${formatFeishuUser(removed)}.`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
+feishuCmd.command('promote <openId>').description('Promote a Feishu member to admin').action((openId: string) => {
+  const config = loadConfig();
+  const promoted = promoteFeishuUserToAdmin(config, openId);
+  if (!promoted) {
+    console.log('');
+    console.log(chalk.red(`  No Feishu member found for openId ${openId}.`));
+    console.log('');
+    return;
+  }
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green(`  ✓ Promoted ${formatFeishuUser(promoted)} to Feishu admin.`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
+feishuCmd.command('demote <openId>').description('Demote a Feishu admin to member').action((openId: string) => {
+  const config = loadConfig();
+  const demoted = demoteFeishuAdmin(config, openId);
+  if (!demoted) {
+    console.log('');
+    console.log(chalk.red(`  No Feishu admin found for openId ${openId}, or this is the last admin.`));
+    console.log('');
+    return;
+  }
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green(`  ✓ Demoted ${formatFeishuUser(demoted)} to Feishu member.`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
+feishuCmd.command('reset').description('Clear all Feishu access state').action(() => {
+  const config = loadConfig();
+  clearFeishuAccess(config);
+  saveConfig(config);
+  console.log('');
+  console.log(chalk.green('  ✓ Cleared all Feishu access state.'));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  console.log('');
+});
 ```
+
+Keep the CLI behavior aligned with Telegram: every Feishu command should print a blank line before and after, should save config only after a successful mutation, and should show an explicit error message when the target `openId` is not found or a demotion would leave zero admins.
 
 - [ ] **Step 4: Run the test and confirm it passes**
 
