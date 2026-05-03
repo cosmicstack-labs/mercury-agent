@@ -7,3 +7,8 @@ dist/
 config/
 soul/
 memory/
+.claude/
+
+CLAUDE.md
+COPILOT.md
+AGENTS.md

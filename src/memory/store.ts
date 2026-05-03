@@ -110,7 +110,11 @@ export class ShortTermMemory {
 
   private saveToDisk(conversationId: string, messages: MemoryEntry[]): void {
     const filepath = join(this.dir, `${conversationId}.json`);
-    writeFileSync(filepath, JSON.stringify(messages), 'utf-8');
+    try {
+      writeFileSync(filepath, JSON.stringify(messages), 'utf-8');
+    } catch (err) {
+      logger.error({ err, filepath }, 'Failed to save short-term memory to disk');
+    }
   }
 }
 

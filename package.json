@@ -68,7 +68,7 @@
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",
     "pino": "^9.6.0",
-    "yaml": "^2.7.0",
+    "yaml": "^2.8.4",
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
