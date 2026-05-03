@@ -16,7 +16,7 @@ export class MiniMaxProvider extends BaseProvider {
 
     this.client = createAnthropic({
       apiKey: config.apiKey,
-      baseURL: config.baseUrl || 'https://api.minimax.io/anthropic',
+      baseURL: config.baseUrl || 'https://api.minimax.io/anthropic/v1',
     });
     this.modelInstance = this.client(config.model);
   }

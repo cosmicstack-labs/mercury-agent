@@ -839,13 +839,13 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.minimax.model = result.model;
           // Let user choose endpoint
           console.log(chalk.white('  MiniMax endpoint:'));
-          console.log(chalk.white('    1. International  - https://api.minimax.io/anthropic'));
-          console.log(chalk.white('    2. China (Mainland) - https://api.minimaxi.com/anthropic'));
+          console.log(chalk.white('    1. International  - https://api.minimax.io/anthropic/v1'));
+          console.log(chalk.white('    2. China (Mainland) - https://api.minimaxi.com/anthropic/v1'));
           const endpointChoice = await ask(chalk.white('  Choose endpoint (1 or 2): '));
           if (endpointChoice === '2') {
-            config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic';
+            config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic/v1';
           } else {
-            config.providers.minimax.baseUrl = 'https://api.minimax.io/anthropic';
+            config.providers.minimax.baseUrl = 'https://api.minimax.io/anthropic/v1';
           }
           config.providers.minimax.enabled = true;
         }
