@@ -71,6 +71,8 @@ const MIMO_TOKEN_PLAN_PREFERRED_MODELS = MIMO_PREFERRED_MODELS;
 
 const OPENAI_COMPAT_PREFERRED_MODELS = [] as const;
 
+const MINIMAX_PREFERRED_MODELS = [] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -177,6 +179,7 @@ function chooseRecommendedModel(
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -213,6 +216,7 @@ export function buildModelCatalog(
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    minimax: MINIMAX_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
