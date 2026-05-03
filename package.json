@@ -58,6 +58,7 @@
     "@ai-sdk/deepseek": "^2.0.29",
     "@ai-sdk/openai": "^3.0.53",
     "@grammyjs/auto-retry": "^2.0.2",
+    "@larksuiteoapi/node-sdk": "^1.62.1",
     "ai": "^6.0.168",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",

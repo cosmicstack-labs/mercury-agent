@@ -12,6 +12,7 @@ import {
   getMercuryHome,
   ensureCreatorField,
   clearTelegramAccess,
+  clearFeishuAccess,
   isProviderConfigured,
   getTelegramAccessSummary,
   getTelegramApprovedUsers,
@@ -23,6 +24,7 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getFeishuAccessSummary,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -915,6 +917,44 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialTelegramPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Feishu (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+    console.log(chalk.dim('  To set up a Feishu bot:'));
+    console.log(chalk.dim('    1. Go to https://open.feishu.cn/app and create an app'));
+    console.log(chalk.dim('    2. Enable "Bot" capability and "Subscribe to messages"'));
+    console.log(chalk.dim('    3. Get App ID and App Secret from the app credentials page'));
+    console.log(chalk.dim('  After setup, users send a message to request access.'));
+    console.log(chalk.dim('  Approve access from the CLI with: mercury feishu approve <openId>'));
+  }
+  console.log('');
+
+  const fsMask = isReconfig && config.channels.feishu.appId ? ` [${maskKey(config.channels.feishu.appId)}]` : '';
+  const feishuAppId = await ask(chalk.white(`  Feishu App ID${fsMask}: `));
+  if (isReconfig && feishuAppId.toLowerCase() === 'none') {
+    config.channels.feishu.enabled = false;
+    config.channels.feishu.appId = '';
+    config.channels.feishu.appSecret = '';
+    clearFeishuAccess(config);
+  } else if (feishuAppId) {
+    if (feishuAppId !== config.channels.feishu.appId) {
+      clearFeishuAccess(config);
+    }
+    config.channels.feishu.appId = feishuAppId;
+    const feishuAppSecret = await ask(chalk.white('  Feishu App Secret: '));
+    config.channels.feishu.appSecret = feishuAppSecret;
+    config.channels.feishu.enabled = true;
+
+    const feishuAllowed = await ask(chalk.white('  Auto-allowed User IDs (comma-separated, optional): '));
+    if (feishuAllowed) {
+      config.channels.feishu.allowedUserIds = feishuAllowed.split(',').map((id) => id.trim()).filter(Boolean);
+    }
+  }
 
   hr();
   console.log('');
