@@ -114,6 +114,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
+  { key: 'minimax', label: 'MiniMax' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -262,6 +263,12 @@ function validateApiKey(provider: ProviderName, value: string): string | null {
     return /^tp-[A-Za-z0-9_-]{16,}$/i.test(value)
       ? null
       : 'MiMo Token Plan keys must start with `tp-`.';
+  }
+
+  if (provider === 'minimax') {
+    return looksLikeToken(value)
+      ? null
+      : 'MiniMax keys must look like a real API token: long, no spaces, and not plain text.';
   }
 
   return null;
@@ -815,6 +822,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.mimoTokenPlan.apiKey = result.apiKey;
           config.providers.mimoTokenPlan.model = result.model;
           config.providers.mimoTokenPlan.enabled = true;
+        }
+      }
+
+      if (provider === 'minimax') {
+        const mask = isReconfig && config.providers.minimax.apiKey ? ` [${maskKey(config.providers.minimax.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'minimax',
+          'MiniMax',
+          chalk.white(`  MiniMax API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.minimax.apiKey = result.apiKey;
+          config.providers.minimax.model = result.model;
+          config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic';
+          config.providers.minimax.enabled = true;
         }
       }
     }

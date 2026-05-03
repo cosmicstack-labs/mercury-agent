@@ -55,7 +55,8 @@ export type ProviderName =
   | 'ollamaLocal'
   | 'openaiCompat'
   | 'mimo'
-  | 'mimoTokenPlan';
+  | 'mimoTokenPlan'
+  | 'minimax';
 
 export interface MercuryConfig {
   identity: {
@@ -74,6 +75,7 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    minimax: ProviderConfig;
   };
   channels: {
     telegram: {
