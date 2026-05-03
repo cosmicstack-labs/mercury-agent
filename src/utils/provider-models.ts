@@ -378,6 +378,25 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
   return buildModelCatalog('mimoTokenPlan', ids, config.model);
 }
 
+async function fetchMiniMaxModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const data = await fetchJson<AnthropicModelResponse>(
+    'https://api.minimaxi.com/anthropic/v1/models',
+    {
+      headers: {
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    },
+    'Mercury could not fetch models for this MiniMax key. Please re-enter it.',
+  );
+
+  const ids = (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => id.startsWith('MiniMax-'));
+
+  return buildModelCatalog('minimax', ids, config.model);
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
@@ -408,6 +427,10 @@ export async function fetchProviderModelCatalog(
 
   if (provider === 'mimoTokenPlan') {
     return fetchMiMoTokenPlanModels(config);
+  }
+
+  if (provider === 'minimax') {
+    return fetchMiniMaxModels(config);
   }
 
   return fetchOpenAICompatModels(provider, config);
