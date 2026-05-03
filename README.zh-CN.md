@@ -4,7 +4,7 @@
 
 [English](README.md) | 简体中文
 
-Mercury 会记住重要信息，在执行有风险的操作前先请求确认，并且可以通过 CLI 或 Telegram 以 24/7 后台进程运行。它适合需要本地文件操作、命令执行、长期记忆、定时任务和多模型兜底能力的个人 AI 助手场景。
+Mercury 会记住重要信息，在执行有风险的操作前先请求确认，并且可以通过 CLI、Telegram 或飞书以 24/7 后台进程运行。它适合需要本地文件操作、命令执行、长期记忆、定时任务和多模型兜底能力的个人 AI 助手场景。
 
 ## 快速开始
 
@@ -21,7 +21,7 @@ npm i -g @cosmicstack/mercury-agent
 mercury
 ```
 
-首次运行会启动配置向导。你需要输入姓名、模型 API Key，并可选择配置 Telegram Bot Token。之后如需重新配置：
+首次运行会启动配置向导。你需要输入姓名、模型 API Key，并可选择配置 Telegram/飞书 Token。之后如需重新配置：
 
 ```bash
 mercury doctor
@@ -88,6 +88,13 @@ mercury status       # 查看运行状态
 | `mercury telegram promote <id>` | 将 Telegram 成员提升为管理员 |
 | `mercury telegram demote <id>` | 将 Telegram 管理员降级为成员 |
 | `mercury telegram reset` | 清空 Telegram 访问状态并重新开始 |
+| `mercury feishu list` | 查看已批准和待处理的飞书用户 |
+| `mercury feishu approve <openId>` | 批准飞书访问请求 |
+| `mercury feishu reject <openId>` | 拒绝飞书访问请求 |
+| `mercury feishu remove <openId>` | 移除已批准飞书用户 |
+| `mercury feishu promote <openId>` | 将飞书成员提升为管理员 |
+| `mercury feishu demote <openId>` | 将飞书管理员降级为成员 |
+| `mercury feishu reset` | 清空飞书访问状态并重新开始 |
 | `mercury service install` | 安装开机自启系统服务 |
 | `mercury service uninstall` | 卸载系统服务 |
 | `mercury service status` | 查看系统服务状态 |
@@ -133,6 +140,7 @@ mercury status       # 查看运行状态
 |------|------|
 | CLI | Readline 提示符、方向键命令菜单、实时文本流、Markdown 重渲染、权限模式选择 |
 | Telegram | HTML 格式化、可编辑流式消息、文件上传、输入状态、多用户访问和管理员/成员角色 |
+| 飞书 | 私聊支持、自动批准用户列表、管理员/成员角色 |
 
 ### Telegram 访问模型
 
@@ -143,6 +151,20 @@ Mercury 使用组织式访问模型，包含管理员和成员。
 - 角色：管理员可以批准、拒绝、提升、降级和重置访问；成员可以与 Mercury 对话。
 - 重置：管理员可在 Telegram 发送 `/unpair`，或在 CLI 中执行 `mercury telegram reset`。
 - 仅支持私聊，群聊消息会被忽略。
+
+CLI 命令：`mercury telegram list|approve|reject|remove|promote|demote|reset`
+
+### 飞书访问模型
+
+飞书使用同样的组织式访问模型，包含管理员和成员。
+
+- 首次设置：在 `mercury setup` 中输入飞书 App ID 和 App Secret。可选填逗号分隔的用户 ID 列表实现自动批准。
+- 新用户：向你的飞书机器人发送消息请求访问，由管理员在 CLI 中批准或拒绝。
+- 角色：管理员可以批准、拒绝、提升、降级和重置访问；成员可以与 Mercury 对话。
+- 重置：在 CLI 中执行 `mercury feishu reset` 清空所有访问状态。
+- 仅支持私聊，群聊暂不支持（MVP）。
+
+CLI 命令：`mercury feishu list|approve|reject|remove|promote|demote|reset`
 
 ## 调度器
 
