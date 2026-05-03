@@ -45,7 +45,7 @@ export class MiniMaxProvider extends BaseProvider {
       prompt,
     });
 
-    for await (const chunk of (await result).textStream) {
+    for await (const chunk of result.textStream) {
       yield { text: chunk, done: false };
     }
     yield { text: '', done: true };

@@ -178,6 +178,7 @@ export class SubAgentSupervisor {
       this.activeAgents.delete(config.id);
       this.fileLockManager.releaseAll(config.id);
       this.pausedAgents.delete(config.id);
+      this.scheduleLock = false;
       await this.processWaitQueue();
     });
   }
