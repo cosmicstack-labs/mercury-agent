@@ -221,7 +221,7 @@ export function getDefaultConfig(): MercuryConfig {
       minimax: {
         name: 'minimax',
         apiKey: getEnv('MINIMAX_API_KEY', ''),
-        baseUrl: getEnv('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic/v1'),
+        baseUrl: getEnv('MINIMAX_BASE_URL', 'https://api.minimax.io/anthropic'),
         model: getEnv('MINIMAX_MODEL', ''),
         enabled: getEnvBool('MINIMAX_ENABLED', true),
       },
