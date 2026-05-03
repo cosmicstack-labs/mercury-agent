@@ -8,3 +8,5 @@ config/
 soul/
 memory/
 .claude/
+
+CLAUDE.md
