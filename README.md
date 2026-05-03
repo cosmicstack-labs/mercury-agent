@@ -236,6 +236,7 @@ Configure multiple LLM providers. Mercury tries them in order and falls back aut
 | **DeepSeek** | deepseek-chat | `DEEPSEEK_API_KEY` | Default, cost-effective |
 | **OpenAI** | gpt-4o-mini | `OPENAI_API_KEY` | GPT-4o, o3, etc. |
 | **Anthropic** | claude-sonnet-4 | `ANTHROPIC_API_KEY` | Claude Sonnet, Haiku, Opus |
+| **MiniMax** | (dynamic) | `MINIMAX_API_KEY` | Anthropic-compatible, dynamic model fetch |
 | **Grok (xAI)** | grok-4 | `GROK_API_KEY` | OpenAI-compatible endpoint |
 | **Ollama Cloud** | gpt-oss:120b | `OLLAMA_CLOUD_API_KEY` | Remote Ollama via API |
 | **Ollama Local** | gpt-oss:20b | No key needed | Local Ollama instance |
