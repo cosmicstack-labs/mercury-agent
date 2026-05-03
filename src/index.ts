@@ -837,7 +837,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         if (!result.skipped && result.apiKey && result.model) {
           config.providers.minimax.apiKey = result.apiKey;
           config.providers.minimax.model = result.model;
-          config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic';
+          config.providers.minimax.baseUrl = 'https://api.minimaxi.com/anthropic/v1';
           config.providers.minimax.enabled = true;
         }
       }
