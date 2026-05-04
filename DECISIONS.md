@@ -2,6 +2,8 @@
 
 > Architecture Decision Records. New ones appended as we go.
 
+[中文版](./DECISIONS.zh-CN.md)
+
 ## ADR-001: TypeScript + Node.js
 
 - **Context**: Need a runtime for 24/7 headless agent with future GUI, mobile, and chat integrations.
