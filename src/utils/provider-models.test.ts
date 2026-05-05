@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildModelCatalog } from './provider-models.js';
+import { buildModelCatalog, extractGrokModelIdsFromLanguageModelsResponse } from './provider-models.js';
 
 describe('buildModelCatalog', () => {
   it('prefers the provider recommended OpenAI model when available', () => {
@@ -115,5 +115,50 @@ describe('buildModelCatalog', () => {
     );
 
     expect(catalog.recommendedModel).toBe('model-a');
+  });
+});
+
+describe('extractGrokModelIdsFromLanguageModelsResponse', () => {
+  it('extracts grok-* model ids from {models: [...]}', () => {
+    const ids = extractGrokModelIdsFromLanguageModelsResponse({
+      models: [{ id: 'grok-4', output_modalities: ['text'] }],
+    });
+
+    expect(ids).toEqual(['grok-4']);
+  });
+
+  it('extracts grok-* model ids from {data: [...]}', () => {
+    const ids = extractGrokModelIdsFromLanguageModelsResponse({
+      data: [{ id: 'grok-3-mini', output_modalities: ['text'] }],
+    });
+
+    expect(ids).toEqual(['grok-3-mini']);
+  });
+
+  it('extracts grok-* model ids from {data: {data: [...]}}', () => {
+    const ids = extractGrokModelIdsFromLanguageModelsResponse({
+      data: { data: [{ id: 'grok-4', output_modalities: ['text'] }] },
+    });
+
+    expect(ids).toEqual(['grok-4']);
+  });
+
+  it('includes grok-* aliases', () => {
+    const ids = extractGrokModelIdsFromLanguageModelsResponse({
+      models: [{ id: 'grok-4-1-fast', aliases: ['grok-4', 'not-grok'], output_modalities: ['text'] }],
+    });
+
+    expect(ids).toEqual(['grok-4-1-fast', 'grok-4']);
+  });
+
+  it('filters out models without text output', () => {
+    const ids = extractGrokModelIdsFromLanguageModelsResponse({
+      models: [
+        { id: 'grok-4', output_modalities: ['image'] },
+        { id: 'grok-3-mini', output_modalities: ['text'] },
+      ],
+    });
+
+    expect(ids).toEqual(['grok-3-mini']);
   });
 });

@@ -87,10 +87,19 @@ interface AnthropicModelResponse {
 }
 
 interface XAIModelResponse {
-  data?: Array<{
+  models?: Array<{
     id?: string;
+    aliases?: string[];
     input_modalities?: string[];
     output_modalities?: string[];
+    outputModalities?: string[];
+  }>;
+  data?: Array<{
+    id?: string;
+    aliases?: string[];
+    input_modalities?: string[];
+    output_modalities?: string[];
+    outputModalities?: string[];
   }>;
 }
 
@@ -224,6 +233,40 @@ export function buildModelCatalog(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function extractGrokModelIdsFromLanguageModelsResponse(payload: unknown): string[] {
+  const candidates: unknown[] = [];
+  if (isRecord(payload)) {
+    if (Array.isArray(payload.models)) {
+      candidates.push(...payload.models);
+    }
+    if (Array.isArray(payload.data)) {
+      candidates.push(...payload.data);
+    }
+    if (isRecord(payload.data) && Array.isArray(payload.data.data)) {
+      candidates.push(...payload.data.data);
+    }
+  }
+
+  return candidates.flatMap((model) => {
+    if (!isRecord(model)) return [];
+    const outputModalities = model.output_modalities ?? model.outputModalities;
+    if (!(Array.isArray(outputModalities) ? outputModalities.includes('text') : outputModalities == null)) return [];
+
+    const primary = typeof model.id === 'string' ? model.id.trim() : '';
+    const aliases = Array.isArray(model.aliases)
+      ? model.aliases
+          .map((alias) => (typeof alias === 'string' ? alias.trim() : ''))
+          .filter(Boolean)
+      : [];
+
+    return [primary, ...aliases].filter((id) => id.startsWith('grok-'));
+  });
+}
+
 async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderConfig): Promise<ProviderModelCatalog> {
   const headers: Record<string, string> = {};
   if (config.apiKey) {
@@ -292,10 +335,7 @@ async function fetchGrokModels(config: ProviderConfig): Promise<ProviderModelCat
     'Mercury could not fetch models for this Grok key. Please re-enter it.',
   );
 
-  const ids = (data.data ?? [])
-    .filter((model) => model.output_modalities?.includes('text') || model.output_modalities == null)
-    .map((model) => model.id?.trim() ?? '')
-    .filter((id) => id.startsWith('grok-'));
+  const ids = extractGrokModelIdsFromLanguageModelsResponse(data);
 
   return buildModelCatalog('grok', ids, config.model);
 }
