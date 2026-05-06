@@ -158,13 +158,21 @@ export class CLIChannel extends BaseChannel {
       // Write prompt on a new line below the Ink TUI area
       process.stdout.write('\n> ');
 
-      const cleanup = () => {
+      let settled = false;
+
+      const finish = (result: string) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
         rl.close();
         this.ensureRawMode();
         this.startRawModeWatchdog();
+        resolve(result);
       };
 
       const onAbort = () => {
+        if (settled) return;
+        settled = true;
         rl.close();
         this.ensureRawMode();
         this.startRawModeWatchdog();
@@ -174,24 +182,18 @@ export class CLIChannel extends BaseChannel {
       signal?.addEventListener('abort', onAbort, { once: true });
 
       rl.on('line', (line: string) => {
-        signal?.removeEventListener('abort', onAbort);
-        cleanup();
-        resolve(line.trim());
+        finish(line.trim());
       });
 
       rl.on('close', () => {
-        signal?.removeEventListener('abort', onAbort);
-        // If closed without a line (e.g. Ctrl+C), still re-acquire raw mode
-        this.ensureRawMode();
-        this.startRawModeWatchdog();
-        resolve('');
+        // Emitted when rl.close() is called or stdin ends.
+        // If we haven't resolved yet (e.g. Ctrl+C path), resolve with empty.
+        finish('');
       });
 
       rl.on('SIGINT', () => {
-        signal?.removeEventListener('abort', onAbort);
-        cleanup();
-        // Return empty string to signal cancellation — caller decides what to do
-        resolve('');
+        // Ctrl+C while in readline — resolve empty to let caller decide.
+        finish('');
       });
     });
   }
