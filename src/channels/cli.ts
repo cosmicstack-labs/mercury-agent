@@ -3,6 +3,7 @@ import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import * as readline from 'node:readline';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
@@ -17,6 +18,7 @@ export interface TuiState {
   toolSteps: ToolStep[];
   isThinking: boolean;
   permissionPrompt: PermissionPromptState | null;
+  isLineInputActive: boolean;
   agentName: string;
   version: string;
   provider: ProviderInfo | null;
@@ -38,6 +40,7 @@ const defaultState: TuiState = {
   toolSteps: [],
   isThinking: false,
   permissionPrompt: null,
+  isLineInputActive: false,
   agentName: 'Mercury',
   version: '1.1.5',
   provider: null,
@@ -66,6 +69,9 @@ export class CLIChannel extends BaseChannel {
   private state: TuiState = { ...defaultState };
   private spotifyClient: any = null;
   private rawModeWatchdog: NodeJS.Timeout | null = null;
+  private lineInputActive = false;
+  private lineInputAbortController: AbortController | null = null;
+  private lineInputPromise: Promise<void> | null = null;
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -84,6 +90,7 @@ export class CLIChannel extends BaseChannel {
   }
 
   async stop(): Promise<void> {
+    this.stopLineInput();
     this.stopRawModeWatchdog();
     this.inkInstance?.unmount();
     this.inkInstance = null;
@@ -130,6 +137,130 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
+  /**
+   * Read a single line of input using Node.js readline in cooked mode.
+   * This allows IME (Input Method Editor) composition for CJK characters,
+   * which raw mode fundamentally prevents.
+   * Temporarily releases raw mode, collects a line, then re-acquires raw mode.
+   */
+  private readLineInput(signal?: AbortSignal): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(new Error('aborted')); return; }
+
+      this.stopRawModeWatchdog();
+      this.releaseRawMode();
+
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      // Write prompt on a new line below the Ink TUI area
+      process.stdout.write('\n> ');
+
+      const cleanup = () => {
+        rl.close();
+        this.ensureRawMode();
+        this.startRawModeWatchdog();
+      };
+
+      const onAbort = () => {
+        rl.close();
+        this.ensureRawMode();
+        this.startRawModeWatchdog();
+        reject(new Error('aborted'));
+      };
+
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      rl.on('line', (line: string) => {
+        signal?.removeEventListener('abort', onAbort);
+        cleanup();
+        resolve(line.trim());
+      });
+
+      rl.on('close', () => {
+        signal?.removeEventListener('abort', onAbort);
+        // If closed without a line (e.g. Ctrl+C), still re-acquire raw mode
+        this.ensureRawMode();
+        this.startRawModeWatchdog();
+        resolve('');
+      });
+
+      rl.on('SIGINT', () => {
+        signal?.removeEventListener('abort', onAbort);
+        cleanup();
+        // Return empty string to signal cancellation — caller decides what to do
+        resolve('');
+      });
+    });
+  }
+
+  /**
+   * Main readline input loop for chat/coding modes.
+   * Runs as long as the mode stays 'chat' or 'coding'.
+   * Stops when mode changes to something else (menu, spotify, splash, etc.)
+   * or when an AbortController signals abort (e.g. for permission prompts).
+   */
+  private async lineInputLoop(onInput: (text: string) => void): Promise<void> {
+    this.lineInputActive = true;
+    this.update({ isLineInputActive: true });
+
+    const abortController = new AbortController();
+    this.lineInputAbortController = abortController;
+
+    try {
+      while (!abortController.signal.aborted) {
+        const mode = this.state.mode;
+        if (mode !== 'chat' && mode !== 'coding') break;
+
+        try {
+          const line = await this.readLineInput(abortController.signal);
+          if (abortController.signal.aborted) break;
+
+          // Empty line from SIGINT or close — if still in chat, keep looping
+          if (line === '') continue;
+
+          // Dispatch through the same inputHandler
+          this.inputHandler?.(line);
+        } catch (err: any) {
+          if (err?.message === 'aborted') break;
+          // Unexpected error — log and continue
+          logger.error('readline input error', err);
+        }
+      }
+    } finally {
+      this.lineInputActive = false;
+      this.lineInputAbortController = null;
+      this.update({ isLineInputActive: false });
+    }
+  }
+
+  /**
+   * Start the line input loop if not already running and mode requires it.
+   */
+  private startLineInputIfNeeded(onInput: (text: string) => void): void {
+    const mode = this.state.mode;
+    if (this.lineInputActive || (mode !== 'chat' && mode !== 'coding')) return;
+    this.lineInputPromise = this.lineInputLoop(onInput);
+    // Handle unhandled rejections from the loop
+    this.lineInputPromise?.catch((err) => {
+      logger.error('lineInputLoop error', err);
+    });
+  }
+
+  /**
+   * Stop the line input loop, aborting any pending readline.
+   */
+  private stopLineInput(): void {
+    if (this.lineInputAbortController) {
+      this.lineInputAbortController.abort();
+      this.lineInputAbortController = null;
+    }
+    this.lineInputActive = false;
+    this.update({ isLineInputActive: false });
+  }
+
   private update(partial: Partial<TuiState>): void {
     this.state = { ...this.state, ...partial };
     this.rerender();
@@ -149,6 +280,7 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
+          this.stopLineInput();
           this.stopRawModeWatchdog();
           this.inkInstance?.unmount();
           this.inkInstance = null;
@@ -156,6 +288,7 @@ export class CLIChannel extends BaseChannel {
           this.exitHandler?.();
         },
         spotifyClient: this.spotifyClient,
+        isLineInputActive: this.lineInputActive,
       }),
     );
   }
@@ -168,14 +301,19 @@ export class CLIChannel extends BaseChannel {
       const trimmed = text.trim();
       if (trimmed === '/chat' || trimmed === '/c') {
         this.update({ mode: 'chat' });
+        this.startLineInputIfNeeded(onInput);
         return;
       }
       if (trimmed === '/coding') {
         this.update({ mode: 'coding' });
+        this.startLineInputIfNeeded(onInput);
         return;
       }
       if (trimmed === '/workspace' || trimmed === '/ws') {
-        this.update({ mode: this.state.workspace?.active ? 'workspace' : 'coding' });
+        const newMode = this.state.workspace?.active ? 'workspace' : 'coding';
+        if (newMode === 'workspace') this.stopLineInput();
+        this.update({ mode: newMode });
+        if (newMode === 'coding') this.startLineInputIfNeeded(onInput);
         return;
       }
       if (trimmed === '/ws up') {
@@ -192,6 +330,7 @@ export class CLIChannel extends BaseChannel {
       }
       if (trimmed === '/ws exit' || trimmed === '/workspace exit' || trimmed === '/general') {
         this.exitWorkspaceToChat();
+        this.startLineInputIfNeeded(onInput);
         return;
       }
       if (trimmed === '/ws close-file') {
@@ -207,14 +346,17 @@ export class CLIChannel extends BaseChannel {
         return;
       }
       if (trimmed === '/menu' || trimmed === '/m') {
+        this.stopLineInput();
         this.update({ mode: 'menu' });
         return;
       }
       if (trimmed === '/spotify' || trimmed === '/s') {
+        this.stopLineInput();
         this.update({ mode: 'spotify' });
         return;
       }
       if (trimmed === '/splash') {
+        this.stopLineInput();
         this.update({ mode: 'splash' });
         return;
       }
@@ -245,6 +387,7 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
+          this.stopLineInput();
           this.stopRawModeWatchdog();
           this.inkInstance?.unmount();
           this.inkInstance = null;
@@ -252,6 +395,7 @@ export class CLIChannel extends BaseChannel {
           this.exitHandler?.();
         },
         spotifyClient: this.spotifyClient,
+        isLineInputActive: this.lineInputActive,
       }),
       { exitOnCtrlC: false, patchConsole: false },
     );
@@ -379,6 +523,10 @@ export class CLIChannel extends BaseChannel {
     const { selectWithArrowKeys } = await import('../utils/arrow-select.js');
     this.menuAbortController = new AbortController();
 
+    // Pause line input while the arrow-select menu uses raw mode
+    const wasLineInputActive = this.lineInputActive;
+    this.stopLineInput();
+
     try {
       return await runner((title, options) => selectWithArrowKeys(title, options, {
         signal: this.menuAbortController?.signal,
@@ -394,6 +542,10 @@ export class CLIChannel extends BaseChannel {
         this.menuAbortController = null;
       }
       this.ensureRawMode();
+      // Restart line input if it was active before the menu
+      if (wasLineInputActive && this.inputHandler && (this.state.mode === 'chat' || this.state.mode === 'coding')) {
+        this.startLineInputIfNeeded(this.inputHandler);
+      }
     }
   }
 
@@ -404,8 +556,17 @@ export class CLIChannel extends BaseChannel {
   }
 
   async prompt(question: string): Promise<string> {
+    // Pause line input so raw-mode useInput can handle the prompt
+    this.stopLineInput();
+
     return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
+      this.permissionResolver = (val) => {
+        resolve(String(val));
+        // Restart line input if we're back in chat/coding mode
+        if (this.inputHandler && (this.state.mode === 'chat' || this.state.mode === 'coding')) {
+          this.startLineInputIfNeeded(this.inputHandler);
+        }
+      };
       this.update({
         permissionPrompt: {
           type: 'ask',
@@ -419,8 +580,17 @@ export class CLIChannel extends BaseChannel {
   async askPermissionMode(): Promise<PermissionMode> {
     if (!process.stdout.isTTY) return 'ask-me';
 
+    // Pause line input so raw-mode useInput can handle the permission prompt
+    this.stopLineInput();
+
     return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(val as PermissionMode);
+      this.permissionResolver = (val) => {
+        resolve(val as PermissionMode);
+        // Restart line input if we're back in chat/coding mode
+        if (this.inputHandler && (this.state.mode === 'chat' || this.state.mode === 'coding')) {
+          this.startLineInputIfNeeded(this.inputHandler);
+        }
+      };
       this.update({
         permissionPrompt: {
           type: 'mode',
@@ -436,8 +606,17 @@ export class CLIChannel extends BaseChannel {
   }
 
   async askPermission(prompt: string): Promise<string> {
+    // Pause line input so raw-mode useInput can handle the permission prompt
+    this.stopLineInput();
+
     return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
+      this.permissionResolver = (val) => {
+        resolve(String(val));
+        // Restart line input if we're back in chat/coding mode
+        if (this.inputHandler && (this.state.mode === 'chat' || this.state.mode === 'coding')) {
+          this.startLineInputIfNeeded(this.inputHandler);
+        }
+      };
       this.update({
         permissionPrompt: {
           type: 'ask',
@@ -454,10 +633,17 @@ export class CLIChannel extends BaseChannel {
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
+    // Pause line input so raw-mode useInput can handle the prompt
+    this.stopLineInput();
+
     return new Promise((resolve) => {
       this.permissionResolver = (val) => {
         const normalized = typeof val === 'string' ? val.trim().toLowerCase() : val;
         resolve(normalized === true || normalized === 'yes' || normalized === 'y');
+        // Restart line input if we're back in chat/coding mode
+        if (this.inputHandler && (this.state.mode === 'chat' || this.state.mode === 'coding')) {
+          this.startLineInputIfNeeded(this.inputHandler);
+        }
       };
       this.update({
         permissionPrompt: {

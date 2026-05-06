@@ -74,9 +74,10 @@ export interface TuiAppProps {
   onPermissionResolve: (value: string | boolean) => void;
   onExit: () => void;
   spotifyClient?: SpotifyClient | null;
+  isLineInputActive?: boolean;
 }
 
-export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
+export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient, isLineInputActive }: TuiAppProps) {
   const { exit } = useApp();
   const [input, setInput] = React.useState('');
   const [permIdx, setPermIdx] = React.useState(0);
@@ -537,8 +538,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (key.ctrl || key.meta) return;
 
-    if (ch && ch.length === 1 && !key.escape) {
-      setInput((prev) => prev + ch);
+    // Accept any printable character (CJK, emoji, pasted text) — not just single-byte ASCII.
+    // Filter out control characters (0x00-0x1F, 0x7F) and escape.
+    if (ch && !key.escape && !/[\x00-\x1F\x7F]/.test(ch)) {
+      // When the readline-based line input is active (IME-friendly cooked mode),
+      // skip appending characters here — readline handles the input buffer.
+      if (!isLineInputActive) {
+        setInput((prev) => prev + ch);
+      }
     }
   });
 
