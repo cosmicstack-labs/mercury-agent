@@ -72,6 +72,7 @@ export class CLIChannel extends BaseChannel {
   private lineInputActive = false;
   private lineInputAbortController: AbortController | null = null;
   private lineInputPromise: Promise<void> | null = null;
+  private readlineWaiting = false;
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -150,6 +151,9 @@ export class CLIChannel extends BaseChannel {
       this.stopRawModeWatchdog();
       this.releaseRawMode();
 
+      // Suppress Ink re-renders while readline owns the terminal output
+      this.readlineWaiting = true;
+
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
@@ -159,41 +163,34 @@ export class CLIChannel extends BaseChannel {
       process.stdout.write('\n> ');
 
       let settled = false;
-
-      const finish = (result: string) => {
+      const settle = (result: string, asReject = false) => {
         if (settled) return;
         settled = true;
         signal?.removeEventListener('abort', onAbort);
+        this.readlineWaiting = false;
         rl.close();
         this.ensureRawMode();
         this.startRawModeWatchdog();
-        resolve(result);
+        if (asReject) reject(new Error('aborted'));
+        else resolve(result);
       };
 
       const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        rl.close();
-        this.ensureRawMode();
-        this.startRawModeWatchdog();
-        reject(new Error('aborted'));
+        settle('', true);
       };
 
       signal?.addEventListener('abort', onAbort, { once: true });
 
       rl.on('line', (line: string) => {
-        finish(line.trim());
+        settle(line.trim());
       });
 
       rl.on('close', () => {
-        // Emitted when rl.close() is called or stdin ends.
-        // If we haven't resolved yet (e.g. Ctrl+C path), resolve with empty.
-        finish('');
+        settle('');
       });
 
       rl.on('SIGINT', () => {
-        // Ctrl+C while in readline — resolve empty to let caller decide.
-        finish('');
+        settle('');
       });
     });
   }
@@ -225,6 +222,8 @@ export class CLIChannel extends BaseChannel {
 
           // Dispatch through the same inputHandler
           this.inputHandler?.(line);
+          // Flush any state updates that were suppressed during readline wait
+          this.rerender();
         } catch (err: any) {
           if (err?.message === 'aborted') break;
           // Unexpected error — log and continue
@@ -270,6 +269,11 @@ export class CLIChannel extends BaseChannel {
 
   private rerender(): void {
     if (!this.inkInstance) return;
+    // Suppress Ink re-renders while readline owns the terminal output
+    // to avoid visual conflicts with the readline prompt.
+    // State updates are still applied; the next rerender after readline
+    // finishes will flush them.
+    if (this.readlineWaiting) return;
     this.inkInstance.rerender(
       React.createElement(TuiApp, {
         state: this.state,
