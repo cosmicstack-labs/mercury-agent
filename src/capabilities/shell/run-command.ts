@@ -30,6 +30,7 @@ function executeCommand(command: string, cwd: string, timeoutMs: number): Promis
       cwd,
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     const finish = (exitCode: number | null, timedOut: boolean) => {

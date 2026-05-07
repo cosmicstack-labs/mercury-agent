@@ -111,6 +111,7 @@ export class BackgroundTaskManager {
         cwd,
         shell: true,
         stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
       });
 
       task.pid = child.pid ?? undefined;
