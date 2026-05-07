@@ -177,9 +177,11 @@ export class TelegramChannel extends BaseChannel {
       }
 
       this.pendingApprovals.delete(data);
-      resolver();
       const action = data.split(':')[1];
-      await ctx.answerCallbackQuery({ text: action === 'no' ? 'Denied' : 'Approved' });
+      const resultLabel = this.resolveActionResultLabel(action);
+      resolver();
+      await ctx.answerCallbackQuery({ text: resultLabel });
+      await this.editMessageToResult(ctx, resultLabel);
     });
 
     bot.catch((err) => {
@@ -469,11 +471,12 @@ export class TelegramChannel extends BaseChannel {
 
     const id = `perm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const keyboard = new InlineKeyboard()
-      .text('Allow', `${id}:yes`)
-      .text('Always', `${id}:always`)
-      .text('Deny', `${id}:no`);
+      .text('✅ Allow Once', `${id}:yes`)
+      .text('✅ Always', `${id}:always`)
+      .row()
+      .text('❌ Deny', `${id}:no`);
 
-    const html = mdToTelegram(prompt);
+    const html = `⚠️ <b>Approval Required</b>\n\n${mdToTelegram(prompt)}`;
 
     try {
       await this.bot.api.sendMessage(chatId, html, {
@@ -507,16 +510,16 @@ export class TelegramChannel extends BaseChannel {
 
     const id = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const keyboard = new InlineKeyboard()
-      .text('Continue', `${id}:yes`)
-      .text('Stop', `${id}:no`);
+      .text('✅ Continue', `${id}:yes`)
+      .text('❌ Stop', `${id}:no`);
 
     try {
-      await this.bot.api.sendMessage(chatId, mdToTelegram(question), {
+      await this.bot.api.sendMessage(chatId, `⚠️ ${mdToTelegram(question)}`, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
     } catch {
-      await this.bot.api.sendMessage(chatId, question, {
+      await this.bot.api.sendMessage(chatId, `⚠️ ${question}`, {
         reply_markup: keyboard,
       });
     }
@@ -543,7 +546,7 @@ export class TelegramChannel extends BaseChannel {
       .text('🔒 Ask Me', `${id}:ask-me`)
       .text('✅ Allow All', `${id}:allow-all`);
 
-    const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
+    const html = `⚙️ <b>Permission Mode</b>\n\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
 
     try {
       await this.bot.api.sendMessage(chatId, html, {
@@ -680,8 +683,12 @@ export class TelegramChannel extends BaseChannel {
       }
 
       saveConfig(this.config);
+      const resultText = this.appendResultToMessage(
+        ctx.callbackQuery?.message?.text,
+        `✅ Approved by ${actorUserId}\nUser: ${this.formatRequestLabel(request)}`,
+      );
       await ctx.answerCallbackQuery({ text: 'Approved' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.editMessageText(resultText, { reply_markup: undefined }).catch(() => {});
       await this.sendDirectMessage(
         request.chatId,
         `Telegram access approved. You can now chat with Mercury.\n\nTelegram access: ${getTelegramAccessSummary(this.config)}`,
@@ -698,8 +705,12 @@ export class TelegramChannel extends BaseChannel {
       }
 
       saveConfig(this.config);
+      const resultText = this.appendResultToMessage(
+        ctx.callbackQuery?.message?.text,
+        `❌ Rejected by ${actorUserId}\nUser: ${this.formatRequestLabel(request)}`,
+      );
       await ctx.answerCallbackQuery({ text: 'Rejected' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.editMessageText(resultText, { reply_markup: undefined }).catch(() => {});
       await this.sendDirectMessage(
         request.chatId,
         'Your Telegram access request was rejected. This bot is not available to you.',
@@ -1008,6 +1019,60 @@ export class TelegramChannel extends BaseChannel {
 
   private isVideoFile(ext: string): boolean {
     return ['.mp4', '.mov', '.avi', '.mkv', '.webm'].includes(ext);
+  }
+
+  private resolveActionResultLabel(action: string): string {
+    switch (action) {
+      case 'yes': return '✅ Allow Once';
+      case 'always': return '✅ Always Allow';
+      case 'no': return '❌ Denied';
+      case 'ask-me': return '🔒 Ask Me';
+      case 'allow-all': return '✅ Allow All';
+      default: return 'Resolved';
+    }
+  }
+
+  private async editMessageToResult(ctx: any, resultLabel: string): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat?.id;
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    if (!chatId || !messageId || !this.bot) return;
+
+    const from = ctx.callbackQuery?.from;
+    const userName = from?.first_name ? from.first_name : this.formatCallbackActor(from?.id);
+    const resultText = `${resultLabel} by ${userName}`;
+    const message = ctx.callbackQuery?.message;
+    const originalText = typeof message?.text === 'string'
+      ? message.text
+      : typeof message?.caption === 'string'
+        ? message.caption
+        : undefined;
+    const newHtml = this.escapeHtml(this.appendResultToMessage(originalText, resultText));
+
+    try {
+      await this.bot.api.editMessageText(chatId, messageId, newHtml, {
+        parse_mode: 'HTML',
+        reply_markup: undefined,
+      });
+    } catch {
+      try {
+        await this.bot.api.editMessageText(chatId, messageId, this.stripHtml(newHtml), {
+          reply_markup: undefined,
+        });
+      } catch {
+        // final edit failed, ignore
+      }
+    }
+  }
+
+  private appendResultToMessage(originalText: string | undefined, resultText: string): string {
+    const trimmedOriginal = originalText?.trim();
+    if (!trimmedOriginal) return resultText;
+    return `${trimmedOriginal}\n\n${resultText}`;
+  }
+
+  private formatCallbackActor(userId: number | undefined): string {
+    if (userId !== undefined) return String(userId);
+    return 'Unknown user';
   }
 
   private async sendDirectMessage(chatId: number, content: string): Promise<void> {
