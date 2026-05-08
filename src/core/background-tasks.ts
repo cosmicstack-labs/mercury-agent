@@ -47,9 +47,44 @@ const BG_TASKS_FILE = 'background-tasks.json';
 
 let taskCounter = 0;
 
+const ADJECTIVES = [
+  'swift', 'calm', 'bold', 'warm', 'cool', 'keen', 'neat', 'wise',
+  'fair', 'glad', 'blue', 'gold', 'soft', 'wild', 'deep', 'pure',
+  'slim', 'tall', 'kind', 'fast', 'red', 'dark', 'pale', 'loud',
+  'thin', 'rich', 'raw', 'dry', 'old', 'new', 'big', 'low',
+  'shy', 'dim', 'hot', 'icy', 'odd', 'tan', 'apt', 'fit',
+  'lax', 'coy', 'sly', 'wry', 'zen', 'deft', 'grim', 'snug',
+];
+
+const NOUNS = [
+  'fox', 'owl', 'elk', 'ant', 'bee', 'cat', 'dog', 'ram',
+  'jay', 'cod', 'eel', 'yak', 'bat', 'hen', 'ape', 'gnu',
+  'oak', 'elm', 'ash', 'bay', 'fir', 'ivy', 'gem', 'ore',
+  'sun', 'moon', 'star', 'wave', 'wind', 'rain', 'snow', 'bolt',
+  'flame', 'spark', 'leaf', 'seed', 'root', 'vine', 'reef', 'cove',
+  'peak', 'vale', 'dune', 'isle', 'pond', 'brook', 'dale', 'mesa',
+];
+
+const usedIds = new Set<string>();
+
 function nextId(): string {
   taskCounter += 1;
-  return `bg-${Date.now().toString(36)}-${taskCounter.toString(36)}`;
+  // Try up to 10 times to find a unique combo
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+    const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+    const id = `${adj}-${noun}`;
+    if (!usedIds.has(id)) {
+      usedIds.add(id);
+      return id;
+    }
+  }
+  // Fallback: append counter
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const id = `${adj}-${noun}-${taskCounter}`;
+  usedIds.add(id);
+  return id;
 }
 
 function tailTruncate(str: string, maxLen: number): string {
@@ -239,6 +274,30 @@ export class BackgroundTaskManager {
     return true;
   }
 
+  cancelAll(): number {
+    let count = 0;
+    for (const [id, task] of this.tasks) {
+      if (task.status === 'running') {
+        if (task.type === 'shell') {
+          this.killTask(id, 'SIGTERM');
+          const sigkill = setTimeout(() => {
+            this.killTask(id, 'SIGKILL');
+          }, SIGTERM_GRACE_MS);
+          this.sigkillTimeouts.set(id, sigkill);
+        }
+        task.status = 'cancelled';
+        task.completedAt = Date.now();
+        task.exitCode = null;
+        this.clearTimeouts(id);
+        this.notifyComplete(task);
+        count++;
+      }
+    }
+    if (count > 0) this.save();
+    logger.info({ count }, 'All background tasks cancelled');
+    return count;
+  }
+
   get(taskId: string): BackgroundTask | undefined {
     return this.tasks.get(taskId);
   }
@@ -377,6 +436,7 @@ export class BackgroundTaskManager {
           task.stderr = `${task.stderr}\nRecovered after restart: task was running when process exited.`.trim();
         }
         this.tasks.set(task.id, task);
+        usedIds.add(task.id);
       }
 
       logger.info({ count: this.tasks.size }, 'Background tasks loaded');

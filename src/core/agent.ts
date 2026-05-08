@@ -546,17 +546,28 @@ export class Agent {
       return;
     }
 
-    if (sub === 'cancel') {
+    if (sub === 'cancel' || sub === 'stop' || sub === 'kill') {
       const taskId = parts[2];
       if (!taskId) {
-        await channel.send('Usage: /bg cancel <id>', msg.channelId);
+        await channel.send(`Usage: /bg ${sub} <id>`, msg.channelId);
         return;
       }
       const cancelled = this.backgroundTasks.cancel(taskId);
       if (cancelled) {
-        await channel.send(`⛔ Cancelled background task ${taskId}.`, msg.channelId);
+        await channel.send(`⛔ Stopped background task ${taskId}.`, msg.channelId);
       } else {
-        await channel.send(`Task ${taskId} not found or not running.`, msg.channelId);
+        await channel.send(`Task "${taskId}" not found or not running.`, msg.channelId);
+      }
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    if (sub === 'killall' || sub === 'stopall') {
+      const count = this.backgroundTasks.cancelAll();
+      if (count === 0) {
+        await channel.send('No running background tasks to stop.', msg.channelId);
+      } else {
+        await channel.send(`⛔ Stopped ${count} background task${count === 1 ? '' : 's'}.`, msg.channelId);
       }
       this.syncBgTasksToTui();
       return;
@@ -578,22 +589,6 @@ export class Agent {
     }
 
     const colonIdx = trimmed.indexOf(':');
-    if (sub.startsWith('cancel')) {
-      const taskId2 = parts[2];
-      if (!taskId2) {
-        await channel.send('Usage: /bg cancel <id>', msg.channelId);
-        return;
-      }
-      const cancelled = this.backgroundTasks.cancel(taskId2);
-      if (cancelled) {
-        await channel.send(`⛔ Cancelled background task ${taskId2}.`, msg.channelId);
-      } else {
-        await channel.send(`Task ${taskId2} not found or not running.`, msg.channelId);
-      }
-      this.syncBgTasksToTui();
-      return;
-    }
-
     if (colonIdx !== -1 && trimmed[colonIdx + 1] === ' ') {
       const taskDescription = trimmed.slice(colonIdx + 1).trim();
       if (!taskDescription) {
@@ -620,7 +615,7 @@ export class Agent {
 
     const command = args || '';
     if (!command) {
-      await channel.send('Usage:\n• /bg <command> — run a shell command in the background\n• /bg: <task> — delegate an LLM task to the background\n• /bg current — move the active task to the background\n• /bg list — show all background tasks\n• /bg <id> — show task details\n• /bg cancel <id> — cancel a running task\n• /bg clear — prune completed tasks', msg.channelId);
+      await channel.send('Usage:\n• /bg <command> — run a shell command in the background\n• /bg: <task> — delegate an LLM task to the background\n• /bg current — move the active task to the background\n• /bg list — show all background tasks\n• /bg <id> — show task details\n• /bg stop <id> — stop a running task\n• /bg killall — stop all running tasks\n• /bg clear — prune completed tasks', msg.channelId);
       return;
     }
 
