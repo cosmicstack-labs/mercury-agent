@@ -129,7 +129,7 @@ export class SubAgent {
 
       try {
         const provider = this.providers.getDefault();
-        const maxSteps = this.config.maxSteps || 10;
+        const maxSteps = this.config.maxSteps || 25;
 
         logger.info({ agentId: this.config.id, provider: provider.name, maxSteps }, 'Sub-agent generating response');
 

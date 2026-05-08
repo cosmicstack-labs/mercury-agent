@@ -108,6 +108,7 @@ export function getManual(): string {
     ['/menu', 'Open the CLI command picker with arrow-key navigation'],
     ['/help', 'Show this manual'],
     ['/status', 'Show config and budget info'],
+    ['/progress', 'Show live status for the current long task'],
     ['/telegram', 'CLI chat only: open the Telegram management menu'],
     ['/telegram pending', 'CLI chat only: list pending Telegram requests'],
     ['/telegram users', 'CLI chat only: list approved Telegram users'],

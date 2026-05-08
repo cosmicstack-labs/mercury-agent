@@ -46,9 +46,9 @@ class ToolCallLoopDetector {
   private recentStepTexts: Array<string> = [];
   private consecutiveNoActionSteps = 0;
 
-  private static readonly ABSOLUTE_MAX = 25;
-  private static readonly FAILED_ABSOLUTE_MAX = 12;
-  private static readonly NO_ACTION_MAX = 5;
+  private static readonly ABSOLUTE_MAX = 50;
+  private static readonly FAILED_ABSOLUTE_MAX = 15;
+  private static readonly NO_ACTION_MAX = 6;
 
   private static readonly HIGH_TOLERANCE_TOOLS = new Set([
     'fetch_url',
@@ -247,8 +247,13 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 10;
-const MAX_RESPONSE_TOKENS = 1600;
+const MAX_STEPS = 25;
+const MAX_RESPONSE_TOKENS = 4096;
+const HEARTBEAT_INITIAL_MS = 20000;
+const HEARTBEAT_MAX_MS = 60000;
+const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
+const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
+const MAX_STALL_MS = 4 * 60 * 1000;
 
 export class Agent {
   readonly lifecycle: Lifecycle;
@@ -260,7 +265,9 @@ export class Agent {
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
-  private autoBackgroundHandoff = false;
+  private lastProgressAt = 0;
+  private currentActivity = '';
+  private completedStepCount = 0;
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
   private spotifyClient?: SpotifyClient;
@@ -335,23 +342,6 @@ export class Agent {
 
     const trimmed = msg.content.trim();
 
-    if (
-      this.processing &&
-      !trimmed.startsWith('/') &&
-      msg.channelType !== 'internal' &&
-      this.supervisor &&
-      this.currentMessage &&
-      this.currentAbort &&
-      !this.currentAbort.signal.aborted &&
-      !this.autoBackgroundHandoff &&
-      this.currentMessage.channelType === msg.channelType &&
-      this.currentMessage.channelId === msg.channelId
-    ) {
-      void this.autoBackgroundCurrentTask(msg).catch((err) => {
-        logger.warn({ err }, 'Auto-background handoff failed');
-      });
-    }
-
     if (this.processing && trimmed.startsWith('/')) {
       this.handleFastPathCommand(msg).catch((err) => {
         logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
@@ -361,37 +351,6 @@ export class Agent {
 
     this.messageQueue.push(msg);
     this.processQueue();
-  }
-
-  private async autoBackgroundCurrentTask(interruptMsg: ChannelMessage): Promise<void> {
-    if (!this.currentMessage || !this.currentAbort || !this.supervisor) return;
-    if (this.currentAbort.signal.aborted || this.autoBackgroundHandoff) return;
-    this.autoBackgroundHandoff = true;
-    try {
-      const taskDescription = this.currentMessage.content.trim();
-      if (!taskDescription) return;
-
-      this.currentAbort.abort();
-
-      const agentId = await this.supervisor.spawn({
-        task: taskDescription,
-        sourceChannelId: this.currentMessage.channelId,
-        sourceChannelType: this.currentMessage.channelType as any,
-        workingDirectory: this.capabilities.getCwd(),
-      });
-      const bgId = this.backgroundTasks.spawnAgent(taskDescription, this.capabilities.getCwd(), agentId);
-      this.syncBgTasksToTui();
-
-      const channel = this.channels.getChannelForMessage(interruptMsg);
-      if (channel) {
-        await channel.send(
-          `📋 I moved the in-progress task to background (${bgId}) so I can respond now. Use /bg ${bgId} or /bg list for progress.`,
-          interruptMsg.channelId,
-        ).catch(() => {});
-      }
-    } finally {
-      this.autoBackgroundHandoff = false;
-    }
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
@@ -438,8 +397,23 @@ export class Agent {
       return;
     }
 
+    if (trimmed === '/progress' || trimmed === '/still') {
+      if (!this.processing || !this.currentMessage) {
+        await channel.send('No active foreground task.', msg.channelId);
+        return;
+      }
+      const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
+      const activityLine = this.currentActivity ? `\nCurrently: ${this.currentActivity}` : '';
+      const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      await channel.send(
+        `⏳ Working on your task. Elapsed: ${elapsedSec}s${stepInfo}.${activityLine}\nUse /bg current to move it to background.`,
+        msg.channelId,
+      );
+      return;
+    }
+
     if (trimmed === '/help') {
-      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /spotify, /code, /memory, /bg', msg.channelId);
+      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /memory, /bg', msg.channelId);
       return;
     }
 
@@ -462,7 +436,8 @@ export class Agent {
       const agentList = activeAgents.map(a => `**${a.id}**: ${a.task.slice(0, 40)}`).join(', ');
       await channel.send(`I'm busy working on sub-agent tasks (${agentList}). Your message has been queued — I'll respond once I'm free. Use /agents to check status.`, msg.channelId);
     } else {
-      await channel.send("I'm busy processing. Use /bg current to move this task to the background, or wait for it to finish.", msg.channelId);
+      const elapsedSec = this.currentMessage ? Math.round((Date.now() - this.currentMessage.timestamp) / 1000) : 0;
+      await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
     }
 
     this.messageQueue.push(msg);
@@ -512,7 +487,7 @@ export class Agent {
   }
 
   private async handleBgCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
-    const parts = trimmed.split(/\s+/);
+    const parts = trimmed.trim().split(/\s+/);
     const sub = parts.length > 1 ? parts[1] : '';
     const args = parts.slice(1).join(' ');
 
@@ -660,6 +635,83 @@ export class Agent {
     }
   }
 
+  private markProgress(activity?: string): void {
+    this.lastProgressAt = Date.now();
+    if (activity) {
+      this.currentActivity = activity;
+    }
+  }
+
+  private withProgressStream(content: AsyncIterable<string>): AsyncIterable<string> {
+    const self = this;
+    return (async function* () {
+      for await (const chunk of content) {
+        self.markProgress('Streaming response...');
+        yield chunk;
+      }
+    })();
+  }
+
+  private startForegroundHeartbeat(msg: ChannelMessage): () => void {
+    if (msg.channelType === 'internal') return () => {};
+
+    let heartbeatCount = 0;
+    let currentIntervalMs = HEARTBEAT_INITIAL_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = () => {
+      if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
+      const channel = this.channels.getChannelForMessage(msg);
+      if (!channel) return;
+
+      const elapsedMs = Date.now() - this.currentMessage.timestamp;
+      const stallMs = Date.now() - this.lastProgressAt;
+      const elapsedSec = Math.round(elapsedMs / 1000);
+      const stallSec = Math.round(stallMs / 1000);
+
+      if (stallMs >= MAX_STALL_MS && this.currentAbort && !this.currentAbort.signal.aborted) {
+        logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
+        this.currentAbort.abort();
+        void channel.send(
+          `⚠ Task stalled (no progress for ${stallSec}s). Stopped to avoid hanging. You can retry or use /bg current sooner for long tasks.`,
+          msg.channelId,
+        ).catch(() => {});
+        return;
+      }
+
+      heartbeatCount++;
+      const handoffHint = elapsedMs >= LONG_TASK_HANDOFF_SUGGEST_MS
+        ? ' Use /bg current to move to background.'
+        : '';
+      const activityLine = this.currentActivity
+        ? `\n   ↳ ${this.currentActivity}`
+        : '';
+      const stepInfo = this.completedStepCount > 0
+        ? ` · step ${this.completedStepCount}/${MAX_STEPS}`
+        : '';
+      void channel.send(
+        `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${handoffHint}${activityLine}`,
+        msg.channelId,
+      ).catch(() => {});
+
+      // Escalate: 20s → 30s → 45s → 60s (cap)
+      if (heartbeatCount <= 2) {
+        currentIntervalMs = 30000;
+      } else if (heartbeatCount <= 4) {
+        currentIntervalMs = 45000;
+      } else {
+        currentIntervalMs = HEARTBEAT_MAX_MS;
+      }
+      timer = setTimeout(tick, currentIntervalMs);
+    };
+
+    timer = setTimeout(tick, HEARTBEAT_INITIAL_MS);
+
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }
+
   private notifyBackgroundTaskComplete(task: import('./background-tasks.js').BackgroundTask): void {
     const label = task.command || task.task || task.id;
     const duration = task.completedAt ? ` in ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : '';
@@ -763,6 +815,11 @@ export class Agent {
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
+    this.currentActivity = '';
+    this.completedStepCount = 0;
+    const stopHeartbeat = this.startForegroundHeartbeat(msg);
+    this.markProgress('Starting...');
+    let wallTimeout: ReturnType<typeof setTimeout> | null = null;
 
     if (this.supervisor && msg.channelType !== 'internal') {
       const activeAgents = this.supervisor.getActiveAgents();
@@ -941,6 +998,7 @@ export class Agent {
       const channel = this.channels.getChannelForMessage(msg);
       if (channel) {
         await channel.typing(msg.channelId).catch(() => {});
+        this.markProgress();
       }
 
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
@@ -957,6 +1015,11 @@ export class Agent {
 
       this.currentMessage = msg;
       this.currentAbort = loopAbortController;
+      wallTimeout = setTimeout(() => {
+        if (!loopAbortController.signal.aborted) {
+          loopAbortController.abort();
+        }
+      }, MAX_FOREGROUND_WALL_MS);
 
       const canStream = msg.channelType === 'cli' || (msg.channelType === 'telegram' && this.telegramStreaming);
 
@@ -967,6 +1030,7 @@ export class Agent {
 
       for (const provider of fallbackIterator) {
         try {
+          this.markProgress(`Calling ${provider.name}...`);
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
@@ -984,6 +1048,13 @@ export class Agent {
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
+                this.completedStepCount++;
+                if (toolCalls && toolCalls.length > 0) {
+                  const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+                  this.markProgress(labels.join(' → '));
+                } else {
+                  this.markProgress('Thinking...');
+                }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
@@ -1081,6 +1152,7 @@ export class Agent {
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
+                    this.markProgress();
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
                   const stepText = (toolResults as any)?.text ?? '';
@@ -1119,15 +1191,15 @@ export class Agent {
                   ? Number(msg.channelId.split(':')[1])
                   : Number(msg.channelId);
                 if (!isNaN(chatId)) {
-                  fullText = await (tgChannel as any).sendStreamToChat(chatId, streamResult.textStream);
+                  fullText = await (tgChannel as any).sendStreamToChat(chatId, this.withProgressStream(streamResult.textStream));
                 } else {
-                  fullText = await channel.stream(streamResult.textStream, msg.channelId);
+                  fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
                 }
               } else {
-                fullText = await channel.stream(streamResult.textStream, msg.channelId);
+                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
               }
             } else {
-              fullText = await channel.stream(streamResult.textStream, msg.channelId);
+              fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
             }
 
             const [usage] = await Promise.all([
@@ -1150,6 +1222,13 @@ export class Agent {
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
+                this.completedStepCount++;
+                if (toolCalls && toolCalls.length > 0) {
+                  const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+                  this.markProgress(labels.join(' → '));
+                } else {
+                  this.markProgress('Thinking...');
+                }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
@@ -1247,6 +1326,7 @@ export class Agent {
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
+                    this.markProgress();
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
                   const stepText = (toolResults as any)?.text ?? '';
@@ -1287,7 +1367,14 @@ export class Agent {
               result = { text: streamedText, usage: undefined };
             }
             if (!result) {
-              result = { text: 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.', usage: undefined };
+              const elapsedMs = Date.now() - startTime;
+              const timedOut = elapsedMs >= MAX_FOREGROUND_WALL_MS;
+              result = {
+                text: timedOut
+                  ? 'I stopped because this request exceeded the foreground time limit. Please retry with a narrower scope, or move it to background with /bg current sooner.'
+                  : 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.',
+                usage: undefined,
+              };
             }
             if (usedProvider) {
               this.providers.markSuccess(usedProvider.name);
@@ -1313,6 +1400,7 @@ export class Agent {
       }
 
       const finalText = (streamedText || result.text || '').trim() || '(no text response)';
+      this.markProgress('Finalizing response...');
 
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
@@ -1358,6 +1446,7 @@ export class Agent {
         } else {
           logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
           await channel.send(finalText, msg.channelId, elapsed);
+          this.markProgress();
         }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
@@ -1368,8 +1457,12 @@ export class Agent {
       logger.error({ err }, 'Error handling message');
       this.lifecycle.transition('idle');
     } finally {
+      if (wallTimeout) clearTimeout(wallTimeout);
+      stopHeartbeat();
       this.currentMessage = null;
       this.currentAbort = null;
+      this.currentActivity = '';
+      this.completedStepCount = 0;
       if (isInternal || isScheduled) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
@@ -1758,8 +1851,22 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
 
     if (cmd.startsWith('/bg')) {
-      const args = trimmed.slice('/bg'.length).trim();
-      await this.handleBgCommand(args, { content: trimmed, channelId, channelType: channelType as any, id: Date.now().toString(36), senderId: 'user', timestamp: Date.now() }, channel);
+      await this.handleBgCommand(trimmed, { content: trimmed, channelId, channelType: channelType as any, id: Date.now().toString(36), senderId: 'user', timestamp: Date.now() }, channel);
+      return true;
+    }
+
+    if (cmd === '/progress' || cmd === '/still') {
+      if (!this.processing || !this.currentMessage) {
+        await channel.send('No active foreground task.', channelId);
+        return true;
+      }
+      const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
+      const activityLine = this.currentActivity ? `\nCurrently: ${this.currentActivity}` : '';
+      const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      await channel.send(
+        `⏳ Working on your task. Elapsed: ${elapsedSec}s${stepInfo}.${activityLine}\nUse /bg current to move it to background.`,
+        channelId,
+      );
       return true;
     }
 
