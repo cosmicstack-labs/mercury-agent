@@ -1061,7 +1061,7 @@ function runPlatformDoctor(): void {
   console.log(`  Spotify inline art: ${canInlineArt ? chalk.green('supported (iTerm local)') : chalk.dim('disabled/fallback mode')}`);
   console.log('');
   console.log(chalk.bold.white('  Keybinding Notes'));
-  console.log(`  • View toggle:      ${chalk.white('Ctrl+V')} (fallback: ${chalk.white('/view')})`);
+  console.log(`  • View toggle:      ${chalk.white('Ctrl+T')} (fallback: ${chalk.white('/view')})`);
   console.log(`  • Workspace exit:   ${chalk.white('Esc')} or ${chalk.white('Ctrl+Q')} (fallback: ${chalk.white('/ws exit')})`);
   console.log(`  • Code mode switch: ${chalk.white('Ctrl+P')} plan, ${chalk.white('Ctrl+X')} execute`);
   console.log('');

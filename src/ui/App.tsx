@@ -474,7 +474,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
     }
 
-    if (key.ctrl && (ch === 'v' || ch === 'V') && !state.permissionPrompt) {
+    if (key.ctrl && (ch === 't' || ch === 'T') && !state.permissionPrompt) {
       onInput('/view toggle');
       return;
     }
@@ -537,8 +537,10 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (key.ctrl || key.meta) return;
 
-    if (ch && ch.length === 1 && !key.escape) {
-      setInput((prev) => prev + ch);
+    if (ch && ch.length > 0 && !key.escape) {
+      // Strip control chars but keep printable content (handles paste)
+      const clean = ch.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+      if (clean) setInput((prev) => prev + clean);
     }
   });
 
@@ -675,13 +677,26 @@ function StatusBarView({ state }: { state: TuiState }) {
   const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
   const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
 
+  // Dynamic subtitle based on thinking state
+  const runningStep = [...state.toolSteps].reverse().find((s) => s.status === 'running');
+  const doneSteps = state.toolSteps.filter((s) => s.status === 'done').length;
+  let subtitle: React.ReactNode;
+  if (state.isThinking) {
+    const activity = runningStep ? runningStep.label : 'Processing';
+    const stepCount = doneSteps > 0 ? `step ${doneSteps}` : '';
+    const parts = [stepCount, activity].filter(Boolean).join(' · ');
+    subtitle = <Text color="green">● {parts}</Text>;
+  } else {
+    subtitle = <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>;
+  }
+
   return (
     <Box flexDirection="column">
       <Box paddingX={1}>
         <Text color={BRAND.logo}>☿</Text>
         <Text> </Text>
         <Text bold color={BRAND.title}>MERCURY</Text>
-        <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>
+        {subtitle}
       </Box>
       <Box paddingX={1} paddingBottom={0}>
         <Box flexGrow={1}>
@@ -997,30 +1012,31 @@ function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'bala
           {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
         </Box>
       ))}
-      <Text dimColor>Ctrl+V toggles Minimal/Detailed (or use /view)</Text>
+      <Text dimColor>Ctrl+T toggles Minimal/Detailed (or use /view)</Text>
     </Box>
   );
 }
 
 function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; steps: ToolStep[]; mode: AppMode }) {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const codingPhases = ['indexing symbols', 'building plan', 'running checks', 'linking context'];
-  const chatPhases = ['reading your message', 'gathering context', 'drafting response', 'polishing answer'];
-  const phases = (mode === 'coding' || mode === 'workspace') ? codingPhases : chatPhases;
   const [frame, setFrame] = React.useState(0);
 
   React.useEffect(() => {
     const timer = setInterval(() => {
-      setFrame((v) => (v + 1) % (frames.length * phases.length));
-    }, 90);
+      setFrame((v) => (v + 1) % frames.length);
+    }, 80);
     return () => clearInterval(timer);
   }, []);
 
   const spinner = frames[frame % frames.length];
-  const phase = phases[Math.floor(frame / frames.length) % phases.length];
-  const pulse = '.'.repeat((frame % 3) + 1);
   const runningStep = [...steps].reverse().find((s) => s.status === 'running');
-  const livePhase = runningStep ? `running: ${runningStep.label}` : phase;
+  const doneSteps = steps.filter((s) => s.status === 'done');
+  const recentDone = doneSteps.slice(-3);
+
+  // Determine current action label
+  const currentAction = runningStep
+    ? runningStep.label
+    : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
@@ -1028,11 +1044,20 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
         <Text color="cyan">{spinner}</Text>
         <Text> </Text>
         <Text color="cyan" bold>{agentName}</Text>
-        <Text dimColor> is thinking{pulse}</Text>
+        <Text dimColor> · </Text>
+        <Text color="white">{currentAction}</Text>
       </Box>
-      <Box marginLeft={2}>
-        <Text color="gray">↳ {livePhase}</Text>
-      </Box>
+      {recentDone.length > 0 && (
+        <Box flexDirection="column" marginLeft={4} marginTop={0}>
+          {recentDone.map((step) => (
+            <Box key={step.id}>
+              <Text color="green">✓</Text>
+              <Text dimColor> {step.label}</Text>
+              {step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
+            </Box>
+          ))}
+        </Box>
+      )}
     </Box>
   );
 }
