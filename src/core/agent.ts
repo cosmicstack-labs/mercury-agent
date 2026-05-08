@@ -19,7 +19,7 @@ import { BackgroundTaskManager } from './background-tasks.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
-import { formatToolStep } from '../utils/tool-label.js';
+import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
@@ -268,6 +268,7 @@ export class Agent {
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
+  private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
   private spotifyClient?: SpotifyClient;
@@ -403,10 +404,11 @@ export class Agent {
         return;
       }
       const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
-      const activityLine = this.currentActivity ? `\nCurrently: ${this.currentActivity}` : '';
       const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 10);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
       await channel.send(
-        `⏳ Working on your task. Elapsed: ${elapsedSec}s${stepInfo}.${activityLine}\nUse /bg current to move it to background.`,
+        `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
         msg.channelId,
       );
       return;
@@ -681,16 +683,15 @@ export class Agent {
 
       heartbeatCount++;
       const handoffHint = elapsedMs >= LONG_TASK_HANDOFF_SUGGEST_MS
-        ? ' Use /bg current to move to background.'
-        : '';
-      const activityLine = this.currentActivity
-        ? `\n   ↳ ${this.currentActivity}`
+        ? '\nUse /bg current to move to background.'
         : '';
       const stepInfo = this.completedStepCount > 0
         ? ` · step ${this.completedStepCount}/${MAX_STEPS}`
         : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 3);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
       void channel.send(
-        `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${handoffHint}${activityLine}`,
+        `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`,
         msg.channelId,
       ).catch(() => {});
 
@@ -817,6 +818,7 @@ export class Agent {
     const startTime = Date.now();
     this.currentActivity = '';
     this.completedStepCount = 0;
+    this.stepNarrative = [];
     const stopHeartbeat = this.startForegroundHeartbeat(msg);
     this.markProgress('Starting...');
     let wallTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1050,6 +1052,9 @@ export class Agent {
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
                 if (toolCalls && toolCalls.length > 0) {
+                  for (const tc of toolCalls as any[]) {
+                    this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
+                  }
                   const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
                   this.markProgress(labels.join(' → '));
                 } else {
@@ -1224,6 +1229,9 @@ export class Agent {
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
                 if (toolCalls && toolCalls.length > 0) {
+                  for (const tc of toolCalls as any[]) {
+                    this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
+                  }
                   const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
                   this.markProgress(labels.join(' → '));
                 } else {
@@ -1463,6 +1471,7 @@ export class Agent {
       this.currentAbort = null;
       this.currentActivity = '';
       this.completedStepCount = 0;
+      this.stepNarrative = [];
       if (isInternal || isScheduled) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
@@ -1861,10 +1870,11 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         return true;
       }
       const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
-      const activityLine = this.currentActivity ? `\nCurrently: ${this.currentActivity}` : '';
       const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 10);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
       await channel.send(
-        `⏳ Working on your task. Elapsed: ${elapsedSec}s${stepInfo}.${activityLine}\nUse /bg current to move it to background.`,
+        `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
         channelId,
       );
       return true;
