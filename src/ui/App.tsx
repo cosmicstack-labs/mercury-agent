@@ -1,7 +1,7 @@
 import React from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, Spacer, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
-import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo } from './types.js';
+import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
@@ -406,8 +406,16 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
 
     if (state.mode === 'workspace') {
+      const focusArea = state.workspace?.focusArea || 'explorer';
+
+      // Global workspace shortcuts (always active)
       if (key.escape || (key.ctrl && (ch === 'q' || ch === 'Q'))) {
-        onInput('/ws exit');
+        // Esc in code viewer returns to explorer; Esc in explorer exits workspace
+        if (focusArea === 'code' || focusArea === 'git') {
+          onInput('/ws focus explorer');
+        } else {
+          onInput('/ws exit');
+        }
         return;
       }
 
@@ -420,44 +428,60 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         return;
       }
 
+      // Panel focus shortcuts
       if (key.ctrl && (ch === 'e' || ch === 'E')) {
-        setWorkspacePane('files');
+        onInput('/ws focus explorer');
         return;
       }
       if (key.ctrl && (ch === 'g' || ch === 'G')) {
-        setWorkspacePane('git');
+        onInput('/ws focus git');
+        return;
+      }
+      if (key.ctrl && (ch === 'j' || ch === 'J')) {
+        onInput('/ws toggle-chat');
+        return;
+      }
+
+      // Tab cycles focus: explorer → code → git → explorer
+      if (key.tab) {
+        const showGit = (process.stdout.columns || 80) >= 100;
+        const cycle = showGit ? ['explorer', 'code', 'git'] : ['explorer', 'code'];
+        const nextIdx = (cycle.indexOf(focusArea) + 1) % cycle.length;
+        onInput(`/ws focus ${cycle[nextIdx]}`);
         return;
       }
 
       const navMode = input.trim().length === 0;
 
-      if (navMode && key.upArrow) {
-        if (workspacePane === 'files') onInput('/ws up');
-        else if (workspacePane === 'details') setDetailCursor((i) => Math.max(0, i - 1));
-        else setGitCursor((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (navMode && key.downArrow) {
-        if (workspacePane === 'files') onInput('/ws down');
-        else if (workspacePane === 'details') setDetailCursor((i) => Math.min(3, i + 1));
-        else setGitCursor((i) => Math.min((state.workspace?.gitFiles.length || 1) - 1, i + 1));
-        return;
-      }
-      if (navMode && key.leftArrow) {
-        if (workspacePane === 'files') onInput('/ws collapse');
-        return;
-      }
-      if (navMode && key.rightArrow) {
-        if (workspacePane === 'files') onInput('/ws expand');
-        return;
-      }
-      if (navMode && isEnter) {
-        if (workspacePane === 'files') onInput('/ws open-selected');
-        else if (workspacePane === 'git') {
-          const picked = state.workspace?.gitFiles[gitCursor];
-          if (picked) onInput(`/ws stage ${picked.path}`);
+      // Focus-aware navigation
+      if (navMode) {
+        if (focusArea === 'explorer') {
+          if (key.upArrow) { onInput('/ws up'); return; }
+          if (key.downArrow) { onInput('/ws down'); return; }
+          if (key.leftArrow) { onInput('/ws collapse'); return; }
+          if (key.rightArrow) { onInput('/ws expand'); return; }
+          if (isEnter) { onInput('/ws open-selected'); return; }
         }
-        return;
+
+        if (focusArea === 'code') {
+          if (key.upArrow) { onInput('/ws scroll -1'); return; }
+          if (key.downArrow) { onInput('/ws scroll 1'); return; }
+          if (key.pageUp) { onInput('/ws scroll -15'); return; }
+          if (key.pageDown) { onInput('/ws scroll 15'); return; }
+          // Ctrl+U / Ctrl+D for half-page scroll (vim-style)
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws scroll -10'); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws scroll 10'); return; }
+        }
+
+        if (focusArea === 'git') {
+          if (key.upArrow) { setGitCursor((i) => Math.max(0, i - 1)); return; }
+          if (key.downArrow) { setGitCursor((i) => Math.min((state.workspace?.gitFiles.length || 1) - 1, i + 1)); return; }
+          if (isEnter) {
+            const picked = state.workspace?.gitFiles[gitCursor];
+            if (picked) onInput(`/ws stage ${picked.path}`);
+            return;
+          }
+        }
       }
     }
 
@@ -777,8 +801,289 @@ function CodingBody({ state }: { state: TuiState }) {
   );
 }
 
+// ─── Workspace IDE ──────────────────────────────────────────────────────────
+
+function useTerminalSize(): { rows: number; cols: number } {
+  const { stdout } = useStdout();
+  const [size, setSize] = React.useState({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
+  React.useEffect(() => {
+    const onResize = () => setSize({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
+    stdout.on('resize', onResize);
+    return () => { stdout.off('resize', onResize); };
+  }, [stdout]);
+  return size;
+}
+
+function WorkspaceTabBar({ ws, focusArea, cols }: { ws: WorkspaceState; focusArea: string; cols: number }) {
+  const showGit = cols >= 100;
+  const tabs: Array<{ id: string; label: string; shortcut: string }> = [
+    { id: 'explorer', label: 'EXPLORER', shortcut: '^E' },
+    { id: 'code', label: 'CODE', shortcut: '' },
+    ...(showGit ? [{ id: 'git', label: 'SOURCE CONTROL', shortcut: '^G' }] : []),
+  ];
+
+  return (
+    <Box paddingX={1}>
+      {tabs.map((tab, i) => (
+        <React.Fragment key={tab.id}>
+          {i > 0 && <Text color="gray"> │ </Text>}
+          <Text
+            bold={focusArea === tab.id}
+            inverse={focusArea === tab.id}
+            color={focusArea === tab.id ? 'cyan' : 'gray'}
+          >
+            {' '}{tab.label}{' '}
+          </Text>
+        </React.Fragment>
+      ))}
+      <Spacer />
+      <Text color="magenta">{ws.branch}</Text>
+      <Text color="gray"> · </Text>
+      <Text dimColor>{ws.rootPath.length > 40 ? '...' + ws.rootPath.slice(-37) : ws.rootPath}</Text>
+    </Box>
+  );
+}
+
+function ExplorerPanel({
+  ws,
+  panelHeight,
+  isFocused,
+}: {
+  ws: WorkspaceState;
+  panelHeight: number;
+  isFocused: boolean;
+}) {
+  const windowSize = Math.max(1, panelHeight - 2); // leave room for header + footer
+  const explorerStart = Math.max(0, Math.min(ws.selectedIndex - Math.floor(windowSize / 2), Math.max(0, ws.nodes.length - windowSize)));
+  const visible = ws.nodes.slice(explorerStart, explorerStart + windowSize);
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={isFocused ? 'cyan' : 'gray'}
+      overflow="hidden"
+      height={panelHeight}
+    >
+      <Box paddingX={1}>
+        <Text bold={isFocused} color={isFocused ? 'cyan' : 'gray'}>EXPLORER</Text>
+        <Spacer />
+        <Text dimColor>{ws.nodes.length}</Text>
+      </Box>
+      {visible.map((node, localIdx) => {
+        const idx = explorerStart + localIdx;
+        const isSelected = idx === ws.selectedIndex;
+        const prefix = node.isDir ? (node.expanded ? '▾' : '▸') : ' ';
+        const indent = ' '.repeat(Math.max(0, node.depth * 2));
+        return (
+          <Box key={node.id} paddingX={1}>
+            <Text
+              inverse={isSelected && isFocused}
+              color={isSelected ? 'white' : node.isDir ? 'blue' : 'gray'}
+              wrap="truncate-end"
+            >
+              {isSelected ? '›' : ' '} {indent}{prefix} {node.name}
+            </Text>
+          </Box>
+        );
+      })}
+      {visible.length < windowSize && Array.from({ length: windowSize - visible.length }, (_, i) => (
+        <Box key={`pad-${i}`}><Text> </Text></Box>
+      ))}
+    </Box>
+  );
+}
+
+function CodeViewerPanel({
+  ws,
+  panelHeight,
+  isFocused,
+}: {
+  ws: WorkspaceState;
+  panelHeight: number;
+  isFocused: boolean;
+}) {
+  const viewerLines = Math.max(1, panelHeight - 3); // header + separator + footer
+  const preview = ws.openedFilePreview;
+  const offset = ws.codeScrollOffset;
+  const totalLines = preview.length;
+  const visibleLines = preview.slice(offset, offset + viewerLines);
+  const lineNumWidth = Math.max(3, String(offset + viewerLines).length);
+  const fileName = ws.openedFilePath
+    ? ws.openedFilePath.replace(ws.rootPath + '/', '')
+    : '';
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={isFocused ? 'cyan' : 'gray'}
+      overflow="hidden"
+      height={panelHeight}
+    >
+      <Box paddingX={1}>
+        <Text bold={isFocused} color={isFocused ? 'cyan' : 'gray'}>CODE</Text>
+        {fileName ? (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="white" wrap="truncate-end">{fileName}</Text>
+          </>
+        ) : null}
+        <Spacer />
+        {totalLines > 0 && (
+          <Text dimColor>{offset + 1}-{Math.min(offset + viewerLines, totalLines)}/{totalLines}</Text>
+        )}
+      </Box>
+      {!ws.openedFilePath ? (
+        <Box flexDirection="column" flexGrow={1} alignItems="center" justifyContent="center">
+          <Text dimColor>Select a file and press Enter</Text>
+          <Text dimColor>to preview its contents</Text>
+        </Box>
+      ) : (
+        <>
+          {visibleLines.map((line, i) => {
+            const lineNum = offset + i + 1;
+            return (
+              <Box key={`L${lineNum}`} paddingLeft={1}>
+                <Text color="gray">{String(lineNum).padStart(lineNumWidth, ' ')} │ </Text>
+                <Text wrap="truncate-end">{line || ' '}</Text>
+              </Box>
+            );
+          })}
+          {visibleLines.length < viewerLines && Array.from({ length: viewerLines - visibleLines.length }, (_, i) => (
+            <Box key={`cpad-${i}`} paddingLeft={1}>
+              <Text color="gray">{' '.repeat(lineNumWidth)} │</Text>
+            </Box>
+          ))}
+        </>
+      )}
+      <Box paddingX={1}>
+        <Text dimColor>
+          {isFocused ? '↑↓ scroll · PgUp/PgDn half page · Esc back' : 'Tab to focus'}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+function GitPanel({
+  ws,
+  panelHeight,
+  isFocused,
+  gitCursor,
+}: {
+  ws: WorkspaceState;
+  panelHeight: number;
+  isFocused: boolean;
+  gitCursor: number;
+}) {
+  const listHeight = Math.max(1, panelHeight - 6); // header + branch + staged/unstaged labels + footer + border
+  const gitStart = Math.max(0, Math.min(gitCursor - Math.floor(listHeight / 2), Math.max(0, ws.gitFiles.length - listHeight)));
+  const visible = ws.gitFiles.slice(gitStart, gitStart + listHeight);
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={isFocused ? 'cyan' : 'gray'}
+      overflow="hidden"
+      height={panelHeight}
+    >
+      <Box paddingX={1}>
+        <Text bold={isFocused} color={isFocused ? 'cyan' : 'gray'}>GIT</Text>
+        <Spacer />
+        <Text color="magenta">{ws.branch}</Text>
+      </Box>
+      <Box paddingX={1}>
+        <Text color="green">● {ws.stagedCount} staged</Text>
+        <Text color="gray"> · </Text>
+        <Text color="yellow">○ {ws.unstagedCount} unstaged</Text>
+      </Box>
+      {visible.length === 0 ? (
+        <Box paddingX={1}><Text dimColor>Clean working tree</Text></Box>
+      ) : (
+        visible.map((f, localIdx) => {
+          const idx = gitStart + localIdx;
+          const isSelected = idx === gitCursor;
+          return (
+            <Box key={f.path} paddingX={1}>
+              <Text
+                inverse={isSelected && isFocused}
+                color={isSelected ? 'white' : f.staged ? 'green' : 'yellow'}
+                wrap="truncate-end"
+              >
+                {isSelected ? '›' : ' '} {f.staged ? '●' : '○'} {f.status} {f.path}
+              </Text>
+            </Box>
+          );
+        })
+      )}
+      {visible.length < listHeight && Array.from({ length: listHeight - visible.length }, (_, i) => (
+        <Box key={`gpad-${i}`}><Text> </Text></Box>
+      ))}
+      <Box paddingX={1}>
+        <Text dimColor>{isFocused ? 'Enter stage/unstage · /ws commit <msg>' : 'Tab to focus'}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function WorkspaceChat({
+  state,
+  chatRows,
+  collapsed,
+}: {
+  state: TuiState;
+  chatRows: number;
+  collapsed: boolean;
+}) {
+  if (collapsed) {
+    return (
+      <Box paddingX={1} height={1}>
+        <Text dimColor>Chat hidden · Ctrl+J to show</Text>
+      </Box>
+    );
+  }
+
+  // Estimate ~2 rows per message, show what fits
+  const maxMessages = Math.max(1, Math.floor(chatRows / 2));
+  const messages = state.chatMessages.slice(-maxMessages);
+  const hiddenCount = Math.max(0, state.chatMessages.length - maxMessages);
+
+  return (
+    <Box flexDirection="column" height={chatRows} overflow="hidden" paddingX={1}>
+      {hiddenCount > 0 && <Text dimColor>↑ {hiddenCount} earlier message{hiddenCount !== 1 ? 's' : ''}</Text>}
+      {messages.map((msg) => {
+        const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
+        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'Sys' : state.agentName;
+        const text = msg.content.split('\n')[0]; // single line in compact view
+        const truncated = text.length > 100 ? text.slice(0, 97) + '...' : text;
+        return (
+          <Box key={msg.id}>
+            <Text color={roleColor} bold>{prefix}: </Text>
+            <Text wrap="truncate-end">{truncated}</Text>
+          </Box>
+        );
+      })}
+      {state.isThinking && (
+        <Box>
+          <Text color="cyan">⠋ </Text>
+          <Text color="cyan" bold>{state.agentName}</Text>
+          <Text dimColor> · </Text>
+          <Text>{(() => {
+            const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
+            return running ? running.label : 'Thinking...';
+          })()}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { state: TuiState; workspacePane: 'files' | 'details' | 'git'; detailCursor: number; gitCursor: number }) {
   const ws = state.workspace;
+  const { rows, cols } = useTerminalSize();
+
   if (!ws?.active) {
     return (
       <Box flexDirection="column" flexGrow={1} paddingX={1}>
@@ -788,104 +1093,65 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
     );
   }
 
-  const selectedNode = ws.nodes[ws.selectedIndex];
-  const selectedRel = selectedNode ? selectedNode.path.replace(ws.rootPath + '/', '') : '';
-  const explorerWindow = 12;
-  const explorerStart = Math.max(0, Math.min(ws.selectedIndex - Math.floor(explorerWindow / 2), Math.max(0, ws.nodes.length - explorerWindow)));
-  const visibleExplorerNodes = ws.nodes.slice(explorerStart, explorerStart + explorerWindow);
-  const gitWindow = 12;
-  const gitStart = Math.max(0, Math.min(gitCursor - Math.floor(gitWindow / 2), Math.max(0, ws.gitFiles.length - gitWindow)));
-  const visibleGitFiles = ws.gitFiles.slice(gitStart, gitStart + gitWindow);
+  const showGitPanel = cols >= 100;
+  const focusArea = ws.focusArea;
+  const chatCollapsed = ws.chatCollapsed;
+
+  // Layout math: rows budget
+  // statusBar(2) + tabBar(1) + separator(1) + chatPanel + inputBox(3) + footer(1) = 8 + chatRows
+  const chatRows = chatCollapsed ? 1 : Math.max(3, Math.min(8, Math.floor(rows * 0.2)));
+  const fixedOverhead = 8; // status(2) + tab(1) + borders handled by panel + inputBox(3) + footer(1) + separator(1)
+  const idePanelHeight = Math.max(8, rows - fixedOverhead - chatRows);
+
+  // Column widths
+  let explorerWidth: number;
+  let gitWidth: number;
+
+  if (cols >= 120) {
+    explorerWidth = Math.floor(cols * 0.20);
+    gitWidth = showGitPanel ? Math.floor(cols * 0.22) : 0;
+  } else if (cols >= 100) {
+    explorerWidth = Math.floor(cols * 0.22);
+    gitWidth = showGitPanel ? Math.floor(cols * 0.24) : 0;
+  } else {
+    explorerWidth = Math.floor(cols * 0.30);
+    gitWidth = 0;
+  }
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <Box paddingX={1}>
-        <Text color="gray">Workspace: </Text><Text color="cyan">{ws.rootPath}</Text>
-        <Text color="gray"> | Branch: </Text><Text color="magenta">{ws.branch}</Text>
-        <Text color="gray"> | Pane: </Text><Text color="white">{workspacePane.toUpperCase()}</Text>
-        <Text color="gray"> | </Text><Text color="green" bold>CODING IDE</Text>
-      </Box>
-      <Box paddingX={1}><Text color="gray">{'═'.repeat(118)}</Text></Box>
-      <Box flexDirection="row" height={16}>
-        <Box flexDirection="column" width={36} paddingX={1}>
-          <Text bold color={workspacePane === 'files' ? 'white' : 'cyan'}>EXPLORER {workspacePane === 'files' ? '●' : '○'}</Text>
-          <Text color="gray">{'─'.repeat(34)}</Text>
-          {visibleExplorerNodes.map((node, localIdx) => {
-            const idx = explorerStart + localIdx;
-            const isSelected = idx === ws.selectedIndex;
-            const prefix = node.isDir ? (node.expanded ? '▾' : '▸') : ' ';
-            const indent = ' '.repeat(Math.max(0, node.depth * 2));
-            return (
-              <Text key={node.id} color={isSelected ? 'white' : 'gray'}>
-                {isSelected ? '›' : ' '} {indent}{prefix} {node.name}
-              </Text>
-            );
-          })}
-          <Text dimColor>{ws.nodes.length > explorerWindow ? `Showing ${explorerStart + 1}-${Math.min(ws.nodes.length, explorerStart + explorerWindow)} of ${ws.nodes.length}` : `${ws.nodes.length} items`}</Text>
+      <WorkspaceTabBar ws={ws} focusArea={focusArea} cols={cols} />
+      <Box flexDirection="row">
+        <Box width={explorerWidth}>
+          <ExplorerPanel
+            ws={ws}
+            panelHeight={idePanelHeight}
+            isFocused={focusArea === 'explorer'}
+          />
         </Box>
-        <Box><Text color="gray">│</Text></Box>
-        <Box flexDirection="column" width={52} paddingX={1}>
-          {workspacePane === 'files' ? (
-            <>
-              <Text bold color="cyan">PREVIEW</Text>
-              <Text color="gray">{'─'.repeat(50)}</Text>
-              <Text>{selectedRel || ws.rootPath}</Text>
-              {ws.openedFilePath ? (
-                ws.openedFilePreview.slice(0, 10).map((line, i) => (
-                  <Text key={`${i}:${line.slice(0, 10)}`} dimColor>{String(i + 1).padStart(3, ' ')} {line}</Text>
-                ))
-              ) : (
-                <Text dimColor>Select a file and press Enter</Text>
-              )}
-            </>
-          ) : workspacePane === 'git' ? (
-            <>
-              <Text bold color="cyan">GIT INSPECTOR</Text>
-              <Text color="gray">{'─'.repeat(50)}</Text>
-              <Text>Staged: <Text color="green">{ws.stagedCount}</Text> · Unstaged: <Text color="yellow">{ws.unstagedCount}</Text></Text>
-              {visibleGitFiles.length === 0 ? <Text dimColor>Clean working tree</Text> : visibleGitFiles.map((f, localIdx) => {
-                const idx = gitStart + localIdx;
-                return <Text key={f.path} color={idx === gitCursor ? 'white' : (f.staged ? 'green' : 'yellow')}>{idx === gitCursor ? '›' : ' '} {f.staged ? '●' : '○'} {f.status} {f.path}</Text>;
-              })}
-              <Text dimColor>{ws.gitFiles.length > gitWindow ? `Showing ${gitStart + 1}-${Math.min(ws.gitFiles.length, gitStart + gitWindow)} of ${ws.gitFiles.length}` : `${ws.gitFiles.length} files`}</Text>
-            </>
-          ) : (
-            <>
-              <Text bold color="cyan">DETAILS</Text>
-              <Text color="gray">{'─'.repeat(50)}</Text>
-              <Text>Selected: <Text color="yellow">{selectedRel || ws.rootPath}</Text></Text>
-              <Text>Mode: <Text color={state.programmingMode === 'execute' ? 'green' : 'yellow'}>{state.programmingMode.toUpperCase()}</Text></Text>
-              {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
-            </>
-          )}
+        <Box flexGrow={1}>
+          <CodeViewerPanel
+            ws={ws}
+            panelHeight={idePanelHeight}
+            isFocused={focusArea === 'code'}
+          />
         </Box>
-        <Box><Text color="gray">│</Text></Box>
-        <Box flexDirection="column" flexGrow={1} paddingX={1}>
-          <Text bold color={workspacePane === 'git' ? 'white' : 'cyan'}>SOURCE CONTROL {workspacePane === 'git' ? '●' : '○'}</Text>
-          <Text color="gray">{'─'.repeat(26)}</Text>
-          <Text>Branch: <Text color="magenta">{ws.branch}</Text></Text>
-          <Text>Staged: <Text color="green">{ws.stagedCount}</Text></Text>
-          <Text>Unstaged: <Text color="yellow">{ws.unstagedCount}</Text></Text>
-          <Text color="gray">{'─'.repeat(26)}</Text>
-          {visibleGitFiles.length === 0 ? <Text dimColor>Clean working tree</Text> : visibleGitFiles.map((f, localIdx) => {
-            const idx = gitStart + localIdx;
-            return <Text key={`side-${f.path}`} color={idx === gitCursor ? 'white' : (f.staged ? 'green' : 'yellow')}>{idx === gitCursor ? '›' : ' '} {f.status} {f.path}</Text>;
-          })}
-          <Text dimColor>Enter stages selected file</Text>
-          <Text dimColor>/ws stage all · /ws commit &lt;msg&gt;</Text>
-        </Box>
+        {showGitPanel && (
+          <Box width={gitWidth}>
+            <GitPanel
+              ws={ws}
+              panelHeight={idePanelHeight}
+              isFocused={focusArea === 'git'}
+              gitCursor={gitCursor}
+            />
+          </Box>
+        )}
       </Box>
-      <Box paddingX={1}><Text color="gray">{'═'.repeat(118)}</Text></Box>
-      <Box flexDirection="column" flexGrow={1} paddingX={1}>
-        <Text bold color="cyan">Chat · Workspace Coding Session</Text>
-        <Text dimColor>Ask implementation questions, refactors, tests, and git actions for this project context.</Text>
-        <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
-        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
-      </Box>
-      <Box paddingX={1}>
-        <Text dimColor>Esc/Ctrl+Q Exit Workspace · Ctrl+P Plan · Ctrl+X Execute · Ctrl+E Explorer · Ctrl+G Git</Text>
-      </Box>
+      <WorkspaceChat
+        state={state}
+        chatRows={chatRows}
+        collapsed={chatCollapsed}
+      />
     </Box>
   );
 }
@@ -1186,7 +1452,7 @@ function InputBox({
         <Text dimColor>█</Text>
       </Box>
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'IDE chat active. Esc exits workspace. Ctrl+P Plan · Ctrl+X Execute.' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Type a prompt, then Enter.'}</Text>
+        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Type a prompt, then Enter.'}</Text>
       </Box>
     </Box>
   );

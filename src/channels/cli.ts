@@ -206,6 +206,20 @@ export class CLIChannel extends BaseChannel {
         this.expandWorkspaceNode();
         return;
       }
+      if (trimmed.startsWith('/ws scroll ')) {
+        const delta = parseInt(trimmed.slice(11), 10);
+        if (!isNaN(delta)) this.scrollWorkspaceCode(delta);
+        return;
+      }
+      if (trimmed.startsWith('/ws focus ')) {
+        const area = trimmed.slice(9).trim() as 'explorer' | 'code' | 'git';
+        if (['explorer', 'code', 'git'].includes(area)) this.setWorkspaceFocus(area);
+        return;
+      }
+      if (trimmed === '/ws toggle-chat') {
+        this.toggleWorkspaceChat();
+        return;
+      }
       if (trimmed === '/menu' || trimmed === '/m') {
         this.update({ mode: 'menu' });
         return;
@@ -593,7 +607,17 @@ export class CLIChannel extends BaseChannel {
     if (!node) return;
     if (!node.isDir) {
       const preview = this.readFilePreview(node.path);
-      this.update({ workspace: { ...ws, selectedPath: node.path, openedFilePath: node.path, openedFilePreview: preview, lastAction: `Opened file: ${node.path}` } });
+      this.update({
+        workspace: {
+          ...ws,
+          selectedPath: node.path,
+          openedFilePath: node.path,
+          openedFilePreview: preview,
+          codeScrollOffset: 0,
+          focusArea: 'code',
+          lastAction: `Opened: ${path.basename(node.path)}`,
+        },
+      });
       return;
     }
     const expanded = !node.expanded;
@@ -647,18 +671,43 @@ export class CLIChannel extends BaseChannel {
       unstagedCount,
       branch,
       lastAction,
+      codeScrollOffset: this.state.workspace?.codeScrollOffset ?? 0,
+      focusArea: this.state.workspace?.focusArea ?? 'explorer',
+      chatCollapsed: this.state.workspace?.chatCollapsed ?? false,
     };
   }
 
   closeWorkspaceFile(): void {
     const ws = this.state.workspace;
     if (!ws?.active) return;
-    this.update({ workspace: { ...ws, openedFilePath: null, openedFilePreview: [], lastAction: 'Closed file preview' } });
+    this.update({ workspace: { ...ws, openedFilePath: null, openedFilePreview: [], codeScrollOffset: 0, focusArea: 'explorer', lastAction: 'Closed file preview' } });
+  }
+
+  scrollWorkspaceCode(delta: number): void {
+    const ws = this.state.workspace;
+    if (!ws?.active || !ws.openedFilePreview.length) return;
+    const maxOffset = Math.max(0, ws.openedFilePreview.length - 1);
+    const next = Math.max(0, Math.min(maxOffset, ws.codeScrollOffset + delta));
+    if (next !== ws.codeScrollOffset) {
+      this.update({ workspace: { ...ws, codeScrollOffset: next } });
+    }
+  }
+
+  setWorkspaceFocus(area: 'explorer' | 'code' | 'git'): void {
+    const ws = this.state.workspace;
+    if (!ws?.active) return;
+    this.update({ workspace: { ...ws, focusArea: area } });
+  }
+
+  toggleWorkspaceChat(): void {
+    const ws = this.state.workspace;
+    if (!ws?.active) return;
+    this.update({ workspace: { ...ws, chatCollapsed: !ws.chatCollapsed } });
   }
 
   private exitWorkspaceToChat(): void {
     const ws = this.state.workspace;
-    const nextWorkspace = ws ? { ...ws, active: false, lastAction: 'Exited workspace mode' } : null;
+    const nextWorkspace = ws ? { ...ws, active: false, focusArea: 'explorer' as const, codeScrollOffset: 0, chatCollapsed: false, lastAction: 'Exited workspace mode' } : null;
     this.update({
       mode: 'chat',
       workspace: nextWorkspace,
@@ -670,7 +719,7 @@ export class CLIChannel extends BaseChannel {
   private readFilePreview(filePath: string): string[] {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      return raw.split('\n').slice(0, 80);
+      return raw.split('\n').slice(0, 500);
     } catch {
       return ['(Unable to read file preview)'];
     }
