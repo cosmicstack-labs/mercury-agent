@@ -115,7 +115,6 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
-  { key: 'chatgptWeb', label: 'ChatGPT Web (Browser Login)' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -697,20 +696,97 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       }
 
       if (provider === 'openai') {
-        const mask = isReconfig && config.providers.openai.apiKey ? ` [${maskKey(config.providers.openai.apiKey)}]` : '';
-        const result = await promptApiKeyWithModelSelection(
-          config,
-          'openai',
-          'OpenAI',
-          chalk.white(`  OpenAI API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
-          isReconfig,
+        // Ask user which OpenAI auth method to use
+        const authMethod = await selectWithArrowKeys(
+          'OpenAI Authentication',
+          [
+            { value: 'apikey', label: 'API Key (platform.openai.com)' },
+            { value: 'oauth', label: 'ChatGPT Plus/Pro (OAuth — use your subscription)' },
+            { value: 'skip', label: 'Skip OpenAI' },
+          ],
         );
-        if (!result.skipped && result.apiKey && result.model) {
-          config.providers.openai.apiKey = result.apiKey;
-          config.providers.openai.model = result.model;
-          config.providers.openai.enabled = true;
+
+        if (authMethod === 'skip' || !authMethod) {
+          continue;
         }
-        continue;
+
+        if (authMethod === 'apikey') {
+          const mask = isReconfig && config.providers.openai.apiKey ? ` [${maskKey(config.providers.openai.apiKey)}]` : '';
+          const result = await promptApiKeyWithModelSelection(
+            config,
+            'openai',
+            'OpenAI',
+            chalk.white(`  OpenAI API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+            isReconfig,
+          );
+          if (!result.skipped && result.apiKey && result.model) {
+            config.providers.openai.apiKey = result.apiKey;
+            config.providers.openai.model = result.model;
+            config.providers.openai.enabled = true;
+          }
+          continue;
+        }
+
+        if (authMethod === 'oauth') {
+          // ChatGPT Plus/Pro OAuth flow
+          const { loadChatGPTSession, isChatGPTSessionValid } = await import('./auth/chatgpt-session.js');
+          const existing = loadChatGPTSession();
+          const alreadyLoggedIn = existing && isChatGPTSessionValid(existing);
+
+          let session = existing;
+
+          if (alreadyLoggedIn) {
+            console.log(chalk.green('  ✓ ChatGPT Plus/Pro already authenticated'));
+            if (existing!.userEmail) console.log(chalk.dim(`    Account: ${existing!.userEmail}`));
+            if (existing!.plan) console.log(chalk.dim(`    Plan: ${existing!.plan}`));
+            const reauth = await ask(chalk.white('  Re-authenticate? [y/N]: '));
+            if (reauth.toLowerCase() !== 'y') {
+              session = existing;
+            } else {
+              session = null;
+            }
+          }
+
+          if (!session || !isChatGPTSessionValid(session)) {
+            console.log(chalk.dim('  Uses your ChatGPT Plus/Pro subscription via OAuth — no API billing.'));
+            console.log(chalk.dim('  A browser window will open for you to authorize Mercury.'));
+
+            try {
+              const { loginChatGPT } = await import('./auth/chatgpt-auth.js');
+              session = await loginChatGPT();
+            } catch (err: any) {
+              console.log(chalk.red(`  ✗ ChatGPT OAuth login failed: ${err.message || err}`));
+              continue;
+            }
+          }
+
+          if (session && session.accessToken) {
+            try {
+              const { fetchChatGPTModels } = await import('./auth/chatgpt-models.js');
+              console.log(chalk.dim('  Fetching available models...'));
+              const catalog = await fetchChatGPTModels(session.accessToken, session.accountId);
+              const model = await chooseProviderModel(
+                'ChatGPT Plus/Pro',
+                catalog.recommendedModel,
+                catalog.models,
+              );
+              config.providers.chatgptWeb.apiKey = '';
+              config.providers.chatgptWeb.model = model;
+              config.providers.chatgptWeb.enabled = true;
+              console.log(chalk.green(`  ✓ OpenAI (ChatGPT Plus/Pro) configured with model: ${model}`));
+            } catch (err: any) {
+              console.log(chalk.yellow(`  Could not fetch models: ${err.message || err}`));
+              const defaultModel = 'gpt-5.4-mini';
+              const manualModel = await ask(chalk.white(`  Enter model name [Enter for ${defaultModel}]: `));
+              const model = manualModel || defaultModel;
+              config.providers.chatgptWeb.apiKey = '';
+              config.providers.chatgptWeb.model = model;
+              config.providers.chatgptWeb.enabled = true;
+              console.log(chalk.green(`  ✓ OpenAI (ChatGPT Plus/Pro) configured with model: ${model}`));
+            }
+          }
+          continue;
+        }
       }
 
       if (provider === 'anthropic') {
@@ -817,74 +893,6 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.mimoTokenPlan.apiKey = result.apiKey;
           config.providers.mimoTokenPlan.model = result.model;
           config.providers.mimoTokenPlan.enabled = true;
-        }
-        continue;
-      }
-
-      if (provider === 'chatgptWeb') {
-        const { loadChatGPTSession, isChatGPTSessionValid } = await import('./auth/chatgpt-session.js');
-        const existing = loadChatGPTSession();
-        const alreadyLoggedIn = existing && isChatGPTSessionValid(existing);
-
-        let session = existing;
-
-        if (alreadyLoggedIn) {
-          console.log(chalk.green('  ✓ ChatGPT Web already authenticated'));
-          if (existing!.userEmail) console.log(chalk.dim(`    Account: ${existing!.userEmail}`));
-          if (existing!.plan) console.log(chalk.dim(`    Plan: ${existing!.plan}`));
-          const reauth = await ask(chalk.white('  Re-authenticate? [y/N]: '));
-          if (reauth.toLowerCase() !== 'y') {
-            // Still let user pick a model
-            session = existing;
-          } else {
-            session = null; // force re-auth below
-          }
-        }
-
-        if (!session || !isChatGPTSessionValid(session)) {
-          console.log(chalk.dim('  ChatGPT Web uses your ChatGPT Plus/Pro subscription via OAuth.'));
-          console.log(chalk.dim('  A browser window will open for you to authorize Mercury.'));
-          const proceed = await ask(chalk.white(`  Set up ChatGPT Web?${isReconfig ? '' : ' (Enter to skip)'} [y/N]: `));
-
-          if (proceed.toLowerCase() !== 'y') {
-            continue;
-          }
-
-          try {
-            const { loginChatGPT } = await import('./auth/chatgpt-auth.js');
-            session = await loginChatGPT();
-          } catch (err: any) {
-            console.log(chalk.red(`  ✗ ChatGPT Web login failed: ${err.message || err}`));
-            continue;
-          }
-        }
-
-        if (session && session.accessToken) {
-          // Fetch available models and let user choose
-          try {
-            const { fetchChatGPTModels } = await import('./auth/chatgpt-models.js');
-            console.log(chalk.dim('  Fetching available models...'));
-            const catalog = await fetchChatGPTModels(session.accessToken, session.accountId);
-            const model = await chooseProviderModel(
-              'ChatGPT Web',
-              catalog.recommendedModel,
-              catalog.models,
-            );
-            config.providers.chatgptWeb.apiKey = '';
-            config.providers.chatgptWeb.model = model;
-            config.providers.chatgptWeb.enabled = true;
-            console.log(chalk.green(`  ✓ ChatGPT Web configured with model: ${model}`));
-          } catch (err: any) {
-            // Model fetch failed — let user pick manually or use default
-            console.log(chalk.yellow(`  Could not fetch models: ${err.message || err}`));
-            const defaultModel = 'gpt-5.4-mini';
-            const manualModel = await ask(chalk.white(`  Enter model name [Enter for ${defaultModel}]: `));
-            const model = manualModel || defaultModel;
-            config.providers.chatgptWeb.apiKey = '';
-            config.providers.chatgptWeb.model = model;
-            config.providers.chatgptWeb.enabled = true;
-            console.log(chalk.green(`  ✓ ChatGPT Web configured with model: ${model}`));
-          }
         }
         continue;
       }
