@@ -118,12 +118,16 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
-  return PROVIDER_OPTIONS
-    .map((option) => option.key)
-    .filter((key) => isProviderConfigured(config.providers[key]));
+  // Include all selectable providers plus chatgptWeb (which is a sub-option of OpenAI)
+  const allProviderKeys: ProviderName[] = [
+    ...PROVIDER_OPTIONS.map((option) => option.key),
+    'chatgptWeb',
+  ];
+  return allProviderKeys.filter((key) => isProviderConfigured(config.providers[key]));
 }
 
 function getProviderLabel(name: ProviderName): string {
+  if (name === 'chatgptWeb') return 'OpenAI (ChatGPT Plus/Pro)';
   return PROVIDER_OPTIONS.find((option) => option.key === name)?.label || name;
 }
 
