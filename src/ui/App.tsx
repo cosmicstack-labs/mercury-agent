@@ -391,6 +391,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
 
     if (isEnter) {
+      // Shift+Enter or Alt+Enter → insert newline instead of submitting
+      if ((key as any).shift || key.meta) {
+        setInput((prev) => prev + '\n');
+        return;
+      }
       const trimmed = input.trim();
       if (trimmed) {
         onInput(trimmed);
@@ -640,8 +645,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
       {state.mode === 'coding' ? <CodingBody state={state} /> : null}
-      {state.mode === 'workspace' ? <WorkspaceBody state={state} workspacePane={workspacePane} detailCursor={detailCursor} gitCursor={gitCursor} /> : null}
-      {state.mode === 'chat' ? (
+      {(state.mode === 'workspace' || state.mode === 'chat') ? (
         <ChatBody state={state} />
       ) : null}
       {state.permissionPrompt && (
@@ -1528,13 +1532,17 @@ function InputBox({
           mode={programmingMode.toUpperCase()}
         </Text>
       </Box>
-      <Box paddingX={1}>
-        <Text color={promptColor} bold>{'>'} </Text>
-        <Text>{input}</Text>
-        <Text dimColor>█</Text>
+      <Box paddingX={1} flexDirection="column">
+        {input.split('\n').map((line, i, arr) => (
+          <Box key={i}>
+            <Text color={promptColor} bold>{i === 0 ? '> ' : '  '}</Text>
+            <Text>{line}</Text>
+            {i === arr.length - 1 && <Text dimColor>█</Text>}
+          </Box>
+        ))}
       </Box>
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Type a prompt, then Enter.'}</Text>
+        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Shift+Enter newline'}</Text>
       </Box>
     </Box>
   );
