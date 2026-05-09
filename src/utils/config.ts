@@ -55,7 +55,8 @@ export type ProviderName =
   | 'ollamaLocal'
   | 'openaiCompat'
   | 'mimo'
-  | 'mimoTokenPlan';
+  | 'mimoTokenPlan'
+  | 'chatgptWeb';
 
 export interface MercuryConfig {
   identity: {
@@ -74,6 +75,7 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    chatgptWeb: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -219,6 +221,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
       },
+      chatgptWeb: {
+        name: 'chatgptWeb',
+        apiKey: '', // not used — auth is via OAuth
+        baseUrl: 'https://chatgpt.com/backend-api',
+        model: getEnv('CHATGPT_WEB_MODEL', 'gpt-5.4-mini'),
+        enabled: getEnvBool('CHATGPT_WEB_ENABLED', false),
+      },
     },
     channels: {
       telegram: {
@@ -349,6 +358,12 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   }
   if (provider.name === 'openaiCompat') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'chatgptWeb') {
+    // ChatGPT Web uses browser session auth, not API keys.
+    // Considered "configured" if enabled with a model selected.
+    // Actual session validity is checked at runtime via isAvailable().
+    return provider.model.length > 0;
   }
   return provider.apiKey.length > 0;
 }
