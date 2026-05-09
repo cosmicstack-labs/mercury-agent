@@ -56,7 +56,8 @@ export type ProviderName =
   | 'openaiCompat'
   | 'mimo'
   | 'mimoTokenPlan'
-  | 'chatgptWeb';
+  | 'chatgptWeb'
+  | 'githubCopilot';
 
 export interface MercuryConfig {
   identity: {
@@ -76,6 +77,7 @@ export interface MercuryConfig {
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
     chatgptWeb: ProviderConfig;
+    githubCopilot: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -228,6 +230,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('CHATGPT_WEB_MODEL', 'gpt-5.4-mini'),
         enabled: getEnvBool('CHATGPT_WEB_ENABLED', false),
       },
+      githubCopilot: {
+        name: 'githubCopilot',
+        apiKey: '', // not used — auth is via GitHub OAuth
+        baseUrl: '', // dynamic — resolved from Copilot token exchange
+        model: getEnv('GITHUB_COPILOT_MODEL', 'gpt-4o'),
+        enabled: getEnvBool('GITHUB_COPILOT_ENABLED', false),
+      },
     },
     channels: {
       telegram: {
@@ -363,6 +372,11 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
     // ChatGPT Web uses browser session auth, not API keys.
     // Considered "configured" if enabled with a model selected.
     // Actual session validity is checked at runtime via isAvailable().
+    return provider.model.length > 0;
+  }
+  if (provider.name === 'githubCopilot') {
+    // GitHub Copilot uses GitHub OAuth, not API keys.
+    // Considered "configured" if enabled with a model selected.
     return provider.model.length > 0;
   }
   return provider.apiKey.length > 0;

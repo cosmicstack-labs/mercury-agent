@@ -7,6 +7,7 @@ import { DeepSeekProvider } from './deepseek.js';
 import { OllamaProvider } from './ollama.js';
 import { MiMoProvider } from './mimo.js';
 import { ChatGPTWebProvider } from './chatgpt-web.js';
+import { GitHubCopilotProvider } from './github-copilot.js';
 import { logger } from '../utils/logger.js';
 
 export class ProviderRegistry {
@@ -28,6 +29,7 @@ export class ProviderRegistry {
       config.providers.mimo,
       config.providers.mimoTokenPlan,
       config.providers.chatgptWeb,
+      config.providers.githubCopilot,
     ];
 
     for (const pc of entries) {
@@ -48,6 +50,8 @@ export class ProviderRegistry {
           provider = new MiMoProvider(pc);
         } else if (pc.name === 'chatgptWeb') {
           provider = new ChatGPTWebProvider(pc);
+        } else if (pc.name === 'githubCopilot') {
+          provider = new GitHubCopilotProvider(pc);
         } else {
           provider = new OpenAICompatProvider(pc);
         }

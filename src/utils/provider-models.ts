@@ -1,5 +1,6 @@
 import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
+import { fetchGitHubModels } from '../auth/github-models.js';
 
 export interface ProviderModelCatalog {
   models: string[];
@@ -78,6 +79,17 @@ const CHATGPT_WEB_PREFERRED_MODELS = [
   'gpt-5.4-mini',
   'gpt-5.3-codex',
   'gpt-5.2',
+] as const;
+
+const GITHUB_COPILOT_PREFERRED_MODELS = [
+  'claude-sonnet-4.6',
+  'gpt-4o',
+  'gpt-5.4',
+  'claude-opus-4.6',
+  'claude-opus-4.7',
+  'gpt-4.1',
+  'gpt-4o-mini',
+  'gemini-3.1-pro-preview',
 ] as const;
 
 export class ProviderModelFetchError extends Error {
@@ -187,6 +199,7 @@ function chooseRecommendedModel(
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
+    githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -224,6 +237,7 @@ export function buildModelCatalog(
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
+    githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
@@ -427,6 +441,17 @@ export async function fetchProviderModelCatalog(
       );
     }
     return fetchChatGPTModels(session.accessToken, session.accountId);
+  }
+
+  if (provider === 'githubCopilot') {
+    const { loadGitHubSession } = await import('../auth/github-session.js');
+    const session = loadGitHubSession();
+    if (!session?.accessToken) {
+      throw new ProviderModelFetchError(
+        'GitHub Copilot is not authenticated. Run `mercury doctor` to set up OAuth.',
+      );
+    }
+    return fetchGitHubModels(session.accessToken);
   }
 
   return fetchOpenAICompatModels(provider, config);
