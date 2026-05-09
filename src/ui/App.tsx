@@ -407,11 +407,12 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (state.mode === 'workspace') {
       const focusArea = state.workspace?.focusArea || 'explorer';
+      const rightPanel = state.workspace?.rightPanel || 'chat';
 
       // Global workspace shortcuts (always active)
       if (key.escape || (key.ctrl && (ch === 'q' || ch === 'Q'))) {
-        // Esc in code viewer returns to explorer; Esc in explorer exits workspace
-        if (focusArea === 'code' || focusArea === 'git') {
+        // Esc in non-explorer panel returns to explorer; Esc in explorer exits workspace
+        if (focusArea !== 'explorer') {
           onInput('/ws focus explorer');
         } else {
           onInput('/ws exit');
@@ -442,10 +443,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         return;
       }
 
-      // Tab cycles focus: explorer → code → git → explorer
+      // Tab cycles focus: explorer → code → right panel (chat or git)
       if (key.tab) {
-        const showGit = (process.stdout.columns || 80) >= 100;
-        const cycle = showGit ? ['explorer', 'code', 'git'] : ['explorer', 'code'];
+        const showRight = (process.stdout.columns || 80) >= 100;
+        const rightFocus = rightPanel === 'chat' ? 'chat' : 'git';
+        const cycle = showRight ? ['explorer', 'code', rightFocus] : ['explorer', 'code'];
         const nextIdx = (cycle.indexOf(focusArea) + 1) % cycle.length;
         onInput(`/ws focus ${cycle[nextIdx]}`);
         return;
@@ -468,7 +470,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           if (key.downArrow) { onInput('/ws scroll 1'); return; }
           if (key.pageUp) { onInput('/ws scroll -15'); return; }
           if (key.pageDown) { onInput('/ws scroll 15'); return; }
-          // Ctrl+U / Ctrl+D for half-page scroll (vim-style)
           if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws scroll -10'); return; }
           if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws scroll 10'); return; }
         }
@@ -481,6 +482,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
             if (picked) onInput(`/ws stage ${picked.path}`);
             return;
           }
+        }
+
+        if (focusArea === 'chat') {
+          if (key.upArrow) { onInput('/ws chat-scroll -1'); return; }
+          if (key.downArrow) { onInput('/ws chat-scroll 1'); return; }
+          if (key.pageUp) { onInput('/ws chat-scroll -10'); return; }
+          if (key.pageDown) { onInput('/ws chat-scroll 10'); return; }
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws chat-scroll -8'); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws chat-scroll 8'); return; }
         }
       }
     }
@@ -815,11 +825,13 @@ function useTerminalSize(): { rows: number; cols: number } {
 }
 
 function WorkspaceTabBar({ ws, focusArea, cols }: { ws: WorkspaceState; focusArea: string; cols: number }) {
-  const showGit = cols >= 100;
-  const tabs: Array<{ id: string; label: string; shortcut: string }> = [
-    { id: 'explorer', label: 'EXPLORER', shortcut: '^E' },
-    { id: 'code', label: 'CODE', shortcut: '' },
-    ...(showGit ? [{ id: 'git', label: 'SOURCE CONTROL', shortcut: '^G' }] : []),
+  const showRightPanel = cols >= 100;
+  const rightLabel = ws.rightPanel === 'chat' ? 'AGENT OUTPUT' : 'SOURCE CONTROL';
+  const rightFocus = ws.rightPanel === 'chat' ? 'chat' : 'git';
+  const tabs: Array<{ id: string; label: string }> = [
+    { id: 'explorer', label: 'EXPLORER' },
+    { id: 'code', label: 'CODE' },
+    ...(showRightPanel ? [{ id: rightFocus, label: rightLabel }] : []),
   ];
 
   return (
@@ -837,9 +849,13 @@ function WorkspaceTabBar({ ws, focusArea, cols }: { ws: WorkspaceState; focusAre
         </React.Fragment>
       ))}
       <Spacer />
+      {showRightPanel && (
+        <>
+          <Text dimColor>^J {ws.rightPanel === 'chat' ? 'git' : 'chat'}</Text>
+          <Text color="gray"> · </Text>
+        </>
+      )}
       <Text color="magenta">{ws.branch}</Text>
-      <Text color="gray"> · </Text>
-      <Text dimColor>{ws.rootPath.length > 40 ? '...' + ws.rootPath.slice(-37) : ws.rootPath}</Text>
     </Box>
   );
 }
@@ -1028,54 +1044,114 @@ function GitPanel({
   );
 }
 
-function WorkspaceChat({
+function AgentOutputPanel({
   state,
-  chatRows,
-  collapsed,
+  panelHeight,
+  isFocused,
+  scrollOffset,
 }: {
   state: TuiState;
-  chatRows: number;
-  collapsed: boolean;
+  panelHeight: number;
+  isFocused: boolean;
+  scrollOffset: number;
 }) {
-  if (collapsed) {
-    return (
-      <Box paddingX={1} height={1}>
-        <Text dimColor>Chat hidden · Ctrl+J to show</Text>
-      </Box>
-    );
+  const viewLines = Math.max(1, panelHeight - 4); // header + thinking + footer + border
+
+  // Build a flat array of rendered lines from messages
+  const allLines: Array<{ key: string; node: React.ReactNode }> = [];
+
+  for (const msg of state.chatMessages) {
+    const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
+    const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'Sys' : state.agentName;
+    const contentLines = msg.content.split('\n');
+
+    // First line with role prefix
+    allLines.push({
+      key: `${msg.id}-0`,
+      node: (
+        <Box>
+          <Text color={roleColor} bold>{prefix}: </Text>
+          <Text wrap="truncate-end">{contentLines[0] || ''}</Text>
+        </Box>
+      ),
+    });
+
+    // Remaining lines indented
+    for (let i = 1; i < contentLines.length; i++) {
+      allLines.push({
+        key: `${msg.id}-${i}`,
+        node: (
+          <Box>
+            <Text> </Text>
+            <Text wrap="truncate-end" dimColor={msg.role === 'system'}>{contentLines[i]}</Text>
+          </Box>
+        ),
+      });
+    }
+
+    // Separator between messages
+    allLines.push({
+      key: `${msg.id}-sep`,
+      node: <Text dimColor>{'─'.repeat(3)}</Text>,
+    });
   }
 
-  // Estimate ~2 rows per message, show what fits
-  const maxMessages = Math.max(1, Math.floor(chatRows / 2));
-  const messages = state.chatMessages.slice(-maxMessages);
-  const hiddenCount = Math.max(0, state.chatMessages.length - maxMessages);
+  // Auto-scroll to bottom if no manual offset, or use scrollOffset
+  const totalLines = allLines.length;
+  const effectiveOffset = scrollOffset === 0
+    ? Math.max(0, totalLines - viewLines) // auto-scroll to bottom
+    : Math.max(0, Math.min(scrollOffset, totalLines - viewLines));
+
+  const visibleLines = allLines.slice(effectiveOffset, effectiveOffset + viewLines);
+  const hiddenAbove = effectiveOffset;
+  const hiddenBelow = Math.max(0, totalLines - effectiveOffset - viewLines);
 
   return (
-    <Box flexDirection="column" height={chatRows} overflow="hidden" paddingX={1}>
-      {hiddenCount > 0 && <Text dimColor>↑ {hiddenCount} earlier message{hiddenCount !== 1 ? 's' : ''}</Text>}
-      {messages.map((msg) => {
-        const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
-        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'Sys' : state.agentName;
-        const text = msg.content.split('\n')[0]; // single line in compact view
-        const truncated = text.length > 100 ? text.slice(0, 97) + '...' : text;
-        return (
-          <Box key={msg.id}>
-            <Text color={roleColor} bold>{prefix}: </Text>
-            <Text wrap="truncate-end">{truncated}</Text>
-          </Box>
-        );
-      })}
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={isFocused ? 'cyan' : 'gray'}
+      overflow="hidden"
+      height={panelHeight}
+    >
+      <Box paddingX={1}>
+        <Text bold={isFocused} color={isFocused ? 'cyan' : 'gray'}>AGENT OUTPUT</Text>
+        <Spacer />
+        <Text dimColor>{state.chatMessages.length} msg{state.chatMessages.length !== 1 ? 's' : ''}</Text>
+      </Box>
+      {hiddenAbove > 0 && (
+        <Box paddingX={1}><Text dimColor>↑ {hiddenAbove} line{hiddenAbove !== 1 ? 's' : ''} above</Text></Box>
+      )}
+      {visibleLines.length === 0 ? (
+        <Box flexDirection="column" flexGrow={1} alignItems="center" justifyContent="center">
+          <Text dimColor>No messages yet.</Text>
+          <Text dimColor>Type below to chat.</Text>
+        </Box>
+      ) : (
+        visibleLines.map((line) => (
+          <Box key={line.key} paddingX={1}>{line.node}</Box>
+        ))
+      )}
+      {/* Fill remaining space */}
+      {visibleLines.length > 0 && visibleLines.length < viewLines - (hiddenAbove > 0 ? 1 : 0) && (
+        Array.from({ length: viewLines - visibleLines.length - (hiddenAbove > 0 ? 1 : 0) }, (_, i) => (
+          <Box key={`apad-${i}`}><Text> </Text></Box>
+        ))
+      )}
       {state.isThinking && (
-        <Box>
+        <Box paddingX={1}>
           <Text color="cyan">⠋ </Text>
           <Text color="cyan" bold>{state.agentName}</Text>
           <Text dimColor> · </Text>
-          <Text>{(() => {
+          <Text wrap="truncate-end">{(() => {
             const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
             return running ? running.label : 'Thinking...';
           })()}</Text>
         </Box>
       )}
+      <Box paddingX={1}>
+        <Text dimColor>{isFocused ? '↑↓ scroll · Ctrl+G git · Esc back' : 'Ctrl+J focus'}</Text>
+      </Box>
     </Box>
   );
 }
@@ -1093,29 +1169,31 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
     );
   }
 
-  const showGitPanel = cols >= 100;
   const focusArea = ws.focusArea;
-  const chatCollapsed = ws.chatCollapsed;
+  const rightPanel = ws.rightPanel;
 
   // Layout math: rows budget
-  // statusBar(2) + tabBar(1) + separator(1) + chatPanel + inputBox(3) + footer(1) = 8 + chatRows
-  const chatRows = chatCollapsed ? 1 : Math.max(3, Math.min(8, Math.floor(rows * 0.2)));
-  const fixedOverhead = 8; // status(2) + tab(1) + borders handled by panel + inputBox(3) + footer(1) + separator(1)
-  const idePanelHeight = Math.max(8, rows - fixedOverhead - chatRows);
+  // statusBar(2) + tabBar(1) + inputBox(3) = 6 fixed rows
+  const fixedOverhead = 6;
+  const idePanelHeight = Math.max(8, rows - fixedOverhead);
 
-  // Column widths
+  // Column widths — 3 columns: explorer | code | right panel (chat or git)
   let explorerWidth: number;
-  let gitWidth: number;
+  let rightWidth: number;
 
-  if (cols >= 120) {
-    explorerWidth = Math.floor(cols * 0.20);
-    gitWidth = showGitPanel ? Math.floor(cols * 0.22) : 0;
+  if (cols >= 140) {
+    explorerWidth = Math.floor(cols * 0.18);
+    rightWidth = Math.floor(cols * 0.28);
+  } else if (cols >= 120) {
+    explorerWidth = Math.floor(cols * 0.18);
+    rightWidth = Math.floor(cols * 0.26);
   } else if (cols >= 100) {
     explorerWidth = Math.floor(cols * 0.22);
-    gitWidth = showGitPanel ? Math.floor(cols * 0.24) : 0;
+    rightWidth = Math.floor(cols * 0.28);
   } else {
+    // Narrow: explorer + code only, no right panel
     explorerWidth = Math.floor(cols * 0.30);
-    gitWidth = 0;
+    rightWidth = 0;
   }
 
   return (
@@ -1136,22 +1214,26 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
             isFocused={focusArea === 'code'}
           />
         </Box>
-        {showGitPanel && (
-          <Box width={gitWidth}>
-            <GitPanel
-              ws={ws}
-              panelHeight={idePanelHeight}
-              isFocused={focusArea === 'git'}
-              gitCursor={gitCursor}
-            />
+        {rightWidth > 0 && (
+          <Box width={rightWidth}>
+            {rightPanel === 'chat' ? (
+              <AgentOutputPanel
+                state={state}
+                panelHeight={idePanelHeight}
+                isFocused={focusArea === 'chat'}
+                scrollOffset={ws.chatScrollOffset}
+              />
+            ) : (
+              <GitPanel
+                ws={ws}
+                panelHeight={idePanelHeight}
+                isFocused={focusArea === 'git'}
+                gitCursor={gitCursor}
+              />
+            )}
           </Box>
         )}
       </Box>
-      <WorkspaceChat
-        state={state}
-        chatRows={chatRows}
-        collapsed={chatCollapsed}
-      />
     </Box>
   );
 }

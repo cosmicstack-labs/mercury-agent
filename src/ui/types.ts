@@ -33,8 +33,10 @@ export interface WorkspaceState {
   branch: string;
   lastAction: string;
   codeScrollOffset: number;
-  focusArea: 'explorer' | 'code' | 'git';
+  focusArea: 'explorer' | 'code' | 'git' | 'chat';
   chatCollapsed: boolean;
+  chatScrollOffset: number;
+  rightPanel: 'chat' | 'git';
 }
 
 export interface ChatMessage {

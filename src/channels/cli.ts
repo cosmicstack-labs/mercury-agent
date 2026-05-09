@@ -212,12 +212,17 @@ export class CLIChannel extends BaseChannel {
         return;
       }
       if (trimmed.startsWith('/ws focus ')) {
-        const area = trimmed.slice(9).trim() as 'explorer' | 'code' | 'git';
-        if (['explorer', 'code', 'git'].includes(area)) this.setWorkspaceFocus(area);
+        const area = trimmed.slice(9).trim() as 'explorer' | 'code' | 'git' | 'chat';
+        if (['explorer', 'code', 'git', 'chat'].includes(area)) this.setWorkspaceFocus(area);
         return;
       }
       if (trimmed === '/ws toggle-chat') {
         this.toggleWorkspaceChat();
+        return;
+      }
+      if (trimmed.startsWith('/ws chat-scroll ')) {
+        const delta = parseInt(trimmed.slice(16), 10);
+        if (!isNaN(delta)) this.scrollWorkspaceChat(delta);
         return;
       }
       if (trimmed === '/menu' || trimmed === '/m') {
@@ -674,6 +679,8 @@ export class CLIChannel extends BaseChannel {
       codeScrollOffset: this.state.workspace?.codeScrollOffset ?? 0,
       focusArea: this.state.workspace?.focusArea ?? 'explorer',
       chatCollapsed: this.state.workspace?.chatCollapsed ?? false,
+      chatScrollOffset: this.state.workspace?.chatScrollOffset ?? 0,
+      rightPanel: this.state.workspace?.rightPanel ?? 'chat',
     };
   }
 
@@ -693,21 +700,36 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
-  setWorkspaceFocus(area: 'explorer' | 'code' | 'git'): void {
+  setWorkspaceFocus(area: 'explorer' | 'code' | 'git' | 'chat'): void {
     const ws = this.state.workspace;
     if (!ws?.active) return;
-    this.update({ workspace: { ...ws, focusArea: area } });
+    // When focusing git or chat, also switch the right panel
+    const rightPanel = area === 'git' ? 'git' : area === 'chat' ? 'chat' : ws.rightPanel;
+    this.update({ workspace: { ...ws, focusArea: area, rightPanel } });
   }
 
   toggleWorkspaceChat(): void {
     const ws = this.state.workspace;
     if (!ws?.active) return;
-    this.update({ workspace: { ...ws, chatCollapsed: !ws.chatCollapsed } });
+    // Toggle right panel between chat and git
+    const rightPanel = ws.rightPanel === 'chat' ? 'git' : 'chat';
+    const focusArea = rightPanel === 'chat' ? 'chat' : ws.focusArea === 'chat' ? 'explorer' : ws.focusArea;
+    this.update({ workspace: { ...ws, rightPanel, focusArea } });
+  }
+
+  scrollWorkspaceChat(delta: number): void {
+    const ws = this.state.workspace;
+    if (!ws?.active) return;
+    const maxOffset = Math.max(0, this.state.chatMessages.length - 1);
+    const next = Math.max(0, Math.min(maxOffset, ws.chatScrollOffset + delta));
+    if (next !== ws.chatScrollOffset) {
+      this.update({ workspace: { ...ws, chatScrollOffset: next } });
+    }
   }
 
   private exitWorkspaceToChat(): void {
     const ws = this.state.workspace;
-    const nextWorkspace = ws ? { ...ws, active: false, focusArea: 'explorer' as const, codeScrollOffset: 0, chatCollapsed: false, lastAction: 'Exited workspace mode' } : null;
+    const nextWorkspace = ws ? { ...ws, active: false, focusArea: 'explorer' as const, codeScrollOffset: 0, chatCollapsed: false, chatScrollOffset: 0, rightPanel: 'chat' as const, lastAction: 'Exited workspace mode' } : null;
     this.update({
       mode: 'chat',
       workspace: nextWorkspace,
