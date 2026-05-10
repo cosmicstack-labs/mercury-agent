@@ -1735,21 +1735,14 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     const channel = this.channels.get(channelType as any);
 
     if (channelType === 'cli' && channel instanceof CLIChannel) {
-      const options: ArrowSelectOption[] = choices.map((label, i) => ({
+      const options = choices.map((label, i) => ({
         value: String(i),
         label,
       }));
 
-      try {
-        const selected = await channel.withMenu(async (select) => {
-          return select(question, options);
-        });
-        if (selected === undefined) return choices[0];
-        const index = parseInt(selected, 10);
-        return isNaN(index) ? choices[0] : choices[index];
-      } catch {
-        return choices[0];
-      }
+      const selected = await channel.presentChoicePrompt(question, options);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
 
     if (channelType === 'telegram' && channel instanceof TelegramChannel) {

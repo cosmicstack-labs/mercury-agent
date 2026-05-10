@@ -472,6 +472,20 @@ export class CLIChannel extends BaseChannel {
     });
   }
 
+  async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>): Promise<string> {
+    return new Promise((resolve) => {
+      this.permissionResolver = (val) => resolve(String(val));
+      this.update({
+        permissionPrompt: {
+          type: 'mode',
+          message: question,
+          options,
+          resolve: () => {},
+        },
+      });
+    });
+  }
+
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
     return new Promise((resolve) => {
       this.permissionResolver = (val) => {

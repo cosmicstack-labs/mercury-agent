@@ -79,7 +79,11 @@ export interface TuiAppProps {
 export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
   const { exit } = useApp();
   const [input, setInput] = React.useState('');
-  const [permIdx, setPermIdx] = React.useState(0);
+  const [cursorPos, setCursorPos] = React.useState(0);
+  const setInputAndCursor = (text: string, pos?: number) => {
+    setInput(text);
+    setCursorPos(pos ?? text.length);
+  };  const [permIdx, setPermIdx] = React.useState(0);
   const permIdxRef = React.useRef(0);
   const [menuIdx, setMenuIdx] = React.useState(0);
   const [spotifyIdx, setSpotifyIdx] = React.useState(6);
@@ -393,7 +397,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (isEnter) {
       // Shift+Enter or Alt+Enter → insert newline instead of submitting
       if ((key as any).shift || key.meta) {
-        setInput((prev) => prev + '\n');
+        setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
+        setCursorPos((p) => p + 1);
         return;
       }
       const trimmed = input.trim();
@@ -405,7 +410,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         });
         setHistoryIndex(-1);
         setHistoryDraft('');
-        setInput('');
+        setInputAndCursor('');
         return;
       }
     }
@@ -536,8 +541,18 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       if (input.startsWith('/') && slashSuggestions.length > 0) {
         const exactIdx = slashSuggestions.findIndex((cmd) => cmd === input);
         const nextIdx = exactIdx >= 0 ? (exactIdx + 1) % slashSuggestions.length : 0;
-        setInput(slashSuggestions[nextIdx]);
+        setInputAndCursor(slashSuggestions[nextIdx]);
       }
+      return;
+    }
+
+    // Left/right arrow: move cursor within input
+    if (key.leftArrow) {
+      setCursorPos((p) => Math.max(0, p - 1));
+      return;
+    }
+    if (key.rightArrow) {
+      setCursorPos((p) => Math.min(input.length, p + 1));
       return;
     }
 
@@ -547,12 +562,12 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         setHistoryDraft(input);
         const next = inputHistory.length - 1;
         setHistoryIndex(next);
-        setInput(inputHistory[next] ?? '');
+        setInputAndCursor(inputHistory[next] ?? '');
         return;
       }
       const next = Math.max(0, historyIndex - 1);
       setHistoryIndex(next);
-      setInput(inputHistory[next] ?? '');
+      setInputAndCursor(inputHistory[next] ?? '');
       return;
     }
 
@@ -561,16 +576,19 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       const next = historyIndex + 1;
       if (next >= inputHistory.length) {
         setHistoryIndex(-1);
-        setInput(historyDraft);
+        setInputAndCursor(historyDraft);
         return;
       }
       setHistoryIndex(next);
-      setInput(inputHistory[next] ?? '');
+      setInputAndCursor(inputHistory[next] ?? '');
       return;
     }
 
     if (key.backspace || key.delete) {
-      setInput((prev) => prev.slice(0, -1));
+      if (cursorPos > 0) {
+        setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
+        setCursorPos((p) => p - 1);
+      }
       return;
     }
 
@@ -579,7 +597,10 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (ch && ch.length > 0 && !key.escape) {
       // Strip control chars but keep printable content (handles paste)
       const clean = ch.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-      if (clean) setInput((prev) => prev + clean);
+      if (clean) {
+        setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
+        setCursorPos((p) => p + clean.length);
+      }
     }
   });
 
@@ -654,6 +675,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       {showInput && (
         <InputBox
           input={input}
+          cursorPos={cursorPos}
           mode={state.mode}
           programmingMode={state.programmingMode}
           projectContext={state.projectContext}
@@ -1505,11 +1527,13 @@ function PermPromptView({ prompt, activeIdx }: { prompt: PermissionPromptState; 
 
 function InputBox({
   input,
+  cursorPos,
   mode,
   programmingMode,
   projectContext,
 }: {
   input: string;
+  cursorPos: number;
   mode: AppMode;
   programmingMode: ProgrammingModeState;
   projectContext: string | null;
@@ -1522,6 +1546,20 @@ function InputBox({
     ? `...${projectContext.slice(-49)}`
     : (projectContext || 'No project context');
 
+  // Split input into lines and figure out which line/col the cursor is on
+  const lines = input.split('\n');
+  let cursorLine = 0;
+  let cursorCol = cursorPos;
+  let consumed = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (consumed + lines[i].length >= cursorPos && i < lines.length - 1 ? consumed + lines[i].length + 1 > cursorPos : true) {
+      cursorLine = i;
+      cursorCol = cursorPos - consumed;
+      break;
+    }
+    consumed += lines[i].length + 1; // +1 for \n
+  }
+
   return (
     <Box flexDirection="column">
       <Text color="dim">{'─'.repeat(60)}</Text>
@@ -1533,11 +1571,18 @@ function InputBox({
         </Text>
       </Box>
       <Box paddingX={1} flexDirection="column">
-        {input.split('\n').map((line, i, arr) => (
+        {lines.map((line, i) => (
           <Box key={i}>
             <Text color={promptColor} bold>{i === 0 ? '> ' : '  '}</Text>
-            <Text>{line}</Text>
-            {i === arr.length - 1 && <Text dimColor>█</Text>}
+            {i === cursorLine ? (
+              <>
+                <Text>{line.slice(0, cursorCol)}</Text>
+                <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
+                <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
+              </>
+            ) : (
+              <Text>{line}</Text>
+            )}
           </Box>
         ))}
       </Box>
