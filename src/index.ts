@@ -162,7 +162,7 @@ async function chooseProvidersToConfigure(config: MercuryConfig, isReconfig: boo
     console.log('');
 
     const prompt = isReconfig
-      ? chalk.white('  Choose providers to configure [comma-separated, Enter keeps current]: ')
+      ? chalk.white('  Choose providers to configure [comma-separated, Enter to keep current]: ')
       : chalk.white('  Choose providers to configure [comma-separated, Enter for DeepSeek]: ');
 
     const input = await ask(prompt);
@@ -175,7 +175,8 @@ async function chooseProvidersToConfigure(config: MercuryConfig, isReconfig: boo
 
     if (parsed.length > 0) return parsed;
     if (!isReconfig) return ['deepseek'];
-    return configured.length > 0 ? configured : ['deepseek'];
+    // On reconfig, Enter with no input means "keep current, don't re-prompt"
+    return [];
   }
 }
 
@@ -678,9 +679,15 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
   console.log('');
 
-  while (true) {
+   while (true) {
     const selectedProviders = await chooseProvidersToConfigure(config, isReconfig);
     console.log('');
+
+    // On reconfig, if user pressed Enter (empty input), they want to keep
+    // current providers unchanged — skip the per-provider prompts entirely.
+    if (isReconfig && selectedProviders.length === 0) {
+      break;
+    }
 
     for (const provider of selectedProviders) {
       if (provider === 'deepseek') {
