@@ -20,6 +20,7 @@ import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
+import { getTelegramHelp } from '../utils/manual.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
@@ -1044,6 +1045,7 @@ export class Agent {
       const tgChannel = this.channels.get('telegram');
       if (msg.channelType === 'telegram' && tgChannel) {
         (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
+        (tgChannel as TelegramChannel).beginTask(msg.channelId);
       }
 
       for (const provider of fallbackIterator) {
@@ -1521,6 +1523,11 @@ export class Agent {
         const errMsg = `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
         if (channel && msg.channelType !== 'internal') {
+          // End task before sending error so it goes through as a normal message
+          if (channel instanceof TelegramChannel) {
+            (channel as TelegramChannel).endTask(msg.channelId);
+            (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          }
           await channel.send(errMsg, msg.channelId);
         }
         this.lifecycle.transition('idle');
@@ -1576,18 +1583,12 @@ export class Agent {
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
-        if (streamedText && streamedText.trim()) {
-          logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
-        } else {
-          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
-          await channel.send(finalText, msg.channelId, elapsed);
-          this.markProgress();
-        }
 
         // Send completion banner only for substantial tasks (3+ steps AND >30s)
         // Simple responses (greetings, quick answers) don't need a banner
         const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
-        if (isSubstantialTask) {
+        if (isSubstantialTask && channel instanceof TelegramChannel) {
+          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
           const completionMeta = {
             provider: usedProvider?.name ?? 'unknown',
             model: usedProvider?.model ?? 'unknown',
@@ -1598,15 +1599,47 @@ export class Agent {
             budgetTotal: this.tokenBudget.getBudget(),
             budgetPercentage: this.tokenBudget.getUsagePercentage(),
           };
-          if (channel instanceof CLIChannel) {
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
-          } else if (channel instanceof TelegramChannel) {
-            await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
+          // If there's a non-streamed response that wasn't deferred, defer it now
+          if (!streamedText && finalText && finalText.trim()) {
+            // send() during active task already deferred it — nothing to do
           }
-        } else if (channel instanceof TelegramChannel && stepCount > 0) {
-          // For small tasks with steps, still clean up the progress card
-          await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
-          (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
+        } else if (channel instanceof TelegramChannel) {
+          // For non-substantial Telegram tasks: end task, flush deferred, clean up
+          (channel as TelegramChannel).endTask(msg.channelId);
+          // Flush deferred response
+          const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
+          const responseText = deferred || (!streamedText && finalText ? finalText : null);
+          if (responseText && responseText.trim()) {
+            await channel.send(responseText, msg.channelId, elapsed);
+          }
+          if (stepCount > 0) {
+            await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
+            (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          }
+          this.markProgress();
+        } else {
+          // CLI or other channels — original flow
+          if (streamedText && streamedText.trim()) {
+            logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
+          } else {
+            logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
+            await channel.send(finalText, msg.channelId, elapsed);
+            this.markProgress();
+          }
+          if (isSubstantialTask && channel instanceof CLIChannel) {
+            const completionMeta = {
+              provider: usedProvider?.name ?? 'unknown',
+              model: usedProvider?.model ?? 'unknown',
+              inputTokens: result.usage?.inputTokens ?? 0,
+              outputTokens: result.usage?.outputTokens ?? 0,
+              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+              budgetUsed: this.tokenBudget.getDailyUsed(),
+              budgetTotal: this.tokenBudget.getBudget(),
+              budgetPercentage: this.tokenBudget.getUsagePercentage(),
+            };
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+          }
         }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
@@ -2069,7 +2102,8 @@ Is this productive iteration or a stuck loop?`,
     if (!ctx) return false;
 
     if (cmd === '/help') {
-      await channel.send(ctx.manual(), channelId);
+      const helpText = channelType === 'telegram' ? getTelegramHelp() : ctx.manual();
+      await channel.send(helpText, channelId);
       return true;
     }
 
