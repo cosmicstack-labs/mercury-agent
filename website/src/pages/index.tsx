@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import Link from '@docusaurus/Link';
 import Head from '@docusaurus/Head';
+import Killipi from '@site/src/components/Killipi';
 import '@site/src/css/landing.css';
 
 type TerminalLine = {
@@ -290,7 +291,7 @@ export default function LandingPage(): React.ReactElement {
           <div className="lp-hero-mesh" />
           <div className="lp-hero-glow" />
           <div className="lp-container lp-hero-content">
-            <div className="lp-hero-badge">Open Source AI Agent</div>
+            <Killipi />
             <h1 className="lp-hero-title">
               The AI agent that<br />
               <span className="lp-hero-highlight">thinks, acts, and asks.</span>
