@@ -1584,8 +1584,10 @@ export class Agent {
           this.markProgress();
         }
 
-        // Send completion banner if there was meaningful work (multi-step)
-        if (stepCount > 0) {
+        // Send completion banner only for substantial tasks (3+ steps AND >30s)
+        // Simple responses (greetings, quick answers) don't need a banner
+        const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
+        if (isSubstantialTask) {
           const completionMeta = {
             provider: usedProvider?.name ?? 'unknown',
             model: usedProvider?.model ?? 'unknown',
@@ -1601,6 +1603,10 @@ export class Agent {
           } else if (channel instanceof TelegramChannel) {
             await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
           }
+        } else if (channel instanceof TelegramChannel && stepCount > 0) {
+          // For small tasks with steps, still clean up the progress card
+          await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
+          (channel as TelegramChannel).resetStepCounter(msg.channelId);
         }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
