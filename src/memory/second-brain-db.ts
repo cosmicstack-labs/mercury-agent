@@ -12,23 +12,29 @@ let syncDatabaseClass: typeof import('better-sqlite3') | null = null;
 let availabilityChecked = false;
 let available = false;
 
-try {
-  const mod = require('better-sqlite3');
-  const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
+function ensureProbed(): void {
+  if (availabilityChecked) return;
+  availabilityChecked = true;
   try {
-    mkdirSync(probeDir, { recursive: true });
-    const probeDb = new mod(join(probeDir, 'probe.db'));
-    probeDb.close();
-    rmSync(probeDir, { recursive: true, force: true });
-    syncDatabaseClass = mod;
+    const mod = require('better-sqlite3');
+    const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
+    try {
+      mkdirSync(probeDir, { recursive: true });
+      const probeDb = new mod(join(probeDir, 'probe.db'));
+      probeDb.close();
+      rmSync(probeDir, { recursive: true, force: true });
+      syncDatabaseClass = mod;
+      available = true;
+    } catch {
+      syncDatabaseClass = null;
+    }
   } catch {
     syncDatabaseClass = null;
   }
-} catch {
-  syncDatabaseClass = null;
 }
 
 export function isBetterSqlite3Available(): boolean {
+  ensureProbed();
   return syncDatabaseClass !== null;
 }
 
@@ -59,6 +65,7 @@ export class SecondBrainDB {
   private db: BetterSqlite3Database;
 
   constructor(dbPath: string) {
+    ensureProbed();
     if (!syncDatabaseClass) {
       throw new Error(
         'better-sqlite3 is not available — second brain memory requires it. ' +

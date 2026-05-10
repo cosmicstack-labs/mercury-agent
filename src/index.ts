@@ -1232,7 +1232,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const tokenBudget = new TokenBudget(config);
-  const providers = new ProviderRegistry(config);
+  const providers = await ProviderRegistry.create(config);
 
   if (!providers.hasProviders()) {
     if (isDaemon) {

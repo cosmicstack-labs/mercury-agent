@@ -783,14 +783,14 @@ export class Agent {
     this.processing = false;
   }
 
-  private switchSessionProvider(providerName: string): { ok: boolean; message: string } {
+  private async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
     const active = getActiveProviders(this.config).map((p) => p.name);
     if (!active.includes(providerName)) {
       return { ok: false, message: `Provider \`${providerName}\` is not configured. Run \`mercury doctor\` to add/configure models.` };
     }
 
     this.config.providers.default = providerName as any;
-    this.providers = new ProviderRegistryImpl(this.config);
+    this.providers = await ProviderRegistryImpl.create(this.config);
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
@@ -2201,7 +2201,7 @@ Is this productive iteration or a stuck loop?`,
           if (picked === 'Keep current model') return true;
           const providerName = picked.split(' · ')[0].trim();
           if (providerName && providerName !== current.name) {
-            const switched = this.switchSessionProvider(providerName);
+            const switched = await this.switchSessionProvider(providerName);
             await channel.send(switched.message, channelId);
           }
         }
@@ -2219,7 +2219,7 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
-      const switched = this.switchSessionProvider(target);
+      const switched = await this.switchSessionProvider(target);
       await channel.send(switched.message, channelId);
       return true;
     }
