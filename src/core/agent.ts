@@ -238,6 +238,14 @@ class ToolCallLoopDetector {
     return this.hardAborted;
   }
 
+  /** Return human-readable summaries of recent calls for AI self-check */
+  getRecentCallSummaries(): string[] {
+    return this.recentCalls.slice(-8).map(c => {
+      const params = c.params.length > 80 ? c.params.slice(0, 77) + '...' : c.params;
+      return `${c.tool}(${params})${c.failed ? ' [FAILED]' : ''}`;
+    });
+  }
+
   reset(): void {
     this.recentCalls = [];
     this.totalCalls = 0;
@@ -254,6 +262,7 @@ const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
 const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
 const MAX_STALL_MS = 4 * 60 * 1000;
+const MAX_SELF_CHECKS = 2; // max AI self-checks per request before auto-aborting
 
 export class Agent {
   readonly lifecycle: Lifecycle;
@@ -1009,6 +1018,7 @@ export class Agent {
       const loopDetector = new ToolCallLoopDetector();
       const loopAbortController = new AbortController();
       let loopWarningSent = false;
+      let selfCheckCount = 0;
 
       this.currentMessage = msg;
       this.currentAbort = loopAbortController;
@@ -1105,8 +1115,34 @@ export class Agent {
                   const softLoop = loopDetector.detectSameTool();
                   if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
                     if (this.capabilities.permissions.isAutoApproveAll()) {
-                      loopDetector.reset();
-                      loopWarningSent = false;
+                      // AI self-check instead of prompting user
+                      if (selfCheckCount >= MAX_SELF_CHECKS) {
+                        logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
+                        if (channel) {
+                          await channel.send(`⚠ ${softLoop.tool} called ${softLoop.count}x — max self-check budget exceeded. Stopping to prevent runaway.`, msg.channelId).catch(() => {});
+                        }
+                        loopAbortController.abort();
+                        return;
+                      }
+                      selfCheckCount++;
+                      const recentCalls = loopDetector.getRecentCallSummaries();
+                      const shouldContinue = await this.aiSelfCheck({
+                        toolName: softLoop.tool,
+                        callCount: softLoop.count,
+                        recentCalls,
+                        taskDescription: msg.content.slice(0, 300),
+                      });
+                      if (shouldContinue) {
+                        loopDetector.reset();
+                        loopWarningSent = false;
+                      } else {
+                        logger.info({ tool: softLoop.tool, count: softLoop.count }, 'AI self-check decided to stop');
+                        if (channel) {
+                          await channel.send(`⚠ AI self-check: ${softLoop.tool} called ${softLoop.count}x — detected unproductive loop. Stopping.`, msg.channelId).catch(() => {});
+                        }
+                        loopAbortController.abort();
+                        return;
+                      }
                     } else {
                       loopWarningSent = true;
                       const shouldContinue = await channel.askToContinue(
@@ -1282,8 +1318,34 @@ export class Agent {
                   const softLoop = loopDetector.detectSameTool();
                   if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
                     if (this.capabilities.permissions.isAutoApproveAll()) {
-                      loopDetector.reset();
-                      loopWarningSent = false;
+                      // AI self-check instead of prompting user
+                      if (selfCheckCount >= MAX_SELF_CHECKS) {
+                        logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
+                        if (channel) {
+                          await channel.send(`⚠ ${softLoop.tool} called ${softLoop.count}x — max self-check budget exceeded. Stopping to prevent runaway.`, msg.channelId).catch(() => {});
+                        }
+                        loopAbortController.abort();
+                        return;
+                      }
+                      selfCheckCount++;
+                      const recentCalls = loopDetector.getRecentCallSummaries();
+                      const shouldContinue = await this.aiSelfCheck({
+                        toolName: softLoop.tool,
+                        callCount: softLoop.count,
+                        recentCalls,
+                        taskDescription: msg.content.slice(0, 300),
+                      });
+                      if (shouldContinue) {
+                        loopDetector.reset();
+                        loopWarningSent = false;
+                      } else {
+                        logger.info({ tool: softLoop.tool, count: softLoop.count }, 'AI self-check decided to stop');
+                        if (channel) {
+                          await channel.send(`⚠ AI self-check: ${softLoop.tool} called ${softLoop.count}x — detected unproductive loop. Stopping.`, msg.channelId).catch(() => {});
+                        }
+                        loopAbortController.abort();
+                        return;
+                      }
                     } else {
                       loopWarningSent = true;
                       const shouldContinue = await channel.askToContinue(
@@ -1497,6 +1559,13 @@ export class Agent {
     }
 
     prompt += `\n\nEnvironment:\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
+
+    prompt += `\n\n**Tool Usage Guidelines:**
+- Use write_file, create_file, and edit_file tools DIRECTLY to create and modify files. Do NOT create intermediary scripts (Python, bash, Node.js) whose sole purpose is to generate other files — you have native file tools for this.
+- Use run_command for: building, testing, installing dependencies, running the project, git operations, and other system tasks that require a shell.
+- Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
+- Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
+- When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
 
     if (this.userMemory) {
       const summary = this.userMemory.getSummary();
@@ -1731,6 +1800,48 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     this.backgroundTasks.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
+  }
+
+  /**
+   * AI self-check: ask the model itself whether repeated tool usage is productive or a loop.
+   * Used in allow-all mode instead of prompting the user.
+   * Returns true if the AI thinks it should continue, false if it should stop.
+   */
+  private async aiSelfCheck(context: {
+    toolName: string;
+    callCount: number;
+    recentCalls: string[];
+    taskDescription: string;
+  }): Promise<boolean> {
+    try {
+      const provider = this.providers.getDefault();
+      if (!provider) return false; // no provider = stop
+
+      const selfCheckResult = await generateText({
+        model: provider.getModelInstance(),
+        system: 'You are a monitoring system. Analyze the tool call pattern and decide if it is productive work or a stuck loop. Respond with ONLY "CONTINUE" or "STOP" followed by a brief reason.',
+        messages: [{
+          role: 'user',
+          content: `The AI agent has called "${context.toolName}" ${context.callCount} times consecutively.
+
+Task: ${context.taskDescription}
+
+Recent calls:
+${context.recentCalls.slice(-5).join('\n')}
+
+Is this productive work (e.g., reading multiple files to understand a codebase, editing different parts of a file) or a stuck loop (e.g., retrying the same failing operation, repeating identical actions)?`,
+        }],
+        maxOutputTokens: 100,
+      });
+
+      const answer = (selfCheckResult.text || '').trim().toUpperCase();
+      const shouldContinue = answer.startsWith('CONTINUE');
+      logger.info({ toolName: context.toolName, count: context.callCount, decision: shouldContinue ? 'continue' : 'stop', reason: selfCheckResult.text?.slice(0, 100) }, 'AI self-check result');
+      return shouldContinue;
+    } catch (err) {
+      logger.warn({ err }, 'AI self-check failed — defaulting to stop');
+      return false;
+    }
   }
 
   setSpotifyClient(client: SpotifyClient): void {
