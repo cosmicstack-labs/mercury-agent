@@ -105,7 +105,20 @@ export class SkillLoader {
   getSkillSummariesText(): string {
     const skills = this.getDiscovered();
     if (skills.length === 0) return '';
-    return 'Available skills:\n' + skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+
+    let text = '**Available Skills** (invoke with the `use_skill` tool):\n';
+    text += skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+
+    // Auto-routing hint for web search
+    const hasWebSearchSkill = skills.some(s => s.name === 'web-search');
+    if (hasWebSearchSkill) {
+      text += '\n\n**Important — Web Search:** When the user asks about current events, news, real-time information, '
+        + 'or anything that requires up-to-date knowledge beyond your training data, you MUST invoke the `web-search` skill '
+        + 'via `use_skill` immediately — do NOT attempt to answer from memory or ask clarifying questions first. '
+        + 'Fetch real information, then respond.';
+    }
+
+    return text;
   }
 
   saveSkill(name: string, content: string): string {
