@@ -230,41 +230,31 @@ export default function Killipi(): React.ReactElement {
           </radialGradient>
         </defs>
 
-        {/* Outer circle */}
+        {/* Ears */}
+        <path
+          d="M 80 78 Q 76 60 87 72"
+          stroke="var(--killipi-stroke)"
+          strokeWidth="2"
+          fill="var(--killipi-face-bg)"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 120 78 Q 124 60 113 72"
+          stroke="var(--killipi-stroke)"
+          strokeWidth="2"
+          fill="var(--killipi-face-bg)"
+          strokeLinecap="round"
+        />
+
+        {/* Face circle */}
         <circle
           cx="100"
           cy="100"
           r="30"
-          fill="none"
+          fill="url(#killipi-face-gradient)"
           stroke="var(--killipi-stroke)"
           strokeWidth="2"
           className="killipi-outer-ring"
-        />
-
-        {/* Ears */}
-        <path
-          d="M 80 75 Q 78 62 85 68"
-          stroke="var(--killipi-stroke)"
-          strokeWidth="2"
-          fill="var(--killipi-face-bg)"
-          strokeLinecap="round"
-        />
-        <path
-          d="M 120 75 Q 122 62 115 68"
-          stroke="var(--killipi-stroke)"
-          strokeWidth="2"
-          fill="var(--killipi-face-bg)"
-          strokeLinecap="round"
-        />
-
-        {/* Inner face circle */}
-        <circle
-          cx="100"
-          cy="100"
-          r="22"
-          fill="url(#killipi-face-gradient)"
-          stroke="var(--killipi-stroke)"
-          strokeWidth="1.5"
         />
 
         {/* Eyes */}
