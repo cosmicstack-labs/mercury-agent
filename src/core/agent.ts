@@ -1039,7 +1039,7 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.capabilities.getTools(),
+              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
@@ -1216,7 +1216,7 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.capabilities.getTools(),
+              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
@@ -1404,6 +1404,12 @@ export class Agent {
 
       const finalText = (streamedText || result.text || '').trim() || '(no text response)';
       this.markProgress('Finalizing response...');
+
+      // Store plan output when in plan mode for later execution
+      if (this.programmingMode.isPlan() && finalText !== '(no text response)') {
+        this.programmingMode.storePlan(finalText);
+        logger.info({ planLength: finalText.length }, 'Plan captured from plan-mode response');
+      }
 
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,

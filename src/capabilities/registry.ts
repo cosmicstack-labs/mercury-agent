@@ -241,6 +241,22 @@ export class CapabilityRegistry {
     return this.tools;
   }
 
+  /** Return tools filtered for plan mode — read-only tools only */
+  getPlanTools(): Record<string, Tool> {
+    const blocked = new Set([
+      'write_file', 'create_file', 'delete_file', 'edit_file',
+      'run_command', 'cd',
+      'git_add', 'git_commit', 'git_push',
+      'create_pr', 'create_issue',
+      'delegate_task',
+    ]);
+    const filtered: Record<string, Tool> = {};
+    for (const [name, tool] of Object.entries(this.tools)) {
+      if (!blocked.has(name)) filtered[name] = tool;
+    }
+    return filtered;
+  }
+
   getToolNames(): string[] {
     return Object.keys(this.tools);
   }
