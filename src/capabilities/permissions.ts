@@ -260,15 +260,41 @@ export class PermissionManager {
     const scope = this.findScope(resolved);
     const tempScope = this.findTempScope(resolved);
 
-    if (scope) {
-      if (mode === 'read' && scope.read) return { allowed: true };
-      if (mode === 'write' && scope.write) return { allowed: true };
-      return { allowed: false, reason: `Permission denied: ${mode} access to ${path} (scope has ${mode}=false)` };
+    // Read access: allow if any scope covers it (reads are safe in any mode)
+    if (mode === 'read') {
+      if (scope && scope.read) return { allowed: true };
+      if (tempScope && tempScope.read) return { allowed: true };
     }
 
+    // Write access: in auto-approve-all mode, allow if scope covers it
+    if (mode === 'write' && this.autoApproveAll) {
+      if (scope && scope.write) return { allowed: true };
+      if (tempScope && tempScope.write) return { allowed: true };
+    }
+
+    // Write access in ask-me mode: ALWAYS prompt the user, even if scope exists
+    if (mode === 'write' && !this.autoApproveAll && this.askHandler && this.currentChannelType !== 'internal') {
+      const scopeAllows = (scope && scope.write) || (tempScope && tempScope.write);
+      if (scopeAllows) {
+        // Scope allows it, but user wants to confirm — prompt with file path
+        const result = await this.askHandler(`Write to file: ${resolved}`);
+        if (result === 'yes') return { allowed: true };
+        if (result === 'always') {
+          // User chose "always" — switch to auto-approve for the rest of this session
+          this.autoApproveAll = true;
+          return { allowed: true };
+        }
+        return { allowed: false, reason: `User denied write to ${path}` };
+      }
+      // No scope covers it — request scope expansion
+      return this.requestScopeExternal(path, mode);
+    }
+
+    // No scope matched — deny or ask
+    if (scope) {
+      return { allowed: false, reason: `Permission denied: ${mode} access to ${path} (scope has ${mode}=false)` };
+    }
     if (tempScope) {
-      if (mode === 'read' && tempScope.read) return { allowed: true };
-      if (mode === 'write' && tempScope.write) return { allowed: true };
       return { allowed: false, reason: `Permission denied: ${mode} access to ${path}` };
     }
 
@@ -278,6 +304,21 @@ export class PermissionManager {
 
     return { allowed: false, reason: `Permission denied for ${mode} access to ${path}` };
   }
+
+  // Read-only commands that never need approval even in ask-me mode
+  private static readonly SAFE_READ_COMMANDS = new Set([
+    'ls', 'cat', 'pwd', 'which', 'echo', 'head', 'tail', 'wc', 'find', 'grep', 'rg',
+    'ps', 'df', 'du', 'uname', 'dir', 'type', 'cd', 'where', 'tree', 'findstr',
+    'tasklist', 'systeminfo', 'git',  // git read commands are filtered by pattern below
+  ]);
+
+  private static readonly SAFE_READ_PATTERNS = [
+    'ls *', 'cat *', 'pwd', 'which *', 'echo *', 'head *', 'tail *', 'wc *',
+    'find *', 'grep *', 'rg *', 'ps *', 'df *', 'du *', 'uname *',
+    'dir *', 'type *', 'cd *', 'where *', 'tree *', 'findstr *',
+    'tasklist *', 'systeminfo *',
+    'git status *', 'git diff *', 'git log *', 'git branch *',
+  ];
 
   async checkShellCommand(command: string): Promise<{ allowed: boolean; reason?: string; needsApproval: boolean }> {
     if (this.autoApproveAll) {
@@ -298,6 +339,7 @@ export class PermissionManager {
     const trimmed = command.trim();
     const baseCmd = trimmed.split(/\s+/)[0];
 
+    // Always block dangerous commands
     for (const pattern of shell.blocked) {
       if (this.matchPattern(trimmed, pattern)) {
         return { allowed: false, reason: `Blocked command: matches "${pattern}"`, needsApproval: false };
@@ -314,37 +356,23 @@ export class PermissionManager {
       }
     }
 
-    for (const pattern of shell.autoApproved) {
-      if (this.matchPattern(trimmed, pattern)) {
-        logger.info({ cmd: trimmed }, 'Shell command auto-approved');
-        return { allowed: true, needsApproval: false };
-      }
+    // In ask-me mode: only auto-approve safe read-only commands
+    // Everything else must be prompted
+    const isSafeRead = PermissionManager.SAFE_READ_PATTERNS.some(p => this.matchPattern(trimmed, p));
+    if (isSafeRead) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (safe read-only)');
+      return { allowed: true, needsApproval: false };
     }
 
-    for (const pattern of shell.needsApproval) {
-      if (this.matchPattern(trimmed, pattern)) {
-        if (this.askHandler && this.currentChannelType !== 'internal') {
-          const result = await this.askHandler(`Run command: ${trimmed}`);
-          if (result === 'yes') {
-            return { allowed: true, needsApproval: false };
-          }
-          if (result === 'always') {
-            this.addApprovedCommand(baseCmd);
-            return { allowed: true, needsApproval: false };
-          }
-          return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
-        }
-        return { allowed: false, reason: `Command requires approval: matches "${pattern}"`, needsApproval: true };
-      }
-    }
-
+    // All non-safe commands require user approval in ask-me mode
     if (this.askHandler && this.currentChannelType !== 'internal') {
       const result = await this.askHandler(`Run command: ${trimmed}`);
       if (result === 'yes') {
         return { allowed: true, needsApproval: false };
       }
       if (result === 'always') {
-        this.addApprovedCommand(baseCmd);
+        // User chose "always" — switch to auto-approve for the rest of this session
+        this.autoApproveAll = true;
         return { allowed: true, needsApproval: false };
       }
       return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
