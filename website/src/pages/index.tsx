@@ -521,6 +521,8 @@ export default function LandingPage(): React.ReactElement {
             <p className="lp-section-sub">Configure one or stack them all. Mercury falls back automatically and tracks which provider last succeeded.</p>
             <div className="lp-provider-grid lp-reveal">
               {[
+                { name: 'ChatGPT Web', desc: 'Use your ChatGPT Plus/Pro subscription. OAuth login, no API key.', badge: 'NEW' },
+                { name: 'GitHub Copilot', desc: 'Your Copilot subscription — access OpenAI, Anthropic, and Google models.', badge: 'NEW' },
                 { name: 'DeepSeek', desc: 'Cost-effective with strong reasoning. Default provider.' },
                 { name: 'OpenAI', desc: 'GPT-4o-mini, GPT-4o, o3. Industry standard.' },
                 { name: 'Anthropic', desc: 'Claude Sonnet, Haiku, Opus. Nuanced reasoning.' },
@@ -529,13 +531,13 @@ export default function LandingPage(): React.ReactElement {
                 { name: 'Ollama Local', desc: 'On your machine. Zero cost, fully private.' },
               ].map((p, i) => (
                 <div key={i} className="lp-provider-card">
-                  <h4>{p.name}</h4>
+                  <h4>{p.name} {(p as any).badge && <span className="lp-provider-badge">{(p as any).badge}</span>}</h4>
                   <p>{p.desc}</p>
                 </div>
               ))}
             </div>
             <div className="lp-provider-note">
-              <p>OpenAI-compatible architecture supports custom endpoints. Switch models mid-session with <code>/models use</code>.</p>
+              <p>API key or OAuth — your choice. ChatGPT Web and GitHub Copilot authenticate through your browser. Switch models mid-session with <code>/models use</code>.</p>
             </div>
           </div>
         </section>

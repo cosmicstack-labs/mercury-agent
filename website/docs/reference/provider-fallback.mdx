@@ -17,6 +17,8 @@ This is a session-level switch for the running process. Use `mercury doctor` to 
 
 ## Supported Providers
 
+### API Key Providers
+
 | Provider | Default Model | API Key | Configuration |
 |----------|--------------|---------|---------------|
 | **DeepSeek** | `deepseek-chat` | `DEEPSEEK_API_KEY` | Default provider, cost-effective |
@@ -27,18 +29,105 @@ This is a session-level switch for the running process. Use `mercury doctor` to 
 | **Ollama Local** | `gpt-oss:20b` | No key needed | Local Ollama instance (127.0.0.1:11434) |
 | **OpenAI Compatible** | Configurable | `OPENAI_COMPAT_API_KEY` | Any OpenAI-compatible server |
 
+### OAuth Providers (No API Key Needed)
+
+These providers authenticate through your browser using OAuth device flow — no API key required.
+
+| Provider | Default Model | Subscription Required | Configuration |
+|----------|--------------|----------------------|---------------|
+| **ChatGPT Web** | `gpt-5.4-mini` | ChatGPT Plus or Pro | Uses your ChatGPT subscription |
+| **GitHub Copilot** | `gpt-4o` | GitHub Copilot | Uses your Copilot subscription |
+
+## ChatGPT Web (ChatGPT Plus/Pro)
+
+Use your existing ChatGPT Plus or Pro subscription as a Mercury provider. No API key or separate billing — it runs through the same backend as chatgpt.com.
+
+### Setup
+
+1. Run `mercury doctor` (or first-time `mercury` setup)
+2. Select **OpenAI** from the provider list
+3. Choose **ChatGPT Plus/Pro (OAuth — use your subscription)**
+4. A browser window opens — sign in with your OpenAI account and enter the device code shown in the terminal
+5. Mercury fetches available models from your account and lets you pick a default
+
+### How It Works
+
+- Authenticates via OpenAI's device flow OAuth (same flow used by the Codex CLI)
+- Uses the ChatGPT Responses API at `chatgpt.com/backend-api/codex`
+- Session tokens are stored locally at `~/.mercury/chatgpt-session.json`
+- Access tokens auto-refresh when they expire — no manual re-authentication needed
+
+### Available Models
+
+Models are fetched from your account. Typical models available on the codex endpoint include:
+
+- `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`
+
+:::warning[Not all ChatGPT models are supported]
+
+Only models available on the codex/responses endpoint work with this provider. Some models like `gpt-4o`, `o3`, and `o4-mini` are not available through this endpoint.
+
+:::
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHATGPT_WEB_ENABLED` | `false` | Enable the ChatGPT Web provider |
+| `CHATGPT_WEB_MODEL` | `gpt-5.4-mini` | Default model to use |
+
+## GitHub Copilot
+
+Use your GitHub Copilot subscription as a Mercury provider. Authenticates through GitHub OAuth and accesses models through the Copilot API.
+
+### Setup
+
+1. Run `mercury doctor` (or first-time `mercury` setup)
+2. Select **GitHub Copilot** from the provider list
+3. A browser window opens — sign in with your GitHub account and enter the device code shown in the terminal
+4. Mercury fetches available models from the Copilot API and lets you pick a default
+
+### How It Works
+
+- Authenticates via GitHub's device flow OAuth
+- Exchanges the GitHub token for a short-lived Copilot API token (auto-refreshed every ~30 minutes)
+- Uses the Copilot API endpoint with OpenAI-compatible requests
+- Session stored locally at `~/.mercury/github-session.json`
+- GitHub OAuth tokens don't expire — they remain valid until revoked on github.com
+
+### Available Models
+
+Models are fetched dynamically from the Copilot API. Typical models include:
+
+- `claude-sonnet-4.6`, `gpt-4o`, `gpt-5.4`, `claude-opus-4.6`, `gpt-4.1`, `gpt-4o-mini`, `gemini-3.1-pro-preview`
+
+:::tip[Multi-vendor models through one subscription]
+
+GitHub Copilot provides access to models from OpenAI, Anthropic, and Google — all through a single subscription. This makes it one of the most versatile provider options.
+
+:::
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_COPILOT_ENABLED` | `false` | Enable the GitHub Copilot provider |
+| `GITHUB_COPILOT_MODEL` | `gpt-4o` | Default model to use |
+
+:::info[Copilot subscription required]
+
+GitHub Copilot must be active on your GitHub account. If the Copilot token exchange fails, Mercury will show: "Is GitHub Copilot enabled for your account?"
+
+:::
+
 ## Configuring Providers
 
-Run `mercury doctor` and enter API keys for the providers you want to use. You can also set environment variables directly or edit `~/.mercury/mercury.yaml`.
+Run `mercury doctor` and enter API keys for the providers you want to use. For OAuth providers (ChatGPT Web, GitHub Copilot), the setup flow opens your browser for authentication — no keys to copy/paste.
+
+You can also set environment variables directly or edit `~/.mercury/mercury.yaml`.
 
 :::tip[Environment variables]
 
 Each provider has env vars for its API key, base URL, and model. For example, DeepSeek uses `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`. Ollama Local requires no API key — just set `OLLAMA_LOCAL_ENABLED=true` and `OLLAMA_LOCAL_MODEL` to your preferred local model.
-
-:::
-
-:::warning[More providers coming]
-
-Google Gemini, Mistral, and other providers are on the roadmap. Mercury's OpenAI-compatible provider architecture means you can often configure additional providers by setting a custom base URL and API key.
 
 :::

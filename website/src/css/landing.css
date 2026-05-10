@@ -171,8 +171,9 @@
 .lp-provider-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .lp-provider-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px 24px; transition: all 0.3s; }
 .lp-provider-card:hover { border-color: var(--border-hover); }
-.lp-provider-card h4 { color: var(--white-bright); font-size: 1em; margin-bottom: 4px; font-weight: 600; }
+.lp-provider-card h4 { color: var(--white-bright); font-size: 1em; margin-bottom: 4px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .lp-provider-card p { color: var(--gray); font-size: 0.88em; margin: 0; }
+.lp-provider-badge { font-size: 0.65em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 4px; background: rgba(0, 212, 255, 0.12); color: var(--cyan); border: 1px solid rgba(0, 212, 255, 0.25); }
 .lp-provider-note { text-align: center; color: var(--gray-dim); font-size: 0.9em; margin-top: 20px; padding: 16px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
 .lp-provider-note p { margin: 0; }
 
