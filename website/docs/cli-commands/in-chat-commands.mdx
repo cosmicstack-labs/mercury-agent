@@ -5,37 +5,75 @@ title: In-Chat Commands
 
 Type these during a conversation with Mercury. Most work in both CLI and Telegram unless marked otherwise. They **do not consume API tokens**.
 
+## General
+
 | Command | Description |
 |---------|-------------|
-| `/help` | Show the full manual |
+| `/help` | Show the full manual (Telegram gets a Telegram-specific version) |
 | `/status` | Show agent name, provider, budget, and channels |
-| `/` or `/menu` | CLI only: open the arrow-key command picker with Back and Exit options |
-| `/telegram` | CLI only: open Telegram management with pending requests, approvals, roles, and reset actions |
-| `/telegram pending` | CLI only: list pending Telegram access requests |
-| `/telegram users` | CLI only: list approved Telegram admins and members |
-| `/telegram approve <code\|id>` | CLI only: approve the first pairing code or a later Telegram access request |
-| `/telegram reject <id>` | CLI only: reject a pending Telegram access request |
-| `/telegram remove <id>` | CLI only: revoke an approved Telegram user |
-| `/telegram promote <id>` | CLI only: promote a Telegram member to admin |
-| `/telegram demote <id>` | CLI only: demote a Telegram admin to member |
-| `/telegram reset` | CLI only: clear all Telegram access and restart pairing from scratch |
+| `/progress` | Show live status for the current long-running task |
+| `/` or `/menu` | CLI only: open the arrow-key command picker |
+| `/permissions` | Change permission mode (Ask Me / Allow All) |
+| `/models` | List configured models/providers for this session |
+| `/models use <provider>` | Switch the current session model/provider |
 | `/tools` | List all currently loaded tools |
 | `/skills` | List installed skills |
+| `/memory` | View and manage second brain memory |
+| `/tasks` | List scheduled tasks |
 | `/stream` | Toggle Telegram text streaming (on/off) |
+| `/stream on` | Enable streaming (live text updates) |
 | `/stream off` | Disable streaming — responses arrive as single message |
+
+## Budget
+
+| Command | Description |
+|---------|-------------|
 | `/budget` | Show token budget status |
 | `/budget override` | Override budget for one request |
 | `/budget reset` | Reset usage to zero |
 | `/budget set <n>` | Change daily token budget |
-| `/permissions` | Change permission mode (Ask Me / Allow All) — Telegram only |
-| `/models` | List configured models/providers and switch active model for this session |
-| `/models use <provider>` | Switch the current session model/provider |
-| `/models doctor` | Show how to add/configure models via `mercury doctor` |
-| `/view` | Toggle progress view (balanced/detailed) — `Ctrl+T` in CLI |
-| `/view balanced` | Set compact progress view |
-| `/view detailed` | Set full progress view |
+
+## Programming Mode
+
+| Command | Description |
+|---------|-------------|
+| `/code` | Show current programming mode |
+| `/code plan` | Switch to plan mode (analyze and present options, no coding) |
+| `/code execute` | Switch to execute mode (implement step by step) |
+| `/code build` | Alias for execute mode |
+| `/code off` | Exit programming mode |
+| `/code toggle` | Cycle through: off → plan → execute → off |
 | `/code agent <task>` | Delegate a coding task to a sub-agent in the background |
+| `/code workspace` | CLI only: open current directory in workspace IDE mode |
+
+## Workspace IDE (CLI Only)
+
+| Command | Description |
+|---------|-------------|
+| `/ws` | Show workspace commands |
+| `/ws open <path>` | Open a directory in workspace IDE mode |
 | `/ws exit` | Exit workspace IDE mode back to general chat |
+| `/ws refresh` | Refresh file tree and git status panel |
+| `/ws stage <file\|all>` | Stage a file or all changes |
+| `/ws commit <message>` | Commit staged changes |
+| `/ws undo <file>` | Revert file changes with `git checkout` |
+| `/ws help` | Show workspace command list |
+
+## Sub-Agents
+
+| Command | Description |
+|---------|-------------|
+| `/agents` | List all sub-agents and their status |
+| `/agents stop <id\|all>` | Stop a sub-agent or all sub-agents |
+| `/agents pause <id>` | Pause a running sub-agent |
+| `/agents resume <id>` | Resume a paused sub-agent |
+| `/agents config` | Show sub-agent resource allocation |
+| `/agents set max <n>` | Set max concurrent sub-agents |
+
+## Background Tasks
+
+| Command | Description |
+|---------|-------------|
 | `/bg <command>` | Run a shell command in the background |
 | `/bg: <task>` | Run a natural-language sub-agent task in background |
 | `/bg current` | Move the current in-flight task to background |
@@ -43,14 +81,97 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/bg <id>` | Show details/output for one background task |
 | `/bg cancel <id>` | Cancel a running background task |
 | `/bg stop <id>` | Alias for `/bg cancel` |
-| `/bg kill <id>` | Alias for `/bg cancel` |
 | `/bg killall` | Cancel all running background tasks |
-| `/bg stopall` | Alias for `/bg killall` |
 | `/bg clear` | Prune completed background tasks |
-| `/progress` | Show last 10 completed agent steps with timing |
-| `/tasks` | List scheduled tasks |
-| `/memory` | View and manage second brain memory |
-| `/unpair` | Telegram only: reset all access, new users can /start again |
+
+## Spotify
+
+| Command | Description |
+|---------|-------------|
+| `/spotify` | Show Spotify connection status |
+| `/spotify auth` | Connect Spotify (browser or manual code flow) |
+| `/spotify code <code>` | Complete auth with a pasted authorization code |
+| `/spotify player` | CLI only: interactive music player with arrow-key controls |
+| `/spotify devices` | List available Spotify devices |
+| `/spotify device <id>` | Set active Spotify device |
+| `/spotify now` | Show what is currently playing |
+| `/spotify logout` | Disconnect Spotify and clear saved tokens |
+
+## Emergency Controls
+
+| Command | Description |
+|---------|-------------|
+| `/halt` | Emergency: stop all agents and clear the task queue |
+| `/stop` | Stop all agents, clear queue, release file locks, clear task board |
+| `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
+
+:::tip Fast-path commands
+`/agents`, `/halt`, `/stop`, `/progress`, `/spotify`, `/code`, `/memory`, and `/bg` all work **even while Mercury is busy processing a task**. They're processed immediately without waiting for the current task to finish.
+:::
+
+## Progress View (CLI Only)
+
+| Command | Description |
+|---------|-------------|
+| `/view` | Toggle progress view (balanced/detailed) |
+| `/view balanced` | Show last 5 tool steps, compact format |
+| `/view detailed` | Show last 20 tool steps, full format |
+
+## Telegram Management (CLI Only)
+
+| Command | Description |
+|---------|-------------|
+| `/telegram` | Open Telegram management menu |
+| `/telegram pending` | List pending Telegram access requests |
+| `/telegram users` | List approved Telegram admins and members |
+| `/telegram approve <code\|id>` | Approve a pairing code or access request |
+| `/telegram reject <id>` | Reject a pending Telegram access request |
+| `/telegram remove <id>` | Revoke an approved Telegram user |
+| `/telegram promote <id>` | Promote a Telegram member to admin |
+| `/telegram demote <id>` | Demote a Telegram admin to member |
+| `/telegram reset` | Clear all Telegram access and restart pairing |
+
+## Telegram-Only Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` or `/pair` | Request access (new users) or check status (approved users) |
+| `/unpair` | Admin only: reset all Telegram access for this instance |
+
+## Keyboard Shortcuts (CLI)
+
+These shortcuts work in the CLI terminal interface:
+
+| Shortcut | Description |
+|----------|-------------|
+| `Ctrl+C` | Exit Mercury |
+| `Ctrl+T` | Toggle progress view (balanced/detailed) |
+| `Ctrl+B` | Show background tasks (or move current task to background if busy) |
+| `Ctrl+N` | Insert newline (multi-line input) |
+| `Ctrl+P` | Switch to code plan mode (in coding/workspace mode) |
+| `Ctrl+X` | Switch to code execute mode (in coding/workspace mode) |
+
+### Slash Command Autocomplete
+
+When you type `/` in the CLI, an autocomplete popup appears with matching commands:
+
+- **Up/Down arrows** — navigate through suggestions
+- **Tab** or **Enter** — fill the selected suggestion into the input
+- **Enter** (when input matches a command) — submit the command
+
+### Workspace IDE Shortcuts
+
+| Shortcut | Description |
+|----------|-------------|
+| `Esc` / `Ctrl+Q` | Exit workspace (from explorer) or return to explorer |
+| `Ctrl+E` | Focus explorer panel |
+| `Ctrl+G` | Focus git panel |
+| `Ctrl+J` | Toggle chat panel |
+| `Tab` | Cycle focus: explorer → code → right panel |
+| `Arrow keys` | Navigate file tree / scroll panels |
+| `Enter` | Open selected file |
+| `Ctrl+U` / `Ctrl+D` | Scroll up/down by 8-10 lines |
+| `PageUp` / `PageDown` | Scroll by 15 lines |
 
 :::info Telegram pairing and access
 Telegram stays private 1:1 only. The first user sends `/start`, receives a pairing code in Telegram, and you approve that code from the CLI during setup. Later Telegram users also send `/start`, appear as pending requests, and can then be approved or rejected from the CLI `/telegram` menu.

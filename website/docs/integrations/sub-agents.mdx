@@ -50,14 +50,24 @@ Mercury: I've delegated both tasks to parallel agents. Agent a1 is building the 
 | Command | Description |
 |---------|-------------|
 | `/agents` | List all sub-agents (running and completed) |
+| `/agents stop <id\|all>` | Stop a sub-agent or all sub-agents |
+| `/agents pause <id>` | Pause a running sub-agent |
+| `/agents resume <id>` | Resume a paused sub-agent |
+| `/agents config` | Show sub-agent resource allocation (max concurrent, mode) |
+| `/agents set max <n>` | Set max concurrent sub-agents |
 | `/code agent <task>` | Delegate a coding task to a sub-agent immediately |
 | `/bg: <task>` | Run a natural-language sub-agent task in background |
 | `/bg current` | Move current in-flight task to a background sub-agent |
 | `/bg list` | List shell + sub-agent background tasks |
 | `/halt` | Emergency: halt all sub-agents and clear the task queue |
-| `/stop` | Full reset: halt agents, clear queue, release locks, clear task board |
+| `/stop` | Full stop: halt agents, clear queue, release file locks, clear task board |
+| `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
-Slash commands like `/agents`, `/halt`, `/stop`, `/spotify`, and `/code status` work **even while the main agent is busy** — they're processed immediately on a fast path.
+:::tip `/halt` vs `/stop` vs `/reset`
+**`/halt`** stops all agents but preserves conversation context and file locks. **`/stop`** goes further — it also releases file locks and clears the task board. **`/reset`** does everything `/stop` does plus clears the conversation context (requires confirmation).
+:::
+
+Slash commands like `/agents`, `/halt`, `/stop`, `/spotify`, and `/code` work **even while the main agent is busy** — they're processed immediately on a fast path.
 
 ## Delegation Tools
 
