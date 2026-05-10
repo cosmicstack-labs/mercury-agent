@@ -1,2 +1,2 @@
 export { TuiApp } from './App.js';
-export type { MercuryAppState, AppMode, ChatMessage, ToolStep, SubAgentInfo, SkillInfo, PermissionPromptState, SidebarSection, SidebarItem, ProviderInfo, TokenInfo } from './types.js';
+export type { MercuryAppState, AppMode, ChatMessage, CompletionMeta, ToolStep, SubAgentInfo, SkillInfo, PermissionPromptState, SidebarSection, SidebarItem, ProviderInfo, TokenInfo } from './types.js';

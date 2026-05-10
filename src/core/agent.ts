@@ -379,10 +379,6 @@ class ToolCallLoopDetector {
     return union === 0 ? 0 : intersection / union;
   }
 
-  isHardAborted(): boolean {
-    return this.hardAborted;
-  }
-
   /** Return human-readable summaries of recent calls for AI self-check */
   reset(): void {
     this.recentCalls = [];
@@ -1713,10 +1709,20 @@ export class Agent {
 
         // Send completion banner if there was meaningful work (multi-step)
         if (stepCount > 0) {
+          const completionMeta = {
+            provider: usedProvider?.name ?? 'unknown',
+            model: usedProvider?.model ?? 'unknown',
+            inputTokens: result.usage?.inputTokens ?? 0,
+            outputTokens: result.usage?.outputTokens ?? 0,
+            totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+            budgetUsed: this.tokenBudget.getDailyUsed(),
+            budgetTotal: this.tokenBudget.getBudget(),
+            budgetPercentage: this.tokenBudget.getUsagePercentage(),
+          };
           if (channel instanceof CLIChannel) {
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount);
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
           } else if (channel instanceof TelegramChannel) {
-            await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId);
+            await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
           }
         }
       } else {

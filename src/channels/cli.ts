@@ -7,7 +7,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 
 export interface TuiState {
@@ -291,7 +291,7 @@ export class CLIChannel extends BaseChannel {
     });
   }
 
-  sendCompletion(elapsedMs: number, stepCount: number): void {
+  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta): void {
     const secs = Math.floor(elapsedMs / 1000);
     const mins = Math.floor(secs / 60);
     const remSecs = secs % 60;
@@ -304,6 +304,7 @@ export class CLIChannel extends BaseChannel {
       role: 'system',
       content: `━━━ Task complete (${parts}) ━━━`,
       timestamp: Date.now(),
+      completionMeta: meta,
     };
     this.update({
       chatMessages: [...this.state.chatMessages, msg],

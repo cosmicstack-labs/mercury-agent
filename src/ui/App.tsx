@@ -1344,9 +1344,35 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
         const roleColor = isCompletion ? 'green' : msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
         const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
         if (isCompletion) {
+          const meta = msg.completionMeta;
+          const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
           return (
-            <Box key={msg.id} marginBottom={1}>
+            <Box key={msg.id} flexDirection="column" marginBottom={1}>
               <Text color="green" bold>{msg.content}</Text>
+              {meta && (
+                <Box flexDirection="row" paddingLeft={2}>
+                  <Text color="gray">☿ </Text>
+                  <Text color="white" bold>{meta.model}</Text>
+                  <Text color="gray"> via </Text>
+                  <Text color="cyan">{meta.provider}</Text>
+                  <Text color="gray"> · </Text>
+                  <Text color="yellow">{formatTokens(meta.totalTokens)}</Text>
+                  <Text color="gray"> tokens · Budget </Text>
+                  {(() => {
+                    const pct = Math.round(meta.budgetPercentage);
+                    const barLen = 16;
+                    const filled = Math.round((pct / 100) * barLen);
+                    const barColor = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+                    return (
+                      <>
+                        <Text color={barColor}>{'█'.repeat(filled)}</Text>
+                        <Text color="gray">{'░'.repeat(barLen - filled)}</Text>
+                        <Text color={barColor}> {pct}%</Text>
+                      </>
+                    );
+                  })()}
+                </Box>
+              )}
             </Box>
           );
         }

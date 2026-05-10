@@ -1024,7 +1024,7 @@ export class TelegramChannel extends BaseChannel {
     this.deleteStatusMessage(targetId);
   }
 
-  async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string): Promise<void> {
+  async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
     const secs = Math.floor(elapsedMs / 1000);
     const mins = Math.floor(secs / 60);
     const remSecs = secs % 60;
@@ -1038,11 +1038,24 @@ export class TelegramChannel extends BaseChannel {
 
     const lines = [
       `✅ **Task complete** (${parts})`,
-      '',
-      ...recentHistory.map(h => `  ✓ ${h}`),
     ];
+
+    if (meta) {
+      const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+      lines.push(`☿ ${meta.model} via ${meta.provider} · ${formatTokens(meta.totalTokens)} tokens`);
+      const pct = Math.round(meta.budgetPercentage);
+      const barLen = 15;
+      const filled = Math.round((pct / 100) * barLen);
+      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+      lines.push(`Budget: ${bar} ${pct}% (${formatTokens(meta.budgetUsed)} / ${formatTokens(meta.budgetTotal)})`);
+    }
+
+    if (recentHistory.length > 0) {
+      lines.push('');
+      lines.push(...recentHistory.map(h => `  ✓ ${h}`));
+    }
+
     await this.updateStatusMessage(lines.join('\n'), targetId);
-    // Don't delete — leave the completion summary visible
     this.stepCounters.delete(key);
     this.stepHistory.delete(key);
     this.statusText.delete(key);

@@ -39,12 +39,24 @@ export interface WorkspaceState {
   rightPanel: 'chat' | 'git';
 }
 
+export interface CompletionMeta {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  budgetUsed: number;      // daily tokens used so far
+  budgetTotal: number;     // daily budget limit
+  budgetPercentage: number; // 0-100
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'agent' | 'system';
   content: string;
   timestamp: number;
   streaming?: boolean;
+  completionMeta?: CompletionMeta;
 }
 
 export interface ToolStep {
