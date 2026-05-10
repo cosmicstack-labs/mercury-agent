@@ -930,9 +930,9 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         if (!session || !isGitHubSessionValid(session)) {
           console.log(chalk.dim('  GitHub Copilot uses your GitHub account via OAuth.'));
           console.log(chalk.dim('  A browser window will open for you to authorize Mercury.'));
-          const proceed = await ask(chalk.white(`  Set up GitHub Copilot?${isReconfig ? '' : ' (Enter to skip)'} [y/N]: `));
+          const proceed = await ask(chalk.white('  Set up GitHub Copilot? [Y/n]: '));
 
-          if (proceed.toLowerCase() !== 'y') {
+          if (proceed.toLowerCase() === 'n') {
             continue;
           }
 
