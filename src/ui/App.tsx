@@ -1472,8 +1472,8 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
       <Box>
         <Text color="cyan">{spinner}</Text>
         <Text> </Text>
-        <Text color="cyan" bold>{agentName}</Text>
-        <Text dimColor> · step {totalSteps} · {timeStr}</Text>
+        <Text color="cyan" bold>{totalSteps > 0 ? agentName : 'Processing'}</Text>
+        <Text dimColor>{totalSteps > 0 ? ` · step ${totalSteps} · ${timeStr}` : ` · ${timeStr}`}</Text>
       </Box>
       <Box marginLeft={4}>
         <Text color="white" bold>{currentAction}</Text>
