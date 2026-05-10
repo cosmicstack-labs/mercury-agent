@@ -788,7 +788,7 @@ function ChatBody({ state }: { state: TuiState }) {
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
@@ -827,7 +827,7 @@ function CodingBody({ state }: { state: TuiState }) {
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
