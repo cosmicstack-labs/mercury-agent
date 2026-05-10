@@ -106,6 +106,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   const slashCommands = React.useMemo(() => [
     '/help',
     '/status',
+    '/progress',
     '/menu',
     '/chat',
     '/code',
@@ -113,7 +114,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/code execute',
     '/code build',
     '/code workspace',
+    '/code agent ',
     '/code off',
+    '/code toggle',
     '/spotify',
     '/budget',
     '/permissions',
@@ -121,11 +124,21 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/models',
     '/models use ',
     '/agents',
+    '/agents stop ',
+    '/agents pause ',
+    '/agents resume ',
     '/bg',
     '/bg current',
     '/bg list',
     '/bg cancel ',
     '/bg clear',
+    '/bg killall',
+    '/stop',
+    '/halt',
+    '/reset',
+    '/tools',
+    '/skills',
+    '/stream',
     '/view',
     '/view balanced',
     '/view detailed',
@@ -143,7 +156,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     const q = input.toLowerCase();
     return slashCommands.filter((cmd) => cmd.startsWith(q)).slice(0, 5);
   }, [input, slashCommands]);
-  
+
+  const [slashSelIdx, setSlashSelIdx] = React.useState(0);
+
+  // Reset selection index when suggestions change
+  React.useEffect(() => {
+    setSlashSelIdx(0);
+  }, [slashSuggestions.length, input]);
 
   React.useEffect(() => {
     if (state.mode !== 'splash') return;
@@ -396,6 +415,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (isEnter) {
       const trimmed = input.trim();
+
+      // If autocomplete popup is showing and input doesn't exactly match the selected suggestion,
+      // fill the suggestion into the input instead of submitting
+      if (slashSuggestions.length > 0 && trimmed !== slashSuggestions[slashSelIdx]) {
+        setInputAndCursor(slashSuggestions[slashSelIdx]);
+        return;
+      }
+
       if (trimmed) {
         onInput(trimmed);
         setInputHistory((prev) => {
@@ -540,9 +567,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (key.tab) {
       if (input.startsWith('/') && slashSuggestions.length > 0) {
-        const exactIdx = slashSuggestions.findIndex((cmd) => cmd === input);
-        const nextIdx = exactIdx >= 0 ? (exactIdx + 1) % slashSuggestions.length : 0;
-        setInputAndCursor(slashSuggestions[nextIdx]);
+        setInputAndCursor(slashSuggestions[slashSelIdx]);
       }
       return;
     }
@@ -557,6 +582,19 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    // Up/down arrow: navigate slash suggestions when popup is visible
+    if (slashSuggestions.length > 0) {
+      if (key.upArrow) {
+        setSlashSelIdx((i) => (i > 0 ? i - 1 : slashSuggestions.length - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSlashSelIdx((i) => (i < slashSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+    }
+
+    // Up arrow: navigate input history
     if (key.upArrow) {
       if (inputHistory.length === 0) return;
       if (historyIndex === -1) {
@@ -684,9 +722,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       )}
       {showInput && slashSuggestions.length > 0 && (
         <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>Suggestions (Tab to complete):</Text>
+          <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
           {slashSuggestions.map((cmd, idx) => (
-            <Text key={cmd} color={idx === 0 ? 'cyan' : 'gray'}>{idx === 0 ? '›' : ' '} {cmd}</Text>
+            <Text key={cmd} color={idx === slashSelIdx ? 'cyan' : 'gray'}>{idx === slashSelIdx ? '›' : ' '} {cmd}</Text>
           ))}
         </Box>
       )}
