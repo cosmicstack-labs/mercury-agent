@@ -31,7 +31,7 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/models` | List configured models/providers and switch active model for this session |
 | `/models use <provider>` | Switch the current session model/provider |
 | `/models doctor` | Show how to add/configure models via `mercury doctor` |
-| `/view` | Toggle progress view (balanced/detailed) |
+| `/view` | Toggle progress view (balanced/detailed) — `Ctrl+T` in CLI |
 | `/view balanced` | Set compact progress view |
 | `/view detailed` | Set full progress view |
 | `/code agent <task>` | Delegate a coding task to a sub-agent in the background |
@@ -42,7 +42,12 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/bg list` | Show background tasks |
 | `/bg <id>` | Show details/output for one background task |
 | `/bg cancel <id>` | Cancel a running background task |
+| `/bg stop <id>` | Alias for `/bg cancel` |
+| `/bg kill <id>` | Alias for `/bg cancel` |
+| `/bg killall` | Cancel all running background tasks |
+| `/bg stopall` | Alias for `/bg killall` |
 | `/bg clear` | Prune completed background tasks |
+| `/progress` | Show last 10 completed agent steps with timing |
 | `/tasks` | List scheduled tasks |
 | `/memory` | View and manage second brain memory |
 | `/unpair` | Telegram only: reset all access, new users can /start again |

@@ -61,3 +61,15 @@ Second Brain is **enabled by default**. To disable it:
 When disabled, Mercury falls back to basic long-term fact search (JSONL, text-match only). No extraction, no consolidation, no SQLite.
 
 All data is stored locally in `~/.mercury/memory/second-brain/second-brain.db` (SQLite). Nothing leaves your machine.
+
+## Troubleshooting
+
+### Native module version mismatch
+
+If you see `NODE_MODULE_VERSION` mismatch errors in logs, the `better-sqlite3` native addon was compiled against a different Node.js version than your runtime. Fix with:
+
+```bash
+npm rebuild better-sqlite3
+```
+
+When `better-sqlite3` fails to load, Second Brain silently falls back to disabled — memory extraction and consolidation will not run. Check daemon logs (`mercury logs`) for SQLite-related errors if memories aren't being stored.

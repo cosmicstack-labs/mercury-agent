@@ -13,7 +13,7 @@ You can enter workspace mode in multiple ways:
 - `/code workspace`
 - `/ws open <path>`
 
-Once active, Mercury switches to coding context for that repository.
+Once active, Mercury switches to coding context for that repository. Agent responses appear in the normal scrollable chat view so you can always see full output.
 
 ## Modes
 
@@ -23,13 +23,36 @@ Use programming modes to control behavior:
 - `/code execute` — implementation mode
 - `/code off` — return to normal conversation behavior
 
-### Keyboard shortcuts (CLI)
+### Keyboard Shortcuts
 
-- `Ctrl+P` → Plan mode
-- `Ctrl+X` → Execute mode
-- `Esc` or `Ctrl+Q` → Exit workspace back to chat
-- `Ctrl+E` → Explorer pane
-- `Ctrl+G` → Git pane
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+P` | Plan mode |
+| `Ctrl+X` | Execute mode |
+| `Ctrl+E` | Focus explorer pane |
+| `Ctrl+G` | Focus git pane |
+| `Ctrl+J` | Toggle right panel between chat and git |
+| `Tab` | Cycle focus: explorer → code → right panel |
+| `Esc` | Return to explorer (or exit workspace from explorer) |
+| `Ctrl+Q` | Exit workspace |
+| `Shift+Enter` | Insert newline (multi-line input) |
+| `Alt+Enter` | Insert newline (fallback for terminals that don't distinguish Shift+Enter) |
+
+### Navigation (when input is empty)
+
+| Focus | Keys | Action |
+|-------|------|--------|
+| Explorer | `↑` `↓` | Move selection |
+| Explorer | `←` `→` | Collapse / expand folder |
+| Explorer | `Enter` | Open selected file |
+| Code | `↑` `↓` | Scroll code ±1 line |
+| Code | `PgUp` `PgDn` | Scroll code ±15 lines |
+| Code | `Ctrl+U` `Ctrl+D` | Scroll code ±10 lines (vim-style) |
+| Chat | `↑` `↓` | Scroll agent output ±1 line |
+| Chat | `PgUp` `PgDn` | Scroll agent output ±10 lines |
+| Chat | `Ctrl+U` `Ctrl+D` | Scroll agent output ±8 lines |
+| Git | `↑` `↓` | Move through changed files |
+| Git | `Enter` | Stage selected file |
 
 ## Workspace Commands
 
@@ -37,9 +60,12 @@ Use programming modes to control behavior:
 |---------|-------------|
 | `/ws open <path>` | Open a directory in workspace mode |
 | `/ws refresh` | Refresh file tree + git status |
+| `/ws focus <area>` | Focus a panel: `explorer`, `code`, `git`, or `chat` |
 | `/ws stage <file\|all>` | Stage one file or all changes |
 | `/ws commit <message>` | Commit staged changes |
 | `/ws undo <file>` | Revert file changes |
+| `/ws toggle-chat` | Toggle right panel between chat and git |
+| `/ws chat-scroll <n>` | Scroll agent output by n lines |
 | `/ws exit` | Exit workspace mode back to general chat |
 
 ## Sub-Agents + Background in Coding
@@ -49,7 +75,18 @@ Workspace mode supports explicit delegation and backgrounding:
 - `/code agent <task>` — delegate coding work to a sub-agent
 - `/bg current` — move active in-flight work to background
 - `/bg list` — inspect all background tasks (shell + sub-agent)
-- `/bg <id>` — view task details/output
+- `/bg <id>` — view task details/output (IDs use friendly names like `swift-fox`)
 - `/bg cancel <id>` — cancel running background work
+- `/bg stop <id>` / `/bg kill <id>` — aliases for cancel
+- `/bg killall` / `/bg stopall` — cancel all running background tasks
 
 This lets you continue coding/chatting while long operations run asynchronously.
+
+## Progress Tracking
+
+During long-running tasks, Mercury shows real-time progress:
+
+- The status bar displays the current tool/action (e.g., `● step 5 · ✂️ Editing App.tsx`)
+- Heartbeat messages escalate timing (20s → 30s → 45s → 60s) to reduce noise
+- Use `/progress` to see the last 10 completed steps with timing
+- Consecutive identical tool calls are collapsed (e.g., "Read 3 files")
