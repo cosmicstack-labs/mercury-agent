@@ -40,45 +40,220 @@ import {
 } from '../utils/config.js';
 
 class ToolCallLoopDetector {
-  private recentCalls: Array<{ tool: string; params: string; failed: boolean }> = [];
+  private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
   private totalCalls = 0;
   private hardAborted = false;
   private recentStepTexts: Array<string> = [];
   private consecutiveNoActionSteps = 0;
 
-  private static readonly ABSOLUTE_MAX = 50;
-  private static readonly FAILED_ABSOLUTE_MAX = 15;
+  // --- Limits ---
+  private static readonly ABSOLUTE_MAX = 75;
+  private static readonly FAILED_ABSOLUTE_MAX = 20;
   private static readonly NO_ACTION_MAX = 6;
 
+  // Tools that naturally repeat in productive work
   private static readonly HIGH_TOLERANCE_TOOLS = new Set([
-    'fetch_url',
-    'read_file',
-    'list_dir',
-    'web_search',
-    'github_api',
-    'run_command',
-    'edit_file',
-    'write_file',
-    'create_file',
-    'git_status',
-    'git_diff',
-    'git_log',
+    'fetch_url', 'read_file', 'list_dir', 'web_search', 'github_api',
+    'run_command', 'edit_file', 'write_file', 'create_file',
+    'git_status', 'git_diff', 'git_log',
   ]);
 
+  // --- Thresholds ---
+  // Identical = same tool + same params (always a true loop)
   private static readonly IDENTICAL_THRESHOLD = 4;
-  private static readonly SIMILAR_THRESHOLD = 5;
+  // Similar = same tool, all failing
+  private static readonly SIMILAR_THRESHOLD = 6;
+  // Text repetition in model output
   private static readonly TEXT_REPEAT_THRESHOLD = 4;
   private static readonly MAX_STEP_TEXTS = 15;
 
-  private static getSameToolThreshold(toolName: string, failingCount: number): number {
-    const baseHigh = 8;
-    const baseNormal = 5;
-    const isHigh = ToolCallLoopDetector.HIGH_TOLERANCE_TOOLS.has(toolName);
-    let threshold = isHigh ? baseHigh : baseNormal;
-    if (failingCount >= 4) {
-      threshold = Math.min(threshold, isHigh ? 4 : 3);
+  record(toolName: string, params: Record<string, any>, failed: boolean = false): void {
+    const paramsKey = JSON.stringify(params).slice(0, 300);
+    this.recentCalls.push({ tool: toolName, params: paramsKey, failed, timestamp: Date.now() });
+    this.totalCalls++;
+    this.consecutiveNoActionSteps = 0;
+    if (this.recentCalls.length > 40) {
+      this.recentCalls.shift();
     }
-    return threshold;
+  }
+
+  recordNoActionResult(): boolean {
+    this.consecutiveNoActionSteps++;
+    return this.consecutiveNoActionSteps >= ToolCallLoopDetector.NO_ACTION_MAX;
+  }
+
+  recordStepText(text: string): void {
+    if (!text || text.length < 10) return;
+    const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!normalized) return;
+    this.recentStepTexts.push(normalized);
+    if (this.recentStepTexts.length > ToolCallLoopDetector.MAX_STEP_TEXTS) {
+      this.recentStepTexts.shift();
+    }
+  }
+
+  detectAbsoluteLimit(): boolean {
+    if (this.totalCalls >= ToolCallLoopDetector.ABSOLUTE_MAX) return true;
+    const failCount = this.recentCalls.filter(c => c.failed).length;
+    if (failCount >= ToolCallLoopDetector.FAILED_ABSOLUTE_MAX) return true;
+    return false;
+  }
+
+  /**
+   * Identical loop: same tool + exact same params repeated.
+   * This is always a true stuck loop — no productive work produces identical calls.
+   */
+  detectIdentical(): { tool: string; count: number; message: string } | null {
+    if (this.recentCalls.length < 3) return null;
+    const last = this.recentCalls[this.recentCalls.length - 1];
+    let identicalCount = 0;
+    for (let i = this.recentCalls.length - 1; i >= 0; i--) {
+      if (this.recentCalls[i].tool === last.tool && this.recentCalls[i].params === last.params) {
+        identicalCount++;
+      } else {
+        break;
+      }
+    }
+    if (identicalCount >= ToolCallLoopDetector.IDENTICAL_THRESHOLD) {
+      this.hardAborted = true;
+      return {
+        tool: last.tool,
+        count: identicalCount,
+        message: `Identical call detected: "${last.tool}" called ${identicalCount}x with the exact same parameters.`,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Failing loop: same tool called repeatedly, all calls failing.
+   * Different params but consistently failing = stuck on a broken approach.
+   */
+  detectSimilarLoop(): { tool: string; count: number; message: string } | null {
+    if (this.recentCalls.length < 4) return null;
+    const last = this.recentCalls[this.recentCalls.length - 1];
+    let failCount = 0;
+    for (let i = this.recentCalls.length - 1; i >= 0; i--) {
+      const call = this.recentCalls[i];
+      if (call.tool !== last.tool) break;
+      if (call.failed) failCount++;
+      else break;
+    }
+    if (failCount >= ToolCallLoopDetector.SIMILAR_THRESHOLD) {
+      this.hardAborted = true;
+      return {
+        tool: last.tool,
+        count: failCount,
+        message: `Failing loop: "${last.tool}" called ${failCount}x, all failing.`,
+      };
+    }
+    return null;
+  }
+
+  detectTextRepetition(): { pattern: string; count: number } | null {
+    if (this.recentStepTexts.length < ToolCallLoopDetector.TEXT_REPEAT_THRESHOLD) return null;
+    const texts = this.recentStepTexts;
+    const last = texts[texts.length - 1];
+    let repeatCount = 0;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (this.textSimilarity(last, texts[i]) >= 0.7) repeatCount++;
+      else break;
+    }
+    if (repeatCount >= ToolCallLoopDetector.TEXT_REPEAT_THRESHOLD) {
+      return { pattern: last.slice(0, 60), count: repeatCount };
+    }
+    return null;
+  }
+
+  private textSimilarity(a: string, b: string): number {
+    if (a === b) return 1;
+    if (!a || !b) return 0;
+    const setA = new Set(a.split(' '));
+    const setB = new Set(b.split(' '));
+    const intersection = [...setA].filter(w => setB.has(w)).length;
+    const union = new Set([...setA, ...setB]).size;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  /**
+   * Smart repetition analysis: detects same-tool runs but evaluates whether
+   * the work is productive based on parameter diversity and success rate.
+   *
+   * Returns null if no concern, or an analysis object with:
+   * - tool, count: what's repeating
+   * - paramDiversity: 0-1, how varied the parameters are (1 = all unique)
+   * - successRate: 0-1, fraction of calls that succeeded
+   * - verdict: 'productive' | 'suspicious' | 'stuck'
+   */
+  analyzeRepetition(): {
+    tool: string;
+    count: number;
+    paramDiversity: number;
+    successRate: number;
+    verdict: 'productive' | 'suspicious' | 'stuck';
+  } | null {
+    if (this.recentCalls.length < 5) return null;
+
+    // Find the consecutive run of the same tool
+    const last = this.recentCalls[this.recentCalls.length - 1];
+    const run: typeof this.recentCalls = [];
+    for (let i = this.recentCalls.length - 1; i >= 0; i--) {
+      if (this.recentCalls[i].tool === last.tool) run.unshift(this.recentCalls[i]);
+      else break;
+    }
+
+    // Need a meaningful run length to analyze
+    const isHigh = ToolCallLoopDetector.HIGH_TOLERANCE_TOOLS.has(last.tool);
+    const minRun = isHigh ? 10 : 6;
+    if (run.length < minRun) return null;
+
+    // Parameter diversity: how many unique param sets vs total calls
+    const uniqueParams = new Set(run.map(c => c.params));
+    const paramDiversity = uniqueParams.size / run.length;
+
+    // Success rate
+    const successes = run.filter(c => !c.failed).length;
+    const successRate = successes / run.length;
+
+    // Verdict logic
+    let verdict: 'productive' | 'suspicious' | 'stuck';
+    if (paramDiversity >= 0.6 && successRate >= 0.7) {
+      // High diversity + mostly succeeding = productive iteration
+      // e.g., fetching 20 different URLs, reading 15 different files
+      verdict = 'productive';
+    } else if (successRate < 0.3) {
+      // Mostly failing = stuck
+      verdict = 'stuck';
+    } else if (paramDiversity < 0.2 && successRate < 0.5) {
+      // Low diversity + mediocre success = suspicious
+      verdict = 'stuck';
+    } else if (paramDiversity < 0.3) {
+      // Low diversity but succeeding — suspicious (might be retrying similar things)
+      verdict = 'suspicious';
+    } else {
+      // Moderate diversity, moderate success — let it run but flag
+      verdict = 'suspicious';
+    }
+
+    return {
+      tool: last.tool,
+      count: run.length,
+      paramDiversity,
+      successRate,
+      verdict,
+    };
+  }
+
+  isHardAborted(): boolean {
+    return this.hardAborted;
+  }
+
+  /** Return human-readable summaries of recent calls for AI self-check */
+  getRecentCallSummaries(): string[] {
+    return this.recentCalls.slice(-10).map(c => {
+      const params = c.params.length > 100 ? c.params.slice(0, 97) + '...' : c.params;
+      return `${c.tool}(${params})${c.failed ? ' [FAILED]' : ' [OK]'}`;
+    });
   }
 
   record(toolName: string, params: Record<string, any>, failed: boolean = false): void {
@@ -204,55 +379,11 @@ class ToolCallLoopDetector {
     return union === 0 ? 0 : intersection / union;
   }
 
-  detectSameTool(): { tool: string; count: number } | null {
-    if (this.recentCalls.length < 3) return null;
-
-    const last = this.recentCalls[this.recentCalls.length - 1];
-
-    let consecutiveCount = 0;
-    let failingConsecutive = 0;
-    for (let i = this.recentCalls.length - 1; i >= 0; i--) {
-      if (this.recentCalls[i].tool === last.tool) {
-        consecutiveCount++;
-        if (this.recentCalls[i].failed) failingConsecutive++;
-      } else {
-        break;
-      }
-    }
-
-    const threshold = ToolCallLoopDetector.getSameToolThreshold(last.tool, failingConsecutive);
-    if (consecutiveCount >= threshold) {
-      return { tool: last.tool, count: consecutiveCount };
-    }
-
-    if (this.recentCalls.length >= 6) {
-      const lastN = this.recentCalls.slice(-6);
-      const toolCounts: Record<string, number> = {};
-      for (const call of lastN) {
-        toolCounts[call.tool] = (toolCounts[call.tool] || 0) + 1;
-      }
-      for (const [tool, count] of Object.entries(toolCounts)) {
-        if (count >= 5) {
-          return { tool, count };
-        }
-      }
-    }
-
-    return null;
-  }
-
   isHardAborted(): boolean {
     return this.hardAborted;
   }
 
   /** Return human-readable summaries of recent calls for AI self-check */
-  getRecentCallSummaries(): string[] {
-    return this.recentCalls.slice(-8).map(c => {
-      const params = c.params.length > 80 ? c.params.slice(0, 77) + '...' : c.params;
-      return `${c.tool}(${params})${c.failed ? ' [FAILED]' : ''}`;
-    });
-  }
-
   reset(): void {
     this.recentCalls = [];
     this.totalCalls = 0;
@@ -1104,7 +1235,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Repeated call detected — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1114,53 +1245,79 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Failing loop detected — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
                   }
-                  const softLoop = loopDetector.detectSameTool();
-                  if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
-                    if (this.capabilities.permissions.isAutoApproveAll()) {
-                      if (selfCheckCount >= MAX_SELF_CHECKS) {
-                        // Hard limit: too many self-checks, genuinely stuck
-                        logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
-                        if (channel) {
-                          await channel.send(`⚠ ${softLoop.tool} repeated ${softLoop.count}x across ${selfCheckCount} checks — task appears stuck. Stopping.`, msg.channelId).catch(() => {});
+                  // ── Mercury Autopilot: intelligent repetition analysis ──
+                  const analysis = loopDetector.analyzeRepetition();
+                  if (analysis && !loopWarningSent && channel && msg.channelType !== 'internal') {
+                    if (analysis.verdict === 'productive') {
+                      // Productive iteration — diverse params, high success rate
+                      // Let it run, just log for transparency
+                      logger.info({
+                        tool: analysis.tool,
+                        count: analysis.count,
+                        diversity: analysis.paramDiversity.toFixed(2),
+                        successRate: analysis.successRate.toFixed(2),
+                      }, 'Mercury Autopilot: productive iteration detected — continuing');
+                    } else if (analysis.verdict === 'suspicious') {
+                      // Suspicious but not definitively stuck — observe further
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        selfCheckCount++;
+                        if (selfCheckCount >= MAX_SELF_CHECKS) {
+                          // Escalate: ask AI for final verdict
+                          const recentCalls = loopDetector.getRecentCallSummaries();
+                          const shouldContinue = await this.aiSelfCheck({
+                            toolName: analysis.tool,
+                            callCount: analysis.count,
+                            recentCalls,
+                            taskDescription: msg.content.slice(0, 300),
+                          });
+                          if (!shouldContinue) {
+                            logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
+                            loopAbortController.abort();
+                            return;
+                          }
                         }
-                        loopAbortController.abort();
-                        return;
-                      }
-                      selfCheckCount++;
-                      const recentCalls = loopDetector.getRecentCallSummaries();
-                      const shouldContinue = await this.aiSelfCheck({
-                        toolName: softLoop.tool,
-                        callCount: softLoop.count,
-                        recentCalls,
-                        taskDescription: msg.content.slice(0, 300),
-                      });
-                      // Either way, reset and let it continue — the self-check count
-                      // tracks escalation. Productive work continues freely; stuck loops
-                      // hit MAX_SELF_CHECKS and abort on the next trigger.
-                      loopDetector.reset();
-                      loopWarningSent = false;
-                      if (!shouldContinue) {
-                        logger.info({ tool: softLoop.tool, count: softLoop.count, check: selfCheckCount }, 'AI self-check flagged possible loop — allowing to continue with monitoring');
-                        if (channel) {
-                          await channel.send(`ℹ Monitoring: ${softLoop.tool} repeated ${softLoop.count}x (check ${selfCheckCount}/${MAX_SELF_CHECKS}). Continuing but watching for further repetition.`, msg.channelId).catch(() => {});
+                        // Not yet at check limit — let it continue with a note
+                        loopDetector.reset();
+                        loopWarningSent = false;
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} called ${analysis.count}x (${Math.round(analysis.paramDiversity * 100)}% param diversity, ${Math.round(analysis.successRate * 100)}% success rate). Continue?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
                         }
                       }
                     } else {
-                      loopWarningSent = true;
-                      const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop. Continue?`,
-                        msg.channelId,
-                      ).catch(() => false);
-                      if (shouldContinue) {
-                        loopDetector.reset();
-                        loopWarningSent = false;
-                      } else {
+                      // verdict === 'stuck'
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
+                        return;
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} appears stuck (${analysis.count} calls, ${Math.round(analysis.successRate * 100)}% success). Continue anyway?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
                       }
                     }
                   }
@@ -1307,7 +1464,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Repeated call detected — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1317,53 +1474,79 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Failing loop detected — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
                   }
-                  const softLoop = loopDetector.detectSameTool();
-                  if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
-                    if (this.capabilities.permissions.isAutoApproveAll()) {
-                      if (selfCheckCount >= MAX_SELF_CHECKS) {
-                        // Hard limit: too many self-checks, genuinely stuck
-                        logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
-                        if (channel) {
-                          await channel.send(`⚠ ${softLoop.tool} repeated ${softLoop.count}x across ${selfCheckCount} checks — task appears stuck. Stopping.`, msg.channelId).catch(() => {});
+                  // ── Mercury Autopilot: intelligent repetition analysis ──
+                  const analysis = loopDetector.analyzeRepetition();
+                  if (analysis && !loopWarningSent && channel && msg.channelType !== 'internal') {
+                    if (analysis.verdict === 'productive') {
+                      // Productive iteration — diverse params, high success rate
+                      // Let it run, just log for transparency
+                      logger.info({
+                        tool: analysis.tool,
+                        count: analysis.count,
+                        diversity: analysis.paramDiversity.toFixed(2),
+                        successRate: analysis.successRate.toFixed(2),
+                      }, 'Mercury Autopilot: productive iteration detected — continuing');
+                    } else if (analysis.verdict === 'suspicious') {
+                      // Suspicious but not definitively stuck — observe further
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        selfCheckCount++;
+                        if (selfCheckCount >= MAX_SELF_CHECKS) {
+                          // Escalate: ask AI for final verdict
+                          const recentCalls = loopDetector.getRecentCallSummaries();
+                          const shouldContinue = await this.aiSelfCheck({
+                            toolName: analysis.tool,
+                            callCount: analysis.count,
+                            recentCalls,
+                            taskDescription: msg.content.slice(0, 300),
+                          });
+                          if (!shouldContinue) {
+                            logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
+                            loopAbortController.abort();
+                            return;
+                          }
                         }
-                        loopAbortController.abort();
-                        return;
-                      }
-                      selfCheckCount++;
-                      const recentCalls = loopDetector.getRecentCallSummaries();
-                      const shouldContinue = await this.aiSelfCheck({
-                        toolName: softLoop.tool,
-                        callCount: softLoop.count,
-                        recentCalls,
-                        taskDescription: msg.content.slice(0, 300),
-                      });
-                      // Either way, reset and let it continue — the self-check count
-                      // tracks escalation. Productive work continues freely; stuck loops
-                      // hit MAX_SELF_CHECKS and abort on the next trigger.
-                      loopDetector.reset();
-                      loopWarningSent = false;
-                      if (!shouldContinue) {
-                        logger.info({ tool: softLoop.tool, count: softLoop.count, check: selfCheckCount }, 'AI self-check flagged possible loop — allowing to continue with monitoring');
-                        if (channel) {
-                          await channel.send(`ℹ Monitoring: ${softLoop.tool} repeated ${softLoop.count}x (check ${selfCheckCount}/${MAX_SELF_CHECKS}). Continuing but watching for further repetition.`, msg.channelId).catch(() => {});
+                        // Not yet at check limit — let it continue with a note
+                        loopDetector.reset();
+                        loopWarningSent = false;
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} called ${analysis.count}x (${Math.round(analysis.paramDiversity * 100)}% param diversity, ${Math.round(analysis.successRate * 100)}% success rate). Continue?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
                         }
                       }
                     } else {
-                      loopWarningSent = true;
-                      const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop. Continue?`,
-                        msg.channelId,
-                      ).catch(() => false);
-                      if (shouldContinue) {
-                        loopDetector.reset();
-                        loopWarningSent = false;
-                      } else {
+                      // verdict === 'stuck'
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
+                        return;
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} appears stuck (${analysis.count} calls, ${Math.round(analysis.successRate * 100)}% success). Continue anyway?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
                       }
                     }
                   }
@@ -1832,32 +2015,52 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   }): Promise<boolean> {
     try {
       const provider = this.providers.getDefault();
-      if (!provider) return false; // no provider = stop
+      if (!provider) return true; // no provider = let it continue
 
       const selfCheckResult = await generateText({
         model: provider.getModelInstance(),
-        system: 'You are a monitoring system. Analyze the tool call pattern and decide if it is productive work or a stuck loop. Respond with ONLY "CONTINUE" or "STOP" followed by a brief reason.',
+        system: `You are Mercury Autopilot, a monitoring system inside an AI coding agent. Your job is to determine whether repeated tool usage is productive iteration or a stuck loop.
+
+Productive patterns (CONTINUE):
+- Fetching multiple different URLs (e.g., scraping articles, reading docs)
+- Reading multiple different files to understand a codebase
+- Editing different sections of code across files
+- Running different commands (build, test, lint, deploy)
+- Creating multiple files for a project
+
+Stuck patterns (STOP):
+- Same exact call repeated with identical parameters
+- Retrying the same failing operation with minor variations
+- Reading the same file over and over
+- Running the same failing command repeatedly
+
+Respond with ONLY "CONTINUE" or "STOP" followed by a one-line reason.`,
         messages: [{
           role: 'user',
-          content: `The AI agent has called "${context.toolName}" ${context.callCount} times consecutively.
+          content: `Tool "${context.toolName}" called ${context.callCount} times consecutively.
 
-Task: ${context.taskDescription}
+User's task: ${context.taskDescription}
 
-Recent calls:
-${context.recentCalls.slice(-5).join('\n')}
+Recent calls (newest last):
+${context.recentCalls.join('\n')}
 
-Is this productive work (e.g., reading multiple files to understand a codebase, editing different parts of a file) or a stuck loop (e.g., retrying the same failing operation, repeating identical actions)?`,
+Is this productive iteration or a stuck loop?`,
         }],
-        maxOutputTokens: 100,
+        maxOutputTokens: 80,
       });
 
       const answer = (selfCheckResult.text || '').trim().toUpperCase();
       const shouldContinue = answer.startsWith('CONTINUE');
-      logger.info({ toolName: context.toolName, count: context.callCount, decision: shouldContinue ? 'continue' : 'stop', reason: selfCheckResult.text?.slice(0, 100) }, 'AI self-check result');
+      logger.info({
+        toolName: context.toolName,
+        count: context.callCount,
+        decision: shouldContinue ? 'continue' : 'stop',
+        reason: selfCheckResult.text?.trim().slice(0, 120),
+      }, 'Mercury Autopilot verdict');
       return shouldContinue;
     } catch (err) {
-      logger.warn({ err }, 'AI self-check failed — defaulting to stop');
-      return false;
+      logger.warn({ err }, 'Mercury Autopilot self-check failed — defaulting to continue');
+      return true; // on failure, be permissive
     }
   }
 
