@@ -4,44 +4,38 @@ import Head from '@docusaurus/Head';
 import '@site/src/css/landing.css';
 
 type TerminalLine = {
-  type: 'prompt' | 'input' | 'tool' | 'output' | 'agent' | 'stream';
+  type: 'prompt' | 'input' | 'tool' | 'output' | 'status' | 'agent' | 'stream' | 'autopilot' | 'completion';
   text: string;
 };
 
 const heroLines: TerminalLine[] = [
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'install skill from https://example.com/daily-digest.md' },
-  { type: 'tool', text: '  [Using: install_skill]' },
-  { type: 'output', text: '  Skill "daily-digest" installed successfully.' },
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'schedule daily-digest every day at 9am' },
-  { type: 'tool', text: '  [Using: schedule_task]' },
-  { type: 'output', text: '  Task scheduled: daily-digest (cron: 0 9 * * *)' },
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'fetch latest repos of hotheadhacker' },
-  { type: 'tool', text: '  [Using: fetch_url]' },
+  { type: 'prompt', text: '> ' },
+  { type: 'input', text: 'refactor the auth module to use JWT and add tests' },
+  { type: 'status', text: '  ⚙️ Mercury working (step 1)' },
+  { type: 'tool', text: '  ✅ read_file · src/auth/handler.ts' },
+  { type: 'tool', text: '  ✅ read_file · src/auth/middleware.ts' },
+  { type: 'tool', text: '  ✅ edit_file · src/auth/handler.ts' },
+  { type: 'tool', text: '  ✅ create_file · src/auth/jwt.ts' },
+  { type: 'tool', text: '  ✅ create_file · tests/auth.test.ts' },
+  { type: 'tool', text: '  ✅ run_command · npm test' },
+  { type: 'output', text: '  Tests: 8 passed, 0 failed' },
+  { type: 'completion', text: '  ✅ Task complete (6 steps · 34s) · claude-sonnet · 8.2k tokens' },
   { type: 'agent', text: 'Mercury: ' },
-  { type: 'stream', text: 'Here are the latest repositories by hotheadhacker: **sekond-brain** (updated today), **no-as-a-service** (7.1k stars)...' },
+  { type: 'stream', text: 'Done. Replaced session-based auth with JWT. Created jwt.ts with sign/verify helpers and added 8 tests covering token generation, expiry, and middleware validation.' },
 ];
 
-const demoLines: TerminalLine[] = [
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'read the package.json and tell me the deps' },
-  { type: 'tool', text: '  [Using: read_file]' },
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'edit the version to 0.2.0' },
-  { type: 'tool', text: '  [Using: edit_file]' },
-  { type: 'output', text: '  Successfully replaced "0.1.0" with "0.2.0" in package.json' },
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'commit that change' },
-  { type: 'tool', text: '  [Using: git_add, git_commit]' },
-  { type: 'output', text: '  [git add package.json] [git commit -m "bump version to 0.2.0"]' },
-  { type: 'prompt', text: 'You: ' },
-  { type: 'input', text: 'send me the package.json file' },
-  { type: 'tool', text: '  [Using: send_file]' },
-  { type: 'output', text: '  File sent: package.json (1.2KB)' },
+const multiAgentLines: TerminalLine[] = [
+  { type: 'prompt', text: '> ' },
+  { type: 'input', text: 'research the best pagination strategies, then implement cursor-based pagination for our API' },
+  { type: 'output', text: '  🤖 Multi-agent mode activated.' },
+  { type: 'output', text: '  Agent a1: researching pagination strategies' },
+  { type: 'output', text: '  Agent a2: implementing cursor-based pagination' },
+  { type: 'tool', text: '  🔄 a1: fetch_url, fetch_url, read_file' },
+  { type: 'tool', text: '  🔄 a2: read_file, edit_file, create_file' },
+  { type: 'completion', text: '  ✅ a1 completed (12.3s) — 3 strategies compared' },
+  { type: 'completion', text: '  ✅ a2 completed (18.7s) — cursor pagination added to 4 endpoints' },
   { type: 'agent', text: 'Mercury: ' },
-  { type: 'stream', text: "Done! I've read the package.json, updated the version, committed the change, and sent you the file. Anything else?" },
+  { type: 'stream', text: 'Both agents are done. a1 found that cursor-based is optimal for our use case (confirmed by a2\'s implementation). Want me to review the changes?' },
 ];
 
 function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: number) {
@@ -65,7 +59,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
 
     if (line.type === 'input') {
       currentSpan = document.createElement('span');
-      currentSpan.style.color = '#f0f0f0';
+      currentSpan.className = 'lp-input-text';
       container.appendChild(currentSpan);
       charIdx = 0;
       typeChars(line.text, () => {
@@ -83,6 +77,17 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
+      setTimeout(nextLine, speed * 3);
+      return;
+    }
+
+    if (line.type === 'status') {
+      const span = document.createElement('span');
+      span.className = 'lp-status';
+      span.textContent = line.text;
+      container.appendChild(span);
+      container.appendChild(document.createElement('br'));
+      idx++;
       setTimeout(nextLine, speed * 2);
       return;
     }
@@ -94,7 +99,29 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
-      setTimeout(nextLine, speed);
+      setTimeout(nextLine, speed * 2);
+      return;
+    }
+
+    if (line.type === 'autopilot') {
+      const span = document.createElement('span');
+      span.className = 'lp-autopilot';
+      span.textContent = line.text;
+      container.appendChild(span);
+      container.appendChild(document.createElement('br'));
+      idx++;
+      setTimeout(nextLine, speed * 4);
+      return;
+    }
+
+    if (line.type === 'completion') {
+      const span = document.createElement('span');
+      span.className = 'lp-completion';
+      span.textContent = line.text;
+      container.appendChild(span);
+      container.appendChild(document.createElement('br'));
+      idx++;
+      setTimeout(nextLine, speed * 3);
       return;
     }
 
@@ -110,7 +137,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
 
     if (line.type === 'stream') {
       currentSpan = document.createElement('span');
-      currentSpan.style.color = '#f0f0f0';
+      currentSpan.className = 'lp-stream-text';
       container.appendChild(currentSpan);
       charIdx = 0;
       typeChars(line.text, () => {
@@ -119,7 +146,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
         const cursor = document.createElement('span');
         cursor.className = 'lp-cursor';
         container.appendChild(cursor);
-      }, speed * 1.5);
+      }, speed * 1.2);
       return;
     }
 
@@ -144,7 +171,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
 
 export default function LandingPage(): React.ReactElement {
   const heroTermRef = useRef<HTMLDivElement>(null);
-  const demoTermRef = useRef<HTMLDivElement>(null);
+  const agentTermRef = useRef<HTMLDivElement>(null);
   const [ghStars, setGhStars] = React.useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
 
@@ -162,7 +189,7 @@ export default function LandingPage(): React.ReactElement {
 
   useEffect(() => {
     const heroEl = heroTermRef.current;
-    const demoEl = demoTermRef.current;
+    const agentEl = agentTermRef.current;
 
     const heroObs = heroEl
       ? new IntersectionObserver(
@@ -170,7 +197,7 @@ export default function LandingPage(): React.ReactElement {
           entries.forEach(entry => {
             if (entry.isIntersecting) {
               heroObs.unobserve(entry.target);
-              typeTerminal(heroEl, heroLines, 25);
+              typeTerminal(heroEl, heroLines, 22);
             }
           });
         },
@@ -178,13 +205,13 @@ export default function LandingPage(): React.ReactElement {
       )
       : null;
 
-    const demoObs = demoEl
+    const agentObs = agentEl
       ? new IntersectionObserver(
         entries => {
           entries.forEach(entry => {
             if (entry.isIntersecting) {
-              demoObs.unobserve(entry.target);
-              typeTerminal(demoEl, demoLines, 18);
+              agentObs.unobserve(entry.target);
+              typeTerminal(agentEl, multiAgentLines, 20);
             }
           });
         },
@@ -193,11 +220,11 @@ export default function LandingPage(): React.ReactElement {
       : null;
 
     if (heroEl && heroObs) heroObs.observe(heroEl);
-    if (demoEl && demoObs) demoObs.observe(demoEl);
+    if (agentEl && agentObs) agentObs.observe(agentEl);
 
     return () => {
       if (heroObs) heroObs.disconnect();
-      if (demoObs) demoObs.disconnect();
+      if (agentObs) agentObs.disconnect();
     };
   }, []);
 
@@ -221,92 +248,219 @@ export default function LandingPage(): React.ReactElement {
   return (
     <>
       <Head>
-        <title>Mercury — Soul-Driven AI Agent with Permission Guardrails | Cosmic Stack</title>
-        <meta name="description" content="The AI agent that asks before it acts. Permission guardrails, token efficiency, sub-agent orchestration, Spotify integration, and full control. Runs 24/7 from CLI or Telegram with multi-provider onboarding, skills, and scheduling." />
-        <meta property="og:title" content="Mercury — Soul-Driven AI Agent with Permission Guardrails" />
-        <meta property="og:description" content="The AI agent that asks before it acts. Permission guardrails, token efficiency, and full control. Runs 24/7 from CLI or Telegram." />
+        <title>Mercury — AI Agent That Thinks, Acts, and Asks Permission</title>
+        <meta name="description" content="An AI coding agent with real-time progress, multi-agent orchestration, intelligent loop detection, and hardened permissions. Runs 24/7 from CLI or Telegram." />
+        <meta property="og:title" content="Mercury — AI Agent That Thinks, Acts, and Asks Permission" />
+        <meta property="og:description" content="An AI coding agent with real-time progress, multi-agent orchestration, and hardened permissions. Runs 24/7 from CLI or Telegram." />
         <meta property="og:type" content="website" />
         <meta property="og:url" content="https://mercury.cosmicstack.org" />
         <meta property="og:image" content="https://mercury.cosmicstack.org/img/card.png" />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Mercury — Soul-Driven AI Agent with Permission Guardrails" />
+        <meta name="twitter:title" content="Mercury — AI Agent That Thinks, Acts, and Asks Permission" />
         <meta name="twitter:image" content="https://mercury.cosmicstack.org/img/card.png" />
       </Head>
 
       <div className="lp-page">
+        {/* Navigation */}
         <nav className="lp-nav">
           <div className="lp-nav-inner">
-            <Link to="/" className="lp-nav-logo">☿ Mercury</Link>
+            <Link to="/" className="lp-nav-logo">
+              <span className="lp-nav-logo-icon">☿</span> Mercury
+            </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
-              <Link to="/#features" onClick={() => setMobileMenuOpen(false)}>Features</Link>
-              <Link to="/#how-it-works" onClick={() => setMobileMenuOpen(false)}>Install</Link>
-              <Link to="/#demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
-              <Link to="/#capabilities" onClick={() => setMobileMenuOpen(false)}>Capabilities</Link>
-              <Link to="/#github" onClick={() => setMobileMenuOpen(false)}>GitHub</Link>
+              <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
+              <Link to="/#live-demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
+              <Link to="/#channels" onClick={() => setMobileMenuOpen(false)}>Channels</Link>
+              <Link to="/#agents" onClick={() => setMobileMenuOpen(false)}>Multi-Agent</Link>
               <Link to="/#compare" onClick={() => setMobileMenuOpen(false)}>Compare</Link>
               <Link to="/docs" onClick={() => setMobileMenuOpen(false)}>Docs</Link>
             </div>
             <div className="lp-nav-right">
               <a href="https://github.com/cosmicstack-labs/mercury-agent" className="lp-github-btn" target="_blank" rel="noopener">
-                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" style={{ verticalAlign: '-2px' }}><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
-                <span className="lp-github-btn-count">{ghStars} ⭐</span>
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
+                {ghStars && <span className="lp-github-btn-count">{ghStars}</span>}
               </a>
               <button className="lp-nav-toggle" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Menu">☰</button>
             </div>
           </div>
         </nav>
 
+        {/* Hero */}
         <section className="lp-hero">
-          <div className="lp-hero-bg" />
+          <div className="lp-hero-mesh" />
+          <div className="lp-hero-glow" />
           <div className="lp-container lp-hero-content">
-            <pre className="lp-hero-ascii" aria-hidden="true">{`    __  _____________  ________  ________  __
-   /  |/  / ____/ __ \\/ ____/ / / / __ \\ \\/ /
-  / /|_/ / __/ / /_/ / /   / / / / /_/ /\\  /
- / /  / / /___/ _, _/ /___/ /_/ / _, _/ / /
-/_/  /_/_____/_/ |_|\\____/\\____/_/ |_| /_/`}</pre>
-            <p className="lp-hero-tagline">Soul-driven. Token-efficient. Always on.</p>
+            <div className="lp-hero-badge">Open Source AI Agent</div>
+            <h1 className="lp-hero-title">
+              The AI agent that<br />
+              <span className="lp-hero-highlight">thinks, acts, and asks.</span>
+            </h1>
             <p className="lp-hero-sub">
-              Your personal AI agent with 31 built-in tools, skill system, multi-agent orchestration, Spotify integration, GitHub companion, and
-              hardened permissions. Runs 24/7 from your terminal or Telegram.
+              Multi-agent orchestration. Real-time progress. Intelligent loop detection.
+              40+ tools. Permission guardrails. Runs 24/7 from your terminal or Telegram.
             </p>
             <div className="lp-hero-actions">
-              <Link href="#how-it-works" className="lp-btn lp-btn-primary">Get Started</Link>
-              <Link href="#demo" className="lp-btn lp-btn-secondary">See it in action</Link>
-              <Link to="/docs" className="lp-btn lp-btn-secondary">Read Docs</Link>
+              <Link href="#live-demo" className="lp-btn lp-btn-primary">See It Work</Link>
+              <Link to="/docs" className="lp-btn lp-btn-secondary">Get Started</Link>
             </div>
             <div className="lp-hero-install">
               <code>npm i -g @cosmicstack/mercury-agent && mercury</code>
             </div>
-            <div className="lp-terminal-window lp-hero-terminal">
+          </div>
+        </section>
+
+        {/* Three Pillars */}
+        <section id="pillars" className="lp-section">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Built Different</h2>
+            <p className="lp-section-sub">Three principles that define Mercury.</p>
+            <div className="lp-pillars">
+              <div className="lp-pillar lp-reveal">
+                <div className="lp-pillar-icon">
+                  <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
+                </div>
+                <h3>Thinks</h3>
+                <p className="lp-pillar-lead">Mercury doesn't just execute. It orchestrates.</p>
+                <ul>
+                  <li>Spawns parallel sub-agents for concurrent tasks</li>
+                  <li>Mercury Autopilot detects stuck loops by analyzing parameter diversity and success rates</li>
+                  <li>AI self-check in Allow All mode — the model evaluates its own progress</li>
+                  <li>25-step agentic loop with graduated escalation</li>
+                </ul>
+              </div>
+              <div className="lp-pillar lp-reveal">
+                <div className="lp-pillar-icon">
+                  <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>
+                </div>
+                <h3>Acts</h3>
+                <p className="lp-pillar-lead">40+ built-in tools. Zero configuration.</p>
+                <ul>
+                  <li>Filesystem, shell, git, GitHub PRs and issues</li>
+                  <li>Spotify playback, search, playlists, and DJ mode</li>
+                  <li>Markdown skill system with scheduling and elevation</li>
+                  <li>Real-time progress with completion banners and token stats</li>
+                </ul>
+              </div>
+              <div className="lp-pillar lp-reveal">
+                <div className="lp-pillar-icon">
+                  <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                </div>
+                <h3>Asks</h3>
+                <p className="lp-pillar-lead">Full control. Nothing happens without your say.</p>
+                <ul>
+                  <li>Ask Me mode: prompts for every write, command, and scope change</li>
+                  <li>Allow All mode: auto-approve with AI self-monitoring</li>
+                  <li>Safe command whitelist — reads never prompt</li>
+                  <li>Directory scoping with per-session memory</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Live Demo */}
+        <section id="live-demo" className="lp-section lp-section-dark">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Watch Mercury Work</h2>
+            <p className="lp-section-sub">A real multi-step coding task with tool calls, progress tracking, and completion stats.</p>
+            <div className="lp-terminal-window lp-terminal-hero">
               <div className="lp-terminal-bar">
                 <span className="lp-terminal-dot lp-dot-red" />
                 <span className="lp-terminal-dot lp-dot-yellow" />
                 <span className="lp-terminal-dot lp-dot-green" />
-                <span className="lp-terminal-title">terminal</span>
+                <span className="lp-terminal-title">mercury</span>
               </div>
               <div className="lp-terminal-body" ref={heroTermRef} />
             </div>
           </div>
         </section>
 
-        <section id="features" className="lp-section">
+        {/* How It Works — Task Flow */}
+        <section id="task-flow" className="lp-section">
           <div className="lp-container">
-            <h2 className="lp-section-title">Built Different</h2>
-            <p className="lp-section-sub">Not another chatbot. An orchestrator that works for you.</p>
-            <div className="lp-features-grid">
+            <h2 className="lp-section-title">Real-Time Task Intelligence</h2>
+            <p className="lp-section-sub">Mercury shows you exactly what's happening, when it's happening.</p>
+            <div className="lp-flow-timeline lp-reveal">
               {[
-                { icon: '☿', title: 'Soul-Driven Identity', desc: "Mercury isn't a blank slate. Its personality is defined by markdown soul files — soul.md, persona.md, taste.md, heartbeat.md — that you control." },
-                { icon: '⚡', title: 'Token-Efficient', desc: 'Daily token budgets with enforcement. Only soul + persona injected per request (~400 tokens). Progressive skill loading. Auto-concise when budget exceeds 70%.' },
-                { icon: '♾', title: 'Always On', desc: 'Background daemon by default. Cron scheduling, delayed tasks, and a heartbeat system. Auto-starts on boot, auto-restarts on crash.' },
-                { icon: '📡', title: 'Multi-Channel', desc: 'CLI with readline and arrow-key menus. Telegram with typing indicators, HTML formatting, file uploads, and private 1:1 access.' },
-                { icon: '🤖', title: 'Sub-Agents', desc: 'Spawn parallel AI agents for concurrent tasks. Mercury orchestrates — research, code, and review run simultaneously. Non-blocking: keep chatting while agents work.' },
-                { icon: '🎵', title: 'Spotify Integration', desc: 'Native Spotify control through conversation. Play music, manage playlists, DJ on your devices. Search, like, queue — all through natural language.' },
-                { icon: '🧩', title: 'Skill System', desc: 'Install community skills with a single command. Skills auto-load into context, get elevated permissions, and can be scheduled as recurring tasks.' },
-                { icon: '🛡', title: 'Permission Hardened', desc: 'Folder-level read/write scoping. Command blocklist. Pending approval flow. Ask Me or Allow All mode per session.' },
+                { step: '1', label: 'Message', desc: 'You send a task. Mercury begins working.' },
+                { step: '2', label: 'Status Card', desc: 'A single message appears showing live progress. On Telegram, it pins to the top.' },
+                { step: '3', label: 'Tool Steps', desc: 'Each tool call updates the card in place — read, edit, run, create. Last 5 steps visible.' },
+                { step: '4', label: 'Autopilot', desc: 'If Mercury detects a loop, it analyzes diversity and success rate. Productive work continues; stuck patterns stop.' },
+                { step: '5', label: 'Complete', desc: 'Status card deleted. AI response + completion banner with token stats and budget usage.' },
+              ].map((s, i) => (
+                <div key={i} className="lp-flow-step">
+                  <div className="lp-flow-dot">{s.step}</div>
+                  <div className="lp-flow-content">
+                    <h4>{s.label}</h4>
+                    <p>{s.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Channels — CLI + Telegram */}
+        <section id="channels" className="lp-section lp-section-alt">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Two Channels, One Agent</h2>
+            <p className="lp-section-sub">Same capabilities. Different interfaces. Both real-time.</p>
+            <div className="lp-channels-grid lp-reveal">
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">{'>'}_</span>
+                  <h3>CLI</h3>
+                </div>
+                <ul>
+                  <li>Ink-based TUI with live progress view</li>
+                  <li>Slash command autocomplete with arrow navigation</li>
+                  <li>Workspace IDE mode with file explorer and git panel</li>
+                  <li>Keyboard shortcuts: Ctrl+B (background), Ctrl+T (view), Ctrl+P (plan)</li>
+                  <li>Multi-line input, input history, streaming output</li>
+                  <li>Interactive Spotify player with seek and volume</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">✈</span>
+                  <h3>Telegram</h3>
+                </div>
+                <ul>
+                  <li>Single pinned status card — one message shows all progress</li>
+                  <li>Ephemeral permission prompts (auto-deleted after response)</li>
+                  <li>15 bot commands registered in the menu</li>
+                  <li>Inline keyboards for permissions and mode selection</li>
+                  <li>File uploads with auto-type detection</li>
+                  <li>Organization access model with admin/member roles</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Multi-Agent */}
+        <section id="agents" className="lp-section lp-section-dark">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Multi-Agent Orchestration</h2>
+            <p className="lp-section-sub">Mercury spawns parallel agents. You keep chatting.</p>
+            <div className="lp-terminal-window" style={{ maxWidth: 760, margin: '0 auto' }}>
+              <div className="lp-terminal-bar">
+                <span className="lp-terminal-dot lp-dot-red" />
+                <span className="lp-terminal-dot lp-dot-yellow" />
+                <span className="lp-terminal-dot lp-dot-green" />
+                <span className="lp-terminal-title">mercury — multi-agent</span>
+              </div>
+              <div className="lp-terminal-body" ref={agentTermRef} />
+            </div>
+            <div className="lp-agent-features lp-reveal">
+              {[
+                { title: 'Parallel Execution', desc: 'Multiple tasks run simultaneously in isolated context windows.' },
+                { title: 'File Locks', desc: 'Reader-writer locks prevent concurrent write conflicts between agents.' },
+                { title: 'Resource-Aware', desc: 'Max concurrent agents auto-detected from CPU and RAM.' },
+                { title: 'Non-Blocking', desc: 'Keep chatting while agents work. Get notified when they finish.' },
               ].map((f, i) => (
-                <div key={i} className="lp-feature-card lp-reveal">
-                  <div className="lp-feature-icon">{f.icon}</div>
-                  <h3>{f.title}</h3>
+                <div key={i} className="lp-agent-feature">
+                  <h4>{f.title}</h4>
                   <p>{f.desc}</p>
                 </div>
               ))}
@@ -314,18 +468,41 @@ export default function LandingPage(): React.ReactElement {
           </div>
         </section>
 
-        <section id="second-brain" className="lp-section lp-section-alt">
+        {/* Mercury Autopilot */}
+        <section id="autopilot" className="lp-section">
           <div className="lp-container">
-            <h2 className="lp-section-title">🧠 Second Brain</h2>
-            <p className="lp-section-sub">Most AI agents forget everything when you close the chat. Mercury <em>remembers</em> — automatically, privately, and with surgical precision.</p>
+            <h2 className="lp-section-title">Mercury Autopilot</h2>
+            <p className="lp-section-sub">Intelligent loop detection that knows the difference between working hard and going in circles.</p>
+            <div className="lp-autopilot-grid lp-reveal">
+              <div className="lp-autopilot-card">
+                <div className="lp-autopilot-verdict lp-verdict-productive">Productive</div>
+                <p>High parameter diversity ({'>'} 60%) and success rate ({'>'} 70%). Mercury continues without interruption.</p>
+              </div>
+              <div className="lp-autopilot-card">
+                <div className="lp-autopilot-verdict lp-verdict-suspicious">Suspicious</div>
+                <p>Moderate repetition detected. In Allow All: AI self-check evaluates progress. In Ask Me: prompts you.</p>
+              </div>
+              <div className="lp-autopilot-card">
+                <div className="lp-autopilot-verdict lp-verdict-stuck">Stuck</div>
+                <p>Low diversity and high failure rate. Mercury stops the current execution path automatically.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Second Brain */}
+        <section id="memory" className="lp-section lp-section-alt">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Second Brain</h2>
+            <p className="lp-section-sub">Mercury remembers — automatically, privately, and with surgical precision.</p>
             <div className="lp-brain-grid">
               {[
-                { title: 'Learns Automatically', desc: 'After each conversation, Mercury extracts facts about you — your preferences, goals, projects, habits, relationships, and decisions.' },
-                { title: 'Recalls What Matters', desc: 'Only memories relevant to the current conversation are injected — up to 5 facts within a 900-character budget.' },
+                { title: 'Learns Automatically', desc: 'After each conversation, Mercury extracts facts — preferences, goals, projects, habits, decisions.' },
+                { title: 'Recalls What Matters', desc: 'Only relevant memories injected — up to 5 facts within a 900-character budget per request.' },
                 { title: 'Resolves Conflicts', desc: 'When Mercury detects a contradiction, the higher-confidence memory wins. No stale data.' },
-                { title: '10 Memory Types', desc: 'Identity, preference, goal, project, habit, decision, constraint, relationship, episode, and reflection — each scored by confidence, importance, and durability.' },
-                { title: 'Auto-Consolidation', desc: 'Every hour Mercury synthesizes a profile summary and generates reflections from patterns it detects.' },
-                { title: 'You Stay in Control', desc: '/memory gives you overview, search, pause, and clear. All data stays on your machine in SQLite — nothing leaves.' },
+                { title: '10 Memory Types', desc: 'Identity, preference, goal, project, habit, decision, constraint, relationship, episode, and reflection.' },
+                { title: 'Auto-Consolidation', desc: 'Hourly synthesis of profile summaries and reflections from detected patterns.' },
+                { title: 'Fully Local', desc: 'All data stays on your machine in SQLite. /memory gives you overview, search, pause, and clear.' },
               ].map((c, i) => (
                 <div key={i} className="lp-brain-card lp-reveal">
                   <h3>{c.title}</h3>
@@ -336,69 +513,33 @@ export default function LandingPage(): React.ReactElement {
           </div>
         </section>
 
-        <section id="how-it-works" className="lp-section lp-section-dark">
+        {/* Providers */}
+        <section id="providers" className="lp-section lp-section-dark">
           <div className="lp-container">
-            <h2 className="lp-section-title">Up and Running in 60 Seconds</h2>
-            <div className="lp-steps">
+            <h2 className="lp-section-title">Any Provider. Automatic Fallback.</h2>
+            <p className="lp-section-sub">Configure one or stack them all. Mercury falls back automatically and tracks which provider last succeeded.</p>
+            <div className="lp-provider-grid lp-reveal">
               {[
-                { num: 1, title: 'Install', cmd: 'npm i -g @cosmicstack/mercury-agent', desc: 'Or use npx @cosmicstack/mercury-agent — no install needed.' },
-                { num: 2, title: 'Setup', cmd: 'mercury', desc: 'First run triggers the onboarding wizard. Choose providers, validate keys, pick your default model, optionally pair Telegram.' },
-                { num: 3, title: 'Run', cmd: 'mercury start', desc: 'Mercury wakes up, loads your soul files, restores scheduled tasks, and runs as a background daemon.' },
-              ].map((s, i) => (
-                <div key={i} className="lp-step lp-reveal">
-                  <div className="lp-step-number">{s.num}</div>
-                  <h3>{s.title}</h3>
-                  <div className="lp-terminal-inline"><code>{s.cmd}</code></div>
-                  <p>{s.desc}</p>
+                { name: 'DeepSeek', desc: 'Cost-effective with strong reasoning. Default provider.' },
+                { name: 'OpenAI', desc: 'GPT-4o-mini, GPT-4o, o3. Industry standard.' },
+                { name: 'Anthropic', desc: 'Claude Sonnet, Haiku, Opus. Nuanced reasoning.' },
+                { name: 'Grok (xAI)', desc: "xAI's models via OpenAI-compatible endpoint." },
+                { name: 'Ollama Cloud', desc: 'Remote Ollama models via API. No local setup.' },
+                { name: 'Ollama Local', desc: 'On your machine. Zero cost, fully private.' },
+              ].map((p, i) => (
+                <div key={i} className="lp-provider-card">
+                  <h4>{p.name}</h4>
+                  <p>{p.desc}</p>
                 </div>
               ))}
             </div>
-          </div>
-        </section>
-
-        <section id="demo" className="lp-section">
-          <div className="lp-container">
-            <h2 className="lp-section-title">See It Work</h2>
-            <p className="lp-section-sub">A real Mercury session — tool calls, streaming, files, and scheduling.</p>
-            <div className="lp-terminal-window" style={{ maxWidth: 760, margin: '0 auto' }}>
-              <div className="lp-terminal-bar">
-                <span className="lp-terminal-dot lp-dot-red" />
-                <span className="lp-terminal-dot lp-dot-yellow" />
-                <span className="lp-terminal-dot lp-dot-green" />
-                <span className="lp-terminal-title">mercury</span>
-              </div>
-              <div className="lp-terminal-body" ref={demoTermRef} />
+            <div className="lp-provider-note">
+              <p>OpenAI-compatible architecture supports custom endpoints. Switch models mid-session with <code>/models use</code>.</p>
             </div>
           </div>
         </section>
 
-        <section id="capabilities" className="lp-section lp-section-dark">
-          <div className="lp-container">
-            <h2 className="lp-section-title">31 Built-In Tools</h2>
-            <p className="lp-section-sub">Plus extensible skills, scheduling, and memory.</p>
-            <div className="lp-caps-grid">
-              {[
-                { title: '📂 Filesystem', items: ['read_file — Read file contents', 'write_file — Write to existing file', 'create_file — Create new files (+ dirs)', 'edit_file — Search & replace text', 'list_dir — List directory contents', 'delete_file — Delete a file', 'send_file — Send file to user', 'approve_scope — Request directory access'] },
-                { title: '💬 Messaging', items: ['send_message — Send a message to approved Telegram recipients'] },
-                { title: '🐚 Shell', items: ['run_command — Execute shell commands', 'cd — Change working directory', 'approve_command — Permanently approve a command'] },
-                { title: '📦 Git', items: ['git_status — Working tree status', 'git_diff — Show file changes', 'git_log — Commit history', 'git_add — Stage files', 'git_commit — Create commits', 'git_push — Push to remote'] },
-                { title: '🐙 GitHub', items: ['create_pr — Create pull requests', 'review_pr — Review PRs + post comments', 'list_issues — List & filter issues', 'create_issue — Create new issues', 'github_api — Raw API access', 'Co-authored-by on every commit'] },
-                { title: '🎵 Spotify', items: ['spotify_search — Search tracks, artists, albums, playlists', 'spotify_play — Play on your devices', 'spotify_pause/next/previous — Playback controls', 'spotify_now_playing — What\'s playing + progress bar', 'spotify_devices — List & select devices', 'spotify_like/top_tracks/playlists — Library access', 'spotify_volume/shuffle/repeat/queue — Full player control'] },
-                { title: '🤖 Sub-Agents', items: ['delegate_task — Spawn parallel AI agents', 'list_agents — Monitor running agents', 'stop_agent — Halt a specific agent', '/agents — See all agents + status', '/halt — Emergency stop all agents', 'File locks for concurrent safety', 'Auto-concurrency from CPU/RAM'] },
-                { title: '🧩 Skills', items: ['install_skill — Install from URL or content', 'list_skills — Show installed skills', 'use_skill — Invoke a skill'] },
-                { title: '⏰ Scheduler', items: ['schedule_task — Cron or one-shot tasks', 'list_scheduled_tasks — View all tasks', 'cancel_scheduled_task — Cancel a task'] },
-                { title: '📊 System', items: ['budget_status — Check token budget'] },
-                { title: '🧠 Memory', items: ['Short-term — Recent conversation per channel', 'Long-term — Auto-extracted facts with dedup', 'Episodic — Timestamped interaction log'] },
-              ].map((g, i) => (
-                <div key={i} className="lp-cap-group lp-reveal">
-                  <h3>{g.title}</h3>
-                  <ul>{g.items.map((item, j) => <li key={j}>{item}</li>)}</ul>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
+        {/* Comparison */}
         <section id="compare" className="lp-section">
           <div className="lp-container">
             <h2 className="lp-section-title">Honest Comparison</h2>
@@ -410,22 +551,20 @@ export default function LandingPage(): React.ReactElement {
                 </thead>
                 <tbody>
                   {[
+                    ['Multi-Agent Orchestration', 'Parallel workers + file locks', '—', '—'],
+                    ['Loop Detection (Autopilot)', 'Diversity + success analysis', '—', '—'],
+                    ['Real-Time Progress', 'Single edited status card + pin', '—', '—'],
+                    ['Permission Modes', 'Ask Me / Allow All + safe whitelist', 'Confirmation prompts', 'Permission prompts'],
+                    ['Telegram Integration', 'Inline keyboards, pinned progress, org access', '—', '—'],
+                    ['Token Budget', 'Daily budget + override + color-coded stats', '—', '—'],
+                    ['Spotify Integration', 'Native playback + DJ mode + 14 tools', '—', '—'],
+                    ['Skill System', 'Install, invoke, schedule with elevation', '—', '—'],
                     ['Soul / Persona System', '4 markdown files', 'Custom instructions', 'CLAUDE.md'],
-                    ['Token Budget', 'Daily budget + override', '—', '—'],
-                    ['Multi-Channel', 'CLI + Telegram + more', 'All', 'All'],
-                    ['Sub-Agents', 'Parallel AI workers, non-blocking', '—', '—'],
-                    ['Spotify Integration', 'Native playback + DJ mode', '—', '—'],
-                    ['Skill System', 'Install, invoke, schedule', '—', '—'],
-                    ['Cron + Delayed Scheduling', 'Persisted, auto-restore', '—', '—'],
-                    ['Permission Hardening', 'Blocklist + scope + approval', 'Confirmation prompts', 'Permission prompts'],
                     ['GitHub Companion', 'PRs, issues, co-authored commits', '—', '—'],
-                    ['Proactive Notifications', 'Heartbeat + task alerts', '—', '—'],
-                    ['Auto Fact Extraction', 'With dedup', '—', '—'],
-                    ['Provider Fallback', 'Auto with last-successful', 'Manual config', 'Anthropic only'],
-                    ['File Upload (Telegram)', 'Auto type detection', '—', '—'],
-                    ['Streaming Output', 'Real-time text stream', 'Real-time text stream', 'Real-time text stream'],
-                    ['Headless / 24-7', 'Built-in', '—', '—'],
-                    ['Language', 'TypeScript / Node.js', 'Python', 'TypeScript / Node.js'],
+                    ['Provider Fallback', 'Auto with last-successful tracking', 'Manual config', 'Anthropic only'],
+                    ['Second Brain', 'Auto-extract, 10 types, conflict resolution', '—', '—'],
+                    ['Workspace IDE', 'File explorer, git panel, keyboard shortcuts', '—', '—'],
+                    ['24/7 Headless', 'Daemon + system service + cron scheduling', '—', '—'],
                     ['Open Source', 'MIT', 'LGPL-2.1', 'Source-available'],
                   ].map((row, i) => (
                     <tr key={i}>
@@ -441,73 +580,55 @@ export default function LandingPage(): React.ReactElement {
           </div>
         </section>
 
-        <section id="architecture" className="lp-section lp-section-dark">
+        {/* Install */}
+        <section id="install" className="lp-section lp-section-dark">
           <div className="lp-container">
-            <h2 className="lp-section-title">Under the Hood</h2>
-            <p className="lp-section-sub">Minimal runtime, maximum capability.</p>
-            <div className="lp-arch-grid">
-              {[
-                { label: 'Core', value: 'TypeScript + Node.js 18+', desc: 'ESM, tsup build, SQLite-backed second brain' },
-                { label: 'AI SDK', value: 'Vercel AI SDK v6', desc: 'streamText + generateText, 10-step agentic loop' },
-                { label: 'Sub-Agents', value: 'Same-process async coroutines', desc: 'Parallel task delegation, file locks, resource-aware concurrency' },
-                { label: 'Spotify', value: 'Native Web API integration', desc: 'OAuth2 auth, 14 tools, DJ mode skill, Premium + free support' },
-                { label: 'Providers', value: 'DeepSeek · OpenAI · Anthropic · Grok · Ollama Cloud · Ollama Local', desc: 'Validated onboarding, model discovery, and fallback with last-successful tracking' },
-                { label: 'Memory', value: 'JSONL + SQLite', desc: 'Short-term, long-term, episodic + second brain' },
-                { label: 'Telegram', value: 'grammY', desc: 'Long polling, pairing codes, CLI-managed access requests, broadcasts, file uploads' },
-                { label: 'Runtime Data', value: '~/.mercury/', desc: 'Config, soul, memory, permissions, skills, schedules — all in your home dir' },
-              ].map((a, i) => (
-                <div key={i} className="lp-arch-card lp-reveal">
-                  <div className="lp-arch-label">{a.label}</div>
-                  <div className="lp-arch-value">{a.value}</div>
-                  <div className="lp-arch-desc">{a.desc}</div>
+            <h2 className="lp-section-title">Up and Running in 60 Seconds</h2>
+            <div className="lp-install-steps">
+              <div className="lp-install-step lp-reveal">
+                <div className="lp-install-num">1</div>
+                <div>
+                  <h4>Install</h4>
+                  <div className="lp-terminal-inline"><code>npm i -g @cosmicstack/mercury-agent</code></div>
                 </div>
-              ))}
+              </div>
+              <div className="lp-install-step lp-reveal">
+                <div className="lp-install-num">2</div>
+                <div>
+                  <h4>Setup</h4>
+                  <div className="lp-terminal-inline"><code>mercury</code></div>
+                  <p>Onboarding wizard: choose providers, validate keys, pair Telegram.</p>
+                </div>
+              </div>
+              <div className="lp-install-step lp-reveal">
+                <div className="lp-install-num">3</div>
+                <div>
+                  <h4>Run</h4>
+                  <div className="lp-terminal-inline"><code>mercury up</code></div>
+                  <p>Starts as a daemon. Auto-restarts on crash. Runs 24/7.</p>
+                </div>
+              </div>
             </div>
           </div>
         </section>
 
-        <section id="providers" className="lp-section">
-          <div className="lp-container">
-            <h2 className="lp-section-title">Supported Providers</h2>
-            <p className="lp-section-sub">Pick one or stack them all. Mercury falls back automatically.</p>
-            <div className="lp-provider-grid lp-reveal">
-              {[
-                { name: 'DeepSeek', desc: 'Default provider. Cost-effective with strong reasoning.' },
-                { name: 'OpenAI', desc: 'GPT-4o-mini, GPT-4o, o3. Industry standard.' },
-                { name: 'Anthropic', desc: 'Claude Sonnet, Haiku, Opus. Nuanced reasoning.' },
-                { name: 'Grok (xAI)', desc: "xAI's models. OpenAI-compatible endpoint." },
-                { name: 'Ollama Cloud', desc: 'Remote Ollama models via API. No local setup.' },
-                { name: 'Ollama Local', desc: 'On your machine. Zero API cost, fully private.' },
-              ].map((p, i) => (
-                <div key={i} className="lp-provider-card">
-                  <div className="lp-provider-logo">⚡</div>
-                  <div className="lp-provider-info">
-                    <h3>{p.name}</h3>
-                    <p>{p.desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="lp-provider-note">
-              <p>More providers on the way — Google Gemini, Mistral, and others. Mercury's OpenAI-compatible architecture also supports custom endpoints.</p>
-            </div>
-          </div>
-        </section>
-
+        {/* CTA */}
         <section id="cta" className="lp-section lp-cta-section">
           <div className="lp-container">
-            <h2 className="lp-section-title">Ready to Deploy Your Agent?</h2>
+            <h2 className="lp-section-title">Deploy Your Agent</h2>
             <div className="lp-cta-terminal">
               <code>npm i -g @cosmicstack/mercury-agent && mercury</code>
             </div>
-            <p className="lp-cta-sub">That's it. 60 seconds to your own AI agent with GitHub companion.</p>
+            <p className="lp-cta-sub">60 seconds to your own AI agent.</p>
             <div className="lp-cta-links">
-              <a href="https://github.com/cosmicstack-labs/mercury-agent" target="_blank" rel="noopener">GitHub →</a>
-              <a href="https://github.com/cosmicstack-labs/mercury-agent/issues" target="_blank" rel="noopener">Report an Issue →</a>
+              <Link to="/docs/getting-started/installation">Documentation</Link>
+              <a href="https://github.com/cosmicstack-labs/mercury-agent" target="_blank" rel="noopener">GitHub</a>
+              <a href="https://github.com/cosmicstack-labs/mercury-agent/issues" target="_blank" rel="noopener">Report an Issue</a>
             </div>
           </div>
         </section>
 
+        {/* Footer */}
         <footer className="lp-footer">
           <div className="lp-container lp-footer-inner">
             <div>
@@ -516,7 +637,6 @@ export default function LandingPage(): React.ReactElement {
             </div>
             <div className="lp-footer-links">
               <Link to="/docs">Docs</Link>
-              <a href="https://mercury.cosmicstack.org">mercury.cosmicstack.org</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues">Issues</a>
             </div>
