@@ -1339,8 +1339,16 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1}>
       {visible.map((msg) => {
-        const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
-        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : agentName;
+        const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
+        const roleColor = isCompletion ? 'green' : msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
+        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
+        if (isCompletion) {
+          return (
+            <Box key={msg.id} marginBottom={1}>
+              <Text color="green" bold>{msg.content}</Text>
+            </Box>
+          );
+        }
         let rendered: string;
         if (msg.streaming) {
           rendered = renderMarkdown(msg.content);

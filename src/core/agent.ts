@@ -56,20 +56,27 @@ class ToolCallLoopDetector {
     'list_dir',
     'web_search',
     'github_api',
+    'run_command',
+    'edit_file',
+    'write_file',
+    'create_file',
+    'git_status',
+    'git_diff',
+    'git_log',
   ]);
 
-  private static readonly IDENTICAL_THRESHOLD = 3;
-  private static readonly SIMILAR_THRESHOLD = 4;
-  private static readonly TEXT_REPEAT_THRESHOLD = 3;
-  private static readonly MAX_STEP_TEXTS = 12;
+  private static readonly IDENTICAL_THRESHOLD = 4;
+  private static readonly SIMILAR_THRESHOLD = 5;
+  private static readonly TEXT_REPEAT_THRESHOLD = 4;
+  private static readonly MAX_STEP_TEXTS = 15;
 
   private static getSameToolThreshold(toolName: string, failingCount: number): number {
-    const baseHigh = 5;
-    const baseNormal = 3;
+    const baseHigh = 8;
+    const baseNormal = 5;
     const isHigh = ToolCallLoopDetector.HIGH_TOLERANCE_TOOLS.has(toolName);
     let threshold = isHigh ? baseHigh : baseNormal;
-    if (failingCount >= 3) {
-      threshold = Math.min(threshold, isHigh ? 3 : 2);
+    if (failingCount >= 4) {
+      threshold = Math.min(threshold, isHigh ? 4 : 3);
     }
     return threshold;
   }
@@ -262,7 +269,7 @@ const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
 const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
 const MAX_STALL_MS = 4 * 60 * 1000;
-const MAX_SELF_CHECKS = 2; // max AI self-checks per request before auto-aborting
+const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
 export class Agent {
   readonly lifecycle: Lifecycle;
@@ -1115,11 +1122,11 @@ export class Agent {
                   const softLoop = loopDetector.detectSameTool();
                   if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
                     if (this.capabilities.permissions.isAutoApproveAll()) {
-                      // AI self-check instead of prompting user
                       if (selfCheckCount >= MAX_SELF_CHECKS) {
+                        // Hard limit: too many self-checks, genuinely stuck
                         logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
                         if (channel) {
-                          await channel.send(`⚠ ${softLoop.tool} called ${softLoop.count}x — max self-check budget exceeded. Stopping to prevent runaway.`, msg.channelId).catch(() => {});
+                          await channel.send(`⚠ ${softLoop.tool} repeated ${softLoop.count}x across ${selfCheckCount} checks — task appears stuck. Stopping.`, msg.channelId).catch(() => {});
                         }
                         loopAbortController.abort();
                         return;
@@ -1132,21 +1139,21 @@ export class Agent {
                         recentCalls,
                         taskDescription: msg.content.slice(0, 300),
                       });
-                      if (shouldContinue) {
-                        loopDetector.reset();
-                        loopWarningSent = false;
-                      } else {
-                        logger.info({ tool: softLoop.tool, count: softLoop.count }, 'AI self-check decided to stop');
+                      // Either way, reset and let it continue — the self-check count
+                      // tracks escalation. Productive work continues freely; stuck loops
+                      // hit MAX_SELF_CHECKS and abort on the next trigger.
+                      loopDetector.reset();
+                      loopWarningSent = false;
+                      if (!shouldContinue) {
+                        logger.info({ tool: softLoop.tool, count: softLoop.count, check: selfCheckCount }, 'AI self-check flagged possible loop — allowing to continue with monitoring');
                         if (channel) {
-                          await channel.send(`⚠ AI self-check: ${softLoop.tool} called ${softLoop.count}x — detected unproductive loop. Stopping.`, msg.channelId).catch(() => {});
+                          await channel.send(`ℹ Monitoring: ${softLoop.tool} repeated ${softLoop.count}x (check ${selfCheckCount}/${MAX_SELF_CHECKS}). Continuing but watching for further repetition.`, msg.channelId).catch(() => {});
                         }
-                        loopAbortController.abort();
-                        return;
                       }
                     } else {
                       loopWarningSent = true;
                       const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop.`,
+                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop. Continue?`,
                         msg.channelId,
                       ).catch(() => false);
                       if (shouldContinue) {
@@ -1318,11 +1325,11 @@ export class Agent {
                   const softLoop = loopDetector.detectSameTool();
                   if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
                     if (this.capabilities.permissions.isAutoApproveAll()) {
-                      // AI self-check instead of prompting user
                       if (selfCheckCount >= MAX_SELF_CHECKS) {
+                        // Hard limit: too many self-checks, genuinely stuck
                         logger.warn({ tool: softLoop.tool, count: softLoop.count, selfChecks: selfCheckCount }, 'Max self-checks reached — aborting');
                         if (channel) {
-                          await channel.send(`⚠ ${softLoop.tool} called ${softLoop.count}x — max self-check budget exceeded. Stopping to prevent runaway.`, msg.channelId).catch(() => {});
+                          await channel.send(`⚠ ${softLoop.tool} repeated ${softLoop.count}x across ${selfCheckCount} checks — task appears stuck. Stopping.`, msg.channelId).catch(() => {});
                         }
                         loopAbortController.abort();
                         return;
@@ -1335,21 +1342,21 @@ export class Agent {
                         recentCalls,
                         taskDescription: msg.content.slice(0, 300),
                       });
-                      if (shouldContinue) {
-                        loopDetector.reset();
-                        loopWarningSent = false;
-                      } else {
-                        logger.info({ tool: softLoop.tool, count: softLoop.count }, 'AI self-check decided to stop');
+                      // Either way, reset and let it continue — the self-check count
+                      // tracks escalation. Productive work continues freely; stuck loops
+                      // hit MAX_SELF_CHECKS and abort on the next trigger.
+                      loopDetector.reset();
+                      loopWarningSent = false;
+                      if (!shouldContinue) {
+                        logger.info({ tool: softLoop.tool, count: softLoop.count, check: selfCheckCount }, 'AI self-check flagged possible loop — allowing to continue with monitoring');
                         if (channel) {
-                          await channel.send(`⚠ AI self-check: ${softLoop.tool} called ${softLoop.count}x — detected unproductive loop. Stopping.`, msg.channelId).catch(() => {});
+                          await channel.send(`ℹ Monitoring: ${softLoop.tool} repeated ${softLoop.count}x (check ${selfCheckCount}/${MAX_SELF_CHECKS}). Continuing but watching for further repetition.`, msg.channelId).catch(() => {});
                         }
-                        loopAbortController.abort();
-                        return;
                       }
                     } else {
                       loopWarningSent = true;
                       const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop.`,
+                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop. Continue?`,
                         msg.channelId,
                       ).catch(() => false);
                       if (shouldContinue) {
@@ -1512,12 +1519,22 @@ export class Agent {
 
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
+        const stepCount = this.completedStepCount;
         if (streamedText && streamedText.trim()) {
           logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
         } else {
           logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
           await channel.send(finalText, msg.channelId, elapsed);
           this.markProgress();
+        }
+
+        // Send completion banner if there was meaningful work (multi-step)
+        if (stepCount > 0) {
+          if (channel instanceof CLIChannel) {
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount);
+          } else if (channel instanceof TelegramChannel) {
+            await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId);
+          }
         }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');

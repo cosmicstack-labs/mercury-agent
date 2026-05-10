@@ -291,6 +291,27 @@ export class CLIChannel extends BaseChannel {
     });
   }
 
+  sendCompletion(elapsedMs: number, stepCount: number): void {
+    const secs = Math.floor(elapsedMs / 1000);
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    const timeStr = mins > 0 ? `${mins}m ${remSecs}s` : `${secs}s`;
+    const stepsStr = stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? 's' : ''}` : '';
+    const parts = [stepsStr, timeStr].filter(Boolean).join(' · ');
+
+    const msg: ChatMessage = {
+      id: `done-${Date.now().toString(36)}`,
+      role: 'system',
+      content: `━━━ Task complete (${parts}) ━━━`,
+      timestamp: Date.now(),
+    };
+    this.update({
+      chatMessages: [...this.state.chatMessages, msg],
+      isThinking: false,
+      toolSteps: [],
+    });
+  }
+
   async sendFile(filePath: string, _targetId?: string): Promise<void> {
     const fs = await import('node:fs');
     const path = await import('node:path');

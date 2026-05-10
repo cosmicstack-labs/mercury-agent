@@ -1024,6 +1024,31 @@ export class TelegramChannel extends BaseChannel {
     this.deleteStatusMessage(targetId);
   }
 
+  async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string): Promise<void> {
+    const secs = Math.floor(elapsedMs / 1000);
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    const timeStr = mins > 0 ? `${mins}m ${remSecs}s` : `${secs}s`;
+    const stepsStr = stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? 's' : ''}` : '';
+    const parts = [stepsStr, timeStr].filter(Boolean).join(' · ');
+
+    const key = targetId || 'notification';
+    const history = this.stepHistory.get(key) || [];
+    const recentHistory = history.slice(-5);
+
+    const lines = [
+      `✅ **Task complete** (${parts})`,
+      '',
+      ...recentHistory.map(h => `  ✓ ${h}`),
+    ];
+    await this.updateStatusMessage(lines.join('\n'), targetId);
+    // Don't delete — leave the completion summary visible
+    this.stepCounters.delete(key);
+    this.stepHistory.delete(key);
+    this.statusText.delete(key);
+    this.statusMessageIds.delete(key);
+  }
+
   private isImageFile(ext: string): boolean {
     return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'].includes(ext);
   }
