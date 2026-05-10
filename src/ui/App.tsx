@@ -743,9 +743,8 @@ function StatusBarView({ state }: { state: TuiState }) {
   let subtitle: React.ReactNode;
   if (state.isThinking) {
     const activity = runningStep ? runningStep.label : 'Processing';
-    const stepCount = doneSteps > 0 ? `step ${doneSteps}` : '';
-    const parts = [stepCount, activity].filter(Boolean).join(' · ');
-    subtitle = <Text color="green">● {parts}</Text>;
+    const stepCount = doneSteps > 0 ? `step ${doneSteps + 1}` : 'step 1';
+    subtitle = <Text color="green">● {stepCount} · {activity}</Text>;
   } else {
     subtitle = <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>;
   }
@@ -1368,25 +1367,30 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
 }
 
 function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed' }) {
-  const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-1);
-  const runningCount = visible.filter((s) => s.status === 'running').length;
-  const doneCount = visible.filter((s) => s.status === 'done').length;
+  const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
+  const totalDone = steps.filter((s) => s.status === 'done').length;
+  const totalRunning = steps.filter((s) => s.status === 'running').length;
+  const hiddenCount = Math.max(0, steps.length - visible.length);
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
-      <Text color="gray">Activity · {viewMode === 'balanced' ? 'minimal' : 'detailed'} · {runningCount > 0 ? `${runningCount} running` : `${doneCount} completed`}</Text>
+      <Box>
+        <Text color="gray">Activity</Text>
+        <Text dimColor> · {totalDone} done{totalRunning > 0 ? `, ${totalRunning} running` : ''}</Text>
+        {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier steps hidden</Text>}
+      </Box>
       {visible.map((step) => (
         <Box key={step.id}>
           <Text>
             {step.status === 'running' ? '⏳' : step.status === 'done' ? '✅' : '❌'}
           </Text>
           <Text> </Text>
-          <Text dimColor>{step.label}</Text>
+          <Text dimColor={step.status === 'done'} color={step.status === 'running' ? 'cyan' : undefined} bold={step.status === 'running'}>{step.label}</Text>
           {step.status === 'running' && <Text color="yellow"> …</Text>}
           {step.status === 'done' && step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
           {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
         </Box>
       ))}
-      <Text dimColor>Ctrl+T toggles Minimal/Detailed (or use /view)</Text>
+      <Text dimColor>Ctrl+T toggles view · /progress for full history</Text>
     </Box>
   );
 }
@@ -1394,10 +1398,14 @@ function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'bala
 function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; steps: ToolStep[]; mode: AppMode }) {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
+  const [elapsed, setElapsed] = React.useState(0);
+  const startRef = React.useRef(Date.now());
 
   React.useEffect(() => {
+    startRef.current = Date.now();
     const timer = setInterval(() => {
       setFrame((v) => (v + 1) % frames.length);
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
     }, 80);
     return () => clearInterval(timer);
   }, []);
@@ -1405,12 +1413,17 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
   const spinner = frames[frame % frames.length];
   const runningStep = [...steps].reverse().find((s) => s.status === 'running');
   const doneSteps = steps.filter((s) => s.status === 'done');
-  const recentDone = doneSteps.slice(-3);
+  const totalSteps = steps.length;
 
   // Determine current action label
   const currentAction = runningStep
     ? runningStep.label
     : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
+
+  // Format elapsed time
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
@@ -1418,12 +1431,14 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
         <Text color="cyan">{spinner}</Text>
         <Text> </Text>
         <Text color="cyan" bold>{agentName}</Text>
-        <Text dimColor> · </Text>
-        <Text color="white">{currentAction}</Text>
+        <Text dimColor> · step {totalSteps} · {timeStr}</Text>
       </Box>
-      {recentDone.length > 0 && (
+      <Box marginLeft={4}>
+        <Text color="white" bold>{currentAction}</Text>
+      </Box>
+      {doneSteps.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>
-          {recentDone.map((step) => (
+          {doneSteps.slice(-3).map((step) => (
             <Box key={step.id}>
               <Text color="green">✓</Text>
               <Text dimColor> {step.label}</Text>

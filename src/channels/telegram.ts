@@ -40,6 +40,7 @@ export class TelegramChannel extends BaseChannel {
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
   private stepCounters = new Map<string, number>();
+  private stepHistory = new Map<string, string[]>();
   private statusText = new Map<string, string>();
 
   constructor(private config: MercuryConfig) {
@@ -352,19 +353,43 @@ export class TelegramChannel extends BaseChannel {
 
   async sendToolFeedback(toolName: string, args: Record<string, any>, targetId?: string): Promise<void> {
     const key = targetId || 'notification';
-    this.stepCounters.set(key, (this.stepCounters.get(key) || 0) + 1);
-    const step = this.stepCounters.get(key)!;
+    const step = (this.stepCounters.get(key) || 0) + 1;
+    this.stepCounters.set(key, step);
     const label = formatToolStep(toolName, args);
-    await this.updateStatusMessage(`**Step ${step}.** ${label}`, targetId);
+
+    // Build a rolling progress view: completed steps + current
+    const history = this.stepHistory.get(key) || [];
+    // Keep last 5 completed steps visible
+    const recentHistory = history.slice(-5);
+    const lines = [
+      `⚙️ **Mercury working** (step ${step})`,
+      '',
+      ...recentHistory.map(h => `✅ ${h}`),
+      `⏳ ${label}…`,
+    ];
+    await this.updateStatusMessage(lines.join('\n'), targetId);
   }
 
   async sendStepDone(toolName: string, result: unknown, targetId?: string): Promise<void> {
     const key = targetId || 'notification';
     const step = this.stepCounters.get(key) || 0;
     const summary = formatToolResult(toolName, result);
-    const current = this.statusText.get(key) || '';
-    const line = summary ? `✓ ${summary}` : '✓ done';
-    await this.updateStatusMessage(`${current}\n${line}`, targetId);
+    const label = formatToolStep(toolName, {} as any);
+    const doneLine = summary ? `${label} · ${summary}` : label;
+
+    // Add to history
+    const history = this.stepHistory.get(key) || [];
+    history.push(doneLine);
+    this.stepHistory.set(key, history);
+
+    // Update progress view
+    const recentHistory = history.slice(-5);
+    const lines = [
+      `⚙️ **Mercury working** (${step} steps done)`,
+      '',
+      ...recentHistory.map(h => `✅ ${h}`),
+    ];
+    await this.updateStatusMessage(lines.join('\n'), targetId);
   }
 
   async typing(targetId?: string): Promise<void> {
@@ -994,6 +1019,7 @@ export class TelegramChannel extends BaseChannel {
   resetStepCounter(targetId?: string): void {
     const key = targetId || 'notification';
     this.stepCounters.delete(key);
+    this.stepHistory.delete(key);
     this.statusText.delete(key);
     this.deleteStatusMessage(targetId);
   }
