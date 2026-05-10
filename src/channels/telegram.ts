@@ -42,6 +42,8 @@ export class TelegramChannel extends BaseChannel {
   private stepCounters = new Map<string, number>();
   private stepHistory = new Map<string, string[]>();
   private statusText = new Map<string, string>();
+  /** Track all ephemeral message IDs (permissions, loops, status) per chat for cleanup */
+  private ephemeralMessageIds = new Map<string, number[]>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -499,27 +501,41 @@ export class TelegramChannel extends BaseChannel {
       .text('Deny', `${id}:no`);
 
     const html = mdToTelegram(prompt);
+    let sentMsgId: number | undefined;
 
     try {
-      await this.bot.api.sendMessage(chatId, html, {
+      const msg = await this.bot.api.sendMessage(chatId, html, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     } catch {
-      await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
+      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     }
 
+    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+
     return new Promise((resolve) => {
-      this.pendingApprovals.set(`${id}:yes`, () => resolve('yes'));
-      this.pendingApprovals.set(`${id}:always`, () => resolve('always'));
-      this.pendingApprovals.set(`${id}:no`, () => resolve('no'));
+      const cleanup = (result: string) => {
+        this.pendingApprovals.delete(`${id}:yes`);
+        this.pendingApprovals.delete(`${id}:always`);
+        this.pendingApprovals.delete(`${id}:no`);
+        // Delete the permission card immediately
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(result);
+      };
+      this.pendingApprovals.set(`${id}:yes`, () => cleanup('yes'));
+      this.pendingApprovals.set(`${id}:always`, () => cleanup('always'));
+      this.pendingApprovals.set(`${id}:no`, () => cleanup('no'));
 
       setTimeout(() => {
         this.pendingApprovals.delete(`${id}:yes`);
         this.pendingApprovals.delete(`${id}:always`);
         this.pendingApprovals.delete(`${id}:no`);
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve('no');
       }, 120_000);
     });
@@ -535,24 +551,36 @@ export class TelegramChannel extends BaseChannel {
       .text('Continue', `${id}:yes`)
       .text('Stop', `${id}:no`);
 
+    let sentMsgId: number | undefined;
     try {
-      await this.bot.api.sendMessage(chatId, mdToTelegram(question), {
+      const msg = await this.bot.api.sendMessage(chatId, mdToTelegram(question), {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     } catch {
-      await this.bot.api.sendMessage(chatId, question, {
+      const msg = await this.bot.api.sendMessage(chatId, question, {
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     }
 
+    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+
     return new Promise((resolve) => {
-      this.pendingApprovals.set(`${id}:yes`, () => resolve(true));
-      this.pendingApprovals.set(`${id}:no`, () => resolve(false));
+      const cleanup = (result: boolean) => {
+        this.pendingApprovals.delete(`${id}:yes`);
+        this.pendingApprovals.delete(`${id}:no`);
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(result);
+      };
+      this.pendingApprovals.set(`${id}:yes`, () => cleanup(true));
+      this.pendingApprovals.set(`${id}:no`, () => cleanup(false));
 
       setTimeout(() => {
         this.pendingApprovals.delete(`${id}:yes`);
         this.pendingApprovals.delete(`${id}:no`);
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve(false);
       }, 120_000);
     });
@@ -570,24 +598,36 @@ export class TelegramChannel extends BaseChannel {
 
     const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
 
+    let sentMsgId: number | undefined;
     try {
-      await this.bot.api.sendMessage(chatId, html, {
+      const msg = await this.bot.api.sendMessage(chatId, html, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     } catch {
-      await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
+      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
         reply_markup: keyboard,
       });
+      sentMsgId = msg.message_id;
     }
 
+    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+
     return new Promise((resolve) => {
-      this.pendingApprovals.set(`${id}:ask-me`, () => resolve('ask-me'));
-      this.pendingApprovals.set(`${id}:allow-all`, () => resolve('allow-all'));
+      const cleanup = (result: PermissionMode) => {
+        this.pendingApprovals.delete(`${id}:ask-me`);
+        this.pendingApprovals.delete(`${id}:allow-all`);
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(result);
+      };
+      this.pendingApprovals.set(`${id}:ask-me`, () => cleanup('ask-me'));
+      this.pendingApprovals.set(`${id}:allow-all`, () => cleanup('allow-all'));
 
       setTimeout(() => {
         this.pendingApprovals.delete(`${id}:ask-me`);
         this.pendingApprovals.delete(`${id}:allow-all`);
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve('ask-me');
       }, 120_000);
     });
@@ -1016,6 +1056,44 @@ export class TelegramChannel extends BaseChannel {
     }
   }
 
+  /** Track a message ID as ephemeral (will be deleted on task completion) */
+  private trackEphemeral(targetId: string | undefined, messageId: number): void {
+    const key = targetId || 'notification';
+    const ids = this.ephemeralMessageIds.get(key) || [];
+    ids.push(messageId);
+    this.ephemeralMessageIds.set(key, ids);
+  }
+
+  /** Delete a specific ephemeral message immediately (e.g., after permission response) */
+  private async deleteEphemeralMessage(targetId: string | undefined, messageId: number): Promise<void> {
+    if (!this.bot) return;
+    const chatIds = this.resolveTargetChatIds(targetId);
+    for (const chatId of chatIds) {
+      await this.bot.api.deleteMessage(chatId, messageId).catch(() => {});
+    }
+    // Remove from tracking
+    const key = targetId || 'notification';
+    const ids = this.ephemeralMessageIds.get(key);
+    if (ids) {
+      const idx = ids.indexOf(messageId);
+      if (idx !== -1) ids.splice(idx, 1);
+    }
+  }
+
+  /** Clean up all ephemeral messages for a chat (called on task completion) */
+  async cleanupEphemeralMessages(targetId?: string): Promise<void> {
+    if (!this.bot) return;
+    const key = targetId || 'notification';
+    const ids = this.ephemeralMessageIds.get(key) || [];
+    const chatIds = this.resolveTargetChatIds(targetId);
+    for (const chatId of chatIds) {
+      for (const msgId of ids) {
+        await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
+      }
+    }
+    this.ephemeralMessageIds.delete(key);
+  }
+
   resetStepCounter(targetId?: string): void {
     const key = targetId || 'notification';
     this.stepCounters.delete(key);
@@ -1055,7 +1133,21 @@ export class TelegramChannel extends BaseChannel {
       lines.push(...recentHistory.map(h => `  ✓ ${h}`));
     }
 
-    await this.updateStatusMessage(lines.join('\n'), targetId);
+    // Clean up: delete the progress status card and all ephemeral messages
+    await this.deleteStatusMessage(targetId);
+    await this.cleanupEphemeralMessages(targetId);
+
+    // Send a fresh completion card (not editing the old status message)
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const html = mdToTelegram(lines.join('\n'));
+    for (const chatId of chatIds) {
+      try {
+        await this.bot?.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+      } catch {
+        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
+      }
+    }
+
     this.stepCounters.delete(key);
     this.stepHistory.delete(key);
     this.statusText.delete(key);
