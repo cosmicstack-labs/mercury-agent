@@ -1337,6 +1337,7 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   if (messages.length === 0) return null;
   const visible = messages.slice(-50);
   const cache = React.useRef<Map<string, string>>(new Map());
+  const wasStreaming = React.useRef<Set<string>>(new Set());
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1}>
       {visible.map((msg) => {
@@ -1380,6 +1381,12 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
         if (msg.streaming) {
           rendered = renderMarkdown(msg.content);
           cache.current.set(msg.id, rendered);
+          wasStreaming.current.add(msg.id);
+        } else if (wasStreaming.current.has(msg.id)) {
+          // Streaming just ended — re-render with final complete content
+          rendered = renderMarkdown(msg.content);
+          cache.current.set(msg.id, rendered);
+          wasStreaming.current.delete(msg.id);
         } else {
           rendered = cache.current.get(msg.id) ?? renderMarkdown(msg.content);
           cache.current.set(msg.id, rendered);
