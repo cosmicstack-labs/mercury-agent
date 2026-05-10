@@ -395,12 +395,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
 
     if (isEnter) {
-      // Shift+Enter or Alt+Enter → insert newline instead of submitting
-      if ((key as any).shift || key.meta) {
-        setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
-        setCursorPos((p) => p + 1);
-        return;
-      }
       const trimmed = input.trim();
       if (trimmed) {
         onInput(trimmed);
@@ -525,6 +519,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
     if (key.ctrl && (ch === 'b' || ch === 'B') && !state.permissionPrompt) {
       onInput(state.isThinking ? '/bg current' : '/bg list');
+      return;
+    }
+
+    // Ctrl+N → insert newline (multi-line input)
+    if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
+      setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
+      setCursorPos((p) => p + 1);
       return;
     }
 
@@ -1610,7 +1611,7 @@ function InputBox({
         ))}
       </Box>
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Shift+Enter newline'}</Text>
+        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
       </Box>
     </Box>
   );
