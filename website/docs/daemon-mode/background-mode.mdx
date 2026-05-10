@@ -61,8 +61,10 @@ mercury status
 
 Shows whether the daemon is running, its PID, and the log file path.
 
-:::info Crash recovery
+:::info[Crash recovery]
+
 Background mode includes a watchdog. If Mercury crashes, it restarts automatically with exponential backoff (1s, 1.25s, 1.56s...). After 10 crashes within 60 seconds, it exits to prevent crash loops. Stale PID files are auto-cleaned on startup to prevent "already running" false positives.
+
 :::
 
 ## Background Tasks and Workers

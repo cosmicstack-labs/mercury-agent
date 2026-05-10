@@ -5,8 +5,10 @@ title: Spotify Integration
 
 Mercury connects to your Spotify account natively — control playback, search music, manage playlists, and DJ on your devices through natural conversation. No browser tabs, no app switching. Just say "play some chill music" and Mercury handles the rest.
 
-:::info Spotify Premium
+:::info[Spotify Premium]
+
 Read-only features (search, top tracks, playlists, now playing) work on **free** Spotify accounts. **Playback control** (play, pause, skip, volume, shuffle, repeat, queue) requires a **Spotify Premium** subscription — this is a Spotify API limitation, not a Mercury restriction.
+
 :::
 
 ## Setup
@@ -23,8 +25,10 @@ Read-only features (search, top tracks, playlists, now playing) work on **free**
 5. Click **Save**
 6. On the app's settings page, copy the **Client ID** and **Client Secret**
 
-:::tip Development Mode
+:::tip[Development Mode]
+
 When your Spotify Developer app is in **development mode** (the default), you can grant access to up to **25 users**. Go to your app's settings → **User Management** → add the Spotify email addresses of anyone who should be able to connect. This is perfect for personal use or small teams. If you need more than 25 users, you'll need to request **extended quota** from Spotify.
+
 :::
 
 ### Step 2: Configure Mercury
@@ -210,8 +214,10 @@ This clears all tokens and account info. Run `/spotify auth` to reconnect later.
 
 ## Security
 
-:::warning Client credentials
+:::warning[Client credentials]
+
 Your Spotify Client ID and Client Secret are stored in `~/.mercury/mercury.yaml`. They are only used to authenticate with Spotify's API from your machine — never shared externally. Treat this file like any other credential.
+
 :::
 
 Your access and refresh tokens are also stored locally. Mercury never sends them anywhere except Spotify's API endpoints.

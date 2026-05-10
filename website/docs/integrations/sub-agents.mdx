@@ -63,8 +63,10 @@ Mercury: I've delegated both tasks to parallel agents. Agent a1 is building the 
 | `/stop` | Full stop: halt agents, clear queue, release file locks, clear task board |
 | `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
-:::tip `/halt` vs `/stop` vs `/reset`
+:::tip[`/halt` vs `/stop` vs `/reset`]
+
 **`/halt`** stops all agents but preserves conversation context and file locks. **`/stop`** goes further — it also releases file locks and clears the task board. **`/reset`** does everything `/stop` does plus clears the conversation context (requires confirmation).
+
 :::
 
 Slash commands like `/agents`, `/halt`, `/stop`, `/spotify`, and `/code` work **even while the main agent is busy** — they're processed immediately on a fast path.

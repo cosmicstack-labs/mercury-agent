@@ -31,10 +31,14 @@ This is a session-level switch for the running process. Use `mercury doctor` to 
 
 Run `mercury doctor` and enter API keys for the providers you want to use. You can also set environment variables directly or edit `~/.mercury/mercury.yaml`.
 
-:::tip Environment variables
+:::tip[Environment variables]
+
 Each provider has env vars for its API key, base URL, and model. For example, DeepSeek uses `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`. Ollama Local requires no API key — just set `OLLAMA_LOCAL_ENABLED=true` and `OLLAMA_LOCAL_MODEL` to your preferred local model.
+
 :::
 
-:::warning More providers coming
+:::warning[More providers coming]
+
 Google Gemini, Mistral, and other providers are on the roadmap. Mercury's OpenAI-compatible provider architecture means you can often configure additional providers by setting a custom base URL and API key.
+
 :::

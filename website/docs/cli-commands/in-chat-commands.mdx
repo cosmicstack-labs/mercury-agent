@@ -105,8 +105,10 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/stop` | Stop all agents, clear queue, release file locks, clear task board |
 | `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
 
-:::tip Fast-path commands
+:::tip[Fast-path commands]
+
 `/agents`, `/halt`, `/stop`, `/progress`, `/spotify`, `/code`, `/memory`, and `/bg` all work **even while Mercury is busy processing a task**. They're processed immediately without waiting for the current task to finish.
+
 :::
 
 ## Progress View (CLI Only)
@@ -173,6 +175,8 @@ When you type `/` in the CLI, an autocomplete popup appears with matching comman
 | `Ctrl+U` / `Ctrl+D` | Scroll up/down by 8-10 lines |
 | `PageUp` / `PageDown` | Scroll by 15 lines |
 
-:::info Telegram pairing and access
+:::info[Telegram pairing and access]
+
 Telegram stays private 1:1 only. The first user sends `/start`, receives a pairing code in Telegram, and you approve that code from the CLI during setup. Later Telegram users also send `/start`, appear as pending requests, and can then be approved or rejected from the CLI `/telegram` menu.
+
 :::

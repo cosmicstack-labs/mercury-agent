@@ -9,12 +9,16 @@ Mercury connects to Telegram via a bot token, providing a mobile-first interface
 
 Mercury uses an **organization access model** with admins and members. The first user becomes the admin by completing a pairing-code flow during setup. Additional users request access by sending `/start`, which admins can approve or reject.
 
-:::info First-time pairing
+:::info[First-time pairing]
+
 When no admins exist yet, sending `/start` creates a **pairing code** that must be entered in the CLI to complete setup. This ensures only the legitimate owner can gain initial access. Once an admin exists, new users send `/start` to create a pending request that admins can approve or reject.
+
 :::
 
-:::warning Private chats only
+:::warning[Private chats only]
+
 Mercury only works in private (one-to-one) chats. Messages in groups or channels are always ignored.
+
 :::
 
 ### Roles
@@ -59,8 +63,10 @@ Mercury registers 15 commands in Telegram's bot menu for quick access:
 | `/spotify` | Spotify playback controls |
 | `/unpair` | Reset all Telegram access (admin only) |
 
-:::tip Telegram-specific help
+:::tip[Telegram-specific help]
+
 Running `/help` on Telegram shows a clean, Telegram-formatted command reference with only Telegram-relevant commands — no CLI-only features like workspace IDE or progress views.
+
 :::
 
 ## Real-Time Task Progress

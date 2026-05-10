@@ -621,7 +621,7 @@ export default function LandingPage(): React.ReactElement {
             </div>
             <p className="lp-cta-sub">60 seconds to your own AI agent.</p>
             <div className="lp-cta-links">
-              <Link to="/docs/getting-started/installation">Documentation</Link>
+              <Link to="/docs">Documentation</Link>
               <a href="https://github.com/cosmicstack-labs/mercury-agent" target="_blank" rel="noopener">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues" target="_blank" rel="noopener">Report an Issue</a>
             </div>
