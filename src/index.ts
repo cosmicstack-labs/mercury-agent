@@ -109,6 +109,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'deepseek', label: 'DeepSeek' },
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
+  { key: 'githubCopilot', label: 'GitHub Copilot' },
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
@@ -118,12 +119,16 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
-  return PROVIDER_OPTIONS
-    .map((option) => option.key)
-    .filter((key) => isProviderConfigured(config.providers[key]));
+  // Include all selectable providers plus chatgptWeb (which is a sub-option of OpenAI)
+  const allProviderKeys: ProviderName[] = [
+    ...PROVIDER_OPTIONS.map((option) => option.key),
+    'chatgptWeb',
+  ];
+  return allProviderKeys.filter((key) => isProviderConfigured(config.providers[key]));
 }
 
 function getProviderLabel(name: ProviderName): string {
+  if (name === 'chatgptWeb') return 'OpenAI (ChatGPT Plus/Pro)';
   return PROVIDER_OPTIONS.find((option) => option.key === name)?.label || name;
 }
 
@@ -696,20 +701,97 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       }
 
       if (provider === 'openai') {
-        const mask = isReconfig && config.providers.openai.apiKey ? ` [${maskKey(config.providers.openai.apiKey)}]` : '';
-        const result = await promptApiKeyWithModelSelection(
-          config,
-          'openai',
-          'OpenAI',
-          chalk.white(`  OpenAI API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
-          isReconfig,
+        // Ask user which OpenAI auth method to use
+        const authMethod = await selectWithArrowKeys(
+          'OpenAI Authentication',
+          [
+            { value: 'apikey', label: 'API Key (platform.openai.com)' },
+            { value: 'oauth', label: 'ChatGPT Plus/Pro (OAuth — use your subscription)' },
+            { value: 'skip', label: 'Skip OpenAI' },
+          ],
         );
-        if (!result.skipped && result.apiKey && result.model) {
-          config.providers.openai.apiKey = result.apiKey;
-          config.providers.openai.model = result.model;
-          config.providers.openai.enabled = true;
+
+        if (authMethod === 'skip' || !authMethod) {
+          continue;
         }
-        continue;
+
+        if (authMethod === 'apikey') {
+          const mask = isReconfig && config.providers.openai.apiKey ? ` [${maskKey(config.providers.openai.apiKey)}]` : '';
+          const result = await promptApiKeyWithModelSelection(
+            config,
+            'openai',
+            'OpenAI',
+            chalk.white(`  OpenAI API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+            isReconfig,
+          );
+          if (!result.skipped && result.apiKey && result.model) {
+            config.providers.openai.apiKey = result.apiKey;
+            config.providers.openai.model = result.model;
+            config.providers.openai.enabled = true;
+          }
+          continue;
+        }
+
+        if (authMethod === 'oauth') {
+          // ChatGPT Plus/Pro OAuth flow
+          const { loadChatGPTSession, isChatGPTSessionValid } = await import('./auth/chatgpt-session.js');
+          const existing = loadChatGPTSession();
+          const alreadyLoggedIn = existing && isChatGPTSessionValid(existing);
+
+          let session = existing;
+
+          if (alreadyLoggedIn) {
+            console.log(chalk.green('  ✓ ChatGPT Plus/Pro already authenticated'));
+            if (existing!.userEmail) console.log(chalk.dim(`    Account: ${existing!.userEmail}`));
+            if (existing!.plan) console.log(chalk.dim(`    Plan: ${existing!.plan}`));
+            const reauth = await ask(chalk.white('  Re-authenticate? [y/N]: '));
+            if (reauth.toLowerCase() !== 'y') {
+              session = existing;
+            } else {
+              session = null;
+            }
+          }
+
+          if (!session || !isChatGPTSessionValid(session)) {
+            console.log(chalk.dim('  Uses your ChatGPT Plus/Pro subscription via OAuth — no API billing.'));
+            console.log(chalk.dim('  A browser window will open for you to authorize Mercury.'));
+
+            try {
+              const { loginChatGPT } = await import('./auth/chatgpt-auth.js');
+              session = await loginChatGPT();
+            } catch (err: any) {
+              console.log(chalk.red(`  ✗ ChatGPT OAuth login failed: ${err.message || err}`));
+              continue;
+            }
+          }
+
+          if (session && session.accessToken) {
+            try {
+              const { fetchChatGPTModels } = await import('./auth/chatgpt-models.js');
+              console.log(chalk.dim('  Fetching available models...'));
+              const catalog = await fetchChatGPTModels(session.accessToken, session.accountId);
+              const model = await chooseProviderModel(
+                'ChatGPT Plus/Pro',
+                catalog.recommendedModel,
+                catalog.models,
+              );
+              config.providers.chatgptWeb.apiKey = '';
+              config.providers.chatgptWeb.model = model;
+              config.providers.chatgptWeb.enabled = true;
+              console.log(chalk.green(`  ✓ OpenAI (ChatGPT Plus/Pro) configured with model: ${model}`));
+            } catch (err: any) {
+              console.log(chalk.yellow(`  Could not fetch models: ${err.message || err}`));
+              const defaultModel = 'gpt-5.4-mini';
+              const manualModel = await ask(chalk.white(`  Enter model name [Enter for ${defaultModel}]: `));
+              const model = manualModel || defaultModel;
+              config.providers.chatgptWeb.apiKey = '';
+              config.providers.chatgptWeb.model = model;
+              config.providers.chatgptWeb.enabled = true;
+              console.log(chalk.green(`  ✓ OpenAI (ChatGPT Plus/Pro) configured with model: ${model}`));
+            }
+          }
+          continue;
+        }
       }
 
       if (provider === 'anthropic') {
@@ -817,6 +899,71 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.mimoTokenPlan.model = result.model;
           config.providers.mimoTokenPlan.enabled = true;
         }
+        continue;
+      }
+
+      if (provider === 'githubCopilot') {
+        const { loadGitHubSession, isGitHubSessionValid } = await import('./auth/github-session.js');
+        const existing = loadGitHubSession();
+        const alreadyLoggedIn = existing && isGitHubSessionValid(existing);
+
+        let session = existing;
+
+        if (alreadyLoggedIn) {
+          console.log(chalk.green('  ✓ GitHub Copilot already authenticated'));
+          if (existing!.userLogin) console.log(chalk.dim(`    Account: @${existing!.userLogin}`));
+          const reauth = await ask(chalk.white('  Re-authenticate? [y/N]: '));
+          if (reauth.toLowerCase() !== 'y') {
+            session = existing;
+          } else {
+            session = null;
+          }
+        }
+
+        if (!session || !isGitHubSessionValid(session)) {
+          console.log(chalk.dim('  GitHub Copilot uses your GitHub account via OAuth.'));
+          console.log(chalk.dim('  A browser window will open for you to authorize Mercury.'));
+          const proceed = await ask(chalk.white(`  Set up GitHub Copilot?${isReconfig ? '' : ' (Enter to skip)'} [y/N]: `));
+
+          if (proceed.toLowerCase() !== 'y') {
+            continue;
+          }
+
+          try {
+            const { loginGitHub } = await import('./auth/github-auth.js');
+            session = await loginGitHub();
+          } catch (err: any) {
+            console.log(chalk.red(`  ✗ GitHub OAuth login failed: ${err.message || err}`));
+            continue;
+          }
+        }
+
+        if (session && session.accessToken) {
+          try {
+            const { fetchGitHubModels } = await import('./auth/github-models.js');
+            console.log(chalk.dim('  Fetching available models...'));
+            const catalog = await fetchGitHubModels(session.accessToken);
+            const model = await chooseProviderModel(
+              'GitHub Copilot',
+              catalog.recommendedModel,
+              catalog.models,
+            );
+            config.providers.githubCopilot.apiKey = '';
+            config.providers.githubCopilot.model = model;
+            config.providers.githubCopilot.enabled = true;
+            console.log(chalk.green(`  ✓ GitHub Copilot configured with model: ${model}`));
+          } catch (err: any) {
+            console.log(chalk.yellow(`  Could not fetch models: ${err.message || err}`));
+            const defaultModel = 'openai/gpt-4.1';
+            const manualModel = await ask(chalk.white(`  Enter model name [Enter for ${defaultModel}]: `));
+            const model = manualModel || defaultModel;
+            config.providers.githubCopilot.apiKey = '';
+            config.providers.githubCopilot.model = model;
+            config.providers.githubCopilot.enabled = true;
+            console.log(chalk.green(`  ✓ GitHub Copilot configured with model: ${model}`));
+          }
+        }
+        continue;
       }
     }
 
