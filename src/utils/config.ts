@@ -133,6 +133,7 @@ export interface MercuryConfig {
     product: string;
   };
   web: {
+    enabled: boolean;
     port: number;
   };
 }
@@ -295,6 +296,7 @@ export function getDefaultConfig(): MercuryConfig {
       product: '',
     },
     web: {
+      enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
     },
   };

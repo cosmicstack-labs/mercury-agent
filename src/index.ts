@@ -1146,46 +1146,64 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   hr();
-  saveConfig(config);
 
   console.log('');
   console.log(chalk.bold.white('  Web Dashboard'));
+  console.log(chalk.dim('  Mercury includes an optional web interface for managing your agent,'));
+  console.log(chalk.dim('  chatting, viewing memory, and controlling settings from your browser.'));
+  console.log(chalk.dim('  You can enable or disable it at any time.'));
   console.log('');
 
-  const portPrompt = isReconfig
-    ? chalk.white(`  Web dashboard port [${config.web.port}]: `)
-    : chalk.white(`  Web dashboard port [${config.web.port}]: `);
-  const portStr = await ask(portPrompt);
-  if (portStr.trim()) {
-    const portNum = parseInt(portStr.trim(), 10);
-    if (portNum > 0 && portNum < 65536) {
-      config.web.port = portNum;
-    } else {
-      console.log(chalk.yellow('  Invalid port number. Keeping default.'));
-    }
+  const webEnabledDefault = config.web.enabled ? 'Y/n' : 'y/N';
+  const webEnabledCurrent = config.web.enabled ? 'enabled' : 'disabled';
+  const webEnableStr = await ask(chalk.white(`  Enable Mercury Web? (${webEnabledDefault}) [${webEnabledCurrent}]: `));
+  if (webEnableStr.trim()) {
+    config.web.enabled = webEnableStr.trim().toLowerCase().startsWith('y');
+  } else if (!isReconfig) {
+    // First run: default to enabled (yes)
+    config.web.enabled = true;
   }
-  console.log(chalk.dim(`  Mercury runs a web dashboard at http://localhost:${config.web.port}`));
 
-  if (isWebAuthInitialized()) {
-    console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
-    const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
-    if (webPassword.trim()) {
-      setWebPassword(webPassword.trim());
-      console.log(chalk.green('  ✓ Web dashboard password updated.'));
+  if (config.web.enabled) {
+    const portPrompt = isReconfig
+      ? chalk.white(`  Web dashboard port [${config.web.port}]: `)
+      : chalk.white(`  Web dashboard port [${config.web.port}]: `);
+    const portStr = await ask(portPrompt);
+    if (portStr.trim()) {
+      const portNum = parseInt(portStr.trim(), 10);
+      if (portNum > 0 && portNum < 65536) {
+        config.web.port = portNum;
+      } else {
+        console.log(chalk.yellow('  Invalid port number. Keeping default.'));
+      }
+    }
+    console.log(chalk.dim(`  Mercury Web will be available at http://localhost:${config.web.port}`));
+
+    if (isWebAuthInitialized()) {
+      console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
+      const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
+      if (webPassword.trim()) {
+        setWebPassword(webPassword.trim());
+        console.log(chalk.green('  ✓ Web dashboard password updated.'));
+      } else {
+        console.log(chalk.dim('  Password unchanged.'));
+      }
     } else {
-      console.log(chalk.dim('  Password unchanged.'));
+      console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+      console.log('');
+      const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
+      if (webPassword.trim()) {
+        setWebPassword(webPassword.trim());
+        console.log(chalk.green('  ✓ Web dashboard password set.'));
+      } else {
+        console.log(chalk.dim('  Using default password: Mercury@123'));
+      }
     }
   } else {
-    console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
-    console.log('');
-    const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
-    if (webPassword.trim()) {
-      setWebPassword(webPassword.trim());
-      console.log(chalk.green('  ✓ Web dashboard password set.'));
-    } else {
-      console.log(chalk.dim('  Using default password: Mercury@123'));
-    }
+    console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
   }
+
+  saveConfig(config);
 
   const home = getMercuryHome();
   console.log('');
@@ -1526,17 +1544,21 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));
     console.log(chalk.dim('  Ctrl+C to exit · /help for commands'));
 
-    startWebServer();
-    updateWebStatus({
-      running: true,
-      pid: process.pid,
-      state: 'idle',
-      defaultProvider: config.providers.default,
-      providers: Object.entries(config.providers)
-        .filter(([k]) => k !== 'default')
-        .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
-      tokenBudget: config.tokens.dailyBudget,
-    });
+    if (config.web.enabled) {
+      startWebServer();
+      updateWebStatus({
+        running: true,
+        pid: process.pid,
+        state: 'idle',
+        defaultProvider: config.providers.default,
+        providers: Object.entries(config.providers)
+          .filter(([k]) => k !== 'default')
+          .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+        tokenBudget: config.tokens.dailyBudget,
+      });
+    } else {
+      console.log(chalk.dim(`  Web: disabled · enable with mercury doctor or set web.enabled: true`));
+    }
 
     // Keep CLI permission mode prompt, but do it after web server is live.
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
@@ -1546,7 +1568,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   } else {
     await channels.startAll();
-    logger.info({ channels: activeCh, tools: toolNames }, 'Mercury is live (daemon mode)');
+    if (config.web.enabled) {
+      startWebServer();
+      updateWebStatus({
+        running: true,
+        pid: process.pid,
+        state: 'idle',
+        defaultProvider: config.providers.default,
+        providers: Object.entries(config.providers)
+          .filter(([k]) => k !== 'default')
+          .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+        tokenBudget: config.tokens.dailyBudget,
+      });
+    }
+    logger.info({ channels: activeCh, tools: toolNames, web: config.web.enabled }, 'Mercury is live (daemon mode)');
   }
 
   const shutdown = async () => {
@@ -1725,6 +1760,7 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
     const spotify = config.spotify;
