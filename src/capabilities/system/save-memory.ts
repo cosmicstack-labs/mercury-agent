@@ -1,12 +1,12 @@
-import { tool } from 'ai';
+import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
-import type { UserMemoryStore } from '../../memory/user-memory.js';
+import type { UserMemoryStore, UserMemoryCandidate } from '../../memory/user-memory.js';
 
 export function createSaveMemoryTool(userMemory: UserMemoryStore) {
   return tool({
     description:
       'Explicitly save a fact, preference, goal, or other durable knowledge to your Second Brain (SQLite-backed long-term memory). Use this when the user directly asks you to remember/save/note something, or when you decide a specific piece of information is important enough to persist. Do NOT ask the user for confirmation — just save it.',
-    parameters: z.object({
+    inputSchema: zodSchema(z.object({
       summary: z.string().min(12).max(220).describe('Concise fact to remember, 12-220 characters'),
       type: z.enum([
         'identity',
@@ -21,15 +21,15 @@ export function createSaveMemoryTool(userMemory: UserMemoryStore) {
       ]).describe('Memory type'),
       detail: z.string().optional().describe('Optional longer explanation or context'),
       importance: z.number().min(0).max(1).default(0.8).describe('How important this fact is, 0.0-1.0'),
-    }),
-    execute: async ({ summary, type, detail, importance }) => {
+    })),
+    execute: async ({ summary, type, detail, importance }: { summary: string; type: string; detail?: string; importance: number }) => {
       if (userMemory.isLearningPaused()) {
         return 'Learning is currently paused. Resume with /memory learn to enable saving.';
       }
 
-      const candidates = [
+      const candidates: UserMemoryCandidate[] = [
         {
-          type,
+          type: type as any,
           summary: summary.trim(),
           detail: detail?.trim(),
           evidenceKind: 'direct' as const,
