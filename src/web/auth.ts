@@ -118,6 +118,38 @@ interface SessionEntry {
 }
 
 const sessions: Map<string, SessionEntry> = new Map();
+const SESSION_FILE = 'web-sessions.json';
+
+function getSessionFilePath(): string {
+  return join(getMercuryHome(), SESSION_FILE);
+}
+
+function persistSessions(): void {
+  try {
+    const dir = getMercuryHome();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const entries = Object.fromEntries(sessions);
+    writeFileSync(getSessionFilePath(), JSON.stringify(entries, null, 2), 'utf-8');
+  } catch {}
+}
+
+function restoreSessions(): void {
+  try {
+    const path = getSessionFilePath();
+    if (!existsSync(path)) return;
+    const raw = readFileSync(path, 'utf-8');
+    const data = JSON.parse(raw) as Record<string, SessionEntry>;
+    const now = Date.now();
+    for (const [key, entry] of Object.entries(data)) {
+      if (entry.expiresAt > now) {
+        sessions.set(key, entry);
+      }
+    }
+  } catch {}
+}
+
+// Restore sessions on module load
+restoreSessions();
 
 export function createSession(): string {
   const token = createSessionToken();
@@ -125,6 +157,7 @@ export function createSession(): string {
     token,
     expiresAt: Date.now() + SESSION_MAX_AGE * 1000,
   });
+  persistSessions();
   return token;
 }
 
@@ -140,6 +173,7 @@ export function validateSession(token: string): boolean {
 
 export function destroySession(token: string): void {
   sessions.delete(token);
+  persistSessions();
 }
 
 export function getSessionCookieName(): string {

@@ -1350,3 +1350,199 @@ function chatScreen() {
     },
   };
 }
+
+// ─── Tasks Page ───────────────────────────────────────────────
+function tasksPage() {
+  return {
+    agents: [],
+    agentsAvailable: false,
+    bgTasks: [],
+    bgAvailable: false,
+    selectedTask: null,
+    pollInterval: null,
+
+    async init() {
+      await this.refresh();
+      this.pollInterval = setInterval(() => this.refresh(), 5000);
+    },
+
+    async refresh() {
+      try {
+        const [agentsRes, bgRes] = await Promise.all([
+          fetch('/api/agents'),
+          fetch('/api/bg'),
+        ]);
+        if (agentsRes.ok) {
+          const data = await agentsRes.json();
+          this.agents = data.agents || [];
+          this.agentsAvailable = data.available;
+        }
+        if (bgRes.ok) {
+          const data = await bgRes.json();
+          this.bgTasks = data.tasks || [];
+          this.bgAvailable = data.available;
+        }
+      } catch (e) {
+        console.error('Failed to refresh tasks:', e);
+      }
+    },
+
+    async haltAll() {
+      await fetch('/api/agents/halt', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async cancelTask(id) {
+      await fetch('/api/bg/' + id + '/cancel', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async clearCompleted() {
+      await fetch('/api/bg/clear', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async viewTask(id) {
+      try {
+        const res = await fetch('/api/bg/' + id);
+        if (res.ok) {
+          this.selectedTask = await res.json();
+        }
+      } catch (e) {
+        console.error('Failed to load task:', e);
+      }
+    },
+
+    formatDuration(t) {
+      if (t.status === 'running' && t.startedAt) {
+        var sec = Math.round((Date.now() - t.startedAt) / 1000);
+        return sec + 's (running)';
+      }
+      if (t.completedAt && t.startedAt) {
+        return ((t.completedAt - t.startedAt) / 1000).toFixed(1) + 's';
+      }
+      return '—';
+    },
+
+    statusClass(status) {
+      if (status === 'running' || status === 'pending') return 'badge-info';
+      if (status === 'completed') return 'badge-success';
+      if (status === 'failed' || status === 'timed_out') return 'badge-danger';
+      if (status === 'cancelled') return 'badge-warning';
+      return '';
+    },
+  };
+}
+
+// ─── Spotify Widget ───────────────────────────────────────────
+function spotifyWidget() {
+  return {
+    available: false,
+    connected: false,
+    accountName: null,
+    nowPlaying: '',
+    loading: false,
+
+    async init() {
+      try {
+        const res = await fetch('/api/spotify/status');
+        if (res.ok) {
+          const data = await res.json();
+          this.available = data.available;
+          this.connected = data.connected;
+          this.accountName = data.accountName;
+          if (this.connected) this.refreshNowPlaying();
+        }
+      } catch {}
+    },
+
+    async refreshNowPlaying() {
+      try {
+        const res = await fetch('/api/spotify/now-playing');
+        if (res.ok) {
+          const data = await res.json();
+          this.nowPlaying = data.text || '';
+        }
+      } catch {}
+    },
+
+    async play() {
+      this.loading = true;
+      await fetch('/api/spotify/play', { method: 'POST' }).catch(() => {});
+      setTimeout(() => { this.refreshNowPlaying(); this.loading = false; }, 500);
+    },
+
+    async pause() {
+      this.loading = true;
+      await fetch('/api/spotify/pause', { method: 'POST' }).catch(() => {});
+      setTimeout(() => { this.refreshNowPlaying(); this.loading = false; }, 500);
+    },
+
+    async next() {
+      this.loading = true;
+      await fetch('/api/spotify/next', { method: 'POST' }).catch(() => {});
+      setTimeout(() => { this.refreshNowPlaying(); this.loading = false; }, 800);
+    },
+
+    async prev() {
+      this.loading = true;
+      await fetch('/api/spotify/previous', { method: 'POST' }).catch(() => {});
+      setTimeout(() => { this.refreshNowPlaying(); this.loading = false; }, 800);
+    },
+  };
+}
+
+// ─── Programming Mode Toggle ──────────────────────────────────
+function codeMode() {
+  return {
+    available: false,
+    state: 'off',
+
+    async init() {
+      try {
+        const res = await fetch('/api/code/status');
+        if (res.ok) {
+          const data = await res.json();
+          this.available = data.available;
+          this.state = data.state;
+        }
+      } catch {}
+    },
+
+    async toggle() {
+      try {
+        const res = await fetch('/api/code/toggle', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          this.state = data.state;
+        }
+      } catch {}
+    },
+
+    async setState(s) {
+      try {
+        const res = await fetch('/api/code/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: s }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          this.state = data.state;
+        }
+      } catch {}
+    },
+
+    label() {
+      if (this.state === 'plan') return 'Plan';
+      if (this.state === 'execute') return 'Execute';
+      return 'Off';
+    },
+
+    badgeClass() {
+      if (this.state === 'plan') return 'badge-warning';
+      if (this.state === 'execute') return 'badge-success';
+      return '';
+    },
+  };
+}

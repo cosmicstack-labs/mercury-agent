@@ -35,6 +35,9 @@ export function renderChat(c: Context): string {
             <span x-show="settings.bypassPermissions">🔓 Auto</span>
             <span x-show="!settings.bypassPermissions">🔒 Ask</span>
           </span>
+          <span x-data="codeMode()" x-init="init()" x-show="available" class="chat-perm-badge" :class="badgeClass()" @click="toggle()" :title="'Programming mode: ' + state">
+            <span x-text="'⚡ ' + label()"></span>
+          </span>
         </div>
         <div class="chat-header-actions">
           <button class="btn btn-ghost btn-sm" @click="clearChat()">Clear</button>

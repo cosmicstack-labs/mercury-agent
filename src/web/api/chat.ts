@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
 import type { WebChannel } from '../../channels/web.js';
+import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../../utils/config.js';
+import { listThreads, loadThread, deleteThread as removeThread, appendMessage } from './chat-history.js';
 
 let webChannel: WebChannel | null = null;
+let programmingMode: ProgrammingMode | null = null;
+
+export function setProgrammingMode(pm: ProgrammingMode): void {
+  programmingMode = pm;
+}
 
 type ChatWebSettings = {
   bypassPermissions: boolean;
@@ -136,6 +143,75 @@ chat.post('/api/chat/permission/:id', async (c) => {
     return c.json({ resolved: true });
   }
   return c.json({ resolved: false, error: 'Permission not found or expired' }, 404);
+});
+
+// Programming mode
+chat.get('/api/code/status', (c) => {
+  if (!programmingMode) {
+    return c.json({ available: false, state: 'off' });
+  }
+  return c.json({
+    available: true,
+    state: programmingMode.getState(),
+    active: programmingMode.isActive(),
+    statusText: programmingMode.getStatusText(),
+  });
+});
+
+chat.post('/api/code/toggle', (c) => {
+  if (!programmingMode) {
+    return c.json({ error: 'Programming mode not available' }, 400);
+  }
+  const newState = programmingMode.toggle();
+  return c.json({ state: newState, active: programmingMode.isActive() });
+});
+
+chat.post('/api/code/set', async (c) => {
+  if (!programmingMode) {
+    return c.json({ error: 'Programming mode not available' }, 400);
+  }
+  const body = await c.req.json<{ state: ProgrammingModeState }>();
+  if (body.state === 'off') programmingMode.setOff();
+  else if (body.state === 'plan') programmingMode.setPlan();
+  else if (body.state === 'execute') programmingMode.setExecute();
+  else return c.json({ error: 'Invalid state. Use: off, plan, execute' }, 400);
+  return c.json({ state: programmingMode.getState(), active: programmingMode.isActive() });
+});
+
+// ─── Chat History ─────────────────────────────────────────────
+
+chat.get('/api/chat/threads', (c) => {
+  return c.json({ threads: listThreads() });
+});
+
+chat.get('/api/chat/threads/:id', (c) => {
+  const id = c.req.param('id');
+  const thread = loadThread(id);
+  if (!thread) return c.json({ error: 'Thread not found' }, 404);
+  return c.json(thread);
+});
+
+chat.delete('/api/chat/threads/:id', (c) => {
+  const id = c.req.param('id');
+  const deleted = removeThread(id);
+  return c.json({ deleted });
+});
+
+chat.post('/api/chat/threads/:id/messages', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json<{ role: 'user' | 'assistant'; content: string }>();
+  if (!body.content || !body.role) {
+    return c.json({ error: 'role and content required' }, 400);
+  }
+  const msg = {
+    id: crypto.randomUUID(),
+    threadId: id,
+    role: body.role,
+    content: body.content,
+    timestamp: Date.now(),
+  };
+  appendMessage(id, msg);
+  return c.json({ saved: true, message: msg });
 });
 
 export default chat;

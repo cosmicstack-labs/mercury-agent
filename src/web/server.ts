@@ -11,7 +11,9 @@ import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
 import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel } from './api/chat.js';
+import chatRoutes, { setWebChannel, setProgrammingMode } from './api/chat.js';
+import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
+import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderProviders } from './pages/providers.js';
 import { renderSettings } from './pages/settings.js';
@@ -25,6 +27,7 @@ import { renderPerson } from './pages/brain/person.js';
 import { renderGoals } from './pages/brain/goals.js';
 import { renderGraph } from './pages/brain/graph.js';
 import { renderChat } from './pages/chat.js';
+import { renderTasks } from './pages/tasks.js';
 import { loadConfig } from '../utils/config.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -55,6 +58,8 @@ app.route('/', configRoutes);
 app.route('/', systemRoutes);
 app.route('/', brainRoutes);
 app.route('/', chatRoutes);
+app.route('/', agentRoutes);
+app.route('/', spotifyRoutes);
 
 app.get('/static/style.css', (c) => {
   const filePath = join(staticDir, 'style.css');
@@ -77,10 +82,11 @@ app.get('/static/app.js', (c) => {
 });
 
 app.get('/vendor/*', (c) => {
-  const filename = c.req.path.split('/').pop() || '';
-  const filePath = join(staticDir, 'vendor', filename);
+  const subPath = c.req.path.slice('/vendor/'.length);
+  if (!subPath || subPath.includes('..')) return c.notFound();
+  const filePath = join(staticDir, 'vendor', subPath);
   if (existsSync(filePath)) {
-    const ext = filename.split('.').pop() || '';
+    const ext = subPath.split('.').pop() || '';
     return new Response(readFileSync(filePath), {
       headers: { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
     });
@@ -154,7 +160,11 @@ app.get('/chat', (c) => {
   return c.html(renderChat(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler };
+app.get('/tasks', (c) => {
+  return c.html(renderTasks(c));
+});
+
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

@@ -50,7 +50,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1481,6 +1481,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   setWebWebChannel(webChannel);
+  setWebProgrammingMode(agent.programmingMode);
+  setWebBgTasks(agent.backgroundTasks);
+  if (supervisor) {
+    setWebSupervisor(supervisor);
+  }
+  if (spotifyClient) {
+    setWebSpotify(spotifyClient);
+  }
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();

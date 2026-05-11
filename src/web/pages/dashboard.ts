@@ -70,6 +70,25 @@ export function renderDashboard(c: Context, status: any): string {
       </div>
     </div>
   </div>
+
+  <!-- Spotify Widget -->
+  <div class="card" x-data="spotifyWidget()" x-init="init()" x-show="available">
+    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <h2>Spotify</h2>
+      <span class="badge" :class="connected ? 'badge-success' : 'badge-danger'" x-text="connected ? 'Connected' : 'Not Connected'"></span>
+    </div>
+    <div class="card-body" x-show="connected">
+      <p class="text-muted" style="margin-bottom:0.5rem" x-show="accountName">Account: <strong x-text="accountName"></strong></p>
+      <p style="margin-bottom:1rem;white-space:pre-wrap;font-size:0.9rem" x-text="nowPlaying || 'Nothing playing'"></p>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-sm" @click="prev()" :disabled="loading">⏮</button>
+        <button class="btn btn-sm" @click="play()" :disabled="loading">▶</button>
+        <button class="btn btn-sm" @click="pause()" :disabled="loading">⏸</button>
+        <button class="btn btn-sm" @click="next()" :disabled="loading">⏭</button>
+        <button class="btn btn-sm" @click="refreshNowPlaying()" style="margin-left:auto">↻</button>
+      </div>
+    </div>
+  </div>
 </div>`;
 
   return renderLayout(c, 'Dashboard', body);

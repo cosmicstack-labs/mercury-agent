@@ -4,6 +4,7 @@ import { getCookie } from 'hono/cookie';
 const NAV_ITEMS = [
   { href: '/', label: 'Status', icon: 'activity' },
   { href: '/chat', label: 'Chat', icon: 'message-circle' },
+  { href: '/tasks', label: 'Tasks', icon: 'layers' },
   { separator: true },
   { heading: 'Second Brain' },
   { href: '/second-brain/memory', label: 'Memory', icon: 'brain' },
@@ -14,7 +15,6 @@ const NAV_ITEMS = [
   { href: '/providers', label: 'Keys', icon: 'key' },
   { href: '/skills', label: 'Skills', icon: 'puzzle' },
   { href: '/permissions', label: 'Perms', icon: 'shield' },
-  { href: '/team', label: 'Team', icon: 'users' },
   { href: '/schedules', label: 'Schedules', icon: 'clock' },
   { href: '/usage', label: 'Usage', icon: 'bar-chart-3' },
   { separator: true },
