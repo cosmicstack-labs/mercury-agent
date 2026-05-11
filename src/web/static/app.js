@@ -377,10 +377,19 @@ function formatDate(ts) {
 
 function memoryBrowser() {
   return {
-    memories: [], loading: true, query: '', selectedMemory: null,
+    memories: [], allMemories: [], loading: true, query: '', selectedMemory: null,
     showAddModal: false, newMemory: { type: 'preference', summary: '', detail: '' },
     memoryTypes: MEMORY_TYPES, typeColors: TYPE_COLORS, available: true,
+    activeTypes: Object.keys(MEMORY_TYPES),
     getTypeColor(type) { return TYPE_COLORS[type] || '#888'; },
+    toggleType(type) {
+      var idx = this.activeTypes.indexOf(type);
+      if (idx >= 0) { this.activeTypes.splice(idx, 1); } else { this.activeTypes.push(type); }
+      this.applyFilters();
+    },
+    applyFilters() {
+      this.memories = this.allMemories.filter(m => this.activeTypes.includes(m.type));
+    },
     async init() {
       this.loading = true;
       try {
@@ -390,21 +399,22 @@ function memoryBrowser() {
           this.available = stats.available !== false;
           if (!this.available) {
             this.memories = [];
+            this.allMemories = [];
             this.loading = false;
             return;
           }
         }
-        const res = await fetch('/api/brain/memory?limit=100');
-        if (res.ok) { const data = await res.json(); this.memories = data.memories || []; this.available = data.available !== false; }
+        const res = await fetch('/api/brain/memory?limit=200');
+        if (res.ok) { const data = await res.json(); this.allMemories = data.memories || []; this.available = data.available !== false; this.applyFilters(); }
       } catch (e) { console.error(e); }
       this.loading = false;
     },
     async search() {
       this.loading = true;
       try {
-        const url = this.query ? `/api/brain/memory/search?q=${encodeURIComponent(this.query)}&limit=50` : '/api/brain/memory?limit=100';
+        const url = this.query ? `/api/brain/memory/search?q=${encodeURIComponent(this.query)}&limit=100` : '/api/brain/memory?limit=200';
         const res = await fetch(url);
-        if (res.ok) { const data = await res.json(); this.memories = data.memories || []; }
+        if (res.ok) { const data = await res.json(); this.allMemories = data.memories || []; this.applyFilters(); }
       } catch (e) { console.error(e); }
       this.loading = false;
     },

@@ -28,9 +28,11 @@ export function renderMemory(c: Context, stats: any): string {
     reflection: '#14b8a6',
   };
 
+  const typeFilterKeys = Object.keys(TYPE_LABELS);
   const typeFilters = Object.entries(TYPE_LABELS).map(([key, label]) => `
-    <label class="filter-chip" x-data="{ checked: true }">
-      <input type="checkbox" :checked="checked" @change="filterMemories()" x-model="checked"
+    <label class="filter-chip">
+      <input type="checkbox" :checked="activeTypes.includes('${key}')"
+             @change="toggleType('${key}')"
              class="filter-check" value="${key}">
       <span class="filter-dot" style="background: ${TYPE_COLORS[key]}"></span>
       ${label}

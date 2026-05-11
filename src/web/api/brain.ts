@@ -15,13 +15,17 @@ export function setUserMemory(mem: UserMemoryStore | null): void {
 
 function ensureMemory(): UserMemoryStore | null {
   if (userMemory) return userMemory;
+
+  // Fallback: try to create our own store if the main agent didn't provide one.
+  // This can fail if better-sqlite3 isn't available or the DB doesn't exist yet.
   if (!isBetterSqlite3Available()) return null;
   try {
     const config = loadConfig();
     const dbPath = join(getMemoryDir(), 'second-brain', 'second-brain.db');
     userMemory = new UserMemoryStore(config, 'user:owner', dbPath);
     return userMemory;
-  } catch {
+  } catch (err) {
+    console.error('[Mercury Web] Second Brain fallback init failed:', err);
     return null;
   }
 }
