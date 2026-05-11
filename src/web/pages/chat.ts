@@ -18,8 +18,8 @@ export function renderChat(c: Context): string {
             </template>
           </div>
           <div class="chat-threads-foot">
-            <button class="btn btn-outline btn-sm btn-block" @click="exportThread()" :disabled="!activeThreadId">Export Thread</button>
-            <button class="btn btn-danger btn-sm btn-block" @click="deleteThread()" :disabled="!activeThreadId">Delete Thread</button>
+            <button class="btn btn-outline btn-sm btn-block" @click="exportThread()" :disabled="!activeThreadId">Export</button>
+            <button class="btn btn-danger btn-sm btn-block" @click="deleteThread()" :disabled="!activeThreadId">Delete</button>
           </div>
         </aside>
 
@@ -30,16 +30,16 @@ export function renderChat(c: Context): string {
             <svg><use href="/vendor/icons.svg#arrow-left"/></svg>
           </button>
           <h1 x-text="activeThreadTitle()">Chat</h1>
-          <span class="chat-provider" x-show="provider" x-text="'Using ' + provider + ' / ' + model"></span>
-          <span class="chat-perm-badge" :class="settings.bypassPermissions ? 'chat-perm-auto' : 'chat-perm-ask'" @click="togglePermissions()" :title="settings.bypassPermissions ? 'Auto-approve: tool calls run without asking' : 'Ask me: tool calls require your approval'">
-            <span x-show="settings.bypassPermissions">🔓 Auto</span>
-            <span x-show="!settings.bypassPermissions">🔒 Ask</span>
-          </span>
-          <span x-data="codeMode()" x-init="init()" x-show="available" class="chat-perm-badge" :class="badgeClass()" @click="toggle()" :title="'Programming mode: ' + state">
-            <span x-text="'⚡ ' + label()"></span>
-          </span>
+          <span class="chat-provider" x-show="provider" x-text="provider + ' / ' + model"></span>
         </div>
         <div class="chat-header-actions">
+          <span class="chat-perm-badge" :class="settings.bypassPermissions ? 'chat-perm-auto' : 'chat-perm-ask'" @click="togglePermissions()" :title="settings.bypassPermissions ? 'Auto-approve: tool calls run without asking' : 'Ask me: tool calls require your approval'">
+            <span x-show="settings.bypassPermissions">Auto</span>
+            <span x-show="!settings.bypassPermissions">Ask</span>
+          </span>
+          <span x-data="codeMode()" x-init="init()" x-show="available" class="chat-perm-badge" :class="badgeClass()" @click="toggle()" :title="'Programming mode: ' + state">
+            <span x-text="label()"></span>
+          </span>
           <button class="btn btn-ghost btn-sm" @click="clearChat()">Clear</button>
         </div>
       </div>
@@ -48,7 +48,7 @@ export function renderChat(c: Context): string {
         <div class="chat-empty" x-show="activeMessages().length === 0 && !waiting">
           <div class="chat-empty-icon">☿</div>
           <p>Start a conversation with Mercury</p>
-          <p class="chat-empty-hint">Messages are processed by the agent and streamed back in real time</p>
+          <p class="chat-empty-hint">Messages are processed by your agent and streamed back in real time.</p>
         </div>
 
         <template x-for="(msg, idx) in activeMessages()" :key="msg.id">
@@ -69,8 +69,8 @@ export function renderChat(c: Context): string {
                 <div class="chat-step" :class="{ 'chat-step-running': step.running, 'chat-step-done': step.done }">
                   <div class="chat-step-header" @click="step.open = !step.open">
                     <span class="chat-step-status" x-show="step.running"><span class="step-spinner"></span></span>
-                    <span class="chat-step-status" x-show="!step.running && step.done">✓</span>
-                    <span class="chat-step-status" x-show="!step.running && step.done === false && step.error">✗</span>
+                    <span class="chat-step-status" x-show="!step.running && step.done" style="color: var(--success);">&#10003;</span>
+                    <span class="chat-step-status" x-show="!step.running && step.done === false && step.error" style="color: var(--error);">&#10007;</span>
                     <span class="chat-step-tool" x-text="'Step ' + (si + 1) + ': ' + step.tool"></span>
                     <span class="chat-step-summary-inline" x-show="!step.open && step.summary" x-text="step.summary"></span>
                     <span class="chat-step-toggle" x-text="step.open ? '−' : '+'"></span>
@@ -127,7 +127,7 @@ export function renderChat(c: Context): string {
         <textarea
           x-ref="chatInput"
           class="chat-input"
-          placeholder="Type a message..."
+          placeholder="Message Mercury..."
           x-model="inputText"
           @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
           @keydown.escape="inputText = ''"
@@ -139,8 +139,7 @@ export function renderChat(c: Context): string {
           @click="sendMessage()"
           :disabled="waiting || !inputText.trim()"
         >
-          <span x-show="!waiting"><svg style="width:14px;height:14px"><use href="/vendor/icons.svg#send"/></svg></span>
-          <span x-show="waiting" class="thinking-dots">Sending</span>
+          <svg style="width:16px;height:16px"><use href="/vendor/icons.svg#send"/></svg>
         </button>
       </div>
       </section>
