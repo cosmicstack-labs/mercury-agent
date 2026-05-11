@@ -39,6 +39,7 @@ import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
@@ -49,6 +50,8 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler } from './web/server.js';
+import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -1145,6 +1148,45 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   saveConfig(config);
 
+  console.log('');
+  console.log(chalk.bold.white('  Web Dashboard'));
+  console.log('');
+
+  const portPrompt = isReconfig
+    ? chalk.white(`  Web dashboard port [${config.web.port}]: `)
+    : chalk.white(`  Web dashboard port [${config.web.port}]: `);
+  const portStr = await ask(portPrompt);
+  if (portStr.trim()) {
+    const portNum = parseInt(portStr.trim(), 10);
+    if (portNum > 0 && portNum < 65536) {
+      config.web.port = portNum;
+    } else {
+      console.log(chalk.yellow('  Invalid port number. Keeping default.'));
+    }
+  }
+  console.log(chalk.dim(`  Mercury runs a web dashboard at http://localhost:${config.web.port}`));
+
+  if (isWebAuthInitialized()) {
+    console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
+    const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
+    if (webPassword.trim()) {
+      setWebPassword(webPassword.trim());
+      console.log(chalk.green('  ✓ Web dashboard password updated.'));
+    } else {
+      console.log(chalk.dim('  Password unchanged.'));
+    }
+  } else {
+    console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+    console.log('');
+    const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
+    if (webPassword.trim()) {
+      setWebPassword(webPassword.trim());
+      console.log(chalk.green('  ✓ Web dashboard password set.'));
+    } else {
+      console.log(chalk.dim('  Using default password: Mercury@123'));
+    }
+  }
+
   const home = getMercuryHome();
   console.log('');
   console.log(chalk.green(`  ✓ Config saved to ${home}/mercury.yaml`));
@@ -1274,6 +1316,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const scheduler = new Scheduler(config);
+  setWebScheduler(scheduler);
 
   const identity = new Identity();
   migrateLegacyMemory();
@@ -1285,6 +1328,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
     try {
       userMemory = new UserMemoryStore(config);
+      setWebUserMemory(userMemory);
       if (!isDaemon) {
         logger.info(`Second brain: enabled (${userMemory.getSummary().total} existing memories)`);
       } else {
@@ -1296,13 +1340,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
     logger.warn(
-      'better-sqlite3 is not available — second brain memory is disabled. ' +
-      'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
+      'Second brain dependency issue: better-sqlite3 is not available. ' +
+      'Memory/brain features require SQLite via better-sqlite3. Install build tools and reinstall dependencies.'
     );
   }
 
   const channels = new ChannelRegistry(config);
-  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
+  const webChannel = new WebChannel(config.identity.name);
+  channels.register('web', webChannel);
+  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget, undefined, userMemory ?? undefined);
 
   let supervisor: SubAgentSupervisor | undefined;
   if (config.subagents.enabled) {
@@ -1434,10 +1480,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
+  setWebWebChannel(webChannel);
+
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
+    }
+    if (channelType === 'web' && webChannel) {
+      return webChannel.askPermission(prompt);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
@@ -1463,6 +1514,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       logger.info(`Creator: ${config.identity.creator}`);
     }
 
+    console.log('');
+    console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));
+    console.log(chalk.dim('  Ctrl+C to exit · /help for commands'));
+
+    startWebServer();
+    updateWebStatus({
+      running: true,
+      pid: process.pid,
+      state: 'idle',
+      defaultProvider: config.providers.default,
+      providers: Object.entries(config.providers)
+        .filter(([k]) => k !== 'default')
+        .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+      tokenBudget: config.tokens.dailyBudget,
+    });
+
+    // Keep CLI permission mode prompt, but do it after web server is live.
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
@@ -1963,6 +2031,26 @@ program
       console.log(chalk.dim('    npm rm -g @cosmicstack/mercury-agent && npm i -g @cosmicstack/mercury-agent'));
     }
 
+    console.log('');
+  });
+
+program
+  .command('web-reset-password')
+  .description('Reset the web dashboard password')
+  .argument('[password]', 'New password (prompted if omitted)')
+  .action(async (password?: string) => {
+    console.log('');
+    if (!password) {
+      password = await ask(chalk.white('  New web dashboard password: '));
+    }
+    if (!password) {
+      console.log(chalk.red('  Password cannot be empty.'));
+      console.log('');
+      process.exit(1);
+    }
+    setWebPassword(password);
+    console.log(chalk.green('  ✓ Web dashboard password updated.'));
+    console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
     console.log('');
   });
 

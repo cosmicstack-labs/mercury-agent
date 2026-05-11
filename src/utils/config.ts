@@ -132,6 +132,9 @@ export interface MercuryConfig {
     accountId: string;
     product: string;
   };
+  web: {
+    port: number;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -290,6 +293,9 @@ export function getDefaultConfig(): MercuryConfig {
       accountName: '',
       accountId: '',
       product: '',
+    },
+    web: {
+      port: getEnvNum('MERCURY_PORT', 6174),
     },
   };
 }

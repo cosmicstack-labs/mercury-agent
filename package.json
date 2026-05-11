@@ -8,7 +8,7 @@
     "mercury": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && cp -r src/web/static dist/web/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -51,18 +51,23 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/web/static"
   ],
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/deepseek": "^2.0.29",
     "@ai-sdk/openai": "^3.0.53",
     "@grammyjs/auto-retry": "^2.0.2",
+    "@hono/node-server": "^2.0.0",
     "ai": "^6.0.168",
+    "bcryptjs": "^3.0.3",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.7",
+    "geist": "^1.7.0",
     "grammy": "^1.42.0",
+    "hono": "^4.12.15",
     "ink": "^5.2.1",
     "js-tiktoken": "^1.0.19",
     "marked": "^14.1.4",
@@ -71,6 +76,7 @@
     "pino": "^9.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "sql.js": "^1.14.1",
     "yaml": "^2.7.0",
     "zod": "^3.25.76"
   },
@@ -78,6 +84,7 @@
     "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.0",
     "@types/node-cron": "^3.0.11",
