@@ -122,6 +122,18 @@ export class SkillLoader {
         + 'Fetch real information, then respond.';
     }
 
+    // Auto-routing hint for tweet-notifier
+    const hasTweetNotifier = skills.some(s => s.name === 'tweet-notifier');
+    if (hasTweetNotifier) {
+      text += '\n\n**Tweet Notification System:** When the user says things like '
+        + '"schedule a tweet", "approve this tweet", "notify supporters about the tweet", '
+        + '"post this tweet at 3pm", "show pending tweets", "reject tweet", or mentions '
+        + 'tweet scheduling/approval/posting workflows, you MUST invoke the `tweet-notifier` skill '
+        + 'via `use_skill` before proceeding. The skill contains complete notification templates, '
+        + 'workflow steps, and the memory schema for tracking tweet states (draft, scheduled, '
+        + 'pending_approval, approved, posted, cancelled).';
+    }
+
     return text;
   }
 

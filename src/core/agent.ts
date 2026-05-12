@@ -1759,6 +1759,18 @@ export class Agent {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
     }
 
+    // Notification routing guidance for tweet-notifier skill
+    const skillNames = this.capabilities.getSkillContext();
+    if (skillNames.includes('tweet-notifier')) {
+      prompt += `\n\n**Tweet Notification System Available** — The tweet-notifier skill is installed.
+When you need to schedule tweets, manage approvals, or notify founders/supporters:
+1. Use the \`use_skill\` tool to invoke the \`tweet-notifier\` skill for detailed instructions
+2. The skill provides templates for scheduling tweets, notifying founders (via send_message), and alerting supporters (approved Telegram users)
+3. Key tools used by this system: schedule_task (for timing), send_message (for notifications to Telegram), save_memory (for tweet state tracking), search_memory (for checking existing tweets)
+4. Supporters are all approved Telegram users — send_message will reach them
+5. The founder (Optimus Prime) receives notifications via send_message (Telegram)`;
+    }
+
     const toolNames = this.capabilities.getToolNames();
     const githubTools = ['create_pr', 'review_pr', 'list_issues', 'create_issue', 'github_api'];
     const hasGitHub = githubTools.some(t => toolNames.includes(t));
