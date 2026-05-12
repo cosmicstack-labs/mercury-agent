@@ -101,14 +101,8 @@ export class TelegramChannel extends BaseChannel {
     return this.permissionModes.get(chatId) ?? 'ask-me';
   }
 
-  private starting = false;
-
   async start(): Promise<void> {
-    // Idempotency guard — prevent concurrent/duplicate start calls
-    if (this.ready || this.starting) {
-      return;
-    }
-    this.starting = true;
+    if (this.bot) return; // Already started — don't create a second polling instance
 
     const token = this.config.channels.telegram.botToken;
     if (!token) {
@@ -239,30 +233,21 @@ export class TelegramChannel extends BaseChannel {
 
     this.bot = bot;
 
-    // Start polling in the background — never block CLI startup.
-    // Telegram may take 30-120s to connect if rate-limited from a previous session.
+    // Start long-polling in the background.
+    // bot.start() blocks until the first getUpdates succeeds, which can take
+    // 30-40s on slow networks. Don't block Mercury startup — let it connect
+    // asynchronously. The guard on line 105 (if this.bot) prevents duplicate instances.
     void bot.start({
       onStart: async (info) => {
         logger.info({ bot: info.username }, 'Telegram bot started — long polling active');
         this.ready = true;
-        this.starting = false;
         await this.registerCommands();
       },
     }).catch((err: any) => {
-      this.starting = false;
-      this.bot = null;
       const message = err?.description || err?.message || String(err);
-      if (err?.error_code === 401) {
-        logger.error(`Telegram bot token is invalid. Get a fresh token from @BotFather via /token.\n  Details: ${message}`);
-      } else if (err?.error_code === 404) {
-        logger.error(`Telegram bot not found — the token may be wrong or the bot was deleted. Verify with @BotFather.\n  Details: ${message}`);
-      } else if (err?.error_code === 429) {
-        logger.error(`Telegram is rate-limiting this bot. Wait a minute and try again.\n  Details: ${message}`);
-      } else if (err?.error_code === 403) {
-        logger.error(`Telegram bot lacks permission for this action. Check bot scopes with @BotFather.\n  Details: ${message}`);
-      } else {
-        logger.error(`Telegram bot failed to start: ${message}`);
-      }
+      logger.error({ err: message }, 'Telegram bot polling stopped');
+      // Don't null out this.bot here — stop() will handle cleanup.
+      // The guard (if this.bot) prevents a second instance from being created.
     });
   }
 
@@ -297,9 +282,7 @@ export class TelegramChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.bot?.stop();
-    this.bot = null;
     this.ready = false;
-    this.starting = false;
     this.stopTypingLoop();
   }
 
