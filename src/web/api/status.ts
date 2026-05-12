@@ -37,7 +37,28 @@ export function getStatus(): AgentStatus {
 const status = new Hono();
 
 status.get('/api/status', (c) => {
-  return c.json(getStatus());
+  const s = getStatus();
+
+  // Transform to the shape the React frontend expects
+  const providersMap: Record<string, { enabled: boolean; hasKey: boolean }> = {};
+  for (const p of s.providers) {
+    providersMap[p.name] = { enabled: p.enabled, hasKey: p.hasKey };
+  }
+
+  return c.json({
+    running: s.running,
+    state: s.state,
+    uptime: Math.floor(process.uptime()),
+    providers: providersMap,
+    tokens: {
+      dailyUsed: s.tokensUsed,
+      dailyBudget: s.tokenBudget,
+    },
+    memory: {
+      total: s.memoryTotal,
+      byType: s.memoryByType,
+    },
+  });
 });
 
 export default status;

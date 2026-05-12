@@ -81,22 +81,27 @@ export function useSSE(): SSEResult {
     });
 
     es.addEventListener("text_delta", (e) => {
-      const text = (e as MessageEvent).data;
-      store.getState().setWaiting(false);
-      store.getState().appendStreamingText(text);
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        store.getState().setWaiting(false);
+        store.getState().appendStreamingText(data.text ?? "");
+      } catch { /* ignore */ }
     });
 
     es.addEventListener("text_done", (e) => {
-      const fullText = (e as MessageEvent).data;
-      store.getState().clearStreaming();
-      store.getState().setWaiting(false);
-      store.getState().resetSteps();
-      store.getState().addMessage({
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: fullText,
-        timestamp: new Date().toISOString(),
-      });
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        const fullText = data.fullText ?? data.text ?? (e as MessageEvent).data;
+        store.getState().clearStreaming();
+        store.getState().setWaiting(false);
+        store.getState().resetSteps();
+        store.getState().addMessage({
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: fullText,
+          timestamp: new Date().toISOString(),
+        });
+      } catch { /* ignore */ }
     });
 
     es.addEventListener("permission_request", (e) => {

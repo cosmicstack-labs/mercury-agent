@@ -101,7 +101,15 @@ export class TelegramChannel extends BaseChannel {
     return this.permissionModes.get(chatId) ?? 'ask-me';
   }
 
+  private starting = false;
+
   async start(): Promise<void> {
+    // Idempotency guard — prevent concurrent/duplicate start calls
+    if (this.ready || this.starting) {
+      return;
+    }
+    this.starting = true;
+
     const token = this.config.channels.telegram.botToken;
     if (!token) {
       logger.warn('Telegram bot token not set — skipping');
@@ -231,38 +239,30 @@ export class TelegramChannel extends BaseChannel {
 
     this.bot = bot;
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-
-      void bot.start({
-        onStart: async (info) => {
-          logger.info({ bot: info.username }, 'Telegram bot started — long polling active');
-          this.ready = true;
-          await this.registerCommands();
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        },
-      }).catch((err: any) => {
-        if (!settled) {
-          settled = true;
-          const message = err?.description || err?.message || String(err);
-          if (err?.error_code === 401) {
-            reject(new Error(`Telegram bot token is invalid. Get a fresh token from @BotFather via /token.\n  Details: ${message}`));
-          } else if (err?.error_code === 404) {
-            reject(new Error(`Telegram bot not found — the token may be wrong or the bot was deleted. Verify with @BotFather.\n  Details: ${message}`));
-          } else if (err?.error_code === 429) {
-            reject(new Error(`Telegram is rate-limiting this bot. Wait a minute and try again.\n  Details: ${message}`));
-          } else if (err?.error_code === 403) {
-            reject(new Error(`Telegram bot lacks permission for this action. Check bot scopes with @BotFather.\n  Details: ${message}`));
-          } else {
-            reject(new Error(`Telegram bot failed to start: ${message}`));
-          }
-          return;
-        }
-        logger.error({ err: err.message }, 'Telegram bot start loop failed after startup');
-      });
+    // Start polling in the background — never block CLI startup.
+    // Telegram may take 30-120s to connect if rate-limited from a previous session.
+    void bot.start({
+      onStart: async (info) => {
+        logger.info({ bot: info.username }, 'Telegram bot started — long polling active');
+        this.ready = true;
+        this.starting = false;
+        await this.registerCommands();
+      },
+    }).catch((err: any) => {
+      this.starting = false;
+      this.bot = null;
+      const message = err?.description || err?.message || String(err);
+      if (err?.error_code === 401) {
+        logger.error(`Telegram bot token is invalid. Get a fresh token from @BotFather via /token.\n  Details: ${message}`);
+      } else if (err?.error_code === 404) {
+        logger.error(`Telegram bot not found — the token may be wrong or the bot was deleted. Verify with @BotFather.\n  Details: ${message}`);
+      } else if (err?.error_code === 429) {
+        logger.error(`Telegram is rate-limiting this bot. Wait a minute and try again.\n  Details: ${message}`);
+      } else if (err?.error_code === 403) {
+        logger.error(`Telegram bot lacks permission for this action. Check bot scopes with @BotFather.\n  Details: ${message}`);
+      } else {
+        logger.error(`Telegram bot failed to start: ${message}`);
+      }
     });
   }
 
@@ -297,7 +297,9 @@ export class TelegramChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.bot?.stop();
+    this.bot = null;
     this.ready = false;
+    this.starting = false;
     this.stopTypingLoop();
   }
 

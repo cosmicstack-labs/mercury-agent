@@ -1606,6 +1606,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           .filter(([k]) => k !== 'default')
           .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
         tokenBudget: config.tokens.dailyBudget,
+        tokensUsed: tokenBudget.getDailyUsed(),
+        memoryTotal: userMemory ? userMemory.getSummary().total : 0,
+        memoryByType: userMemory ? userMemory.getSummary().byType : {},
       });
     } else {
       console.log(chalk.dim(`  Web: disabled · enable with mercury doctor or set web.enabled: true`));
@@ -1630,6 +1633,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           .filter(([k]) => k !== 'default')
           .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
         tokenBudget: config.tokens.dailyBudget,
+        tokensUsed: tokenBudget.getDailyUsed(),
+        memoryTotal: userMemory ? userMemory.getSummary().total : 0,
+        memoryByType: userMemory ? userMemory.getSummary().byType : {},
       });
     }
     logger.info({ channels: activeCh, tools: toolNames, web: config.web.enabled }, 'Mercury is live (daemon mode)');

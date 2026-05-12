@@ -79,7 +79,9 @@ chat.get('/api/chat/events', (c) => {
         } catch {}
       };
 
-      send(`data: ${JSON.stringify({ type: 'connected', data: { id: clientId } })}\n\n`);
+      // Send connected event with proper SSE named event format
+      const providerInfo = currentProviderFn ? currentProviderFn() : { name: '', model: '' };
+      send(`event: connected\ndata: ${JSON.stringify({ id: clientId, provider: providerInfo.name, model: providerInfo.model })}\n\n`);
 
       const keepalive = setInterval(() => {
         send(`: keepalive\n\n`);

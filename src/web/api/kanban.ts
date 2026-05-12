@@ -6,6 +6,32 @@ import type { ProviderRegistry } from '../../providers/registry.js';
 
 const app = new Hono();
 
+// Normalize backend card statuses to the frontend-expected values
+// Backend uses: pending, running, paused, completed, failed, halted
+// Frontend expects: pending, running, paused, done, failed
+function normalizeCardStatus(status: string): string {
+  if (status === 'completed' || status === 'halted') return 'done';
+  return status;
+}
+
+function normalizeCard(card: any): any {
+  return {
+    ...card,
+    status: normalizeCardStatus(card.status),
+    tokensUsed: card.tokenUsage?.total ?? card.tokensUsed,
+    createdAt: card.createdAt ?? card.startedAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeBoard(board: any): any {
+  return {
+    ...board,
+    active: board.status === 'active',
+    cards: (board.cards ?? []).map(normalizeCard),
+    createdAt: typeof board.createdAt === 'number' ? new Date(board.createdAt).toISOString() : board.createdAt,
+  };
+}
+
 let supervisor: SubAgentSupervisor | undefined;
 let boardManager: BoardManager | undefined;
 let providerRegistry: ProviderRegistry | undefined;
@@ -38,13 +64,16 @@ export function getAgentCardMap(): Map<string, { boardId: string; cardId: string
 // List all boards
 app.get('/api/boards', (c: any) => {
   if (!boardManager) return c.json({ boards: [], available: false });
-  const boards = boardManager.getAllBoards().map(b => ({
-    ...b,
-    cardCount: b.cards.length,
-    pendingCount: b.cards.filter(c => c.status === 'pending').length,
-    runningCount: b.cards.filter(c => c.status === 'running').length,
-    doneCount: b.cards.filter(c => c.status === 'completed' || c.status === 'failed' || c.status === 'halted').length,
-  }));
+  const boards = boardManager.getAllBoards().map(b => {
+    const nb = normalizeBoard(b);
+    return {
+      ...nb,
+      cardCount: b.cards.length,
+      pendingCount: b.cards.filter((c: any) => c.status === 'pending').length,
+      runningCount: b.cards.filter((c: any) => c.status === 'running').length,
+      doneCount: b.cards.filter((c: any) => c.status === 'completed' || c.status === 'failed' || c.status === 'halted').length,
+    };
+  });
   return c.json({ boards, available: true });
 });
 
@@ -54,8 +83,18 @@ app.get('/api/boards/:id', (c: any) => {
   const board = boardManager.getBoard(c.req.param('id'));
   if (!board) return c.json({ error: 'Board not found' }, 404);
 
-  const resources = supervisor ? supervisor.getResourceUsage() : null;
-  return c.json({ board, resources });
+  const sysResources = supervisor ? supervisor.getResourceUsage() : null;
+  const nb = normalizeBoard(board);
+  // Transform to frontend-expected BoardResources shape
+  const resources = {
+    totalTokens: nb.cards.reduce((sum: number, c: any) => sum + (c.tokensUsed ?? 0), 0),
+    runningCount: nb.cards.filter((c: any) => c.status === 'running').length,
+    pendingCount: nb.cards.filter((c: any) => c.status === 'pending' || c.status === 'paused').length,
+    doneCount: nb.cards.filter((c: any) => c.status === 'done').length,
+    failedCount: nb.cards.filter((c: any) => c.status === 'failed').length,
+    ...(sysResources ? { system: sysResources } : {}),
+  };
+  return c.json({ board: nb, resources });
 });
 
 // Create board
@@ -174,7 +213,7 @@ Example: [{"task":"Create the user authentication module with login/register end
 
     const created = boardManager.addCards(boardId, validCards);
 
-    return c.json({ ok: true, cards: created, count: created.length });
+    return c.json({ ok: true, cards: created.map(normalizeCard), count: created.length });
   } catch (err: any) {
     return c.json({ error: 'Generation failed: ' + (err.message || 'unknown error') }, 500);
   }
@@ -194,7 +233,7 @@ app.post('/api/boards/:id/cards', async (c: any) => {
   }
   const card = boardManager.addCard(c.req.param('id'), task.trim(), priority || 'normal');
   if (!card) return c.json({ error: 'Board not found' }, 404);
-  return c.json({ ok: true, card });
+  return c.json({ ok: true, card: normalizeCard(card) });
 });
 
 // Add multiple cards
@@ -207,7 +246,7 @@ app.post('/api/boards/:id/cards/bulk', async (c: any) => {
   }
   const created = boardManager.addCards(c.req.param('id'), cards);
   if (created.length === 0) return c.json({ error: 'Board not found' }, 404);
-  return c.json({ ok: true, cards: created });
+  return c.json({ ok: true, cards: created.map(normalizeCard) });
 });
 
 // Update card
@@ -216,7 +255,7 @@ app.patch('/api/boards/:boardId/cards/:cardId', async (c: any) => {
   const body = await c.req.json();
   const card = boardManager.updateCard(c.req.param('boardId'), c.req.param('cardId'), body);
   if (!card) return c.json({ error: 'Card not found' }, 404);
-  return c.json({ ok: true, card });
+  return c.json({ ok: true, card: normalizeCard(card) });
 });
 
 // Delete card

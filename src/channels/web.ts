@@ -20,7 +20,7 @@ class SSEClient {
 
   send(event: ChatEvent): void {
     try {
-      const data = `data: ${JSON.stringify(event)}\n\n`;
+      const data = `event: ${event.type}\ndata: ${JSON.stringify(event.data ?? {})}\n\n`;
       this.controller.enqueue(new TextEncoder().encode(data));
     } catch {
       // client disconnected
