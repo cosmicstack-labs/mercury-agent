@@ -80,6 +80,7 @@ export interface TaskBoardEntry {
   progress?: string;
   sourceChannelId?: string;
   sourceChannelType?: string;
+  tokenUsage?: { input: number; output: number; total: number };
 }
 
 export interface ResourceUsage {

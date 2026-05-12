@@ -194,6 +194,17 @@ export class SubAgentSupervisor {
     this.pausedAgents.delete(agentId);
 
     logger.info({ agentId, status: result.status, duration: result.duration }, 'Sub-agent completed');
+
+    // Persist final token usage on the task board entry
+    const totalTokens = (result.tokenUsage?.input ?? 0) + (result.tokenUsage?.output ?? 0);
+    this.taskBoard.update(agentId, {
+      tokenUsage: {
+        input: result.tokenUsage?.input ?? 0,
+        output: result.tokenUsage?.output ?? 0,
+        total: totalTokens,
+      },
+    });
+
     this.lifecycleCallback?.({ type: 'complete', agentId, result });
 
     const entry = this.taskBoard.get(agentId);

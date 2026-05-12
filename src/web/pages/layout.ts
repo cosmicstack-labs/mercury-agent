@@ -4,6 +4,7 @@ const NAV_ITEMS = [
   { href: '/', label: 'Status', icon: 'activity' },
   { href: '/chat', label: 'Chat', icon: 'message-circle' },
   { href: '/tasks', label: 'Tasks', icon: 'clock' },
+  { href: '/board', label: 'Board', icon: 'layout-grid' },
   { separator: true },
   { heading: 'Second Brain' },
   { href: '/second-brain/memory', label: 'Memory', icon: 'brain' },

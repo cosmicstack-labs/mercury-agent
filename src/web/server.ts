@@ -28,6 +28,8 @@ import { renderGoals } from './pages/brain/goals.js';
 import { renderGraph } from './pages/brain/graph.js';
 import { renderChat } from './pages/chat.js';
 import { renderTasks } from './pages/tasks.js';
+import kanbanRoutes, { setKanbanSupervisor } from './api/kanban.js';
+import { renderKanban } from './pages/kanban.js';
 import { loadConfig } from '../utils/config.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -60,6 +62,7 @@ app.route('/', brainRoutes);
 app.route('/', chatRoutes);
 app.route('/', agentRoutes);
 app.route('/', spotifyRoutes);
+app.route('/', kanbanRoutes);
 
 app.get('/static/style.css', (c) => {
   const filePath = join(staticDir, 'style.css');
@@ -164,7 +167,11 @@ app.get('/tasks', (c) => {
   return c.html(renderTasks(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback };
+app.get('/board', (c) => {
+  return c.html(renderKanban(c));
+});
+
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

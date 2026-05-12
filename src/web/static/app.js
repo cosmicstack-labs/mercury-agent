@@ -1767,3 +1767,162 @@ function codeMode() {
     },
   };
 }
+
+// ─── Kanban Board ─────────────────────────────────────────────
+function kanbanBoard() {
+  return {
+    entries: [],
+    resources: null,
+    available: false,
+    selectedCard: null,
+    showSpawn: false,
+    spawnTask: '',
+    spawnPriority: 'normal',
+    spawnMaxSteps: 25,
+    spawnError: '',
+    pollInterval: null,
+
+    async init() {
+      await this.refresh();
+      this.pollInterval = setInterval(() => this.refresh(), 2000);
+    },
+
+    async refresh() {
+      try {
+        var res = await fetch('/api/kanban');
+        if (res.ok) {
+          var data = await res.json();
+          this.entries = data.entries || [];
+          this.resources = data.resources || null;
+          this.available = data.available;
+
+          // Update selectedCard if still viewing one
+          if (this.selectedCard) {
+            var updated = this.entries.find(function(e) { return e.agentId === this.selectedCard.agentId; }.bind(this));
+            if (updated) this.selectedCard = updated;
+          }
+        }
+      } catch (e) {
+        console.error('Kanban refresh failed:', e);
+      }
+    },
+
+    byStatus(status) {
+      return this.entries.filter(function(e) { return e.status === status; });
+    },
+
+    completedCards() {
+      return this.entries.filter(function(e) {
+        return e.status === 'completed' || e.status === 'failed' || e.status === 'halted';
+      });
+    },
+
+    get activeCount() {
+      return this.entries.filter(function(e) { return e.status === 'running' || e.status === 'pending' || e.status === 'paused'; }).length;
+    },
+
+    get doneCount() {
+      return this.completedCards().length;
+    },
+
+    formatTokens(tu) {
+      if (!tu) return '';
+      var total = tu.total || (tu.input + tu.output);
+      if (total >= 1000000) return (total / 1000000).toFixed(1) + 'M tokens';
+      if (total >= 1000) return (total / 1000).toFixed(1) + 'k tokens';
+      return total + ' tokens';
+    },
+
+    elapsed(card) {
+      if (!card.startedAt) return '';
+      var ms = Date.now() - card.startedAt;
+      var sec = Math.round(ms / 1000);
+      if (sec < 60) return sec + 's';
+      var min = Math.floor(sec / 60);
+      return min + 'm ' + (sec % 60) + 's';
+    },
+
+    duration(card) {
+      if (!card.completedAt || !card.startedAt) return '';
+      var sec = ((card.completedAt - card.startedAt) / 1000).toFixed(1);
+      return sec + 's';
+    },
+
+    selectCard(card) {
+      this.selectedCard = { ...card };
+    },
+
+    cardDoneClass(card) {
+      if (card.status === 'completed') return 'kanban-card-done';
+      if (card.status === 'failed') return 'kanban-card-failed';
+      return 'kanban-card-halted';
+    },
+
+    statusBadgeClass(status) {
+      if (status === 'running' || status === 'pending') return 'badge-info';
+      if (status === 'completed') return 'badge-success';
+      if (status === 'failed') return 'badge-danger';
+      if (status === 'paused') return 'badge-warning';
+      if (status === 'halted') return 'badge-neutral';
+      return '';
+    },
+
+    async spawnAgent() {
+      this.spawnError = '';
+      if (!this.spawnTask.trim()) {
+        this.spawnError = 'Task description is required.';
+        return;
+      }
+      try {
+        var res = await fetch('/api/kanban/spawn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            task: this.spawnTask,
+            priority: this.spawnPriority,
+            maxSteps: this.spawnMaxSteps || 25,
+          }),
+        });
+        if (res.ok) {
+          this.showSpawn = false;
+          this.spawnTask = '';
+          this.spawnPriority = 'normal';
+          this.spawnMaxSteps = 25;
+          await this.refresh();
+        } else {
+          var data = await res.json();
+          this.spawnError = data.error || 'Failed to spawn agent.';
+        }
+      } catch (e) {
+        this.spawnError = 'Network error: ' + e.message;
+      }
+    },
+
+    async haltAgent(id) {
+      await fetch('/api/kanban/' + id + '/halt', { method: 'POST' });
+      this.selectedCard = null;
+      await this.refresh();
+    },
+
+    async pauseAgent(id) {
+      await fetch('/api/kanban/' + id + '/pause', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async resumeAgent(id) {
+      await fetch('/api/kanban/' + id + '/resume', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async haltAll() {
+      if (!confirm('Halt all running agents?')) return;
+      await fetch('/api/kanban/halt-all', { method: 'POST' });
+      await this.refresh();
+    },
+
+    async clearDone() {
+      await fetch('/api/kanban/clear-done', { method: 'POST' });
+      await this.refresh();
+    },
+  };
+}

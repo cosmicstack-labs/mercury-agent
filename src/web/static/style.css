@@ -1561,3 +1561,654 @@ tr:last-child td { border-bottom: none; }
 
 .chat-page .main { display: flex; flex-direction: column; }
 .chat-page .chat-container { flex: 1; }
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Layout Modifiers (Workspace / Right Panel)
+   ════════════════════════════════════════════════════════ */
+
+/* When workspace is active, swap thread sidebar for file tree */
+.chat-layout-workspace {
+  grid-template-columns: 240px 1fr;
+}
+.chat-layout-workspace.chat-layout-preview {
+  grid-template-columns: 240px 1fr 360px;
+}
+.chat-threads-hidden { display: none !important; }
+
+/* When right panel is open, add column */
+.chat-layout:has(.chat-right-panel[style*="display: block"]),
+.chat-layout:has(.chat-right-panel:not([style*="display: none"])) {
+  /* fallback handled by JS grid override */
+}
+
+.btn-active {
+  color: var(--accent) !important;
+  background: var(--accent-subtle) !important;
+  border-color: var(--border-accent) !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Progress Bar (Compact, below header)
+   ════════════════════════════════════════════════════════ */
+
+.chat-progress {
+  padding: 0 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.chat-progress-bar {
+  height: 3px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.chat-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  border-radius: var(--radius-full);
+  transition: width 0.4s ease;
+  animation: progressPulse 2s ease-in-out infinite;
+}
+@keyframes progressPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.chat-progress-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.chat-progress-step {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+.chat-progress-tool {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Compact Step Indicators
+   ════════════════════════════════════════════════════════ */
+
+.chat-steps-compact {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.chat-steps-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: background var(--transition);
+  user-select: none;
+}
+.chat-steps-summary:hover { background: var(--bg-hover); }
+.chat-steps-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.step-spinner-sm {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.chat-steps-toggle {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1;
+}
+.chat-steps-detail {
+  border-top: 1px solid var(--border);
+}
+.chat-steps-detail .chat-step {
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+.chat-steps-detail .chat-step:last-child { border-bottom: none; }
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Right Settings Panel
+   ════════════════════════════════════════════════════════ */
+
+.chat-right-panel {
+  width: 280px;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rp-section {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.rp-section:last-child { border-bottom: none; }
+
+.rp-section-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 10px;
+}
+
+/* Model list */
+.rp-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rp-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--text);
+  width: 100%;
+}
+.rp-model-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+.rp-model-active {
+  background: var(--accent-subtle) !important;
+  border-color: var(--border-accent) !important;
+}
+.rp-model-name {
+  font-size: 0.8125rem;
+  font-weight: 550;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rp-model-detail {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  display: none; /* hidden on narrow panel, shown on hover via title */
+}
+.rp-model-check {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.rp-empty {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  padding: 8px 0;
+}
+
+/* Mode toggle group */
+.rp-mode-group {
+  display: flex;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.rp-mode-btn {
+  flex: 1;
+  padding: 7px 0;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+}
+.rp-mode-btn:hover { color: var(--text); background: var(--bg-hover); }
+.rp-mode-btn + .rp-mode-btn { border-left: 1px solid var(--border); }
+.rp-mode-active {
+  color: var(--accent) !important;
+  background: var(--accent-subtle) !important;
+  font-weight: 600;
+}
+
+/* Permissions toggle */
+.rp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rp-toggle input[type="checkbox"] {
+  width: 16px; height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Workspace section */
+.rp-workspace-path {
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.rp-workspace-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Workspace File Tree (Left Sidebar)
+   ════════════════════════════════════════════════════════ */
+
+.ws-file-tree {
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ws-file-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ws-file-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.ws-path-text {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.ws-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-size: 0.8125rem;
+}
+.ws-file-item:hover { background: var(--bg-hover); }
+.ws-file-active {
+  background: var(--accent-subtle) !important;
+  border: 1px solid var(--border-accent);
+}
+.ws-file-icon {
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+.ws-file-name {
+  flex: 1;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-file-size {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.ws-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--text-faint);
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHAT — Workspace File Preview (Right Pane)
+   ════════════════════════════════════════════════════════ */
+
+.ws-file-preview {
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 300px;
+  max-width: 500px;
+}
+.ws-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.ws-preview-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-preview-code {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 16px;
+  margin: 0;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* ── Responsive overrides for workspace/right panel ── */
+@media (max-width: 1024px) {
+  .chat-right-panel { width: 240px; }
+  .ws-file-preview { min-width: 240px; max-width: 320px; }
+}
+@media (max-width: 768px) {
+  .chat-right-panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 280px;
+    z-index: 200;
+    box-shadow: var(--shadow-lg);
+  }
+  .ws-file-tree { display: none !important; }
+  .ws-file-preview { display: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════
+   KANBAN BOARD
+   ════════════════════════════════════════════════════════ */
+
+.kanban-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 0px);
+  overflow: hidden;
+  padding: 0;
+}
+
+.kanban-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.kanban-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.kanban-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+.kanban-resource-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.kanban-resource-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+}
+.kanban-resource-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.kanban-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Columns */
+.kanban-columns {
+  flex: 1;
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0;
+}
+.kanban-col {
+  flex: 1;
+  min-width: 240px;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+.kanban-col:last-child { border-right: none; }
+.kanban-col-active {
+  background: linear-gradient(180deg, var(--accent-subtle), var(--bg));
+}
+
+.kanban-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.kanban-col-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.kanban-col-count {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+}
+.kanban-col-count-active {
+  color: var(--accent);
+  border-color: var(--border-accent);
+  background: var(--accent-subtle);
+}
+
+.kanban-col-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kanban-col-empty {
+  text-align: center;
+  padding: 24px 12px;
+  font-size: 0.8125rem;
+  color: var(--text-faint);
+}
+
+/* Cards */
+.kanban-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: all var(--transition);
+  box-shadow: var(--shadow-sm);
+}
+.kanban-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.kanban-card-running {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-glow);
+}
+.kanban-card-running:hover {
+  box-shadow: var(--shadow-glow), var(--shadow-md);
+}
+.kanban-card-done { opacity: 0.85; }
+.kanban-card-failed { border-left: 3px solid var(--error); }
+.kanban-card-halted { opacity: 0.65; }
+.kanban-card-paused {
+  border-left: 3px solid var(--warning);
+}
+
+.kanban-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.kanban-card-id {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  margin-bottom: 4px;
+}
+.kanban-card-top .kanban-card-id { margin-bottom: 0; }
+.kanban-card-status-icon { font-size: 0.875rem; font-weight: 700; }
+
+.kanban-card-task {
+  font-size: 0.8125rem;
+  color: var(--text);
+  line-height: 1.45;
+  margin-bottom: 8px;
+  word-wrap: break-word;
+}
+
+.kanban-card-progress {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kanban-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kanban-card-tokens {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: auto;
+}
+
+.kanban-card-elapsed {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .kanban-columns {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .kanban-col {
+    max-width: none;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .kanban-col:last-child { border-bottom: none; }
+  .kanban-header { flex-direction: column; gap: 10px; align-items: flex-start; }
+}

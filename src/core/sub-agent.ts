@@ -23,6 +23,9 @@ export class SubAgent {
   private result: SubAgentResult | null = null;
   private filesModified: string[] = [];
 
+  private totalInputTokens: number = 0;
+  private totalOutputTokens: number = 0;
+
   private agentConfig: MercuryConfig;
   private providers: ProviderRegistry;
   private identity: Identity;
@@ -144,8 +147,18 @@ export class SubAgent {
           tools: this.capabilities.getTools(),
           stopWhen: stepCountIs(maxSteps),
           abortSignal: this.abortController.signal,
-          onStepFinish: async ({ toolCalls, toolResults }) => {
+          onStepFinish: async ({ toolCalls, toolResults, usage }) => {
             if (this.abortController.signal.aborted) return;
+
+            // Accumulate live token usage
+            if (usage) {
+              this.totalInputTokens += usage.inputTokens ?? 0;
+              this.totalOutputTokens += usage.outputTokens ?? 0;
+              const liveTotal = this.totalInputTokens + this.totalOutputTokens;
+              this.taskBoard.update(this.config.id, {
+                tokenUsage: { input: this.totalInputTokens, output: this.totalOutputTokens, total: liveTotal },
+              });
+            }
 
             if (toolCalls && toolResults && toolCalls.length > 0) {
               const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
