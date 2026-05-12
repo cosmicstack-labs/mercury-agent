@@ -102,8 +102,9 @@ const COLUMNS: { key: CardStatus; label: string }[] = [
   { key: "failed", label: "Failed" },
 ];
 
-const PRIORITY_CONFIG: Record<CardPriority, { label: string; color: string }> = {
+const PRIORITY_CONFIG: Record<string, { label: string; color: string }> = {
   low: { label: "Low", color: "text-muted-foreground border-muted-foreground/40" },
+  normal: { label: "Med", color: "text-yellow-400 border-yellow-400/40" },
   medium: { label: "Med", color: "text-yellow-400 border-yellow-400/40" },
   high: { label: "High", color: "text-orange-400 border-orange-400/40" },
   critical: { label: "Crit", color: "text-red-400 border-red-400/40" },
@@ -152,9 +153,9 @@ function Skeleton({ className }: { className?: string }) {
   return <div className={cn("animate-pulse rounded-lg bg-muted", className)} />;
 }
 
-function PriorityBadge({ priority }: { priority?: CardPriority }) {
+function PriorityBadge({ priority }: { priority?: string }) {
   if (!priority) return null;
-  const cfg = PRIORITY_CONFIG[priority];
+  const cfg = PRIORITY_CONFIG[priority as CardPriority] ?? { label: priority, color: "text-muted-foreground border-muted-foreground/40" };
   return (
     <span className={cn("text-[10px] font-semibold uppercase border rounded px-1.5 py-0.5", cfg.color)}>
       {cfg.label}
