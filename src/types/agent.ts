@@ -105,3 +105,30 @@ export interface SubagentsConfig {
   maxConcurrent: number;
   mode: 'auto' | 'manual';
 }
+
+export type BoardStatus = 'active' | 'inactive';
+
+export interface BoardCard {
+  id: string;
+  task: string;
+  status: SubAgentStatus;
+  priority: SubAgentPriority;
+  order: number;
+  startedAt?: number;
+  completedAt?: number;
+  result?: string;
+  error?: string;
+  filesLocked: string[];
+  progress?: string;
+  tokenUsage?: { input: number; output: number; total: number };
+}
+
+export interface Board {
+  id: string;
+  name: string;
+  description: string;
+  status: BoardStatus;
+  createdAt: number;
+  updatedAt: number;
+  cards: BoardCard[];
+}

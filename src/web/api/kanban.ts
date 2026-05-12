@@ -1,116 +1,375 @@
 import { Hono } from 'hono';
+import { generateText } from 'ai';
 import type { SubAgentSupervisor } from '../../core/supervisor.js';
+import type { BoardManager } from '../../core/board-manager.js';
+import type { ProviderRegistry } from '../../providers/registry.js';
 
 const app = new Hono();
 
 let supervisor: SubAgentSupervisor | undefined;
+let boardManager: BoardManager | undefined;
+let providerRegistry: ProviderRegistry | undefined;
+
+// Maps cardId -> agentId for tracking runtime agent execution
+const cardAgentMap: Map<string, string> = new Map();
+// Reverse: agentId -> { boardId, cardId }
+const agentCardMap: Map<string, { boardId: string; cardId: string }> = new Map();
 
 export function setKanbanSupervisor(s: SubAgentSupervisor): void {
   supervisor = s;
 }
 
-// Get full task board
-app.get('/api/kanban', (c: any) => {
-  if (!supervisor) {
-    return c.json({ entries: [], available: false });
-  }
-  const board = supervisor.getTaskBoard();
-  const entries = board.getAll().map((e: any) => ({
-    ...e,
-    tokenUsage: e.tokenUsage || null,
+export function setKanbanBoardManager(bm: BoardManager): void {
+  boardManager = bm;
+}
+
+export function setKanbanProviders(pr: ProviderRegistry): void {
+  providerRegistry = pr;
+}
+
+export function getAgentCardMap(): Map<string, { boardId: string; cardId: string }> {
+  return agentCardMap;
+}
+
+// ══════════════════════════════════════════════════════════
+// Board CRUD
+// ══════════════════════════════════════════════════════════
+
+// List all boards
+app.get('/api/boards', (c: any) => {
+  if (!boardManager) return c.json({ boards: [], available: false });
+  const boards = boardManager.getAllBoards().map(b => ({
+    ...b,
+    cardCount: b.cards.length,
+    pendingCount: b.cards.filter(c => c.status === 'pending').length,
+    runningCount: b.cards.filter(c => c.status === 'running').length,
+    doneCount: b.cards.filter(c => c.status === 'completed' || c.status === 'failed' || c.status === 'halted').length,
   }));
-  const resources = supervisor.getResourceUsage();
-  return c.json({ entries, resources, available: true });
+  return c.json({ boards, available: true });
 });
 
-// Get entries by status
-app.get('/api/kanban/status/:status', (c: any) => {
-  if (!supervisor) return c.json({ entries: [] });
-  const status = c.req.param('status');
-  const board = supervisor.getTaskBoard();
-  const entries = board.getByStatus(status);
-  return c.json({ entries });
+// Get single board with cards
+app.get('/api/boards/:id', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const board = boardManager.getBoard(c.req.param('id'));
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+
+  const resources = supervisor ? supervisor.getResourceUsage() : null;
+  return c.json({ board, resources });
 });
 
-// Get single entry
-app.get('/api/kanban/:id', (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  const board = supervisor.getTaskBoard();
-  const entry = board.get(c.req.param('id'));
-  if (!entry) return c.json({ error: 'Not found' }, 404);
-  return c.json({ entry });
-});
-
-// Spawn a new agent task
-app.post('/api/kanban/spawn', async (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
+// Create board
+app.post('/api/boards', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
   const body = await c.req.json();
-  const { task, priority, workingDirectory, maxSteps, sourceChannelType, sourceChannelId } = body;
-  if (!task || typeof task !== 'string' || task.trim().length === 0) {
-    return c.json({ error: 'Task description required' }, 400);
+  const { name, description } = body;
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return c.json({ error: 'Board name required' }, 400);
   }
-  const id = await supervisor.spawn({
-    task: task.trim(),
-    priority: priority || 'normal',
-    workingDirectory: workingDirectory || undefined,
-    maxSteps: maxSteps || undefined,
-    sourceChannelType: sourceChannelType || 'web',
-    sourceChannelId: sourceChannelId || 'kanban',
-  });
-  return c.json({ ok: true, id });
+  const board = boardManager.createBoard(name.trim(), (description || '').trim());
+  return c.json({ ok: true, board });
 });
 
-// Halt a specific agent
-app.post('/api/kanban/:id/halt', async (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  const id = c.req.param('id');
-  const halted = await supervisor.halt(id);
-  return c.json({ ok: halted });
+// Update board
+app.patch('/api/boards/:id', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const board = boardManager.updateBoard(c.req.param('id'), body);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+  return c.json({ ok: true, board });
 });
 
-// Pause a specific agent
-app.post('/api/kanban/:id/pause', async (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  const id = c.req.param('id');
-  const paused = await supervisor.pause(id);
-  return c.json({ ok: paused });
-});
-
-// Resume a specific agent
-app.post('/api/kanban/:id/resume', async (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  const id = c.req.param('id');
-  const resumed = await supervisor.resume(id);
-  return c.json({ ok: resumed });
-});
-
-// Halt all agents
-app.post('/api/kanban/halt-all', async (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  await supervisor.haltAll();
+// Delete board
+app.delete('/api/boards/:id', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deleted = boardManager.deleteBoard(c.req.param('id'));
+  if (!deleted) return c.json({ error: 'Cannot delete board (not found or has running agents)' }, 400);
   return c.json({ ok: true });
 });
 
-// Clear completed/failed/halted entries from board
-app.post('/api/kanban/clear-done', (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  const board = supervisor.getTaskBoard();
-  const all = board.getAll();
-  let cleared = 0;
-  for (const entry of all) {
-    if (entry.status === 'completed' || entry.status === 'failed' || entry.status === 'halted') {
-      board.remove(entry.agentId);
-      cleared++;
-    }
+// Activate board
+app.post('/api/boards/:id/activate', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const activated = boardManager.activateBoard(c.req.param('id'));
+  if (!activated) return c.json({ error: 'Cannot activate (another board has running agents)' }, 400);
+  return c.json({ ok: true });
+});
+
+// Deactivate board
+app.post('/api/boards/:id/deactivate', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deactivated = boardManager.deactivateBoard(c.req.param('id'));
+  if (!deactivated) return c.json({ error: 'Cannot deactivate (has running agents)' }, 400);
+  return c.json({ ok: true });
+});
+
+// Generate cards from board description using LLM
+app.post('/api/boards/:id/generate', async (c: any) => {
+  if (!boardManager || !providerRegistry) {
+    return c.json({ error: 'Not available' }, 400);
   }
+
+  const boardId = c.req.param('id');
+  const board = boardManager.getBoard(boardId);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+
+  if (!board.description || board.description.trim().length === 0) {
+    return c.json({ error: 'Board needs a description to generate cards from' }, 400);
+  }
+
+  try {
+    const provider = providerRegistry.getDefault();
+    const result = await generateText({
+      model: provider.getModelInstance(),
+      system: `You are a project planning assistant. Given a board description, break it down into discrete, actionable task cards for an AI coding agent to execute.
+
+Rules:
+- Each task should be a single, focused unit of work
+- Tasks should be ordered logically (dependencies first)
+- Each task needs a clear description that an AI agent can act on autonomously
+- Assign priority: "high" for critical/blocking tasks, "normal" for standard work, "low" for nice-to-haves
+- Return ONLY valid JSON, no markdown fences, no explanation
+
+Return a JSON array of objects with "task" (string) and "priority" ("high"|"normal"|"low") fields.
+Example: [{"task":"Create the user authentication module with login/register endpoints","priority":"high"},{"task":"Add input validation for all form fields","priority":"normal"}]`,
+      messages: [
+        {
+          role: 'user',
+          content: `Board: "${board.name}"\n\nDescription:\n${board.description}\n\nGenerate task cards for this board.`,
+        },
+      ],
+    });
+
+    const text = (result.text || '').trim();
+
+    // Parse the JSON response — handle markdown fences if present
+    let jsonStr = text;
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      jsonStr = fenceMatch[1].trim();
+    }
+
+    let cards: Array<{ task: string; priority?: string }>;
+    try {
+      cards = JSON.parse(jsonStr);
+    } catch {
+      return c.json({ error: 'Failed to parse generated cards. LLM response was not valid JSON.', raw: text }, 500);
+    }
+
+    if (!Array.isArray(cards) || cards.length === 0) {
+      return c.json({ error: 'No cards generated', raw: text }, 500);
+    }
+
+    // Validate and sanitize
+    const validCards = cards
+      .filter(c => c && typeof c.task === 'string' && c.task.trim().length > 0)
+      .map(c => ({
+        task: c.task.trim(),
+        priority: (['high', 'normal', 'low'].includes(c.priority || '') ? c.priority : 'normal') as 'high' | 'normal' | 'low',
+      }));
+
+    if (validCards.length === 0) {
+      return c.json({ error: 'No valid cards in generated output', raw: text }, 500);
+    }
+
+    const created = boardManager.addCards(boardId, validCards);
+
+    return c.json({ ok: true, cards: created, count: created.length });
+  } catch (err: any) {
+    return c.json({ error: 'Generation failed: ' + (err.message || 'unknown error') }, 500);
+  }
+});
+
+// ══════════════════════════════════════════════════════════
+// Card CRUD
+// ══════════════════════════════════════════════════════════
+
+// Add card to board
+app.post('/api/boards/:id/cards', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { task, priority } = body;
+  if (!task || typeof task !== 'string' || task.trim().length === 0) {
+    return c.json({ error: 'Task description required' }, 400);
+  }
+  const card = boardManager.addCard(c.req.param('id'), task.trim(), priority || 'normal');
+  if (!card) return c.json({ error: 'Board not found' }, 404);
+  return c.json({ ok: true, card });
+});
+
+// Add multiple cards
+app.post('/api/boards/:id/cards/bulk', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { cards } = body;
+  if (!Array.isArray(cards) || cards.length === 0) {
+    return c.json({ error: 'Cards array required' }, 400);
+  }
+  const created = boardManager.addCards(c.req.param('id'), cards);
+  if (created.length === 0) return c.json({ error: 'Board not found' }, 404);
+  return c.json({ ok: true, cards: created });
+});
+
+// Update card
+app.patch('/api/boards/:boardId/cards/:cardId', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const card = boardManager.updateCard(c.req.param('boardId'), c.req.param('cardId'), body);
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ ok: true, card });
+});
+
+// Delete card
+app.delete('/api/boards/:boardId/cards/:cardId', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deleted = boardManager.deleteCard(c.req.param('boardId'), c.req.param('cardId'));
+  if (!deleted) return c.json({ error: 'Cannot delete card (not found or running)' }, 400);
+  return c.json({ ok: true });
+});
+
+// Reorder cards
+app.post('/api/boards/:id/cards/reorder', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { cardIds } = body;
+  if (!Array.isArray(cardIds)) return c.json({ error: 'cardIds array required' }, 400);
+  const ok = boardManager.reorderCards(c.req.param('id'), cardIds);
+  return c.json({ ok });
+});
+
+// Clear done cards
+app.post('/api/boards/:id/cards/clear-done', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const cleared = boardManager.clearDoneCards(c.req.param('id'));
   return c.json({ ok: true, cleared });
 });
 
-// Clear entire board
-app.post('/api/kanban/clear', (c: any) => {
-  if (!supervisor) return c.json({ error: 'Not available' }, 400);
-  supervisor.haltAll();
-  supervisor.clearTaskBoard();
+// ══════════════════════════════════════════════════════════
+// Card Execution (spawn agent for a card)
+// ══════════════════════════════════════════════════════════
+
+// Execute a single card
+app.post('/api/boards/:boardId/cards/:cardId/run', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const boardId = c.req.param('boardId');
+  const cardId = c.req.param('cardId');
+
+  const board = boardManager.getBoard(boardId);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+  if (board.status !== 'active') return c.json({ error: 'Board is not active. Activate it first.' }, 400);
+
+  const card = board.cards.find(cc => cc.id === cardId);
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  if (card.status === 'running' || card.status === 'paused') {
+    return c.json({ error: 'Card is already running' }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+
+  const agentId = await supervisor.spawn({
+    task: card.task,
+    priority: card.priority,
+    maxSteps: body.maxSteps || 25,
+    sourceChannelType: 'web',
+    sourceChannelId: `board:${boardId}`,
+  });
+
+  // Track mapping
+  cardAgentMap.set(cardId, agentId);
+  agentCardMap.set(agentId, { boardId, cardId });
+
+  // Update card status
+  boardManager.updateCard(boardId, cardId, {
+    status: 'running',
+    startedAt: Date.now(),
+    progress: 'Spawned agent ' + agentId,
+  });
+
+  return c.json({ ok: true, agentId });
+});
+
+// Execute all pending cards on active board
+app.post('/api/boards/:id/run-all', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const boardId = c.req.param('id');
+  const board = boardManager.getBoard(boardId);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+  if (board.status !== 'active') return c.json({ error: 'Board is not active' }, 400);
+
+  const body = await c.req.json().catch(() => ({}));
+  const pending = board.cards.filter(c => c.status === 'pending').sort((a, b) => a.order - b.order);
+  const spawned: string[] = [];
+
+  for (const card of pending) {
+    const agentId = await supervisor.spawn({
+      task: card.task,
+      priority: card.priority,
+      maxSteps: body.maxSteps || 25,
+      sourceChannelType: 'web',
+      sourceChannelId: `board:${boardId}`,
+    });
+
+    cardAgentMap.set(card.id, agentId);
+    agentCardMap.set(agentId, { boardId, cardId: card.id });
+
+    boardManager.updateCard(boardId, card.id, {
+      status: 'running',
+      startedAt: Date.now(),
+      progress: 'Spawned agent ' + agentId,
+    });
+
+    spawned.push(agentId);
+  }
+
+  return c.json({ ok: true, spawned });
+});
+
+// Halt a running card
+app.post('/api/boards/:boardId/cards/:cardId/halt', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const cardId = c.req.param('cardId');
+  const agentId = cardAgentMap.get(cardId);
+  if (!agentId) return c.json({ error: 'No running agent for this card' }, 400);
+
+  const halted = await supervisor.halt(agentId);
+  if (halted) {
+    boardManager.updateCard(c.req.param('boardId'), cardId, {
+      status: 'halted',
+      completedAt: Date.now(),
+      progress: 'Halted by user',
+    });
+    cardAgentMap.delete(cardId);
+    agentCardMap.delete(agentId);
+  }
+  return c.json({ ok: halted });
+});
+
+// Halt all running cards on a board
+app.post('/api/boards/:id/halt-all', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const boardId = c.req.param('id');
+  const board = boardManager.getBoard(boardId);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+
+  for (const card of board.cards) {
+    if (card.status === 'running' || card.status === 'paused') {
+      const agentId = cardAgentMap.get(card.id);
+      if (agentId) {
+        await supervisor.halt(agentId);
+        cardAgentMap.delete(card.id);
+        agentCardMap.delete(agentId);
+      }
+      boardManager.updateCard(boardId, card.id, {
+        status: 'halted',
+        completedAt: Date.now(),
+        progress: 'Halted by user',
+      });
+    }
+  }
   return c.json({ ok: true });
 });
 

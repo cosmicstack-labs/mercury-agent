@@ -35,6 +35,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
 import { SubAgentSupervisor } from './core/supervisor.js';
+import { BoardManager } from './core/board-manager.js';
 import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
@@ -50,7 +51,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1388,6 +1389,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     capabilities.setSupervisor(supervisor);
   }
 
+  // Board manager for multi-board kanban
+  const boardMgr = new BoardManager();
+  boardMgr.load();
+
   capabilities.setChatCommandContext({
     toolNames: () => capabilities.getToolNames(),
     skillNames: () => skills.map(s => s.name),
@@ -1506,6 +1511,49 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (supervisor) {
     setWebSupervisor(supervisor);
     setWebKanban(supervisor);
+    setWebBoardManager(boardMgr);
+    setWebKanbanProviders(providers);
+
+    // Lifecycle callback: sync agent results back to board cards
+    const { getAgentCardMap } = await import('./web/api/kanban.js');
+    supervisor.setLifecycleCallback((event) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(event.agentId);
+      if (!mapping) return;
+
+      if (event.type === 'progress' && event.progress) {
+        boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
+          progress: event.progress,
+        });
+        // Also sync token usage from the runtime task board
+        const taskBoard = supervisor!.getTaskBoard();
+        const entry = taskBoard.get(event.agentId);
+        if (entry?.tokenUsage) {
+          boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
+            tokenUsage: entry.tokenUsage,
+          });
+        }
+        boardMgr.saveBatch();
+      }
+
+      if (event.type === 'complete' && event.result) {
+        const taskBoard = supervisor!.getTaskBoard();
+        const entry = taskBoard.get(event.agentId);
+        boardMgr.updateCard(mapping.boardId, mapping.cardId, {
+          status: event.result.status === 'completed' ? 'completed' : (event.result.status === 'halted' ? 'halted' : 'failed'),
+          completedAt: Date.now(),
+          result: event.result.output,
+          error: event.result.error,
+          progress: event.result.status === 'completed' ? 'Completed' : (event.result.status === 'halted' ? 'Halted' : 'Failed'),
+          tokenUsage: entry?.tokenUsage || {
+            input: event.result.tokenUsage?.input ?? 0,
+            output: event.result.tokenUsage?.output ?? 0,
+            total: (event.result.tokenUsage?.input ?? 0) + (event.result.tokenUsage?.output ?? 0),
+          },
+        });
+        acMap.delete(event.agentId);
+      }
+    });
   }
   if (spotifyClient) {
     setWebSpotify(spotifyClient);

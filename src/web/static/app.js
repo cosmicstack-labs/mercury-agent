@@ -1768,62 +1768,308 @@ function codeMode() {
   };
 }
 
-// ─── Kanban Board ─────────────────────────────────────────────
+// ─── Kanban Board (Multi-Board) ───────────────────────────────
 function kanbanBoard() {
   return {
-    entries: [],
+    // Board list
+    boards: [],
+    loading: true,
+    activeBoardId: null,
+    currentBoard: null,
     resources: null,
-    available: false,
+
+    // Create board
+    showCreateBoard: false,
+    newBoardName: '',
+    newBoardDesc: '',
+    createError: '',
+    generating: false,
+
+    // Edit board
+    showEditBoard: false,
+    editBoardName: '',
+    editBoardDesc: '',
+    showBoardMenu: false,
+
+    // Cards
     selectedCard: null,
-    showSpawn: false,
-    spawnTask: '',
-    spawnPriority: 'normal',
-    spawnMaxSteps: 25,
-    spawnError: '',
+    showAddCard: false,
+    addCardTask: '',
+    addCardPriority: 'normal',
+    addCardError: '',
+    showEditCard: false,
+    editingCard: null,
+
     pollInterval: null,
 
     async init() {
-      await this.refresh();
-      this.pollInterval = setInterval(() => this.refresh(), 2000);
+      await this.loadBoards();
+      this.loading = false;
+      this.pollInterval = setInterval(function() {
+        if (this.activeBoardId) this.refreshBoard();
+        else this.loadBoards();
+      }.bind(this), 2500);
     },
 
-    async refresh() {
+    // ── Board list ──
+
+    async loadBoards() {
       try {
-        var res = await fetch('/api/kanban');
+        var res = await fetch('/api/boards');
         if (res.ok) {
           var data = await res.json();
-          this.entries = data.entries || [];
-          this.resources = data.resources || null;
-          this.available = data.available;
-
-          // Update selectedCard if still viewing one
-          if (this.selectedCard) {
-            var updated = this.entries.find(function(e) { return e.agentId === this.selectedCard.agentId; }.bind(this));
-            if (updated) this.selectedCard = updated;
-          }
+          this.boards = data.boards || [];
         }
       } catch (e) {
-        console.error('Kanban refresh failed:', e);
+        console.error('Failed to load boards:', e);
       }
     },
 
-    byStatus(status) {
-      return this.entries.filter(function(e) { return e.status === status; });
+    async openBoard(id) {
+      this.activeBoardId = id;
+      await this.refreshBoard();
+    },
+
+    closeBoard() {
+      this.activeBoardId = null;
+      this.currentBoard = null;
+      this.loadBoards();
+    },
+
+    async refreshBoard() {
+      if (!this.activeBoardId) return;
+      try {
+        var res = await fetch('/api/boards/' + this.activeBoardId);
+        if (res.ok) {
+          var data = await res.json();
+          this.currentBoard = data.board;
+          this.resources = data.resources;
+          // Sort cards by order
+          if (this.currentBoard && this.currentBoard.cards) {
+            this.currentBoard.cards.sort(function(a, b) { return a.order - b.order; });
+          }
+          // Update selected card if viewing one
+          if (this.selectedCard && this.currentBoard) {
+            var updated = this.currentBoard.cards.find(function(c) { return c.id === this.selectedCard.id; }.bind(this));
+            if (updated) this.selectedCard = { ...updated };
+          }
+        } else if (res.status === 404) {
+          this.closeBoard();
+        }
+      } catch (e) {
+        console.error('Failed to refresh board:', e);
+      }
+    },
+
+    async createBoard(withGenerate) {
+      this.createError = '';
+      if (!this.newBoardName.trim()) { this.createError = 'Name required'; return; }
+      try {
+        var res = await fetch('/api/boards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.newBoardName, description: this.newBoardDesc }),
+        });
+        if (res.ok) {
+          var data = await res.json();
+          var boardId = data.board.id;
+
+          if (withGenerate && this.newBoardDesc.trim()) {
+            this.generating = true;
+            try {
+              var genRes = await fetch('/api/boards/' + boardId + '/generate', { method: 'POST' });
+              if (!genRes.ok) {
+                var genErr = await genRes.json();
+                this.createError = genErr.error || 'Card generation failed';
+                // Board was still created, open it
+              }
+            } catch (e) {
+              this.createError = 'Generation network error';
+            }
+            this.generating = false;
+          }
+
+          this.showCreateBoard = false;
+          this.newBoardName = '';
+          this.newBoardDesc = '';
+          await this.loadBoards();
+          this.openBoard(boardId);
+        } else {
+          var err = await res.json();
+          this.createError = err.error || 'Failed';
+        }
+      } catch (e) {
+        this.createError = 'Network error';
+        this.generating = false;
+      }
+    },
+
+    async saveBoard() {
+      if (!this.activeBoardId) return;
+      await fetch('/api/boards/' + this.activeBoardId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.editBoardName, description: this.editBoardDesc }),
+      });
+      this.showEditBoard = false;
+      await this.refreshBoard();
+    },
+
+    async activateBoard() {
+      if (!this.activeBoardId) return;
+      var res = await fetch('/api/boards/' + this.activeBoardId + '/activate', { method: 'POST' });
+      if (!res.ok) {
+        var data = await res.json();
+        alert(data.error || 'Cannot activate');
+        return;
+      }
+      await this.refreshBoard();
+    },
+
+    async deactivateBoard() {
+      if (!this.activeBoardId) return;
+      await fetch('/api/boards/' + this.activeBoardId + '/deactivate', { method: 'POST' });
+      await this.refreshBoard();
+    },
+
+    async confirmDeleteBoard() {
+      if (!this.activeBoardId) return;
+      if (!confirm('Delete this board and all its cards?')) return;
+      var res = await fetch('/api/boards/' + this.activeBoardId, { method: 'DELETE' });
+      if (res.ok) {
+        this.closeBoard();
+      } else {
+        var data = await res.json();
+        alert(data.error || 'Cannot delete');
+      }
+    },
+
+    // ── Cards ──
+
+    cardsByStatus(status) {
+      if (!this.currentBoard) return [];
+      return this.currentBoard.cards.filter(function(c) { return c.status === status; });
     },
 
     completedCards() {
-      return this.entries.filter(function(e) {
-        return e.status === 'completed' || e.status === 'failed' || e.status === 'halted';
+      if (!this.currentBoard) return [];
+      return this.currentBoard.cards.filter(function(c) {
+        return c.status === 'completed' || c.status === 'failed' || c.status === 'halted';
       });
     },
 
-    get activeCount() {
-      return this.entries.filter(function(e) { return e.status === 'running' || e.status === 'pending' || e.status === 'paused'; }).length;
+    get pendingCount() {
+      return this.currentBoard ? this.cardsByStatus('pending').length : 0;
+    },
+
+    get runningCount() {
+      return this.currentBoard ? this.cardsByStatus('running').length : 0;
     },
 
     get doneCount() {
       return this.completedCards().length;
     },
+
+    async addCard() {
+      this.addCardError = '';
+      if (!this.addCardTask.trim()) { this.addCardError = 'Task required'; return; }
+      try {
+        var res = await fetch('/api/boards/' + this.activeBoardId + '/cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task: this.addCardTask, priority: this.addCardPriority }),
+        });
+        if (res.ok) {
+          this.showAddCard = false;
+          this.addCardTask = '';
+          this.addCardPriority = 'normal';
+          await this.refreshBoard();
+        } else {
+          var data = await res.json();
+          this.addCardError = data.error || 'Failed';
+        }
+      } catch (e) {
+        this.addCardError = 'Network error';
+      }
+    },
+
+    editCard(card) {
+      this.editingCard = { ...card };
+      this.showEditCard = true;
+    },
+
+    async saveCard() {
+      if (!this.editingCard) return;
+      await fetch('/api/boards/' + this.activeBoardId + '/cards/' + this.editingCard.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: this.editingCard.task, priority: this.editingCard.priority }),
+      });
+      this.showEditCard = false;
+      this.editingCard = null;
+      await this.refreshBoard();
+    },
+
+    async deleteCard(cardId) {
+      await fetch('/api/boards/' + this.activeBoardId + '/cards/' + cardId, { method: 'DELETE' });
+      await this.refreshBoard();
+    },
+
+    async runCard(cardId) {
+      await fetch('/api/boards/' + this.activeBoardId + '/cards/' + cardId + '/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      await this.refreshBoard();
+    },
+
+    async haltCard(cardId) {
+      await fetch('/api/boards/' + this.activeBoardId + '/cards/' + cardId + '/halt', { method: 'POST' });
+      await this.refreshBoard();
+    },
+
+    async runAllPending() {
+      await fetch('/api/boards/' + this.activeBoardId + '/run-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      await this.refreshBoard();
+    },
+
+    async haltAll() {
+      if (!confirm('Halt all running cards?')) return;
+      await fetch('/api/boards/' + this.activeBoardId + '/halt-all', { method: 'POST' });
+      await this.refreshBoard();
+    },
+
+    async clearDone() {
+      await fetch('/api/boards/' + this.activeBoardId + '/cards/clear-done', { method: 'POST' });
+      await this.refreshBoard();
+    },
+
+    async generateCards() {
+      if (!this.activeBoardId || this.generating) return;
+      this.generating = true;
+      try {
+        var res = await fetch('/api/boards/' + this.activeBoardId + '/generate', { method: 'POST' });
+        if (!res.ok) {
+          var data = await res.json();
+          alert(data.error || 'Generation failed');
+        }
+        await this.refreshBoard();
+      } catch (e) {
+        alert('Generation network error');
+      }
+      this.generating = false;
+    },
+
+    selectCard(card) {
+      this.selectedCard = { ...card };
+    },
+
+    // ── Helpers ──
 
     formatTokens(tu) {
       if (!tu) return '';
@@ -1848,8 +2094,9 @@ function kanbanBoard() {
       return sec + 's';
     },
 
-    selectCard(card) {
-      this.selectedCard = { ...card };
+    formatDate(ts) {
+      if (!ts) return '';
+      return new Date(ts).toLocaleDateString();
     },
 
     cardDoneClass(card) {
@@ -1865,64 +2112,6 @@ function kanbanBoard() {
       if (status === 'paused') return 'badge-warning';
       if (status === 'halted') return 'badge-neutral';
       return '';
-    },
-
-    async spawnAgent() {
-      this.spawnError = '';
-      if (!this.spawnTask.trim()) {
-        this.spawnError = 'Task description is required.';
-        return;
-      }
-      try {
-        var res = await fetch('/api/kanban/spawn', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            task: this.spawnTask,
-            priority: this.spawnPriority,
-            maxSteps: this.spawnMaxSteps || 25,
-          }),
-        });
-        if (res.ok) {
-          this.showSpawn = false;
-          this.spawnTask = '';
-          this.spawnPriority = 'normal';
-          this.spawnMaxSteps = 25;
-          await this.refresh();
-        } else {
-          var data = await res.json();
-          this.spawnError = data.error || 'Failed to spawn agent.';
-        }
-      } catch (e) {
-        this.spawnError = 'Network error: ' + e.message;
-      }
-    },
-
-    async haltAgent(id) {
-      await fetch('/api/kanban/' + id + '/halt', { method: 'POST' });
-      this.selectedCard = null;
-      await this.refresh();
-    },
-
-    async pauseAgent(id) {
-      await fetch('/api/kanban/' + id + '/pause', { method: 'POST' });
-      await this.refresh();
-    },
-
-    async resumeAgent(id) {
-      await fetch('/api/kanban/' + id + '/resume', { method: 'POST' });
-      await this.refresh();
-    },
-
-    async haltAll() {
-      if (!confirm('Halt all running agents?')) return;
-      await fetch('/api/kanban/halt-all', { method: 'POST' });
-      await this.refresh();
-    },
-
-    async clearDone() {
-      await fetch('/api/kanban/clear-done', { method: 'POST' });
-      await this.refresh();
     },
   };
 }

@@ -28,8 +28,9 @@ import { renderGoals } from './pages/brain/goals.js';
 import { renderGraph } from './pages/brain/graph.js';
 import { renderChat } from './pages/chat.js';
 import { renderTasks } from './pages/tasks.js';
-import kanbanRoutes, { setKanbanSupervisor } from './api/kanban.js';
+import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import { renderKanban } from './pages/kanban.js';
+import { BoardManager } from '../core/board-manager.js';
 import { loadConfig } from '../utils/config.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -171,7 +172,7 @@ app.get('/board', (c) => {
   return c.html(renderKanban(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
