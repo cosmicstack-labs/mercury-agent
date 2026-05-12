@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { generateText } from 'ai';
 import type { SubAgentSupervisor } from '../../core/supervisor.js';
 import type { BoardManager } from '../../core/board-manager.js';
@@ -690,6 +691,68 @@ app.delete('/api/boards/:boardId/cards/:cardId/dependencies/:depId', (c: any) =>
   const ok = boardManager.removeDependency(c.req.param('boardId'), c.req.param('cardId'), c.req.param('depId'));
   if (!ok) return c.json({ error: 'Dependency not found' }, 404);
   return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Attachment File Serving (preview/download)
+// ══════════════════════════════════════════════════════════
+
+app.get('/api/boards/:boardId/cards/:cardId/attachments/:attachmentId/content', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const card = boardManager.getCard(c.req.param('boardId'), c.req.param('cardId'));
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  const att = card.attachments?.find(a => a.id === c.req.param('attachmentId'));
+  if (!att) return c.json({ error: 'Attachment not found' }, 404);
+
+  if (!existsSync(att.path)) {
+    return c.json({ error: 'File not found on disk', path: att.path }, 404);
+  }
+
+  try {
+    const stat = statSync(att.path);
+    const content = readFileSync(att.path, 'utf-8');
+    return c.json({
+      ok: true,
+      attachment: att,
+      content,
+      size: stat.size,
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Failed to read file: ' + err.message }, 500);
+  }
+});
+
+// Download endpoint — returns raw file
+app.get('/api/boards/:boardId/cards/:cardId/attachments/:attachmentId/download', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const card = boardManager.getCard(c.req.param('boardId'), c.req.param('cardId'));
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  const att = card.attachments?.find(a => a.id === c.req.param('attachmentId'));
+  if (!att) return c.json({ error: 'Attachment not found' }, 404);
+
+  if (!existsSync(att.path)) {
+    return c.json({ error: 'File not found on disk' }, 404);
+  }
+
+  try {
+    const content = readFileSync(att.path);
+    const mimeTypes: Record<string, string> = {
+      markdown: 'text/markdown',
+      document: 'application/octet-stream',
+      image: 'image/' + (att.path.endsWith('.png') ? 'png' : att.path.endsWith('.svg') ? 'svg+xml' : 'jpeg'),
+      presentation: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      other: 'application/octet-stream',
+    };
+    const mime = mimeTypes[att.type] ?? 'application/octet-stream';
+    return new Response(content, {
+      headers: {
+        'Content-Type': mime,
+        'Content-Disposition': `attachment; filename="${att.name}"`,
+      },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Failed to read file: ' + err.message }, 500);
+  }
 });
 
 export default app;

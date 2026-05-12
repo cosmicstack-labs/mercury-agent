@@ -317,6 +317,10 @@ export const boards = {
         post<{ ok: boolean; attachment: CardAttachment }>(`/api/boards/${boardId}/cards/${cardId}/attachments`, data),
       delete: (boardId: string, cardId: string, attachmentId: string) =>
         del<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/attachments/${attachmentId}`),
+      content: (boardId: string, cardId: string, attachmentId: string) =>
+        get<{ ok: boolean; attachment: CardAttachment; content: string; size: number }>(`/api/boards/${boardId}/cards/${cardId}/attachments/${attachmentId}/content`),
+      downloadUrl: (boardId: string, cardId: string, attachmentId: string) =>
+        `/api/boards/${boardId}/cards/${cardId}/attachments/${attachmentId}/download`,
     },
     // Labels
     labels: {

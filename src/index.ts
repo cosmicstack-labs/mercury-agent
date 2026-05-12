@@ -1516,23 +1516,46 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     // Lifecycle callback: sync agent results back to board cards
     const { getAgentCardMap } = await import('./web/api/kanban.js');
+
+    // Comment check: sub-agents poll this to discover new user comments
+    supervisor.setCommentCheckCallback((agentId: string) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(agentId);
+      if (!mapping) return [];
+      const card = boardMgr.getCard(mapping.boardId, mapping.cardId);
+      if (!card || !card.comments) return [];
+      return card.comments
+        .filter(c => c.author === 'user')
+        .map(c => ({ id: c.id, author: c.authorName, content: c.content, timestamp: c.timestamp }));
+    });
+
+    // Post comment: sub-agents use this to reply to user comments
+    supervisor.setPostCommentCallback((agentId: string, content: string) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(agentId);
+      if (!mapping) return;
+      boardMgr.addComment(mapping.boardId, mapping.cardId, 'agent', `Agent ${agentId}`, content);
+    });
+
     supervisor.setLifecycleCallback((event) => {
       const acMap = getAgentCardMap();
       const mapping = acMap.get(event.agentId);
       if (!mapping) return;
 
       if (event.type === 'progress' && event.progress) {
-        boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
-          progress: event.progress,
-        });
-        // Also sync token usage from the runtime task board
+        // Sync progress, live token usage, and files being edited
         const taskBoard = supervisor!.getTaskBoard();
         const entry = taskBoard.get(event.agentId);
-        if (entry?.tokenUsage) {
-          boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
-            tokenUsage: entry.tokenUsage,
-          });
-        }
+        const fileLockMgr = supervisor!.getFileLockManager();
+        const lockedFiles = fileLockMgr.getLocksFor(event.agentId)
+          .filter(l => l.mode === 'write')
+          .map(l => l.filePath);
+
+        boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
+          progress: event.progress,
+          filesLocked: lockedFiles,
+          ...(entry?.tokenUsage ? { tokenUsage: entry.tokenUsage } : {}),
+        });
         boardMgr.saveBatch();
       }
 
@@ -1544,6 +1567,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           completedAt: Date.now(),
           result: event.result.output,
           error: event.result.error,
+          filesLocked: [], // release on completion
           progress: event.result.status === 'completed' ? 'Completed' : (event.result.status === 'halted' ? 'Halted' : 'Failed'),
           tokenUsage: entry?.tokenUsage || {
             input: event.result.tokenUsage?.input ?? 0,
@@ -1551,6 +1575,30 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             total: (event.result.tokenUsage?.input ?? 0) + (event.result.tokenUsage?.output ?? 0),
           },
         });
+
+        // Auto-detect document files and register as attachments
+        if (event.result.filesModified && event.result.filesModified.length > 0) {
+          const docExtensions: Record<string, 'markdown' | 'document' | 'image' | 'presentation' | 'other'> = {
+            '.md': 'markdown', '.mdx': 'markdown',
+            '.doc': 'document', '.docx': 'document', '.pdf': 'document', '.txt': 'document',
+            '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.svg': 'image', '.webp': 'image',
+            '.ppt': 'presentation', '.pptx': 'presentation',
+          };
+          for (const filePath of event.result.filesModified) {
+            const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+            const docType = docExtensions[ext];
+            if (docType) {
+              const fileName = filePath.split('/').pop() || filePath;
+              boardMgr.addAttachment(mapping.boardId, mapping.cardId, {
+                name: fileName,
+                path: filePath,
+                type: docType,
+                addedBy: 'agent',
+              });
+            }
+          }
+        }
+
         acMap.delete(event.agentId);
       }
     });
