@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
-import type { Board, BoardCard, BoardStatus, SubAgentStatus, SubAgentPriority } from '../types/agent.js';
+import type { Board, BoardCard, BoardStatus, SubAgentStatus, SubAgentPriority, CardComment, CardAttachment, CardLabel } from '../types/agent.js';
 
 const BOARDS_FILE = 'boards.json';
 
@@ -253,6 +253,264 @@ export class BoardManager {
       this.save();
     }
     return cleared;
+  }
+
+  // ── Card Comments ──
+
+  addComment(boardId: string, cardId: string, author: 'user' | 'agent', authorName: string, content: string): CardComment | undefined {
+    const card = this.getCard(boardId, cardId);
+    if (!card) return undefined;
+    if (!card.comments) card.comments = [];
+    const comment: CardComment = {
+      id: `cmt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      author,
+      authorName,
+      content,
+      timestamp: Date.now(),
+    };
+    card.comments.push(comment);
+    const board = this.boards.get(boardId)!;
+    board.updatedAt = Date.now();
+    this.save();
+    return comment;
+  }
+
+  deleteComment(boardId: string, cardId: string, commentId: string): boolean {
+    const card = this.getCard(boardId, cardId);
+    if (!card || !card.comments) return false;
+    const idx = card.comments.findIndex(c => c.id === commentId);
+    if (idx === -1) return false;
+    card.comments.splice(idx, 1);
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  // ── Card Attachments ──
+
+  addAttachment(boardId: string, cardId: string, attachment: Omit<CardAttachment, 'id' | 'addedAt'>): CardAttachment | undefined {
+    const card = this.getCard(boardId, cardId);
+    if (!card) return undefined;
+    if (!card.attachments) card.attachments = [];
+    const full: CardAttachment = {
+      ...attachment,
+      id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      addedAt: Date.now(),
+    };
+    card.attachments.push(full);
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return full;
+  }
+
+  deleteAttachment(boardId: string, cardId: string, attachmentId: string): boolean {
+    const card = this.getCard(boardId, cardId);
+    if (!card || !card.attachments) return false;
+    const idx = card.attachments.findIndex(a => a.id === attachmentId);
+    if (idx === -1) return false;
+    card.attachments.splice(idx, 1);
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  // ── Card Labels ──
+
+  addLabel(boardId: string, cardId: string, name: string, color: string): CardLabel | undefined {
+    const card = this.getCard(boardId, cardId);
+    if (!card) return undefined;
+    if (!card.labels) card.labels = [];
+    // Don't add duplicate labels
+    if (card.labels.some(l => l.name === name)) return card.labels.find(l => l.name === name);
+    const label: CardLabel = {
+      id: `lbl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      color,
+    };
+    card.labels.push(label);
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return label;
+  }
+
+  removeLabel(boardId: string, cardId: string, labelId: string): boolean {
+    const card = this.getCard(boardId, cardId);
+    if (!card || !card.labels) return false;
+    const idx = card.labels.findIndex(l => l.id === labelId);
+    if (idx === -1) return false;
+    card.labels.splice(idx, 1);
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  // ── Card Dependencies ──
+
+  setParent(boardId: string, cardId: string, parentId: string | null): boolean {
+    const board = this.boards.get(boardId);
+    if (!board) return false;
+    const card = board.cards.find(c => c.id === cardId);
+    if (!card) return false;
+    if (parentId) {
+      // Validate parent exists and is not self or a descendant
+      if (parentId === cardId) return false;
+      const parent = board.cards.find(c => c.id === parentId);
+      if (!parent) return false;
+      // Prevent circular: walk up from parentId, ensure we never hit cardId
+      let current: string | undefined = parentId;
+      while (current) {
+        if (current === cardId) return false; // circular
+        const p = board.cards.find(c => c.id === current);
+        current = p?.parentId;
+      }
+      card.parentId = parentId;
+      // Auto-add parent to dependsOn
+      if (!card.dependsOn) card.dependsOn = [];
+      if (!card.dependsOn.includes(parentId)) card.dependsOn.push(parentId);
+    } else {
+      delete card.parentId;
+    }
+    board.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  addDependency(boardId: string, cardId: string, dependsOnCardId: string): boolean {
+    const board = this.boards.get(boardId);
+    if (!board) return false;
+    const card = board.cards.find(c => c.id === cardId);
+    if (!card) return false;
+    if (cardId === dependsOnCardId) return false;
+    if (!board.cards.find(c => c.id === dependsOnCardId)) return false;
+    // Check for circular dependency
+    if (this.wouldCreateCycle(board, dependsOnCardId, cardId)) return false;
+    if (!card.dependsOn) card.dependsOn = [];
+    if (!card.dependsOn.includes(dependsOnCardId)) card.dependsOn.push(dependsOnCardId);
+    board.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  removeDependency(boardId: string, cardId: string, dependsOnCardId: string): boolean {
+    const card = this.getCard(boardId, cardId);
+    if (!card || !card.dependsOn) return false;
+    const idx = card.dependsOn.indexOf(dependsOnCardId);
+    if (idx === -1) return false;
+    card.dependsOn.splice(idx, 1);
+    if (card.dependsOn.length === 0) delete card.dependsOn;
+    this.boards.get(boardId)!.updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  getChildren(boardId: string, cardId: string): BoardCard[] {
+    const board = this.boards.get(boardId);
+    if (!board) return [];
+    return board.cards.filter(c => c.parentId === cardId);
+  }
+
+  /** Check if adding an edge from -> to would create a cycle */
+  private wouldCreateCycle(board: Board, from: string, to: string): boolean {
+    // BFS from 'to' following dependsOn edges; if we reach 'from', it's a cycle
+    const visited = new Set<string>();
+    const queue = [to];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === from) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const card = board.cards.find(c => c.id === current);
+      if (card?.dependsOn) {
+        for (const dep of card.dependsOn) queue.push(dep);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Smart Execute: returns cards in dependency-aware execution order.
+   * Uses topological sort — cards with no unmet dependencies come first.
+   * Returns batches: each batch can run concurrently, batches must run sequentially.
+   */
+  getSmartExecutionOrder(boardId: string): BoardCard[][] {
+    const board = this.boards.get(boardId);
+    if (!board) return [];
+
+    const pending = board.cards.filter(c => c.status === 'pending');
+    if (pending.length === 0) return [];
+
+    const pendingIds = new Set(pending.map(c => c.id));
+    // Build in-degree map (only considering pending cards)
+    const inDegree = new Map<string, number>();
+    const dependents = new Map<string, string[]>(); // card -> cards that depend on it
+
+    for (const card of pending) {
+      const deps = (card.dependsOn ?? []).filter(d => pendingIds.has(d));
+      inDegree.set(card.id, deps.length);
+      for (const dep of deps) {
+        if (!dependents.has(dep)) dependents.set(dep, []);
+        dependents.get(dep)!.push(card.id);
+      }
+    }
+
+    const batches: BoardCard[][] = [];
+    const remaining = new Set(pendingIds);
+
+    while (remaining.size > 0) {
+      // Find all cards with in-degree 0 (no unmet dependencies)
+      const batch: BoardCard[] = [];
+      for (const id of remaining) {
+        if ((inDegree.get(id) ?? 0) === 0) {
+          batch.push(pending.find(c => c.id === id)!);
+        }
+      }
+
+      if (batch.length === 0) {
+        // Circular dependency detected — just add remaining cards as-is
+        for (const id of remaining) {
+          batch.push(pending.find(c => c.id === id)!);
+        }
+        batches.push(batch.sort((a, b) => a.order - b.order));
+        break;
+      }
+
+      // Sort batch by priority (high first) then order
+      batch.sort((a, b) => {
+        const prio = { high: 0, normal: 1, low: 2 };
+        const pa = prio[a.priority] ?? 1;
+        const pb = prio[b.priority] ?? 1;
+        return pa !== pb ? pa - pb : a.order - b.order;
+      });
+
+      batches.push(batch);
+
+      // Remove batch from graph, update in-degrees
+      for (const card of batch) {
+        remaining.delete(card.id);
+        for (const dep of dependents.get(card.id) ?? []) {
+          inDegree.set(dep, (inDegree.get(dep) ?? 1) - 1);
+        }
+      }
+    }
+
+    return batches;
+  }
+
+  /**
+   * Get cards whose dependencies are now satisfied (all dependsOn cards completed).
+   * Used for auto-cascading: when a card finishes, check which children are now unblocked.
+   */
+  getUnblockedCards(boardId: string): BoardCard[] {
+    const board = this.boards.get(boardId);
+    if (!board) return [];
+    return board.cards.filter(card => {
+      if (card.status !== 'pending') return false;
+      if (!card.dependsOn || card.dependsOn.length === 0) return true;
+      return card.dependsOn.every(depId => {
+        const dep = board.cards.find(c => c.id === depId);
+        return dep && (dep.status === 'completed');
+      });
+    });
   }
 
   // ── Bridge: sync card status from runtime TaskBoard ──

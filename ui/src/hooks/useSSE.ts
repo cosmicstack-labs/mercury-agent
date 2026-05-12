@@ -90,8 +90,9 @@ export function useSSE(): SSEResult {
 
     es.addEventListener("text_done", (e) => {
       try {
-        const data = JSON.parse((e as MessageEvent).data);
-        const fullText = data.fullText ?? data.text ?? (e as MessageEvent).data;
+        const raw = (e as MessageEvent).data;
+        const data = JSON.parse(raw);
+        const fullText = data.fullText ?? data.text ?? raw;
         store.getState().clearStreaming();
         store.getState().setWaiting(false);
         store.getState().resetSteps();
@@ -101,7 +102,12 @@ export function useSSE(): SSEResult {
           content: fullText,
           timestamp: new Date().toISOString(),
         });
-      } catch { /* ignore */ }
+      } catch {
+        // Always reset busy state even if parsing fails
+        store.getState().clearStreaming();
+        store.getState().setWaiting(false);
+        store.getState().resetSteps();
+      }
     });
 
     es.addEventListener("permission_request", (e) => {

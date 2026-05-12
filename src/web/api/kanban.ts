@@ -19,7 +19,13 @@ function normalizeCard(card: any): any {
     ...card,
     status: normalizeCardStatus(card.status),
     tokensUsed: card.tokenUsage?.total ?? card.tokensUsed,
+    tokenUsage: card.tokenUsage ?? null,
     createdAt: card.createdAt ?? card.startedAt ?? new Date().toISOString(),
+    labels: card.labels ?? [],
+    comments: card.comments ?? [],
+    attachments: card.attachments ?? [],
+    parentId: card.parentId ?? null,
+    dependsOn: card.dependsOn ?? [],
   };
 }
 
@@ -142,7 +148,7 @@ app.post('/api/boards/:id/deactivate', (c: any) => {
   return c.json({ ok: true });
 });
 
-// Generate cards from board description using LLM
+// Generate cards from board description using LLM (with dependency tree)
 app.post('/api/boards/:id/generate', async (c: any) => {
   if (!boardManager || !providerRegistry) {
     return c.json({ error: 'Not available' }, 400);
@@ -160,21 +166,38 @@ app.post('/api/boards/:id/generate', async (c: any) => {
     const provider = providerRegistry.getDefault();
     const result = await generateText({
       model: provider.getModelInstance(),
-      system: `You are a project planning assistant. Given a board description, break it down into discrete, actionable task cards for an AI coding agent to execute.
+      system: `You are a project planning assistant. Given a board description, break it down into a dependency tree of task cards for an AI coding agent to execute.
 
 Rules:
+- Create parent tasks for major features/milestones and child tasks for their implementation steps
 - Each task should be a single, focused unit of work
-- Tasks should be ordered logically (dependencies first)
-- Each task needs a clear description that an AI agent can act on autonomously
+- Child tasks should reference their parent by index (0-based) in the "parentIndex" field
+- Tasks with dependencies should list the indices they depend on in "dependsOnIndices"
+- Root tasks (no parent) should have parentIndex: null
+- Order tasks logically — parents before children, dependencies before dependents
 - Assign priority: "high" for critical/blocking tasks, "normal" for standard work, "low" for nice-to-haves
 - Return ONLY valid JSON, no markdown fences, no explanation
 
-Return a JSON array of objects with "task" (string) and "priority" ("high"|"normal"|"low") fields.
-Example: [{"task":"Create the user authentication module with login/register endpoints","priority":"high"},{"task":"Add input validation for all form fields","priority":"normal"}]`,
+Return a JSON array of objects:
+{
+  "task": "description",
+  "priority": "high"|"normal"|"low",
+  "parentIndex": number|null,
+  "dependsOnIndices": number[]
+}
+
+Example:
+[
+  {"task":"Set up database schema for users","priority":"high","parentIndex":null,"dependsOnIndices":[]},
+  {"task":"Create user model and migrations","priority":"high","parentIndex":0,"dependsOnIndices":[0]},
+  {"task":"Build authentication endpoints","priority":"high","parentIndex":0,"dependsOnIndices":[1]},
+  {"task":"Set up frontend routing","priority":"normal","parentIndex":null,"dependsOnIndices":[]},
+  {"task":"Build login page UI","priority":"normal","parentIndex":3,"dependsOnIndices":[2,3]}
+]`,
       messages: [
         {
           role: 'user',
-          content: `Board: "${board.name}"\n\nDescription:\n${board.description}\n\nGenerate task cards for this board.`,
+          content: `Board: "${board.name}"\n\nDescription:\n${board.description}\n\nGenerate task cards with parent-child relationships and dependencies for this board.`,
         },
       ],
     });
@@ -188,32 +211,64 @@ Example: [{"task":"Create the user authentication module with login/register end
       jsonStr = fenceMatch[1].trim();
     }
 
-    let cards: Array<{ task: string; priority?: string }>;
+    let rawCards: Array<{ task: string; priority?: string; parentIndex?: number | null; dependsOnIndices?: number[] }>;
     try {
-      cards = JSON.parse(jsonStr);
+      rawCards = JSON.parse(jsonStr);
     } catch {
       return c.json({ error: 'Failed to parse generated cards. LLM response was not valid JSON.', raw: text }, 500);
     }
 
-    if (!Array.isArray(cards) || cards.length === 0) {
+    if (!Array.isArray(rawCards) || rawCards.length === 0) {
       return c.json({ error: 'No cards generated', raw: text }, 500);
     }
 
     // Validate and sanitize
-    const validCards = cards
+    const validCards = rawCards
       .filter(c => c && typeof c.task === 'string' && c.task.trim().length > 0)
       .map(c => ({
         task: c.task.trim(),
         priority: (['high', 'normal', 'low'].includes(c.priority || '') ? c.priority : 'normal') as 'high' | 'normal' | 'low',
+        parentIndex: typeof c.parentIndex === 'number' ? c.parentIndex : null,
+        dependsOnIndices: Array.isArray(c.dependsOnIndices) ? c.dependsOnIndices.filter(i => typeof i === 'number') : [],
       }));
 
     if (validCards.length === 0) {
       return c.json({ error: 'No valid cards in generated output', raw: text }, 500);
     }
 
-    const created = boardManager.addCards(boardId, validCards);
+    // First pass: create all cards (without deps)
+    const created = boardManager.addCards(boardId, validCards.map(c => ({ task: c.task, priority: c.priority })));
 
-    return c.json({ ok: true, cards: created.map(normalizeCard), count: created.length });
+    // Second pass: wire up parentId and dependsOn using the created card IDs
+    for (let i = 0; i < validCards.length; i++) {
+      const spec = validCards[i];
+      const card = created[i];
+      if (!card) continue;
+
+      // Set parent
+      if (spec.parentIndex !== null && spec.parentIndex >= 0 && spec.parentIndex < created.length && spec.parentIndex !== i) {
+        const parentCard = created[spec.parentIndex];
+        if (parentCard) {
+          boardManager.setParent(boardId, card.id, parentCard.id);
+        }
+      }
+
+      // Set dependsOn
+      for (const depIdx of spec.dependsOnIndices) {
+        if (depIdx >= 0 && depIdx < created.length && depIdx !== i) {
+          const depCard = created[depIdx];
+          if (depCard) {
+            boardManager.addDependency(boardId, card.id, depCard.id);
+          }
+        }
+      }
+    }
+
+    // Re-fetch cards after wiring deps
+    const updatedBoard = boardManager.getBoard(boardId);
+    const finalCards = updatedBoard ? updatedBoard.cards.slice(-created.length).map(normalizeCard) : created.map(normalizeCard);
+
+    return c.json({ ok: true, cards: finalCards, count: created.length });
   } catch (err: any) {
     return c.json({ error: 'Generation failed: ' + (err.message || 'unknown error') }, 500);
   }
@@ -409,6 +464,231 @@ app.post('/api/boards/:id/halt-all', async (c: any) => {
       });
     }
   }
+  return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Smart Execute (dependency-aware)
+// ══════════════════════════════════════════════════════════
+
+// Get execution plan (preview)
+app.get('/api/boards/:id/execution-plan', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const batches = boardManager.getSmartExecutionOrder(boardId);
+  return c.json({
+    ok: true,
+    batches: batches.map((batch, i) => ({
+      wave: i + 1,
+      cards: batch.map(normalizeCard),
+    })),
+    totalBatches: batches.length,
+    totalCards: batches.reduce((sum, b) => sum + b.length, 0),
+  });
+});
+
+// Smart Execute: run cards in dependency order
+app.post('/api/boards/:id/smart-execute', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const boardId = c.req.param('id');
+  const board = boardManager.getBoard(boardId);
+  if (!board) return c.json({ error: 'Board not found' }, 404);
+  if (board.status !== 'active') return c.json({ error: 'Board is not active' }, 400);
+
+  const body = await c.req.json().catch(() => ({}));
+  const batches = boardManager.getSmartExecutionOrder(boardId);
+  if (batches.length === 0) return c.json({ ok: true, message: 'No pending cards to execute', spawned: [] });
+
+  // Start the first batch — subsequent batches auto-start via cascade
+  const firstBatch = batches[0];
+  const spawned: string[] = [];
+
+  for (const card of firstBatch) {
+    const agentId = await supervisor.spawn({
+      task: card.task,
+      priority: card.priority,
+      maxSteps: body.maxSteps || 25,
+      sourceChannelType: 'web',
+      sourceChannelId: `board:${boardId}`,
+    });
+
+    cardAgentMap.set(card.id, agentId);
+    agentCardMap.set(agentId, { boardId, cardId: card.id });
+
+    boardManager.updateCard(boardId, card.id, {
+      status: 'running',
+      startedAt: Date.now(),
+      progress: `Wave 1 — Spawned agent ${agentId}`,
+    });
+
+    spawned.push(agentId);
+  }
+
+  return c.json({
+    ok: true,
+    spawned,
+    plan: {
+      totalBatches: batches.length,
+      currentBatch: 1,
+      remainingBatches: batches.length - 1,
+      nextBatchCards: batches.length > 1 ? batches[1].map(c => c.id) : [],
+    },
+  });
+});
+
+// Check and cascade: called when a card completes to auto-start unblocked children
+app.post('/api/boards/:boardId/cards/:cardId/cascade', async (c: any) => {
+  if (!boardManager || !supervisor) return c.json({ error: 'Not available' }, 400);
+
+  const boardId = c.req.param('boardId');
+  const board = boardManager.getBoard(boardId);
+  if (!board || board.status !== 'active') return c.json({ ok: true, cascaded: [] });
+
+  const body = await c.req.json().catch(() => ({}));
+  const unblocked = boardManager.getUnblockedCards(boardId);
+  const cascaded: string[] = [];
+
+  for (const card of unblocked) {
+    const agentId = await supervisor.spawn({
+      task: card.task,
+      priority: card.priority,
+      maxSteps: body.maxSteps || 25,
+      sourceChannelType: 'web',
+      sourceChannelId: `board:${boardId}`,
+    });
+
+    cardAgentMap.set(card.id, agentId);
+    agentCardMap.set(agentId, { boardId, cardId: card.id });
+
+    boardManager.updateCard(boardId, card.id, {
+      status: 'running',
+      startedAt: Date.now(),
+      progress: `Auto-cascaded — Spawned agent ${agentId}`,
+    });
+
+    cascaded.push(card.id);
+  }
+
+  return c.json({ ok: true, cascaded });
+});
+
+// ══════════════════════════════════════════════════════════
+// Card Comments
+// ══════════════════════════════════════════════════════════
+
+app.get('/api/boards/:boardId/cards/:cardId/comments', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const card = boardManager.getCard(c.req.param('boardId'), c.req.param('cardId'));
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ comments: card.comments ?? [] });
+});
+
+app.post('/api/boards/:boardId/cards/:cardId/comments', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { content, author, authorName } = body;
+  if (!content || typeof content !== 'string') return c.json({ error: 'Content required' }, 400);
+  const comment = boardManager.addComment(
+    c.req.param('boardId'),
+    c.req.param('cardId'),
+    author || 'user',
+    authorName || 'Admin',
+    content.trim(),
+  );
+  if (!comment) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ ok: true, comment });
+});
+
+app.delete('/api/boards/:boardId/cards/:cardId/comments/:commentId', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deleted = boardManager.deleteComment(c.req.param('boardId'), c.req.param('cardId'), c.req.param('commentId'));
+  if (!deleted) return c.json({ error: 'Comment not found' }, 404);
+  return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Card Attachments
+// ══════════════════════════════════════════════════════════
+
+app.get('/api/boards/:boardId/cards/:cardId/attachments', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const card = boardManager.getCard(c.req.param('boardId'), c.req.param('cardId'));
+  if (!card) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ attachments: card.attachments ?? [] });
+});
+
+app.post('/api/boards/:boardId/cards/:cardId/attachments', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { name, path, type, size, addedBy } = body;
+  if (!name || !path) return c.json({ error: 'name and path required' }, 400);
+  const attachment = boardManager.addAttachment(c.req.param('boardId'), c.req.param('cardId'), {
+    name,
+    path,
+    type: type || 'other',
+    size,
+    addedBy: addedBy || 'agent',
+  });
+  if (!attachment) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ ok: true, attachment });
+});
+
+app.delete('/api/boards/:boardId/cards/:cardId/attachments/:attachmentId', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deleted = boardManager.deleteAttachment(c.req.param('boardId'), c.req.param('cardId'), c.req.param('attachmentId'));
+  if (!deleted) return c.json({ error: 'Attachment not found' }, 404);
+  return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Card Labels
+// ══════════════════════════════════════════════════════════
+
+app.post('/api/boards/:boardId/cards/:cardId/labels', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { name, color } = body;
+  if (!name || !color) return c.json({ error: 'name and color required' }, 400);
+  const label = boardManager.addLabel(c.req.param('boardId'), c.req.param('cardId'), name, color);
+  if (!label) return c.json({ error: 'Card not found' }, 404);
+  return c.json({ ok: true, label });
+});
+
+app.delete('/api/boards/:boardId/cards/:cardId/labels/:labelId', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const deleted = boardManager.removeLabel(c.req.param('boardId'), c.req.param('cardId'), c.req.param('labelId'));
+  if (!deleted) return c.json({ error: 'Label not found' }, 404);
+  return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Card Dependencies
+// ══════════════════════════════════════════════════════════
+
+app.post('/api/boards/:boardId/cards/:cardId/parent', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { parentId } = body;
+  const ok = boardManager.setParent(c.req.param('boardId'), c.req.param('cardId'), parentId ?? null);
+  if (!ok) return c.json({ error: 'Invalid parent (not found, self-reference, or circular)' }, 400);
+  return c.json({ ok: true });
+});
+
+app.post('/api/boards/:boardId/cards/:cardId/dependencies', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const body = await c.req.json();
+  const { dependsOnCardId } = body;
+  if (!dependsOnCardId) return c.json({ error: 'dependsOnCardId required' }, 400);
+  const ok = boardManager.addDependency(c.req.param('boardId'), c.req.param('cardId'), dependsOnCardId);
+  if (!ok) return c.json({ error: 'Invalid dependency (not found, self-reference, or circular)' }, 400);
+  return c.json({ ok: true });
+});
+
+app.delete('/api/boards/:boardId/cards/:cardId/dependencies/:depId', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const ok = boardManager.removeDependency(c.req.param('boardId'), c.req.param('cardId'), c.req.param('depId'));
+  if (!ok) return c.json({ error: 'Dependency not found' }, 404);
   return c.json({ ok: true });
 });
 

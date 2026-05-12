@@ -20,6 +20,7 @@ const PermissionsPage = lazy(() => import("./pages/Permissions").then((m) => ({ 
 const SchedulesPage = lazy(() => import("./pages/Schedules").then((m) => ({ default: m.SchedulesPage })));
 const UsagePage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.UsagePage })));
 const SettingsPage = lazy(() => import("./pages/Settings").then((m) => ({ default: m.SettingsPage })));
+const ProfitSharingPage = lazy(() => import("./pages/ProfitSharing").then((m) => ({ default: m.ProfitSharingPage })));
 
 function PageLoader() {
   return (
@@ -77,6 +78,7 @@ function AnimatedRoutes() {
             <Route path="schedules" element={<AnimatedPage><SchedulesPage /></AnimatedPage>} />
             <Route path="usage" element={<AnimatedPage><UsagePage /></AnimatedPage>} />
             <Route path="settings" element={<AnimatedPage><SettingsPage /></AnimatedPage>} />
+            <Route path="profit-sharing" element={<AnimatedPage><ProfitSharingPage /></AnimatedPage>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

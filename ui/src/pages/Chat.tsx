@@ -339,6 +339,9 @@ export function ChatPage() {
   const setActiveThread = useChatStore((s) => s.setActiveThread);
   const addMessage = useChatStore((s) => s.addMessage);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const setWaiting = useChatStore((s) => s.setWaiting);
+  const clearStreaming = useChatStore((s) => s.clearStreaming);
+  const resetSteps = useChatStore((s) => s.resetSteps);
 
   // Panel state
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -381,6 +384,9 @@ export function ChatPage() {
       // Reload threads in background to pick up new thread
       reloadThreads();
     } catch {
+      setWaiting(false);
+      clearStreaming();
+      resetSteps();
       addMessage({
         id: crypto.randomUUID(),
         role: "system",

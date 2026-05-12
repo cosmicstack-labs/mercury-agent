@@ -266,6 +266,13 @@ export const boards = {
     post<{ ok: boolean; cards: BoardCard[]; count: number }>(
       `/api/boards/${id}/generate`
     ),
+  executionPlan: (id: string) =>
+    get<{ ok: boolean } & ExecutionPlan>(`/api/boards/${id}/execution-plan`),
+  smartExecute: (id: string, maxSteps?: number) =>
+    post<{ ok: boolean; spawned: string[]; plan: { totalBatches: number; currentBatch: number; remainingBatches: number; nextBatchCards: string[] } }>(
+      `/api/boards/${id}/smart-execute`,
+      maxSteps ? { maxSteps } : undefined
+    ),
   cards: {
     add: (boardId: string, data: { task: string; priority?: string }) =>
       post<{ ok: boolean; card: BoardCard }>(`/api/boards/${boardId}/cards`, data),
@@ -291,6 +298,40 @@ export const boards = {
       ),
     halt: (boardId: string, cardId: string) =>
       post<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/halt`),
+    cascade: (boardId: string, cardId: string) =>
+      post<{ ok: boolean; cascaded: string[] }>(`/api/boards/${boardId}/cards/${cardId}/cascade`),
+    // Comments
+    comments: {
+      list: (boardId: string, cardId: string) =>
+        get<{ comments: CardComment[] }>(`/api/boards/${boardId}/cards/${cardId}/comments`),
+      add: (boardId: string, cardId: string, content: string, author?: string, authorName?: string) =>
+        post<{ ok: boolean; comment: CardComment }>(`/api/boards/${boardId}/cards/${cardId}/comments`, { content, author, authorName }),
+      delete: (boardId: string, cardId: string, commentId: string) =>
+        del<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/comments/${commentId}`),
+    },
+    // Attachments
+    attachments: {
+      list: (boardId: string, cardId: string) =>
+        get<{ attachments: CardAttachment[] }>(`/api/boards/${boardId}/cards/${cardId}/attachments`),
+      add: (boardId: string, cardId: string, data: { name: string; path: string; type?: string; size?: number; addedBy?: string }) =>
+        post<{ ok: boolean; attachment: CardAttachment }>(`/api/boards/${boardId}/cards/${cardId}/attachments`, data),
+      delete: (boardId: string, cardId: string, attachmentId: string) =>
+        del<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/attachments/${attachmentId}`),
+    },
+    // Labels
+    labels: {
+      add: (boardId: string, cardId: string, name: string, color: string) =>
+        post<{ ok: boolean; label: CardLabel }>(`/api/boards/${boardId}/cards/${cardId}/labels`, { name, color }),
+      remove: (boardId: string, cardId: string, labelId: string) =>
+        del<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/labels/${labelId}`),
+    },
+    // Dependencies
+    setParent: (boardId: string, cardId: string, parentId: string | null) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/parent`, { parentId }),
+    addDependency: (boardId: string, cardId: string, dependsOnCardId: string) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/dependencies`, { dependsOnCardId }),
+    removeDependency: (boardId: string, cardId: string, depId: string) =>
+      del<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/dependencies/${depId}`),
   },
   runAll: (id: string, maxSteps?: number) =>
     post<{ ok: boolean; spawned: string[] }>(
@@ -521,19 +562,57 @@ export interface Board {
   createdAt: string;
 }
 
+export interface CardComment {
+  id: string;
+  author: 'user' | 'agent';
+  authorName: string;
+  content: string;
+  timestamp: number;
+}
+
+export interface CardAttachment {
+  id: string;
+  name: string;
+  path: string;
+  type: 'markdown' | 'document' | 'image' | 'presentation' | 'other';
+  size?: number;
+  addedAt: number;
+  addedBy: 'user' | 'agent';
+}
+
+export interface CardLabel {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface BoardCard {
   id: string;
   task: string;
-  status: "pending" | "running" | "paused" | "done" | "failed";
-  priority?: "low" | "medium" | "high" | "critical";
+  status: "pending" | "running" | "paused" | "done" | "failed" | "question";
+  priority?: "low" | "normal" | "medium" | "high" | "critical";
   tokensUsed?: number;
+  tokenUsage?: { input: number; output: number; total: number } | null;
   tokenBudget?: number;
   agentId?: string;
   error?: string;
   result?: string;
+  progress?: string;
+  filesLocked?: string[];
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  labels?: CardLabel[];
+  comments?: CardComment[];
+  attachments?: CardAttachment[];
+  parentId?: string | null;
+  dependsOn?: string[];
+}
+
+export interface ExecutionPlan {
+  batches: { wave: number; cards: BoardCard[] }[];
+  totalBatches: number;
+  totalCards: number;
 }
 
 export interface BoardResources {

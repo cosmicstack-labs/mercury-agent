@@ -10,6 +10,7 @@ import {
   Users,
   Target,
   Share2,
+  Calculator,
   Cpu,
   Puzzle,
   Shield,
@@ -50,6 +51,12 @@ const NAV_SECTIONS = [
       { to: "/second-brain/persons", icon: Users, label: "Persons" },
       { to: "/second-brain/goals", icon: Target, label: "Goals" },
       { to: "/second-brain/graph", icon: Share2, label: "Graph" },
+    ],
+  },
+  {
+    title: "Tools",
+    items: [
+      { to: "/profit-sharing", icon: Calculator, label: "Profit Sharing" },
     ],
   },
   {

@@ -41,7 +41,7 @@ export interface HeartbeatState {
   lastReflection?: string;
 }
 
-export type SubAgentStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'halted';
+export type SubAgentStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'halted' | 'question';
 
 export type SubAgentPriority = 'low' | 'normal' | 'high';
 
@@ -108,6 +108,30 @@ export interface SubagentsConfig {
 
 export type BoardStatus = 'active' | 'inactive';
 
+export interface CardComment {
+  id: string;
+  author: 'user' | 'agent';
+  authorName: string;
+  content: string;
+  timestamp: number;
+}
+
+export interface CardAttachment {
+  id: string;
+  name: string;
+  path: string;
+  type: 'markdown' | 'document' | 'image' | 'presentation' | 'other';
+  size?: number;
+  addedAt: number;
+  addedBy: 'user' | 'agent';
+}
+
+export interface CardLabel {
+  id: string;
+  name: string;
+  color: string; // hex color
+}
+
 export interface BoardCard {
   id: string;
   task: string;
@@ -121,6 +145,12 @@ export interface BoardCard {
   filesLocked: string[];
   progress?: string;
   tokenUsage?: { input: number; output: number; total: number };
+  labels?: CardLabel[];
+  comments?: CardComment[];
+  attachments?: CardAttachment[];
+  // ── Dependency tree ──
+  parentId?: string;        // immediate parent card (tree structure)
+  dependsOn?: string[];     // cards that must complete before this one can run
 }
 
 export interface Board {
