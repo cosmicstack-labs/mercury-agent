@@ -907,6 +907,7 @@ function simpleMarkdown(md) {
 
 function chatScreen() {
   return {
+    // Thread state
     messages: [],
     threads: [],
     activeThreadId: '',
@@ -921,6 +922,26 @@ function chatScreen() {
     isAtBottom: true,
     settings: { bypassPermissions: false, restrictUser: false },
 
+    // Right panel state
+    rightPanelOpen: false,
+    availableModels: [],
+    codeState: 'off',
+    codeAvailable: false,
+
+    // Workspace state
+    workspaceOpen: false,
+    wsRoot: '',
+    wsCurrentPath: '.',
+    wsFiles: [],
+    wsActiveFile: '',
+    wsFileName: '',
+    wsFileContent: null,
+
+    // Step tracking for progress bar
+    totalSteps: 0,
+    completedSteps: 0,
+    currentStepTool: '',
+
     renderMarkdown(md) { return simpleMarkdown(md); },
 
     formatTime(ts) {
@@ -929,11 +950,17 @@ function chatScreen() {
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
 
+    formatFileSize(bytes) {
+      if (!bytes || bytes === 0) return '';
+      if (bytes < 1024) return bytes + 'B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + 'KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+    },
+
     onScroll() {
       var el = this.$refs.messagesContainer;
       if (!el) return;
-      var threshold = 150;
-      this.isAtBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
+      this.isAtBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 150;
     },
 
     scrollToBottom() {
@@ -949,9 +976,20 @@ function chatScreen() {
       this.saveSettings();
     },
 
-    goHome() {
-      window.location.href = '/';
+    goHome() { window.location.href = '/'; },
+
+    wsRootName() {
+      if (!this.wsRoot) return 'Workspace';
+      var parts = this.wsRoot.replace(/\/$/, '').split('/');
+      return parts[parts.length - 1] || 'Workspace';
     },
+
+    progressPercent() {
+      if (this.totalSteps === 0) return 0;
+      return Math.min(100, (this.completedSteps / Math.max(this.totalSteps, this.completedSteps + 1)) * 100);
+    },
+
+    // ── Thread management ────────────────────────────
 
     saveThreadsToStorage() {
       try {
@@ -985,7 +1023,8 @@ function chatScreen() {
       }
     },
 
-    createThread(focusInput = true) {
+    createThread(focusInput) {
+      if (focusInput === undefined) focusInput = true;
       var id = 'web:thread_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       var now = Date.now();
       this.threads.unshift({ id: id, title: 'New Thread', createdAt: now, updatedAt: now, messages: [] });
@@ -1004,6 +1043,9 @@ function chatScreen() {
       this.streamingText = '';
       this.currentAssistantId = null;
       this.currentThreadId = null;
+      this.totalSteps = 0;
+      this.completedSteps = 0;
+      this.currentStepTool = '';
       this.saveThreadsToStorage();
       this.$nextTick(() => {
         this.$refs.chatInput?.focus();
@@ -1040,13 +1082,7 @@ function chatScreen() {
     async exportThread() {
       var t = this.activeThread();
       if (!t) return;
-      var payload = JSON.stringify({
-        id: t.id,
-        title: t.title,
-        createdAt: t.createdAt,
-        updatedAt: t.updatedAt,
-        messages: t.messages || [],
-      }, null, 2);
+      var payload = JSON.stringify({ id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt, messages: t.messages || [] }, null, 2);
       var blob = new Blob([payload], { type: 'application/json' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
@@ -1072,11 +1108,32 @@ function chatScreen() {
       this.$nextTick(() => this.$refs.chatInput?.focus());
     },
 
+    clearChat() {
+      var t = this.activeThread();
+      if (!t) return;
+      t.messages = [];
+      t.title = 'New Thread';
+      t.updatedAt = Date.now();
+      this.messages = this.activeMessages();
+      this.streamingText = '';
+      this.currentAssistantId = null;
+      this.currentThreadId = null;
+      this.waiting = false;
+      this.totalSteps = 0;
+      this.completedSteps = 0;
+      this.saveThreadsToStorage();
+      this.$nextTick(() => this.$refs.chatInput?.focus());
+    },
+
+    // ── Settings & Init ──────────────────────────────
+
     async loadSettings() {
       try {
         var res = await fetch('/api/chat/settings');
         if (res.ok) {
-          this.settings = await res.json();
+          var data = await res.json();
+          this.settings = data;
+          if (data.workspace) this.wsRoot = data.workspace;
         }
       } catch {}
     },
@@ -1095,11 +1152,165 @@ function chatScreen() {
       this.loadThreadsFromStorage();
       this.connectSSE();
       this.loadSettings();
+      this.loadModels();
+      this.loadCodeStatus();
       this.$nextTick(() => {
         this.$refs.chatInput?.focus();
         this.scrollToBottom();
       });
     },
+
+    // ── Models ───────────────────────────────────────
+
+    async loadModels() {
+      try {
+        var res = await fetch('/api/chat/models');
+        if (res.ok) {
+          var data = await res.json();
+          this.availableModels = data.providers || [];
+          if (data.current) {
+            this.provider = data.current.name;
+            this.model = data.current.model;
+          }
+        }
+      } catch {}
+    },
+
+    async switchModel(providerName) {
+      try {
+        var res = await fetch('/api/chat/models/switch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: providerName }),
+        });
+        if (res.ok) {
+          await this.loadModels();
+        }
+      } catch {}
+    },
+
+    // ── Programming Mode ─────────────────────────────
+
+    async loadCodeStatus() {
+      try {
+        var res = await fetch('/api/code/status');
+        if (res.ok) {
+          var data = await res.json();
+          this.codeAvailable = data.available;
+          this.codeState = data.state || 'off';
+        }
+      } catch {}
+    },
+
+    async setCodeMode(state) {
+      try {
+        var res = await fetch('/api/code/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: state }),
+        });
+        if (res.ok) {
+          var data = await res.json();
+          this.codeState = data.state;
+        }
+      } catch {}
+    },
+
+    // ── Right Panel ──────────────────────────────────
+
+    toggleRightPanel() {
+      this.rightPanelOpen = !this.rightPanelOpen;
+      if (this.rightPanelOpen) {
+        this.loadModels();
+        this.loadCodeStatus();
+      }
+    },
+
+    // ── Workspace ────────────────────────────────────
+
+    toggleWorkspace() {
+      if (!this.wsRoot) {
+        this.openWorkspaceDialog();
+        return;
+      }
+      this.workspaceOpen = !this.workspaceOpen;
+      if (this.workspaceOpen) {
+        this.refreshFileTree();
+      }
+    },
+
+    openWorkspaceDialog() {
+      var path = prompt('Enter workspace directory path:', this.wsRoot || process.cwd?.() || '/');
+      if (!path) return;
+      this.setWorkspaceRoot(path);
+    },
+
+    async setWorkspaceRoot(path) {
+      try {
+        var res = await fetch('/api/workspace/root', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: path }),
+        });
+        if (res.ok) {
+          var data = await res.json();
+          this.wsRoot = data.workspace;
+          this.wsCurrentPath = '.';
+          this.workspaceOpen = true;
+          this.refreshFileTree();
+        } else {
+          var err = await res.json();
+          alert(err.error || 'Failed to open workspace');
+        }
+      } catch {}
+    },
+
+    async refreshFileTree() {
+      if (!this.wsRoot) return;
+      try {
+        var url = '/api/workspace/tree';
+        if (this.wsCurrentPath && this.wsCurrentPath !== '.') {
+          url += '?path=' + encodeURIComponent(this.wsCurrentPath);
+        }
+        var res = await fetch(url);
+        if (res.ok) {
+          var data = await res.json();
+          this.wsFiles = data.items || [];
+        }
+      } catch {}
+    },
+
+    navigateTo(path) {
+      this.wsCurrentPath = path;
+      this.refreshFileTree();
+    },
+
+    navigateUp() {
+      var parts = this.wsCurrentPath.split('/');
+      parts.pop();
+      this.wsCurrentPath = parts.length > 0 ? parts.join('/') : '.';
+      this.refreshFileTree();
+    },
+
+    async openFile(path) {
+      this.wsActiveFile = path;
+      try {
+        var res = await fetch('/api/workspace/file?path=' + encodeURIComponent(path));
+        if (res.ok) {
+          var data = await res.json();
+          this.wsFileName = data.name;
+          this.wsFileContent = data.content;
+        }
+      } catch {}
+    },
+
+    closeFilePreview() {
+      this.wsActiveFile = '';
+      this.wsFileName = '';
+      this.wsFileContent = null;
+    },
+
+    // ── SSE ──────────────────────────────────────────
 
     connectSSE() {
       var self = this;
@@ -1131,6 +1342,9 @@ function chatScreen() {
       switch (evt.type) {
         case 'thinking':
           this.waiting = true;
+          this.totalSteps = 0;
+          this.completedSteps = 0;
+          this.currentStepTool = '';
           this._smartScroll();
           break;
 
@@ -1144,11 +1358,13 @@ function chatScreen() {
           break;
 
         case 'step_start':
+          this.totalSteps++;
+          this.currentStepTool = evt.data.tool || '';
           if (this.currentAssistantId) {
             var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
               if (!msg.steps) msg.steps = [];
-              msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: true, running: true, done: false, summary: '' });
+              msg.steps.push({ tool: evt.data.tool, label: evt.data.label, open: false, running: true, done: false, summary: '' });
             }
           }
           this.saveThreadsToStorage();
@@ -1156,6 +1372,8 @@ function chatScreen() {
           break;
 
         case 'step_done':
+          this.completedSteps++;
+          this.currentStepTool = '';
           if (this.currentAssistantId) {
             var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg && msg.steps && msg.steps.length > 0) {
@@ -1164,7 +1382,6 @@ function chatScreen() {
                 if (msg.steps[i].tool === toolName && msg.steps[i].running) {
                   msg.steps[i].running = false;
                   msg.steps[i].done = true;
-                  msg.steps[i].open = false;
                   msg.steps[i].summary = evt.data.summary || '';
                   break;
                 }
@@ -1209,6 +1426,9 @@ function chatScreen() {
           this.streamingText = '';
           this.currentAssistantId = null;
           this.currentThreadId = null;
+          this.totalSteps = 0;
+          this.completedSteps = 0;
+          this.currentStepTool = '';
           this.updateActiveThreadMeta();
           this.$nextTick(() => this.$refs.chatInput?.focus());
           this._smartScroll();
@@ -1262,6 +1482,8 @@ function chatScreen() {
 
         case 'error':
           this.waiting = false;
+          this.totalSteps = 0;
+          this.completedSteps = 0;
           if (this.currentAssistantId) {
             var msg = this.activeMessages().find(function(m) { return m.id === self.currentAssistantId; });
             if (msg) {
@@ -1282,6 +1504,8 @@ function chatScreen() {
       }
     },
 
+    // ── Send Message ─────────────────────────────────
+
     sendMessage() {
       if (!this.inputText.trim() || this.waiting) return;
       if (!this.activeThreadId) this.createThread(false);
@@ -1298,11 +1522,13 @@ function chatScreen() {
         id: this.currentAssistantId, role: 'assistant', content: '',
         timestamp: Date.now(), steps: [], permissions: [],
         streaming: true, provider: this.provider, model: this.model,
-        prompt: text
+        prompt: text, _stepsOpen: false
       });
 
       this.waiting = true;
       this.streamingText = '';
+      this.totalSteps = 0;
+      this.completedSteps = 0;
       this.updateActiveThreadMeta();
       this.scrollToBottom();
       this.$nextTick(() => this.$refs.chatInput?.focus());
@@ -1342,21 +1568,6 @@ function chatScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: action })
       }).catch(function(err) { console.error('Permission resolve error:', err); });
-    },
-
-    clearChat() {
-      var t = this.activeThread();
-      if (!t) return;
-      t.messages = [];
-      t.title = 'New Thread';
-      t.updatedAt = Date.now();
-      this.messages = this.activeMessages();
-      this.streamingText = '';
-      this.currentAssistantId = null;
-      this.currentThreadId = null;
-      this.waiting = false;
-      this.saveThreadsToStorage();
-      this.$nextTick(() => this.$refs.chatInput?.focus());
     },
   };
 }

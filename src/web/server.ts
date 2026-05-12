@@ -11,7 +11,7 @@ import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
 import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel, setProgrammingMode } from './api/chat.js';
+import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback } from './api/chat.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import { renderDashboard } from './pages/dashboard.js';
@@ -164,7 +164,7 @@ app.get('/tasks', (c) => {
   return c.html(renderTasks(c));
 });
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

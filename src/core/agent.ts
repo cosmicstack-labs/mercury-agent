@@ -803,6 +803,21 @@ export class Agent {
     return { ok: true, message: `Session model switched to **${providerName}** · **${model}**.` };
   }
 
+  /** Returns the currently active provider name and model. */
+  getCurrentProvider(): { name: string; model: string } {
+    try {
+      const p = this.providers.getDefault();
+      return { name: this.config.providers.default as string || p.name, model: p.getModel() };
+    } catch {
+      return { name: this.config.providers.default as string || 'unknown', model: '' };
+    }
+  }
+
+  /** Public wrapper for web API model switching. */
+  async switchProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
+    return this.switchSessionProvider(providerName);
+  }
+
   async birth(): Promise<void> {
     this.lifecycle.transition('birthing');
     logger.info({ name: this.config.identity.name }, 'Mercury is being born...');
