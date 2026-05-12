@@ -35,13 +35,15 @@ export class ChannelRegistry {
   }
 
   async startAll(): Promise<void> {
-    for (const [type, channel] of this.channels) {
-      try {
-        await channel.start();
-      } catch (err) {
-        logger.error({ channel: type, err }, 'Failed to start channel');
-      }
-    }
+    await Promise.all(
+      [...this.channels.entries()].map(async ([type, channel]) => {
+        try {
+          await channel.start();
+        } catch (err) {
+          logger.error({ channel: type, err }, 'Failed to start channel');
+        }
+      })
+    );
   }
 
   async stopAll(): Promise<void> {

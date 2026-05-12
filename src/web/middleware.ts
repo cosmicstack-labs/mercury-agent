@@ -6,7 +6,7 @@ const PUBLIC_PATHS = new Set(['/login', '/api/auth/login']);
 
 export async function authGuard(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname;
-  if (path.startsWith('/vendor/') || path.startsWith('/static/') || path.endsWith('.css') || path.endsWith('.js') || path.endsWith('.png') || path.endsWith('.ico')) {
+  if (path.startsWith('/vendor/') || path.startsWith('/static/') || path.startsWith('/assets/') || path.startsWith('/icons/') || path.endsWith('.css') || path.endsWith('.js') || path.endsWith('.png') || path.endsWith('.ico') || path.endsWith('.svg') || path.endsWith('.woff2') || path.endsWith('.webmanifest')) {
     return next();
   }
   if (PUBLIC_PATHS.has(path)) {
