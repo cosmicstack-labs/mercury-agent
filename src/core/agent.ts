@@ -1669,6 +1669,10 @@ export class Agent {
           // CLI or other channels — original flow
           if (streamedText && streamedText.trim()) {
             logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
+            // Web channel needs text_done after streaming to reset frontend state
+            if (channel instanceof WebChannel) {
+              await channel.send(streamedText, msg.channelId, elapsed);
+            }
           } else {
             logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
             await channel.send(finalText, msg.channelId, elapsed);

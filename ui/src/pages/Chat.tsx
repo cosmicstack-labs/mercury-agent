@@ -249,6 +249,104 @@ function PermissionPrompt({
   );
 }
 
+// ─── Slash Commands ──────────────────────────────────────────
+
+interface SlashCommand {
+  command: string;
+  description: string;
+  category: string;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { command: "/help", description: "Show all available commands", category: "General" },
+  { command: "/progress", description: "Show current task progress", category: "General" },
+  { command: "/halt", description: "Stop all sub-agents", category: "General" },
+  { command: "/stop", description: "Stop all agents and clear tasks", category: "General" },
+  { command: "/agents", description: "List active sub-agents and status", category: "Agents" },
+  { command: "/agents kill", description: "Kill a specific sub-agent", category: "Agents" },
+  { command: "/bg", description: "Run a shell command in background", category: "Background" },
+  { command: "/bg:", description: "Delegate an LLM task to background", category: "Background" },
+  { command: "/bg list", description: "Show all background tasks", category: "Background" },
+  { command: "/bg current", description: "Move active task to background", category: "Background" },
+  { command: "/bg stop", description: "Stop a background task", category: "Background" },
+  { command: "/bg killall", description: "Stop all background tasks", category: "Background" },
+  { command: "/bg clear", description: "Prune completed background tasks", category: "Background" },
+  { command: "/models", description: "List available models", category: "Models" },
+  { command: "/models use", description: "Switch to a different model", category: "Models" },
+  { command: "/code", description: "Toggle programming mode", category: "Code" },
+  { command: "/code plan", description: "Set plan-only mode", category: "Code" },
+  { command: "/code execute", description: "Set execute mode", category: "Code" },
+  { command: "/code off", description: "Disable programming mode", category: "Code" },
+  { command: "/spotify", description: "Spotify status and controls", category: "Spotify" },
+  { command: "/spotify play", description: "Play or search for music", category: "Spotify" },
+  { command: "/spotify pause", description: "Pause playback", category: "Spotify" },
+  { command: "/spotify next", description: "Skip to next track", category: "Spotify" },
+  { command: "/spotify prev", description: "Previous track", category: "Spotify" },
+  { command: "/spotify queue", description: "Show play queue", category: "Spotify" },
+  { command: "/budget", description: "Show token budget status", category: "Budget" },
+  { command: "/budget override", description: "Override budget for next request", category: "Budget" },
+  { command: "/budget reset", description: "Reset daily usage counter", category: "Budget" },
+  { command: "/budget set", description: "Set new daily budget limit", category: "Budget" },
+  { command: "/memory", description: "Manage second-brain memory", category: "Memory" },
+  { command: "/permissions", description: "Toggle permission mode", category: "General" },
+  { command: "/ws", description: "Workspace file operations", category: "Workspace" },
+  { command: "/exit", description: "Shutdown Mercury", category: "General" },
+];
+
+function SlashCommandMenu({
+  filter,
+  selectedIndex,
+  onSelect,
+}: {
+  filter: string;
+  selectedIndex: number;
+  onSelect: (cmd: string) => void;
+}) {
+  const filtered = SLASH_COMMANDS.filter((c) =>
+    c.command.startsWith(filter.toLowerCase())
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      transition={{ duration: 0.15 }}
+      className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-xl border border-border bg-popover shadow-xl"
+    >
+      <div className="p-1">
+        {filtered.map((cmd, i) => (
+          <button
+            key={cmd.command}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onSelect(cmd.command);
+            }}
+            className={cn(
+              "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+              i === selectedIndex
+                ? "bg-primary/10 text-primary"
+                : "text-foreground hover:bg-muted"
+            )}
+          >
+            <span className="font-mono font-medium text-xs shrink-0">
+              {cmd.command}
+            </span>
+            <span className="text-muted-foreground text-xs truncate">
+              {cmd.description}
+            </span>
+            <span className="ml-auto text-[10px] text-muted-foreground/60 shrink-0">
+              {cmd.category}
+            </span>
+          </button>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
 function ChatInput({
   onSend,
   disabled,
@@ -257,11 +355,20 @@ function ChatInput({
   disabled: boolean;
 }) {
   const [text, setText] = useState("");
+  const [showSlash, setShowSlash] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Compute filtered commands for index bounds
+  const slashFilter = showSlash ? text.split("\n")[0] : "";
+  const filteredCommands = SLASH_COMMANDS.filter((c) =>
+    c.command.startsWith(slashFilter.toLowerCase())
+  );
 
   function handleSubmit() {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
+    setShowSlash(false);
     onSend(trimmed);
     setText("");
     if (textareaRef.current) {
@@ -269,10 +376,59 @@ function ChatInput({
     }
   }
 
+  function selectSlashCommand(cmd: string) {
+    // If the command typically takes arguments, add a trailing space
+    const needsArg = ["/bg", "/bg:", "/bg stop", "/models use", "/agents kill", "/spotify play", "/budget set"].includes(cmd);
+    setText(needsArg ? cmd + " " : cmd);
+    setShowSlash(false);
+    setSlashIndex(0);
+    textareaRef.current?.focus();
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
+    if (showSlash && filteredCommands.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((prev) => Math.min(prev + 1, filteredCommands.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        selectSlashCommand(filteredCommands[slashIndex].command);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowSlash(false);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
+    }
+  }
+
+  function handleChange(value: string) {
+    setText(value);
+
+    // Show slash menu when text starts with / and is a single line of just the command
+    const firstLine = value.split("\n")[0];
+    if (firstLine.startsWith("/") && !firstLine.includes(" ")) {
+      setShowSlash(true);
+      setSlashIndex(0);
+    } else if (firstLine.startsWith("/") && firstLine.split(" ").length <= 2) {
+      // Allow filtering for two-word commands like "/bg list"
+      setShowSlash(true);
+      setSlashIndex(0);
+    } else {
+      setShowSlash(false);
     }
   }
 
@@ -288,15 +444,28 @@ function ChatInput({
     <div className="border-t border-border bg-background/80 backdrop-blur-xl px-4 py-3">
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <div className="relative flex-1">
+          <AnimatePresence>
+            {showSlash && filteredCommands.length > 0 && (
+              <SlashCommandMenu
+                filter={slashFilter}
+                selectedIndex={slashIndex}
+                onSelect={selectSlashCommand}
+              />
+            )}
+          </AnimatePresence>
           <textarea
             ref={textareaRef}
             value={text}
             onChange={(e) => {
-              setText(e.target.value);
+              handleChange(e.target.value);
               handleInput();
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Send a message..."
+            onBlur={() => {
+              // Delay to allow click on menu item
+              setTimeout(() => setShowSlash(false), 200);
+            }}
+            placeholder="Send a message... (type / for commands)"
             rows={1}
             className={cn(
               "w-full resize-none rounded-xl border border-border bg-muted/40 px-4 py-3 pr-12 text-sm text-foreground placeholder:text-muted-foreground",
@@ -378,6 +547,9 @@ export function ChatPage() {
       content,
       timestamp: new Date().toISOString(),
     });
+
+    // Immediately show waiting state
+    setWaiting(true);
 
     try {
       await api.chat.send(content, activeThreadId ?? undefined);
