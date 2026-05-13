@@ -21,6 +21,7 @@ const SchedulesPage = lazy(() => import("./pages/Schedules").then((m) => ({ defa
 const UsagePage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.UsagePage })));
 const SettingsPage = lazy(() => import("./pages/Settings").then((m) => ({ default: m.SettingsPage })));
 const ProfitSharingPage = lazy(() => import("./pages/ProfitSharing").then((m) => ({ default: m.ProfitSharingPage })));
+const WorkspacePage = lazy(() => import("./pages/Workspace").then((m) => ({ default: m.WorkspacePage })));
 
 function PageLoader() {
   return (
@@ -67,6 +68,7 @@ function AnimatedRoutes() {
             <Route path="chat" element={<ChatPage />} />
             <Route path="tasks" element={<AnimatedPage><TasksPage /></AnimatedPage>} />
             <Route path="board" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
+            <Route path="workspace" element={<WorkspacePage />} />
             <Route path="second-brain/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
             <Route path="second-brain/persons" element={<AnimatedPage><PersonsPage /></AnimatedPage>} />
             <Route path="second-brain/persons/:id" element={<AnimatedPage><PersonDetailPage /></AnimatedPage>} />

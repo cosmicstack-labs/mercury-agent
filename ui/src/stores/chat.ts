@@ -39,6 +39,8 @@ export interface ChatState {
   resetSteps: () => void;
   setSettings: (settings: ChatSettings) => void;
   clearMessages: () => void;
+  threadVersion: number;
+  bumpThreadVersion: () => void;
 }
 
 const STORAGE_KEY = "mercury-chat-active-thread";
@@ -117,4 +119,7 @@ export const useChatStore = create<ChatState>((set) => ({
   setSettings: (settings) => set({ settings }),
 
   clearMessages: () => set({ messages: [], streamingText: "", isStreaming: false }),
+
+  threadVersion: 0,
+  bumpThreadVersion: () => set((state) => ({ threadVersion: state.threadVersion + 1 })),
 }));

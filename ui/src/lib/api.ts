@@ -145,8 +145,44 @@ export const workspace = {
     get<WorkspaceTree>(`/api/workspace/tree${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   file: (path: string) =>
     get<WorkspaceFile>(`/api/workspace/file?path=${encodeURIComponent(path)}`),
+  saveFile: (path: string, content: string) =>
+    put<{ success: boolean; path: string }>("/api/workspace/file", { path, content }),
   setRoot: (path: string) =>
     put<{ success: boolean; workspace: string }>("/api/workspace/root", { path }),
+  info: () => get<WorkspaceInfo>("/api/workspace/info"),
+};
+
+// ── Git ──
+export const gitApi = {
+  status: () => get<GitStatus>("/api/git/status"),
+  branches: () => get<{ branches: GitBranch[] }>("/api/git/branches"),
+  checkout: (branch: string, create?: boolean) =>
+    post<{ success: boolean; message: string }>("/api/git/checkout", { branch, create }),
+  diff: (opts?: { staged?: boolean; file?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.staged) qs.set("staged", "true");
+    if (opts?.file) qs.set("file", opts.file);
+    return get<{ diff: string }>(`/api/git/diff?${qs}`);
+  },
+  log: (count?: number) =>
+    get<{ commits: GitCommit[] }>(`/api/git/log${count ? `?count=${count}` : ""}`),
+  stage: (files: string[]) =>
+    post<{ success: boolean }>("/api/git/stage", { files }),
+  unstage: (files: string[]) =>
+    post<{ success: boolean }>("/api/git/unstage", { files }),
+  commit: (message: string) =>
+    post<{ success: boolean; message: string }>("/api/git/commit", { message }),
+  push: (opts?: { remote?: string; branch?: string; setUpstream?: boolean }) =>
+    post<{ success: boolean; message: string }>("/api/git/push", opts || {}),
+  pull: () => post<{ success: boolean; message: string }>("/api/git/pull", {}),
+  generateCommitMessage: () =>
+    post<{ message: string }>("/api/git/generate-commit-message", {}),
+};
+
+// ── Terminal ──
+export const terminal = {
+  exec: (command: string, cwd?: string) =>
+    post<TerminalResult>("/api/terminal/exec", { command, cwd }),
 };
 
 // ── Brain ──
@@ -427,7 +463,7 @@ export interface CodeStatus {
 export interface WorkspaceTree {
   root: string;
   currentPath: string;
-  items: { name: string; type: "file" | "directory"; size?: number }[];
+  items: { name: string; path: string; isDirectory: boolean; type: string; size?: number; ext?: string }[];
 }
 
 export interface WorkspaceFile {
@@ -437,6 +473,53 @@ export interface WorkspaceFile {
   truncated: boolean;
   content: string;
   ext: string;
+}
+
+export interface WorkspaceInfo {
+  cwd: string;
+  projectName: string;
+  projectType: string;
+  isGit: boolean;
+  branch: string;
+  remoteUrl: string;
+}
+
+export interface GitStatus {
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  files: GitFile[];
+  cwd: string;
+}
+
+export interface GitFile {
+  path: string;
+  status: string;
+  staged: boolean;
+}
+
+export interface GitBranch {
+  name: string;
+  isCurrent: boolean;
+  upstream: string;
+}
+
+export interface GitCommit {
+  hash: string;
+  short: string;
+  author: string;
+  email: string;
+  date: string;
+  message: string;
+}
+
+export interface TerminalResult {
+  success: boolean;
+  output: string;
+  exitCode: number;
+  cwd: string;
+  error?: string;
 }
 
 export interface BrainStatus {
@@ -636,6 +719,8 @@ const api = {
   chat,
   code,
   workspace,
+  git: gitApi,
+  terminal,
   brain,
   agents,
   bgTasks,

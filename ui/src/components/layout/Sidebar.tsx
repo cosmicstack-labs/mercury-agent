@@ -6,6 +6,7 @@ import {
   MessageSquare,
   ListTodo,
   Kanban,
+  Code2,
   Brain,
   Users,
   Target,
@@ -42,6 +43,7 @@ const NAV_SECTIONS = [
       { to: "/chat", icon: MessageSquare, label: "Chat" },
       { to: "/tasks", icon: ListTodo, label: "Tasks" },
       { to: "/board", icon: Kanban, label: "Board" },
+      { to: "/workspace", icon: Code2, label: "Workspace" },
     ],
   },
   {

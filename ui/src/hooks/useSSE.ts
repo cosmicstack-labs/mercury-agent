@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useChatStore } from "@/stores/chat";
+import api from "@/lib/api";
 
 interface SSEResult {
   connected: boolean;
@@ -102,6 +103,14 @@ export function useSSE(): SSEResult {
           content: fullText,
           timestamp: new Date().toISOString(),
         });
+
+        // Persist assistant message to thread
+        const threadId = store.getState().activeThreadId;
+        if (threadId) {
+          api.chat.threads.addMessage(threadId, "assistant", fullText)
+            .then(() => store.getState().bumpThreadVersion())
+            .catch(() => {});
+        }
       } catch {
         // Always reset busy state even if parsing fails
         store.getState().clearStreaming();

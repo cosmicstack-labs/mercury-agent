@@ -4,6 +4,21 @@ export interface DefaultSkillSeed {
   content: string;
 }
 
+/** Category labels shown to the user in grouped skill output */
+export const CATEGORY_LABELS: Record<string, string> = {
+  web: 'Web & Research',
+  social: 'Social Media',
+  media: 'Media & Downloads',
+  productivity: 'Productivity',
+  system: 'System Administration',
+  development: 'Development',
+  uncategorized: 'Other',
+};
+
+export function getCategoryLabel(category: string): string {
+  return CATEGORY_LABELS[category] || category.charAt(0).toUpperCase() + category.slice(1);
+}
+
 export const DEFAULT_SKILL_SEEDS: DefaultSkillSeed[] = [
   {
     dirName: 'web-search',
@@ -12,6 +27,25 @@ export const DEFAULT_SKILL_SEEDS: DefaultSkillSeed[] = [
 name: web-search
 description: Perform web searches using DuckDuckGo HTML and summarize sources.
 version: 1.0.0
+category: web
+categories:
+  - web
+  - research
+intents:
+  - search the web
+  - look up
+  - find online
+  - what is
+  - current news
+  - search for
+  - find information about
+  - research
+  - web search
+tags:
+  - search
+  - web
+  - research
+  - duckduckgo
 allowed-tools:
   - fetch_url
 ---
@@ -44,6 +78,27 @@ Use this skill when the user asks for current events, external facts, or web res
 name: tweet-notifier
 description: Schedule tweets with notifications to founders and supporters. Alerts founders when tweets are scheduled, and notifies supporters (approved Telegram users) when tweets are pending approval.
 version: 1.0.0
+category: social
+categories:
+  - social
+  - communication
+intents:
+  - schedule tweet
+  - approve tweet
+  - post tweet
+  - reject tweet
+  - pending tweets
+  - show tweets
+  - notify supporters
+  - cancel tweet
+  - tweet approval
+  - schedule a tweet
+tags:
+  - twitter
+  - tweet
+  - scheduling
+  - notification
+  - social media
 allowed-tools:
   - schedule_task
   - send_message

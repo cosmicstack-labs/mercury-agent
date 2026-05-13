@@ -5,7 +5,7 @@ import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 import { authGuard, errorHandler } from './middleware.js';
-import { initWebAuth, getWebPort, loadWebAuth } from './auth.js';
+import { initWebAuth, getWebPort } from './auth.js';
 import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
@@ -16,8 +16,8 @@ import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, 
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
+import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
 import { BoardManager } from '../core/board-manager.js';
-import { loadConfig } from '../utils/config.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
 const app = new Hono();
@@ -58,6 +58,7 @@ app.route('/', chatRoutes);
 app.route('/', agentRoutes);
 app.route('/', spotifyRoutes);
 app.route('/', kanbanRoutes);
+app.route('/', ideRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -146,75 +147,14 @@ if (spaAvailable) {
   });
 
 } else {
-  // ═══════════════════════════════════════════════════════════════
-  // Legacy Alpine.js mode — server-rendered pages (fallback)
-  // ═══════════════════════════════════════════════════════════════
-
-  // Lazy-import page renderers only when needed (avoid build errors if pages are removed)
-  const legacyPageHandler = async (c: any, renderer: string, args: any[] = []) => {
-    try {
-      const mod = await import(`./pages/${renderer}.js`);
-      const fn = Object.values(mod)[0] as Function;
-      return c.html(fn(c, ...args));
-    } catch {
-      return c.text('Legacy UI not available. Please build the React UI.', 500);
-    }
-  };
-
-  app.get('/static/style.css', (c) => {
-    const filePath = join(staticDir, 'style.css');
-    if (existsSync(filePath)) {
-      return new Response(readFileSync(filePath), { headers: { 'Content-Type': 'text/css' } });
-    }
-    return c.notFound();
+  // React SPA not built — return helpful message for all routes
+  app.get('*', (c) => {
+    if (c.req.path.startsWith('/api/')) return c.notFound();
+    return c.text('Mercury React UI not built. Run: cd ui && npm install && npm run build', 500);
   });
-
-  app.get('/static/app.js', (c) => {
-    const filePath = join(staticDir, 'app.js');
-    if (existsSync(filePath)) {
-      return new Response(readFileSync(filePath), { headers: { 'Content-Type': 'application/javascript' } });
-    }
-    return c.notFound();
-  });
-
-  app.get('/', (c) => legacyPageHandler(c, 'dashboard'));
-  app.get('/providers', (c) => {
-    const config = loadConfig();
-    const list = Object.entries(config.providers)
-      .filter(([k]) => k !== 'default')
-      .map(([name, p]: [string, any]) => ({
-        name: p.name || name,
-        maskedKey: p.apiKey ? p.apiKey.slice(0, 4) + '••••' + p.apiKey.slice(-4) : '',
-        baseUrl: p.baseUrl,
-        model: p.model,
-        enabled: p.enabled,
-        hasKey: !!p.apiKey,
-      }));
-    return legacyPageHandler(c, 'providers', [list]);
-  });
-  app.get('/settings', (c) => {
-    const config = loadConfig();
-    const auth = loadWebAuth();
-    return legacyPageHandler(c, 'settings', [config, auth?.username || 'mercury']);
-  });
-  app.get('/skills', (c) => legacyPageHandler(c, 'skills'));
-  app.get('/permissions', (c) => legacyPageHandler(c, 'permissions'));
-  app.get('/usage', (c) => legacyPageHandler(c, 'usage'));
-  app.get('/schedules', (c) => legacyPageHandler(c, 'schedules'));
-  app.get('/second-brain/graph', (c) => legacyPageHandler(c, 'brain/graph'));
-  app.get('/second-brain/memory', (c) => legacyPageHandler(c, 'brain/memory'));
-  app.get('/second-brain/persons', (c) => legacyPageHandler(c, 'brain/persons'));
-  app.get('/second-brain/persons/:id', (c) => {
-    const id = c.req.param('id');
-    return legacyPageHandler(c, 'brain/person', [id]);
-  });
-  app.get('/second-brain/goals', (c) => legacyPageHandler(c, 'brain/goals'));
-  app.get('/chat', (c) => legacyPageHandler(c, 'chat'));
-  app.get('/tasks', (c) => legacyPageHandler(c, 'tasks'));
-  app.get('/board', (c) => legacyPageHandler(c, 'kanban'));
 }
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

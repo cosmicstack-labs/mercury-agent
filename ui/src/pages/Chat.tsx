@@ -26,12 +26,15 @@ import { ThreadList } from "@/components/chat/ThreadList";
 import { WorkspacePanel } from "@/components/chat/WorkspacePanel";
 import { ModelSwitcher } from "@/components/chat/ModelSwitcher";
 import { CodeModeToggle } from "@/components/chat/CodeModeToggle";
+import { MessageBubble as MessageBubbleComponent } from "@/components/chat/MessageBubble";
+import { StreamingMessage } from "@/components/chat/StreamingMessage";
 
 // ─── Hooks ───────────────────────────────────────────────────
 
 function useThreads() {
   const setThreads = useChatStore((s) => s.setThreads);
   const threads = useChatStore((s) => s.threads);
+  const threadVersion = useChatStore((s) => s.threadVersion);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -47,7 +50,7 @@ function useThreads() {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, threadVersion]);
 
   return { threads, loading, reload: load };
 }
@@ -91,89 +94,6 @@ function useAutoScroll(deps: unknown[]) {
 }
 
 // ─── Sub-components ──────────────────────────────────────────
-
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === "user";
-  const isSystem = message.role === "system";
-
-  // Permission prompt detection
-  let permData: {
-    id: string;
-    tool?: string;
-    description?: string;
-  } | null = null;
-  if (isSystem) {
-    try {
-      const parsed = JSON.parse(message.content);
-      if (parsed.id && (parsed.tool || parsed.description)) {
-        permData = parsed;
-      }
-    } catch {
-      // not a permission prompt, render as text
-    }
-  }
-
-  if (permData) {
-    return <PermissionPrompt data={permData} />;
-  }
-
-  return (
-    <div
-      className={cn(
-        "flex w-full",
-        isUser ? "justify-end" : "justify-start"
-      )}
-    >
-      <div
-        className={cn(
-          "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : isSystem
-              ? "bg-destructive/10 text-destructive border border-destructive/20"
-              : "bg-muted text-foreground"
-        )}
-      >
-        <div className="whitespace-pre-wrap break-words">
-          {message.content}
-        </div>
-        {message.steps && message.steps.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {message.steps.map((step, i) => (
-              <span
-                key={i}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                  step.status === "done"
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                    : step.status === "error"
-                      ? "bg-destructive/10 text-destructive"
-                      : "bg-primary/10 text-primary"
-                )}
-              >
-                {step.status === "running" && (
-                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                )}
-                {step.tool}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StreamingBubble({ text }: { text: string }) {
-  return (
-    <div className="flex w-full justify-start">
-      <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-3 text-sm leading-relaxed text-foreground">
-        <div className="whitespace-pre-wrap break-words">{text}</div>
-        <span className="inline-block h-4 w-1 animate-pulse bg-primary ml-0.5" />
-      </div>
-    </div>
-  );
-}
 
 function WaitingIndicator() {
   return (
@@ -511,6 +431,7 @@ export function ChatPage() {
   const setWaiting = useChatStore((s) => s.setWaiting);
   const clearStreaming = useChatStore((s) => s.clearStreaming);
   const resetSteps = useChatStore((s) => s.resetSteps);
+  const bumpThreadVersion = useChatStore((s) => s.bumpThreadVersion);
 
   // Panel state
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -530,9 +451,11 @@ export function ChatPage() {
       try {
         const thread = await api.chat.threads.get(activeThreadId);
         clearMessages();
-        thread.messages.forEach((m) => addMessage(m));
+        if (thread.messages && thread.messages.length > 0) {
+          thread.messages.forEach((m) => addMessage(m));
+        }
       } catch {
-        // thread may not exist anymore
+        // Thread doesn't exist yet (new thread) — just clear
         clearMessages();
       }
     })();
@@ -540,6 +463,13 @@ export function ChatPage() {
   }, [activeThreadId]);
 
   async function handleSend(content: string) {
+    // Ensure we have a thread ID — create one if needed
+    let threadId = activeThreadId;
+    if (!threadId) {
+      threadId = `web:${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setActiveThread(threadId);
+    }
+
     // Optimistic user message
     addMessage({
       id: crypto.randomUUID(),
@@ -551,8 +481,13 @@ export function ChatPage() {
     // Immediately show waiting state
     setWaiting(true);
 
+    // Persist user message to backend thread
+    api.chat.threads.addMessage(threadId, "user", content)
+      .then(() => bumpThreadVersion())
+      .catch(() => {});
+
     try {
-      await api.chat.send(content, activeThreadId ?? undefined);
+      await api.chat.send(content, threadId);
       // Reload threads in background to pick up new thread
       reloadThreads();
     } catch {
@@ -582,7 +517,8 @@ export function ChatPage() {
   }
 
   function handleNewThread() {
-    setActiveThread(null);
+    const newId = `web:${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setActiveThread(newId);
     clearMessages();
   }
 
@@ -753,11 +689,22 @@ export function ChatPage() {
                 </div>
               ) : (
                 <>
-                  {messages.map((msg) => (
-                    <MessageBubble key={msg.id} message={msg} />
-                  ))}
+                  {messages.map((msg) => {
+                    // Permission prompt detection for system messages
+                    if (msg.role === "system") {
+                      try {
+                        const parsed = JSON.parse(msg.content);
+                        if (parsed.id && (parsed.tool || parsed.description)) {
+                          return <PermissionPrompt key={msg.id} data={parsed} />;
+                        }
+                      } catch {
+                        // not a permission prompt, render as regular message
+                      }
+                    }
+                    return <MessageBubbleComponent key={msg.id} message={msg} />;
+                  })}
                   {isStreaming && streamingText && (
-                    <StreamingBubble text={streamingText} />
+                    <StreamingMessage text={streamingText} />
                   )}
                   {waiting && !isStreaming && <WaitingIndicator />}
                 </>

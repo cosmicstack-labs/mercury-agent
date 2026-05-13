@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import type { SkillDiscovery, Skill, SkillMeta } from './types.js';
+import { IntentRouter } from './intent-router.js';
 import { logger } from '../utils/logger.js';
-import { DEFAULT_SKILL_SEEDS } from './default-skills.js';
+import { DEFAULT_SKILL_SEEDS, getCategoryLabel } from './default-skills.js';
 
 const SKILL_FILE = 'SKILL.md';
 const DISABLED_FILE = '.disabled';
@@ -31,9 +32,11 @@ export class SkillLoader {
   private skillsDir: string;
   private discovered: Map<string, SkillDiscovery> = new Map();
   private loaded: Map<string, Skill> = new Map();
+  readonly intentRouter: IntentRouter;
 
   constructor(skillsDir?: string) {
     this.skillsDir = skillsDir || join(getMercuryHome(), 'skills');
+    this.intentRouter = new IntentRouter();
   }
 
   discover(): SkillDiscovery[] {
@@ -61,11 +64,16 @@ export class SkillLoader {
           name: parsed.meta.name,
           description: parsed.meta.description,
         });
-        logger.info({ skill: parsed.meta.name }, 'Skill discovered');
+        // Register full meta with IntentRouter for intent/tag/category matching
+        this.intentRouter.registerSkillMeta(parsed.meta);
+        logger.info({ skill: parsed.meta.name, category: parsed.meta.category, intents: parsed.meta.intents?.length }, 'Skill discovered');
       } catch (err) {
         logger.warn({ dir: entry.name, err }, 'Failed to load skill');
       }
     }
+
+    // Build intent index from discovered skills (basic info for fallback matching)
+    this.intentRouter.buildIndex([...this.discovered.values()]);
 
     return [...this.discovered.values()];
   }
@@ -110,8 +118,27 @@ export class SkillLoader {
     const skills = this.getDiscovered();
     if (skills.length === 0) return '';
 
+    // Group skills by category using IntentRouter
+    const categories = this.intentRouter.getAllCategories();
+    const hasCategories = categories.size > 0;
+
     let text = '**Available Skills** (invoke with the `use_skill` tool):\n';
-    text += skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+
+    if (hasCategories && categories.size > 1) {
+      // Group by category
+      for (const [category, catSkills] of categories) {
+        const label = getCategoryLabel(category);
+        text += `\n**${label}:**\n`;
+        for (const s of catSkills) {
+          const discovered = this.discovered.get(s.name);
+          const desc = discovered?.description || s.description;
+          text += `- ${s.name}: ${desc}\n`;
+        }
+      }
+    } else {
+      // Flat list (no categorization or only one category)
+      text += skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+    }
 
     // Auto-routing hint for web search
     const hasWebSearchSkill = skills.some(s => s.name === 'web-search');
@@ -133,6 +160,11 @@ export class SkillLoader {
         + 'workflow steps, and the memory schema for tracking tweet states (draft, scheduled, '
         + 'pending_approval, approved, posted, cancelled).';
     }
+
+    // Intent routing hint — tell the agent about the new system
+    text += '\n\n**Skill Intent Routing Available** — When a user request matches skill intents, '
+      + 'you can use intent matching to automatically route to the right skills. '
+      + 'For multi-skill requests, batch execution across sub-agents for parallel processing.';
 
     return text;
   }
@@ -246,6 +278,9 @@ export class SkillLoader {
 name: template-skill
 description: A template skill for Mercury. Use this as a starting point to create your own skills.
 version: 0.1.0
+category: development
+tags:
+  - template
 allowed-tools:
   - read_file
   - list_dir
@@ -270,6 +305,7 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
 - Keep instructions concise to save tokens
 - List only the tools you need in allowed-tools
 - The skill name must be unique among installed skills
+- Add \`category\`, \`categories\`, \`intents\`, and \`tags\` in frontmatter for automatic intent routing
 `;
 
     writeFileSync(join(templateDir, SKILL_FILE), content, 'utf-8');

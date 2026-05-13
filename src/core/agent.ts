@@ -16,6 +16,8 @@ import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
+import { SkillBatcher } from '../skills/batcher.js';
+import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
@@ -294,6 +296,8 @@ export class Agent {
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
   private spotifyClient?: SpotifyClient;
+  private skillBatcher: SkillBatcher | null = null;
+  private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
 
   constructor(
@@ -333,8 +337,18 @@ export class Agent {
     });
   }
 
+  setSkillLoader(skillLoader: SkillLoader): void {
+    this.skillLoader = skillLoader;
+    if (this.supervisor) {
+      this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
+    }
+  }
+
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
     this.supervisor = supervisor;
+    if (this.skillLoader) {
+      this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
+    }
     supervisor.setNotifyCallback(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
       if (channel) {
@@ -1026,6 +1040,51 @@ export class Agent {
       }
 
       messages.push({ role: 'user', content: msg.content });
+
+      // ── Skill Intent Routing & Batch Execution ──
+      if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
+        try {
+          const intentRouter = this.skillLoader.intentRouter;
+          if (intentRouter && intentRouter.isInitialized()) {
+            const batches = intentRouter.matchToBatches(trimmed, 0.4);
+            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
+
+            if (batches.length > 0 && totalMatchedSkills >= 1) {
+              const matchedSkillNames = batches.flatMap(b => b.skills.map(s => s.name));
+              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
+
+              // For 2+ skills, batch execute via sub-agents
+              // For single skill, let the LLM handle it normally via use_skill
+              if (totalMatchedSkills >= 2) {
+                const plan = this.skillBatcher.planExecution(batches);
+                if (plan.batches.length > 0) {
+                  const channel = this.channels.getChannelForMessage(msg);
+                  if (channel) {
+                    await channel.send(`🧠 Intent routing matched **${totalMatchedSkills}** skills: ${matchedSkillNames.join(', ')}. Executing batch in background...`, msg.channelId).catch(() => {});
+                  }
+
+                  // Execute and wait for results
+                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
+                  const summary = this.skillBatcher.summarizeResults(batchResults);
+
+                  if (summary) {
+                    messages.push({
+                      role: 'user',
+                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
+                    });
+                    messages.push({
+                      role: 'assistant',
+                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
+        }
+      }
 
       this.lifecycle.transition('responding');
 
