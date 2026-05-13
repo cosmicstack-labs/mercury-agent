@@ -7,11 +7,15 @@
 </p>
 
 <p align="center">
-  <strong>Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access.</strong>
+  <strong>A permission-hardened AI agent for CLI and Telegram that runs 24/7 with explicit tool approvals, token budgets, and persistent scheduling.</strong>
 </p>
 
 <p align="center">
-  Remembers what matters. Asks before it acts. Runs 24/7 from CLI or Telegram. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
+  Soul-driven under the hood — personality, taste, and memory defined in markdown files you own, so Mercury stays distinctly yours while it works.
+</p>
+
+<p align="center">
+  Remembers what matters. Asks before it acts. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
 </p>
 
 <p align="center">
