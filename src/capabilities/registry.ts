@@ -48,6 +48,7 @@ import {
   createSpotifyPlaylistsTool,
 } from './spotify/index.js';
 import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
+import { createStoreMemoryTool } from './memory/store-memory.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
@@ -80,6 +81,8 @@ export class CapabilityRegistry {
   private spotifyClient?: SpotifyClient;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
+  private userMemoryGetter: () => import('../memory/user-memory.js').UserMemoryStore | null = () => null;
+  private sharedMemoryGetter: () => import('../memory/shared-memory-store.js').SharedMemoryStore | null = () => null;
   private currentChannelId = 'cli';
   private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
@@ -124,6 +127,14 @@ export class CapabilityRegistry {
 
   setSendMessageHandler(handler: (content: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
+  }
+
+  setMemoryStores(
+    userMemory: () => import('../memory/user-memory.js').UserMemoryStore | null,
+    sharedMemory: () => import('../memory/shared-memory-store.js').SharedMemoryStore | null,
+  ): void {
+    this.userMemoryGetter = userMemory;
+    this.sharedMemoryGetter = sharedMemory;
   }
 
   setSupervisor(supervisor: SubAgentSupervisor): void {
@@ -203,6 +214,9 @@ export class CapabilityRegistry {
       this.tools.budget_status = createBudgetStatusTool(this.tokenBudget);
       logger.info('Budget tool registered');
     }
+
+    this.tools.store_memory = createStoreMemoryTool(this.userMemoryGetter, this.sharedMemoryGetter);
+    logger.info('Memory store tool registered');
 
     if (manifest.capabilities.git?.enabled) {
       this.tools.git_status = createGitStatusTool(() => this.getCwd());

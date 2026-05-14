@@ -106,6 +106,9 @@ export interface MercuryConfig {
       enabled: boolean;
       maxRecords: number;
     };
+    sharedMemory?: {
+      enabled: boolean;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -131,6 +134,12 @@ export interface MercuryConfig {
     accountName: string;
     accountId: string;
     product: string;
+  };
+  relay?: {
+    enabled?: boolean;
+    url?: string;
+    apiKey?: string;
+    username?: string;
   };
 }
 
@@ -290,6 +299,12 @@ export function getDefaultConfig(): MercuryConfig {
       accountName: '',
       accountId: '',
       product: '',
+    },
+    relay: {
+      enabled: getEnvBool('RELAY_ENABLED', true),
+      url: getEnv('RELAY_URL', 'wss://relay.cosmicstack.org/v1/ws'),
+      apiKey: getEnv('RELAY_API_KEY'),
+      username: getEnv('RELAY_USERNAME'),
     },
   };
 }

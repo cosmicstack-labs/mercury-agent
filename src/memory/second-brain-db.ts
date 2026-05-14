@@ -12,29 +12,23 @@ let syncDatabaseClass: typeof import('better-sqlite3') | null = null;
 let availabilityChecked = false;
 let available = false;
 
-function ensureProbed(): void {
-  if (availabilityChecked) return;
-  availabilityChecked = true;
+try {
+  const mod = require('better-sqlite3');
+  const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
   try {
-    const mod = require('better-sqlite3');
-    const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
-    try {
-      mkdirSync(probeDir, { recursive: true });
-      const probeDb = new mod(join(probeDir, 'probe.db'));
-      probeDb.close();
-      rmSync(probeDir, { recursive: true, force: true });
-      syncDatabaseClass = mod;
-      available = true;
-    } catch {
-      syncDatabaseClass = null;
-    }
+    mkdirSync(probeDir, { recursive: true });
+    const probeDb = new mod(join(probeDir, 'probe.db'));
+    probeDb.close();
+    rmSync(probeDir, { recursive: true, force: true });
+    syncDatabaseClass = mod;
   } catch {
     syncDatabaseClass = null;
   }
+} catch {
+  syncDatabaseClass = null;
 }
 
 export function isBetterSqlite3Available(): boolean {
-  ensureProbed();
   return syncDatabaseClass !== null;
 }
 
@@ -65,7 +59,6 @@ export class SecondBrainDB {
   private db: BetterSqlite3Database;
 
   constructor(dbPath: string) {
-    ensureProbed();
     if (!syncDatabaseClass) {
       throw new Error(
         'better-sqlite3 is not available — second brain memory requires it. ' +
@@ -136,6 +129,24 @@ export class SecondBrainDB {
       END;
     `);
 
+    // Migration: add scope column if upgrading from pre-conscious/subconscious schema
+    try {
+      const cols = this.db.pragma('table_info(memories)') as Array<{ name: string }>;
+      const hasScope = cols.some(c => c.name === 'scope');
+      if (!hasScope) {
+        this.db.exec(`ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'durable'`);
+        logger.info('Migrated second-brain DB: added scope column');
+      }
+      const hasLastUsedAt = cols.some(c => c.name === 'last_used_at');
+      if (!hasLastUsedAt) {
+        this.db.exec(`ALTER TABLE memories ADD COLUMN last_used_at INTEGER`);
+        this.db.exec(`ALTER TABLE memories ADD COLUMN last_used_query TEXT`);
+        logger.info('Migrated second-brain DB: added last_used_at/last_used_query columns');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Second brain migration check failed');
+    }
+
     this.db.pragma('foreign_keys = ON');
     logger.info('Second brain database initialized');
   }
@@ -203,7 +214,7 @@ export class SecondBrainDB {
   }
 
   getActive(userKey: string): MemoryRow[] {
-    const stmt = this.db.prepare('SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 ORDER BY updated_at DESC');
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable') ORDER BY updated_at DESC`);
     return stmt.all(userKey) as MemoryRow[];
   }
 
@@ -213,7 +224,7 @@ export class SecondBrainDB {
   }
 
   getByType(userKey: string, type: string): MemoryRow[] {
-    const stmt = this.db.prepare('SELECT * FROM memories WHERE user_key = ? AND type = ? AND dismissed = 0 ORDER BY updated_at DESC');
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND type = ? AND dismissed = 0 AND scope IN ('active', 'durable') ORDER BY updated_at DESC`);
     return stmt.all(userKey, type) as MemoryRow[];
   }
 
@@ -251,14 +262,14 @@ export class SecondBrainDB {
   searchRelevant(userKey: string, query: string, limit: number = 10): MemoryRow[] {
     const tokens = query.split(/\s+/).filter(t => t.length > 0).map(t => t.replace(/"/g, '""'));
     if (tokens.length === 0) {
-      const stmt = this.db.prepare('SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 ORDER BY updated_at DESC LIMIT ?');
+      const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable') ORDER BY updated_at DESC LIMIT ?`);
       return stmt.all(userKey, limit) as MemoryRow[];
     }
     const ftsQuery = tokens.join(' OR ');
     const ftsStmt = this.db.prepare(`
       SELECT m.* FROM memories m
       JOIN memories_fts fts ON m.rowid = fts.rowid
-      WHERE memories_fts MATCH ? AND m.user_key = ? AND m.dismissed = 0
+      WHERE memories_fts MATCH ? AND m.user_key = ? AND m.dismissed = 0 AND m.scope IN ('active', 'durable')
       ORDER BY rank
       LIMIT ?
     `);
@@ -266,7 +277,31 @@ export class SecondBrainDB {
       return ftsStmt.all(ftsQuery, userKey, limit) as MemoryRow[];
     } catch {
       const likeClauses = tokens.map(() => '(summary LIKE ? OR detail LIKE ?)').join(' OR ');
-      const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND (${likeClauses}) ORDER BY updated_at DESC LIMIT ?`);
+      const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable') AND (${likeClauses}) ORDER BY updated_at DESC LIMIT ?`);
+      const likes = tokens.flatMap(t => [`%${t}%`, `%${t}%`]);
+      return stmt.all(userKey, ...likes, limit) as MemoryRow[];
+    }
+  }
+
+  searchSubconscious(userKey: string, query: string, limit: number = 10): MemoryRow[] {
+    const tokens = query.split(/\s+/).filter(t => t.length > 0).map(t => t.replace(/"/g, '""'));
+    if (tokens.length === 0) {
+      const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope = 'subconscious' ORDER BY updated_at DESC LIMIT ?`);
+      return stmt.all(userKey, limit) as MemoryRow[];
+    }
+    const ftsQuery = tokens.join(' OR ');
+    const ftsStmt = this.db.prepare(`
+      SELECT m.* FROM memories m
+      JOIN memories_fts fts ON m.rowid = fts.rowid
+      WHERE memories_fts MATCH ? AND m.user_key = ? AND m.dismissed = 0 AND m.scope = 'subconscious'
+      ORDER BY rank
+      LIMIT ?
+    `);
+    try {
+      return ftsStmt.all(ftsQuery, userKey, limit) as MemoryRow[];
+    } catch {
+      const likeClauses = tokens.map(() => '(summary LIKE ? OR detail LIKE ?)').join(' OR ');
+      const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope = 'subconscious' AND (${likeClauses}) ORDER BY updated_at DESC LIMIT ?`);
       const likes = tokens.flatMap(t => [`%${t}%`, `%${t}%`]);
       return stmt.all(userKey, ...likes, limit) as MemoryRow[];
     }
@@ -309,43 +344,46 @@ export class SecondBrainDB {
     return result.changes;
   }
 
-  pruneStale(userKey: string): { activePruned: number; durablePruned: number } {
+  moveToSubconscious(userKey: string): number {
+    const SUBCONSCIOUS_THRESHOLD_DAYS = 30;
+    const threshold = SUBCONSCIOUS_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - threshold;
+
+    const stmt = this.db.prepare(`
+      UPDATE memories SET scope = 'subconscious', updated_at = ?
+      WHERE user_key = ? AND dismissed = 0
+        AND scope IN ('active', 'durable')
+        AND last_seen_at < ? AND last_seen_at > 0
+    `);
+    const result = stmt.run(Date.now(), userKey, cutoff);
+    return result.changes;
+  }
+
+  promoteToConscious(id: string, newScope: 'active' | 'durable'): boolean {
     const now = Date.now();
-    const twentyOneDays = 21 * 24 * 60 * 60 * 1000;
-    const fortyTwoDays = 42 * 24 * 60 * 60 * 1000;
-    const oneHundredTwentyDays = 120 * 24 * 60 * 60 * 1000;
+    const stmt = this.db.prepare(
+      `UPDATE memories SET scope = ?, updated_at = ?, last_seen_at = ? WHERE id = ? AND scope = 'subconscious'`
+    );
+    const result = stmt.run(newScope, now, now, id);
+    return result.changes > 0;
+  }
 
-    const activeInferred = this.db.prepare(`
-      UPDATE memories SET dismissed = 1, updated_at = ?
-      WHERE user_key = ? AND scope = 'active' AND evidence_kind = 'inferred' AND dismissed = 0
-        AND last_seen_at < ? AND last_seen_at > 0
-    `);
-    const activeInferredResult = activeInferred.run(now, userKey, now - twentyOneDays);
+  getSubconscious(userKey: string): MemoryRow[] {
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope = 'subconscious' ORDER BY updated_at DESC`);
+    return stmt.all(userKey) as MemoryRow[];
+  }
 
-    const activeDirect = this.db.prepare(`
-      UPDATE memories SET dismissed = 1, updated_at = ?
-      WHERE user_key = ? AND scope = 'active' AND evidence_kind = 'direct' AND dismissed = 0
-        AND last_seen_at < ? AND last_seen_at > 0
-    `);
-    const activeDirectResult = activeDirect.run(now, userKey, now - fortyTwoDays);
+  countSubconscious(userKey: string): number {
+    const stmt = this.db.prepare(`SELECT COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0 AND scope = 'subconscious'`);
+    const row = stmt.get(userKey) as { count: number };
+    return row.count;
+  }
 
-    const activePruned = activeInferredResult.changes + activeDirectResult.changes;
-
-    const durableInferred = this.db.prepare(`
-      UPDATE memories SET confidence = MAX(0.15, confidence - 0.15), updated_at = ?
-      WHERE user_key = ? AND scope = 'durable' AND evidence_kind = 'inferred' AND dismissed = 0
-        AND last_seen_at < ? AND last_seen_at > 0
-    `);
-    durableInferred.run(now, userKey, now - oneHundredTwentyDays);
-
-    const durablePruned = this.db.prepare(`
-      UPDATE memories SET dismissed = 1, updated_at = ?
-      WHERE user_key = ? AND scope = 'durable' AND dismissed = 0
-        AND confidence < 0.3 AND last_seen_at < ? AND last_seen_at > 0
-    `);
-    const durablePrunedResult = durablePruned.run(now, userKey, now - oneHundredTwentyDays);
-
-    return { activePruned, durablePruned: durablePrunedResult.changes };
+  getMemoriesByIds(ids: string[]): MemoryRow[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`);
+    return stmt.all(...ids) as MemoryRow[];
   }
 
   setMeta(key: string, value: string): void {
@@ -365,7 +403,7 @@ export class SecondBrainDB {
   }
 
   countByType(userKey: string): Record<string, number> {
-    const stmt = this.db.prepare("SELECT type, COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0 GROUP BY type");
+    const stmt = this.db.prepare(`SELECT type, COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable') GROUP BY type`);
     const rows = stmt.all(userKey) as Array<{ type: string; count: number }>;
     const result: Record<string, number> = {};
     for (const row of rows) {
@@ -375,7 +413,7 @@ export class SecondBrainDB {
   }
 
   totalActive(userKey: string): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0');
+    const stmt = this.db.prepare(`SELECT COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable')`);
     const row = stmt.get(userKey) as { count: number };
     return row.count;
   }

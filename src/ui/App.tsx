@@ -86,6 +86,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   };  const [permIdx, setPermIdx] = React.useState(0);
   const permIdxRef = React.useRef(0);
   const [menuIdx, setMenuIdx] = React.useState(0);
+  const [dynamicMenuIdx, setDynamicMenuIdx] = React.useState(0);
+  const dynamicMenuIdxRef = React.useRef(0);
   const [spotifyIdx, setSpotifyIdx] = React.useState(6);
   const [splashPhase, setSplashPhase] = React.useState<'logo' | 'skills' | 'provider' | 'ready'>('logo');
   const [skillsLoaded, setSkillsLoaded] = React.useState(0);
@@ -149,6 +151,25 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/ws stage all',
     '/ws commit ',
     '/ws help',
+    '/relay',
+    '/relay status',
+    '/relay reset',
+    '/friend ',
+    '/friend access',
+    '/friend access ',
+    '/listfriends',
+    '/message ',
+    '/messages',
+    '/messages read all',
+    '/notifications',
+    '/notifications read all',
+    '/notifications clear',
+    '/memory shared',
+    '/memory shared pause',
+    '/memory shared resume',
+    '/memory shared search ',
+    '/memory shared categories',
+    '/memory shared clear',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {
@@ -158,6 +179,28 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   }, [input, slashCommands]);
 
   const [slashSelIdx, setSlashSelIdx] = React.useState(0);
+
+  // @ mention autocomplete — works anywhere in input
+  const mentionMatch = React.useMemo(() => {
+    // Find the last @ that starts a mention (preceded by space or start of string)
+    const match = input.match(/(?:^|[\s])@([a-z0-9_]*)$/i);
+    if (!match) return null;
+    return { partial: match[1].toLowerCase(), startIdx: input.length - match[1].length - 1 };
+  }, [input]);
+
+  const mentionSuggestions = React.useMemo(() => {
+    if (!mentionMatch || state.friends.length === 0) return [];
+    const q = mentionMatch.partial;
+    return state.friends
+      .filter((f) => f.username.startsWith(q))
+      .slice(0, 5);
+  }, [mentionMatch, state.friends]);
+
+  const [mentionSelIdx, setMentionSelIdx] = React.useState(0);
+
+  React.useEffect(() => {
+    setMentionSelIdx(0);
+  }, [mentionSuggestions.length, input]);
 
   // Reset selection index when suggestions change
   React.useEffect(() => {
@@ -281,6 +324,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
   }, [state.permissionPrompt]);
 
+  React.useEffect(() => {
+    if (state.menuPrompt) {
+      setDynamicMenuIdx(0);
+      dynamicMenuIdxRef.current = 0;
+    }
+  }, [state.menuPrompt]);
+
   useInput((ch, key) => {
     const keyChar = (ch || (key as any)?.name || '').toLowerCase();
     const isEnter = key.return || (key as any)?.name === 'enter';
@@ -365,6 +415,27 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    if (state.menuPrompt) {
+      const opts = state.menuPrompt.options;
+      if (key.upArrow) {
+        const next = Math.max(0, dynamicMenuIdxRef.current - 1);
+        dynamicMenuIdxRef.current = next;
+        setDynamicMenuIdx(next);
+      } else if (key.downArrow) {
+        const next = Math.min(opts.length - 1, dynamicMenuIdxRef.current + 1);
+        dynamicMenuIdxRef.current = next;
+        setDynamicMenuIdx(next);
+      } else if (isEnter) {
+        const selected = opts[dynamicMenuIdxRef.current] || opts[0];
+        if (selected) state.menuPrompt.resolve(selected.value);
+      } else if (key.escape) {
+        // Select 'back' if available, otherwise last option
+        const back = opts.find((o) => o.value === 'back');
+        state.menuPrompt.resolve(back ? back.value : opts[opts.length - 1]?.value || '');
+      }
+      return;
+    }
+
     if (state.mode === 'menu') {
       if (key.upArrow) setMenuIdx((i) => Math.max(0, i - 1));
       else if (key.downArrow) setMenuIdx((i) => Math.min(5, i + 1));
@@ -420,6 +491,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       // fill the suggestion into the input instead of submitting
       if (slashSuggestions.length > 0 && trimmed !== slashSuggestions[slashSelIdx]) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
+        return;
+      }
+
+      // If @ mention popup is showing, complete the mention instead of submitting
+      if (mentionMatch && mentionSuggestions.length > 0) {
+        const friend = mentionSuggestions[mentionSelIdx];
+        const before = input.slice(0, mentionMatch.startIdx);
+        const after = `@${friend.username} `;
+        const newVal = before + after;
+        setInput(newVal);
+        setCursorPos(newVal.length);
         return;
       }
 
@@ -568,6 +650,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.tab) {
       if (input.startsWith('/') && slashSuggestions.length > 0) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
+      } else if (mentionMatch && mentionSuggestions.length > 0) {
+        const friend = mentionSuggestions[mentionSelIdx];
+        const before = input.slice(0, mentionMatch.startIdx);
+        const after = `@${friend.username} `;
+        const newVal = before + after;
+        setInput(newVal);
+        setCursorPos(newVal.length);
       }
       return;
     }
@@ -590,6 +679,18 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
       if (key.downArrow) {
         setSlashSelIdx((i) => (i < slashSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+    }
+
+    // Up/down arrow: navigate @ mention suggestions
+    if (mentionSuggestions.length > 0) {
+      if (key.upArrow) {
+        setMentionSelIdx((i) => (i > 0 ? i - 1 : mentionSuggestions.length - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setMentionSelIdx((i) => (i < mentionSuggestions.length - 1 ? i + 1 : 0));
         return;
       }
     }
@@ -696,7 +797,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     );
   }
 
-  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
+  const showInput = !state.permissionPrompt && !state.menuPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
 
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -710,6 +811,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       ) : null}
       {state.permissionPrompt && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
+      )}
+      {state.menuPrompt && (
+        <DynamicMenuView menu={state.menuPrompt} activeIdx={dynamicMenuIdx} />
       )}
       {showInput && (
         <InputBox
@@ -725,6 +829,16 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
           {slashSuggestions.map((cmd, idx) => (
             <Text key={cmd} color={idx === slashSelIdx ? 'cyan' : 'gray'}>{idx === slashSelIdx ? '›' : ' '} {cmd}</Text>
+          ))}
+        </Box>
+      )}
+      {showInput && slashSuggestions.length === 0 && mentionSuggestions.length > 0 && (
+        <Box flexDirection="column" paddingX={1}>
+          <Text dimColor>Friends (↑↓ navigate · Tab/Enter to select):</Text>
+          {mentionSuggestions.map((f, idx) => (
+            <Text key={f.username} color={idx === mentionSelIdx ? 'cyan' : 'gray'}>
+              {idx === mentionSelIdx ? '›' : ' '} @{f.username}{f.displayName ? ` (${f.displayName})` : ''}
+            </Text>
           ))}
         </Box>
       )}
@@ -1616,6 +1730,21 @@ function PermPromptView({ prompt, activeIdx }: { prompt: PermissionPromptState; 
         </Box>
       ))}
       <Text dimColor>  ↑↓ to navigate, Enter to select</Text>
+    </Box>
+  );
+}
+
+function DynamicMenuView({ menu, activeIdx }: { menu: import('../ui/types.js').MenuPromptState; activeIdx: number }) {
+  return (
+    <Box flexDirection="column" marginTop={1} paddingX={1}>
+      <Box><Text bold color="cyan">{menu.title}</Text></Box>
+      {menu.options.map((opt, i) => (
+        <Box key={opt.value}>
+          <Text>{i === activeIdx ? '●' : '·'} </Text>
+          <Text color={i === activeIdx ? 'cyan' : 'gray'}>{opt.label}</Text>
+        </Box>
+      ))}
+      <Text dimColor>  ↑↓ navigate · Enter select · Esc back</Text>
     </Box>
   );
 }

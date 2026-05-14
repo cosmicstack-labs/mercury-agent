@@ -7,7 +7,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, MenuPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 
 export interface TuiState {
@@ -29,6 +29,8 @@ export interface TuiState {
   permissionMode: PermissionMode;
   workspace: WorkspaceState | null;
   backgroundTasks: BackgroundTaskInfo[];
+  menuPrompt: MenuPromptState | null;
+  friends: Array<{ username: string; displayName: string | null }>;
 }
 
 const defaultState: TuiState = {
@@ -50,6 +52,8 @@ const defaultState: TuiState = {
   permissionMode: 'ask-me',
   workspace: null,
   backgroundTasks: [],
+  menuPrompt: null,
+  friends: [],
 };
 
 export class CLIChannel extends BaseChannel {
@@ -417,24 +421,40 @@ export class CLIChannel extends BaseChannel {
 
   async withMenu<T>(runner: (select: (title: string, options: Array<{ value: string; label: string }>) => Promise<string>) => Promise<T>): Promise<T | undefined> {
     this.menuDepth += 1;
-    const { selectWithArrowKeys } = await import('../utils/arrow-select.js');
     this.menuAbortController = new AbortController();
 
+    const selectViaTui = (title: string, options: Array<{ value: string; label: string }>): Promise<string> => {
+      return new Promise<string>((resolve, reject) => {
+        const onAbort = () => {
+          this.update({ menuPrompt: null });
+          reject(new Error('Menu cancelled'));
+        };
+        this.menuAbortController?.signal.addEventListener('abort', onAbort, { once: true });
+
+        this.update({
+          menuPrompt: {
+            title,
+            options,
+            resolve: (value: string) => {
+              this.menuAbortController?.signal.removeEventListener('abort', onAbort);
+              this.update({ menuPrompt: null });
+              resolve(value);
+            },
+          },
+        });
+      });
+    };
+
     try {
-      return await runner((title, options) => selectWithArrowKeys(title, options, {
-        signal: this.menuAbortController?.signal,
-      }));
+      return await runner(selectViaTui);
     } catch (error) {
-      if (error instanceof Error && error.name === 'ArrowSelectCancelledError') {
-        return undefined;
-      }
-      throw error;
+      return undefined;
     } finally {
       this.menuDepth = Math.max(0, this.menuDepth - 1);
       if (this.menuDepth === 0) {
         this.menuAbortController = null;
       }
-      this.ensureRawMode();
+      this.update({ menuPrompt: null });
     }
   }
 
@@ -554,6 +574,10 @@ export class CLIChannel extends BaseChannel {
 
   setSidebarSections(sections: SidebarSection[]): void {
     this.update({ sidebarSections: sections });
+  }
+
+  setFriends(friends: Array<{ username: string; displayName: string | null }>): void {
+    this.update({ friends });
   }
 
   setMode(mode: AppMode): void {

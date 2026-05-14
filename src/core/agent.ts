@@ -5,6 +5,10 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
+import type { SharedMemoryStore } from '../memory/shared-memory-store.js';
+import { validateUsernameLocal, type RelayClient, type FriendInfo, type FriendsResponse } from '../relay/client.js';
+import type { NotificationsStore } from '../memory/notifications-store.js';
+import type { MessagesStore } from '../memory/messages-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
@@ -295,6 +299,16 @@ export class Agent {
   private spotifyClient?: SpotifyClient;
   readonly backgroundTasks: BackgroundTaskManager;
 
+  // Relay & shared memory state
+  private _relayClient: RelayClient | null = null;
+  private sharedMemory: SharedMemoryStore | null = null;
+  private _notifications: NotificationsStore | null = null;
+  private _messagesStore: MessagesStore | null = null;
+  private _awaitingUsernameInput: boolean = false;
+  private _awaitingRecoveryInput: boolean = false;
+  private _memoryQueryTarget: string | null = null;
+  private _friendsCache: FriendInfo[] = [];
+
   constructor(
     private config: MercuryConfig,
     private providers: ProviderRegistry,
@@ -307,10 +321,18 @@ export class Agent {
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
+    relayClient?: RelayClient | null,
+    sharedMemory?: SharedMemoryStore | null,
+    notifications?: NotificationsStore | null,
+    messagesStore?: MessagesStore | null,
   ) {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
+    this._relayClient = relayClient ?? null;
+    this.sharedMemory = sharedMemory ?? null;
+    this._notifications = notifications ?? null;
+    this._messagesStore = messagesStore ?? null;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
     this.backgroundTasks = new BackgroundTaskManager();
@@ -330,6 +352,14 @@ export class Agent {
     setAskUserHandler(async (question, choices, channelId, channelType) => {
       return this.presentChoice(question, choices, channelId, channelType);
     });
+  }
+
+  set relayClient(client: RelayClient | null) {
+    this._relayClient = client;
+  }
+
+  get relayClient(): RelayClient | null {
+    return this._relayClient;
   }
 
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
@@ -1698,12 +1728,20 @@ export class Agent {
       prompt += `\n\nSecond Brain is ENABLED. You have a persistent, structured memory of ${summary.total} facts about this user.`;
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
       prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
+      prompt += `\nWhen the user explicitly asks you to remember something (e.g. "remember this", "remember that I...", "keep in mind that..."), you MUST use the store_memory tool. Do NOT pretend to memorize — only the tool actually persists memories. The tool stores in both Second Brain and Shared Memory independently (respecting each store's pause state).`;
       prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
       if (summary.learningPaused) {
-        prompt += `\nLearning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
+        prompt += `\nSecond Brain learning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
       }
     } else {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
+    }
+
+    if (this.sharedMemory) {
+      prompt += `\nShared Memory is ENABLED. When using store_memory, shareable facts are also stored in shared memory (accessible by friends via relay).`;
+      if (this.sharedMemory.isLearningPaused()) {
+        prompt += ` Shared Memory learning is currently PAUSED.`;
+      }
     }
 
     const toolNames = this.capabilities.getToolNames();
@@ -1794,7 +1832,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
 
         const pruning = this.userMemory.prune();
-        if (pruning.activePruned > 0 || pruning.durablePruned > 0 || pruning.promoted > 0) {
+        if (pruning.movedToSubconscious > 0 || pruning.hardDeleted > 0 || pruning.promoted > 0) {
           logger.info({ pruning }, 'Second brain pruned');
         }
       } catch (err) {
@@ -1835,19 +1873,31 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   }
 
   private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
-    if (!this.userMemory) return;
-    if (this.userMemory.isLearningPaused()) return;
+    const canSecondBrain = this.userMemory && !this.userMemory.isLearningPaused();
+    const canSharedMemory = this.sharedMemory && !this.sharedMemory.isLearningPaused();
+    if (!canSecondBrain && !canSharedMemory) return;
 
     const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
     if (trivial.test(userMessage.trim())) return;
 
     if (!this.tokenBudget.canAfford(800)) return;
 
+    const existingCategories = this.sharedMemory ? this.sharedMemory.getCategories() : [];
+
     try {
       const provider = this.providers.getDefault();
+
+      let systemPrompt = `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0), category (the domain this memory belongs to — such as personal, professional, health, technical, financial, or another existing category. Only create a new category if the memory doesn't fit ANY existing category), shareable (true if appropriate to share with friends, false if private or sensitive).`;
+
+      if (existingCategories.length > 0) {
+        systemPrompt += `\n\nExisting categories to prefer: ${existingCategories.join(', ')}`;
+      }
+
+      systemPrompt += `\n\nExtract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array.`;
+
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
+        system: systemPrompt,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
@@ -1874,16 +1924,31 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         confidence: number;
         importance: number;
         durability: number;
+        category?: string;
+        shareable?: boolean;
       }>;
 
       try {
         const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-        candidates = JSON.parse(jsonStr);
+        const parsed = JSON.parse(jsonStr);
+        // Wrap single object in array
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.summary) {
+          candidates = [parsed];
+        } else if (Array.isArray(parsed)) {
+          candidates = parsed;
+        } else {
+          // Unexpected shape — bail out
+          return;
+        }
       } catch {
+        // Fallback: treat as plain-text bullet list, but reject lines that look like raw JSON fields
+        const jsonFieldPattern = /^\s*"?\w+"?\s*:\s*["'\[{0-9]/;
         const facts = text
           .split('\n')
           .map(l => l.replace(/^-\s*/, '').trim())
-          .filter(f => f.length > 10 && f.length < 200);
+          .filter(f => f.length > 10 && f.length < 200)
+          .filter(f => !jsonFieldPattern.test(f));
+        if (facts.length === 0) return;
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
           summary: f,
@@ -1891,27 +1956,58 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           importance: 0.7,
           durability: 0.7,
           evidenceKind: 'inferred',
+          category: 'general',
+          shareable: true,
         }));
       }
 
       const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
-      const typed = candidates
-        .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
-        .filter(c => validTypes.includes(c.type))
-        .map(c => ({
-          type: c.type as any,
-          summary: c.summary,
-          detail: c.detail,
-          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-        }));
 
-      if (typed.length > 0) {
-        const remembered = this.userMemory.remember(typed, 'conversation');
-        if (remembered.length > 0) {
-          logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+      // Second Brain candidates
+      if (canSecondBrain) {
+        const secondBrainCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+          }));
+
+        if (secondBrainCandidates.length > 0) {
+          const remembered = this.userMemory!.remember(secondBrainCandidates, 'conversation');
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+          }
+        }
+      }
+
+      // Shared Memory candidates (need category, shareable filter)
+      if (canSharedMemory) {
+        const sharedCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .filter(c => c.shareable !== false)
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+            category: (c.category || 'general'),
+          }));
+
+        if (sharedCandidates.length > 0) {
+          const remembered = this.sharedMemory!.remember(sharedCandidates);
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type), categories: remembered.map(r => r.category) }, 'Shared memories stored');
+          }
         }
       }
     } catch (err) {
@@ -2105,6 +2201,109 @@ Is this productive iteration or a stuck loop?`,
     const ctx = this.capabilities.getChatCommandContext();
     if (!ctx) return false;
 
+    // Handle pending memory query (user selected a friend, now entering query)
+    if (this._memoryQueryTarget) {
+      const query = trimmed.trim();
+      if (query.startsWith('/')) {
+        this._memoryQueryTarget = null;
+        // Fall through to let the command be handled normally
+      } else {
+        const targetUser = this._memoryQueryTarget;
+        this._memoryQueryTarget = null;
+        if (!query) {
+          await channel.send('Query cannot be empty. Try again with /memory @', channelId);
+          return true;
+        }
+        await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
+        try {
+          const result = await this._relayClient!.sendMemoryQuery(targetUser, query);
+          if (!result.forwarded) {
+            await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`⚠ ${err.message || 'Failed to query memory'}`, channelId);
+        }
+        return true;
+      }
+    }
+
+    if (this._awaitingUsernameInput && !this._relayClient?.isRegistered()) {
+      const username = trimmed.toLowerCase().trim();
+      if (username.startsWith('/')) {
+        this._awaitingUsernameInput = false;
+        // Fall through to let the command be handled normally
+      } else {
+        const validation = validateUsernameLocal(username);
+        if (!validation.valid) {
+          await channel.send(`❌ ${validation.error}. Try another:`, channelId);
+          return true;
+        }
+        try {
+          const available = await this._relayClient!.checkUsername(username);
+          if (!available.available) {
+            await channel.send(`❌ Username '${username}' is taken. Try another:`, channelId);
+            return true;
+          }
+        } catch (err) {
+          logger.error({ err }, 'Relay checkUsername failed');
+          await channel.send(`❌ Could not check username availability. Try again: (${err instanceof Error ? err.message : String(err)})`, channelId);
+          return true;
+        }
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        if (channelType === 'cli') {
+          channels.push({ type: 'cli', id: 'cli' });
+        }
+        try {
+          const result = await this._relayClient!.register(
+            username,
+            this.config.identity.owner || undefined,
+            channels,
+          );
+          this._awaitingUsernameInput = false;
+          await this._relayClient!.connect();
+          await channel.send(`✅ Registered successfully!\n\n${this.getRelayStatusText()}`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Registration failed: ${err.message}`, channelId);
+          this._awaitingUsernameInput = false;
+        }
+        return true;
+      }
+    }
+
+    if (this._awaitingRecoveryInput && !this._relayClient?.isRegistered()) {
+      const username = trimmed.toLowerCase().trim();
+      if (username.startsWith('/')) {
+        this._awaitingRecoveryInput = false;
+        // Fall through to let the command be handled normally
+      } else {
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        if (channelType === 'cli') {
+          channels.push({ type: 'cli', id: 'cli' });
+        }
+        try {
+          const result = await this._relayClient!.recover(
+            username,
+            this.config.identity.owner || undefined,
+            channels,
+          );
+          this._awaitingRecoveryInput = false;
+          await this._relayClient!.connect();
+          await channel.send(`✅ Recovered successfully!\n\n${this.getRelayStatusText()}`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Username does not match. Try again:`, channelId);
+        }
+        return true;
+      }
+    }
+
     if (cmd === '/help') {
       const helpText = channelType === 'telegram' ? getTelegramHelp() : ctx.manual();
       await channel.send(helpText, channelId);
@@ -2240,6 +2439,682 @@ Is this productive iteration or a stuck loop?`,
       }
 
       await this.sendMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    // /memory @username query — query a friend's shared memory
+    if (cmd.startsWith('/memory @') || cmd.startsWith('/memory @')) {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (!this._relayClient.isRegistered()) {
+        await channel.send('Not registered on relay. Use /relay to register.', channelId);
+        return true;
+      }
+
+      const args = trimmed.slice('/memory'.length).trim();
+      const atMatch = args.match(/^@(\S+)\s+(.+)$/s);
+
+      // /memory @ or /memory @<partial> with no query — interactive friend selection on CLI
+      if (!atMatch && channelType === 'cli' && channel instanceof CLIChannel) {
+        try {
+          const data = await this._relayClient.getFriends();
+          if (data.friends.length === 0) {
+            await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+            return true;
+          }
+          await (channel as CLIChannel).withMenu(async (select) => {
+            const friendOptions: ArrowSelectOption[] = data.friends.map(f => ({
+              value: f.username,
+              label: `${f.display_name || f.username} (@${f.username})`,
+            }));
+            friendOptions.push({ value: 'back', label: 'Back' });
+
+            const chosen = await select('Query friend\'s memory', friendOptions);
+            if (chosen === 'back') return;
+
+            await channel.send(`Selected @${chosen}. Now type your query:`, channelId);
+            this._memoryQueryTarget = chosen;
+          });
+        } catch (err: any) {
+          await channel.send(`❌ ${err.message}`, channelId);
+        }
+        return true;
+      }
+
+      if (!atMatch) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      const targetUser = atMatch[1].toLowerCase().replace(/^@/, '');
+      const query = atMatch[2].trim();
+
+      if (!query) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
+
+      try {
+        const result = await this._relayClient.sendMemoryQuery(targetUser, query);
+        if (!result.forwarded) {
+          await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
+        }
+      } catch (err: any) {
+        await channel.send(`⚠ ${err.message || 'Failed to query memory'}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/memory shared' || cmd === '/memory shared overview') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      await this.sendSharedMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared pause') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      if (this.sharedMemory.isLearningPaused()) {
+        await channel.send('Shared learning is already paused.', channelId);
+        return true;
+      }
+      this.sharedMemory.setLearningPaused(true);
+      await channel.send('Shared learning paused. No new shared memories will be stored until resumed.', channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared resume') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      if (!this.sharedMemory.isLearningPaused()) {
+        await channel.send('Shared learning is already active.', channelId);
+        return true;
+      }
+      this.sharedMemory.setLearningPaused(false);
+      await channel.send('Shared learning resumed. New memories will be stored in shared memory.', channelId);
+      return true;
+    }
+
+    if (trimmed.toLowerCase().startsWith('/memory shared search')) {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const query = trimmed.slice('/memory shared search'.length).trim();
+      if (!query) {
+        await channel.send('Usage: /memory shared search <query>', channelId);
+        return true;
+      }
+      const results = this.sharedMemory.search(query, 10);
+      if (results.length === 0) {
+        await channel.send(`No shared memories found matching "${query}".`, channelId);
+        return true;
+      }
+      const lines = [`**Search results for "${query}":**`, ''];
+      for (const r of results) {
+        lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared categories') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const categories = this.sharedMemory.getCategories();
+      if (categories.length === 0) {
+        await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+        return true;
+      }
+      const summary = this.sharedMemory.getSummary();
+      const lines = ['**Shared Memory Categories:**', ''];
+      for (const cat of categories) {
+        const count = summary.byCategory[cat] ?? 0;
+        lines.push(`  ${cat}: ${count} memories`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared clear') {
+      if (!this.sharedMemory) {
+        await channel.send('Shared memory is not enabled.', channelId);
+        return true;
+      }
+      const cleared = this.sharedMemory.clear();
+      await channel.send(`Cleared ${cleared} shared memories.`, channelId);
+      return true;
+    }
+
+    if (cmd === '/relay status') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      await channel.send(this.getRelayStatusText(), channelId);
+      return true;
+    }
+
+    if (cmd === '/relay reset') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      try {
+        await this._relayClient.deregister();
+        this._awaitingUsernameInput = false;
+        this._awaitingRecoveryInput = false;
+        await channel.send('🗑 Relay reset complete. All data removed. Use /relay to register again.', channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Relay reset failed: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/relay') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (this._relayClient.isConnected()) {
+        this._relayClient.disconnect();
+        await channel.send('🔴 Disconnected from relay', channelId);
+        return true;
+      }
+      if (this._relayClient.isRegistered()) {
+        const status = await this._relayClient.validateApiKey();
+        if (status === 'invalid') {
+          this._relayClient.clearRegistration();
+        } else if (status === 'unreachable') {
+          await channel.send('⚠️ Cannot reach relay server to validate credentials. Try again later, or use `/relay reset` to re-register.', channelId);
+          return true;
+        }
+      }
+      if (!this._relayClient.isRegistered()) {
+        if (this._awaitingUsernameInput || this._awaitingRecoveryInput) {
+          return true;
+        }
+
+        // Check if this device is already linked to a relay account
+        const tgAdmins = this.config.channels.telegram.admins;
+        const telegramId = tgAdmins && tgAdmins.length > 0 ? String(tgAdmins[0].userId) : null;
+
+        if (telegramId) {
+          try {
+            const lookup = await this._relayClient.lookupChannel('telegram', telegramId);
+            if (lookup.registered) {
+              await channel.send('Your device is already linked to a relay account.\nPlease enter your relay username to verify:', channelId);
+              this._awaitingRecoveryInput = true;
+              return true;
+            }
+          } catch {
+            // Lookup failed — fall through to new registration
+          }
+        }
+
+        await channel.send('Choose a relay username (3-20 chars, lowercase letters, numbers, underscores):', channelId);
+        this._awaitingUsernameInput = true;
+        return true;
+      }
+      const connected = await this._relayClient.connect();
+      if (connected) {
+        await channel.send('🟢 Connected to relay', channelId);
+      } else {
+        await channel.send('❌ Failed to connect to relay', channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/friend ')) {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/friend '.length).trim();
+
+      // /friend access commands
+      if (input.startsWith('access')) {
+        if (!this.sharedMemory) {
+          await channel.send('❌ Shared memory not available.', channelId);
+          return true;
+        }
+        const accessInput = input.slice('access'.length).trim();
+
+        const verifyFriendship = async (target: string): Promise<boolean> => {
+          try {
+            const data = await this._relayClient!.getFriends();
+            return data.friends.some(f => f.username === target);
+          } catch {
+            await channel.send('❌ Failed to verify friendship. Try again later.', channelId);
+            return false;
+          }
+        };
+
+        if (!accessInput || accessInput === '@') {
+          if (channelType === 'cli' && channel instanceof CLIChannel) {
+            try {
+              const data = await this._relayClient!.getFriends();
+              if (data.friends.length === 0) {
+                await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+                return true;
+              }
+              await (channel as CLIChannel).withMenu(async (select) => {
+                const friendOptions: ArrowSelectOption[] = data.friends.map(f => ({
+                  value: f.username,
+                  label: `${f.display_name || f.username} (@${f.username})`,
+                }));
+                friendOptions.push({ value: 'back', label: 'Back' });
+
+                const chosen = await select('Select friend to manage access', friendOptions);
+                if (chosen === 'back') return;
+
+                const currentAccess = this.sharedMemory!.getAllowedCategories(chosen);
+                const myCategories = this.sharedMemory!.getCategories();
+                const info = currentAccess.length > 0
+                  ? `Current access: ${currentAccess.join(', ')}`
+                  : 'No access granted';
+                await channel.send(`@${chosen} — ${info}\nYour categories: ${myCategories.join(', ') || '(none)'}`, channelId);
+
+                const action = await select(`Manage @${chosen}`, [
+                  { value: 'add', label: 'Grant categories' },
+                  { value: 'remove', label: 'Revoke categories' },
+                  { value: 'all', label: 'Grant all categories' },
+                  { value: 'none', label: 'Revoke all access' },
+                  { value: 'request', label: 'Request access from them' },
+                  { value: 'back', label: 'Back' },
+                ]);
+
+                if (action === 'back') return;
+
+                if (action === 'all') {
+                  this.sharedMemory!.grantAllCategories(chosen);
+                  const cats = this.sharedMemory!.getAllowedCategories(chosen);
+                  await channel.send(`✅ Granted @${chosen} access to all categories: ${cats.join(', ')}`, channelId);
+                } else if (action === 'none') {
+                  this.sharedMemory!.revokeAllCategories(chosen);
+                  await channel.send(`✅ Revoked all memory access for @${chosen}`, channelId);
+                } else if (action === 'add') {
+                  const available = myCategories.filter(c => !currentAccess.includes(c));
+                  if (available.length === 0) {
+                    await channel.send(`@${chosen} already has access to all your categories.`, channelId);
+                    return;
+                  }
+                  const catOptions: ArrowSelectOption[] = available.map(c => ({ value: c, label: c }));
+                  catOptions.push({ value: 'back', label: 'Back' });
+                  const selectedCat = await select('Select category to grant', catOptions);
+                  if (selectedCat === 'back') return;
+                  this.sharedMemory!.grantCategory(chosen, selectedCat);
+                  await channel.send(`✅ Granted @${chosen} access to: ${selectedCat}`, channelId);
+                } else if (action === 'remove') {
+                  if (currentAccess.length === 0) {
+                    await channel.send(`@${chosen} has no access to revoke.`, channelId);
+                    return;
+                  }
+                  const catOptions: ArrowSelectOption[] = currentAccess.map(c => ({ value: c, label: c }));
+                  catOptions.push({ value: 'back', label: 'Back' });
+                  const selectedCat = await select('Select category to revoke', catOptions);
+                  if (selectedCat === 'back') return;
+                  this.sharedMemory!.revokeCategory(chosen, selectedCat);
+                  await channel.send(`✅ Revoked @${chosen} access to: ${selectedCat}`, channelId);
+                } else if (action === 'request') {
+                  const catOptions: ArrowSelectOption[] = myCategories.map(c => ({ value: c, label: c }));
+                  catOptions.push({ value: 'back', label: 'Back' });
+                  const selectedCat = await select('Select category to request from them', catOptions);
+                  if (selectedCat === 'back') return;
+                  try {
+                    const result = await this._relayClient!.sendAccessRequest(chosen, [selectedCat]);
+                    if (result.delivered) {
+                      await channel.send(`✅ Access request sent to @${chosen} for: ${selectedCat}`, channelId);
+                    } else {
+                      await channel.send(`⚠ @${chosen} is offline. Access request not delivered.`, channelId);
+                    }
+                  } catch (err: any) {
+                    await channel.send(`❌ ${err.message}`, channelId);
+                  }
+                }
+              });
+            } catch (err: any) {
+              await channel.send(`❌ ${err.message}`, channelId);
+            }
+            return true;
+          }
+
+          // Non-CLI: show text map
+          const map = this.sharedMemory.getFriendAccessMap();
+          const entries = Object.entries(map);
+          if (entries.length === 0) {
+            await channel.send('No friends have memory access granted.\nUse: /friend access @username add <category>', channelId);
+            return true;
+          }
+          const lines = ['**Friend Access:**', ''];
+          for (const [friend, cats] of entries) {
+            lines.push(`@${friend}: ${cats.join(', ')}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          return true;
+        }
+
+        // Parse: @username [add|remove|all|none|request] [categories...]
+        const accessMatch = accessInput.match(/^@?([a-z0-9_]{3,20})(?:\s+(.*))?$/i);
+        if (!accessMatch) {
+          await channel.send('Usage: /friend access @username [add|remove|all|none|request] [categories]', channelId);
+          return true;
+        }
+        const targetFriend = accessMatch[1].toLowerCase();
+        const action = (accessMatch[2] || '').trim();
+
+        if (!(await verifyFriendship(targetFriend))) {
+          await channel.send(`❌ @${targetFriend} is not your friend. Send a friend request first with /friend @${targetFriend}`, channelId);
+          return true;
+        }
+
+        if (!action) {
+          const cats = this.sharedMemory.getAllowedCategories(targetFriend);
+          if (cats.length === 0) {
+            await channel.send(`@${targetFriend} has no memory access.\nAvailable categories: ${this.sharedMemory.getCategories().join(', ') || '(none)'}\nUse: /friend access @${targetFriend} add <category>`, channelId);
+          } else {
+            await channel.send(`@${targetFriend} can access: ${cats.join(', ')}`, channelId);
+          }
+          return true;
+        }
+
+        if (action === 'all') {
+          this.sharedMemory.grantAllCategories(targetFriend);
+          const cats = this.sharedMemory.getAllowedCategories(targetFriend);
+          await channel.send(`✅ Granted @${targetFriend} access to all categories: ${cats.join(', ')}`, channelId);
+          return true;
+        }
+
+        if (action === 'none') {
+          this.sharedMemory.revokeAllCategories(targetFriend);
+          await channel.send(`✅ Revoked all memory access for @${targetFriend}`, channelId);
+          return true;
+        }
+
+        if (action.startsWith('add ')) {
+          const categories = action.slice(4).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+          if (categories.length === 0) {
+            await channel.send('Usage: /friend access @username add category1,category2', channelId);
+            return true;
+          }
+          for (const cat of categories) {
+            this.sharedMemory.grantCategory(targetFriend, cat);
+          }
+          await channel.send(`✅ Granted @${targetFriend} access to: ${categories.join(', ')}`, channelId);
+          return true;
+        }
+
+        if (action.startsWith('remove ')) {
+          const categories = action.slice(7).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+          if (categories.length === 0) {
+            await channel.send('Usage: /friend access @username remove category1,category2', channelId);
+            return true;
+          }
+          for (const cat of categories) {
+            this.sharedMemory.revokeCategory(targetFriend, cat);
+          }
+          await channel.send(`✅ Revoked @${targetFriend} access to: ${categories.join(', ')}`, channelId);
+          return true;
+        }
+
+        if (action.startsWith('request ')) {
+          const categories = action.slice(8).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+          if (categories.length === 0) {
+            await channel.send('Usage: /friend access @username request category1,category2', channelId);
+            return true;
+          }
+          try {
+            const result = await this._relayClient!.sendAccessRequest(targetFriend, categories);
+            if (result.delivered) {
+              await channel.send(`✅ Access request sent to @${targetFriend} for: ${categories.join(', ')}`, channelId);
+            } else {
+              await channel.send(`⚠ @${targetFriend} is offline. Access request not delivered.`, channelId);
+            }
+          } catch (err: any) {
+            await channel.send(`❌ ${err.message}`, channelId);
+          }
+          return true;
+        }
+
+        await channel.send('Usage: /friend access @username [add|remove|all|none|request] [categories]', channelId);
+        return true;
+      }
+
+      if (!input) {
+        await channel.send('Usage: /friend @username', channelId);
+        return true;
+      }
+
+      // /friend @username — check existing relationship first, then send request
+      const targetUser = input.replace(/^@/, '').toLowerCase().trim();
+      try {
+        const data = await this._relayClient.getFriends();
+
+        if (data.friends.some(f => f.username === targetUser)) {
+          await channel.send(`✅ @${targetUser} is already your friend.\nUse /friend access @${targetUser} to manage memory access.`, channelId);
+          return true;
+        }
+
+        if (data.pending_sent.some(p => p.target_user.username === targetUser)) {
+          await channel.send(`⏳ Friend request to @${targetUser} is already pending.`, channelId);
+          return true;
+        }
+
+        if (data.pending_received.some(p => p.target_user.username === targetUser)) {
+          await channel.send(`📥 @${targetUser} has already sent you a friend request. Use /notifications to accept it.`, channelId);
+          return true;
+        }
+
+        const result = await this._relayClient.sendFriendRequest(targetUser);
+        const name = result.target_user.display_name || result.target_user.username;
+        await channel.send(`✅ Friend request sent to @${name}`, channelId);
+      } catch (err: any) {
+        await channel.send(`❌ ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/message ')) {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/message '.length).trim();
+      const match = input.match(/^@?([a-z0-9_]{3,20})\s+(.+)$/i);
+      if (!match) {
+        await channel.send('Usage: /message @username your message here', channelId);
+        return true;
+      }
+      const targetUser = match[1].toLowerCase();
+      const msgContent = match[2];
+      try {
+        const result = await this._relayClient.sendMessage(targetUser, msgContent);
+        if (result.delivered) {
+          const name = result.to_user?.display_name || targetUser;
+          await channel.send(`✅ Message delivered to @${name}`, channelId);
+        } else {
+          await channel.send(`⚠ @${targetUser} is currently offline. Message not delivered.`, channelId);
+        }
+        if (this._messagesStore) {
+          this._messagesStore.addOutbound(targetUser, result.to_user?.display_name ?? null, msgContent, result.sent_at ?? Math.floor(Date.now() / 1000));
+        }
+      } catch (err: any) {
+        await channel.send(`❌ ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/messages' || cmd.startsWith('/messages ')) {
+      if (!this._messagesStore) {
+        await channel.send('❌ Messages not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      const sub = trimmed.slice('/messages'.length).trim().toLowerCase();
+
+      if (sub.endsWith('read all') || sub === 'read') {
+        const marked = this._messagesStore.markAllRead();
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('read ')) {
+        const peer = sub.slice('read '.length).trim().replace(/^@/, '').toLowerCase();
+        if (!peer) {
+          await channel.send('Usage: /messages read @username', channelId);
+          return true;
+        }
+        const marked = this._messagesStore.markAllReadForPeer(peer);
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} from @${peer} as read.`, channelId);
+        return true;
+      }
+
+      if (sub === 'clear') {
+        const cleared = this._messagesStore.clearAll();
+        await channel.send(`🗑 Cleared ${cleared} message${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('@') || (sub.length >= 3 && !sub.startsWith('read') && sub !== 'clear' && sub !== '')) {
+        const peer = sub.replace(/^@/, '').toLowerCase();
+        const conversation = this._messagesStore.getConversation(peer, 20);
+        if (conversation.length === 0) {
+          await channel.send(`No messages with @${peer}.`, channelId);
+          return true;
+        }
+        conversation.sort((a, b) => a.sentAt - b.sentAt);
+        const lines = [`**Messages with @${peer}:**`, ''];
+        for (const msg of conversation) {
+          const icon = msg.direction === 'inbound' ? '←' : '→';
+          const time = formatTimeAgo(msg.sentAt);
+          lines.push(`${icon} ${msg.content} (${time})`);
+        }
+        lines.push('');
+        lines.push('Use /messages read @' + peer + ' to mark as read.');
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const conversations = this._messagesStore.getConversations();
+      if (conversations.length === 0) {
+        await channel.send('📭 No messages yet. Use /message @username to send a message.', channelId);
+        return true;
+      }
+      const msgSummary = this._messagesStore.getSummary();
+      const lines = [`📬 Conversations (${msgSummary.unread} unread)`, ''];
+      for (const conv of conversations) {
+        const name = conv.peerDisplayName || conv.peerUser;
+        const icon = conv.unreadCount > 0 ? '🔵' : '⚪';
+        const time = formatTimeAgo(conv.lastSentAt);
+        lines.push(`${icon} @${conv.peerUser} (${name}) — ${conv.lastMessage.slice(0, 40)}${conv.lastMessage.length > 40 ? '...' : ''} (${time})`);
+      }
+      lines.push('');
+      lines.push('Use /messages @username to see a conversation.');
+      lines.push('Use /messages read all to mark all as read.');
+      lines.push('Use /messages clear to delete all messages.');
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/listfriends') {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      try {
+        const data = await this._relayClient.getFriends();
+
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          await (channel as CLIChannel).withMenu(async (select) => {
+            await this.openCliFriendsMenu(channel as CLIChannel, channelId, select, data);
+          });
+          return true;
+        }
+
+        const lines = ['**👥 Your Friends**', ''];
+        if (data.friends.length > 0) {
+          lines.push('✅ Friends:');
+          for (const f of data.friends) {
+            const name = f.display_name || f.username;
+            lines.push(`  ${name} (@${f.username})`);
+          }
+        }
+        if (data.pending_sent.length > 0) {
+          lines.push('');
+          lines.push('📤 Pending sent:');
+          for (const f of data.pending_sent) {
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
+          }
+        }
+        if (data.pending_received.length > 0) {
+          lines.push('');
+          lines.push('📥 Pending received:');
+          for (const f of data.pending_received) {
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
+          }
+        }
+        if (data.friends.length === 0 && data.pending_sent.length === 0 && data.pending_received.length === 0) {
+          lines.push('No friends yet. Use /friend @username to send a request.');
+        }
+        await channel.send(lines.join('\n'), channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Failed to get friends: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/notifications' || cmd === '/notification' || cmd.startsWith('/notifications ') || cmd.startsWith('/notification ')) {
+      if (!this._notifications) {
+        await channel.send('❌ Notifications not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('read all') || cmd.endsWith('read')) {
+        const marked = this._notifications.markAllRead();
+        await channel.send(`✅ Marked ${marked} notification${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('clear')) {
+        const cleared = this._notifications.clearRead();
+        await channel.send(`🗑 Cleared ${cleared} read notification${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      const notifSummary = this._notifications.getSummary();
+      const all = this._notifications.getAll(50);
+
+      if (all.length === 0) {
+        await channel.send('📭 No notifications.', channelId);
+        return true;
+      }
+
+      const lines = [`📬 Notifications (${notifSummary.unread} unread)`, ''];
+      for (const n of all) {
+        const icon = n.read ? '⚪' : '🔵';
+        const timeAgo = formatTimeAgo(n.createdAt);
+        lines.push(`${icon} ${n.message} (${timeAgo})`);
+      }
+      lines.push('');
+      lines.push('Use /notifications read all to mark as read, /notifications clear to remove read ones.');
+
+      await channel.send(lines.join('\n'), channelId);
       return true;
     }
 
@@ -3147,7 +4022,7 @@ Is this productive iteration or a stuck loop?`,
     const summary = this.userMemory.getSummary();
     const lines = [
       `**Memory Overview**`,
-      `Total memories: ${summary.total}`,
+      `Conscious: ${summary.total} | Subconscious: ${summary.subconsciousTotal}`,
       `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
     ];
     if (summary.profileSummary) {
@@ -3172,15 +4047,24 @@ Is this productive iteration or a stuck loop?`,
 
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
-        const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-        const action = await sel('Memory', [
-          { value: 'overview', label: 'Overview' },
-          { value: 'recent', label: 'Recent Memories' },
-          { value: 'search', label: 'Search' },
-          { value: 'toggle', label: learningLabel },
+      const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+      const hasSharedMemory = !!this.sharedMemory;
+      const sharedLabel = hasSharedMemory ? 'Shared Memory' : '';
+      const options: { value: string; label: string }[] = [
+        { value: 'overview', label: 'Overview' },
+        { value: 'recent', label: 'Recent Memories' },
+        { value: 'subconscious', label: 'Subconscious Memory' },
+        { value: 'search', label: 'Search' },
+        { value: 'toggle', label: learningLabel },
+      ];
+        if (hasSharedMemory) {
+          options.push({ value: 'shared', label: sharedLabel });
+        }
+        options.push(
           { value: 'clear', label: 'Clear All Memories' },
           { value: 'back', label: 'Back' },
-        ]);
+        );
+        const action = await sel('Memory', options);
 
         if (action === 'back') return;
 
@@ -3197,11 +4081,34 @@ Is this productive iteration or a stuck loop?`,
           }
           const lines = ['**Recent Memories:**', ''];
           for (const r of recent) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const scope = r.scope === 'subconscious' ? '💤' : r.scope === 'active' ? '⏳' : '📌';
             const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
             lines.push(`${scope} [${r.type}] ${r.summary}`);
             lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
           }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'subconscious') {
+          const summary = this.userMemory!.getSummary();
+          const subconscious = this.userMemory!.getSubconscious(5);
+          if (subconscious.length === 0) {
+            await channel.send('💤 **Subconscious Memory**\n\nNo subconscious memories yet. Memories move here after 30 days of not being referenced, and are recalled automatically when relevant to a conversation.', channelId);
+            continue;
+          }
+          const lines = [`**Subconscious Memory (showing first 5 by recency):**`, ''];
+          for (const r of subconscious) {
+            const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
+            lines.push(`💤 [${r.type}] ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+          }
+          if (summary.subconsciousTotal > 5) {
+            lines.push('');
+            lines.push(`... and ${summary.subconsciousTotal - 5} more subconscious memories stored.`);
+          }
+          lines.push('');
+          lines.push('These memories can be recalled to conscious when relevant to a conversation.');
           await channel.send(lines.join('\n'), channelId);
           continue;
         }
@@ -3216,7 +4123,7 @@ Is this productive iteration or a stuck loop?`,
           }
           const lines = [`**Search results for "${query}":**`, ''];
           for (const r of results) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const scope = r.scope === 'subconscious' ? '💤' : r.scope === 'active' ? '⏳' : '📌';
             lines.push(`${scope} [${r.type}] ${r.summary}`);
             lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
           }
@@ -3242,6 +4149,11 @@ Is this productive iteration or a stuck loop?`,
           }
           continue;
         }
+
+        if (action === 'shared') {
+          await this.openCliSharedMemoryMenu(channel, channelId, sel);
+          continue;
+        }
       }
     };
 
@@ -3249,6 +4161,127 @@ Is this productive iteration or a stuck loop?`,
       await runMenu(select);
     } else {
       await channel.withMenu(runMenu);
+    }
+  }
+
+  private async openCliSharedMemoryMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+  ): Promise<void> {
+    if (!this.sharedMemory) return;
+
+    while (true) {
+      const summary = this.sharedMemory.getSummary();
+      const sharedLearningLabel = summary.learningPaused ? 'Resume Shared Learning' : 'Pause Shared Learning';
+      const action = await select('Shared Memory', [
+        { value: 'overview', label: `Overview (${summary.total} memories)` },
+        { value: 'recent', label: 'Recent' },
+        { value: 'search', label: 'Search' },
+        { value: 'categories', label: 'Categories' },
+        { value: 'toggle', label: sharedLearningLabel },
+        { value: 'clear', label: 'Clear All Shared Memories' },
+        { value: 'back', label: 'Back' },
+      ]);
+
+      if (action === 'back') return;
+
+      if (action === 'overview') {
+        const lines = [
+          '**Shared Memory Overview**',
+          `Total memories: ${summary.total}`,
+          `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+        ];
+        const catEntries = Object.entries(summary.byCategory);
+        if (catEntries.length > 0) {
+          lines.push('');
+          lines.push('By category:');
+          for (const [cat, count] of catEntries) {
+            lines.push(`  ${cat}: ${count}`);
+          }
+        }
+        const typeEntries = Object.entries(summary.byType);
+        if (typeEntries.length > 0) {
+          lines.push('');
+          lines.push('By type:');
+          for (const [type, count] of typeEntries) {
+            lines.push(`  ${type}: ${count}`);
+          }
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'recent') {
+        const recent = this.sharedMemory.getRecent(10);
+        if (recent.length === 0) {
+          await channel.send('No shared memories yet.', channelId);
+          continue;
+        }
+        const lines = ['**Recent Shared Memories:**', ''];
+        for (const r of recent) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'search') {
+        const query = await channel.prompt('Search shared memories: ');
+        if (!query) continue;
+        const results = this.sharedMemory.search(query, 10);
+        if (results.length === 0) {
+          await channel.send(`No shared memories found matching "${query}".`, channelId);
+          continue;
+        }
+        const lines = [`**Search results for "${query}":**`, ''];
+        for (const r of results) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'categories') {
+        const categories = this.sharedMemory.getCategories();
+        if (categories.length === 0) {
+          await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+          continue;
+        }
+        const lines = ['**Shared Memory Categories:**', ''];
+        for (const cat of categories) {
+          const count = summary.byCategory[cat] ?? 0;
+          lines.push(`  ${cat}: ${count} memories`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'toggle') {
+        const currentlyPaused = this.sharedMemory.isLearningPaused();
+        this.sharedMemory.setLearningPaused(!currentlyPaused);
+        await channel.send(
+          currentlyPaused
+            ? 'Shared learning resumed. New memories will be stored in shared memory.'
+            : 'Shared learning paused. No new shared memories will be stored until resumed.',
+          channelId,
+        );
+        continue;
+      }
+
+      if (action === 'clear') {
+        const confirm = await select('Clear all shared memories?', [
+          { value: 'cancel', label: 'Cancel' },
+          { value: 'confirm', label: 'Clear everything' },
+        ]);
+        if (confirm === 'confirm') {
+          const cleared = this.sharedMemory.clear();
+          await channel.send(`Cleared ${cleared} shared memories.`, channelId);
+        }
+        continue;
+      }
     }
   }
 
@@ -3451,4 +4484,192 @@ Is this productive iteration or a stuck loop?`,
       }
     }
   }
+
+  private async sendSharedMemoryOverview(channel: any, channelId: string): Promise<void> {
+    if (!this.sharedMemory) return;
+    const summary = this.sharedMemory.getSummary();
+    const lines = [
+      `**Shared Memory Overview**`,
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+    ];
+    const catEntries = Object.entries(summary.byCategory);
+    if (catEntries.length > 0) {
+      lines.push('');
+      lines.push('By category:');
+      for (const [cat, count] of catEntries) {
+        lines.push(`  ${cat}: ${count}`);
+      }
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('');
+      lines.push('By type:');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+    lines.push('');
+    lines.push('Commands: /memory @<friend> <query> | /memory shared pause|resume|search <query>|categories|clear');
+    await channel.send(lines.join('\n'), channelId);
+  }
+
+  private getRelayStatusText(): string {
+    const lines: string[] = ['**Relay Status**', ''];
+    const registered = this._relayClient!.isRegistered();
+    const connected = this._relayClient!.isConnected();
+    const reconnecting = this._relayClient!.isReconnecting();
+    const username = this.config.relay?.username || null;
+
+    lines.push(`Status: ${connected ? '🟢 Connected' : reconnecting ? '🔄 Reconnecting' : '🔴 Disconnected'}`);
+    lines.push(`Registered: ${registered ? 'Yes' : 'No'}`);
+    if (username) {
+      lines.push(`Username: @${username}`);
+    }
+    return lines.join('\n');
+  }
+
+  private async openCliFriendsMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+    data: FriendsResponse,
+  ): Promise<void> {
+    const formatName = (u: { username: string; display_name: string | null }) =>
+      u.display_name || u.username;
+
+    const allOptions: ArrowSelectOption[] = [];
+
+    if (data.friends.length > 0) {
+      for (const f of data.friends) {
+        const name = f.display_name || f.username;
+        allOptions.push({ value: `friend:${f.username}`, label: `✅ ${name} (@${f.username})` });
+      }
+    }
+    if (data.pending_sent.length > 0) {
+      for (const f of data.pending_sent) {
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `sent:${f.target_user.username}`, label: `📤 ${name} (@${f.target_user.username})` });
+      }
+    }
+    if (data.pending_received.length > 0) {
+      for (const f of data.pending_received) {
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `received:${f.target_user.username}`, label: `📥 ${name} (@${f.target_user.username})` });
+      }
+    }
+
+    if (allOptions.length === 0) {
+      await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+      return;
+    }
+
+    allOptions.push({ value: 'back', label: 'Back' });
+
+    const chosen = await select('👥 Friends', allOptions);
+    if (chosen === 'back') return;
+
+    const [type, targetUsername] = chosen.split(':');
+
+    if (type === 'friend') {
+      const friend = data.friends.find(f => f.username === targetUsername);
+      if (!friend) return;
+      const name = friend.display_name || friend.username;
+      const action = await select(name, [
+        { value: 'remove', label: 'Remove Friend' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'remove') {
+        const confirm = await select(`Remove ${name}?`, [
+          { value: 'confirm', label: 'Confirm' },
+          { value: 'cancel', label: 'Cancel' },
+        ]);
+        if (confirm === 'confirm' && this._relayClient) {
+          try {
+            await this._relayClient.deleteFriend(targetUsername);
+            if (this.sharedMemory) {
+              this.sharedMemory.revokeAllCategories(targetUsername);
+            }
+            await channel.send(`🗑 Removed ${name} from friends.`, channelId);
+          } catch (err: any) {
+            await channel.send(`❌ Failed: ${err.message}`, channelId);
+          }
+        }
+      }
+    } else if (type === 'sent') {
+      const req = data.pending_sent.find(f => f.target_user.username === targetUsername);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'cancel', label: 'Cancel Request' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'cancel' && this._relayClient) {
+        try {
+          await this._relayClient.cancelRequest(targetUsername);
+          await channel.send(`✖ Cancelled friend request to ${name}.`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    } else if (type === 'received') {
+      const req = data.pending_received.find(f => f.target_user.username === targetUsername);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'accept', label: 'Accept' },
+        { value: 'reject', label: 'Reject' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (this._relayClient) {
+        try {
+          if (action === 'accept') {
+            await this._relayClient.approveRequest(targetUsername);
+            await channel.send(`✅ Accepted ${name}'s friend request!\nThey currently have no access to your shared memory. Use /friend access @${targetUsername} add <category> to grant access.`, channelId);
+          } else if (action === 'reject') {
+            await this._relayClient.rejectRequest(targetUsername);
+            await channel.send(`❌ Rejected ${name}'s friend request.`, channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    }
+  }
+
+  handleRelayPush(data: Record<string, unknown>, channelType: string, channelId: string): void {
+    const type = data.type as string;
+    const fromUser = data.from_user as string | undefined;
+    const fromDisplayName = data.from_display_name as string | null | undefined;
+    const displayName = fromDisplayName || fromUser || 'Unknown';
+
+    const channel = this.channels.get(channelType as any);
+    if (!channel) {
+      console.error(`[Agent] Relay push: channel '${channelType}' not found`);
+      return;
+    }
+
+    const messages: Record<string, string> = {
+      'FRIEND_ACCEPT': `✅ @${displayName} accepted your friend request!`,
+      'FRIEND_REJECT': `❌ @${displayName} rejected your friend request.`,
+      'FRIEND_CANCEL': `⏳ @${displayName} cancelled their friend request.`,
+      'FRIEND_REMOVE': `🗑 @${displayName} removed you from their friends.`,
+    };
+
+    const msg = messages[type];
+    if (msg) {
+      channel.send(msg, channelId).catch((err: unknown) => {
+        console.error('[Agent] Relay push notification failed:', err);
+      });
+    }
+  }
+}
+
+function formatTimeAgo(unixTimestamp: number): string {
+  const seconds = Math.floor(Date.now() / 1000) - unixTimestamp;
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(unixTimestamp * 1000).toLocaleDateString();
 }

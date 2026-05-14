@@ -23,6 +23,7 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getTelegramApprovedChatIds,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -49,6 +50,13 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { SharedMemoryStore } from './memory/shared-memory-store.js';
+import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
+import { NotificationsStore } from './memory/notifications-store.js';
+import { isNotificationsDbAvailable } from './memory/notifications-db.js';
+import { MessagesStore } from './memory/messages-store.js';
+import { isMessagesDbAvailable } from './memory/messages-db.js';
+import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -1301,6 +1309,57 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     );
   }
 
+  // Shared Memory
+  let sharedMemory: SharedMemoryStore | null = null;
+  if (config.memory.sharedMemory?.enabled !== false && isSharedMemoryDbAvailable()) {
+    try {
+      sharedMemory = new SharedMemoryStore(config);
+      if (!isDaemon) {
+        console.log(chalk.dim(`  Shared memory: enabled (${sharedMemory.getSummary().total} existing memories)`));
+      } else {
+        logger.info({ total: sharedMemory.getSummary().total }, 'Shared memory loaded');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Shared memory initialization failed, continuing without it');
+      sharedMemory = null;
+    }
+  } else if (config.memory.sharedMemory?.enabled !== false && !isSharedMemoryDbAvailable()) {
+    logger.warn(
+      'better-sqlite3 is not available — shared memory is disabled. ' +
+      'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
+    );
+  }
+
+  // Notifications
+  let notifications: NotificationsStore | null = null;
+  if (isNotificationsDbAvailable()) {
+    try {
+      notifications = new NotificationsStore();
+      logger.info({ unread: notifications.getSummary().unread }, 'Notifications store loaded');
+    } catch (err) {
+      logger.warn({ err }, 'Notifications initialization failed, continuing without it');
+      notifications = null;
+    }
+  }
+
+  // Messages
+  let messagesStore: MessagesStore | null = null;
+  if (isMessagesDbAvailable()) {
+    try {
+      messagesStore = new MessagesStore();
+      logger.info({ conversations: messagesStore.getSummary().conversations }, 'Messages store loaded');
+    } catch (err) {
+      logger.warn({ err }, 'Messages initialization failed, continuing without it');
+      messagesStore = null;
+    }
+  }
+
+  // Relay Client
+  let relayClient: RelayClient | null = null;
+  if (config.relay?.enabled !== false && config.relay?.url) {
+    relayClient = new RelayClient(() => config);
+  }
+
   const channels = new ChannelRegistry(config);
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
 
@@ -1330,7 +1389,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     config: () => config,
     tokenBudget: () => tokenBudget,
     manual: () => getManual(),
-    memorySummary: () => userMemory ? userMemory.getSummary() : { total: 0, byType: {}, learningPaused: false },
+    memorySummary: () => userMemory ? userMemory.getSummary() : { total: 0, subconsciousTotal: 0, byType: {}, learningPaused: false },
     memoryRecent: (limit?: number) => userMemory ? userMemory.getRecent(limit) : [],
     memorySearch: (query: string, limit?: number) => userMemory ? userMemory.search(query, limit) : [],
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
@@ -1374,10 +1433,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setGitHubToken(process.env.GITHUB_TOKEN);
   }
 
+  capabilities.setMemoryStores(
+    () => userMemory,
+    () => sharedMemory,
+  );
+
   capabilities.registerAll();
 
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
+    relayClient, sharedMemory, notifications, messagesStore,
   );
 
   if (supervisor) {
@@ -1434,6 +1499,218 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
+  // --- Relay Event Handlers ---
+  if (relayClient) {
+    // Helper to refresh friends list and push to CLI for @ autocomplete
+    const refreshFriendsForUI = () => {
+      if (!relayClient) return;
+      relayClient.getFriends().then((data) => {
+        const friends = data.friends.map(f => ({
+          username: f.username,
+          displayName: f.display_name,
+        }));
+        const bootCli = channels.getCliChannel();
+        if (bootCli) {
+          bootCli.setFriends(friends);
+        }
+      }).catch(() => {});
+    };
+
+    const storeNotification = (type: string, message: string, fromUser: string, meta?: Record<string, unknown>) => {
+      if (!notifications) return;
+      const record = notifications.add(type as any, message, fromUser, meta);
+      if (record) {
+        // Push to Telegram if available
+        if (tgChannel) {
+          const chatIds = getTelegramApprovedChatIds(config);
+          let pushSucceeded = false;
+          for (const chatId of chatIds) {
+            tgChannel.send(message, chatId.toString()).then(() => {
+              if (!pushSucceeded) {
+                pushSucceeded = true;
+                notifications!.markRead(record.id);
+              }
+            }).catch(() => {});
+          }
+        }
+        // Push to CLI if available
+        if (cliChannel) {
+          cliChannel.send(message);
+          notifications.markRead(record.id);
+        }
+      }
+    };
+
+    relayClient.on('friend_request', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = d.from_user as string;
+      const requestId = d.request_id as string;
+      storeNotification('friend_request', `@${fromUser} wants to be your memory friend`, fromUser, { request_id: requestId });
+    });
+
+    relayClient.on('initial_state', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const requests = d.friend_requests as Array<{ from_user: string; request_id: string; from_display_name: string | null }> | undefined;
+      if (!requests || requests.length === 0) return;
+      for (const req of requests) {
+        storeNotification('friend_request', `@${req.from_user} wants to be your memory friend`, req.from_user, { request_id: req.request_id });
+      }
+      refreshFriendsForUI();
+    });
+
+    relayClient.on('friend_accept', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_accept', `✅ @${fromUser} accepted your friend request!`, fromUser);
+      refreshFriendsForUI();
+    });
+
+    relayClient.on('friend_reject', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_reject', `❌ @${fromUser} rejected your friend request.`, fromUser);
+    });
+
+    relayClient.on('friend_cancel', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_cancel', `⏳ @${fromUser} cancelled their friend request.`, fromUser);
+    });
+
+    relayClient.on('friend_remove', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      storeNotification('friend_remove', `🗑 @${fromUser} removed you from their friends.`, fromUser);
+      if (sharedMemory) {
+        sharedMemory.revokeAllCategories(fromUser);
+      }
+      refreshFriendsForUI();
+    });
+
+    relayClient.on('access_request', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      const fromDisplayName = (d.from_display_name as string | null) ?? null;
+      const categories = (d.categories as string[]) || [];
+      const displayName = fromDisplayName || fromUser;
+      const myCategories = sharedMemory ? sharedMemory.getCategories() : [];
+      const lines = [
+        `🔑 @${displayName} is requesting access to your memory categories: ${categories.join(', ')}`,
+        `Your categories: ${myCategories.length > 0 ? myCategories.join(', ') : '(none)'}`,
+        `Use /friend access @${fromUser} add <categories> to grant access.`,
+      ];
+      storeNotification('access_request', lines.join('\n'), fromUser);
+    });
+
+    relayClient.on('message', (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      const fromUser = (d.from_user as string) || 'Unknown';
+      const fromDisplayName = (d.from_display_name as string | null) ?? null;
+      const content = (d.content as string) || '';
+      const sentAt = (d.sent_at as number) || Math.floor(Date.now() / 1000);
+
+      if (messagesStore) {
+        messagesStore.addInbound(fromUser, fromDisplayName, content, sentAt);
+      }
+
+      const displayName = fromDisplayName || fromUser;
+      const formattedMessage = `💬 @${displayName}: ${content}`;
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        for (const chatId of chatIds) {
+          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+        }
+      }
+      if (cliChannel) {
+        cliChannel.send(formattedMessage);
+      }
+    });
+
+    relayClient.on('memory_query', (data: unknown) => {
+      const d = data as MemoryQueryEvent;
+      const fromUser = d.from_user || 'Unknown';
+      const fromDisplayName = d.from_display_name ?? null;
+      const requestId = d.request_id;
+      const query = d.query;
+
+      if (!sharedMemory) {
+        relayClient!.sendMemoryResponse(fromUser, requestId, query, []).catch(() => {});
+        return;
+      }
+
+      const results = sharedMemory.search(query, 10);
+      const allowed = sharedMemory.getAllowedCategories(fromUser);
+      const filtered = allowed.length > 0
+        ? results.filter(r => allowed.includes(r.category))
+        : [];
+      const items: MemoryResultItem[] = filtered.map(r => ({
+        type: r.type,
+        category: r.category,
+        summary: r.summary.length > 220 ? r.summary.slice(0, 220) : r.summary,
+        detail: r.detail ? (r.detail.length > 500 ? r.detail.slice(0, 500) : r.detail) : null,
+        confidence: r.confidence,
+        importance: r.importance,
+      }));
+
+      const displayName = fromDisplayName || fromUser;
+      relayClient!.sendMemoryResponse(fromUser, requestId, query, items)
+        .then((result) => {
+          if (!result.delivered) {
+            logger.warn({ fromUser, query, error: result.error }, 'Memory response delivery failed');
+          }
+        })
+        .catch((err) => {
+          logger.warn({ fromUser, query, err }, 'Memory response send failed');
+        });
+
+      const resultCount = items.length;
+      const localMessage = `🧠 @${displayName} queried your memory for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
+      storeNotification('memory_query', localMessage, fromUser, { request_id: requestId, query });
+    });
+
+    relayClient.on('memory_response', (data: unknown) => {
+      const d = data as MemoryResponseEvent;
+      const fromUser = d.from_user || 'Unknown';
+      const fromDisplayName = d.from_display_name ?? null;
+      const query = d.query;
+      const results = d.results || [];
+      const displayName = fromDisplayName || fromUser;
+
+      let formattedMessage: string;
+      if (results.length === 0) {
+        formattedMessage = `🧠 @${displayName}'s memory for "${query}":\nNo shared memories found.`;
+      } else {
+        const lines = [`🧠 @${displayName}'s memory for "${query}":`, ''];
+        for (const r of results) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          if (r.detail) {
+            lines.push(`   ${r.detail}`);
+          }
+        }
+        formattedMessage = lines.join('\n');
+      }
+
+      if (tgChannel) {
+        const chatIds = getTelegramApprovedChatIds(config);
+        for (const chatId of chatIds) {
+          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+        }
+      }
+      if (cliChannel) {
+        cliChannel.send(formattedMessage);
+      }
+    });
+
+    // Auto-connect if already registered
+    if (relayClient.isRegistered()) {
+      relayClient.connect().then(() => {
+        refreshFriendsForUI();
+      }).catch((err) => {
+        logger.warn({ err }, 'Relay auto-connect failed');
+      });
+    }
+  }
+
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     if (channelType === 'telegram' && tgChannel) {
@@ -1485,6 +1762,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         userMemory.consolidate();
         userMemory.close();
       } catch {}
+    }
+    if (relayClient) {
+      relayClient.disconnect();
     }
     await agent.shutdown();
     process.exit(0);

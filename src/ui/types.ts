@@ -147,3 +147,9 @@ export interface PermissionPromptState {
   options?: Array<{ value: string; label: string }>;
   resolve: (value: string | boolean) => void;
 }
+
+export interface MenuPromptState {
+  title: string;
+  options: Array<{ value: string; label: string }>;
+  resolve: (value: string) => void;
+}
