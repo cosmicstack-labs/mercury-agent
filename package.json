@@ -68,7 +68,7 @@
     "marked": "^14.1.4",
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",
-    "pino": "^9.6.0",
+    "pino": "^10.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.7.0",
