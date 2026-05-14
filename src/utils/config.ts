@@ -56,6 +56,8 @@ export type ProviderName =
   | 'openaiCompat'
   | 'mimo'
   | 'mimoTokenPlan'
+  | 'astraflow'
+  | 'astraflowCn'
   | 'chatgptWeb'
   | 'githubCopilot';
 
@@ -76,6 +78,8 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    astraflow: ProviderConfig;
+    astraflowCn: ProviderConfig;
     chatgptWeb: ProviderConfig;
     githubCopilot: ProviderConfig;
   };
@@ -222,6 +226,20 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('MIMO_TOKEN_PLAN_BASE_URL', 'https://token-plan-cn.xiaomimimo.com/v1'),
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
+      },
+      astraflow: {
+        name: 'astraflow',
+        apiKey: getEnv('ASTRAFLOW_API_KEY', ''),
+        baseUrl: getEnv('ASTRAFLOW_BASE_URL', 'https://api-us-ca.umodelverse.ai/v1'),
+        model: getEnv('ASTRAFLOW_MODEL', 'deepseek-v3'),
+        enabled: getEnvBool('ASTRAFLOW_ENABLED', true),
+      },
+      astraflowCn: {
+        name: 'astraflowCn',
+        apiKey: getEnv('ASTRAFLOW_CN_API_KEY', ''),
+        baseUrl: getEnv('ASTRAFLOW_CN_BASE_URL', 'https://api.modelverse.cn/v1'),
+        model: getEnv('ASTRAFLOW_CN_MODEL', 'deepseek-v3'),
+        enabled: getEnvBool('ASTRAFLOW_CN_ENABLED', false),
       },
       chatgptWeb: {
         name: 'chatgptWeb',

@@ -19,6 +19,9 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
   } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
     const { MiMoProvider } = await import('./mimo.js');
     return new MiMoProvider(pc);
+  } else if (pc.name === 'astraflow' || pc.name === 'astraflowCn') {
+    const { OpenAICompatProvider } = await import('./openai-compat.js');
+    return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'chatgptWeb') {
     const { ChatGPTWebProvider } = await import('./chatgpt-web.js');
     return new ChatGPTWebProvider(pc);
@@ -53,6 +56,8 @@ export class ProviderRegistry {
       config.providers.openaiCompat,
       config.providers.mimo,
       config.providers.mimoTokenPlan,
+      config.providers.astraflow,
+      config.providers.astraflowCn,
       config.providers.chatgptWeb,
       config.providers.githubCopilot,
     ];
