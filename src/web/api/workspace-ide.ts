@@ -205,7 +205,8 @@ ide.post('/api/git/commit', async (c) => {
     const body = await c.req.json<{ message: string }>();
     if (!body.message?.trim()) return c.json({ error: 'message is required' }, 400);
     const cwd = getWorkspaceRoot();
-    const result = git(`commit -m "${body.message.replace(/"/g, '\\"')}"`, cwd);
+    const fullMessage = `${body.message.trim()}\n\nCo-authored-by: Mercury <mercury@cosmicstack.org>`;
+    const result = git(`commit -m "${fullMessage.replace(/"/g, '\\"')}"`, cwd);
     return c.json({ success: true, message: result });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

@@ -4,6 +4,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   DndContext,
@@ -117,10 +118,10 @@ type CardStatus = BoardCard["status"];
 type CardPriority = NonNullable<BoardCard["priority"]>;
 
 const COLUMNS: { key: CardStatus; label: string }[] = [
-  { key: "pending", label: "Pending" },
-  { key: "running", label: "Running" },
+  { key: "pending", label: "To Do" },
+  { key: "running", label: "In Progress" },
   { key: "done", label: "Done" },
-  { key: "failed", label: "Failed" },
+  { key: "failed", label: "Blocked" },
 ];
 
 const PRIORITY_CONFIG: Record<string, { label: string; color: string }> = {
@@ -223,12 +224,13 @@ function timeAgo(ts: number): string {
 // ═══════════════════════════════════════════════════════════════
 
 export function KanbanPage() {
-  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const { boardId } = useParams<{ boardId?: string }>();
+  const navigate = useNavigate();
 
-  return selectedBoardId ? (
-    <BoardDetailView boardId={selectedBoardId} onBack={() => setSelectedBoardId(null)} />
+  return boardId ? (
+    <BoardDetailView boardId={boardId} onBack={() => navigate("/board")} />
   ) : (
-    <BoardListView onSelect={setSelectedBoardId} />
+    <BoardListView onSelect={(id) => navigate(`/board/${id}`)} />
   );
 }
 
@@ -259,11 +261,11 @@ function BoardListView({ onSelect }: { onSelect: (id: string) => void }) {
     if (!createName.trim()) return;
     setCreating(true);
     try {
-      await api.boards.create({ name: createName.trim(), description: createDesc.trim() || undefined });
+      const { board } = await api.boards.create({ name: createName.trim(), description: createDesc.trim() || undefined });
       setCreateOpen(false);
       setCreateName("");
       setCreateDesc("");
-      load();
+      onSelect(board.id);
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
@@ -409,6 +411,7 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const sseRef = useRef<EventSource | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -435,9 +438,39 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 2500);
-    return () => clearInterval(pollRef.current);
-  }, [boardId]); // intentionally not including load to avoid restart on selectedCard change
+
+    // Use SSE for real-time updates, fallback to polling
+    const baseUrl = window.location.origin;
+    const es = new EventSource(`${baseUrl}/api/boards/${boardId}/events`);
+    sseRef.current = es;
+
+    es.addEventListener('board-update', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setBoard(data);
+        setError("");
+        // Refresh selected card if open
+        setSelectedCard((prev) => {
+          if (!prev) return null;
+          const updated = data.cards?.find((c: BoardCard) => c.id === prev.id);
+          return updated ?? prev;
+        });
+      } catch {}
+    });
+
+    es.onerror = () => {
+      // Fallback to polling if SSE fails
+      es.close();
+      sseRef.current = null;
+      pollRef.current = setInterval(load, 2500);
+    };
+
+    return () => {
+      es.close();
+      sseRef.current = null;
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [boardId]);
 
   const cards = useMemo(() => board?.cards ?? [], [board]);
 
@@ -1198,6 +1231,76 @@ function AddCardDialog({
 // Card Detail Sheet (with tabs: Details, Comments, Attachments)
 // ═══════════════════════════════════════════════════════════════
 
+function FeedbackResponsePanel({ boardId, cardId, progress, onRefresh }: { boardId: string; cardId: string; progress?: string; onRefresh: () => void }) {
+  const [feedback, setFeedback] = useState<Array<{ id: string; question: string; options?: string[] }>>([]);
+  const [customText, setCustomText] = useState("");
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    api.boards.feedback.list(boardId).then(d => {
+      const forCard = d.feedback.filter(f => f.cardId === cardId);
+      setFeedback(forCard);
+    }).catch(() => {});
+  }, [boardId, cardId, progress]);
+
+  const handleRespond = async (feedbackId: string, response: string) => {
+    setSending(true);
+    try {
+      await api.boards.feedback.respond(boardId, feedbackId, response);
+      setFeedback(prev => prev.filter(f => f.id !== feedbackId));
+      setCustomText("");
+      onRefresh();
+    } catch {} finally { setSending(false); }
+  };
+
+  if (feedback.length === 0) {
+    return (
+      <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+        <p className="text-xs text-purple-300 font-medium uppercase tracking-wider mb-1">Awaiting Input</p>
+        <p className="text-sm text-purple-200/80">{progress?.replace('Awaiting feedback: ', '') || 'Agent is waiting for a decision...'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {feedback.map(fb => (
+        <div key={fb.id} className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3 space-y-2">
+          <p className="text-xs text-purple-300 font-medium uppercase tracking-wider">Decision Required</p>
+          <p className="text-sm text-foreground">{fb.question}</p>
+          {fb.options && fb.options.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {fb.options.map(opt => (
+                <Button key={opt} size="sm" variant="outline" disabled={sending}
+                  className="text-xs border-purple-400/40 text-purple-300 hover:bg-purple-500/20"
+                  onClick={() => handleRespond(fb.id, opt)}
+                >
+                  {opt}
+                </Button>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Input
+              value={customText}
+              onChange={(e) => setCustomText(e.target.value)}
+              placeholder="Type a custom response..."
+              className="text-sm h-8"
+              onKeyDown={(e) => { if (e.key === 'Enter' && customText.trim()) handleRespond(fb.id, customText.trim()); }}
+            />
+            <Button size="sm" disabled={!customText.trim() || sending}
+              className="h-8 bg-purple-500 hover:bg-purple-600 text-white"
+              onClick={() => handleRespond(fb.id, customText.trim())}
+            >
+              <Send className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CardDetailSheet({
   card, boardId, allCards, open, onOpenChange, onRun, onHalt, onDelete, onRefresh,
 }: {
@@ -1390,6 +1493,11 @@ function CardDetailSheet({
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Progress</label>
                   <p className="text-sm text-[#00d4ff]/80 mt-0.5">{card.progress}</p>
                 </div>
+              )}
+
+              {/* Feedback Response UI */}
+              {card.status === "question" && (
+                <FeedbackResponsePanel boardId={boardId} cardId={card.id} progress={card.progress} onRefresh={onRefresh} />
               )}
 
               {/* Files being edited */}

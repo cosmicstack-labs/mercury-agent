@@ -283,14 +283,6 @@ function EditorPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const current = tabs.find((t) => t.path === activeTab);
 
-  // Sync textarea scroll with container
-  const handleTextareaScroll = useCallback(() => {
-    if (textareaRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = textareaRef.current.scrollTop;
-      scrollRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
-
   // Handle keyboard shortcuts
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -368,14 +360,10 @@ function EditorPanel({
             </div>
           </div>
 
-          {/* Code content — layered: highlighted code behind, transparent textarea on top */}
-          <div className="flex-1 min-h-0 relative bg-[#282c34]">
-            {/* Syntax highlighted layer (visual) — scrolled via ref */}
-            <div
-              ref={scrollRef}
-              className="absolute inset-0 overflow-hidden pointer-events-none select-none"
-              aria-hidden="true"
-            >
+          {/* Code content — syntax highlighted with editable overlay */}
+          <div className="flex-1 min-h-0 overflow-auto bg-[#282c34]" ref={scrollRef}>
+            <div className="relative" style={{ minWidth: "fit-content" }}>
+              {/* Syntax highlighted layer (visual) */}
               <SyntaxHighlighter
                 language={current.language}
                 style={oneDark}
@@ -383,7 +371,7 @@ function EditorPanel({
                 lineNumberStyle={{
                   minWidth: "3em",
                   paddingRight: "1em",
-                  color: "rgba(255,255,255,0.2)",
+                  color: "rgba(255,255,255,0.25)",
                   fontSize: "13px",
                   lineHeight: "20px",
                   userSelect: "none",
@@ -395,8 +383,6 @@ function EditorPanel({
                   fontSize: "13px",
                   lineHeight: "20px",
                   fontFamily: "var(--font-mono, 'Geist Mono', ui-monospace, monospace)",
-                  overflow: "visible",
-                  minHeight: "100%",
                 }}
                 codeTagProps={{
                   style: {
@@ -409,26 +395,25 @@ function EditorPanel({
               >
                 {current.content || " "}
               </SyntaxHighlighter>
+              {/* Transparent textarea overlay for editing */}
+              <textarea
+                ref={textareaRef}
+                value={current.content}
+                onChange={(e) => onContentChange(current.path, e.target.value)}
+                spellCheck={false}
+                className={cn(
+                  "absolute top-0 left-0 w-full h-full resize-none bg-transparent text-transparent caret-white",
+                  "font-mono text-[13px] leading-[20px]",
+                  "focus:outline-none",
+                  "whitespace-pre overflow-hidden"
+                )}
+                style={{
+                  tabSize: 2,
+                  padding: "0.5rem 0 0.5rem 4.5em",
+                  fontFamily: "var(--font-mono, 'Geist Mono', ui-monospace, monospace)",
+                }}
+              />
             </div>
-            {/* Editable textarea layer (input) — handles actual scrolling */}
-            <textarea
-              ref={textareaRef}
-              value={current.content}
-              onChange={(e) => onContentChange(current.path, e.target.value)}
-              onScroll={handleTextareaScroll}
-              spellCheck={false}
-              className={cn(
-                "absolute inset-0 w-full h-full resize-none bg-transparent text-transparent caret-white",
-                "font-mono text-[13px] leading-[20px]",
-                "focus:outline-none",
-                "whitespace-pre overflow-auto"
-              )}
-              style={{
-                tabSize: 2,
-                padding: "0.5rem 0 0.5rem 4.5em",
-                fontFamily: "var(--font-mono, 'Geist Mono', ui-monospace, monospace)",
-              }}
-            />
           </div>
         </div>
       )}
@@ -557,9 +542,20 @@ function GitPanel() {
   async function handleGenerateMessage() {
     setActionLoading("generate");
     try {
+      // Auto-stage all unstaged files first
+      const unstaged = gitStatus?.files.filter((f) => !f.staged) || [];
+      if (unstaged.length > 0) {
+        await api.git.stage(["."]);
+        await refresh();
+      }
       const result = await api.git.generateCommitMessage();
-      setCommitMsg(result.message);
-      showFeedbackMsg("success", "Message generated");
+      const msg = typeof result === "string" ? result : result?.message || "";
+      if (msg) {
+        setCommitMsg(msg);
+        showFeedbackMsg("success", "Message generated");
+      } else {
+        showFeedbackMsg("error", "No message returned");
+      }
     } catch (err: any) {
       showFeedbackMsg("error", err.message);
     } finally {

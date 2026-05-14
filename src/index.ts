@@ -1559,7 +1559,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           filesLocked: lockedFiles,
           ...(entry?.tokenUsage ? { tokenUsage: entry.tokenUsage } : {}),
         });
-        boardMgr.saveBatch();
+        boardMgr.saveBatch(mapping.boardId);
       }
 
       if (event.type === 'complete' && event.result) {
@@ -1603,6 +1603,28 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         }
 
         acMap.delete(event.agentId);
+
+        // Log completion to board context for inter-card sharing
+        const card = boardMgr.getCard(mapping.boardId, mapping.cardId);
+        boardMgr.addContextEvent(mapping.boardId, {
+          cardId: mapping.cardId,
+          type: event.result.status === 'completed' ? 'card-completed' : 'card-failed',
+          summary: `Card "${card?.task ?? mapping.cardId}" ${event.result.status}: ${(event.result.output || event.result.error || '').slice(0, 200)}`,
+          data: {
+            filesModified: event.result.filesModified,
+            output: event.result.output?.slice(0, 500),
+          },
+        });
+
+        // Auto-detect and set working directory from file paths
+        if (event.result.filesModified && event.result.filesModified.length > 0) {
+          const firstFile = event.result.filesModified[0];
+          const dir = firstFile.substring(0, firstFile.lastIndexOf('/'));
+          const ctx = boardMgr.getBoardContext(mapping.boardId);
+          if (ctx && !ctx.workingDirectory && dir) {
+            boardMgr.setBoardWorkingDirectory(mapping.boardId, dir);
+          }
+        }
       }
     });
   }

@@ -379,6 +379,20 @@ export const boards = {
       maxSteps ? { maxSteps } : undefined
     ),
   haltAll: (id: string) => post<{ ok: boolean }>(`/api/boards/${id}/halt-all`),
+  feedback: {
+    list: (boardId: string) =>
+      get<{ ok: boolean; feedback: Array<{ id: string; boardId: string; cardId: string; question: string; options?: string[]; createdAt: number }> }>(`/api/boards/${boardId}/feedback`),
+    respond: (boardId: string, feedbackId: string, response: string) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/feedback/${feedbackId}/respond`, { response }),
+  },
+  context: {
+    get: (boardId: string) =>
+      get<{ ok: boolean; context: { workingDirectory?: string; variables: Record<string, any>; events: any[] } }>(`/api/boards/${boardId}/context`),
+    setDirectory: (boardId: string, directory: string) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/context/directory`, { directory }),
+    setVariable: (boardId: string, key: string, value: any) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/context/variables`, { key, value }),
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════

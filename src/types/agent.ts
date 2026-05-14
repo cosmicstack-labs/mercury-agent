@@ -132,6 +132,25 @@ export interface CardLabel {
   color: string; // hex color
 }
 
+export interface BoardContextEvent {
+  cardId: string;
+  timestamp: number;
+  type: 'card-completed' | 'card-failed' | 'directory-changed' | 'file-created' | 'decision-made' | 'context-set';
+  summary: string;
+  data?: Record<string, any>;
+}
+
+export interface BoardContext {
+  /** Shared working directory for this board's agents */
+  workingDirectory?: string;
+  /** Shared key-value context variables accessible to all cards */
+  variables: Record<string, any>;
+  /** Ordered event log of what happened on this board */
+  events: BoardContextEvent[];
+  /** Max events to retain (rolling window) */
+  maxEvents?: number;
+}
+
 export interface BoardCard {
   id: string;
   task: string;
@@ -151,6 +170,8 @@ export interface BoardCard {
   // ── Dependency tree ──
   parentId?: string;        // immediate parent card (tree structure)
   dependsOn?: string[];     // cards that must complete before this one can run
+  // ── Context ──
+  contextSnapshot?: Record<string, any>;  // snapshot of board context when card started
 }
 
 export interface Board {
@@ -161,4 +182,5 @@ export interface Board {
   createdAt: number;
   updatedAt: number;
   cards: BoardCard[];
+  context?: BoardContext;
 }

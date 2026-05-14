@@ -1355,4 +1355,54 @@ export class TelegramChannel extends BaseChannel {
       await this.bot.api.sendMessage(chatId, content).catch(() => {});
     }
   }
+
+  /**
+   * Send a feedback request to the admin via Telegram with inline keyboard options.
+   * Returns the user's response as a string.
+   */
+  async sendFeedbackRequest(feedbackId: string, boardName: string, cardTask: string, question: string, options?: string[]): Promise<string | null> {
+    if (!this.bot) return null;
+
+    // Find admin chat
+    const admin = this.getAdminUser();
+    if (!admin) return null;
+
+    const header = `🔔 <b>Feedback Required</b>\n\n<b>Board:</b> ${this.escapeHtml(boardName)}\n<b>Card:</b> ${this.escapeHtml(cardTask)}\n\n${this.escapeHtml(question)}`;
+
+    const keyboard = new InlineKeyboard();
+    if (options && options.length > 0) {
+      for (const opt of options) {
+        keyboard.text(opt, `feedback:${feedbackId}:${opt}`).row();
+      }
+    }
+    keyboard.text('💬 Type custom response', `feedback:${feedbackId}:__custom__`);
+
+    try {
+      await this.bot.api.sendMessage(admin.chatId, header, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch {
+      try {
+        await this.bot.api.sendMessage(admin.chatId, `Feedback Required\n\nBoard: ${boardName}\nCard: ${cardTask}\n\n${question}`, {
+          reply_markup: keyboard,
+        });
+      } catch { return null; }
+    }
+    return null; // Response comes via callback_query handler
+  }
+
+  private getAdminUser(): { chatId: number } | null {
+    // Access the first admin user from approved list
+    const users = (this as any).approvedUsers as Map<number, any> | undefined;
+    if (!users) return null;
+    for (const [chatId, user] of users) {
+      if (user.role === 'admin') return { chatId };
+    }
+    // Fallback: first user
+    for (const [chatId] of users) {
+      return { chatId };
+    }
+    return null;
+  }
 }

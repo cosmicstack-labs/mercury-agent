@@ -68,6 +68,7 @@ function AnimatedRoutes() {
             <Route path="chat" element={<ChatPage />} />
             <Route path="tasks" element={<AnimatedPage><TasksPage /></AnimatedPage>} />
             <Route path="board" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
+            <Route path="board/:boardId" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
             <Route path="workspace" element={<WorkspacePage />} />
             <Route path="second-brain/memory" element={<AnimatedPage><MemoryPage /></AnimatedPage>} />
             <Route path="second-brain/persons" element={<AnimatedPage><PersonsPage /></AnimatedPage>} />

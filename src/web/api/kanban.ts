@@ -54,6 +54,10 @@ export function setKanbanSupervisor(s: SubAgentSupervisor): void {
 
 export function setKanbanBoardManager(bm: BoardManager): void {
   boardManager = bm;
+  // Hook into board changes for SSE
+  bm.onBoardChange((boardId) => {
+    emitBoardUpdate(boardId);
+  });
 }
 
 export function setKanbanProviders(pr: ProviderRegistry): void {
@@ -63,6 +67,69 @@ export function setKanbanProviders(pr: ProviderRegistry): void {
 export function getAgentCardMap(): Map<string, { boardId: string; cardId: string }> {
   return agentCardMap;
 }
+
+// ── SSE Board Events ─────────────────────────────────────────
+// Clients subscribe to /api/boards/:id/events for real-time updates
+
+type SSEClient = { boardId: string; controller: ReadableStreamDefaultController; encoder: InstanceType<typeof TextEncoder> };
+const sseClients: Set<SSEClient> = new Set();
+
+/** Broadcast a board update event to all SSE clients watching that board */
+export function emitBoardUpdate(boardId: string, event: string = 'board-update', data?: any): void {
+  if (!boardManager) return;
+  const board = boardManager.getBoard(boardId);
+  if (!board) return;
+  const payload = data ?? normalizeBoard(board);
+  for (const client of sseClients) {
+    if (client.boardId !== boardId) continue;
+    try {
+      client.controller.enqueue(client.encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+app.get('/api/boards/:id/events', (c: any) => {
+  const boardId = c.req.param('id');
+  if (!boardManager) return c.json({ error: 'Board manager not available' }, 503);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      const client: SSEClient = { boardId, controller, encoder };
+      sseClients.add(client);
+
+      // Send initial state
+      const board = boardManager!.getBoard(boardId);
+      if (board) {
+        try {
+          controller.enqueue(encoder.encode(`event: board-update\ndata: ${JSON.stringify(normalizeBoard(board))}\n\n`));
+        } catch {}
+      }
+
+      // Keepalive
+      const keepalive = setInterval(() => {
+        try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); sseClients.delete(client); }
+      }, 15000);
+
+      // Cleanup on close (controller error signals disconnect)
+      c.req.raw.signal?.addEventListener('abort', () => {
+        clearInterval(keepalive);
+        sseClients.delete(client);
+      });
+    },
+    cancel() {}
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+});
 
 // ══════════════════════════════════════════════════════════
 // Board CRUD
@@ -362,12 +429,18 @@ app.post('/api/boards/:boardId/cards/:cardId/run', async (c: any) => {
 
   const body = await c.req.json().catch(() => ({}));
 
+  // Build board context for inter-card sharing
+  const boardContext = boardManager.buildCardContext(boardId, cardId);
+  const taskWithContext = boardContext ? `${card.task}\n${boardContext}` : card.task;
+  const ctx = boardManager.getBoardContext(boardId);
+
   const agentId = await supervisor.spawn({
-    task: card.task,
+    task: taskWithContext,
     priority: card.priority,
     maxSteps: body.maxSteps || 25,
     sourceChannelType: 'web',
     sourceChannelId: `board:${boardId}`,
+    workingDirectory: ctx?.workingDirectory,
   });
 
   // Track mapping
@@ -396,14 +469,19 @@ app.post('/api/boards/:id/run-all', async (c: any) => {
   const body = await c.req.json().catch(() => ({}));
   const pending = board.cards.filter(c => c.status === 'pending').sort((a, b) => a.order - b.order);
   const spawned: string[] = [];
+  const ctx = boardManager.getBoardContext(boardId);
 
   for (const card of pending) {
+    const boardContext = boardManager.buildCardContext(boardId, card.id);
+    const taskWithContext = boardContext ? `${card.task}\n${boardContext}` : card.task;
+
     const agentId = await supervisor.spawn({
-      task: card.task,
+      task: taskWithContext,
       priority: card.priority,
       maxSteps: body.maxSteps || 25,
       sourceChannelType: 'web',
       sourceChannelId: `board:${boardId}`,
+      workingDirectory: ctx?.workingDirectory,
     });
 
     cardAgentMap.set(card.id, agentId);
@@ -504,14 +582,19 @@ app.post('/api/boards/:id/smart-execute', async (c: any) => {
   // Start the first batch — subsequent batches auto-start via cascade
   const firstBatch = batches[0];
   const spawned: string[] = [];
+  const ctx = boardManager.getBoardContext(boardId);
 
   for (const card of firstBatch) {
+    const boardContext = boardManager.buildCardContext(boardId, card.id);
+    const taskWithContext = boardContext ? `${card.task}\n${boardContext}` : card.task;
+
     const agentId = await supervisor.spawn({
-      task: card.task,
+      task: taskWithContext,
       priority: card.priority,
       maxSteps: body.maxSteps || 25,
       sourceChannelType: 'web',
       sourceChannelId: `board:${boardId}`,
+      workingDirectory: ctx?.workingDirectory,
     });
 
     cardAgentMap.set(card.id, agentId);
@@ -549,14 +632,19 @@ app.post('/api/boards/:boardId/cards/:cardId/cascade', async (c: any) => {
   const body = await c.req.json().catch(() => ({}));
   const unblocked = boardManager.getUnblockedCards(boardId);
   const cascaded: string[] = [];
+  const ctx = boardManager.getBoardContext(boardId);
 
   for (const card of unblocked) {
+    const boardContext = boardManager.buildCardContext(boardId, card.id);
+    const taskWithContext = boardContext ? `${card.task}\n${boardContext}` : card.task;
+
     const agentId = await supervisor.spawn({
-      task: card.task,
+      task: taskWithContext,
       priority: card.priority,
       maxSteps: body.maxSteps || 25,
       sourceChannelType: 'web',
       sourceChannelId: `board:${boardId}`,
+      workingDirectory: ctx?.workingDirectory,
     });
 
     cardAgentMap.set(card.id, agentId);
@@ -753,6 +841,114 @@ app.get('/api/boards/:boardId/cards/:cardId/attachments/:attachmentId/download',
   } catch (err: any) {
     return c.json({ error: 'Failed to read file: ' + err.message }, 500);
   }
+});
+
+// ══════════════════════════════════════════════════════════
+// Board Context API
+// ══════════════════════════════════════════════════════════
+
+// Get board context
+app.get('/api/boards/:id/context', (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const ctx = boardManager.getBoardContext(boardId);
+  if (!ctx) return c.json({ error: 'Board not found' }, 404);
+  return c.json({ ok: true, context: ctx });
+});
+
+// Set board working directory
+app.post('/api/boards/:id/context/directory', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const { directory } = await c.req.json();
+  if (!directory) return c.json({ error: 'directory required' }, 400);
+  boardManager.setBoardWorkingDirectory(boardId, directory);
+  return c.json({ ok: true });
+});
+
+// Set context variable
+app.post('/api/boards/:id/context/variables', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const { key, value } = await c.req.json();
+  if (!key) return c.json({ error: 'key required' }, 400);
+  boardManager.setContextVariable(boardId, key, value);
+  return c.json({ ok: true });
+});
+
+// ══════════════════════════════════════════════════════════
+// Feedback Queue API
+// ══════════════════════════════════════════════════════════
+
+interface FeedbackRequest {
+  id: string;
+  boardId: string;
+  cardId: string;
+  agentId: string;
+  question: string;
+  options?: string[];
+  createdAt: number;
+  resolved: boolean;
+  response?: string;
+}
+
+const feedbackQueue: Map<string, FeedbackRequest> = new Map();
+const feedbackResolvers: Map<string, (response: string) => void> = new Map();
+
+/** Called by agent when it needs a decision. Returns a promise that resolves with the user's response. */
+export function requestFeedback(boardId: string, cardId: string, agentId: string, question: string, options?: string[]): Promise<string> {
+  const id = `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const request: FeedbackRequest = {
+    id, boardId, cardId, agentId, question, options, createdAt: Date.now(), resolved: false,
+  };
+  feedbackQueue.set(id, request);
+
+  // Update card status to 'question' to halt execution visually
+  if (boardManager) {
+    boardManager.updateCard(boardId, cardId, { status: 'question', progress: `Awaiting feedback: ${question}` });
+  }
+
+  // Emit SSE event for real-time notification
+  emitBoardUpdate(boardId, 'feedback-request', request);
+
+  return new Promise((resolve) => {
+    feedbackResolvers.set(id, resolve);
+  });
+}
+
+// Get pending feedback requests for a board
+app.get('/api/boards/:id/feedback', (c: any) => {
+  const boardId = c.req.param('id');
+  const pending = [...feedbackQueue.values()].filter(f => f.boardId === boardId && !f.resolved);
+  return c.json({ ok: true, feedback: pending });
+});
+
+// Respond to a feedback request
+app.post('/api/boards/:boardId/feedback/:feedbackId/respond', async (c: any) => {
+  const feedbackId = c.req.param('feedbackId');
+  const { response } = await c.req.json();
+  if (!response) return c.json({ error: 'response required' }, 400);
+
+  const request = feedbackQueue.get(feedbackId);
+  if (!request) return c.json({ error: 'Feedback request not found' }, 404);
+  if (request.resolved) return c.json({ error: 'Already resolved' }, 400);
+
+  request.resolved = true;
+  request.response = response;
+
+  // Resume the agent
+  const resolver = feedbackResolvers.get(feedbackId);
+  if (resolver) {
+    resolver(response);
+    feedbackResolvers.delete(feedbackId);
+  }
+
+  // Update card status back to running
+  if (boardManager) {
+    boardManager.updateCard(request.boardId, request.cardId, { status: 'running', progress: `Feedback received: ${response}` });
+  }
+
+  return c.json({ ok: true });
 });
 
 export default app;

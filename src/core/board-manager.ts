@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
-import type { Board, BoardCard, BoardStatus, SubAgentStatus, SubAgentPriority, CardComment, CardAttachment, CardLabel } from '../types/agent.js';
+import type { Board, BoardCard, BoardContext, BoardContextEvent, BoardStatus, SubAgentStatus, SubAgentPriority, CardComment, CardAttachment, CardLabel } from '../types/agent.js';
 
 const BOARDS_FILE = 'boards.json';
 
@@ -10,6 +10,24 @@ export class BoardManager {
   private boards: Map<string, Board> = new Map();
   private counter: number = 0;
   private cardCounter: number = 0;
+  private onChangeListeners: Array<(boardId: string) => void> = [];
+  private dirtyBoards: Set<string> = new Set();
+
+  /** Register a listener called after any board mutation (with the affected board ID) */
+  onBoardChange(listener: (boardId: string) => void): void {
+    this.onChangeListeners.push(listener);
+  }
+
+  private notifyChange(boardId: string): void {
+    for (const fn of this.onChangeListeners) {
+      try { fn(boardId); } catch {}
+    }
+  }
+
+  /** Mark a board as dirty for next save notification */
+  private markDirty(boardId: string): void {
+    this.dirtyBoards.add(boardId);
+  }
 
   load(): void {
     const filePath = this.getFilePath();
@@ -30,7 +48,7 @@ export class BoardManager {
     }
   }
 
-  save(): void {
+  save(changedBoardId?: string): void {
     const dir = join(getMercuryHome(), 'memory');
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -42,6 +60,12 @@ export class BoardManager {
       boards: [...this.boards.values()],
     };
     writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    // Notify listeners for dirty boards
+    if (changedBoardId) this.dirtyBoards.add(changedBoardId);
+    for (const bid of this.dirtyBoards) {
+      this.notifyChange(bid);
+    }
+    this.dirtyBoards.clear();
   }
 
   // ── Board CRUD ──
@@ -64,7 +88,7 @@ export class BoardManager {
       cards: [],
     };
     this.boards.set(id, board);
-    this.save();
+    this.save(id);
     logger.info({ boardId: id, name }, 'Board created');
     return board;
   }
@@ -87,7 +111,7 @@ export class BoardManager {
     if (partial.name !== undefined) board.name = partial.name;
     if (partial.description !== undefined) board.description = partial.description;
     board.updatedAt = Date.now();
-    this.save();
+    this.save(id);
     return board;
   }
 
@@ -100,7 +124,7 @@ export class BoardManager {
       if (hasRunning) return false;
     }
     this.boards.delete(id);
-    this.save();
+    this.save(id);
     logger.info({ boardId: id }, 'Board deleted');
     return true;
   }
@@ -120,7 +144,7 @@ export class BoardManager {
 
     board.status = 'active';
     board.updatedAt = Date.now();
-    this.save();
+    this.save(id);
     logger.info({ boardId: id }, 'Board activated');
     return true;
   }
@@ -132,7 +156,7 @@ export class BoardManager {
     if (hasRunning) return false;
     board.status = 'inactive';
     board.updatedAt = Date.now();
-    this.save();
+    this.save(id);
     return true;
   }
 
@@ -161,7 +185,7 @@ export class BoardManager {
     };
     board.cards.push(card);
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return card;
   }
 
@@ -188,7 +212,7 @@ export class BoardManager {
       created.push(card);
     }
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return created;
   }
 
@@ -205,7 +229,7 @@ export class BoardManager {
     if (!card) return undefined;
     Object.assign(card, partial);
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return card;
   }
 
@@ -219,7 +243,7 @@ export class BoardManager {
     if (card.status === 'running' || card.status === 'paused') return false;
     board.cards.splice(idx, 1);
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -232,7 +256,7 @@ export class BoardManager {
     }
     board.cards.sort((a, b) => a.order - b.order);
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -250,7 +274,7 @@ export class BoardManager {
     const cleared = before - board.cards.length;
     if (cleared > 0) {
       board.updatedAt = Date.now();
-      this.save();
+      this.save(boardId);
     }
     return cleared;
   }
@@ -271,7 +295,7 @@ export class BoardManager {
     card.comments.push(comment);
     const board = this.boards.get(boardId)!;
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return comment;
   }
 
@@ -282,7 +306,7 @@ export class BoardManager {
     if (idx === -1) return false;
     card.comments.splice(idx, 1);
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -299,7 +323,7 @@ export class BoardManager {
     };
     card.attachments.push(full);
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return full;
   }
 
@@ -310,7 +334,7 @@ export class BoardManager {
     if (idx === -1) return false;
     card.attachments.splice(idx, 1);
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -329,7 +353,7 @@ export class BoardManager {
     };
     card.labels.push(label);
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return label;
   }
 
@@ -340,7 +364,7 @@ export class BoardManager {
     if (idx === -1) return false;
     card.labels.splice(idx, 1);
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -371,7 +395,7 @@ export class BoardManager {
       delete card.parentId;
     }
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -387,7 +411,7 @@ export class BoardManager {
     if (!card.dependsOn) card.dependsOn = [];
     if (!card.dependsOn.includes(dependsOnCardId)) card.dependsOn.push(dependsOnCardId);
     board.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -399,7 +423,7 @@ export class BoardManager {
     card.dependsOn.splice(idx, 1);
     if (card.dependsOn.length === 0) delete card.dependsOn;
     this.boards.get(boardId)!.updatedAt = Date.now();
-    this.save();
+    this.save(boardId);
     return true;
   }
 
@@ -524,8 +548,115 @@ export class BoardManager {
     // Don't call save() on every runtime update (too frequent), caller batches
   }
 
-  saveBatch(): void {
-    this.save();
+  saveBatch(boardId?: string): void {
+    this.save(boardId);
+  }
+
+  // ── Board Context Management ──
+
+  /** Get or initialize the board context */
+  getBoardContext(boardId: string): BoardContext | undefined {
+    const board = this.boards.get(boardId);
+    if (!board) return undefined;
+    if (!board.context) {
+      board.context = { variables: {}, events: [], maxEvents: 200 };
+    }
+    return board.context;
+  }
+
+  /** Add an event to the board context log */
+  addContextEvent(boardId: string, event: Omit<BoardContextEvent, 'timestamp'>): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    const full: BoardContextEvent = { ...event, timestamp: Date.now() };
+    ctx.events.push(full);
+    // Rolling window
+    const max = ctx.maxEvents ?? 200;
+    if (ctx.events.length > max) {
+      ctx.events = ctx.events.slice(-max);
+    }
+    this.save(boardId);
+  }
+
+  /** Set a shared context variable */
+  setContextVariable(boardId: string, key: string, value: any): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    ctx.variables[key] = value;
+    this.save(boardId);
+  }
+
+  /** Set the board's shared working directory */
+  setBoardWorkingDirectory(boardId: string, dir: string): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    ctx.workingDirectory = dir;
+    this.addContextEvent(boardId, {
+      cardId: 'system',
+      type: 'directory-changed',
+      summary: `Working directory set to: ${dir}`,
+      data: { directory: dir },
+    });
+  }
+
+  /**
+   * Build context prompt for a card's sub-agent.
+   * Includes: board working dir, shared variables, recent events,
+   * and completed dependency card results.
+   */
+  buildCardContext(boardId: string, cardId: string): string {
+    const board = this.boards.get(boardId);
+    if (!board) return '';
+    const ctx = board.context;
+    const card = board.cards.find(c => c.id === cardId);
+    if (!card) return '';
+
+    const parts: string[] = [];
+
+    // Board identity anchor (prevents drift)
+    parts.push(`[Board]: "${board.name}" — ${board.description || 'No description'}`);
+    parts.push(`[Your Task Card]: "${card.task}" (id: ${card.id})`);
+
+    // Board context
+    if (ctx?.workingDirectory) {
+      parts.push(`[Board Working Directory]: ${ctx.workingDirectory}`);
+    }
+    if (ctx?.variables && Object.keys(ctx.variables).length > 0) {
+      parts.push(`[Shared Context Variables]:\n${JSON.stringify(ctx.variables, null, 2)}`);
+    }
+
+    // Dependency card results (inter-card context sharing)
+    if (card.dependsOn && card.dependsOn.length > 0) {
+      const depResults: string[] = [];
+      for (const depId of card.dependsOn) {
+        const dep = board.cards.find(c => c.id === depId);
+        if (dep && dep.result) {
+          depResults.push(`- Card "${dep.task}" (${dep.id}): ${dep.result}`);
+        }
+      }
+      if (depResults.length > 0) {
+        parts.push(`[Completed Dependency Results]:\n${depResults.join('\n')}`);
+      }
+    }
+
+    // Even without explicit deps, include recent completed card summaries for awareness
+    const recentCompleted = board.cards
+      .filter(c => c.id !== cardId && c.status === 'completed' && c.result)
+      .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
+      .slice(0, 5);
+    if (recentCompleted.length > 0 && (!card.dependsOn || card.dependsOn.length === 0)) {
+      const summaries = recentCompleted.map(c => `- "${c.task}": ${(c.result || '').slice(0, 150)}`);
+      parts.push(`[Recently Completed Cards on this Board]:\n${summaries.join('\n')}`);
+    }
+
+    // Recent board events (last 20 for context)
+    if (ctx?.events && ctx.events.length > 0) {
+      const recent = ctx.events.slice(-20);
+      const eventSummary = recent.map(e => `  [${e.type}] ${e.summary}`).join('\n');
+      parts.push(`[Recent Board Activity]:\n${eventSummary}`);
+    }
+
+    return parts.length > 0 ? `\n--- Board Context ---\n${parts.join('\n\n')}\n--- End Board Context ---\n` : '';
   }
 
   private getFilePath(): string {
