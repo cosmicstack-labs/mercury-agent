@@ -556,9 +556,9 @@ export class BoardManager {
     if (!card) return;
     if (!card.activityLog) card.activityLog = [];
     card.activityLog.push({ ...entry, timestamp: Date.now() });
-    // Cap at 100 entries per card to avoid bloat
-    if (card.activityLog.length > 100) {
-      card.activityLog = card.activityLog.slice(-100);
+    // Cap at 50 entries per card
+    if (card.activityLog.length > 50) {
+      card.activityLog = card.activityLog.slice(-50);
     }
   }
 
@@ -585,11 +585,11 @@ export class BoardManager {
     const full: BoardContextEvent = { ...event, timestamp: Date.now() };
     ctx.events.push(full);
     // Rolling window
-    const max = ctx.maxEvents ?? 200;
+    const max = ctx.maxEvents ?? 50;
     if (ctx.events.length > max) {
       ctx.events = ctx.events.slice(-max);
     }
-    this.save(boardId);
+    // Don't save here — caller is responsible for batching saves
   }
 
   /** Set a shared context variable */

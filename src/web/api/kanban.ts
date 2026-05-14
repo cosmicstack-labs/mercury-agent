@@ -75,10 +75,31 @@ export function getAgentCardMap(): Map<string, { boardId: string; cardId: string
 type SSEClient = { boardId: string; controller: ReadableStreamDefaultController; encoder: InstanceType<typeof TextEncoder> };
 const sseClients: Set<SSEClient> = new Set();
 
+/** Debounced SSE emission — avoids flooding clients on rapid progress ticks */
+const sseDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const SSE_DEBOUNCE_MS = 800; // At most one update per 800ms per board
+
 /** Broadcast a board update event to all SSE clients watching that board */
 export function emitBoardUpdate(boardId: string, event: string = 'board-update', data?: any): void {
   if (!boardManager) return;
-  const board = boardManager.getBoard(boardId);
+
+  // Feedback requests bypass debounce (user needs to see them immediately)
+  if (event === 'feedback-request') {
+    doEmit(boardId, event, data);
+    return;
+  }
+
+  // Debounce regular board updates
+  const existing = sseDebounceTimers.get(boardId);
+  if (existing) clearTimeout(existing);
+  sseDebounceTimers.set(boardId, setTimeout(() => {
+    sseDebounceTimers.delete(boardId);
+    doEmit(boardId, event, data);
+  }, SSE_DEBOUNCE_MS));
+}
+
+function doEmit(boardId: string, event: string, data?: any): void {
+  const board = boardManager!.getBoard(boardId);
   if (!board) return;
   const payload = data ?? normalizeBoard(board);
   for (const client of sseClients) {
@@ -867,6 +888,7 @@ app.post('/api/boards/:id/context/directory', async (c: any) => {
   const { directory } = await c.req.json();
   if (!directory) return c.json({ error: 'directory required' }, 400);
   boardManager.setBoardWorkingDirectory(boardId, directory);
+  boardManager.saveBatch(boardId);
   return c.json({ ok: true });
 });
 
