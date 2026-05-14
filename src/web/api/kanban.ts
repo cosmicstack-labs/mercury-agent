@@ -27,6 +27,7 @@ function normalizeCard(card: any): any {
     attachments: card.attachments ?? [],
     parentId: card.parentId ?? null,
     dependsOn: card.dependsOn ?? [],
+    activityLog: card.activityLog ?? [],
   };
 }
 
@@ -454,6 +455,9 @@ app.post('/api/boards/:boardId/cards/:cardId/run', async (c: any) => {
     progress: 'Spawned agent ' + agentId,
   });
 
+  // Initialize activity log
+  boardManager.pushActivity(boardId, cardId, { type: 'started', message: 'Agent spawned and starting task' });
+
   return c.json({ ok: true, agentId });
 });
 
@@ -873,6 +877,36 @@ app.post('/api/boards/:id/context/variables', async (c: any) => {
   const { key, value } = await c.req.json();
   if (!key) return c.json({ error: 'key required' }, 400);
   boardManager.setContextVariable(boardId, key, value);
+  return c.json({ ok: true });
+});
+
+// Set project instructions
+app.post('/api/boards/:id/context/instructions', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const { instructions } = await c.req.json();
+  if (!instructions) return c.json({ error: 'instructions required' }, 400);
+  boardManager.setProjectInstructions(boardId, instructions);
+  return c.json({ ok: true });
+});
+
+// Set project structure
+app.post('/api/boards/:id/context/structure', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const { structure } = await c.req.json();
+  if (!structure || typeof structure !== 'object') return c.json({ error: 'structure object required' }, 400);
+  boardManager.setProjectStructure(boardId, structure);
+  return c.json({ ok: true });
+});
+
+// Add knowledge entry
+app.post('/api/boards/:id/context/knowledge', async (c: any) => {
+  if (!boardManager) return c.json({ error: 'Not available' }, 400);
+  const boardId = c.req.param('id');
+  const { knowledge } = await c.req.json();
+  if (!knowledge) return c.json({ error: 'knowledge required' }, 400);
+  boardManager.addKnowledge(boardId, knowledge);
   return c.json({ ok: true });
 });
 

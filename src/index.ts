@@ -1554,6 +1554,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           .filter(l => l.mode === 'write')
           .map(l => l.filePath);
 
+        // Determine activity type from progress message
+        const progressMsg = event.progress;
+        let activityType: 'progress' | 'tool-use' | 'thinking' | 'file-lock' = 'progress';
+        if (progressMsg.startsWith('Using:')) activityType = 'tool-use';
+        else if (progressMsg.includes('LLM') || progressMsg.includes('Processing')) activityType = 'thinking';
+        else if (lockedFiles.length > 0) activityType = 'file-lock';
+
+        // Push to activity log
+        boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+          type: activityType,
+          message: progressMsg,
+          data: lockedFiles.length > 0 ? { files: lockedFiles } : undefined,
+        });
+
         boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
           progress: event.progress,
           filesLocked: lockedFiles,
@@ -1565,6 +1579,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (event.type === 'complete' && event.result) {
         const taskBoard = supervisor!.getTaskBoard();
         const entry = taskBoard.get(event.agentId);
+
+        // Push completion to activity log
+        boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+          type: event.result.status === 'completed' ? 'completed' : 'failed',
+          message: event.result.status === 'completed'
+            ? `Task completed${event.result.filesModified?.length ? ` — ${event.result.filesModified.length} file(s) modified` : ''}`
+            : `Task failed: ${(event.result.error || 'Unknown error').slice(0, 150)}`,
+          data: event.result.filesModified?.length ? { files: event.result.filesModified } : undefined,
+        });
+
         boardMgr.updateCard(mapping.boardId, mapping.cardId, {
           status: event.result.status === 'completed' ? 'completed' : (event.result.status === 'halted' ? 'halted' : 'failed'),
           completedAt: Date.now(),

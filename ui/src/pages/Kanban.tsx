@@ -721,6 +721,36 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
         </div>
 
         {error && <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>}
+
+        {/* Attention Banner — cards needing user input */}
+        {columnCards.question && columnCards.question.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-lg border border-purple-500/40 bg-purple-500/10 px-4 py-3 flex items-center gap-3"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
+              <span className="text-sm font-medium text-purple-300">
+                {columnCards.question.length} card{columnCards.question.length > 1 ? 's' : ''} need{columnCards.question.length === 1 ? 's' : ''} your attention
+              </span>
+            </div>
+            <div className="flex gap-2 ml-auto">
+              {columnCards.question.map(qCard => (
+                <Button
+                  key={qCard.id}
+                  size="sm"
+                  variant="outline"
+                  className="text-xs border-purple-400/40 text-purple-300 hover:bg-purple-500/20 gap-1"
+                  onClick={() => setSelectedCard(qCard)}
+                >
+                  <CircleDot className="h-3 w-3" />
+                  {truncate(qCard.task, 30)}
+                </Button>
+              ))}
+            </div>
+          </motion.div>
+        )}
       </div>
 
       {/* Kanban Columns */}
@@ -1314,7 +1344,7 @@ function CardDetailSheet({
   onDelete: (id: string) => void;
   onRefresh: () => void;
 }) {
-  const [tab, setTab] = useState<"details" | "comments" | "attachments">("details");
+  const [tab, setTab] = useState<"details" | "activity" | "comments" | "attachments">("details");
   const [editingTask, setEditingTask] = useState(false);
   const [taskDraft, setTaskDraft] = useState("");
   const [commentText, setCommentText] = useState("");
@@ -1453,6 +1483,9 @@ function CardDetailSheet({
           {/* Tabs */}
           <div className="flex gap-1 border-b border-border/50 pb-2">
             <button className={tabClass("details")} onClick={() => setTab("details")}>Details</button>
+            <button className={tabClass("activity")} onClick={() => setTab("activity")}>
+              Activity {(card.activityLog?.length ?? 0) > 0 && <Badge variant="secondary" className="ml-1 text-[9px] px-1 h-4">{card.activityLog!.length}</Badge>}
+            </button>
             <button className={tabClass("comments")} onClick={() => setTab("comments")}>
               Comments {(card.comments?.length ?? 0) > 0 && <Badge variant="secondary" className="ml-1 text-[9px] px-1 h-4">{card.comments!.length}</Badge>}
             </button>
@@ -1599,6 +1632,61 @@ function CardDetailSheet({
                 <div>
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Error</label>
                   <div className="mt-1 rounded-md border border-red-500/20 bg-red-500/5 p-3 text-xs text-red-400 whitespace-pre-wrap">{card.error}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Activity Tab ── */}
+          {tab === "activity" && (
+            <div className="space-y-1">
+              {(!card.activityLog || card.activityLog.length === 0) ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">No activity recorded yet. Run this card to see live steps.</p>
+              ) : (
+                <div className="relative pl-4 border-l-2 border-border/40 space-y-2 max-h-[400px] overflow-y-auto">
+                  {[...card.activityLog].reverse().map((entry, i) => {
+                    const icon =
+                      entry.type === 'started' ? '🚀' :
+                      entry.type === 'tool-use' ? '🔧' :
+                      entry.type === 'thinking' ? '💭' :
+                      entry.type === 'file-lock' ? '📁' :
+                      entry.type === 'completed' ? '✅' :
+                      entry.type === 'failed' ? '❌' :
+                      entry.type === 'feedback' ? '❓' : '▸';
+                    const color =
+                      entry.type === 'completed' ? 'text-emerald-400' :
+                      entry.type === 'failed' ? 'text-red-400' :
+                      entry.type === 'tool-use' ? 'text-[#00d4ff]' :
+                      entry.type === 'thinking' ? 'text-yellow-300' :
+                      entry.type === 'feedback' ? 'text-purple-400' :
+                      'text-muted-foreground';
+                    return (
+                      <div key={i} className="relative">
+                        <div className="absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full bg-border border-2 border-background" />
+                        <div className="flex items-start gap-2">
+                          <span className="text-xs shrink-0">{icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={cn("text-xs leading-relaxed", color)}>{entry.message}</p>
+                            {entry.data?.files && (
+                              <div className="mt-0.5">
+                                {(entry.data.files as string[]).slice(0, 3).map((f, fi) => (
+                                  <p key={fi} className="text-[10px] font-mono text-muted-foreground/60 truncate">{f.split('/').pop()}</p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-[9px] text-muted-foreground/50 shrink-0 tabular-nums">{timeAgo(entry.timestamp)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {card.status === "running" && (
+                <div className="flex items-center gap-2 pt-2 border-t border-border/30">
+                  <div className="w-2 h-2 rounded-full bg-[#00d4ff] animate-pulse" />
+                  <span className="text-xs text-[#00d4ff]/80">Agent is working...</span>
+                  {card.progress && <span className="text-[10px] text-muted-foreground ml-auto truncate max-w-[150px]">{card.progress}</span>}
                 </div>
               )}
             </div>

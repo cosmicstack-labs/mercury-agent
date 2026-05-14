@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
-import type { Board, BoardCard, BoardContext, BoardContextEvent, BoardStatus, SubAgentStatus, SubAgentPriority, CardComment, CardAttachment, CardLabel } from '../types/agent.js';
+import type { Board, BoardCard, BoardContext, BoardContextEvent, CardActivityEntry, BoardStatus, SubAgentStatus, SubAgentPriority, CardComment, CardAttachment, CardLabel } from '../types/agent.js';
 
 const BOARDS_FILE = 'boards.json';
 
@@ -548,6 +548,20 @@ export class BoardManager {
     // Don't call save() on every runtime update (too frequent), caller batches
   }
 
+  /** Push an activity log entry to a card (real-time step history) */
+  pushActivity(boardId: string, cardId: string, entry: Omit<CardActivityEntry, 'timestamp'>): void {
+    const board = this.boards.get(boardId);
+    if (!board) return;
+    const card = board.cards.find(c => c.id === cardId);
+    if (!card) return;
+    if (!card.activityLog) card.activityLog = [];
+    card.activityLog.push({ ...entry, timestamp: Date.now() });
+    // Cap at 100 entries per card to avoid bloat
+    if (card.activityLog.length > 100) {
+      card.activityLog = card.activityLog.slice(-100);
+    }
+  }
+
   saveBatch(boardId?: string): void {
     this.save(boardId);
   }
@@ -586,6 +600,36 @@ export class BoardManager {
     this.save(boardId);
   }
 
+  /** Set project instructions for the board (system prompt for all agents) */
+  setProjectInstructions(boardId: string, instructions: string): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    ctx.projectInstructions = instructions;
+    this.save(boardId);
+  }
+
+  /** Set project structure map */
+  setProjectStructure(boardId: string, structure: Record<string, string>): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    ctx.projectStructure = structure;
+    this.save(boardId);
+  }
+
+  /** Add to accumulated knowledge base */
+  addKnowledge(boardId: string, knowledge: string): void {
+    const ctx = this.getBoardContext(boardId);
+    if (!ctx) return;
+    if (!ctx.knowledgeBase) ctx.knowledgeBase = [];
+    // Avoid duplicates
+    if (!ctx.knowledgeBase.includes(knowledge)) {
+      ctx.knowledgeBase.push(knowledge);
+      // Cap at 50 entries
+      if (ctx.knowledgeBase.length > 50) ctx.knowledgeBase = ctx.knowledgeBase.slice(-50);
+      this.save(boardId);
+    }
+  }
+
   /** Set the board's shared working directory */
   setBoardWorkingDirectory(boardId: string, dir: string): void {
     const ctx = this.getBoardContext(boardId);
@@ -601,8 +645,20 @@ export class BoardManager {
 
   /**
    * Build context prompt for a card's sub-agent.
-   * Includes: board working dir, shared variables, recent events,
-   * and completed dependency card results.
+   * 
+   * DESIGN: Minimal, relevant context only. The task is king.
+   * We budget ~1200 chars max to avoid drowning the task prompt.
+   * 
+   * What causes agents to "bluff" or go off-task:
+   * - Too much irrelevant context (all cards, all events, all knowledge)
+   * - Context longer than the actual task
+   * - Redundant "guidance" instructions that confuse the system prompt
+   * 
+   * What we inject (in priority order, with hard limits):
+   * 1. Working directory (one line)
+   * 2. Project instructions (user-authored, capped at 400 chars)
+   * 3. Direct dependency results only (capped at 200 chars each)
+   * 4. Shared variables (only if compact)
    */
   buildCardContext(boardId: string, cardId: string): string {
     const board = this.boards.get(boardId);
@@ -613,50 +669,47 @@ export class BoardManager {
 
     const parts: string[] = [];
 
-    // Board identity anchor (prevents drift)
-    parts.push(`[Board]: "${board.name}" — ${board.description || 'No description'}`);
-    parts.push(`[Your Task Card]: "${card.task}" (id: ${card.id})`);
-
-    // Board context
+    // 1. Working directory (essential for file operations)
     if (ctx?.workingDirectory) {
-      parts.push(`[Board Working Directory]: ${ctx.workingDirectory}`);
-    }
-    if (ctx?.variables && Object.keys(ctx.variables).length > 0) {
-      parts.push(`[Shared Context Variables]:\n${JSON.stringify(ctx.variables, null, 2)}`);
+      parts.push(`cwd: ${ctx.workingDirectory}`);
     }
 
-    // Dependency card results (inter-card context sharing)
+    // 2. Project instructions — user-authored, always relevant, hard cap
+    if (ctx?.projectInstructions) {
+      const instr = ctx.projectInstructions.length > 400
+        ? ctx.projectInstructions.slice(0, 400) + '...'
+        : ctx.projectInstructions;
+      parts.push(`Rules: ${instr}`);
+    }
+
+    // 3. Direct dependency results ONLY (not all cards — just what this card needs)
     if (card.dependsOn && card.dependsOn.length > 0) {
       const depResults: string[] = [];
       for (const depId of card.dependsOn) {
         const dep = board.cards.find(c => c.id === depId);
-        if (dep && dep.result) {
-          depResults.push(`- Card "${dep.task}" (${dep.id}): ${dep.result}`);
+        if (dep && dep.status === 'completed' && dep.result) {
+          depResults.push(`"${dep.task}": ${dep.result.slice(0, 200)}`);
         }
       }
       if (depResults.length > 0) {
-        parts.push(`[Completed Dependency Results]:\n${depResults.join('\n')}`);
+        parts.push(`Prior results:\n${depResults.join('\n')}`);
       }
     }
 
-    // Even without explicit deps, include recent completed card summaries for awareness
-    const recentCompleted = board.cards
-      .filter(c => c.id !== cardId && c.status === 'completed' && c.result)
-      .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
-      .slice(0, 5);
-    if (recentCompleted.length > 0 && (!card.dependsOn || card.dependsOn.length === 0)) {
-      const summaries = recentCompleted.map(c => `- "${c.task}": ${(c.result || '').slice(0, 150)}`);
-      parts.push(`[Recently Completed Cards on this Board]:\n${summaries.join('\n')}`);
+    // 4. Shared variables — only if compact
+    if (ctx?.variables) {
+      const keys = Object.keys(ctx.variables);
+      if (keys.length > 0 && keys.length <= 8) {
+        const varStr = JSON.stringify(ctx.variables);
+        if (varStr.length < 250) {
+          parts.push(`Vars: ${varStr}`);
+        }
+      }
     }
 
-    // Recent board events (last 20 for context)
-    if (ctx?.events && ctx.events.length > 0) {
-      const recent = ctx.events.slice(-20);
-      const eventSummary = recent.map(e => `  [${e.type}] ${e.summary}`).join('\n');
-      parts.push(`[Recent Board Activity]:\n${eventSummary}`);
-    }
+    if (parts.length === 0) return '';
 
-    return parts.length > 0 ? `\n--- Board Context ---\n${parts.join('\n\n')}\n--- End Board Context ---\n` : '';
+    return `\n[Context] ${parts.join(' | ')}\n`;
   }
 
   private getFilePath(): string {

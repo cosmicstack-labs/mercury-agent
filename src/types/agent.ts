@@ -149,6 +149,19 @@ export interface BoardContext {
   events: BoardContextEvent[];
   /** Max events to retain (rolling window) */
   maxEvents?: number;
+  /** Project instructions — high-level guidance for all agents on this board */
+  projectInstructions?: string;
+  /** Key file paths and their purpose (e.g. {"src/index.ts": "entry point", "package.json": "dependencies"}) */
+  projectStructure?: Record<string, string>;
+  /** Accumulated knowledge — things agents learn about the project that persist */
+  knowledgeBase?: string[];
+}
+
+export interface CardActivityEntry {
+  timestamp: number;
+  type: 'progress' | 'tool-use' | 'thinking' | 'completed' | 'failed' | 'feedback' | 'file-lock' | 'started';
+  message: string;
+  data?: Record<string, any>;
 }
 
 export interface BoardCard {
@@ -172,6 +185,8 @@ export interface BoardCard {
   dependsOn?: string[];     // cards that must complete before this one can run
   // ── Context ──
   contextSnapshot?: Record<string, any>;  // snapshot of board context when card started
+  // ── Activity Log ──
+  activityLog?: CardActivityEntry[];      // real-time step history
 }
 
 export interface Board {

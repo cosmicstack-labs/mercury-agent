@@ -387,11 +387,17 @@ export const boards = {
   },
   context: {
     get: (boardId: string) =>
-      get<{ ok: boolean; context: { workingDirectory?: string; variables: Record<string, any>; events: any[] } }>(`/api/boards/${boardId}/context`),
+      get<{ ok: boolean; context: { workingDirectory?: string; variables: Record<string, any>; events: any[]; projectInstructions?: string; projectStructure?: Record<string, string>; knowledgeBase?: string[] } }>(`/api/boards/${boardId}/context`),
     setDirectory: (boardId: string, directory: string) =>
       post<{ ok: boolean }>(`/api/boards/${boardId}/context/directory`, { directory }),
     setVariable: (boardId: string, key: string, value: any) =>
       post<{ ok: boolean }>(`/api/boards/${boardId}/context/variables`, { key, value }),
+    setInstructions: (boardId: string, instructions: string) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/context/instructions`, { instructions }),
+    setStructure: (boardId: string, structure: Record<string, string>) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/context/structure`, { structure }),
+    addKnowledge: (boardId: string, knowledge: string) =>
+      post<{ ok: boolean }>(`/api/boards/${boardId}/context/knowledge`, { knowledge }),
   },
 };
 
@@ -687,6 +693,13 @@ export interface CardLabel {
   color: string;
 }
 
+export interface CardActivityEntry {
+  timestamp: number;
+  type: 'progress' | 'tool-use' | 'thinking' | 'completed' | 'failed' | 'feedback' | 'file-lock' | 'started';
+  message: string;
+  data?: Record<string, any>;
+}
+
 export interface BoardCard {
   id: string;
   task: string;
@@ -708,6 +721,7 @@ export interface BoardCard {
   attachments?: CardAttachment[];
   parentId?: string | null;
   dependsOn?: string[];
+  activityLog?: CardActivityEntry[];
 }
 
 export interface ExecutionPlan {
