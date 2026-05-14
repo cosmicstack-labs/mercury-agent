@@ -2427,6 +2427,12 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    // /memory access → alias for /friend access
+    if (cmd.startsWith('/memory access') || trimmed.startsWith('/memory access')) {
+      const aliased = '/friend ' + trimmed.slice('/memory '.length);
+      return this.handleChatCommand(aliased, channelType, channelId);
+    }
+
     if (cmd === '/memory') {
       if (!this.userMemory) {
         await channel.send('Second brain is not enabled.', channelId);
@@ -2694,13 +2700,16 @@ Is this productive iteration or a stuck loop?`,
         }
         const accessInput = input.slice('access'.length).trim();
 
-        const verifyFriendship = async (target: string): Promise<boolean> => {
+        const verifyFriendship = async (target: string): Promise<'friend' | 'pending_sent' | 'pending_received' | 'none' | 'error'> => {
           try {
             const data = await this._relayClient!.getFriends();
-            return data.friends.some(f => f.username === target);
+            if (data.friends.some(f => f.username === target)) return 'friend';
+            if (data.pending_sent.some(f => f.target_user.username === target)) return 'pending_sent';
+            if (data.pending_received.some(f => f.target_user.username === target)) return 'pending_received';
+            return 'none';
           } catch {
             await channel.send('❌ Failed to verify friendship. Try again later.', channelId);
-            return false;
+            return 'error';
           }
         };
 
@@ -2817,7 +2826,17 @@ Is this productive iteration or a stuck loop?`,
         const targetFriend = accessMatch[1].toLowerCase();
         const action = (accessMatch[2] || '').trim();
 
-        if (!(await verifyFriendship(targetFriend))) {
+        const friendStatus = await verifyFriendship(targetFriend);
+        if (friendStatus === 'error') return true;
+        if (friendStatus === 'pending_sent') {
+          await channel.send(`⏳ Friend request sent to @${targetFriend}, waiting for acceptance. You can manage access after they accept.`, channelId);
+          return true;
+        }
+        if (friendStatus === 'pending_received') {
+          await channel.send(`📥 You have a pending request from @${targetFriend}. Accept it first with /friend accept @${targetFriend}`, channelId);
+          return true;
+        }
+        if (friendStatus === 'none') {
           await channel.send(`❌ @${targetFriend} is not your friend. Send a friend request first with /friend @${targetFriend}`, channelId);
           return true;
         }
@@ -4541,21 +4560,24 @@ Is this productive iteration or a stuck loop?`,
     const allOptions: ArrowSelectOption[] = [];
 
     if (data.friends.length > 0) {
+      allOptions.push({ value: '_header_friends', label: '── Friends ──' });
       for (const f of data.friends) {
         const name = f.display_name || f.username;
-        allOptions.push({ value: `friend:${f.username}`, label: `✅ ${name} (@${f.username})` });
+        allOptions.push({ value: `friend:${f.username}`, label: `  ✅ ${name} (@${f.username})` });
       }
     }
     if (data.pending_sent.length > 0) {
+      allOptions.push({ value: '_header_sent', label: '── Pending (Sent) ──' });
       for (const f of data.pending_sent) {
         const name = f.target_user.display_name || f.target_user.username;
-        allOptions.push({ value: `sent:${f.target_user.username}`, label: `📤 ${name} (@${f.target_user.username})` });
+        allOptions.push({ value: `sent:${f.target_user.username}`, label: `  📤 ${name} (@${f.target_user.username})` });
       }
     }
     if (data.pending_received.length > 0) {
+      allOptions.push({ value: '_header_received', label: '── Pending (Incoming) ──' });
       for (const f of data.pending_received) {
         const name = f.target_user.display_name || f.target_user.username;
-        allOptions.push({ value: `received:${f.target_user.username}`, label: `📥 ${name} (@${f.target_user.username})` });
+        allOptions.push({ value: `received:${f.target_user.username}`, label: `  📥 ${name} (@${f.target_user.username})` });
       }
     }
 
@@ -4567,7 +4589,7 @@ Is this productive iteration or a stuck loop?`,
     allOptions.push({ value: 'back', label: 'Back' });
 
     const chosen = await select('👥 Friends', allOptions);
-    if (chosen === 'back') return;
+    if (chosen === 'back' || chosen.startsWith('_header_')) return;
 
     const [type, targetUsername] = chosen.split(':');
 
