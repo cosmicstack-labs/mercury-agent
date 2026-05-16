@@ -7,7 +7,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { SubAgentConfig, SubAgentResult, SubAgentStatus, ResourceUsage } from '../types/agent.js';
 import type { ChannelRegistry } from '../channels/registry.js';
-import { SubAgent } from './sub-agent.js';
+import { SubAgent, type CommentCheckCallback, type PostCommentCallback } from './sub-agent.js';
 import { FileLockManager } from './file-lock.js';
 import { TaskBoard } from './task-board.js';
 import { ResourceManager } from './resource-manager.js';
@@ -35,7 +35,9 @@ export class SubAgentSupervisor {
   private channels: ChannelRegistry;
 
   private notifyCallback?: NotifyCallback;
-  private lifecycleCallback?: AgentLifecycleCallback;
+  private lifecycleCallbacks: AgentLifecycleCallback[] = [];
+  private commentCheckCallback?: CommentCheckCallback;
+  private postCommentCallback?: PostCommentCallback;
   private pausedAgents: Set<string> = new Set();
   private pauseResolvers: Map<string, () => void> = new Map();
 
@@ -75,7 +77,22 @@ export class SubAgentSupervisor {
   }
 
   setLifecycleCallback(cb: AgentLifecycleCallback): void {
-    this.lifecycleCallback = cb;
+    // Additive — don't overwrite previous callbacks
+    this.lifecycleCallbacks.push(cb);
+  }
+
+  private fireLifecycleEvent(event: Parameters<AgentLifecycleCallback>[0]): void {
+    for (const cb of this.lifecycleCallbacks) {
+      try { cb(event); } catch {}
+    }
+  }
+
+  setCommentCheckCallback(cb: CommentCheckCallback): void {
+    this.commentCheckCallback = cb;
+  }
+
+  setPostCommentCallback(cb: PostCommentCallback): void {
+    this.postCommentCallback = cb;
   }
 
   private async notify(channelType: string, channelId: string, message: string): Promise<void> {
@@ -159,7 +176,7 @@ export class SubAgentSupervisor {
 
     subAgent.setProgressCallback((agentId, progress) => {
       this.taskBoard.update(agentId, { progress });
-      this.lifecycleCallback?.({ type: 'progress', agentId, progress });
+      this.fireLifecycleEvent({ type: 'progress', agentId, progress });
 
       const entry = this.taskBoard.get(agentId);
       if (entry) {
@@ -168,6 +185,14 @@ export class SubAgentSupervisor {
         this.notify(channelType, channelId, `🔄 Agent ${agentId}: ${progress}`).catch(() => {});
       }
     });
+
+    // Wire comment check so sub-agent can receive user feedback during execution
+    if (this.commentCheckCallback) {
+      subAgent.setCommentCheckCallback(this.commentCheckCallback);
+    }
+    if (this.postCommentCallback) {
+      subAgent.setPostCommentCallback(this.postCommentCallback);
+    }
 
     logger.info({ agentId: config.id, task: config.task.slice(0, 60) }, 'Starting sub-agent');
 
@@ -194,7 +219,18 @@ export class SubAgentSupervisor {
     this.pausedAgents.delete(agentId);
 
     logger.info({ agentId, status: result.status, duration: result.duration }, 'Sub-agent completed');
-    this.lifecycleCallback?.({ type: 'complete', agentId, result });
+
+    // Persist final token usage on the task board entry
+    const totalTokens = (result.tokenUsage?.input ?? 0) + (result.tokenUsage?.output ?? 0);
+    this.taskBoard.update(agentId, {
+      tokenUsage: {
+        input: result.tokenUsage?.input ?? 0,
+        output: result.tokenUsage?.output ?? 0,
+        total: totalTokens,
+      },
+    });
+
+    this.fireLifecycleEvent({ type: 'complete', agentId, result });
 
     const entry = this.taskBoard.get(agentId);
     if (entry) {

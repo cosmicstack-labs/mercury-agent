@@ -19,6 +19,8 @@ import { createScheduleTaskTool } from './scheduler/schedule-task.js';
 import { createListTasksTool } from './scheduler/list-tasks.js';
 import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
+import { createSaveMemoryTool } from './system/save-memory.js';
+import { createSearchMemoryTool } from './system/search-memory.js';
 import { createGitStatusTool } from './git/git-status.js';
 import { createGitDiffTool } from './git/git-diff.js';
 import { createGitLogTool } from './git/git-log.js';
@@ -56,6 +58,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { SubAgentSupervisor } from '../core/supervisor.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
+import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatCommandContext {
@@ -79,6 +82,7 @@ export class CapabilityRegistry {
   private tokenBudget?: TokenBudget;
   private supervisor?: SubAgentSupervisor;
   private spotifyClient?: SpotifyClient;
+  private userMemory?: UserMemoryStore;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private userMemoryGetter: () => import('../memory/user-memory.js').UserMemoryStore | null = () => null;
@@ -88,12 +92,13 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
 
-  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor) {
+  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
     this.supervisor = supervisor;
+    this.userMemory = userMemory;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -217,6 +222,12 @@ export class CapabilityRegistry {
 
     this.tools.store_memory = createStoreMemoryTool(this.userMemoryGetter, this.sharedMemoryGetter);
     logger.info('Memory store tool registered');
+
+    if (this.userMemory) {
+      this.tools.save_memory = createSaveMemoryTool(this.userMemory);
+      this.tools.search_memory = createSearchMemoryTool(this.userMemory);
+      logger.info('Second Brain tools registered (save_memory, search_memory)');
+    }
 
     if (manifest.capabilities.git?.enabled) {
       this.tools.git_status = createGitStatusTool(() => this.getCwd());

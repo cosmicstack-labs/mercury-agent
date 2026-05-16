@@ -14,6 +14,8 @@ import { logger } from '../utils/logger.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
 export type CompletionCallback = (result: SubAgentResult) => void;
+export type CommentCheckCallback = (agentId: string) => { id: string; author: string; content: string; timestamp: number }[];
+export type PostCommentCallback = (agentId: string, content: string) => void;
 
 export class SubAgent {
   readonly config: SubAgentConfig;
@@ -22,6 +24,9 @@ export class SubAgent {
   private startTime: number = 0;
   private result: SubAgentResult | null = null;
   private filesModified: string[] = [];
+
+  private totalInputTokens: number = 0;
+  private totalOutputTokens: number = 0;
 
   private agentConfig: MercuryConfig;
   private providers: ProviderRegistry;
@@ -37,6 +42,9 @@ export class SubAgent {
 
   private onProgress?: ProgressCallback;
   private onComplete?: CompletionCallback;
+  private onCheckComments?: CommentCheckCallback;
+  private onPostComment?: PostCommentCallback;
+  private lastSeenCommentTimestamp: number = 0;
 
   constructor(
     config: SubAgentConfig,
@@ -91,6 +99,14 @@ export class SubAgent {
     this.onComplete = cb;
   }
 
+  setCommentCheckCallback(cb: CommentCheckCallback): void {
+    this.onCheckComments = cb;
+  }
+
+  setPostCommentCallback(cb: PostCommentCallback): void {
+    this.onPostComment = cb;
+  }
+
   async run(): Promise<SubAgentResult> {
     this.status = 'running';
     this.startTime = Date.now();
@@ -130,6 +146,7 @@ export class SubAgent {
       try {
         const provider = this.providers.getDefault();
         const maxSteps = this.config.maxSteps || 25;
+        let stepsRemaining = maxSteps;
 
         logger.info({ agentId: this.config.id, provider: provider.name, maxSteps }, 'Sub-agent generating response');
 
@@ -137,48 +154,113 @@ export class SubAgent {
           this.onProgress(this.config.id, 'Calling LLM provider...');
         }
 
-        const result = await generateText({
-          model: provider.getModelInstance(),
-          system: systemPrompt,
-          messages,
-          tools: this.capabilities.getTools(),
-          stopWhen: stepCountIs(maxSteps),
-          abortSignal: this.abortController.signal,
-          onStepFinish: async ({ toolCalls, toolResults }) => {
-            if (this.abortController.signal.aborted) return;
+        // Track last result for final output
+        let lastResult: any = null;
 
-            if (toolCalls && toolResults && toolCalls.length > 0) {
-              const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
-              logger.info({ agentId: this.config.id, tools: names }, 'Sub-agent tool step');
+        // Execution loop: run generateText, then check for new comments.
+        // If new comments found, inject them as user messages and continue.
+        while (stepsRemaining > 0 && !this.abortController.signal.aborted) {
+          const result = await generateText({
+            model: provider.getModelInstance(),
+            system: systemPrompt,
+            messages,
+            tools: this.capabilities.getTools(),
+            stopWhen: stepCountIs(stepsRemaining),
+            abortSignal: this.abortController.signal,
+            onStepFinish: async ({ toolCalls, toolResults, usage }) => {
+              if (this.abortController.signal.aborted) return;
+              stepsRemaining--;
 
-              for (let i = 0; i < toolCalls.length; i++) {
-                const tc = toolCalls[i];
-                const toolName = tc.toolName as string;
+              // Accumulate live token usage
+              if (usage) {
+                this.totalInputTokens += usage.inputTokens ?? 0;
+                this.totalOutputTokens += usage.outputTokens ?? 0;
+                const liveTotal = this.totalInputTokens + this.totalOutputTokens;
+                this.taskBoard.update(this.config.id, {
+                  tokenUsage: { input: this.totalInputTokens, output: this.totalOutputTokens, total: liveTotal },
+                });
+              }
 
-                if (['write_file', 'edit_file', 'create_file', 'delete_file'].includes(toolName)) {
-                  const filePath = (tc.input as any)?.path || (tc.input as any)?.filePath;
-                  if (filePath) {
-                    const acquired = this.fileLockManager.acquire(filePath, this.config.id, 'write');
-                    if (!acquired) {
-                      this.filesModified.push(filePath);
+              if (toolCalls && toolResults && toolCalls.length > 0) {
+                const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
+                logger.info({ agentId: this.config.id, tools: names }, 'Sub-agent tool step');
+
+                for (let i = 0; i < toolCalls.length; i++) {
+                  const tc = toolCalls[i];
+                  const toolName = tc.toolName as string;
+
+                  if (['write_file', 'edit_file', 'create_file', 'delete_file'].includes(toolName)) {
+                    const filePath = (tc.input as any)?.path || (tc.input as any)?.filePath;
+                    if (filePath) {
+                      const acquired = this.fileLockManager.acquire(filePath, this.config.id, 'write');
+                      if (!acquired) {
+                        this.filesModified.push(filePath);
+                      }
+                    }
+                  }
+
+                  if (['read_file', 'list_dir'].includes(toolName)) {
+                    const filePath = (tc.input as any)?.path || (tc.input as any)?.filePath;
+                    if (filePath) {
+                      this.fileLockManager.acquire(filePath, this.config.id, 'read');
                     }
                   }
                 }
 
-                if (['read_file', 'list_dir'].includes(toolName)) {
-                  const filePath = (tc.input as any)?.path || (tc.input as any)?.filePath;
-                  if (filePath) {
-                    this.fileLockManager.acquire(filePath, this.config.id, 'read');
-                  }
+                if (this.onProgress) {
+                  this.onProgress(this.config.id, `Using: ${names}`);
                 }
               }
+            },
+          });
 
-              if (this.onProgress) {
-                this.onProgress(this.config.id, `Using: ${names}`);
+          lastResult = result;
+
+          // Append the assistant response to the conversation history
+          if (result.text) {
+            messages.push({ role: 'assistant', content: result.text });
+
+            // If this was a response to user comments, post the reply as an agent comment
+            if (this.onPostComment && this.lastSeenCommentTimestamp > 0) {
+              const replyText = result.text.trim();
+              if (replyText.length > 0 && replyText !== '(no text response)') {
+                this.onPostComment(this.config.id, replyText.length > 500 ? replyText.slice(0, 500) + '...' : replyText);
               }
             }
-          },
-        });
+          }
+
+          // Check for new user comments on this card
+          if (this.onCheckComments && !this.abortController.signal.aborted && stepsRemaining > 0) {
+            const newComments = this.onCheckComments(this.config.id)
+              .filter(c => c.timestamp > this.lastSeenCommentTimestamp);
+
+            if (newComments.length > 0) {
+              this.lastSeenCommentTimestamp = Math.max(...newComments.map(c => c.timestamp));
+              const commentText = newComments
+                .map(c => `[${c.author}]: ${c.content}`)
+                .join('\n');
+
+              logger.info({ agentId: this.config.id, count: newComments.length }, 'Sub-agent received new comments');
+
+              messages.push({
+                role: 'user',
+                content: `The admin has left new comments on your task card. Please read, reflect, and adjust your approach if needed. Then reply with your thoughts and continue working.\n\n${commentText}`,
+              });
+
+              if (this.onProgress) {
+                this.onProgress(this.config.id, `Reviewing ${newComments.length} new comment${newComments.length > 1 ? 's' : ''}...`);
+              }
+
+              // Continue the loop — generateText will be called again with the comments
+              continue;
+            }
+          }
+
+          // No new comments — we're done
+          break;
+        }
+
+        const result = lastResult;
 
         if (this.abortController.signal.aborted) {
           this.status = 'halted';
@@ -191,8 +273,8 @@ export class SubAgent {
             filesModified: this.filesModified,
             duration,
             tokenUsage: {
-              input: result.usage?.inputTokens ?? 0,
-              output: result.usage?.outputTokens ?? 0,
+              input: result?.usage?.inputTokens ?? this.totalInputTokens,
+              output: result?.usage?.outputTokens ?? this.totalOutputTokens,
             },
           };
 
@@ -205,14 +287,14 @@ export class SubAgent {
           return this.result;
         }
 
-        const finalText = (result.text || '').trim() || '(no text response)';
+        const finalText = (result?.text || '').trim() || '(no text response)';
 
         this.tokenBudget.recordUsage({
           provider: provider.name,
           model: provider.getModel(),
-          inputTokens: result.usage?.inputTokens ?? 0,
-          outputTokens: result.usage?.outputTokens ?? 0,
-          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          inputTokens: this.totalInputTokens,
+          outputTokens: this.totalOutputTokens,
+          totalTokens: this.totalInputTokens + this.totalOutputTokens,
           channelType: 'internal',
         });
 
@@ -232,8 +314,8 @@ export class SubAgent {
           filesModified: this.filesModified,
           duration,
           tokenUsage: {
-            input: result.usage?.inputTokens ?? 0,
-            output: result.usage?.outputTokens ?? 0,
+            input: this.totalInputTokens,
+            output: this.totalOutputTokens,
           },
         };
 

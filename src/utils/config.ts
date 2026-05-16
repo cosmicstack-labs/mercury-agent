@@ -141,6 +141,10 @@ export interface MercuryConfig {
     apiKey?: string;
     username?: string;
   };
+  web: {
+    enabled: boolean;
+    port: number;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -305,6 +309,10 @@ export function getDefaultConfig(): MercuryConfig {
       url: getEnv('RELAY_URL', 'wss://relay.cosmicstack.org/v1/ws'),
       apiKey: getEnv('RELAY_API_KEY'),
       username: getEnv('RELAY_USERNAME'),
+    },
+    web: {
+      enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
+      port: getEnvNum('MERCURY_PORT', 6174),
     },
   };
 }

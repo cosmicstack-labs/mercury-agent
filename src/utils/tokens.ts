@@ -126,9 +126,10 @@ export class TokenBudget {
   }
 
   getStatusText(): string {
+    const used = this.sanitizeCount(this.dailyUsed);
     const pct = Math.round(this.getUsagePercentage());
     const remaining = this.getRemaining();
-    return `Token budget: ${this.dailyUsed.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
+    return `Token budget: ${used.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
   }
 
   private resetIfNewDay(): void {
@@ -147,7 +148,7 @@ export class TokenBudget {
     const path = join(getMercuryHome(), TOKEN_FILE);
     try {
       const data = {
-        dailyUsed: this.dailyUsed,
+        dailyUsed: this.sanitizeCount(this.dailyUsed),
         dailyBudget: this.dailyBudget,
         lastResetDate: this.lastResetDate,
         requestLog: this.requestLog.slice(-200),
@@ -165,6 +166,16 @@ export class TokenBudget {
       const raw = readFileSync(path, 'utf-8');
       const data = JSON.parse(raw) as Partial<TokenTracker>;
       const today = new Date().toISOString().split('T')[0];
+      let repaired = false;
+      const rawLogLength = Array.isArray(data.requestLog) ? data.requestLog.length : 0;
+      const restoredLogs = Array.isArray(data.requestLog)
+        ? data.requestLog
+          .map((entry) => this.sanitizeLogEntry(entry as Omit<TokenLogEntry, 'timestamp'> & { timestamp?: unknown }, this.sanitizeTimestamp((entry as any)?.timestamp)))
+          .filter((entry) => entry.totalTokens > 0)
+        : [];
+      if (restoredLogs.length !== rawLogLength) {
+        repaired = true;
+      }
       if (data.lastResetDate === today) {
         const restored = safeNumber(data.dailyUsed);
         if (!isNaN(restored)) {
@@ -178,8 +189,36 @@ export class TokenBudget {
         }));
       }
       this.lastResetDate = data.lastResetDate ?? today;
+      if (repaired) {
+        this.persist();
+      }
     } catch (err) {
       logger.warn({ err }, 'Failed to restore token usage');
     }
+  }
+
+  private sanitizeCount(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+
+  private sanitizeTimestamp(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : Date.now();
+  }
+
+  private sanitizeLogEntry(entry: Omit<TokenLogEntry, 'timestamp'> & { timestamp?: unknown }, timestamp: number): TokenLogEntry {
+    const inputTokens = this.sanitizeCount(entry.inputTokens);
+    const outputTokens = this.sanitizeCount(entry.outputTokens);
+    const rawTotal = this.sanitizeCount(entry.totalTokens);
+    const totalTokens = rawTotal > 0 ? rawTotal : inputTokens + outputTokens;
+
+    return {
+      timestamp: this.sanitizeTimestamp(timestamp),
+      provider: typeof entry.provider === 'string' && entry.provider ? entry.provider : 'unknown',
+      model: typeof entry.model === 'string' && entry.model ? entry.model : 'unknown',
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      channelType: typeof entry.channelType === 'string' && entry.channelType ? entry.channelType : 'unknown',
+    };
   }
 }

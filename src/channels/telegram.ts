@@ -102,6 +102,8 @@ export class TelegramChannel extends BaseChannel {
   }
 
   async start(): Promise<void> {
+    if (this.bot) return; // Already started — don't create a second polling instance
+
     const token = this.config.channels.telegram.botToken;
     if (!token) {
       logger.warn('Telegram bot token not set — skipping');
@@ -231,38 +233,21 @@ export class TelegramChannel extends BaseChannel {
 
     this.bot = bot;
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-
-      void bot.start({
-        onStart: async (info) => {
-          logger.info({ bot: info.username }, 'Telegram bot started — long polling active');
-          this.ready = true;
-          await this.registerCommands();
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        },
-      }).catch((err: any) => {
-        if (!settled) {
-          settled = true;
-          const message = err?.description || err?.message || String(err);
-          if (err?.error_code === 401) {
-            reject(new Error(`Telegram bot token is invalid. Get a fresh token from @BotFather via /token.\n  Details: ${message}`));
-          } else if (err?.error_code === 404) {
-            reject(new Error(`Telegram bot not found — the token may be wrong or the bot was deleted. Verify with @BotFather.\n  Details: ${message}`));
-          } else if (err?.error_code === 429) {
-            reject(new Error(`Telegram is rate-limiting this bot. Wait a minute and try again.\n  Details: ${message}`));
-          } else if (err?.error_code === 403) {
-            reject(new Error(`Telegram bot lacks permission for this action. Check bot scopes with @BotFather.\n  Details: ${message}`));
-          } else {
-            reject(new Error(`Telegram bot failed to start: ${message}`));
-          }
-          return;
-        }
-        logger.error({ err: err.message }, 'Telegram bot start loop failed after startup');
-      });
+    // Start long-polling in the background.
+    // bot.start() blocks until the first getUpdates succeeds, which can take
+    // 30-40s on slow networks. Don't block Mercury startup — let it connect
+    // asynchronously. The guard on line 105 (if this.bot) prevents duplicate instances.
+    void bot.start({
+      onStart: async (info) => {
+        logger.info({ bot: info.username }, 'Telegram bot started — long polling active');
+        this.ready = true;
+        await this.registerCommands();
+      },
+    }).catch((err: any) => {
+      const message = err?.description || err?.message || String(err);
+      logger.error({ err: message }, 'Telegram bot polling stopped');
+      // Don't null out this.bot here — stop() will handle cleanup.
+      // The guard (if this.bot) prevents a second instance from being created.
     });
   }
 
@@ -1369,5 +1354,55 @@ export class TelegramChannel extends BaseChannel {
     } catch {
       await this.bot.api.sendMessage(chatId, content).catch(() => {});
     }
+  }
+
+  /**
+   * Send a feedback request to the admin via Telegram with inline keyboard options.
+   * Returns the user's response as a string.
+   */
+  async sendFeedbackRequest(feedbackId: string, boardName: string, cardTask: string, question: string, options?: string[]): Promise<string | null> {
+    if (!this.bot) return null;
+
+    // Find admin chat
+    const admin = this.getAdminUser();
+    if (!admin) return null;
+
+    const header = `🔔 <b>Feedback Required</b>\n\n<b>Board:</b> ${this.escapeHtml(boardName)}\n<b>Card:</b> ${this.escapeHtml(cardTask)}\n\n${this.escapeHtml(question)}`;
+
+    const keyboard = new InlineKeyboard();
+    if (options && options.length > 0) {
+      for (const opt of options) {
+        keyboard.text(opt, `feedback:${feedbackId}:${opt}`).row();
+      }
+    }
+    keyboard.text('💬 Type custom response', `feedback:${feedbackId}:__custom__`);
+
+    try {
+      await this.bot.api.sendMessage(admin.chatId, header, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch {
+      try {
+        await this.bot.api.sendMessage(admin.chatId, `Feedback Required\n\nBoard: ${boardName}\nCard: ${cardTask}\n\n${question}`, {
+          reply_markup: keyboard,
+        });
+      } catch { return null; }
+    }
+    return null; // Response comes via callback_query handler
+  }
+
+  private getAdminUser(): { chatId: number } | null {
+    // Access the first admin user from approved list
+    const users = (this as any).approvedUsers as Map<number, any> | undefined;
+    if (!users) return null;
+    for (const [chatId, user] of users) {
+      if (user.role === 'admin') return { chatId };
+    }
+    // Fallback: first user
+    for (const [chatId] of users) {
+      return { chatId };
+    }
+    return null;
   }
 }

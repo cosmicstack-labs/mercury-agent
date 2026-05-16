@@ -36,10 +36,12 @@ import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
 import { SubAgentSupervisor } from './core/supervisor.js';
+import { BoardManager } from './core/board-manager.js';
 import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
@@ -57,6 +59,8 @@ import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { MessagesStore } from './memory/messages-store.js';
 import { isMessagesDbAvailable } from './memory/messages-db.js';
 import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -1151,6 +1155,63 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   hr();
+
+  console.log('');
+  console.log(chalk.bold.white('  Web Dashboard'));
+  console.log(chalk.dim('  Mercury includes an optional web interface for managing your agent,'));
+  console.log(chalk.dim('  chatting, viewing memory, and controlling settings from your browser.'));
+  console.log(chalk.dim('  You can enable or disable it at any time.'));
+  console.log('');
+
+  const webEnabledDefault = config.web.enabled ? 'Y/n' : 'y/N';
+  const webEnabledCurrent = config.web.enabled ? 'enabled' : 'disabled';
+  const webEnableStr = await ask(chalk.white(`  Enable Mercury Web? (${webEnabledDefault}) [${webEnabledCurrent}]: `));
+  if (webEnableStr.trim()) {
+    config.web.enabled = webEnableStr.trim().toLowerCase().startsWith('y');
+  } else if (!isReconfig) {
+    // First run: default to enabled (yes)
+    config.web.enabled = true;
+  }
+
+  if (config.web.enabled) {
+    const portPrompt = isReconfig
+      ? chalk.white(`  Web dashboard port [${config.web.port}]: `)
+      : chalk.white(`  Web dashboard port [${config.web.port}]: `);
+    const portStr = await ask(portPrompt);
+    if (portStr.trim()) {
+      const portNum = parseInt(portStr.trim(), 10);
+      if (portNum > 0 && portNum < 65536) {
+        config.web.port = portNum;
+      } else {
+        console.log(chalk.yellow('  Invalid port number. Keeping default.'));
+      }
+    }
+    console.log(chalk.dim(`  Mercury Web will be available at http://localhost:${config.web.port}`));
+
+    if (isWebAuthInitialized()) {
+      console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
+      const webPassword = await ask(chalk.white('  New web dashboard password [keep current]: '));
+      if (webPassword.trim()) {
+        setWebPassword(webPassword.trim());
+        console.log(chalk.green('  ✓ Web dashboard password updated.'));
+      } else {
+        console.log(chalk.dim('  Password unchanged.'));
+      }
+    } else {
+      console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+      console.log('');
+      const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
+      if (webPassword.trim()) {
+        setWebPassword(webPassword.trim());
+        console.log(chalk.green('  ✓ Web dashboard password set.'));
+      } else {
+        console.log(chalk.dim('  Using default password: Mercury@123'));
+      }
+    }
+  } else {
+    console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
+  }
+
   saveConfig(config);
 
   const home = getMercuryHome();
@@ -1282,6 +1343,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const scheduler = new Scheduler(config);
+  setWebScheduler(scheduler);
 
   const identity = new Identity();
   migrateLegacyMemory();
@@ -1293,6 +1355,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
     try {
       userMemory = new UserMemoryStore(config);
+      setWebUserMemory(userMemory);
       if (!isDaemon) {
         logger.info(`Second brain: enabled (${userMemory.getSummary().total} existing memories)`);
       } else {
@@ -1304,8 +1367,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
     logger.warn(
-      'better-sqlite3 is not available — second brain memory is disabled. ' +
-      'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
+      'Second brain dependency issue: better-sqlite3 is not available. ' +
+      'Memory/brain features require SQLite via better-sqlite3. Install build tools and reinstall dependencies.'
     );
   }
 
@@ -1361,7 +1424,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const channels = new ChannelRegistry(config);
-  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget);
+  const webChannel = new WebChannel(config.identity.name);
+  channels.register('web', webChannel);
+  const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget, undefined, userMemory ?? undefined);
 
   let supervisor: SubAgentSupervisor | undefined;
   if (config.subagents.enabled) {
@@ -1382,6 +1447,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
     capabilities.setSupervisor(supervisor);
   }
+
+  // Board manager for multi-board kanban
+  const boardMgr = new BoardManager();
+  boardMgr.load();
 
   capabilities.setChatCommandContext({
     toolNames: () => capabilities.getToolNames(),
@@ -1444,6 +1513,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
     relayClient, sharedMemory, notifications, messagesStore,
   );
+
+  agent.setSkillLoader(skillLoader);
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
@@ -1711,10 +1782,185 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   }
 
+  // --- Web Channel Setup ---
+  setWebWebChannel(webChannel);
+  setWebProgrammingMode(agent.programmingMode);
+  setWebBgTasks(agent.backgroundTasks);
+  setWebModelSwitch((provider) => agent.switchProvider(provider));
+  setWebCurrentProvider(() => agent.getCurrentProvider());
+  if (supervisor) {
+    setWebSupervisor(supervisor);
+    setWebKanban(supervisor);
+    setWebBoardManager(boardMgr);
+    setWebKanbanProviders(providers);
+    setWebIDEProviders(providers);
+
+    // Lifecycle callback: sync agent results back to board cards
+    const { getAgentCardMap } = await import('./web/api/kanban.js');
+
+    // Comment check: sub-agents poll this to discover new user comments
+    supervisor.setCommentCheckCallback((agentId: string) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(agentId);
+      if (!mapping) return [];
+      const card = boardMgr.getCard(mapping.boardId, mapping.cardId);
+      if (!card || !card.comments) return [];
+      return card.comments
+        .filter(c => c.author === 'user')
+        .map(c => ({ id: c.id, author: c.authorName, content: c.content, timestamp: c.timestamp }));
+    });
+
+    // Post comment: sub-agents use this to reply to user comments
+    supervisor.setPostCommentCallback((agentId: string, content: string) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(agentId);
+      if (!mapping) return;
+      boardMgr.addComment(mapping.boardId, mapping.cardId, 'agent', `Agent ${agentId}`, content);
+    });
+
+    supervisor.setLifecycleCallback((event) => {
+      const acMap = getAgentCardMap();
+      const mapping = acMap.get(event.agentId);
+      if (!mapping) return;
+
+      if (event.type === 'progress' && event.progress) {
+        // Sync progress, live token usage, and files being edited
+        const taskBoard = supervisor!.getTaskBoard();
+        const entry = taskBoard.get(event.agentId);
+        const fileLockMgr = supervisor!.getFileLockManager();
+        const lockedFiles = fileLockMgr.getLocksFor(event.agentId)
+          .filter(l => l.mode === 'write')
+          .map(l => l.filePath);
+
+        // Determine activity type from progress message
+        const progressMsg = event.progress;
+        let activityType: 'progress' | 'tool-use' | 'thinking' | 'file-lock' = 'progress';
+        if (progressMsg.startsWith('Using:')) activityType = 'tool-use';
+        else if (progressMsg.includes('LLM') || progressMsg.includes('Processing')) activityType = 'thinking';
+        else if (lockedFiles.length > 0) activityType = 'file-lock';
+
+        // Push to activity log
+        boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+          type: activityType,
+          message: progressMsg,
+          data: lockedFiles.length > 0 ? { files: lockedFiles } : undefined,
+        });
+
+        boardMgr.syncCardFromRuntime(mapping.boardId, mapping.cardId, {
+          progress: event.progress,
+          filesLocked: lockedFiles,
+          ...(entry?.tokenUsage ? { tokenUsage: entry.tokenUsage } : {}),
+        });
+
+        // Token budget enforcement
+        const cardData = boardMgr.getCard(mapping.boardId, mapping.cardId);
+        if (cardData?.tokenBudget && entry?.tokenUsage) {
+          const totalUsed = entry.tokenUsage.total ?? ((entry.tokenUsage.input ?? 0) + (entry.tokenUsage.output ?? 0));
+          if (totalUsed >= cardData.tokenBudget) {
+            // Halt the agent and pause the card
+            supervisor!.halt(event.agentId);
+            boardMgr.updateCard(mapping.boardId, mapping.cardId, {
+              status: 'paused',
+              progress: `Token budget exhausted (${totalUsed.toLocaleString()} / ${cardData.tokenBudget.toLocaleString()} tokens used)`,
+              pausedForTokens: true,
+            } as any);
+            boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+              type: 'feedback',
+              message: `Paused: token budget exhausted (${totalUsed.toLocaleString()} / ${cardData.tokenBudget.toLocaleString()})`,
+            });
+          }
+        }
+
+        boardMgr.saveBatch(mapping.boardId);
+      }
+
+      if (event.type === 'complete' && event.result) {
+        const taskBoard = supervisor!.getTaskBoard();
+        const entry = taskBoard.get(event.agentId);
+
+        // Push completion to activity log
+        boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+          type: event.result.status === 'completed' ? 'completed' : 'failed',
+          message: event.result.status === 'completed'
+            ? `Task completed${event.result.filesModified?.length ? ` — ${event.result.filesModified.length} file(s) modified` : ''}`
+            : `Task failed: ${(event.result.error || 'Unknown error').slice(0, 150)}`,
+          data: event.result.filesModified?.length ? { files: event.result.filesModified } : undefined,
+        });
+
+        boardMgr.updateCard(mapping.boardId, mapping.cardId, {
+          status: event.result.status === 'completed' ? 'completed' : (event.result.status === 'halted' ? 'halted' : 'failed'),
+          completedAt: Date.now(),
+          result: event.result.output,
+          error: event.result.error,
+          filesLocked: [], // release on completion
+          progress: event.result.status === 'completed' ? 'Completed' : (event.result.status === 'halted' ? 'Halted' : 'Failed'),
+          tokenUsage: entry?.tokenUsage || {
+            input: event.result.tokenUsage?.input ?? 0,
+            output: event.result.tokenUsage?.output ?? 0,
+            total: (event.result.tokenUsage?.input ?? 0) + (event.result.tokenUsage?.output ?? 0),
+          },
+        });
+
+        // Auto-detect document files and register as attachments
+        if (event.result.filesModified && event.result.filesModified.length > 0) {
+          const docExtensions: Record<string, 'markdown' | 'document' | 'image' | 'presentation' | 'other'> = {
+            '.md': 'markdown', '.mdx': 'markdown',
+            '.doc': 'document', '.docx': 'document', '.pdf': 'document', '.txt': 'document',
+            '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.svg': 'image', '.webp': 'image',
+            '.ppt': 'presentation', '.pptx': 'presentation',
+          };
+          for (const filePath of event.result.filesModified) {
+            const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+            const docType = docExtensions[ext];
+            if (docType) {
+              const fileName = filePath.split('/').pop() || filePath;
+              boardMgr.addAttachment(mapping.boardId, mapping.cardId, {
+                name: fileName,
+                path: filePath,
+                type: docType,
+                addedBy: 'agent',
+              });
+            }
+          }
+        }
+
+        acMap.delete(event.agentId);
+
+        // Log completion to board context for inter-card sharing
+        const card = boardMgr.getCard(mapping.boardId, mapping.cardId);
+        boardMgr.addContextEvent(mapping.boardId, {
+          cardId: mapping.cardId,
+          type: event.result.status === 'completed' ? 'card-completed' : 'card-failed',
+          summary: `Card "${card?.task ?? mapping.cardId}" ${event.result.status}: ${(event.result.output || event.result.error || '').slice(0, 200)}`,
+          data: {
+            filesModified: event.result.filesModified,
+            output: event.result.output?.slice(0, 500),
+          },
+        });
+
+        // Auto-detect and set working directory from file paths
+        if (event.result.filesModified && event.result.filesModified.length > 0) {
+          const firstFile = event.result.filesModified[0];
+          const dir = firstFile.substring(0, firstFile.lastIndexOf('/'));
+          const ctx = boardMgr.getBoardContext(mapping.boardId);
+          if (ctx && !ctx.workingDirectory && dir) {
+            boardMgr.setBoardWorkingDirectory(mapping.boardId, dir);
+          }
+        }
+      }
+    });
+  }
+  if (spotifyClient) {
+    setWebSpotify(spotifyClient);
+  }
+
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
+    }
+    if (channelType === 'web' && webChannel) {
+      return webChannel.askPermission(prompt);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
@@ -1740,6 +1986,30 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       logger.info(`Creator: ${config.identity.creator}`);
     }
 
+    console.log('');
+    console.log(chalk.green(`  ${name} is live. Type a message and press Enter.`));
+    console.log(chalk.dim('  Ctrl+C to exit · /help for commands'));
+
+    if (config.web.enabled) {
+      startWebServer();
+      updateWebStatus({
+        running: true,
+        pid: process.pid,
+        state: 'idle',
+        defaultProvider: config.providers.default,
+        providers: Object.entries(config.providers)
+          .filter(([k]) => k !== 'default')
+          .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+        tokenBudget: config.tokens.dailyBudget,
+        tokensUsed: tokenBudget.getDailyUsed(),
+        memoryTotal: userMemory ? userMemory.getSummary().total : 0,
+        memoryByType: userMemory ? userMemory.getSummary().byType : {},
+      });
+    } else {
+      console.log(chalk.dim(`  Web: disabled · enable with mercury doctor or set web.enabled: true`));
+    }
+
+    // Keep CLI permission mode prompt, but do it after web server is live.
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
@@ -1747,7 +2017,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
   } else {
     await channels.startAll();
-    logger.info({ channels: activeCh, tools: toolNames }, 'Mercury is live (daemon mode)');
+    if (config.web.enabled) {
+      startWebServer();
+      updateWebStatus({
+        running: true,
+        pid: process.pid,
+        state: 'idle',
+        defaultProvider: config.providers.default,
+        providers: Object.entries(config.providers)
+          .filter(([k]) => k !== 'default')
+          .map(([name, p]: [string, any]) => ({ name: p.name || name, enabled: p.enabled, hasKey: !!p.apiKey })),
+        tokenBudget: config.tokens.dailyBudget,
+        tokensUsed: tokenBudget.getDailyUsed(),
+        memoryTotal: userMemory ? userMemory.getSummary().total : 0,
+        memoryByType: userMemory ? userMemory.getSummary().byType : {},
+      });
+    }
+    logger.info({ channels: activeCh, tools: toolNames, web: config.web.enabled }, 'Mercury is live (daemon mode)');
   }
 
   const shutdown = async () => {
@@ -1929,6 +2215,7 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
     const spotify = config.spotify;
@@ -2243,6 +2530,26 @@ program
       console.log(chalk.dim('    npm rm -g @cosmicstack/mercury-agent && npm i -g @cosmicstack/mercury-agent'));
     }
 
+    console.log('');
+  });
+
+program
+  .command('web-reset-password')
+  .description('Reset the web dashboard password')
+  .argument('[password]', 'New password (prompted if omitted)')
+  .action(async (password?: string) => {
+    console.log('');
+    if (!password) {
+      password = await ask(chalk.white('  New web dashboard password: '));
+    }
+    if (!password) {
+      console.log(chalk.red('  Password cannot be empty.'));
+      console.log('');
+      process.exit(1);
+    }
+    setWebPassword(password);
+    console.log(chalk.green('  ✓ Web dashboard password updated.'));
+    console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
     console.log('');
   });
 
