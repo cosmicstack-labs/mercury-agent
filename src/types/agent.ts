@@ -177,6 +177,10 @@ export interface BoardCard {
   filesLocked: string[];
   progress?: string;
   tokenUsage?: { input: number; output: number; total: number };
+  /** Maximum token budget for this card. Agent is paused if exceeded. */
+  tokenBudget?: number;
+  /** If true, card was paused due to token budget exhaustion */
+  pausedForTokens?: boolean;
   labels?: CardLabel[];
   comments?: CardComment[];
   attachments?: CardAttachment[];

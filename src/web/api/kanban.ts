@@ -21,6 +21,8 @@ function normalizeCard(card: any): any {
     status: normalizeCardStatus(card.status),
     tokensUsed: card.tokenUsage?.total ?? card.tokensUsed,
     tokenUsage: card.tokenUsage ?? null,
+    tokenBudget: card.tokenBudget ?? null,
+    pausedForTokens: card.pausedForTokens ?? false,
     createdAt: card.createdAt ?? card.startedAt ?? new Date().toISOString(),
     labels: card.labels ?? [],
     comments: card.comments ?? [],
@@ -372,12 +374,16 @@ Example:
 app.post('/api/boards/:id/cards', async (c: any) => {
   if (!boardManager) return c.json({ error: 'Not available' }, 400);
   const body = await c.req.json();
-  const { task, priority } = body;
+  const { task, priority, tokenBudget } = body;
   if (!task || typeof task !== 'string' || task.trim().length === 0) {
     return c.json({ error: 'Task description required' }, 400);
   }
   const card = boardManager.addCard(c.req.param('id'), task.trim(), priority || 'normal');
   if (!card) return c.json({ error: 'Board not found' }, 404);
+  // Set token budget if provided
+  if (tokenBudget && typeof tokenBudget === 'number' && tokenBudget > 0) {
+    card.tokenBudget = tokenBudget;
+  }
   return c.json({ ok: true, card: normalizeCard(card) });
 });
 
@@ -445,11 +451,22 @@ app.post('/api/boards/:boardId/cards/:cardId/run', async (c: any) => {
 
   const card = board.cards.find(cc => cc.id === cardId);
   if (!card) return c.json({ error: 'Card not found' }, 404);
-  if (card.status === 'running' || card.status === 'paused') {
+  if (card.status === 'running') {
     return c.json({ error: 'Card is already running' }, 400);
   }
 
   const body = await c.req.json().catch(() => ({}));
+
+  // If resuming a token-paused card, allow budget override
+  if (card.pausedForTokens && body.tokenBudget) {
+    boardManager.updateCard(boardId, cardId, { tokenBudget: body.tokenBudget, pausedForTokens: false } as any);
+  } else if (card.pausedForTokens && body.overrideBudget) {
+    // Remove budget entirely
+    boardManager.updateCard(boardId, cardId, { tokenBudget: undefined, pausedForTokens: false } as any);
+  } else if (card.pausedForTokens) {
+    // Clear the flag so it can re-run (with same budget — will pause again if still over)
+    boardManager.updateCard(boardId, cardId, { pausedForTokens: false } as any);
+  }
 
   // Build board context for inter-card sharing
   const boardContext = boardManager.buildCardContext(boardId, cardId);

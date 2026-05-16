@@ -327,10 +327,10 @@ export const boards = {
       post<{ ok: boolean }>(`/api/boards/${boardId}/cards/reorder`, { cardIds }),
     clearDone: (boardId: string) =>
       post<{ ok: boolean; cleared: number }>(`/api/boards/${boardId}/cards/clear-done`),
-    run: (boardId: string, cardId: string, maxSteps?: number) =>
+    run: (boardId: string, cardId: string, opts?: { maxSteps?: number; overrideBudget?: boolean; tokenBudget?: number }) =>
       post<{ ok: boolean; agentId: string }>(
         `/api/boards/${boardId}/cards/${cardId}/run`,
-        maxSteps ? { maxSteps } : undefined
+        opts ?? undefined
       ),
     halt: (boardId: string, cardId: string) =>
       post<{ ok: boolean }>(`/api/boards/${boardId}/cards/${cardId}/halt`),
@@ -707,7 +707,8 @@ export interface BoardCard {
   priority?: "low" | "normal" | "medium" | "high" | "critical";
   tokensUsed?: number;
   tokenUsage?: { input: number; output: number; total: number } | null;
-  tokenBudget?: number;
+  tokenBudget?: number | null;
+  pausedForTokens?: boolean;
   agentId?: string;
   error?: string;
   result?: string;

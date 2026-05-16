@@ -1573,6 +1573,26 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           filesLocked: lockedFiles,
           ...(entry?.tokenUsage ? { tokenUsage: entry.tokenUsage } : {}),
         });
+
+        // Token budget enforcement
+        const cardData = boardMgr.getCard(mapping.boardId, mapping.cardId);
+        if (cardData?.tokenBudget && entry?.tokenUsage) {
+          const totalUsed = entry.tokenUsage.total ?? ((entry.tokenUsage.input ?? 0) + (entry.tokenUsage.output ?? 0));
+          if (totalUsed >= cardData.tokenBudget) {
+            // Halt the agent and pause the card
+            supervisor!.halt(event.agentId);
+            boardMgr.updateCard(mapping.boardId, mapping.cardId, {
+              status: 'paused',
+              progress: `Token budget exhausted (${totalUsed.toLocaleString()} / ${cardData.tokenBudget.toLocaleString()} tokens used)`,
+              pausedForTokens: true,
+            } as any);
+            boardMgr.pushActivity(mapping.boardId, mapping.cardId, {
+              type: 'feedback',
+              message: `Paused: token budget exhausted (${totalUsed.toLocaleString()} / ${cardData.tokenBudget.toLocaleString()})`,
+            });
+          }
+        }
+
         boardMgr.saveBatch(mapping.boardId);
       }
 

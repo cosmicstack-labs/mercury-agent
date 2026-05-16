@@ -100,6 +100,7 @@ import {
 } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { cn } from "@/lib/utils";
 import { formatDate, formatTokens, truncate } from "@/lib/utils";
 import api, {
@@ -561,7 +562,9 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
   };
 
   const handleRunCard = async (cardId: string) => {
-    try { await api.boards.cards.run(boardId, cardId); load(); }
+    const card = cards.find(c => c.id === cardId);
+    const opts = card?.pausedForTokens ? { overrideBudget: true } : undefined;
+    try { await api.boards.cards.run(boardId, cardId, opts); load(); }
     catch (e: unknown) { setError((e as Error).message); }
   };
 
@@ -640,9 +643,13 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
               className="flex items-start gap-2 cursor-pointer hover:bg-muted/30 rounded-md px-2 py-1 -mx-2 transition-colors"
               onClick={() => { setDescDraft(board?.description ?? ""); setEditingDesc(true); }}
             >
-              <p className="text-sm text-muted-foreground flex-1">
-                {board?.description || "Click to add a description..."}
-              </p>
+              <div className="text-sm text-muted-foreground flex-1">
+                {board?.description ? (
+                  <MarkdownRenderer content={board.description} className="prose-sm prose-invert max-w-none" />
+                ) : (
+                  <p className="text-muted-foreground/60 italic">Click to add a description...</p>
+                )}
+              </div>
               <Pencil className="h-3.5 w-3.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 shrink-0" />
             </div>
           )}
@@ -1117,7 +1124,23 @@ function KanbanCardContent({ card, allCards, boardId, onRun, onHalt, onDelete, o
       )}
 
       {/* Pending state */}
-      {(card.status === "pending" || card.status === "paused") && (
+      {card.status === "paused" && card.pausedForTokens && (
+        <div className="mt-2 space-y-1.5">
+          <div className="rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5">
+            <p className="text-[10px] font-medium text-yellow-400">Token budget exhausted</p>
+            <p className="text-[9px] text-yellow-300/70 mt-0.5">
+              {card.tokenUsage ? formatTokens(card.tokenUsage.total) : '?'} / {card.tokenBudget ? formatTokens(card.tokenBudget) : '?'} tokens
+            </p>
+          </div>
+          <Button
+            size="sm" variant="outline" className="h-6 w-full text-[10px] gap-1 border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10"
+            onClick={(e) => { e.stopPropagation(); onRun(card.id); }}
+          >
+            <RotateCcw className="h-3 w-3" /> Resume (override)
+          </Button>
+        </div>
+      )}
+      {(card.status === "pending" || (card.status === "paused" && !card.pausedForTokens)) && (
         <div className="mt-2">
           <Button
             size="sm" variant="outline" className="h-6 w-full text-[10px] gap-1 border-[#00d4ff]/30 text-[#00d4ff] hover:bg-[#00d4ff]/10"
@@ -1149,7 +1172,9 @@ function KanbanCardContent({ card, allCards, boardId, onRun, onHalt, onDelete, o
             </button>
           )}
           {expanded && card.result && (
-            <p className="mt-1 text-[10px] text-muted-foreground whitespace-pre-wrap rounded bg-muted/50 p-2">{card.result}</p>
+            <div className="mt-1 text-[10px] rounded bg-muted/50 p-2">
+              <MarkdownRenderer content={card.result} className="prose-xs prose-invert max-w-none" />
+            </div>
           )}
         </div>
       )}
@@ -1187,13 +1212,18 @@ function AddCardDialog({
   const [task, setTask] = useState("");
   const [priority, setPriority] = useState<string>("normal");
   const [parentId, setParentId] = useState<string>("none");
+  const [tokenBudget, setTokenBudget] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
     if (!task.trim()) return;
     setSubmitting(true);
     try {
-      const result = await api.boards.cards.add(boardId, { task: task.trim(), priority: priority || undefined });
+      const cardData: any = { task: task.trim(), priority: priority || undefined };
+      if (tokenBudget && parseInt(tokenBudget) > 0) {
+        cardData.tokenBudget = parseInt(tokenBudget);
+      }
+      const result = await api.boards.cards.add(boardId, cardData);
       // Set parent if selected
       if (parentId !== "none" && result.card) {
         await api.boards.cards.setParent(boardId, result.card.id, parentId);
@@ -1201,6 +1231,7 @@ function AddCardDialog({
       setTask("");
       setPriority("normal");
       setParentId("none");
+      setTokenBudget("");
       onOpenChange(false);
       onCreated();
     } catch {} finally { setSubmitting(false); }
@@ -1231,11 +1262,24 @@ function AddCardDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Parent Card</label>
-              <Select value={parentId} onValueChange={setParentId}>
-                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
+              <label className="text-sm font-medium text-foreground">Token Budget</label>
+              <Input
+                type="number"
+                placeholder="No limit"
+                value={tokenBudget}
+                onChange={(e) => setTokenBudget(e.target.value)}
+                min={0}
+                step={1000}
+              />
+              <p className="text-[10px] text-muted-foreground">Max tokens before auto-pause</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Parent Card</label>
+            <Select value={parentId} onValueChange={setParentId}>
+              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
                   {allCards.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {truncate(c.task, 50)}
@@ -1245,7 +1289,6 @@ function AddCardDialog({
               </Select>
             </div>
           </div>
-        </div>
         <DialogFooter>
           <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
           <Button onClick={handleSubmit} disabled={!task.trim() || submitting} className="bg-[#00d4ff] text-black hover:bg-[#00d4ff]/80">
@@ -1364,6 +1407,7 @@ function CardDetailSheet({
   const statusLabel =
     card.status === "running" ? "Running" :
     card.status === "pending" ? "Pending" :
+    card.status === "paused" && card.pausedForTokens ? "Budget Exhausted" :
     card.status === "paused" ? "Paused" :
     card.status === "done" ? "Done" :
     card.status === "question" ? "Needs Input" : "Failed";
@@ -1373,6 +1417,7 @@ function CardDetailSheet({
     card.status === "done" ? "text-emerald-400" :
     card.status === "failed" ? "text-red-400" :
     card.status === "question" ? "text-purple-400" :
+    card.pausedForTokens ? "text-yellow-400" :
     "text-muted-foreground";
 
   const handleSaveTask = async () => {
@@ -1445,6 +1490,25 @@ function CardDetailSheet({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Token budget exhausted banner */}
+          {card.pausedForTokens && (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 space-y-1">
+              <p className="text-xs font-medium text-yellow-400">Token budget exhausted</p>
+              <p className="text-[10px] text-yellow-300/70">
+                Used {card.tokenUsage ? formatTokens(card.tokenUsage.total) : '?'} of {card.tokenBudget ? formatTokens(card.tokenBudget) : '?'} token budget.
+                Click Run to resume with override.
+              </p>
+            </div>
+          )}
+
+          {/* Token budget display */}
+          {card.tokenBudget && !card.pausedForTokens && (
+            <p className="text-[10px] text-muted-foreground">
+              Budget: {formatTokens(card.tokenBudget)} tokens
+              {card.tokenUsage ? ` (${formatTokens(card.tokenUsage.total)} used)` : ''}
+            </p>
+          )}
 
           {/* Labels */}
           <div className="space-y-2">
@@ -1623,7 +1687,9 @@ function CardDetailSheet({
               {card.result && (
                 <div>
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Result</label>
-                  <div className="mt-1 max-h-60 overflow-y-auto rounded-md bg-muted/50 p-3 text-xs text-foreground/80 whitespace-pre-wrap">{card.result}</div>
+                  <div className="mt-1 max-h-60 overflow-y-auto rounded-md bg-muted/50 p-3">
+                    <MarkdownRenderer content={card.result} className="prose-sm prose-invert max-w-none" />
+                  </div>
                 </div>
               )}
 
