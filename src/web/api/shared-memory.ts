@@ -2,15 +2,21 @@ import { Hono } from 'hono';
 import { loadConfig, getMemoryDir } from '../../utils/config.js';
 import { isSharedMemoryDbAvailable } from '../../memory/shared-memory-db.js';
 import { SharedMemoryStore } from '../../memory/shared-memory-store.js';
+import { RelayClient } from '../../relay/client.js';
 import { join } from 'node:path';
 
 let sharedMemory: SharedMemoryStore | null = null;
+let relayClient: RelayClient | null = null;
 
 const SQLITE_DEPENDENCY_ERROR =
   'Shared memory dependency issue: better-sqlite3 (SQLite backend) is not available. Install dependencies and restart Mercury.';
 
 export function setSharedMemory(mem: SharedMemoryStore | null): void {
   sharedMemory = mem;
+}
+
+export function setRelayClient(client: RelayClient | null): void {
+  relayClient = client;
 }
 
 function ensureMemory(): SharedMemoryStore | null {
@@ -50,6 +56,10 @@ function memToJson(r: any) {
 }
 
 const sharedMemoryRoutes = new Hono();
+
+// ══════════════════════════════════════════════════════════════
+// Shared Memory endpoints
+// ══════════════════════════════════════════════════════════════
 
 // ── Status / Summary ──
 sharedMemoryRoutes.get('/api/shared-memory/status', async (c) => {
@@ -151,7 +161,10 @@ sharedMemoryRoutes.delete('/api/shared-memory/memories', async (c) => {
   return c.json({ success: true, deleted });
 });
 
-// ── Friend Access Control ──
+// ══════════════════════════════════════════════════════════════
+// Friend Access Control endpoints
+// ══════════════════════════════════════════════════════════════
+
 sharedMemoryRoutes.get('/api/shared-memory/access', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ accessMap: {}, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
@@ -181,7 +194,6 @@ sharedMemoryRoutes.put('/api/shared-memory/access/:friend', async (c) => {
   } else if (body.action === 'revoke-all') {
     mem.revokeAllCategories(friend);
   } else if (body.action === 'set' && Array.isArray(body.categories)) {
-    // Replace: revoke all, then grant each
     mem.revokeAllCategories(friend);
     for (const cat of body.categories) {
       mem.grantCategory(friend, cat);
@@ -191,6 +203,131 @@ sharedMemoryRoutes.put('/api/shared-memory/access/:friend', async (c) => {
   }
 
   return c.json({ friend, categories: mem.getAllowedCategories(friend) });
+});
+
+// ══════════════════════════════════════════════════════════════
+// Friend Management endpoints (via RelayClient)
+// ══════════════════════════════════════════════════════════════
+
+// ── List friends (confirmed + pending) ──
+sharedMemoryRoutes.get('/api/friends', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured. Set up relay in mercury doctor.', available: false }, 503);
+  try {
+    const data = await relayClient.getFriends();
+    return c.json({ ...data, available: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to fetch friends', available: false }, 500);
+  }
+});
+
+// ── Send friend request ──
+sharedMemoryRoutes.post('/api/friends/request', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const body = await c.req.json();
+  const username = body.username?.trim()?.toLowerCase();
+  if (!username) return c.json({ error: 'username is required' }, 400);
+  try {
+    const result = await relayClient.sendFriendRequest(username);
+    return c.json({ ...result, success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to send friend request' }, 400);
+  }
+});
+
+// ── Accept friend request ──
+sharedMemoryRoutes.post('/api/friends/accept', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const body = await c.req.json();
+  const username = body.username?.trim()?.toLowerCase();
+  if (!username) return c.json({ error: 'username is required' }, 400);
+  try {
+    const result = await relayClient.approveRequest(username);
+    return c.json({ ...result, success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to accept request' }, 400);
+  }
+});
+
+// ── Reject friend request ──
+sharedMemoryRoutes.post('/api/friends/reject', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const body = await c.req.json();
+  const username = body.username?.trim()?.toLowerCase();
+  if (!username) return c.json({ error: 'username is required' }, 400);
+  try {
+    const result = await relayClient.rejectRequest(username);
+    return c.json({ ...result, success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to reject request' }, 400);
+  }
+});
+
+// ── Cancel sent friend request ──
+sharedMemoryRoutes.post('/api/friends/cancel', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const body = await c.req.json();
+  const username = body.username?.trim()?.toLowerCase();
+  if (!username) return c.json({ error: 'username is required' }, 400);
+  try {
+    const result = await relayClient.cancelRequest(username);
+    return c.json({ ...result, success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to cancel request' }, 400);
+  }
+});
+
+// ── Remove friend ──
+sharedMemoryRoutes.delete('/api/friends/:username', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const username = c.req.param('username');
+  try {
+    const result = await relayClient.deleteFriend(username);
+    return c.json({ ...result, success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to remove friend' }, 400);
+  }
+});
+
+// ── Check user online status ──
+sharedMemoryRoutes.get('/api/friends/:username/status', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const username = c.req.param('username');
+  try {
+    const result = await relayClient.getUserStatus(username);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to check status' }, 500);
+  }
+});
+
+// ── Query friend's shared memory ──
+sharedMemoryRoutes.post('/api/friends/:username/query', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const username = c.req.param('username');
+  const body = await c.req.json();
+  const query = body.query?.trim();
+  if (!query) return c.json({ error: 'query is required' }, 400);
+  try {
+    const result = await relayClient.sendMemoryQuery(username, query);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to send memory query' }, 500);
+  }
+});
+
+// ── Send access request to friend ──
+sharedMemoryRoutes.post('/api/friends/:username/access-request', async (c) => {
+  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
+  const username = c.req.param('username');
+  const body = await c.req.json();
+  const categories = body.categories;
+  if (!Array.isArray(categories) || categories.length === 0) return c.json({ error: 'categories array is required' }, 400);
+  try {
+    const result = await relayClient.sendAccessRequest(username, categories);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to send access request' }, 500);
+  }
 });
 
 export default sharedMemoryRoutes;

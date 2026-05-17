@@ -23,6 +23,7 @@ import {
   ChevronRight,
   FolderOpen,
   UserCheck,
+  Radio,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -63,6 +64,8 @@ const NAV_SECTIONS = [
       { to: "/shared-memory", icon: Share2, label: "Memories" },
       { to: "/shared-memory/categories", icon: FolderOpen, label: "Categories" },
       { to: "/shared-memory/access", icon: UserCheck, label: "Access" },
+      { to: "/shared-memory/friends", icon: Users, label: "Friends" },
+      { to: "/relay", icon: Radio, label: "Relay" },
     ],
   },
   {

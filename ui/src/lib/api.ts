@@ -267,6 +267,79 @@ export const sharedMemory = {
   },
 };
 
+// ── Relay ──
+export interface RelayStatus {
+  enabled: boolean;
+  url: string;
+  username: string;
+  registered: boolean;
+  connected: boolean;
+  reconnecting: boolean;
+  available: boolean;
+  telegram: { userId: number; username: string | null; firstName: string | null } | null;
+  ownerName: string | null;
+}
+
+export interface RelayRegisterResult {
+  success: boolean;
+  username: string;
+  displayName: string | null;
+  recovered: boolean;
+  connected: boolean;
+}
+
+export interface RelayRecoverResult {
+  success: boolean;
+  username: string;
+  displayName: string | null;
+  connected: boolean;
+}
+
+export interface RelayConfigResult {
+  success: boolean;
+  relay: { enabled: boolean; url: string; username: string };
+  restartRequired: boolean;
+}
+
+export const relay = {
+  status: () => get<RelayStatus>("/api/relay/status"),
+  connect: () => post<{ connected: boolean; message: string }>("/api/relay/connect"),
+  disconnect: () => post<{ connected: boolean; message: string }>("/api/relay/disconnect"),
+  checkUsername: (username: string) =>
+    post<{ available: boolean; error?: string }>("/api/relay/check-username", { username }),
+  register: (username: string, displayName?: string) =>
+    post<RelayRegisterResult>("/api/relay/register", { username, displayName }),
+  recover: (username: string, displayName?: string) =>
+    post<RelayRecoverResult>("/api/relay/recover", { username, displayName }),
+  validate: () => get<{ status: string }>("/api/relay/validate"),
+  deregister: () => post<{ success: boolean; message: string }>("/api/relay/deregister"),
+  updateConfig: (body: { url?: string; enabled?: boolean }) =>
+    put<RelayConfigResult>("/api/relay/config", body),
+  lookupChannel: (type: string, id: string) =>
+    post<{ registered: boolean }>("/api/relay/lookup-channel", { type, id }),
+};
+
+// ── Friends ──
+export const friends = {
+  list: () => get<FriendsResponse>("/api/friends"),
+  sendRequest: (username: string) =>
+    post<FriendRequestResult>("/api/friends/request", { username }),
+  acceptRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/accept", { username }),
+  rejectRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/reject", { username }),
+  cancelRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/cancel", { username }),
+  remove: (username: string) =>
+    del<{ status: string; success: boolean }>(`/api/friends/${encodeURIComponent(username)}`),
+  status: (username: string) =>
+    get<{ username: string; online: boolean }>(`/api/friends/${encodeURIComponent(username)}/status`),
+  queryMemory: (username: string, query: string) =>
+    post<{ forwarded: boolean; request_id?: string }>(`/api/friends/${encodeURIComponent(username)}/query`, { query }),
+  requestAccess: (username: string, categories: string[]) =>
+    post<{ delivered: boolean }>(`/api/friends/${encodeURIComponent(username)}/access-request`, { categories }),
+};
+
 // ── Agents / Tasks ──
 export const agents = {
   list: () => get<{ agents: Agent[]; available: boolean }>("/api/agents"),
@@ -686,6 +759,39 @@ export interface SharedAccessMap {
   available: boolean;
 }
 
+// ── Friend Types ──
+export interface FriendInfo {
+  username: string;
+  display_name: string | null;
+  friends_since: number;
+}
+
+export interface RelayUser {
+  username: string;
+  display_name: string | null;
+}
+
+export interface PendingRequestInfo {
+  request_id: string;
+  created_at: number;
+  target_user: RelayUser;
+}
+
+export interface FriendsResponse {
+  friends: FriendInfo[];
+  pending_sent: PendingRequestInfo[];
+  pending_received: PendingRequestInfo[];
+  available: boolean;
+}
+
+export interface FriendRequestResult {
+  request_id: string;
+  status: string;
+  target_online: boolean;
+  target_user: RelayUser;
+  success: boolean;
+}
+
 export interface Agent {
   id: string;
   task: string;
@@ -847,6 +953,7 @@ const api = {
   schedules,
   spotify,
   boards,
+  relay,
 };
 
 export default api;

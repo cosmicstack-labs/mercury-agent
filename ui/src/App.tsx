@@ -25,6 +25,8 @@ const WorkspacePage = lazy(() => import("./pages/Workspace").then((m) => ({ defa
 const SharedMemoryPage = lazy(() => import("./pages/shared-memory/SharedMemory"));
 const SharedCategoriesPage = lazy(() => import("./pages/shared-memory/SharedCategories"));
 const SharedAccessPage = lazy(() => import("./pages/shared-memory/SharedAccess"));
+const FriendsPage = lazy(() => import("./pages/shared-memory/Friends"));
+const RelayPage = lazy(() => import("./pages/Relay"));
 
 function PageLoader() {
   return (
@@ -81,6 +83,8 @@ function AnimatedRoutes() {
             <Route path="shared-memory" element={<AnimatedPage><SharedMemoryPage /></AnimatedPage>} />
             <Route path="shared-memory/categories" element={<AnimatedPage><SharedCategoriesPage /></AnimatedPage>} />
             <Route path="shared-memory/access" element={<AnimatedPage><SharedAccessPage /></AnimatedPage>} />
+            <Route path="shared-memory/friends" element={<AnimatedPage><FriendsPage /></AnimatedPage>} />
+            <Route path="relay" element={<AnimatedPage><RelayPage /></AnimatedPage>} />
             <Route path="providers" element={<AnimatedPage><ProvidersPage /></AnimatedPage>} />
             <Route path="skills" element={<AnimatedPage><SkillsPage /></AnimatedPage>} />
             <Route path="permissions" element={<AnimatedPage><PermissionsPage /></AnimatedPage>} />

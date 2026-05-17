@@ -59,7 +59,7 @@ import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { MessagesStore } from './memory/messages-store.js';
 import { isMessagesDbAvailable } from './memory/messages-db.js';
 import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setRelayClient as setWebRelayClient, setRelayClientForRelay as setWebRelayForRelay, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1424,6 +1424,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   let relayClient: RelayClient | null = null;
   if (config.relay?.enabled !== false && config.relay?.url) {
     relayClient = new RelayClient(() => config);
+    setWebRelayClient(relayClient);
+    setWebRelayForRelay(relayClient);
   }
 
   const channels = new ChannelRegistry(config);
