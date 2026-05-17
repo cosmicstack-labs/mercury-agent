@@ -21,6 +21,8 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  FolderOpen,
+  UserCheck,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -53,6 +55,14 @@ const NAV_SECTIONS = [
       { to: "/second-brain/persons", icon: Users, label: "Persons" },
       { to: "/second-brain/goals", icon: Target, label: "Goals" },
       { to: "/second-brain/graph", icon: Share2, label: "Graph" },
+    ],
+  },
+  {
+    title: "Shared Memory",
+    items: [
+      { to: "/shared-memory", icon: Share2, label: "Memories" },
+      { to: "/shared-memory/categories", icon: FolderOpen, label: "Categories" },
+      { to: "/shared-memory/access", icon: UserCheck, label: "Access" },
     ],
   },
   {

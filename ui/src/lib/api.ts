@@ -223,6 +223,50 @@ export const brain = {
   graph: () => get<GraphData>("/api/brain/graph"),
 };
 
+// ── Shared Memory ──
+export const sharedMemory = {
+  status: () => get<SharedMemoryStatus>("/api/shared-memory/status"),
+  memories: {
+    list: (params?: { limit?: number; offset?: number; q?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set("limit", String(params.limit));
+      if (params?.offset) qs.set("offset", String(params.offset));
+      if (params?.q) qs.set("q", params.q);
+      return get<{ memories: SharedMemoryRecord[]; total: number }>(
+        `/api/shared-memory/memories?${qs}`
+      );
+    },
+    search: (q: string, limit?: number) =>
+      get<{ memories: SharedMemoryRecord[]; total: number }>(
+        `/api/shared-memory/memories/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
+      ),
+    create: (data: SharedMemoryCreate) =>
+      post<SharedMemoryRecord>("/api/shared-memory/memories", data),
+    clear: () => del<{ success: boolean; deleted: number }>("/api/shared-memory/memories"),
+  },
+  learning: {
+    get: () => get<{ paused: boolean }>("/api/shared-memory/learning"),
+    set: (paused: boolean) =>
+      put<{ paused: boolean }>("/api/shared-memory/learning", { paused }),
+  },
+  categories: () =>
+    get<{ categories: string[]; byCategory: Record<string, number> }>(
+      "/api/shared-memory/categories"
+    ),
+  access: {
+    map: () => get<SharedAccessMap>("/api/shared-memory/access"),
+    get: (friend: string) =>
+      get<{ friend: string; categories: string[] }>(
+        `/api/shared-memory/access/${encodeURIComponent(friend)}`
+      ),
+    update: (friend: string, body: { action: string; category?: string; categories?: string[] }) =>
+      put<{ friend: string; categories: string[] }>(
+        `/api/shared-memory/access/${encodeURIComponent(friend)}`,
+        body
+      ),
+  },
+};
+
 // ── Agents / Tasks ──
 export const agents = {
   list: () => get<{ agents: Agent[]; available: boolean }>("/api/agents"),
@@ -596,6 +640,50 @@ export interface GraphEdge {
   target: string;
   type?: string;
   weight?: number;
+}
+
+// ── Shared Memory Types ──
+export interface SharedMemoryStatus {
+  total: number;
+  byType: Record<string, number>;
+  byCategory: Record<string, number>;
+  categories: string[];
+  learningPaused: boolean;
+  available: boolean;
+}
+
+export interface SharedMemoryRecord {
+  id: string;
+  type: string;
+  category: string;
+  summary: string;
+  detail?: string | null;
+  evidenceKind: string;
+  confidence: number;
+  importance: number;
+  durability: number;
+  evidenceCount: number;
+  dismissed: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  lastUsedAt?: number | null;
+  lastUsedQuery?: string | null;
+}
+
+export interface SharedMemoryCreate {
+  type: string;
+  category?: string;
+  summary: string;
+  detail?: string;
+  confidence?: number;
+  importance?: number;
+  durability?: number;
+}
+
+export interface SharedAccessMap {
+  accessMap: Record<string, string[]>;
+  available: boolean;
 }
 
 export interface Agent {

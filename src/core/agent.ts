@@ -4219,6 +4219,7 @@ Is this productive iteration or a stuck loop?`,
         }
         options.push(
           { value: 'clear', label: 'Clear All Memories' },
+          { value: 'clear-all', label: 'Clear All (everything related to memory and yourself)' },
           { value: 'back', label: 'Back' },
         );
         const action = await sel('Memory', options);
@@ -4303,6 +4304,18 @@ Is this productive iteration or a stuck loop?`,
           if (confirm === 'confirm') {
             const cleared = this.userMemory!.clear();
             await channel.send(`Cleared ${cleared} memories.`, channelId);
+          }
+          continue;
+        }
+
+        if (action === 'clear-all') {
+          const confirm = await sel('Clear ALL memories, profile, metadata, and person graph? This cannot be undone.', [
+            { value: 'cancel', label: 'Cancel' },
+            { value: 'confirm', label: 'Yes, wipe everything' },
+          ]);
+          if (confirm === 'confirm') {
+            const cleared = this.userMemory!.clearAll();
+            await channel.send(`Full reset complete. Cleared ${cleared} memories plus all profile data, metadata, and person graph.`, channelId);
           }
           continue;
         }

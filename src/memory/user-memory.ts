@@ -288,6 +288,18 @@ export class UserMemoryStore {
     return this.db.clearByType(this.userKey);
   }
 
+  /** Clear all memories, metadata (profile, active summary), and person graph — full reset. */
+  clearAll(): number {
+    const cleared = this.db.clearByType(this.userKey);
+    this.db.clearUserPersonGraph(this.userKey);
+    this.db.deleteMeta(`${this.userKey}:profile_summary`);
+    this.db.deleteMeta(`${this.userKey}:active_summary`);
+    this.db.deleteMeta(`${this.userKey}:learning_paused`);
+    this.db.deleteMeta(`${this.userKey}:persons_backfilled`);
+    this.db.deleteMeta(`${this.userKey}:persons_backfilled_version`);
+    return cleared;
+  }
+
   consolidate(): { profileUpdated: boolean; reflectionCount: number } {
     const now = Date.now();
     if (now - this.lastConsolidateAt < this.consolidateThrottleMs && this.lastConsolidateAt > 0) {
@@ -600,7 +612,6 @@ export class UserMemoryStore {
         this.db.linkMemoryPerson(memory.id, person.id, 'interaction', memory.confidence);
       }
     }
-  }
   }
 
   private toRecord(row: MemoryRow): UserMemoryRecord {

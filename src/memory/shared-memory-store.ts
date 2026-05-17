@@ -184,6 +184,12 @@ export class SharedMemoryStore {
     this.db.close();
   }
 
+  /** Direct insert for manual/API creation — bypasses learning pause and candidate validation. */
+  manualInsert(candidate: SharedMemoryCandidate): SharedMemoryRecord | null {
+    const resolvedCategory = this.resolveCategory(candidate.category);
+    return this.insertRecord(candidate, resolvedCategory);
+  }
+
   pruneEmptyCategories(): void {
     this.db.pruneEmptyCategories();
   }

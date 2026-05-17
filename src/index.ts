@@ -59,7 +59,7 @@ import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { MessagesStore } from './memory/messages-store.js';
 import { isMessagesDbAvailable } from './memory/messages-db.js';
 import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1186,7 +1186,9 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         console.log(chalk.yellow('  Invalid port number. Keeping default.'));
       }
     }
-    console.log(chalk.dim(`  Mercury Web will be available at http://localhost:${config.web.port}`));
+    console.log(chalk.green(`  ✓ Web dashboard enabled at http://localhost:${config.web.port}`));
+    console.log(chalk.dim(`    Username: mercury · Password: the one you just set (or Mercury@123 if default)`));
+    console.log(chalk.dim(`    The dashboard starts automatically when Mercury runs.`));
 
     if (isWebAuthInitialized()) {
       console.log(chalk.dim('  You can change your password below, or press Enter to keep it.'));
@@ -1377,6 +1379,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.memory.sharedMemory?.enabled !== false && isSharedMemoryDbAvailable()) {
     try {
       sharedMemory = new SharedMemoryStore(config);
+      setWebSharedMemory(sharedMemory);
       if (!isDaemon) {
         console.log(chalk.dim(`  Shared memory: enabled (${sharedMemory.getSummary().total} existing memories)`));
       } else {
@@ -1992,6 +1995,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     if (config.web.enabled) {
       startWebServer();
+      console.log(chalk.cyan(`  Web dashboard: http://localhost:${config.web.port}`) + chalk.dim(` · login as `) + chalk.white('mercury'));
       updateWebStatus({
         running: true,
         pid: process.pid,
@@ -2006,7 +2010,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         memoryByType: userMemory ? userMemory.getSummary().byType : {},
       });
     } else {
-      console.log(chalk.dim(`  Web: disabled · enable with mercury doctor or set web.enabled: true`));
+      console.log(chalk.dim('  Web dashboard disabled. Run ') + chalk.white('mercury doctor') + chalk.dim(' to enable it.'));
     }
 
     // Keep CLI permission mode prompt, but do it after web server is live.
@@ -2019,6 +2023,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     await channels.startAll();
     if (config.web.enabled) {
       startWebServer();
+      logger.info(`Web dashboard: http://localhost:${config.web.port}`);
       updateWebStatus({
         running: true,
         pid: process.pid,
@@ -2215,7 +2220,7 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
-    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
+    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled · http://localhost:${config.web.port}`) + chalk.dim(` · user: mercury`) : chalk.dim('disabled') + chalk.dim(' — run ') + chalk.white('mercury doctor') + chalk.dim(' to enable')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
     const spotify = config.spotify;
