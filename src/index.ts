@@ -1665,21 +1665,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       refreshFriendsForUI();
     });
 
-    relayClient.on('access_request', (data: unknown) => {
-      const d = data as Record<string, unknown>;
-      const fromUser = (d.from_user as string) || 'Unknown';
-      const fromDisplayName = (d.from_display_name as string | null) ?? null;
-      const categories = (d.categories as string[]) || [];
-      const displayName = fromDisplayName || fromUser;
-      const myCategories = sharedMemory ? sharedMemory.getCategories() : [];
-      const lines = [
-        `🔑 @${displayName} is requesting access to your memory categories: ${categories.join(', ')}`,
-        `Your categories: ${myCategories.length > 0 ? myCategories.join(', ') : '(none)'}`,
-        `Use /friend access @${fromUser} add <categories> to grant access.`,
-      ];
-      storeNotification('access_request', lines.join('\n'), fromUser);
-    });
-
     relayClient.on('message', (data: unknown) => {
       const d = data as Record<string, unknown>;
       const fromUser = (d.from_user as string) || 'Unknown';
@@ -1730,8 +1715,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         importance: r.importance,
       }));
 
+      // Determine denial message when results exist but user has no access
+      let denialMessage: string | undefined;
+      const ownerUsername = config.relay?.username || 'the memory owner';
+      if (results.length > 0 && filtered.length === 0) {
+        denialMessage = `You do not have access to these memories. Ask @${ownerUsername} to grant you access to the relevant categories.`;
+      }
+
       const displayName = fromDisplayName || fromUser;
-      relayClient!.sendMemoryResponse(fromUser, requestId, query, items)
+      relayClient!.sendMemoryResponse(fromUser, requestId, query, items, denialMessage)
         .then((result) => {
           if (!result.delivered) {
             logger.warn({ fromUser, query, error: result.error }, 'Memory response delivery failed');
@@ -1742,7 +1734,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         });
 
       const resultCount = items.length;
-      const localMessage = `🧠 @${displayName} queried your memory for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
+      const localMessage = denialMessage
+        ? `🧠 @${displayName} queried your memory for "${query}" — denied (no access to matching categories)`
+        : `🧠 @${displayName} queried your memory for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
       storeNotification('memory_query', localMessage, fromUser, { request_id: requestId, query });
     });
 
@@ -1755,7 +1749,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       const displayName = fromDisplayName || fromUser;
 
       let formattedMessage: string;
-      if (results.length === 0) {
+      if (d.message && results.length === 0) {
+        formattedMessage = `🔒 @${displayName}'s memory for "${query}":\n${d.message}`;
+      } else if (results.length === 0) {
         formattedMessage = `🧠 @${displayName}'s memory for "${query}":\nNo shared memories found.`;
       } else {
         const lines = [`🧠 @${displayName}'s memory for "${query}":`, ''];

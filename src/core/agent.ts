@@ -2876,7 +2876,6 @@ Is this productive iteration or a stuck loop?`,
                   { value: 'remove', label: 'Revoke categories' },
                   { value: 'all', label: 'Grant all categories' },
                   { value: 'none', label: 'Revoke all access' },
-                  { value: 'request', label: 'Request access from them' },
                   { value: 'back', label: 'Back' },
                 ]);
 
@@ -2912,21 +2911,6 @@ Is this productive iteration or a stuck loop?`,
                   if (selectedCat === 'back') return;
                   this.sharedMemory!.revokeCategory(chosen, selectedCat);
                   await channel.send(`✅ Revoked @${chosen} access to: ${selectedCat}`, channelId);
-                } else if (action === 'request') {
-                  const catOptions: ArrowSelectOption[] = myCategories.map(c => ({ value: c, label: c }));
-                  catOptions.push({ value: 'back', label: 'Back' });
-                  const selectedCat = await select('Select category to request from them', catOptions);
-                  if (selectedCat === 'back') return;
-                  try {
-                    const result = await this._relayClient!.sendAccessRequest(chosen, [selectedCat]);
-                    if (result.delivered) {
-                      await channel.send(`✅ Access request sent to @${chosen} for: ${selectedCat}`, channelId);
-                    } else {
-                      await channel.send(`⚠ @${chosen} is offline. Access request not delivered.`, channelId);
-                    }
-                  } catch (err: any) {
-                    await channel.send(`❌ ${err.message}`, channelId);
-                  }
                 }
               });
             } catch (err: any) {
@@ -2950,10 +2934,10 @@ Is this productive iteration or a stuck loop?`,
           return true;
         }
 
-        // Parse: @username [add|remove|all|none|request] [categories...]
+        // Parse: @username [add|remove|all|none] [categories...]
         const accessMatch = accessInput.match(/^@?([a-z0-9_]{3,20})(?:\s+(.*))?$/i);
         if (!accessMatch) {
-          await channel.send('Usage: /friend access @username [add|remove|all|none|request] [categories]', channelId);
+          await channel.send('Usage: /friend access @username [add|remove|all|none] [categories]', channelId);
           return true;
         }
         const targetFriend = accessMatch[1].toLowerCase();
@@ -3023,26 +3007,7 @@ Is this productive iteration or a stuck loop?`,
           return true;
         }
 
-        if (action.startsWith('request ')) {
-          const categories = action.slice(8).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
-          if (categories.length === 0) {
-            await channel.send('Usage: /friend access @username request category1,category2', channelId);
-            return true;
-          }
-          try {
-            const result = await this._relayClient!.sendAccessRequest(targetFriend, categories);
-            if (result.delivered) {
-              await channel.send(`✅ Access request sent to @${targetFriend} for: ${categories.join(', ')}`, channelId);
-            } else {
-              await channel.send(`⚠ @${targetFriend} is offline. Access request not delivered.`, channelId);
-            }
-          } catch (err: any) {
-            await channel.send(`❌ ${err.message}`, channelId);
-          }
-          return true;
-        }
-
-        await channel.send('Usage: /friend access @username [add|remove|all|none|request] [categories]', channelId);
+        await channel.send('Usage: /friend access @username [add|remove|all|none] [categories]', channelId);
         return true;
       }
 

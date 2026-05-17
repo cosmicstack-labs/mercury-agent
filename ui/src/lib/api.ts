@@ -338,8 +338,6 @@ export const friends = {
     get<{ username: string; online: boolean }>(`/api/friends/${encodeURIComponent(username)}/status`),
   queryMemory: (username: string, query: string) =>
     post<{ forwarded: boolean; request_id?: string }>(`/api/friends/${encodeURIComponent(username)}/query`, { query }),
-  requestAccess: (username: string, categories: string[]) =>
-    post<{ delivered: boolean }>(`/api/friends/${encodeURIComponent(username)}/access-request`, { categories }),
 };
 
 // ── Agents / Tasks ──

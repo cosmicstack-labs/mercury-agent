@@ -77,8 +77,6 @@ export default function FriendsPage() {
   const [grantedToFriend, setGrantedToFriend] = useState<string[]>([]);
   const [panelLoading, setPanelLoading] = useState(false);
   const [panelUpdating, setPanelUpdating] = useState(false);
-  const [requestCats, setRequestCats] = useState<string[]>([]);
-  const [requestSending, setRequestSending] = useState(false);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [memoryQuerying, setMemoryQuerying] = useState(false);
   const [memoryQueryResult, setMemoryQueryResult] = useState<string | null>(null);
@@ -286,24 +284,6 @@ export default function FriendsPage() {
       toast("error", err.message || "Failed");
     } finally {
       setPanelUpdating(false);
-    }
-  };
-
-  const handleRequestAccess = async () => {
-    if (!panelFriend || requestCats.length === 0) return;
-    setRequestSending(true);
-    try {
-      const res = await api.requestAccess(panelFriend.username, requestCats);
-      if (res.delivered) {
-        toast("success", `Access request sent to @${panelFriend.username}`);
-        setRequestCats([]);
-      } else {
-        toast("error", `@${panelFriend.username} is offline — request could not be delivered`);
-      }
-    } catch (err: any) {
-      toast("error", err.message || "Failed to send request");
-    } finally {
-      setRequestSending(false);
     }
   };
 
@@ -701,40 +681,11 @@ export default function FriendsPage() {
                         })}
                       </div>
                     )}
-                  </div>
+                   </div>
 
                   <div className="border-t" />
 
-                  {/* Section 2: Request Access from them */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold flex items-center gap-2">
-                      <Lock className="h-4 w-4 text-amber-400" />
-                      Request Access
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      Request access to @{panelFriend.username}'s memory categories.
-                    </p>
-                    <Input
-                      placeholder="Enter category names, comma-separated"
-                      value={requestCats.join(", ")}
-                      onChange={(e) => {
-                        const cats = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
-                        setRequestCats(cats);
-                      }}
-                      className="text-sm"
-                    />
-                    <Button size="sm" onClick={handleRequestAccess}
-                      disabled={requestSending || requestCats.length === 0}
-                      className="w-full"
-                      style={{ backgroundColor: "#a855f7" }}>
-                      {requestSending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
-                      Send Access Request
-                    </Button>
-                  </div>
-
-                  <div className="border-t" />
-
-                  {/* Section 3: Query their memory */}
+                  {/* Section 2: Query their memory */}
                   <div className="space-y-3">
                     <h3 className="text-sm font-semibold flex items-center gap-2">
                       <Search className="h-4 w-4 text-emerald-400" />

@@ -315,19 +315,4 @@ sharedMemoryRoutes.post('/api/friends/:username/query', async (c) => {
   }
 });
 
-// ── Send access request to friend ──
-sharedMemoryRoutes.post('/api/friends/:username/access-request', async (c) => {
-  if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
-  const username = c.req.param('username');
-  const body = await c.req.json();
-  const categories = body.categories;
-  if (!Array.isArray(categories) || categories.length === 0) return c.json({ error: 'categories array is required' }, 400);
-  try {
-    const result = await relayClient.sendAccessRequest(username, categories);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ error: err.message || 'Failed to send access request' }, 500);
-  }
-});
-
 export default sharedMemoryRoutes;

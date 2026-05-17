@@ -107,6 +107,7 @@ export interface MemoryResponseEvent {
   request_id: string;
   query: string;
   results: MemoryResultItem[];
+  message?: string;
 }
 
 export interface FriendRequestResult {
@@ -397,9 +398,11 @@ export class RelayClient {
     return data;
   }
 
-  async sendMemoryResponse(toUser: string, requestId: string, query: string, results: MemoryResultItem[]): Promise<MemoryResponseResult> {
+  async sendMemoryResponse(toUser: string, requestId: string, query: string, results: MemoryResultItem[], message?: string): Promise<MemoryResponseResult> {
     const target = toUser.toLowerCase().trim().replace(/^@/, '');
-    const res = await this.authedPost('/v1/memory-response', { to_user: target, request_id: requestId, query, results });
+    const body: Record<string, unknown> = { to_user: target, request_id: requestId, query, results };
+    if (message) body.message = message;
+    const res = await this.authedPost('/v1/memory-response', body);
     const data = await res.json() as MemoryResponseResult & { error?: string };
     if (!res.ok) {
       throw new Error(data.error || 'Failed to send memory response');
@@ -407,14 +410,8 @@ export class RelayClient {
     return data;
   }
 
-  async sendAccessRequest(toUser: string, categories: string[]): Promise<{ delivered: boolean }> {
-    const target = toUser.toLowerCase().trim().replace(/^@/, '');
-    const res = await this.authedPost('/v1/access-request', { to_user: target, categories });
-    const data = await res.json() as { delivered: boolean; error?: string };
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to send access request');
-    }
-    return data;
+  async sendAccessRequest(_toUser: string, _categories: string[]): Promise<{ delivered: boolean }> {
+    throw new Error('Access requests have been removed. Memory sharing is controlled by the memory owner.');
   }
 
   async getFriends(): Promise<FriendsResponse> {

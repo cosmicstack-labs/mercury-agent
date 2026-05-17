@@ -11,8 +11,7 @@ export type NotificationType =
   | 'friend_remove'
   | 'message'
   | 'memory_query'
-  | 'memory_response'
-  | 'access_request';
+  | 'memory_response';
 
 export interface NotificationRecord {
   id: string;
