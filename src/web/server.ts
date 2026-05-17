@@ -19,6 +19,8 @@ import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProv
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
 import sharedMemoryRoutes, { setSharedMemory, setRelayClient } from './api/shared-memory.js';
 import relayRoutes, { setRelayClientForRelay } from './api/relay.js';
+import notificationRoutes, { setNotificationsStore } from './api/notifications.js';
+import messageRoutes, { setMessagesStore } from './api/messages.js';
 import { BoardManager } from '../core/board-manager.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -63,6 +65,8 @@ app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);
 app.route('/', sharedMemoryRoutes);
 app.route('/', relayRoutes);
+app.route('/', notificationRoutes);
+app.route('/', messageRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -158,7 +162,7 @@ if (spaAvailable) {
   });
 }
 
-export { updateStatus, setUserMemory, setSharedMemory, setRelayClient, setRelayClientForRelay, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
+export { updateStatus, setUserMemory, setSharedMemory, setRelayClient, setRelayClientForRelay, setNotificationsStore, setMessagesStore, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

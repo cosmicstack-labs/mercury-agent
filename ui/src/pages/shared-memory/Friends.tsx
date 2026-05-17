@@ -2,12 +2,15 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Users, UserPlus, UserMinus, Check, X, Clock, Loader2, CheckCircle2, XCircle, Circle, Send, Radio,
+  Users, UserPlus, UserMinus, Check, X, Clock, Loader2, CheckCircle2, XCircle, Circle, Send, Radio, Shield, Search, Lock, Unlock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
+} from "@/components/ui/sheet";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
@@ -16,7 +19,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { friends as api, relay as relayApi, type FriendInfo, type PendingRequestInfo, type RelayStatus } from "@/lib/api";
+import { friends as api, relay as relayApi, sharedMemory as smApi, notifications as notifApi, type FriendInfo, type PendingRequestInfo, type RelayStatus, type NotificationRecord } from "@/lib/api";
 
 interface Toast { id: number; type: "success" | "error"; message: string }
 
@@ -66,6 +69,20 @@ export default function FriendsPage() {
   const [suggestions, setSuggestions] = useState<Array<{ username: string; display_name: string | null }>>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Side panel state
+  const [panelFriend, setPanelFriend] = useState<FriendInfo | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [myCategories, setMyCategories] = useState<string[]>([]);
+  const [grantedToFriend, setGrantedToFriend] = useState<string[]>([]);
+  const [panelLoading, setPanelLoading] = useState(false);
+  const [panelUpdating, setPanelUpdating] = useState(false);
+  const [requestCats, setRequestCats] = useState<string[]>([]);
+  const [requestSending, setRequestSending] = useState(false);
+  const [memoryQuery, setMemoryQuery] = useState("");
+  const [memoryQuerying, setMemoryQuerying] = useState(false);
+  const [memoryQueryResult, setMemoryQueryResult] = useState<string | null>(null);
+  const [memoryResponses, setMemoryResponses] = useState<NotificationRecord[]>([]);
 
   const toast = useCallback((type: "success" | "error", message: string) => {
     const id = Date.now();
@@ -197,6 +214,136 @@ export default function FriendsPage() {
       fetchFriends();
     } catch (err: any) {
       toast("error", err.message || "Failed to remove");
+    }
+  };
+
+  const openPanel = async (friend: FriendInfo) => {
+    setPanelFriend(friend);
+    setPanelOpen(true);
+    setPanelLoading(true);
+    setGrantedToFriend([]);
+    setMyCategories([]);
+    setRequestCats([]);
+    setMemoryQuery("");
+    setMemoryQueryResult(null);
+    setMemoryResponses([]);
+    try {
+      const [catRes, accessRes, notifRes] = await Promise.all([
+        smApi.categories(),
+        smApi.access.get(friend.username).catch(() => ({ friend: friend.username, categories: [] as string[] })),
+        notifApi.list({ type: "memory_response", source: friend.username, limit: 20 }).catch(() => ({ notifications: [] })),
+      ]);
+      setMyCategories(catRes.categories || []);
+      setGrantedToFriend(accessRes.categories || []);
+      setMemoryResponses(notifRes.notifications || []);
+    } catch {
+      // Access page may not be available
+    } finally {
+      setPanelLoading(false);
+    }
+  };
+
+  const handleGrantToggle = async (category: string) => {
+    if (!panelFriend) return;
+    const granted = grantedToFriend.includes(category);
+    setPanelUpdating(true);
+    try {
+      const res = await smApi.access.update(panelFriend.username, {
+        action: granted ? "revoke" : "grant",
+        category,
+      });
+      setGrantedToFriend(res.categories || []);
+      toast("success", `${granted ? "Revoked" : "Granted"} "${category}" for @${panelFriend.username}`);
+    } catch (err: any) {
+      toast("error", err.message || "Failed to update access");
+    } finally {
+      setPanelUpdating(false);
+    }
+  };
+
+  const handleGrantAll = async () => {
+    if (!panelFriend) return;
+    setPanelUpdating(true);
+    try {
+      const res = await smApi.access.update(panelFriend.username, { action: "grant-all" });
+      setGrantedToFriend(res.categories || []);
+      toast("success", `Granted all categories to @${panelFriend.username}`);
+    } catch (err: any) {
+      toast("error", err.message || "Failed");
+    } finally {
+      setPanelUpdating(false);
+    }
+  };
+
+  const handleRevokeAll = async () => {
+    if (!panelFriend) return;
+    setPanelUpdating(true);
+    try {
+      const res = await smApi.access.update(panelFriend.username, { action: "revoke-all" });
+      setGrantedToFriend(res.categories || []);
+      toast("success", `Revoked all access for @${panelFriend.username}`);
+    } catch (err: any) {
+      toast("error", err.message || "Failed");
+    } finally {
+      setPanelUpdating(false);
+    }
+  };
+
+  const handleRequestAccess = async () => {
+    if (!panelFriend || requestCats.length === 0) return;
+    setRequestSending(true);
+    try {
+      const res = await api.requestAccess(panelFriend.username, requestCats);
+      if (res.delivered) {
+        toast("success", `Access request sent to @${panelFriend.username}`);
+        setRequestCats([]);
+      } else {
+        toast("error", `@${panelFriend.username} is offline — request could not be delivered`);
+      }
+    } catch (err: any) {
+      toast("error", err.message || "Failed to send request");
+    } finally {
+      setRequestSending(false);
+    }
+  };
+
+  const handleMemoryQuery = async () => {
+    if (!panelFriend || !memoryQuery.trim()) return;
+    setMemoryQuerying(true);
+    setMemoryQueryResult(null);
+    try {
+      const res = await api.queryMemory(panelFriend.username, memoryQuery.trim());
+      if (res.forwarded) {
+        setMemoryQueryResult("Query sent — waiting for response...");
+        // Poll for the response notification
+        let attempts = 0;
+        const beforeCount = memoryResponses.length;
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const notifRes = await notifApi.list({ type: "memory_response", source: panelFriend!.username, limit: 20 });
+            const newNotifs = notifRes.notifications || [];
+            if (newNotifs.length > beforeCount) {
+              setMemoryResponses(newNotifs);
+              setMemoryQueryResult(null);
+              setMemoryQuerying(false);
+              clearInterval(poll);
+              return;
+            }
+          } catch {}
+          if (attempts >= 15) {
+            setMemoryQueryResult("Response may still arrive — check back shortly");
+            setMemoryQuerying(false);
+            clearInterval(poll);
+          }
+        }, 2000);
+      } else {
+        setMemoryQueryResult("Could not forward query — friend may be offline");
+        setMemoryQuerying(false);
+      }
+    } catch (err: any) {
+      setMemoryQueryResult(err.message || "Query failed");
+      setMemoryQuerying(false);
     }
   };
 
@@ -451,6 +598,11 @@ export default function FriendsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => openPanel(friend)}
+                        className="text-muted-foreground hover:text-[#a855f7] transition-colors"
+                        title="Memory access">
+                        <Shield className="h-4 w-4" />
+                      </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button size="sm" variant="ghost" className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive">
@@ -476,6 +628,162 @@ export default function FriendsPage() {
           </AnimatePresence>
         )}
       </div>
+
+      {/* Memory Access Side Panel */}
+      <Sheet open={panelOpen} onOpenChange={setPanelOpen}>
+        <SheetContent className="w-[400px] sm:w-[440px] overflow-y-auto">
+          {panelFriend && (
+            <>
+              <SheetHeader className="pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-full bg-[#a855f7]/15 flex items-center justify-center text-[#a855f7] font-semibold text-sm">
+                    {panelFriend.username.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <SheetTitle className="text-lg">@{panelFriend.username}</SheetTitle>
+                    {panelFriend.display_name && (
+                      <SheetDescription>{panelFriend.display_name}</SheetDescription>
+                    )}
+                  </div>
+                </div>
+              </SheetHeader>
+
+              {panelLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-[#a855f7]" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+
+                  {/* Section 1: Your Access Grants (what you share with them) */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold flex items-center gap-2">
+                        <Unlock className="h-4 w-4 text-[#a855f7]" />
+                        Your Shared Categories
+                      </h3>
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="ghost" className="h-7 text-xs px-2" disabled={panelUpdating || myCategories.length === 0}
+                          onClick={handleGrantAll}>
+                          Grant All
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 text-xs px-2" disabled={panelUpdating || grantedToFriend.length === 0}
+                          onClick={handleRevokeAll}>
+                          Revoke All
+                        </Button>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Categories of your memories that @{panelFriend.username} can access.
+                    </p>
+                    {myCategories.length === 0 ? (
+                      <p className="text-xs text-muted-foreground/60 py-2">No categories yet. Add shared memories to create categories.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {myCategories.map((cat) => {
+                          const granted = grantedToFriend.includes(cat);
+                          return (
+                            <Badge
+                              key={cat}
+                              className={cn(
+                                "cursor-pointer select-none transition-all text-xs",
+                                granted
+                                  ? "text-white hover:opacity-80"
+                                  : "bg-muted text-muted-foreground hover:bg-muted/80",
+                              )}
+                              style={granted ? { backgroundColor: "#a855f7" } : undefined}
+                              onClick={() => !panelUpdating && handleGrantToggle(cat)}
+                            >
+                              {granted ? <Unlock className="h-3 w-3 mr-1" /> : <Lock className="h-3 w-3 mr-1" />}
+                              {cat}
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border-t" />
+
+                  {/* Section 2: Request Access from them */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold flex items-center gap-2">
+                      <Lock className="h-4 w-4 text-amber-400" />
+                      Request Access
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Request access to @{panelFriend.username}'s memory categories.
+                    </p>
+                    <Input
+                      placeholder="Enter category names, comma-separated"
+                      value={requestCats.join(", ")}
+                      onChange={(e) => {
+                        const cats = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                        setRequestCats(cats);
+                      }}
+                      className="text-sm"
+                    />
+                    <Button size="sm" onClick={handleRequestAccess}
+                      disabled={requestSending || requestCats.length === 0}
+                      className="w-full"
+                      style={{ backgroundColor: "#a855f7" }}>
+                      {requestSending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                      Send Access Request
+                    </Button>
+                  </div>
+
+                  <div className="border-t" />
+
+                  {/* Section 3: Query their memory */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold flex items-center gap-2">
+                      <Search className="h-4 w-4 text-emerald-400" />
+                      Query Memory
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Search @{panelFriend.username}'s shared memories (they must be online).
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="What do you want to know?"
+                        value={memoryQuery}
+                        onChange={(e) => setMemoryQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleMemoryQuery()}
+                        className="text-sm flex-1"
+                      />
+                      <Button size="sm" onClick={handleMemoryQuery}
+                        disabled={memoryQuerying || !memoryQuery.trim()}
+                        style={{ backgroundColor: "#a855f7" }}>
+                        {memoryQuerying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                    {memoryQueryResult && (
+                      <div className="rounded-lg border bg-muted/30 p-3">
+                        <p className="text-xs text-muted-foreground">{memoryQueryResult}</p>
+                      </div>
+                    )}
+                    {memoryResponses.length > 0 && (
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        <p className="text-xs font-medium text-muted-foreground">Past Responses</p>
+                        {memoryResponses.map((n) => (
+                          <div key={n.id} className="rounded-lg border bg-muted/20 p-3 space-y-1">
+                            <pre className="text-xs text-foreground whitespace-pre-wrap font-mono leading-relaxed">{n.message}</pre>
+                            <p className="text-[10px] text-muted-foreground/60">
+                              {new Date(n.createdAt * 1000).toLocaleString()}
+                              {!n.read && <span className="ml-2 text-[#a855f7] font-medium">new</span>}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

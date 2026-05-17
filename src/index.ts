@@ -59,7 +59,7 @@ import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { MessagesStore } from './memory/messages-store.js';
 import { isMessagesDbAvailable } from './memory/messages-db.js';
 import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setRelayClient as setWebRelayClient, setRelayClientForRelay as setWebRelayForRelay, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setRelayClient as setWebRelayClient, setRelayClientForRelay as setWebRelayForRelay, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setNotificationsStore as setWebNotifications, setMessagesStore as setWebMessages } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1407,6 +1407,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       notifications = null;
     }
   }
+  setWebNotifications(notifications);
 
   // Messages
   let messagesStore: MessagesStore | null = null;
@@ -1419,6 +1420,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       messagesStore = null;
     }
   }
+  setWebMessages(messagesStore);
 
   // Relay Client
   let relayClient: RelayClient | null = null;
@@ -1775,6 +1777,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (cliChannel) {
         cliChannel.send(formattedMessage);
       }
+
+      // Persist to notifications DB so the web UI can read it
+      storeNotification('memory_response', formattedMessage, fromUser, {
+        query,
+        results,
+        from_display_name: fromDisplayName,
+      });
     });
 
     // Auto-connect if already registered

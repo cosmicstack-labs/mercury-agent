@@ -935,6 +935,78 @@ export interface BoardResources {
   failedCount: number;
 }
 
+// ── Notifications ──
+export interface NotificationRecord {
+  id: string;
+  type: string;
+  sourceUser: string | null;
+  message: string;
+  data: Record<string, unknown> | null;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface NotificationsSummary {
+  total: number;
+  unread: number;
+}
+
+export const notifications = {
+  list: (opts?: { type?: string; source?: string; unread?: boolean; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.source) params.set('source', opts.source);
+    if (opts?.unread) params.set('unread', 'true');
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return get<{ notifications: NotificationRecord[] }>(`/api/notifications${qs ? `?${qs}` : ''}`);
+  },
+  summary: () => get<NotificationsSummary>("/api/notifications/summary"),
+  markRead: (id: string) => post<{ success: boolean }>(`/api/notifications/${id}/read`),
+  markAllRead: () => post<{ marked: number }>("/api/notifications/read-all"),
+  clearRead: () => del<{ cleared: number }>("/api/notifications/read"),
+};
+
+// ── Messages ──
+export interface MessageRecord {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  peerUser: string;
+  peerDisplayName: string | null;
+  content: string;
+  read: boolean;
+  sentAt: number;
+  storedAt: number;
+}
+
+export interface ConversationSummary {
+  peerUser: string;
+  peerDisplayName: string | null;
+  lastMessage: string;
+  lastSentAt: number;
+  unreadCount: number;
+}
+
+export interface MessagesSummary {
+  total: number;
+  unread: number;
+  conversations: number;
+}
+
+export const messages = {
+  conversations: () => get<{ conversations: ConversationSummary[] }>("/api/messages/conversations"),
+  conversation: (peerUser: string, limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return get<{ messages: MessageRecord[] }>(`/api/messages/conversation/${encodeURIComponent(peerUser)}${qs}`);
+  },
+  summary: () => get<MessagesSummary>("/api/messages/summary"),
+  send: (to: string, content: string) => post<{ message: MessageRecord }>("/api/messages/send", { to, content }),
+  markRead: (id: string) => post<{ success: boolean }>(`/api/messages/${id}/read`),
+  markConversationRead: (peerUser: string) => post<{ marked: number }>(`/api/messages/conversation/${encodeURIComponent(peerUser)}/read`),
+  markAllRead: () => post<{ marked: number }>("/api/messages/read-all"),
+  clearRead: () => del<{ cleared: number }>("/api/messages/read"),
+};
+
 // Default export for convenience
 const api = {
   status,
@@ -956,6 +1028,8 @@ const api = {
   spotify,
   boards,
   relay,
+  notifications,
+  messages,
 };
 
 export default api;
