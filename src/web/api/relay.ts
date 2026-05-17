@@ -260,4 +260,25 @@ relayRoutes.post('/api/relay/lookup-channel', async (c) => {
   return c.json(result);
 });
 
+// ── Search users (prefix autocomplete) ──────────────────────────
+relayRoutes.post('/api/relay/search-users', async (c) => {
+  if (!relayClient) {
+    return c.json({ error: 'Relay client not initialised.' }, 503);
+  }
+  if (!relayClient.isRegistered()) {
+    return c.json({ users: [] });
+  }
+  const body = await c.req.json<{ query: string; limit?: number }>();
+  const query = (body.query || '').toLowerCase().trim();
+  if (!query) {
+    return c.json({ users: [] });
+  }
+  try {
+    const users = await relayClient.searchUsers(query, body.limit);
+    return c.json({ users });
+  } catch {
+    return c.json({ users: [] });
+  }
+});
+
 export default relayRoutes;

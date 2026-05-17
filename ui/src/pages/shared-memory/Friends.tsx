@@ -63,6 +63,9 @@ export default function FriendsPage() {
   const [adding, setAdding] = useState(false);
   const [onlineStatuses, setOnlineStatuses] = useState<Record<string, boolean>>({});
   const [relayStatus, setRelayStatus] = useState<RelayStatus | null>(null);
+  const [suggestions, setSuggestions] = useState<Array<{ username: string; display_name: string | null }>>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   const toast = useCallback((type: "success" | "error", message: string) => {
     const id = Date.now();
@@ -108,6 +111,39 @@ export default function FriendsPage() {
   }, []);
 
   useEffect(() => { fetchFriends(); }, [fetchFriends]);
+
+  // Debounced user search for typeahead
+  useEffect(() => {
+    const query = addUsername.toLowerCase().trim();
+    if (!query || query.length < 1) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    setSuggestionsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await relayApi.searchUsers(query, 8);
+        // Filter out already-known users
+        const knownUsernames = new Set([
+          ...friendsList.map((f) => f.username),
+          ...pendingSent.map((p) => p.target_user.username),
+          ...pendingReceived.map((p) => p.target_user.username),
+        ]);
+        const filtered = (res.users || []).filter((u) => !knownUsernames.has(u.username));
+        setSuggestions(filtered);
+        setShowSuggestions(filtered.length > 0);
+      } catch {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [addUsername, friendsList, pendingSent, pendingReceived]);
 
   const handleAdd = async () => {
     if (!addUsername.trim()) return;
@@ -228,7 +264,10 @@ export default function FriendsPage() {
             </p>
           </div>
         </div>
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <Dialog open={addOpen} onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) { setAddUsername(""); setSuggestions([]); setShowSuggestions(false); }
+        }}>
           <DialogTrigger asChild>
             <Button size="sm" className="bg-[#a855f7] hover:bg-[#a855f7]/90">
               <UserPlus className="h-4 w-4 mr-1" /> Add Friend
@@ -240,15 +279,57 @@ export default function FriendsPage() {
               <DialogDescription>Enter the username of the person you want to add.</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
-              <div>
+              <div className="relative">
                 <label className="text-sm font-medium mb-1.5 block">Username</label>
-                <Input
-                  value={addUsername}
-                  onChange={(e) => setAddUsername(e.target.value)}
-                  placeholder="username"
-                  onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-                />
+                <div className="relative">
+                  <Input
+                    value={addUsername}
+                    onChange={(e) => {
+                      setAddUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""));
+                      setShowSuggestions(true);
+                    }}
+                    placeholder="Start typing a username..."
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && addUsername.trim()) handleAdd();
+                      if (e.key === "Escape") setShowSuggestions(false);
+                    }}
+                    onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                    autoComplete="off"
+                  />
+                  {suggestionsLoading && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground mt-1">Lowercase letters, numbers, and underscores only.</p>
+
+                {/* Suggestions dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 z-50 mt-1 rounded-lg border border-border bg-popover shadow-lg overflow-hidden">
+                    {suggestions.map((user) => (
+                      <button
+                        key={user.username}
+                        type="button"
+                        className="flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-muted/50 transition-colors"
+                        onClick={() => {
+                          setAddUsername(user.username);
+                          setShowSuggestions(false);
+                        }}
+                      >
+                        <div className="h-7 w-7 rounded-full bg-[#a855f7]/15 flex items-center justify-center text-[#a855f7] font-semibold text-xs shrink-0">
+                          {user.username.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">@{user.username}</p>
+                          {user.display_name && (
+                            <p className="text-xs text-muted-foreground truncate">{user.display_name}</p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button onClick={handleAdd} disabled={adding || !addUsername.trim()} className="bg-[#a855f7] hover:bg-[#a855f7]/90">

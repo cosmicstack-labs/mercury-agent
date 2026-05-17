@@ -433,6 +433,13 @@ export class RelayClient {
     return await res.json() as { username: string; online: boolean };
   }
 
+  async searchUsers(query: string, limit?: number): Promise<Array<{ username: string; display_name: string | null }>> {
+    const res = await this.authedPost('/v1/search-users', { query, limit: limit ?? 10 });
+    if (!res.ok) return [];
+    const data = await res.json() as { users: Array<{ username: string; display_name: string | null }> };
+    return data.users || [];
+  }
+
   async validateApiKey(): Promise<'valid' | 'invalid' | 'unreachable'> {
     if (!this.apiKey) return 'invalid';
     try {

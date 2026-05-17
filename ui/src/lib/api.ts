@@ -317,6 +317,8 @@ export const relay = {
     put<RelayConfigResult>("/api/relay/config", body),
   lookupChannel: (type: string, id: string) =>
     post<{ registered: boolean }>("/api/relay/lookup-channel", { type, id }),
+  searchUsers: (query: string, limit?: number) =>
+    post<{ users: Array<{ username: string; display_name: string | null }> }>("/api/relay/search-users", { query, limit }),
 };
 
 // ── Friends ──
