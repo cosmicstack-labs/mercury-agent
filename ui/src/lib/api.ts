@@ -189,17 +189,18 @@ export const terminal = {
 export const brain = {
   status: () => get<BrainStatus>("/api/brain/status"),
   memory: {
-    list: (params?: { limit?: number; offset?: number; type?: string; q?: string }) => {
+    list: (params?: { limit?: number; offset?: number; type?: string; q?: string; scope?: string }) => {
       const qs = new URLSearchParams();
       if (params?.limit) qs.set("limit", String(params.limit));
       if (params?.offset) qs.set("offset", String(params.offset));
       if (params?.type) qs.set("type", params.type);
       if (params?.q) qs.set("q", params.q);
+      if (params?.scope) qs.set("scope", params.scope);
       return get<{ memories: Memory[]; total: number }>(`/api/brain/memory?${qs}`);
     },
-    search: (q: string, limit?: number) =>
+    search: (q: string, limit?: number, scope?: string) =>
       get<{ memories: Memory[]; total: number }>(
-        `/api/brain/memory/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
+        `/api/brain/memory/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}${scope ? `&scope=${scope}` : ""}`
       ),
     get: (id: string) => get<Memory>(`/api/brain/memory/${id}`),
     create: (data: MemoryCreate) => post<Memory>("/api/brain/memory", data),
@@ -544,6 +545,7 @@ export interface TerminalResult {
 
 export interface BrainStatus {
   total: number;
+  subconsciousTotal: number;
   byType: Record<string, number>;
   available: boolean;
 }
@@ -555,10 +557,13 @@ export interface Memory {
   detail?: string;
   importance?: number;
   confidence?: number;
-  scope?: string;
-  durability?: string;
+  scope?: 'active' | 'durable' | 'subconscious';
+  durability?: number;
+  evidenceKind?: string;
+  evidenceCount?: number;
   createdAt: string;
   updatedAt?: string;
+  lastSeenAt?: string;
 }
 
 export interface MemoryCreate {

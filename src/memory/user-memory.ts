@@ -124,6 +124,12 @@ export class UserMemoryStore {
     return rows.map(row => this.toRecord(row));
   }
 
+  searchAll(query: string, limit: number = 20): UserMemoryRecord[] {
+    const conscious = this.db.searchFTS(this.userKey, query, limit);
+    const subconscious = this.db.searchSubconscious(this.userKey, query, limit);
+    return [...conscious, ...subconscious].map(row => this.toRecord(row));
+  }
+
   getByType(type: UserMemoryType): UserMemoryRecord[] {
     const rows = this.db.getByType(this.userKey, type);
     return rows.map(row => this.toRecord(row));

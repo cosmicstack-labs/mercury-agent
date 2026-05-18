@@ -84,10 +84,13 @@ brain.get('/api/brain/memory', async (c) => {
     const offset = parseInt(c.req.query('offset') || '0');
     const type = c.req.query('type');
     const query = c.req.query('q');
+    const scope = c.req.query('scope') || 'conscious';
 
     let records: any[];
     if (query) {
-      records = mem.search(query, limit + offset);
+      records = scope === 'all' ? mem.searchAll(query, limit + offset) : mem.search(query, limit + offset);
+    } else if (scope === 'subconscious') {
+      records = mem.getSubconscious(limit + offset);
     } else if (type) {
       records = mem.getByType(type as any);
     } else {
@@ -107,7 +110,8 @@ brain.get('/api/brain/memory/search', async (c) => {
   if (mem) {
     const q = c.req.query('q') || '';
     const limit = Math.min(parseInt(c.req.query('limit') || '20'), 100);
-    const records = mem.search(q, limit);
+    const scope = c.req.query('scope') || 'all';
+    const records = scope === 'all' ? mem.searchAll(q, limit) : mem.search(q, limit);
     return c.json({ memories: records.map(memToJson), total: records.length, available: true });
   }
   return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
@@ -141,7 +145,6 @@ brain.put('/api/brain/memory/:id', async (c) => {
   if (body.detail !== undefined) updates.detail = body.detail;
   if (body.importance !== undefined) updates.importance = Number(body.importance);
   if (body.confidence !== undefined) updates.confidence = Number(body.confidence);
-  if (body.scope !== undefined) updates.scope = body.scope;
   const updated = mem.updateMemory(id, updates);
   if (!updated) return c.json({ error: 'Memory not found or update failed' }, 404);
   return c.json({ success: true });
