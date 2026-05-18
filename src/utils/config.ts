@@ -104,7 +104,6 @@ export interface MercuryConfig {
     shortTermMaxMessages: number;
     secondBrain: {
       enabled: boolean;
-      maxRecords: number;
     };
   };
   heartbeat: {
@@ -267,7 +266,6 @@ export function getDefaultConfig(): MercuryConfig {
       shortTermMaxMessages: getEnvNum('SHORT_TERM_MAX_MESSAGES', 20),
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
-        maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
       },
     },
     heartbeat: {

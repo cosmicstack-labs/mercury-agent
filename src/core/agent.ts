@@ -1922,7 +1922,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
 
         const pruning = this.userMemory.prune();
-        if (pruning.activePruned > 0 || pruning.durablePruned > 0 || pruning.promoted > 0) {
+        if (pruning.movedToSubconscious > 0 || pruning.promoted > 0 || pruning.hardDeleted > 0) {
           logger.info({ pruning }, 'Second brain pruned');
         }
       } catch (err) {

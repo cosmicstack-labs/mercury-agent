@@ -858,7 +858,8 @@ export class TelegramChannel extends BaseChannel {
     const summary = this.chatCommandContext.memorySummary();
     const lines = [
       `<b>Memory Overview</b>`,
-      `Total memories: ${summary.total}`,
+      `Conscious memories: ${summary.total}`,
+      `Subconscious memories: ${summary.subconsciousTotal}`,
       `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
     ];
     if (summary.profileSummary) {
@@ -906,7 +907,8 @@ export class TelegramChannel extends BaseChannel {
       const summary = this.chatCommandContext.memorySummary();
       const lines = [
         `<b>Memory Overview</b>`,
-        `Total memories: ${summary.total}`,
+        `Conscious memories: ${summary.total}`,
+        `Subconscious memories: ${summary.subconsciousTotal}`,
         `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
       ];
       if (summary.profileSummary) {
@@ -937,7 +939,7 @@ export class TelegramChannel extends BaseChannel {
       }
       const lines = ['<b>Recent Memories:</b>\n'];
       for (const r of recent) {
-        const scope = r.scope === 'active' ? '⏳' : '📌';
+        const scope = r.scope === 'active' ? '⏳' : r.scope === 'subconscious' ? '💤' : '📌';
         lines.push(`${scope} [${r.type}] ${this.escapeHtml(r.summary)}`);
         lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
       }

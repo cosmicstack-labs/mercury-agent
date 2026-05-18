@@ -21,7 +21,7 @@ export interface UserMemoryRecord {
   type: UserMemoryType;
   summary: string;
   detail?: string | null;
-  scope: 'durable' | 'active';
+  scope: 'durable' | 'active' | 'subconscious';
   evidenceKind: 'direct' | 'inferred' | 'manual' | 'system';
   source: 'conversation' | 'system';
   confidence: number;
@@ -50,6 +50,7 @@ export interface UserMemoryCandidate {
 
 export interface UserMemorySummary {
   total: number;
+  subconsciousTotal: number;
   byType: Partial<Record<UserMemoryType, number>>;
   learningPaused: boolean;
   profileSummary?: string;
@@ -76,18 +77,17 @@ export interface UserPersonRecord {
 }
 
 const MIN_CONFIDENCE = 0.55;
+const SUBCONSCIOUS_RECALL_THRESHOLD = 0.5;
 const PERSON_INDEX_VERSION = '5';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
-  private maxRecords: number;
   private userKey: string;
   private consolidateThrottleMs: number;
   private lastConsolidateAt: number = 0;
 
   constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
-    this.maxRecords = config.memory.secondBrain?.maxRecords ?? 50;
     this.consolidateThrottleMs = 5 * 60 * 1000;
     const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'second-brain', 'second-brain.db');
     this.db = new SecondBrainDB(resolvedDbPath);
@@ -98,6 +98,7 @@ export class UserMemoryStore {
     const byType = this.db.countByType(this.userKey) as Partial<Record<UserMemoryType, number>>;
     return {
       total: this.db.totalActive(this.userKey),
+      subconsciousTotal: this.db.countSubconscious(this.userKey),
       byType,
       learningPaused: this.isLearningPaused(),
       profileSummary: this.db.getMeta(`${this.userKey}:profile_summary`) ?? undefined,
@@ -171,12 +172,35 @@ export class UserMemoryStore {
 
     const selected: MemoryRow[] = [];
     let currentLength = 0;
+    const consciousScores: number[] = [];
     for (const row of ranked) {
       const line = `- [${row.type}] ${row.summary}`;
       if (selected.length >= maxRecords) break;
       if (selected.length > 0 && currentLength + line.length > maxChars) break;
       selected.push(row);
+      consciousScores.push(memoryHealthScore(row));
       currentLength += line.length + 1;
+    }
+
+    const strongConsciousMatches = consciousScores.filter(s => s > SUBCONSCIOUS_RECALL_THRESHOLD).length;
+
+    if (strongConsciousMatches < 3) {
+      const subconsciousResults = this.db.searchSubconscious(this.userKey, query, Math.max(maxRecords * 2, 10));
+      if (subconsciousResults.length > 0) {
+        const subconsciousRanked = this.scoreAndRankSubconscious(subconsciousResults, query);
+
+        for (const row of subconsciousRanked) {
+          const line = `- [${row.type}] ${row.summary}`;
+          if (selected.length >= maxRecords) break;
+          if (currentLength + line.length > maxChars) break;
+          selected.push(row);
+          currentLength += line.length + 1;
+
+          const newScope = inferScope({ type: row.type as UserMemoryType, summary: row.summary, confidence: row.confidence, importance: row.importance, durability: row.durability });
+          this.db.promoteToConscious(row.id, newScope);
+          logger.debug({ id: row.id, type: row.type, summary: row.summary.slice(0, 50), newScope }, 'Recalled memory from subconscious');
+        }
+      }
     }
 
     if (selected.length === 0) {
@@ -248,8 +272,6 @@ export class UserMemoryStore {
         this.indexPersonsForMemory(record);
       }
     }
-
-    this.enforceMaxRecords();
 
     return remembered;
   }
@@ -326,14 +348,17 @@ export class UserMemoryStore {
     return record;
   }
 
-  prune(): { activePruned: number; durablePruned: number; promoted: number } {
+  prune(): { movedToSubconscious: number; promoted: number; hardDeleted: number } {
     const promoted = this.db.promoteToDurable(this.userKey);
-    const { activePruned, durablePruned } = this.db.pruneStale(this.userKey);
+    const movedToSubconscious = this.db.moveToSubconscious(this.userKey);
     const hardDeleted = this.db.hardDeleteDismissed(this.userKey);
     if (hardDeleted > 0) {
       logger.debug({ hardDeleted, userKey: this.userKey }, 'Hard deleted dismissed memories');
     }
-    return { activePruned, durablePruned, promoted };
+    if (movedToSubconscious > 0) {
+      logger.debug({ movedToSubconscious, userKey: this.userKey }, 'Moved stale memories to subconscious');
+    }
+    return { movedToSubconscious, promoted, hardDeleted };
   }
 
   close(): void {
@@ -459,24 +484,6 @@ export class UserMemoryStore {
     return 'incoming';
   }
 
-  private enforceMaxRecords(): void {
-    const total = this.db.totalActive(this.userKey);
-    if (total <= this.maxRecords) return;
-
-    const allActive = this.db.getActive(this.userKey);
-    const toDismiss = allActive
-      .sort((a, b) => memoryHealthScore(b) - memoryHealthScore(a))
-      .slice(this.maxRecords);
-
-    for (const row of toDismiss) {
-      this.db.softDelete(row.id);
-    }
-
-    if (toDismiss.length > 0) {
-      logger.debug({ dismissed: toDismiss.length, userKey: this.userKey }, 'Enforced max records limit');
-    }
-  }
-
   private markUsed(ids: string[], query?: string): void {
     const now = Date.now();
     for (const id of ids) {
@@ -507,6 +514,27 @@ export class UserMemoryStore {
       })
       .sort((a, b) => b.score - a.score)
       .map(r => r.row);
+  }
+
+  private scoreAndRankSubconscious(rows: MemoryRow[], query: string): MemoryRow[] {
+    const now = Date.now();
+    const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+    return rows
+      .map(row => {
+        let score = 0;
+        score += row.confidence * 0.20;
+        score += row.importance * 0.20;
+        score += row.durability * 0.10;
+        const recallAgeDays = Math.min((now - row.last_seen_at) / (1000 * 60 * 60 * 24), 365);
+        score += Math.max(0, 0.20 - recallAgeDays * 0.001);
+        const lower = (row.summary + ' ' + (row.detail ?? '')).toLowerCase();
+        const matchCount = tokens.filter(t => lower.includes(t)).length;
+        score += (matchCount / Math.max(tokens.length, 1)) * 0.30;
+        return { row, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.row);
+  }
   }
 
   private ensurePersonsBackfilled(): void {
@@ -577,7 +605,7 @@ export class UserMemoryStore {
       type: row.type as UserMemoryType,
       summary: row.summary,
       detail: row.detail,
-      scope: row.scope as 'durable' | 'active',
+      scope: row.scope as 'durable' | 'active' | 'subconscious',
       evidenceKind: row.evidence_kind as UserMemoryRecord['evidenceKind'],
       source: row.source as UserMemoryRecord['source'],
       confidence: row.confidence,
@@ -764,11 +792,14 @@ function memoryHealthScore(row: MemoryRow): number {
     + (effectiveConfidence(row) * 0.25)
     + (Math.min(row.evidence_count, 5) / 5 * 0.15)
     + (row.scope === 'active' ? 0.08 : 0)
+    - (row.scope === 'subconscious' ? 0.2 : 0)
     - (row.superseded_by ? 0.3 : 0)
     - (isRowStale(row) ? 0.12 : 0);
 }
 
 function effectiveConfidence(row: MemoryRow): number {
+  if (row.scope === 'subconscious') return row.confidence;
+
   const ageDays = (Date.now() - row.updated_at) / (1000 * 60 * 60 * 24);
   let confidence = row.confidence;
 
@@ -788,14 +819,9 @@ function effectiveConfidence(row: MemoryRow): number {
 }
 
 function isRowStale(row: MemoryRow): boolean {
+  if (row.scope === 'subconscious') return true;
   const ageDays = (Date.now() - row.updated_at) / (1000 * 60 * 60 * 24);
-  if (row.scope === 'active') {
-    return ageDays > 21;
-  }
-  if (row.evidence_kind === 'inferred') {
-    return ageDays > 120;
-  }
-  return ageDays > 365;
+  return ageDays > 30;
 }
 
 function tokenize(input: string): string[] {

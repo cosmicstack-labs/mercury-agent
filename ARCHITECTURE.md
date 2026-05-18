@@ -176,6 +176,17 @@ All runtime data lives in `~/.mercury/` (not the project directory):
 
 Mercury's second brain is an autonomous, persistent user model that learns from conversations over time. It is not a raw chat log and it is not a document dump. It stores compact, structured memories it believes may help in future conversations.
 
+### Conscious and Subconscious
+
+The second brain has two layers:
+
+| Layer | What | How it works |
+|---|---|---|
+| **Conscious** | Memories actively used in conversations | Retrieved via FTS5, scored, injected into the system prompt (up to 5 memories / 900 chars) |
+| **Subconscious** | Memories that haven't been referenced in 30+ days | Stored but dormant. Only searched when conscious results are weak. Recalled to conscious on strong match. |
+
+Nothing is ever permanently deleted (except explicitly cleared by the user or superseded by conflict resolution). Memories flow: **conscious → subconscious** (30 days unseen) and **subconscious → conscious** (strong recall match).
+
 ### How It Learns (Background, Invisible)
 
 For each non-trivial conversation:
@@ -185,11 +196,23 @@ For each non-trivial conversation:
    - Merges with existing memory if >= 74% overlap (strengthens evidence)
    - Auto-resolves conflicts (higher confidence wins, equal confidence → newer wins)
    - Auto-tiers: identity/preference → durable, goal/project → active
-   - Promotes active → durable after 3+ reinforcing observations
    - Stores weak memories with low confidence — they decay naturally
-4. On each heartbeat, Mercury consolidates (re-synthesizes profile/active summaries, generates reflections) and prunes (dismisses stale memories, promotes reinforced ones).
+4. On each heartbeat, Mercury consolidates (re-synthesizes profile/active summaries, generates reflections) and prunes:
+   - Promotes active → durable after 3+ reinforcing observations
+   - Moves stale memories (30+ days unseen) from conscious to subconscious
+   - Hard-deletes only explicitly dismissed memories (user Clear All, conflict superseded)
 
-The user never sees or waits for this process. No tool calls are involved in the agentic loop.
+### Subconscious Recall
+
+When `retrieveRelevant()` searches for memories to inject into the prompt:
+
+1. **Pass 1**: FTS5 search on conscious memories (scope = active/durable)
+2. **Score and rank** conscious results using the conscious scoring formula
+3. **Check**: If fewer than 3 results score above 0.5 (weak conscious match), proceed to Pass 2
+4. **Pass 2**: FTS5 search on subconscious memories (scope = subconscious)
+5. **Score and rank** subconscious results using the subconscious scoring formula (keyword match weighted higher)
+6. **Promote**: Any subconscious memory selected is promoted back to conscious (scope set to active or durable via `inferScope`)
+7. Both conscious and recalled subconscious memories share the same 5-slot / 900-char budget
 
 ### What It Does Not Store
 
@@ -203,9 +226,9 @@ The user never sees or waits for this process. No tool calls are involved in the
 /memory        → Opens arrow-key menu (CLI) or sends overview (Telegram)
 
 Menu:
-  Overview          — total memories, breakdown by type, learning status
-  Recent            — last 10 memories (type + summary + confidence)
-  Search            — full-text search across all memories
+  Overview          — conscious memories, subconscious memories, breakdown by type, learning status
+  Recent            — last 10 conscious memories (type + summary + confidence + scope)
+  Search            — full-text search across all memories (conscious + subconscious)
   Pause Learning    — toggle: stop/resume storing new memories
   Clear All         — confirm, then wipes all memories
   Back
