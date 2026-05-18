@@ -361,6 +361,10 @@ export class UserMemoryStore {
     return { movedToSubconscious, promoted, hardDeleted };
   }
 
+  getSubconscious(limit: number = 10): UserMemoryRecord[] {
+    return this.db.getSubconscious(this.userKey).slice(0, limit).map(row => this.toRecord(row));
+  }
+
   close(): void {
     this.db.close();
   }
@@ -534,7 +538,6 @@ export class UserMemoryStore {
       })
       .sort((a, b) => b.score - a.score)
       .map(r => r.row);
-  }
   }
 
   private ensurePersonsBackfilled(): void {

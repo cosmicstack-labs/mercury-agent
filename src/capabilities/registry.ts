@@ -71,6 +71,16 @@ export interface ChatCommandContext {
   memorySearch: (query: string, limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
   memorySetLearningPaused: (paused: boolean) => void;
   memoryClear: () => number;
+  memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
+  sharedMemorySummary: () => import('../memory/shared-memory-store.js').SharedMemorySummary;
+  sharedMemoryRecent: (limit?: number) => import('../memory/shared-memory-store.js').SharedMemoryRecord[];
+  sharedMemorySearch: (query: string, limit?: number) => import('../memory/shared-memory-store.js').SharedMemoryRecord[];
+  sharedMemorySetLearningPaused: (paused: boolean) => void;
+  sharedMemoryClear: () => number;
+  sharedMemoryCategories: () => string[];
+  relayClient: import('../relay/client.js').RelayClient | null;
+  notificationsStore: import('../memory/notifications-store.js').NotificationsStore | null;
+  messagesStore: import('../memory/messages-store.js').MessagesStore | null;
 }
 
 export class CapabilityRegistry {

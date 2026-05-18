@@ -878,8 +878,12 @@ export class TelegramChannel extends BaseChannel {
       .text('📋 Overview', `${MEMORY_ACTION_PREFIX}:overview`)
       .text('🔍 Recent', `${MEMORY_ACTION_PREFIX}:recent`)
       .row()
+      .text('💤 Subconscious', `${MEMORY_ACTION_PREFIX}:subconscious`)
       .text(learningLabel, `${MEMORY_ACTION_PREFIX}:toggle_learning`)
-      .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`);
+      .row()
+      .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`)
+      .row()
+      .text('🧠 Shared', `${MEMORY_ACTION_PREFIX}:shared`);
 
     await this.bot.api.sendMessage(chatId, lines.join('\n'), {
       parse_mode: 'HTML',
@@ -986,6 +990,130 @@ export class TelegramChannel extends BaseChannel {
 
     if (action === 'clear_no') {
       await ctx.answerCallbackQuery({ text: 'Cancelled' });
+      return;
+    }
+
+    if (action === 'subconscious') {
+      if (!this.chatCommandContext) {
+        await ctx.answerCallbackQuery({ text: 'Not available' });
+        return;
+      }
+      const subconsciousMemories = this.chatCommandContext.memoryGetSubconscious(5);
+      const subconsciousTotal = this.chatCommandContext.memorySummary().subconsciousTotal;
+      if (subconsciousMemories.length === 0) {
+        await this.bot.api.sendMessage(chatId, '💤 <b>Subconscious Memory</b>\n\nNo subconscious memories yet. Memories move here after 30 days of not being referenced, and are recalled automatically when relevant to a conversation.').catch(() => {});
+        return;
+      }
+      const lines = ['💤 <b>Subconscious Memory (first 5 by recency):</b>\n'];
+      for (const r of subconsciousMemories) {
+        const ageDays = Math.round((Date.now() - r.lastSeenAt) / (1000 * 60 * 60 * 24));
+        lines.push(`💤 [${r.type}] ${this.escapeHtml(r.summary)}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Last seen: ${ageDays}d ago`);
+      }
+      if (subconsciousTotal > 5) {
+        lines.push(`\n... and ${subconsciousTotal - 5} more subconscious memories stored.`);
+      }
+      lines.push(`\n<i>These memories can be recalled to conscious when relevant to a conversation.</i>`);
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action === 'shared') {
+      await this.sendSharedMemoryKeyboard(chatId);
+      return;
+    }
+
+    if (action === 'shared_overview') {
+      await ctx.answerCallbackQuery({ text: 'Shared memory overview' });
+      await this.sendSharedMemoryKeyboard(chatId);
+      return;
+    }
+
+    if (action === 'shared_recent') {
+      await ctx.answerCallbackQuery({ text: 'Recent shared memories' });
+      if (!this.chatCommandContext) return;
+      const recent = this.chatCommandContext.sharedMemoryRecent(10);
+      if (recent.length === 0) {
+        await this.bot.api.sendMessage(chatId, 'No shared memories yet.').catch(() => {});
+        return;
+      }
+      const lines = ['<b>Recent Shared Memories:</b>\n'];
+      for (const r of recent) {
+        lines.push(`[${r.type}|${r.category}] ${this.escapeHtml(r.summary)}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action === 'shared_toggle_learning') {
+      if (!this.chatCommandContext) return;
+      const currentSummary = this.chatCommandContext.sharedMemorySummary();
+      const currentlyPaused = currentSummary.learningPaused;
+      this.chatCommandContext.sharedMemorySetLearningPaused(!currentlyPaused);
+      const label = currentlyPaused ? '▶ Shared learning resumed' : '⏸ Shared learning paused';
+      await ctx.answerCallbackQuery({ text: label });
+      await this.bot.api.sendMessage(chatId, currentlyPaused
+        ? 'Shared learning resumed. New memories will be stored in shared memory.'
+        : 'Shared learning paused. No new shared memories will be stored until resumed.',
+      ).catch(() => {});
+      await this.sendSharedMemoryKeyboard(chatId);
+      return;
+    }
+
+    if (action === 'shared_categories') {
+      await ctx.answerCallbackQuery({ text: 'Categories' });
+      if (!this.chatCommandContext) return;
+      const categories = this.chatCommandContext.sharedMemoryCategories();
+      const summary = this.chatCommandContext.sharedMemorySummary();
+      if (categories.length === 0) {
+        await this.bot.api.sendMessage(chatId, 'No categories yet. Categories are created automatically when memories are stored.').catch(() => {});
+        return;
+      }
+      const lines = ['<b>Shared Memory Categories:</b>\n'];
+      for (const cat of categories) {
+        const count = summary.byCategory[cat] ?? 0;
+        lines.push(`  ${cat}: ${count} memories`);
+      }
+      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
+      });
+      return;
+    }
+
+    if (action === 'shared_clear_confirm') {
+      const keyboard = new InlineKeyboard()
+        .text('🗑 Yes, clear all shared memories', `${MEMORY_ACTION_PREFIX}:shared_clear_yes`)
+        .text('✖ Cancel', `${MEMORY_ACTION_PREFIX}:shared_clear_no`);
+      await ctx.answerCallbackQuery({});
+      await this.bot.api.sendMessage(chatId, '⚠️ Are you sure you want to clear <b>all shared memories</b>? This cannot be undone.', {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }).catch(async () => {
+        await this.bot!.api.sendMessage(chatId, '⚠️ Are you sure you want to clear all shared memories?', { reply_markup: keyboard });
+      });
+      return;
+    }
+
+    if (action === 'shared_clear_yes') {
+      if (!this.chatCommandContext) return;
+      const cleared = this.chatCommandContext.sharedMemoryClear();
+      await ctx.answerCallbackQuery({ text: `Cleared ${cleared} shared memories` });
+      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} shared memories.`).catch(() => {});
+      return;
+    }
+
+    if (action === 'shared_clear_no') {
+      await ctx.answerCallbackQuery({ text: 'Cancelled' });
+      return;
+    }
+
+    if (action === 'shared_back') {
+      await this.sendMemoryKeyboard(chatId);
       return;
     }
 
