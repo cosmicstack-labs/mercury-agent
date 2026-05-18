@@ -2006,12 +2006,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
       try {
         const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-        candidates = JSON.parse(jsonStr);
+        const parsed = JSON.parse(jsonStr);
+        // Handle both single object and array of objects
+        candidates = Array.isArray(parsed) ? parsed : [parsed];
       } catch {
         const facts = text
           .split('\n')
           .map(l => l.replace(/^-\s*/, '').trim())
-          .filter(f => f.length > 10 && f.length < 200);
+          // Skip JSON-like lines (key-value pairs, braces, brackets)
+          .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
           summary: f,
