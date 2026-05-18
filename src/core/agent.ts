@@ -1975,7 +1975,29 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       const provider = this.providers.getDefault();
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
+        system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
+
+Each candidate: { type, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
+
+TYPE DEFINITIONS (pick the single most specific one):
+- identity: who the user IS — their name, role, job title, self-description
+- relationship: other people the user knows — MUST include the person's name in summary
+- preference: likes, dislikes, style choices, opinions
+- goal: aspirations, targets, things they want to achieve
+- project: specific ongoing work, initiatives, things being built
+- habit: routines, recurring behaviors, schedules
+- decision: choices made, commitments, selected approaches
+- constraint: limitations, rules they follow, things they avoid
+- episode: notable one-time events worth remembering
+
+RULES:
+- Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
+- If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
+- "identity" is ONLY for the user themselves.
+- For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
+- Only extract specific, durable, user-specific information.
+- Do NOT extract trivial observations, greetings, or assistant behavior.
+- Output pure JSON array, no markdown fences.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
