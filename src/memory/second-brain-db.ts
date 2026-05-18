@@ -714,7 +714,7 @@ export class SecondBrainDB {
   getRelationshipMemoryRows(userKey: string): MemoryRow[] {
     const stmt = this.db.prepare(`
       SELECT * FROM memories
-      WHERE user_key = ? AND dismissed = 0 AND type IN ('relationship', 'episode')
+      WHERE user_key = ? AND dismissed = 0 AND type IN ('relationship', 'episode', 'identity', 'project')
       ORDER BY updated_at DESC
     `);
     return stmt.all(userKey) as MemoryRow[];

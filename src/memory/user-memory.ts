@@ -78,7 +78,7 @@ export interface UserPersonRecord {
 
 const MIN_CONFIDENCE = 0.55;
 const SUBCONSCIOUS_RECALL_THRESHOLD = 0.5;
-const PERSON_INDEX_VERSION = '6';
+const PERSON_INDEX_VERSION = '7';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
@@ -576,7 +576,7 @@ export class UserMemoryStore {
 
   private indexPersonsForMemoryRow(memory: MemoryRow): void {
     if (memory.dismissed === 1) return;
-    if (!['relationship', 'episode'].includes(memory.type)) return;
+    if (!['relationship', 'episode', 'identity', 'project'].includes(memory.type)) return;
 
     const text = `${memory.summary} ${memory.detail ?? ''}`.trim();
     if (!text) return;
@@ -614,8 +614,21 @@ export class UserMemoryStore {
       return;
     }
 
+    // For identity/project/episode: extract names and create/link persons
+    const names = extractHumanNames(text);
+    for (const name of names) {
+      const person = this.db.upsertPerson({
+        userKey: this.userKey,
+        name,
+        relationshipToUser: 'known',
+        confidence: memory.confidence,
+      });
+      this.db.addPersonAlias(person.id, name, 'memory');
+      this.db.linkMemoryPerson(memory.id, person.id, 'mention', memory.confidence);
+    }
+
+    // Also link to already-known persons by alias/name match
     const knownPersons = this.db.listPersons(this.userKey, '', 300);
-    if (knownPersons.length === 0) return;
     for (const person of knownPersons) {
       if (mentionsPerson(text, person.display_name) || mentionsPerson(text, person.canonical_name)) {
         this.db.linkMemoryPerson(memory.id, person.id, 'interaction', memory.confidence);
