@@ -578,10 +578,17 @@ export interface MemoryCreate {
 export interface Person {
   id: string;
   name: string;
+  canonicalName?: string;
   relationship?: string;
   summary?: string;
   traits?: string[];
+  confidence?: number;
   memoryCount?: number;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  connections?: Array<{ name: string; relationship: string }>;
 }
 
 export interface GraphData {
