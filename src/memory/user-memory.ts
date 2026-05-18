@@ -78,7 +78,7 @@ export interface UserPersonRecord {
 
 const MIN_CONFIDENCE = 0.55;
 const SUBCONSCIOUS_RECALL_THRESHOLD = 0.5;
-const PERSON_INDEX_VERSION = '5';
+const PERSON_INDEX_VERSION = '6';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
@@ -586,15 +586,30 @@ export class UserMemoryStore {
 
     if (memory.type === 'relationship') {
       const relationMentions = extractUserRelationshipMentions(text);
-      for (const mention of relationMentions) {
-        const person = this.db.upsertPerson({
-          userKey: this.userKey,
-          name: mention.name,
-          relationshipToUser: mention.relation,
-          confidence: memory.confidence,
-        });
-        this.db.addPersonAlias(person.id, mention.name, 'memory');
-        this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+      if (relationMentions.length > 0) {
+        for (const mention of relationMentions) {
+          const person = this.db.upsertPerson({
+            userKey: this.userKey,
+            name: mention.name,
+            relationshipToUser: mention.relation,
+            confidence: memory.confidence,
+          });
+          this.db.addPersonAlias(person.id, mention.name, 'memory');
+          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+        }
+      } else {
+        // Fallback: extract any capitalized names from relationship memories
+        const names = extractHumanNames(text);
+        for (const name of names) {
+          const person = this.db.upsertPerson({
+            userKey: this.userKey,
+            name,
+            relationshipToUser: 'known',
+            confidence: memory.confidence,
+          });
+          this.db.addPersonAlias(person.id, name, 'memory');
+          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+        }
       }
       return;
     }
@@ -666,6 +681,25 @@ const USER_RELATION_ROLE_MAP: Record<string, string> = {
   coworkers: 'colleague',
   teammate: 'colleague',
   teammates: 'colleague',
+  partner: 'partner',
+  partners: 'partner',
+  developer: 'colleague',
+  developers: 'colleague',
+  'co-founder': 'partner',
+  cofounder: 'partner',
+  cofounders: 'partner',
+  boss: 'colleague',
+  manager: 'colleague',
+  mentor: 'colleague',
+  mentee: 'colleague',
+  cto: 'colleague',
+  ceo: 'colleague',
+  lover: 'partner',
+  girlfriend: 'partner',
+  boyfriend: 'partner',
+  fiancee: 'partner',
+  fiance: 'partner',
+  spouse: 'partner',
 };
 
 const NON_PERSON_TERMS = new Set([
