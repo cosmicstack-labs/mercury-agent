@@ -57,7 +57,9 @@ check('shebang present', () => {
 check('no dangling script references', () => {
   const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
   const scripts = pkg.scripts || {};
+  const devOnlyScripts = ['build', 'build:ui', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly'];
   for (const [key, val] of Object.entries(scripts)) {
+    if (devOnlyScripts.includes(key)) continue;
     if (val.includes('scripts/') || val.includes('bash ')) {
       throw new Error(`script "${key}" references unpublished path: ${val}`);
     }
