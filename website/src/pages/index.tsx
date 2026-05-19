@@ -509,14 +509,14 @@ export default function LandingPage(): React.ReactElement {
         <section id="memory" className="lp-section lp-section-alt">
           <div className="lp-container">
             <h2 className="lp-section-title">Second Brain</h2>
-            <p className="lp-section-sub">Mercury remembers — automatically, privately, and with surgical precision.</p>
+            <p className="lp-section-sub">Mercury remembers — modeled after the conscious, subconscious, and unconscious mind.</p>
             <div className="lp-brain-grid">
               {[
-                { title: 'Learns Automatically', desc: 'After each conversation, Mercury extracts facts — preferences, goals, projects, habits, decisions.' },
-                { title: 'Recalls What Matters', desc: 'Only relevant memories injected — up to 5 facts within a 900-character budget per request.' },
+                { title: 'Conscious Mind', desc: 'Active working memory — facts Mercury is currently reasoning about and can immediately surface in conversation.' },
+                { title: 'Subconscious Mind', desc: 'Long-term recall — memories not currently active but retrieved automatically when contextually relevant.' },
+                { title: 'Unconscious Mind', desc: 'Deep patterns and instincts — auto-extracted habits, preferences, and behavioral patterns that shape responses.' },
                 { title: 'Resolves Conflicts', desc: 'When Mercury detects a contradiction, the higher-confidence memory wins. No stale data.' },
-                { title: '10 Memory Types', desc: 'Identity, preference, goal, project, habit, decision, constraint, relationship, episode, and reflection.' },
-                { title: 'Auto-Consolidation', desc: 'Hourly synthesis of profile summaries and reflections from detected patterns.' },
+                { title: 'Auto-Consolidation', desc: 'Hourly synthesis of profile summaries and reflections from detected patterns across all memory layers.' },
                 { title: 'Fully Local', desc: 'All data stays on your machine in SQLite. /memory gives you overview, search, pause, and clear.' },
               ].map((c, i) => (
                 <div key={i} className="lp-brain-card lp-reveal">
