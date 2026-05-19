@@ -1399,11 +1399,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     config: () => config,
     tokenBudget: () => tokenBudget,
     manual: () => getManual(),
-    memorySummary: () => userMemory ? userMemory.getSummary() : { total: 0, byType: {}, learningPaused: false },
+    memorySummary: () => userMemory ? userMemory.getSummary() : { total: 0, subconsciousTotal: 0, byType: {}, learningPaused: false },
     memoryRecent: (limit?: number) => userMemory ? userMemory.getRecent(limit) : [],
     memorySearch: (query: string, limit?: number) => userMemory ? userMemory.search(query, limit) : [],
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
     memoryClear: () => userMemory ? userMemory.clear() : 0,
+    memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
   });
 
   capabilities.setSendFileHandler(async (filePath: string) => {
