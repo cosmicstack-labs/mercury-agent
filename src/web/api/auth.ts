@@ -40,7 +40,10 @@ const auth = new Hono();
 auth.get('/login', (c) => {
   if (existsSync(spaLoginIndex)) {
     return new Response(readFileSync(spaLoginIndex), {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
     });
   }
   return c.html(renderLoginPage());

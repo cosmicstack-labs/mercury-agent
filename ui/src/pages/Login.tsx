@@ -62,7 +62,7 @@ export function LoginPage() {
               alt="Mercury"
               className="w-16 h-16"
             />
-            <h1 className="mercury-gradient-text text-2xl font-bold tracking-tight">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Welcome back
             </h1>
             <p className="text-sm text-muted-foreground">

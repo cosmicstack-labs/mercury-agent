@@ -93,11 +93,11 @@ export function Sidebar({ open, onToggle }: SidebarProps) {
           )}
         >
           {open ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center">
               <img
                 src={resolved === "dark" ? "/logo-full-dark.png" : "/logo-full-light.png"}
                 alt="Mercury Agent"
-                className="h-10 w-auto"
+                className="max-w-[160px] h-auto"
               />
             </div>
           ) : (

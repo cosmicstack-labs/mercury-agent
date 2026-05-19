@@ -149,13 +149,19 @@ if (spaAvailable) {
       if (existsSync(filePath)) {
         const ext = reqPath.split('.').pop() || '';
         return new Response(readFileSync(filePath), {
-          headers: { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
+          headers: {
+            'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+            'Cache-Control': 'public, max-age=3600',
+          },
         });
       }
     }
 
     return new Response(readFileSync(spaIndexPath), {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
     });
   });
 
