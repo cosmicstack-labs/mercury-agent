@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../../utils/config.js';
 
@@ -51,7 +51,6 @@ export function listThreads(): ChatThread[] {
   const dir = getChatDir();
   if (!existsSync(dir)) return [];
   try {
-    const { readdirSync } = require('node:fs');
     const files: string[] = readdirSync(dir).filter((f: string) => f.endsWith('.json'));
     const threads: ChatThread[] = [];
     for (const file of files) {
@@ -71,7 +70,6 @@ export function deleteThread(threadId: string): boolean {
   const path = getThreadPath(threadId);
   if (!existsSync(path)) return false;
   try {
-    const { unlinkSync } = require('node:fs');
     unlinkSync(path);
     return true;
   } catch {
