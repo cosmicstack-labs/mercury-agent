@@ -223,45 +223,45 @@ export const brain = {
   graph: () => get<GraphData>("/api/brain/graph"),
 };
 
-// ── Shared Memory ──
-export const sharedMemory = {
-  status: () => get<SharedMemoryStatus>("/api/shared-memory/status"),
+// ── Collaborative Knowledge ──
+export const collaborativeKnowledge = {
+  status: () => get<CollaborativeKnowledgeStatus>("/api/ck/status"),
   memories: {
     list: (params?: { limit?: number; offset?: number; q?: string }) => {
       const qs = new URLSearchParams();
       if (params?.limit) qs.set("limit", String(params.limit));
       if (params?.offset) qs.set("offset", String(params.offset));
       if (params?.q) qs.set("q", params.q);
-      return get<{ memories: SharedMemoryRecord[]; total: number }>(
-        `/api/shared-memory/memories?${qs}`
+      return get<{ memories: CollaborativeKnowledgeRecord[]; total: number }>(
+        `/api/ck/memories?${qs}`
       );
     },
     search: (q: string, limit?: number) =>
-      get<{ memories: SharedMemoryRecord[]; total: number }>(
-        `/api/shared-memory/memories/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
+      get<{ memories: CollaborativeKnowledgeRecord[]; total: number }>(
+        `/api/ck/memories/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
       ),
-    create: (data: SharedMemoryCreate) =>
-      post<SharedMemoryRecord>("/api/shared-memory/memories", data),
-    clear: () => del<{ success: boolean; deleted: number }>("/api/shared-memory/memories"),
+    create: (data: CollaborativeKnowledgeCreate) =>
+      post<CollaborativeKnowledgeRecord>("/api/ck/memories", data),
+    clear: () => del<{ success: boolean; deleted: number }>("/api/ck/memories"),
   },
   learning: {
-    get: () => get<{ paused: boolean }>("/api/shared-memory/learning"),
+    get: () => get<{ paused: boolean }>("/api/ck/learning"),
     set: (paused: boolean) =>
-      put<{ paused: boolean }>("/api/shared-memory/learning", { paused }),
+      put<{ paused: boolean }>("/api/ck/learning", { paused }),
   },
   categories: () =>
     get<{ categories: string[]; byCategory: Record<string, number> }>(
-      "/api/shared-memory/categories"
+      "/api/ck/categories"
     ),
   access: {
-    map: () => get<SharedAccessMap>("/api/shared-memory/access"),
+    map: () => get<CollaborativeKnowledgeAccessMap>("/api/ck/access"),
     get: (friend: string) =>
       get<{ friend: string; categories: string[] }>(
-        `/api/shared-memory/access/${encodeURIComponent(friend)}`
+        `/api/ck/access/${encodeURIComponent(friend)}`
       ),
     update: (friend: string, body: { action: string; category?: string; categories?: string[] }) =>
       put<{ friend: string; categories: string[] }>(
-        `/api/shared-memory/access/${encodeURIComponent(friend)}`,
+        `/api/ck/access/${encodeURIComponent(friend)}`,
         body
       ),
   },
@@ -715,8 +715,8 @@ export interface GraphEdge {
   weight?: number;
 }
 
-// ── Shared Memory Types ──
-export interface SharedMemoryStatus {
+// ── Collaborative Knowledge Types ──
+export interface CollaborativeKnowledgeStatus {
   total: number;
   byType: Record<string, number>;
   byCategory: Record<string, number>;
@@ -725,7 +725,7 @@ export interface SharedMemoryStatus {
   available: boolean;
 }
 
-export interface SharedMemoryRecord {
+export interface CollaborativeKnowledgeRecord {
   id: string;
   type: string;
   category: string;
@@ -744,7 +744,7 @@ export interface SharedMemoryRecord {
   lastUsedQuery?: string | null;
 }
 
-export interface SharedMemoryCreate {
+export interface CollaborativeKnowledgeCreate {
   type: string;
   category?: string;
   summary: string;
@@ -754,7 +754,7 @@ export interface SharedMemoryCreate {
   durability?: number;
 }
 
-export interface SharedAccessMap {
+export interface CollaborativeKnowledgeAccessMap {
   accessMap: Record<string, string[]>;
   available: boolean;
 }

@@ -106,7 +106,7 @@ export interface MercuryConfig {
       enabled: boolean;
       maxRecords: number;
     };
-    sharedMemory?: {
+    collaborativeKnowledge?: {
       enabled: boolean;
     };
   };

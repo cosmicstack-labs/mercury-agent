@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FolderOpen, Loader2, Tag } from "lucide-react";
-import { sharedMemory } from "@/lib/api";
+import { collaborativeKnowledge } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,12 +11,12 @@ interface CategoriesData {
   byCategory: Record<string, number>;
 }
 
-export default function SharedCategories() {
+export default function CollaborativeKnowledgeCategories() {
   const [data, setData] = useState<CategoriesData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    sharedMemory
+    collaborativeKnowledge
       .categories()
       .then((res: CategoriesData) => setData(res))
       .finally(() => setLoading(false));
@@ -27,7 +27,7 @@ export default function SharedCategories() {
       <div className="flex items-center gap-3">
         <FolderOpen className="h-7 w-7" style={{ color: "#a855f7" }} />
         <h1 className="text-2xl font-bold tracking-tight">
-          Shared Memory Categories
+          Collaborative Knowledge Categories
         </h1>
       </div>
 

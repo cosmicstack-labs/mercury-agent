@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-import { authenticate, createSession, destroySession, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge } from '../auth.js';
+import { authenticate, createSession, destroySession, changePassword, getSessionCookieName, getSessionMaxAge } from '../auth.js';
 
 function renderLoginPage(error?: string): string {
   return `<!DOCTYPE html>
@@ -20,11 +20,10 @@ button:hover{background:#00bfe6}
 .err{color:#ef4444;font-size:.8rem;margin-bottom:1rem}
 </style></head><body>
 <div class="card">
-<h1>Mercury</h1><p class="sub">Sign in to continue</p>
+<h1>Mercury</h1><p class="sub">Enter password to continue</p>
 ${error ? `<div class="err">${error}</div>` : ''}
 <form method="POST" action="/api/auth/login">
-<label for="u">Username</label><input id="u" name="username" autocomplete="username" required>
-<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
+<label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required autofocus>
 <button type="submit">Sign in</button>
 </form></div></body></html>`;
 }
@@ -37,15 +36,14 @@ auth.get('/login', (c) => {
 
 auth.post('/api/auth/login', async (c) => {
   const body = await c.req.parseBody();
-  const username = (body.username as string) || '';
   const password = (body.password as string) || '';
 
-  if (!username || !password) {
-    return c.html(renderLoginPage('Please enter both username and password'), 400);
+  if (!password) {
+    return c.html(renderLoginPage('Please enter your password'), 400);
   }
 
-  if (!authenticate(username, password)) {
-    return c.html(renderLoginPage('Invalid username or password'), 401);
+  if (!authenticate('mercury', password)) {
+    return c.html(renderLoginPage('Invalid password'), 401);
   }
 
   const token = createSession();
@@ -74,17 +72,6 @@ auth.post('/api/auth/password', async (c) => {
     return c.json({ error: 'Current and new password required' }, 400);
   }
   const ok = changePassword(currentPassword, newPassword);
-  if (!ok) return c.json({ error: 'Current password is incorrect' }, 403);
-  return c.json({ success: true });
-});
-
-auth.post('/api/auth/username', async (c) => {
-  const body = await c.req.json();
-  const { currentPassword, newUsername } = body;
-  if (!currentPassword || !newUsername) {
-    return c.json({ error: 'Current password and new username required' }, 400);
-  }
-  const ok = changeUsername(currentPassword, newUsername);
   if (!ok) return c.json({ error: 'Current password is incorrect' }, 403);
   return c.json({ success: true });
 });

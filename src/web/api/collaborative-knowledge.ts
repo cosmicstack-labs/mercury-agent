@@ -1,33 +1,33 @@
 import { Hono } from 'hono';
 import { loadConfig, getMemoryDir } from '../../utils/config.js';
-import { isSharedMemoryDbAvailable } from '../../memory/shared-memory-db.js';
-import { SharedMemoryStore } from '../../memory/shared-memory-store.js';
+import { isCollaborativeKnowledgeDbAvailable } from '../../memory/collaborative-knowledge-db.js';
+import { CollaborativeKnowledgeStore } from '../../memory/collaborative-knowledge-store.js';
 import { RelayClient } from '../../relay/client.js';
 import { join } from 'node:path';
 
-let sharedMemory: SharedMemoryStore | null = null;
+let ck: CollaborativeKnowledgeStore | null = null;
 let relayClient: RelayClient | null = null;
 
 const SQLITE_DEPENDENCY_ERROR =
   'Shared memory dependency issue: better-sqlite3 (SQLite backend) is not available. Install dependencies and restart Mercury.';
 
-export function setSharedMemory(mem: SharedMemoryStore | null): void {
-  sharedMemory = mem;
+export function setWebCollaborativeKnowledge(mem: CollaborativeKnowledgeStore | null): void {
+  ck = mem;
 }
 
 export function setRelayClient(client: RelayClient | null): void {
   relayClient = client;
 }
 
-function ensureMemory(): SharedMemoryStore | null {
-  if (sharedMemory) return sharedMemory;
+function ensureMemory(): CollaborativeKnowledgeStore | null {
+  if (ck) return ck;
 
-  if (!isSharedMemoryDbAvailable()) return null;
+  if (!isCollaborativeKnowledgeDbAvailable()) return null;
   try {
     const config = loadConfig();
     const dbPath = join(getMemoryDir(), 'shared', 'shared.db');
-    sharedMemory = new SharedMemoryStore(config, dbPath);
-    return sharedMemory;
+    ck = new CollaborativeKnowledgeStore(config, dbPath);
+    return ck;
   } catch (err) {
     console.error('[Mercury Web] Shared Memory fallback init failed:', err);
     return null;
@@ -55,14 +55,14 @@ function memToJson(r: any) {
   };
 }
 
-const sharedMemoryRoutes = new Hono();
+const ckRoutes = new Hono();
 
 // ══════════════════════════════════════════════════════════════
 // Shared Memory endpoints
 // ══════════════════════════════════════════════════════════════
 
 // ── Status / Summary ──
-sharedMemoryRoutes.get('/api/shared-memory/status', async (c) => {
+ckRoutes.get('/api/ck/status', async (c) => {
   const mem = ensureMemory();
   if (mem) {
     return c.json({ ...mem.getSummary(), available: true });
@@ -71,7 +71,7 @@ sharedMemoryRoutes.get('/api/shared-memory/status', async (c) => {
 });
 
 // ── List / Search memories ──
-sharedMemoryRoutes.get('/api/shared-memory/memories', async (c) => {
+ckRoutes.get('/api/ck/memories', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
 
@@ -92,7 +92,7 @@ sharedMemoryRoutes.get('/api/shared-memory/memories', async (c) => {
 });
 
 // ── Search ──
-sharedMemoryRoutes.get('/api/shared-memory/memories/search', async (c) => {
+ckRoutes.get('/api/ck/memories/search', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
 
@@ -103,7 +103,7 @@ sharedMemoryRoutes.get('/api/shared-memory/memories/search', async (c) => {
 });
 
 // ── Create memory ──
-sharedMemoryRoutes.post('/api/shared-memory/memories', async (c) => {
+ckRoutes.post('/api/ck/memories', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
 
@@ -129,13 +129,13 @@ sharedMemoryRoutes.post('/api/shared-memory/memories', async (c) => {
 });
 
 // ── Learning pause/resume ──
-sharedMemoryRoutes.get('/api/shared-memory/learning', async (c) => {
+ckRoutes.get('/api/ck/learning', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   return c.json({ paused: mem.isLearningPaused() });
 });
 
-sharedMemoryRoutes.put('/api/shared-memory/learning', async (c) => {
+ckRoutes.put('/api/ck/learning', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const body = await c.req.json();
@@ -145,7 +145,7 @@ sharedMemoryRoutes.put('/api/shared-memory/learning', async (c) => {
 });
 
 // ── Categories ──
-sharedMemoryRoutes.get('/api/shared-memory/categories', async (c) => {
+ckRoutes.get('/api/ck/categories', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ categories: [], available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
   const categories = mem.getCategories();
@@ -154,7 +154,7 @@ sharedMemoryRoutes.get('/api/shared-memory/categories', async (c) => {
 });
 
 // ── Clear all shared memories ──
-sharedMemoryRoutes.delete('/api/shared-memory/memories', async (c) => {
+ckRoutes.delete('/api/ck/memories', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const deleted = mem.clear();
@@ -165,13 +165,13 @@ sharedMemoryRoutes.delete('/api/shared-memory/memories', async (c) => {
 // Friend Access Control endpoints
 // ══════════════════════════════════════════════════════════════
 
-sharedMemoryRoutes.get('/api/shared-memory/access', async (c) => {
+ckRoutes.get('/api/ck/access', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ accessMap: {}, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
   return c.json({ accessMap: mem.getFriendAccessMap(), available: true });
 });
 
-sharedMemoryRoutes.get('/api/shared-memory/access/:friend', async (c) => {
+ckRoutes.get('/api/ck/access/:friend', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const friend = c.req.param('friend');
@@ -179,7 +179,7 @@ sharedMemoryRoutes.get('/api/shared-memory/access/:friend', async (c) => {
   return c.json({ friend, categories });
 });
 
-sharedMemoryRoutes.put('/api/shared-memory/access/:friend', async (c) => {
+ckRoutes.put('/api/ck/access/:friend', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const friend = c.req.param('friend');
@@ -210,7 +210,7 @@ sharedMemoryRoutes.put('/api/shared-memory/access/:friend', async (c) => {
 // ══════════════════════════════════════════════════════════════
 
 // ── List friends (confirmed + pending) ──
-sharedMemoryRoutes.get('/api/friends', async (c) => {
+ckRoutes.get('/api/friends', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured. Set up relay in mercury doctor.', available: false }, 503);
   try {
     const data = await relayClient.getFriends();
@@ -221,7 +221,7 @@ sharedMemoryRoutes.get('/api/friends', async (c) => {
 });
 
 // ── Send friend request ──
-sharedMemoryRoutes.post('/api/friends/request', async (c) => {
+ckRoutes.post('/api/friends/request', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const body = await c.req.json();
   const username = body.username?.trim()?.toLowerCase();
@@ -235,7 +235,7 @@ sharedMemoryRoutes.post('/api/friends/request', async (c) => {
 });
 
 // ── Accept friend request ──
-sharedMemoryRoutes.post('/api/friends/accept', async (c) => {
+ckRoutes.post('/api/friends/accept', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const body = await c.req.json();
   const username = body.username?.trim()?.toLowerCase();
@@ -249,7 +249,7 @@ sharedMemoryRoutes.post('/api/friends/accept', async (c) => {
 });
 
 // ── Reject friend request ──
-sharedMemoryRoutes.post('/api/friends/reject', async (c) => {
+ckRoutes.post('/api/friends/reject', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const body = await c.req.json();
   const username = body.username?.trim()?.toLowerCase();
@@ -263,7 +263,7 @@ sharedMemoryRoutes.post('/api/friends/reject', async (c) => {
 });
 
 // ── Cancel sent friend request ──
-sharedMemoryRoutes.post('/api/friends/cancel', async (c) => {
+ckRoutes.post('/api/friends/cancel', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const body = await c.req.json();
   const username = body.username?.trim()?.toLowerCase();
@@ -277,7 +277,7 @@ sharedMemoryRoutes.post('/api/friends/cancel', async (c) => {
 });
 
 // ── Remove friend ──
-sharedMemoryRoutes.delete('/api/friends/:username', async (c) => {
+ckRoutes.delete('/api/friends/:username', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const username = c.req.param('username');
   try {
@@ -289,7 +289,7 @@ sharedMemoryRoutes.delete('/api/friends/:username', async (c) => {
 });
 
 // ── Check user online status ──
-sharedMemoryRoutes.get('/api/friends/:username/status', async (c) => {
+ckRoutes.get('/api/friends/:username/status', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const username = c.req.param('username');
   try {
@@ -300,19 +300,19 @@ sharedMemoryRoutes.get('/api/friends/:username/status', async (c) => {
   }
 });
 
-// ── Query friend's shared memory ──
-sharedMemoryRoutes.post('/api/friends/:username/query', async (c) => {
+// ── Query friend's collaborative knowledge ──
+ckRoutes.post('/api/friends/:username/query', async (c) => {
   if (!relayClient) return c.json({ error: 'Relay not configured', available: false }, 503);
   const username = c.req.param('username');
   const body = await c.req.json();
   const query = body.query?.trim();
   if (!query) return c.json({ error: 'query is required' }, 400);
   try {
-    const result = await relayClient.sendMemoryQuery(username, query);
+    const result = await relayClient.sendCKQuery(username, query);
     return c.json(result);
   } catch (err: any) {
-    return c.json({ error: err.message || 'Failed to send memory query' }, 500);
+    return c.json({ error: err.message || 'Failed to send collaborative knowledge query' }, 500);
   }
 });
 
-export default sharedMemoryRoutes;
+export default ckRoutes;

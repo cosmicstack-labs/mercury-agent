@@ -59,12 +59,12 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    title: "Shared Memory",
+    title: "Collaborative Knowledge",
     items: [
-      { to: "/shared-memory", icon: Share2, label: "Memories" },
-      { to: "/shared-memory/categories", icon: FolderOpen, label: "Categories" },
-      { to: "/shared-memory/access", icon: UserCheck, label: "Access" },
-      { to: "/shared-memory/friends", icon: Users, label: "Friends" },
+      { to: "/collaborative-knowledge", icon: Share2, label: "Memories" },
+      { to: "/collaborative-knowledge/categories", icon: FolderOpen, label: "Categories" },
+      { to: "/collaborative-knowledge/access", icon: UserCheck, label: "Access" },
+      { to: "/collaborative-knowledge/friends", icon: Users, label: "Friends" },
       { to: "/relay", icon: Radio, label: "Relay" },
     ],
   },

@@ -1,10 +1,10 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { getMemoryDir } from '../utils/config.js';
-import { SharedMemoryDB, type SharedMemoryRow } from './shared-memory-db.js';
+import { CollaborativeKnowledgeDB, type CollaborativeKnowledgeRow } from './collaborative-knowledge-db.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
-export type SharedMemoryType =
+export type CollaborativeKnowledgeType =
   | 'identity'
   | 'preference'
   | 'goal'
@@ -15,9 +15,9 @@ export type SharedMemoryType =
   | 'relationship'
   | 'episode';
 
-export interface SharedMemoryRecord {
+export interface CollaborativeKnowledgeRecord {
   id: string;
-  type: SharedMemoryType;
+  type: CollaborativeKnowledgeType;
   category: string;
   summary: string;
   detail?: string | null;
@@ -34,8 +34,8 @@ export interface SharedMemoryRecord {
   lastUsedQuery?: string | null;
 }
 
-export interface SharedMemoryCandidate {
-  type: SharedMemoryType;
+export interface CollaborativeKnowledgeCandidate {
+  type: CollaborativeKnowledgeType;
   category: string;
   summary: string;
   detail?: string;
@@ -45,9 +45,9 @@ export interface SharedMemoryCandidate {
   durability: number;
 }
 
-export interface SharedMemorySummary {
+export interface CollaborativeKnowledgeSummary {
   total: number;
-  byType: Partial<Record<SharedMemoryType, number>>;
+  byType: Partial<Record<CollaborativeKnowledgeType, number>>;
   byCategory: Record<string, number>;
   categories: string[];
   learningPaused: boolean;
@@ -55,17 +55,17 @@ export interface SharedMemorySummary {
 
 const MIN_CONFIDENCE = 0.55;
 
-export class SharedMemoryStore {
-  private db: SharedMemoryDB;
+export class CollaborativeKnowledgeStore {
+  private db: CollaborativeKnowledgeDB;
 
   constructor(config: MercuryConfig, dbPath?: string) {
-    const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'shared', 'shared.db');
-    this.db = new SharedMemoryDB(resolvedDbPath);
+    const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'ck', 'collaborative-knowledge.db');
+    this.db = new CollaborativeKnowledgeDB(resolvedDbPath);
     this.db.init();
   }
 
-  getSummary(): SharedMemorySummary {
-    const byType = this.db.countByType() as Partial<Record<SharedMemoryType, number>>;
+  getSummary(): CollaborativeKnowledgeSummary {
+    const byType = this.db.countByType() as Partial<Record<CollaborativeKnowledgeType, number>>;
     const byCategory = this.db.countByCategory();
     return {
       total: this.db.totalActive(),
@@ -76,11 +76,11 @@ export class SharedMemoryStore {
     };
   }
 
-  getRecent(limit: number = 10): SharedMemoryRecord[] {
+  getRecent(limit: number = 10): CollaborativeKnowledgeRecord[] {
     return this.db.getActive().slice(0, limit).map(row => this.toRecord(row));
   }
 
-  search(query: string, limit: number = 10): SharedMemoryRecord[] {
+  search(query: string, limit: number = 10): CollaborativeKnowledgeRecord[] {
     const rows = this.db.searchRelevant(query, limit);
     return rows.map(row => this.toRecord(row));
   }
@@ -88,14 +88,14 @@ export class SharedMemoryStore {
   retrieveRelevant(
     query: string,
     options?: { maxRecords?: number; maxChars?: number },
-  ): { records: SharedMemoryRecord[]; context: string } {
+  ): { records: CollaborativeKnowledgeRecord[]; context: string } {
     const maxRecords = options?.maxRecords ?? 5;
     const maxChars = options?.maxChars ?? 900;
 
     const ftsResults = this.db.searchRelevant(query, Math.max(maxRecords * 2, 10));
     const ranked = this.scoreAndRank(ftsResults, query);
 
-    const selected: SharedMemoryRow[] = [];
+    const selected: CollaborativeKnowledgeRow[] = [];
     let currentLength = 0;
     for (const row of ranked) {
       const line = `- [${row.type}|${row.category}] ${row.summary}`;
@@ -110,7 +110,7 @@ export class SharedMemoryStore {
     }
 
     const contextLines = [
-      'Shared memory (your shared knowledge pool):',
+      'Collaborative knowledge (your shared knowledge pool):',
       ...selected.map(row => `- [${row.type}|${row.category}] ${row.summary}`),
     ];
 
@@ -126,16 +126,16 @@ export class SharedMemoryStore {
     if (existing) return existing;
 
     this.db.addCategory(normalized);
-    logger.info({ category: normalized }, 'New shared memory category created');
+    logger.info({ category: normalized }, 'New collaborative knowledge category created');
     return normalized;
   }
 
   remember(
-    candidates: SharedMemoryCandidate[],
-  ): SharedMemoryRecord[] {
+    candidates: CollaborativeKnowledgeCandidate[],
+  ): CollaborativeKnowledgeRecord[] {
     if (this.isLearningPaused()) return [];
 
-    const remembered: SharedMemoryRecord[] = [];
+    const remembered: CollaborativeKnowledgeRecord[] = [];
 
     for (const candidate of candidates) {
       if (!shouldStoreCandidate(candidate)) continue;
@@ -185,7 +185,7 @@ export class SharedMemoryStore {
   }
 
   /** Direct insert for manual/API creation — bypasses learning pause and candidate validation. */
-  manualInsert(candidate: SharedMemoryCandidate): SharedMemoryRecord | null {
+  manualInsert(candidate: CollaborativeKnowledgeCandidate): CollaborativeKnowledgeRecord | null {
     const resolvedCategory = this.resolveCategory(candidate.category);
     return this.insertRecord(candidate, resolvedCategory);
   }
@@ -217,13 +217,20 @@ export class SharedMemoryStore {
     this.db.revokeAllCategories(friend);
   }
 
+  setFriendAccess(friend: string, categories: string[]): void {
+    this.db.revokeAllCategories(friend);
+    for (const cat of categories) {
+      this.db.grantCategory(friend, cat);
+    }
+  }
+
   getFriendAccessMap(): Record<string, string[]> {
     return this.db.getFriendAccessMap();
   }
 
-  private insertRecord(candidate: SharedMemoryCandidate, category: string): SharedMemoryRecord | null {
+  private insertRecord(candidate: CollaborativeKnowledgeCandidate, category: string): CollaborativeKnowledgeRecord | null {
     const now = Date.now();
-    const id = generateId('smem');
+    const id = generateId('ck');
 
     this.db.insert({
       id,
@@ -248,7 +255,7 @@ export class SharedMemoryStore {
     return row ? this.toRecord(row) : null;
   }
 
-  private mergeRecord(existing: SharedMemoryRow, candidate: SharedMemoryCandidate, category: string): SharedMemoryRecord | null {
+  private mergeRecord(existing: CollaborativeKnowledgeRow, candidate: CollaborativeKnowledgeCandidate, category: string): CollaborativeKnowledgeRecord | null {
     const updatedAt = Date.now();
     this.db.update({
       id: existing.id,
@@ -268,7 +275,7 @@ export class SharedMemoryStore {
     return row ? this.toRecord(row) : null;
   }
 
-  private resolveConflict(existing: SharedMemoryRow, candidate: SharedMemoryCandidate): 'incoming' | 'existing' {
+  private resolveConflict(existing: CollaborativeKnowledgeRow, candidate: CollaborativeKnowledgeCandidate): 'incoming' | 'existing' {
     if (candidate.confidence > existing.confidence) {
       this.db.update({
         id: existing.id,
@@ -302,7 +309,7 @@ export class SharedMemoryStore {
     }
   }
 
-  private scoreAndRank(rows: SharedMemoryRow[], query: string): SharedMemoryRow[] {
+  private scoreAndRank(rows: CollaborativeKnowledgeRow[], query: string): CollaborativeKnowledgeRow[] {
     const now = Date.now();
     const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
     return rows
@@ -322,10 +329,10 @@ export class SharedMemoryStore {
       .map(r => r.row);
   }
 
-  private toRecord(row: SharedMemoryRow): SharedMemoryRecord {
+  private toRecord(row: CollaborativeKnowledgeRow): CollaborativeKnowledgeRecord {
     return {
       id: row.id,
-      type: row.type as SharedMemoryType,
+      type: row.type as CollaborativeKnowledgeType,
       category: row.category,
       summary: row.summary,
       detail: row.detail,
@@ -344,7 +351,7 @@ export class SharedMemoryStore {
   }
 }
 
-function shouldStoreCandidate(candidate: SharedMemoryCandidate): boolean {
+function shouldStoreCandidate(candidate: CollaborativeKnowledgeCandidate): boolean {
   const summary = candidate.summary.trim();
   if (summary.length < 12 || summary.length > 220) return false;
   if (candidate.confidence < MIN_CONFIDENCE) return false;

@@ -261,7 +261,7 @@ export default function Relay() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Relay</h1>
             <p className="text-sm text-muted-foreground">
-              Connect to the Mercury relay network for friend messaging and shared memory.
+              Connect to the Mercury relay network for friend messaging and collaborative knowledge.
             </p>
           </div>
         </div>

@@ -52,14 +52,14 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { SharedMemoryStore } from './memory/shared-memory-store.js';
-import { isSharedMemoryDbAvailable } from './memory/shared-memory-db.js';
+import { CollaborativeKnowledgeStore } from './memory/collaborative-knowledge-store.js';
+import { isCollaborativeKnowledgeDbAvailable } from './memory/collaborative-knowledge-db.js';
 import { NotificationsStore } from './memory/notifications-store.js';
 import { isNotificationsDbAvailable } from './memory/notifications-db.js';
 import { MessagesStore } from './memory/messages-store.js';
 import { isMessagesDbAvailable } from './memory/messages-db.js';
-import { RelayClient, type MemoryQueryEvent, type MemoryResponseEvent, type MemoryResultItem } from './relay/client.js';
-import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setSharedMemory as setWebSharedMemory, setRelayClient as setWebRelayClient, setRelayClientForRelay as setWebRelayForRelay, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setNotificationsStore as setWebNotifications, setMessagesStore as setWebMessages } from './web/server.js';
+import { RelayClient, type CKQueryEvent, type CKResponseEvent, type CKResultItem } from './relay/client.js';
+import { startWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebCollaborativeKnowledge, setRelayClient as setWebRelayClient, setRelayClientForRelay as setWebRelayForRelay, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setNotificationsStore as setWebNotifications, setMessagesStore as setWebMessages } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1374,24 +1374,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     );
   }
 
-  // Shared Memory
-  let sharedMemory: SharedMemoryStore | null = null;
-  if (config.memory.sharedMemory?.enabled !== false && isSharedMemoryDbAvailable()) {
+  // Collaborative Knowledge
+  let ck: CollaborativeKnowledgeStore | null = null;
+  if (config.memory.collaborativeKnowledge?.enabled !== false && isCollaborativeKnowledgeDbAvailable()) {
     try {
-      sharedMemory = new SharedMemoryStore(config);
-      setWebSharedMemory(sharedMemory);
+      ck = new CollaborativeKnowledgeStore(config);
+      setWebCollaborativeKnowledge(ck);
       if (!isDaemon) {
-        console.log(chalk.dim(`  Shared memory: enabled (${sharedMemory.getSummary().total} existing memories)`));
+        console.log(chalk.dim(`  Collaborative knowledge: enabled (${ck.getSummary().total} existing memories)`));
       } else {
-        logger.info({ total: sharedMemory.getSummary().total }, 'Shared memory loaded');
+        logger.info({ total: ck.getSummary().total }, 'Collaborative knowledge loaded');
       }
     } catch (err) {
-      logger.warn({ err }, 'Shared memory initialization failed, continuing without it');
-      sharedMemory = null;
+      logger.warn({ err }, 'Collaborative knowledge initialization failed, continuing without it');
+      ck = null;
     }
-  } else if (config.memory.sharedMemory?.enabled !== false && !isSharedMemoryDbAvailable()) {
+  } else if (config.memory.collaborativeKnowledge?.enabled !== false && !isCollaborativeKnowledgeDbAvailable()) {
     logger.warn(
-      'better-sqlite3 is not available — shared memory is disabled. ' +
+      'better-sqlite3 is not available — collaborative knowledge is disabled. ' +
       'To enable it, install build tools (make, gcc/g++, python3) and ensure Node >= 20, then reinstall.'
     );
   }
@@ -1511,14 +1511,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   capabilities.setMemoryStores(
     () => userMemory,
-    () => sharedMemory,
+    () => ck,
   );
 
   capabilities.registerAll();
 
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
-    relayClient, sharedMemory, notifications, messagesStore,
+    relayClient, ck, notifications, messagesStore,
   );
 
   agent.setSkillLoader(skillLoader);
@@ -1659,8 +1659,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       const d = data as Record<string, unknown>;
       const fromUser = (d.from_user as string) || 'Unknown';
       storeNotification('friend_remove', `🗑 @${fromUser} removed you from their friends.`, fromUser);
-      if (sharedMemory) {
-        sharedMemory.revokeAllCategories(fromUser);
+      if (ck) {
+        ck.revokeAllCategories(fromUser);
       }
       refreshFriendsForUI();
     });
@@ -1689,24 +1689,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       }
     });
 
-    relayClient.on('memory_query', (data: unknown) => {
-      const d = data as MemoryQueryEvent;
+    relayClient.on('ck_query', (data: unknown) => {
+      const d = data as CKQueryEvent;
       const fromUser = d.from_user || 'Unknown';
       const fromDisplayName = d.from_display_name ?? null;
       const requestId = d.request_id;
       const query = d.query;
 
-      if (!sharedMemory) {
-        relayClient!.sendMemoryResponse(fromUser, requestId, query, []).catch(() => {});
+      if (!ck) {
+        relayClient!.sendCKResponse(fromUser, requestId, query, []).catch(() => {});
         return;
       }
 
-      const results = sharedMemory.search(query, 10);
-      const allowed = sharedMemory.getAllowedCategories(fromUser);
+      const results = ck.search(query, 10);
+      const allowed = ck.getAllowedCategories(fromUser);
       const filtered = allowed.length > 0
         ? results.filter(r => allowed.includes(r.category))
         : [];
-      const items: MemoryResultItem[] = filtered.map(r => ({
+      const items: CKResultItem[] = filtered.map(r => ({
         type: r.type,
         category: r.category,
         summary: r.summary.length > 220 ? r.summary.slice(0, 220) : r.summary,
@@ -1717,31 +1717,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       // Determine denial message when results exist but user has no access
       let denialMessage: string | undefined;
-      const ownerUsername = config.relay?.username || 'the memory owner';
+      const ownerUsername = config.relay?.username || 'the owner';
       if (results.length > 0 && filtered.length === 0) {
-        denialMessage = `You do not have access to these memories. Ask @${ownerUsername} to grant you access to the relevant categories.`;
+        denialMessage = `You do not have access to this collaborative knowledge. Ask @${ownerUsername} to grant you access to the relevant categories.`;
       }
 
       const displayName = fromDisplayName || fromUser;
-      relayClient!.sendMemoryResponse(fromUser, requestId, query, items, denialMessage)
+      relayClient!.sendCKResponse(fromUser, requestId, query, items, denialMessage)
         .then((result) => {
           if (!result.delivered) {
-            logger.warn({ fromUser, query, error: result.error }, 'Memory response delivery failed');
+            logger.warn({ fromUser, query, error: result.error }, 'CK response delivery failed');
           }
         })
         .catch((err) => {
-          logger.warn({ fromUser, query, err }, 'Memory response send failed');
+          logger.warn({ fromUser, query, err }, 'CK response send failed');
         });
 
       const resultCount = items.length;
       const localMessage = denialMessage
-        ? `🧠 @${displayName} queried your memory for "${query}" — denied (no access to matching categories)`
-        : `🧠 @${displayName} queried your memory for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
-      storeNotification('memory_query', localMessage, fromUser, { request_id: requestId, query });
+        ? `🧠 @${displayName} queried your collaborative knowledge for "${query}" — denied (no access to matching categories)`
+        : `🧠 @${displayName} queried your collaborative knowledge for "${query}" (${resultCount} result${resultCount !== 1 ? 's' : ''} shared)`;
+      storeNotification('ck_query', localMessage, fromUser, { request_id: requestId, query });
     });
 
-    relayClient.on('memory_response', (data: unknown) => {
-      const d = data as MemoryResponseEvent;
+    relayClient.on('ck_response', (data: unknown) => {
+      const d = data as CKResponseEvent;
       const fromUser = d.from_user || 'Unknown';
       const fromDisplayName = d.from_display_name ?? null;
       const query = d.query;
@@ -1750,11 +1750,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       let formattedMessage: string;
       if (d.message && results.length === 0) {
-        formattedMessage = `🔒 @${displayName}'s memory for "${query}":\n${d.message}`;
+        formattedMessage = `🔒 @${displayName}'s collaborative knowledge for "${query}":\n${d.message}`;
       } else if (results.length === 0) {
-        formattedMessage = `🧠 @${displayName}'s memory for "${query}":\nNo shared memories found.`;
+        formattedMessage = `🧠 @${displayName}'s collaborative knowledge for "${query}":\nNo results found.`;
       } else {
-        const lines = [`🧠 @${displayName}'s memory for "${query}":`, ''];
+        const lines = [`🧠 @${displayName}'s collaborative knowledge for "${query}":`, ''];
         for (const r of results) {
           lines.push(`[${r.type}|${r.category}] ${r.summary}`);
           if (r.detail) {
@@ -1775,11 +1775,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       }
 
       // Persist to notifications DB so the web UI can read it
-      storeNotification('memory_response', formattedMessage, fromUser, {
+      storeNotification('ck_response', formattedMessage, fromUser, {
         query,
         results,
         from_display_name: fromDisplayName,
       });
+    });
+
+    relayClient.on('access_update', (data: unknown) => {
+      const d = data as { from_user: string; categories: string[] };
+      const fromUser = d.from_user;
+      const categories = d.categories || [];
+
+      // Sync access rules to local CK store
+      if (ck) {
+        ck.setFriendAccess(fromUser, categories);
+        logger.info({ fromUser, categories }, 'CK access updated from relay');
+      }
     });
 
     // Auto-connect if already registered

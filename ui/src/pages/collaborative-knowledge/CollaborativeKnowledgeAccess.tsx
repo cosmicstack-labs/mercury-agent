@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { sharedMemory, friends as friendsApi } from "@/lib/api";
+import { collaborativeKnowledge, friends as friendsApi } from "@/lib/api";
 import type { FriendInfo } from "@/lib/api";
 
 const ACCENT = "#a855f7";
@@ -38,7 +38,7 @@ function ToastBar({ toasts }: { toasts: Toast[] }) {
   );
 }
 
-export default function SharedAccess() {
+export default function CollaborativeKnowledgeAccess() {
   const [accessMap, setAccessMap] = useState<Record<string, string[]>>({});
   const [categories, setCategories] = useState<string[]>([]);
   const [allFriends, setAllFriends] = useState<FriendInfo[]>([]);
@@ -57,8 +57,8 @@ export default function SharedAccess() {
     setLoading(true);
     try {
       const [mapRes, catRes] = await Promise.all([
-        sharedMemory.access.map(),
-        sharedMemory.categories(),
+        collaborativeKnowledge.access.map(),
+        collaborativeKnowledge.categories(),
       ]);
       setAccessMap(mapRes.accessMap);
       setCategories(catRes.categories);
@@ -92,7 +92,7 @@ export default function SharedAccess() {
         const payload = action === "grant-all" || action === "revoke-all"
           ? { action }
           : { action, category: category! };
-        await sharedMemory.access.update(friend, payload);
+        await collaborativeKnowledge.access.update(friend, payload);
         await fetchData();
         toast("success", `Access updated for @${friend}`);
       } catch (err) {
@@ -129,7 +129,7 @@ export default function SharedAccess() {
       <div className="flex items-center gap-3">
         <Shield className="h-6 w-6" style={{ color: ACCENT }} />
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Shared Memory Access</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Collaborative Knowledge Access</h1>
           <p className="text-sm text-muted-foreground">
             Control which categories each friend can access.
             {categories.length > 0 && <span className="text-muted-foreground/70"> {categories.length} categor{categories.length === 1 ? "y" : "ies"} available.</span>}
@@ -143,7 +143,7 @@ export default function SharedAccess() {
           <CardContent className="flex flex-col items-center justify-center gap-3 py-16">
             <Users className="h-12 w-12 text-muted-foreground/40" />
             <p className="text-sm text-muted-foreground">No friends found.</p>
-            <p className="text-xs text-muted-foreground">Add friends first to configure shared memory access.</p>
+            <p className="text-xs text-muted-foreground">Add friends first to configure collaborative knowledge access.</p>
           </CardContent>
         </Card>
       ) : (
@@ -197,7 +197,7 @@ export default function SharedAccess() {
                           exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
                           <div className="mt-4 flex flex-wrap gap-2 border-t pt-4">
                             {categories.length === 0 ? (
-                              <p className="text-xs text-muted-foreground">No categories available. Add shared memories to create categories.</p>
+                              <p className="text-xs text-muted-foreground">No categories available. Add collaborative knowledge to create categories.</p>
                             ) : (
                               categories.map((cat) => {
                                 const granted = isCategoryGranted(friend, cat);

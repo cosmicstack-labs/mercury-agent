@@ -19,7 +19,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { friends as api, relay as relayApi, sharedMemory as smApi, notifications as notifApi, type FriendInfo, type PendingRequestInfo, type RelayStatus, type NotificationRecord } from "@/lib/api";
+import { friends as api, relay as relayApi, collaborativeKnowledge as ckApi, notifications as notifApi, type FriendInfo, type PendingRequestInfo, type RelayStatus, type NotificationRecord } from "@/lib/api";
 
 interface Toast { id: number; type: "success" | "error"; message: string }
 
@@ -227,8 +227,8 @@ export default function FriendsPage() {
     setMemoryResponses([]);
     try {
       const [catRes, accessRes, notifRes] = await Promise.all([
-        smApi.categories(),
-        smApi.access.get(friend.username).catch(() => ({ friend: friend.username, categories: [] as string[] })),
+        ckApi.categories(),
+        ckApi.access.get(friend.username).catch(() => ({ friend: friend.username, categories: [] as string[] })),
         notifApi.list({ type: "memory_response", source: friend.username, limit: 20 }).catch(() => ({ notifications: [] })),
       ]);
       setMyCategories(catRes.categories || []);
@@ -246,7 +246,7 @@ export default function FriendsPage() {
     const granted = grantedToFriend.includes(category);
     setPanelUpdating(true);
     try {
-      const res = await smApi.access.update(panelFriend.username, {
+      const res = await ckApi.access.update(panelFriend.username, {
         action: granted ? "revoke" : "grant",
         category,
       });
@@ -263,7 +263,7 @@ export default function FriendsPage() {
     if (!panelFriend) return;
     setPanelUpdating(true);
     try {
-      const res = await smApi.access.update(panelFriend.username, { action: "grant-all" });
+      const res = await ckApi.access.update(panelFriend.username, { action: "grant-all" });
       setGrantedToFriend(res.categories || []);
       toast("success", `Granted all categories to @${panelFriend.username}`);
     } catch (err: any) {
@@ -277,7 +277,7 @@ export default function FriendsPage() {
     if (!panelFriend) return;
     setPanelUpdating(true);
     try {
-      const res = await smApi.access.update(panelFriend.username, { action: "revoke-all" });
+      const res = await ckApi.access.update(panelFriend.username, { action: "revoke-all" });
       setGrantedToFriend(res.categories || []);
       toast("success", `Revoked all access for @${panelFriend.username}`);
     } catch (err: any) {
@@ -344,7 +344,7 @@ export default function FriendsPage() {
               <>
                 <p className="text-muted-foreground">Relay not set up</p>
                 <p className="text-sm text-muted-foreground mt-2">
-                  Register on the relay network to manage friends and share memories.
+                   Register on the relay network to manage friends and share knowledge.
                 </p>
                 <Button className="mt-4" style={{ backgroundColor: "#a855f7" }} onClick={() => navigate("/relay")}>
                   <Radio className="mr-2 h-4 w-4" /> Set Up Relay
@@ -592,7 +592,7 @@ export default function FriendsPage() {
                         <AlertDialogContent>
                           <AlertDialogHeader>
                             <AlertDialogTitle>Remove @{friend.username}?</AlertDialogTitle>
-                            <AlertDialogDescription>This will remove them from your friends list. They will no longer have access to your shared memories.</AlertDialogDescription>
+                            <AlertDialogDescription>This will remove them from your friends list. They will no longer have access to your collaborative knowledge.</AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
                             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -657,7 +657,7 @@ export default function FriendsPage() {
                       Categories of your memories that @{panelFriend.username} can access.
                     </p>
                     {myCategories.length === 0 ? (
-                      <p className="text-xs text-muted-foreground/60 py-2">No categories yet. Add shared memories to create categories.</p>
+                      <p className="text-xs text-muted-foreground/60 py-2">No categories yet. Add collaborative knowledge to create categories.</p>
                     ) : (
                       <div className="flex flex-wrap gap-2">
                         {myCategories.map((cat) => {
@@ -692,7 +692,7 @@ export default function FriendsPage() {
                       Query Memory
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      Search @{panelFriend.username}'s shared memories (they must be online).
+                      Search @{panelFriend.username}'s collaborative knowledge (they must be online).
                     </p>
                     <div className="flex gap-2">
                       <Input

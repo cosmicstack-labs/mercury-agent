@@ -5,7 +5,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
-import type { SharedMemoryStore } from '../memory/shared-memory-store.js';
+import type { CollaborativeKnowledgeStore } from '../memory/collaborative-knowledge-store.js';
 import { validateUsernameLocal, type RelayClient, type FriendInfo, type FriendsResponse } from '../relay/client.js';
 import type { NotificationsStore } from '../memory/notifications-store.js';
 import type { MessagesStore } from '../memory/messages-store.js';
@@ -304,9 +304,9 @@ export class Agent {
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
 
-  // Relay & shared memory state
+  // Relay & collaborative knowledge state
   private _relayClient: RelayClient | null = null;
-  private sharedMemory: SharedMemoryStore | null = null;
+  private ck: CollaborativeKnowledgeStore | null = null;
   private _notifications: NotificationsStore | null = null;
   private _messagesStore: MessagesStore | null = null;
   private _awaitingUsernameInput: boolean = false;
@@ -327,7 +327,7 @@ export class Agent {
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
     relayClient?: RelayClient | null,
-    sharedMemory?: SharedMemoryStore | null,
+    ck?: CollaborativeKnowledgeStore | null,
     notifications?: NotificationsStore | null,
     messagesStore?: MessagesStore | null,
   ) {
@@ -335,7 +335,7 @@ export class Agent {
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this._relayClient = relayClient ?? null;
-    this.sharedMemory = sharedMemory ?? null;
+    this.ck = ck ?? null;
     this._notifications = notifications ?? null;
     this._messagesStore = messagesStore ?? null;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
@@ -1838,7 +1838,7 @@ export class Agent {
       prompt += `\n\nSecond Brain (SQLite-backed long-term memory) is ENABLED. You have ${summary.total} persistent memories about this user.`;
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
       prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
-      prompt += `\nWhen the user explicitly asks you to remember something (e.g. "remember this", "remember that I...", "keep in mind that..."), you MUST use the store_memory tool. Do NOT pretend to memorize — only the tool actually persists memories. The tool stores in both Second Brain and Shared Memory independently (respecting each store's pause state).`;
+      prompt += `\nWhen the user explicitly asks you to remember something (e.g. "remember this", "remember that I...", "keep in mind that..."), you MUST use the store_memory tool. Do NOT pretend to memorize — only the tool actually persists memories. The tool stores in both Second Brain and Collaborative Knowledge independently (respecting each store's pause state).`;
       prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
       prompt += `\n\nCRITICAL — Memory storage rules:`;
       prompt += `\n- ALL persistent user knowledge lives in the Second Brain SQLite database — this is the single source of truth.`;
@@ -1853,10 +1853,10 @@ export class Agent {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
     }
 
-    if (this.sharedMemory) {
-      prompt += `\nShared Memory is ENABLED. When using store_memory, shareable facts are also stored in shared memory (accessible by friends via relay).`;
-      if (this.sharedMemory.isLearningPaused()) {
-        prompt += ` Shared Memory learning is currently PAUSED.`;
+    if (this.ck) {
+      prompt += `\nCollaborative Knowledge is ENABLED. When using store_memory, shareable facts are also stored in collaborative knowledge (accessible by friends via relay).`;
+      if (this.ck.isLearningPaused()) {
+        prompt += ` Collaborative Knowledge learning is currently PAUSED.`;
       }
     }
 
@@ -2002,15 +2002,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
   private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
     const canSecondBrain = this.userMemory && !this.userMemory.isLearningPaused();
-    const canSharedMemory = this.sharedMemory && !this.sharedMemory.isLearningPaused();
-    if (!canSecondBrain && !canSharedMemory) return;
+    const canCK = this.ck && !this.ck.isLearningPaused();
+    if (!canSecondBrain && !canCK) return;
 
     const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
     if (trivial.test(userMessage.trim())) return;
 
     if (!this.tokenBudget.canAfford(800)) return;
 
-    const existingCategories = this.sharedMemory ? this.sharedMemory.getCategories() : [];
+    const existingCategories = this.ck ? this.ck.getCategories() : [];
 
     try {
       const provider = this.providers.getDefault();
@@ -2114,8 +2114,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
       }
 
-      // Shared Memory candidates (need category, shareable filter)
-      if (canSharedMemory) {
+      // Collaborative Knowledge candidates (need category, shareable filter)
+      if (canCK) {
         const sharedCandidates = candidates
           .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
           .filter(c => validTypes.includes(c.type))
@@ -2132,9 +2132,9 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           }));
 
         if (sharedCandidates.length > 0) {
-          const remembered = this.sharedMemory!.remember(sharedCandidates);
+          const remembered = this.ck!.remember(sharedCandidates);
           if (remembered.length > 0) {
-            logger.info({ count: remembered.length, types: remembered.map(r => r.type), categories: remembered.map(r => r.category) }, 'Shared memories stored');
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type), categories: remembered.map(r => r.category) }, 'Collaborative knowledge stored');
           }
         }
       }
@@ -2344,12 +2344,12 @@ Is this productive iteration or a stuck loop?`,
         }
         await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
         try {
-          const result = await this._relayClient!.sendMemoryQuery(targetUser, query);
+          const result = await this._relayClient!.sendCKQuery(targetUser, query);
           if (!result.forwarded) {
             await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
           }
         } catch (err: any) {
-          await channel.send(`⚠ ${err.message || 'Failed to query memory'}`, channelId);
+          await channel.send(`⚠ ${err.message || 'Failed to query collaborative knowledge'}`, channelId);
         }
         return true;
       }
@@ -2581,7 +2581,7 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
-    // /memory @username query — query a friend's shared memory
+    // /memory @username query — query a friend's collaborative knowledge
     if (cmd.startsWith('/memory @') || cmd.startsWith('/memory @')) {
       if (!this._relayClient) {
         await channel.send('Relay is not configured.', channelId);
@@ -2638,56 +2638,56 @@ Is this productive iteration or a stuck loop?`,
       await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
 
       try {
-        const result = await this._relayClient.sendMemoryQuery(targetUser, query);
+        const result = await this._relayClient.sendCKQuery(targetUser, query);
         if (!result.forwarded) {
           await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
         }
       } catch (err: any) {
-        await channel.send(`⚠ ${err.message || 'Failed to query memory'}`, channelId);
+        await channel.send(`⚠ ${err.message || 'Failed to query collaborative knowledge'}`, channelId);
       }
       return true;
     }
 
     if (cmd === '/memory shared' || cmd === '/memory shared overview') {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
-      await this.sendSharedMemoryOverview(channel, channelId);
+      await this.sendCKOverview(channel, channelId);
       return true;
     }
 
     if (cmd === '/memory shared pause') {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
-      if (this.sharedMemory.isLearningPaused()) {
-        await channel.send('Shared learning is already paused.', channelId);
+      if (this.ck.isLearningPaused()) {
+        await channel.send('Collaborative learning is already paused.', channelId);
         return true;
       }
-      this.sharedMemory.setLearningPaused(true);
-      await channel.send('Shared learning paused. No new shared memories will be stored until resumed.', channelId);
+      this.ck.setLearningPaused(true);
+      await channel.send('Collaborative learning paused. No new collaborative knowledge will be stored until resumed.', channelId);
       return true;
     }
 
     if (cmd === '/memory shared resume') {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
-      if (!this.sharedMemory.isLearningPaused()) {
-        await channel.send('Shared learning is already active.', channelId);
+      if (!this.ck.isLearningPaused()) {
+        await channel.send('Collaborative learning is already active.', channelId);
         return true;
       }
-      this.sharedMemory.setLearningPaused(false);
-      await channel.send('Shared learning resumed. New memories will be stored in shared memory.', channelId);
+      this.ck.setLearningPaused(false);
+      await channel.send('Collaborative learning resumed. New memories will be stored in collaborative knowledge.', channelId);
       return true;
     }
 
     if (trimmed.toLowerCase().startsWith('/memory shared search')) {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
       const query = trimmed.slice('/memory shared search'.length).trim();
@@ -2695,9 +2695,9 @@ Is this productive iteration or a stuck loop?`,
         await channel.send('Usage: /memory shared search <query>', channelId);
         return true;
       }
-      const results = this.sharedMemory.search(query, 10);
+      const results = this.ck.search(query, 10);
       if (results.length === 0) {
-        await channel.send(`No shared memories found matching "${query}".`, channelId);
+        await channel.send(`No collaborative knowledge found matching "${query}".`, channelId);
         return true;
       }
       const lines = [`**Search results for "${query}":**`, ''];
@@ -2710,17 +2710,17 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/memory shared categories') {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
-      const categories = this.sharedMemory.getCategories();
+      const categories = this.ck.getCategories();
       if (categories.length === 0) {
         await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
         return true;
       }
-      const summary = this.sharedMemory.getSummary();
-      const lines = ['**Shared Memory Categories:**', ''];
+      const summary = this.ck.getSummary();
+      const lines = ['**Collaborative Knowledge Categories:**', ''];
       for (const cat of categories) {
         const count = summary.byCategory[cat] ?? 0;
         lines.push(`  ${cat}: ${count} memories`);
@@ -2730,12 +2730,12 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/memory shared clear') {
-      if (!this.sharedMemory) {
-        await channel.send('Shared memory is not enabled.', channelId);
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
         return true;
       }
-      const cleared = this.sharedMemory.clear();
-      await channel.send(`Cleared ${cleared} shared memories.`, channelId);
+      const cleared = this.ck.clear();
+      await channel.send(`Cleared ${cleared} collaborative knowledge.`, channelId);
       return true;
     }
 
@@ -2760,6 +2760,35 @@ Is this productive iteration or a stuck loop?`,
         await channel.send('🗑 Relay reset complete. All data removed. Use /relay to register again.', channelId);
       } catch (err: any) {
         await channel.send(`❌ Relay reset failed: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/pair ') || cmd === '/pair') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (this._relayClient.isRegistered()) {
+        await channel.send('Already registered on relay. Use /relay reset first if you want to re-pair.', channelId);
+        return true;
+      }
+      const code = trimmed.slice('/pair '.length).trim();
+      if (!code) {
+        await channel.send('Usage: /pair <CODE>\nGet a pairing code from the dashboard at relay.cosmicstack.org', channelId);
+        return true;
+      }
+      try {
+        // Gather channel info for linking
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        const result = await this._relayClient.pair(code, channels.length > 0 ? channels : undefined);
+        await channel.send(`✅ Paired successfully!\nUsername: ${result.username}\nYou can now use /relay to connect.`, channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Pairing failed: ${err.message}`, channelId);
       }
       return true;
     }
@@ -2827,8 +2856,8 @@ Is this productive iteration or a stuck loop?`,
 
       // /friend access commands
       if (input.startsWith('access')) {
-        if (!this.sharedMemory) {
-          await channel.send('❌ Shared memory not available.', channelId);
+        if (!this.ck) {
+          await channel.send('❌ Collaborative knowledge not available.', channelId);
           return true;
         }
         const accessInput = input.slice('access'.length).trim();
@@ -2864,8 +2893,8 @@ Is this productive iteration or a stuck loop?`,
                 const chosen = await select('Select friend to manage access', friendOptions);
                 if (chosen === 'back') return;
 
-                const currentAccess = this.sharedMemory!.getAllowedCategories(chosen);
-                const myCategories = this.sharedMemory!.getCategories();
+                const currentAccess = this.ck!.getAllowedCategories(chosen);
+                const myCategories = this.ck!.getCategories();
                 const info = currentAccess.length > 0
                   ? `Current access: ${currentAccess.join(', ')}`
                   : 'No access granted';
@@ -2882,11 +2911,11 @@ Is this productive iteration or a stuck loop?`,
                 if (action === 'back') return;
 
                 if (action === 'all') {
-                  this.sharedMemory!.grantAllCategories(chosen);
-                  const cats = this.sharedMemory!.getAllowedCategories(chosen);
+                  this.ck!.grantAllCategories(chosen);
+                  const cats = this.ck!.getAllowedCategories(chosen);
                   await channel.send(`✅ Granted @${chosen} access to all categories: ${cats.join(', ')}`, channelId);
                 } else if (action === 'none') {
-                  this.sharedMemory!.revokeAllCategories(chosen);
+                  this.ck!.revokeAllCategories(chosen);
                   await channel.send(`✅ Revoked all memory access for @${chosen}`, channelId);
                 } else if (action === 'add') {
                   const available = myCategories.filter(c => !currentAccess.includes(c));
@@ -2898,7 +2927,7 @@ Is this productive iteration or a stuck loop?`,
                   catOptions.push({ value: 'back', label: 'Back' });
                   const selectedCat = await select('Select category to grant', catOptions);
                   if (selectedCat === 'back') return;
-                  this.sharedMemory!.grantCategory(chosen, selectedCat);
+                  this.ck!.grantCategory(chosen, selectedCat);
                   await channel.send(`✅ Granted @${chosen} access to: ${selectedCat}`, channelId);
                 } else if (action === 'remove') {
                   if (currentAccess.length === 0) {
@@ -2909,7 +2938,7 @@ Is this productive iteration or a stuck loop?`,
                   catOptions.push({ value: 'back', label: 'Back' });
                   const selectedCat = await select('Select category to revoke', catOptions);
                   if (selectedCat === 'back') return;
-                  this.sharedMemory!.revokeCategory(chosen, selectedCat);
+                  this.ck!.revokeCategory(chosen, selectedCat);
                   await channel.send(`✅ Revoked @${chosen} access to: ${selectedCat}`, channelId);
                 }
               });
@@ -2920,7 +2949,7 @@ Is this productive iteration or a stuck loop?`,
           }
 
           // Non-CLI: show text map
-          const map = this.sharedMemory.getFriendAccessMap();
+          const map = this.ck.getFriendAccessMap();
           const entries = Object.entries(map);
           if (entries.length === 0) {
             await channel.send('No friends have memory access granted.\nUse: /friend access @username add <category>', channelId);
@@ -2959,9 +2988,9 @@ Is this productive iteration or a stuck loop?`,
         }
 
         if (!action) {
-          const cats = this.sharedMemory.getAllowedCategories(targetFriend);
+          const cats = this.ck.getAllowedCategories(targetFriend);
           if (cats.length === 0) {
-            await channel.send(`@${targetFriend} has no memory access.\nAvailable categories: ${this.sharedMemory.getCategories().join(', ') || '(none)'}\nUse: /friend access @${targetFriend} add <category>`, channelId);
+            await channel.send(`@${targetFriend} has no memory access.\nAvailable categories: ${this.ck.getCategories().join(', ') || '(none)'}\nUse: /friend access @${targetFriend} add <category>`, channelId);
           } else {
             await channel.send(`@${targetFriend} can access: ${cats.join(', ')}`, channelId);
           }
@@ -2969,14 +2998,14 @@ Is this productive iteration or a stuck loop?`,
         }
 
         if (action === 'all') {
-          this.sharedMemory.grantAllCategories(targetFriend);
-          const cats = this.sharedMemory.getAllowedCategories(targetFriend);
+          this.ck.grantAllCategories(targetFriend);
+          const cats = this.ck.getAllowedCategories(targetFriend);
           await channel.send(`✅ Granted @${targetFriend} access to all categories: ${cats.join(', ')}`, channelId);
           return true;
         }
 
         if (action === 'none') {
-          this.sharedMemory.revokeAllCategories(targetFriend);
+          this.ck.revokeAllCategories(targetFriend);
           await channel.send(`✅ Revoked all memory access for @${targetFriend}`, channelId);
           return true;
         }
@@ -2988,7 +3017,7 @@ Is this productive iteration or a stuck loop?`,
             return true;
           }
           for (const cat of categories) {
-            this.sharedMemory.grantCategory(targetFriend, cat);
+            this.ck.grantCategory(targetFriend, cat);
           }
           await channel.send(`✅ Granted @${targetFriend} access to: ${categories.join(', ')}`, channelId);
           return true;
@@ -3001,7 +3030,7 @@ Is this productive iteration or a stuck loop?`,
             return true;
           }
           for (const cat of categories) {
-            this.sharedMemory.revokeCategory(targetFriend, cat);
+            this.ck.revokeCategory(targetFriend, cat);
           }
           await channel.send(`✅ Revoked @${targetFriend} access to: ${categories.join(', ')}`, channelId);
           return true;
@@ -4170,8 +4199,8 @@ Is this productive iteration or a stuck loop?`,
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
       const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-      const hasSharedMemory = !!this.sharedMemory;
-      const sharedLabel = hasSharedMemory ? 'Shared Memory' : '';
+      const hasCK = !!this.ck;
+      const sharedLabel = hasCK ? 'Collaborative Knowledge' : '';
       const options: { value: string; label: string }[] = [
         { value: 'overview', label: 'Overview' },
         { value: 'recent', label: 'Recent Memories' },
@@ -4179,7 +4208,7 @@ Is this productive iteration or a stuck loop?`,
         { value: 'search', label: 'Search' },
         { value: 'toggle', label: learningLabel },
       ];
-        if (hasSharedMemory) {
+        if (hasCK) {
           options.push({ value: 'shared', label: sharedLabel });
         }
         options.push(
@@ -4286,7 +4315,7 @@ Is this productive iteration or a stuck loop?`,
         }
 
         if (action === 'shared') {
-          await this.openCliSharedMemoryMenu(channel, channelId, sel);
+          await this.openCliCKMenu(channel, channelId, sel);
           continue;
         }
       }
@@ -4299,23 +4328,23 @@ Is this productive iteration or a stuck loop?`,
     }
   }
 
-  private async openCliSharedMemoryMenu(
+  private async openCliCKMenu(
     channel: CLIChannel,
     channelId: string,
     select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
   ): Promise<void> {
-    if (!this.sharedMemory) return;
+    if (!this.ck) return;
 
     while (true) {
-      const summary = this.sharedMemory.getSummary();
-      const sharedLearningLabel = summary.learningPaused ? 'Resume Shared Learning' : 'Pause Shared Learning';
-      const action = await select('Shared Memory', [
+      const summary = this.ck.getSummary();
+      const sharedLearningLabel = summary.learningPaused ? 'Resume Collaborative Learning' : 'Pause Collaborative Learning';
+      const action = await select('Collaborative Knowledge', [
         { value: 'overview', label: `Overview (${summary.total} memories)` },
         { value: 'recent', label: 'Recent' },
         { value: 'search', label: 'Search' },
         { value: 'categories', label: 'Categories' },
         { value: 'toggle', label: sharedLearningLabel },
-        { value: 'clear', label: 'Clear All Shared Memories' },
+        { value: 'clear', label: 'Clear All Collaborative Knowledge' },
         { value: 'back', label: 'Back' },
       ]);
 
@@ -4323,7 +4352,7 @@ Is this productive iteration or a stuck loop?`,
 
       if (action === 'overview') {
         const lines = [
-          '**Shared Memory Overview**',
+          '**Collaborative Knowledge Overview**',
           `Total memories: ${summary.total}`,
           `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
         ];
@@ -4348,12 +4377,12 @@ Is this productive iteration or a stuck loop?`,
       }
 
       if (action === 'recent') {
-        const recent = this.sharedMemory.getRecent(10);
+        const recent = this.ck.getRecent(10);
         if (recent.length === 0) {
-          await channel.send('No shared memories yet.', channelId);
+          await channel.send('No collaborative knowledge yet.', channelId);
           continue;
         }
-        const lines = ['**Recent Shared Memories:**', ''];
+        const lines = ['**Recent Collaborative Knowledge:**', ''];
         for (const r of recent) {
           lines.push(`[${r.type}|${r.category}] ${r.summary}`);
           lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
@@ -4363,11 +4392,11 @@ Is this productive iteration or a stuck loop?`,
       }
 
       if (action === 'search') {
-        const query = await channel.prompt('Search shared memories: ');
+        const query = await channel.prompt('Search collaborative knowledge: ');
         if (!query) continue;
-        const results = this.sharedMemory.search(query, 10);
+        const results = this.ck.search(query, 10);
         if (results.length === 0) {
-          await channel.send(`No shared memories found matching "${query}".`, channelId);
+          await channel.send(`No collaborative knowledge found matching "${query}".`, channelId);
           continue;
         }
         const lines = [`**Search results for "${query}":**`, ''];
@@ -4380,12 +4409,12 @@ Is this productive iteration or a stuck loop?`,
       }
 
       if (action === 'categories') {
-        const categories = this.sharedMemory.getCategories();
+        const categories = this.ck.getCategories();
         if (categories.length === 0) {
           await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
           continue;
         }
-        const lines = ['**Shared Memory Categories:**', ''];
+        const lines = ['**Collaborative Knowledge Categories:**', ''];
         for (const cat of categories) {
           const count = summary.byCategory[cat] ?? 0;
           lines.push(`  ${cat}: ${count} memories`);
@@ -4395,25 +4424,25 @@ Is this productive iteration or a stuck loop?`,
       }
 
       if (action === 'toggle') {
-        const currentlyPaused = this.sharedMemory.isLearningPaused();
-        this.sharedMemory.setLearningPaused(!currentlyPaused);
+        const currentlyPaused = this.ck.isLearningPaused();
+        this.ck.setLearningPaused(!currentlyPaused);
         await channel.send(
           currentlyPaused
-            ? 'Shared learning resumed. New memories will be stored in shared memory.'
-            : 'Shared learning paused. No new shared memories will be stored until resumed.',
+            ? 'Collaborative learning resumed. New memories will be stored in collaborative knowledge.'
+            : 'Collaborative learning paused. No new collaborative knowledge will be stored until resumed.',
           channelId,
         );
         continue;
       }
 
       if (action === 'clear') {
-        const confirm = await select('Clear all shared memories?', [
+        const confirm = await select('Clear all collaborative knowledge?', [
           { value: 'cancel', label: 'Cancel' },
           { value: 'confirm', label: 'Clear everything' },
         ]);
         if (confirm === 'confirm') {
-          const cleared = this.sharedMemory.clear();
-          await channel.send(`Cleared ${cleared} shared memories.`, channelId);
+          const cleared = this.ck.clear();
+          await channel.send(`Cleared ${cleared} collaborative knowledge.`, channelId);
         }
         continue;
       }
@@ -4620,11 +4649,11 @@ Is this productive iteration or a stuck loop?`,
     }
   }
 
-  private async sendSharedMemoryOverview(channel: any, channelId: string): Promise<void> {
-    if (!this.sharedMemory) return;
-    const summary = this.sharedMemory.getSummary();
+  private async sendCKOverview(channel: any, channelId: string): Promise<void> {
+    if (!this.ck) return;
+    const summary = this.ck.getSummary();
     const lines = [
-      `**Shared Memory Overview**`,
+      `**Collaborative Knowledge Overview**`,
       `Total memories: ${summary.total}`,
       `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
     ];
@@ -4725,8 +4754,8 @@ Is this productive iteration or a stuck loop?`,
         if (confirm === 'confirm' && this._relayClient) {
           try {
             await this._relayClient.deleteFriend(targetUsername);
-            if (this.sharedMemory) {
-              this.sharedMemory.revokeAllCategories(targetUsername);
+            if (this.ck) {
+              this.ck.revokeAllCategories(targetUsername);
             }
             await channel.send(`🗑 Removed ${name} from friends.`, channelId);
           } catch (err: any) {
@@ -4763,7 +4792,7 @@ Is this productive iteration or a stuck loop?`,
         try {
           if (action === 'accept') {
             await this._relayClient.approveRequest(targetUsername);
-            await channel.send(`✅ Accepted ${name}'s friend request!\nThey currently have no access to your shared memory. Use /friend access @${targetUsername} add <category> to grant access.`, channelId);
+            await channel.send(`✅ Accepted ${name}'s friend request!\nThey currently have no access to your collaborative knowledge. Use /friend access @${targetUsername} add <category> to grant access.`, channelId);
           } else if (action === 'reject') {
             await this._relayClient.rejectRequest(targetUsername);
             await channel.send(`❌ Rejected ${name}'s friend request.`, channelId);

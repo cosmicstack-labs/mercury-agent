@@ -1,7 +1,7 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { UserMemoryStore } from '../../memory/user-memory.js';
-import type { SharedMemoryStore } from '../../memory/shared-memory-store.js';
+import type { CollaborativeKnowledgeStore } from '../../memory/collaborative-knowledge-store.js';
 
 const VALID_TYPES = [
   'identity', 'preference', 'goal', 'project', 'habit',
@@ -10,12 +10,12 @@ const VALID_TYPES = [
 
 export function createStoreMemoryTool(
   getUserMemory: () => UserMemoryStore | null,
-  getSharedMemory: () => SharedMemoryStore | null,
+  getCK: () => CollaborativeKnowledgeStore | null,
 ) {
   return tool({
     description:
       'Store a fact about the user in long-term memory. Use this when the user explicitly asks you to remember something. ' +
-      'The memory is stored in Second Brain (personal) and Shared Memory (if enabled and not paused) independently. ' +
+      'The memory is stored in Second Brain (personal) and Collaborative Knowledge (if enabled and not paused) independently. ' +
       'Do NOT fabricate a confirmation — the tool returns what was actually stored.',
     inputSchema: zodSchema(
       z.object({
@@ -36,12 +36,12 @@ export function createStoreMemoryTool(
         category: z
           .string()
           .optional()
-          .describe('Domain category for shared memory (e.g. personal, professional, health, technical). Defaults to "general".'),
+          .describe('Domain category for collaborative knowledge (e.g. personal, professional, health, technical). Defaults to "general".'),
       }),
     ),
     execute: async ({ type, summary, detail, category }) => {
       const userMemory = getUserMemory();
-      const sharedMemory = getSharedMemory();
+      const ck = getCK();
       const results: string[] = [];
 
       const candidate = {
@@ -70,24 +70,24 @@ export function createStoreMemoryTool(
         results.push('Second Brain: not available');
       }
 
-      // Store in Shared Memory
-      if (sharedMemory) {
-        if (sharedMemory.isLearningPaused()) {
-          results.push('Shared Memory: skipped (learning paused)');
+      // Store in Collaborative Knowledge
+      if (ck) {
+        if (ck.isLearningPaused()) {
+          results.push('Collaborative Knowledge: skipped (learning paused)');
         } else {
-          const sharedCandidate = {
+          const ckCandidate = {
             ...candidate,
             category: category || 'general',
           };
-          const remembered = sharedMemory.remember([sharedCandidate]);
+          const remembered = ck.remember([ckCandidate]);
           if (remembered.length > 0) {
-            results.push(`Shared Memory: stored [${remembered[0].type}] in category "${remembered[0].category}"`);
+            results.push(`Collaborative Knowledge: stored [${remembered[0].type}] in category "${remembered[0].category}"`);
           } else {
-            results.push('Shared Memory: merged with existing memory or filtered by quality check');
+            results.push('Collaborative Knowledge: merged with existing memory or filtered by quality check');
           }
         }
       } else {
-        results.push('Shared Memory: not available');
+        results.push('Collaborative Knowledge: not available');
       }
 
       return results.join('\n');

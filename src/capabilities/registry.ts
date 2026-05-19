@@ -86,7 +86,7 @@ export class CapabilityRegistry {
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private userMemoryGetter: () => import('../memory/user-memory.js').UserMemoryStore | null = () => null;
-  private sharedMemoryGetter: () => import('../memory/shared-memory-store.js').SharedMemoryStore | null = () => null;
+  private ckGetter: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null = () => null;
   private currentChannelId = 'cli';
   private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
@@ -136,10 +136,10 @@ export class CapabilityRegistry {
 
   setMemoryStores(
     userMemory: () => import('../memory/user-memory.js').UserMemoryStore | null,
-    sharedMemory: () => import('../memory/shared-memory-store.js').SharedMemoryStore | null,
+    ck: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null,
   ): void {
     this.userMemoryGetter = userMemory;
-    this.sharedMemoryGetter = sharedMemory;
+    this.ckGetter = ck;
   }
 
   setSupervisor(supervisor: SubAgentSupervisor): void {
@@ -220,7 +220,7 @@ export class CapabilityRegistry {
       logger.info('Budget tool registered');
     }
 
-    this.tools.store_memory = createStoreMemoryTool(this.userMemoryGetter, this.sharedMemoryGetter);
+    this.tools.store_memory = createStoreMemoryTool(this.userMemoryGetter, this.ckGetter);
     logger.info('Memory store tool registered');
 
     if (this.userMemory) {

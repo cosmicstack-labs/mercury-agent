@@ -19,7 +19,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { sharedMemory as api, type SharedMemoryStatus, type SharedMemoryRecord, type SharedMemoryCreate } from "@/lib/api";
+import { collaborativeKnowledge as api, type CollaborativeKnowledgeStatus, type CollaborativeKnowledgeRecord, type CollaborativeKnowledgeCreate } from "@/lib/api";
 
 const MEMORY_TYPES = ["identity","preference","goal","project","habit","decision","constraint","relationship","episode"] as const;
 const TYPE_COLORS: Record<string, string> = {
@@ -82,7 +82,7 @@ function ImportanceBar({ value }: { value: number }) {
   );
 }
 
-function MemoryItem({ memory, index }: { memory: SharedMemoryRecord; index: number }) {
+function MemoryItem({ memory, index }: { memory: CollaborativeKnowledgeRecord; index: number }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <motion.div custom={index} variants={{ hidden: { opacity: 0, y: 12 }, visible: (i: number) => ({ opacity: 1, y: 0, transition: { delay: i * 0.04, duration: 0.3 } }), exit: { opacity: 0, y: -8 } }}
@@ -116,9 +116,9 @@ function MemoryItem({ memory, index }: { memory: SharedMemoryRecord; index: numb
   );
 }
 
-export default function SharedMemoryPage() {
-  const [status, setStatus] = useState<SharedMemoryStatus | null>(null);
-  const [memories, setMemories] = useState<SharedMemoryRecord[]>([]);
+export default function CollaborativeKnowledgePage() {
+  const [status, setStatus] = useState<CollaborativeKnowledgeStatus | null>(null);
+  const [memories, setMemories] = useState<CollaborativeKnowledgeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [offset, setOffset] = useState(0);
@@ -158,7 +158,7 @@ export default function SharedMemoryPage() {
     searchTimer.current = setTimeout(() => { setOffset(0); fetchMemories(value, 0); }, 300);
   }, [fetchMemories]);
 
-  const handleCreate = async (data: SharedMemoryCreate) => {
+  const handleCreate = async (data: CollaborativeKnowledgeCreate) => {
     setCreating(true);
     try {
       await api.memories.create(data);
@@ -199,7 +199,7 @@ export default function SharedMemoryPage() {
         <div className="flex items-center gap-3">
           <Share2 className="h-6 w-6 text-[#a855f7]" />
           <div>
-            <h1 className="text-2xl font-bold">Shared Memory</h1>
+            <h1 className="text-2xl font-bold">Collaborative Knowledge</h1>
             {status && <p className="text-sm text-muted-foreground">{status.total} memories across {status.categories.length} categories</p>}
           </div>
         </div>
@@ -210,14 +210,14 @@ export default function SharedMemoryPage() {
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="bg-[#a855f7] hover:bg-[#a855f7]/90"><Plus className="h-4 w-4 mr-1" /> Add Memory</Button></DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Create Shared Memory</DialogTitle><DialogDescription>Add a new memory to the shared pool.</DialogDescription></DialogHeader>
+              <DialogHeader><DialogTitle>Create Collaborative Knowledge</DialogTitle><DialogDescription>Add a new memory to the shared pool.</DialogDescription></DialogHeader>
               <CreateForm onSubmit={handleCreate} creating={creating} />
             </DialogContent>
           </Dialog>
           <AlertDialog>
             <AlertDialogTrigger asChild><Button size="sm" variant="destructive"><Trash2 className="h-4 w-4 mr-1" /> Clear All</Button></AlertDialogTrigger>
             <AlertDialogContent>
-              <AlertDialogHeader><AlertDialogTitle>Clear all shared memories?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone. All shared memories will be permanently deleted.</AlertDialogDescription></AlertDialogHeader>
+              <AlertDialogHeader><AlertDialogTitle>Clear all collaborative knowledge?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone. All collaborative knowledge entries will be permanently deleted.</AlertDialogDescription></AlertDialogHeader>
               <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={handleClear}>Clear All</AlertDialogAction></AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -227,13 +227,13 @@ export default function SharedMemoryPage() {
       {/* Search */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Search shared memories..." value={searchQuery} onChange={(e) => handleSearch(e.target.value)} className="pl-10" />
+        <Input placeholder="Search collaborative knowledge..." value={searchQuery} onChange={(e) => handleSearch(e.target.value)} className="pl-10" />
       </div>
 
       {/* List */}
       <div className="space-y-3">
         {loading ? Array.from({ length: 5 }).map((_, i) => <MemoryCardSkeleton key={i} />) : memories.length === 0 ? (
-          <Card><CardContent className="p-12 text-center text-muted-foreground"><Share2 className="h-12 w-12 mx-auto mb-4 opacity-30" /><p>No shared memories found</p></CardContent></Card>
+          <Card><CardContent className="p-12 text-center text-muted-foreground"><Share2 className="h-12 w-12 mx-auto mb-4 opacity-30" /><p>No collaborative knowledge found</p></CardContent></Card>
         ) : (
           <AnimatePresence mode="popLayout">{memories.map((m, i) => <MemoryItem key={m.id} memory={m} index={i} />)}</AnimatePresence>
         )}
@@ -253,7 +253,7 @@ export default function SharedMemoryPage() {
   );
 }
 
-function CreateForm({ onSubmit, creating }: { onSubmit: (d: SharedMemoryCreate) => void; creating: boolean }) {
+function CreateForm({ onSubmit, creating }: { onSubmit: (d: CollaborativeKnowledgeCreate) => void; creating: boolean }) {
   const [type, setType] = useState("preference");
   const [category, setCategory] = useState("general");
   const [summary, setSummary] = useState("");

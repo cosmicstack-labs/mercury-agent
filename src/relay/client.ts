@@ -72,18 +72,18 @@ export interface MessageResult {
   error?: string;
 }
 
-export interface MemoryQueryResult {
+export interface CKQueryResult {
   forwarded: boolean;
   request_id?: string;
   error?: string;
 }
 
-export interface MemoryResponseResult {
+export interface CKResponseResult {
   delivered: boolean;
   error?: string;
 }
 
-export interface MemoryResultItem {
+export interface CKResultItem {
   type: string;
   category: string;
   summary: string;
@@ -92,21 +92,21 @@ export interface MemoryResultItem {
   importance: number;
 }
 
-export interface MemoryQueryEvent {
-  type: 'MEMORY_QUERY';
+export interface CKQueryEvent {
+  type: 'CK_QUERY';
   from_user: string;
   from_display_name: string | null;
   request_id: string;
   query: string;
 }
 
-export interface MemoryResponseEvent {
-  type: 'MEMORY_RESPONSE';
+export interface CKResponseEvent {
+  type: 'CK_RESPONSE';
   from_user: string;
   from_display_name: string | null;
   request_id: string;
   query: string;
-  results: MemoryResultItem[];
+  results: CKResultItem[];
   message?: string;
 }
 
@@ -235,6 +235,26 @@ export class RelayClient {
     saveConfig(cfg);
 
     return { apiKey: data.api_key, user: data.user, recovered: !!data.recovered };
+  }
+
+  async pair(code: string, channels?: Array<{ type: string; id: string }>): Promise<{ apiKey: string; username: string; displayName: string | null }> {
+    const res = await this.httpPost('/v1/auth/pair', {
+      code: code.toUpperCase().trim(),
+      channels: channels || undefined,
+    });
+    if (!res.ok) {
+      const err = await res.json() as { error: string };
+      throw new Error(err.error || 'Pairing failed');
+    }
+    const data = await res.json() as { api_key: string; username: string; display_name: string | null };
+    this.apiKey = data.api_key;
+
+    const cfg = this.config();
+    cfg.relay!.apiKey = data.api_key;
+    cfg.relay!.username = data.username;
+    saveConfig(cfg);
+
+    return { apiKey: data.api_key, username: data.username, displayName: data.display_name };
   }
 
   connect(): Promise<boolean> {
@@ -388,30 +408,30 @@ export class RelayClient {
     return data;
   }
 
-  async sendMemoryQuery(toUser: string, query: string): Promise<MemoryQueryResult> {
+  async sendCKQuery(toUser: string, query: string): Promise<CKQueryResult> {
     const target = toUser.toLowerCase().trim().replace(/^@/, '');
-    const res = await this.authedPost('/v1/memory-query', { to_user: target, query });
-    const data = await res.json() as MemoryQueryResult & { error?: string };
+    const res = await this.authedPost('/v1/ck-query', { to_user: target, query });
+    const data = await res.json() as CKQueryResult & { error?: string };
     if (!res.ok) {
-      throw new Error(data.error || 'Failed to send memory query');
+      throw new Error(data.error || 'Failed to send collaborative knowledge query');
     }
     return data;
   }
 
-  async sendMemoryResponse(toUser: string, requestId: string, query: string, results: MemoryResultItem[], message?: string): Promise<MemoryResponseResult> {
+  async sendCKResponse(toUser: string, requestId: string, query: string, results: CKResultItem[], message?: string): Promise<CKResponseResult> {
     const target = toUser.toLowerCase().trim().replace(/^@/, '');
     const body: Record<string, unknown> = { to_user: target, request_id: requestId, query, results };
     if (message) body.message = message;
-    const res = await this.authedPost('/v1/memory-response', body);
-    const data = await res.json() as MemoryResponseResult & { error?: string };
+    const res = await this.authedPost('/v1/ck-response', body);
+    const data = await res.json() as CKResponseResult & { error?: string };
     if (!res.ok) {
-      throw new Error(data.error || 'Failed to send memory response');
+      throw new Error(data.error || 'Failed to send collaborative knowledge response');
     }
     return data;
   }
 
   async sendAccessRequest(_toUser: string, _categories: string[]): Promise<{ delivered: boolean }> {
-    throw new Error('Access requests have been removed. Memory sharing is controlled by the memory owner.');
+    throw new Error('Access requests have been removed. Collaborative knowledge sharing is controlled by the owner.');
   }
 
   async getFriends(): Promise<FriendsResponse> {
@@ -445,6 +465,38 @@ export class RelayClient {
     } catch {
       return 'unreachable';
     }
+  }
+
+  // ─── CK Access Sync ─────────────────────────────────────────────────────────
+
+  async getCKAccess(): Promise<Record<string, string[]>> {
+    const res = await this.authedGet('/v1/ck/access');
+    if (!res.ok) throw new Error('Failed to get CK access rules');
+    const data = await res.json() as { access: Record<string, string[]> };
+    return data.access;
+  }
+
+  async setCKAccess(friend: string, categories: string[]): Promise<void> {
+    const res = await this.authedPut(`/v1/ck/access/${friend}`, { categories });
+    if (!res.ok) {
+      const err = await res.json() as { error: string };
+      throw new Error(err.error || 'Failed to set CK access');
+    }
+  }
+
+  async removeCKAccess(friend: string): Promise<void> {
+    const res = await this.authedDelete(`/v1/ck/access/${friend}`);
+    if (!res.ok) {
+      const err = await res.json() as { error: string };
+      throw new Error(err.error || 'Failed to remove CK access');
+    }
+  }
+
+  async getFriendCKAccess(friend: string): Promise<string[]> {
+    const res = await this.authedGet(`/v1/ck/access/${friend}`);
+    if (!res.ok) throw new Error('Failed to get friend CK access');
+    const data = await res.json() as { friend: string; categories: string[] };
+    return data.categories;
   }
 
   clearRegistration(): void {
@@ -506,9 +558,10 @@ export class RelayClient {
       'FRIEND_CANCEL': 'friend_cancel',
       'FRIEND_REMOVE': 'friend_remove',
       'MESSAGE': 'message',
-      'MEMORY_QUERY': 'memory_query',
-      'MEMORY_RESPONSE': 'memory_response',
+      'CK_QUERY': 'ck_query',
+      'CK_RESPONSE': 'ck_response',
       'ACCESS_REQUEST': 'access_request',
+      'ACCESS_UPDATE': 'access_update',
     };
 
     const eventType = eventMap[msg.type as string];
@@ -568,6 +621,17 @@ export class RelayClient {
     return ipv4Fetch(`${this.baseUrl}${path}`, {
       method: 'DELETE',
       headers: { 'X-API-Key': this.apiKey },
+    });
+  }
+
+  private async authedPut(path: string, body: Record<string, unknown>): Promise<Response> {
+    return ipv4Fetch(`${this.baseUrl}${path}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey,
+      },
+      body: JSON.stringify(body),
     });
   }
 }

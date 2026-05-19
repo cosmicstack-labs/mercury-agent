@@ -26,11 +26,11 @@ try {
   syncDatabaseClass = null;
 }
 
-export function isSharedMemoryDbAvailable(): boolean {
+export function isCollaborativeKnowledgeDbAvailable(): boolean {
   return syncDatabaseClass !== null;
 }
 
-export interface SharedMemoryRow {
+export interface CollaborativeKnowledgeRow {
   id: string;
   type: string;
   category: string;
@@ -49,13 +49,13 @@ export interface SharedMemoryRow {
   last_used_query: string | null;
 }
 
-export class SharedMemoryDB {
+export class CollaborativeKnowledgeDB {
   private db: BetterSqlite3Database;
 
   constructor(dbPath: string) {
     if (!syncDatabaseClass) {
       throw new Error(
-        'better-sqlite3 is not available — shared memory requires it. ' +
+        'better-sqlite3 is not available — collaborative knowledge requires it. ' +
         'Install build tools (make, gcc/g++, python3) or upgrade to Node >= 20.'
       );
     }
@@ -70,7 +70,7 @@ export class SharedMemoryDB {
 
   init(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS shared_memories (
+      CREATE TABLE IF NOT EXISTS collaborative_knowledge (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
         category TEXT NOT NULL DEFAULT 'general',
@@ -89,37 +89,37 @@ export class SharedMemoryDB {
         last_used_query TEXT
       );
 
-      CREATE VIRTUAL TABLE IF NOT EXISTS shared_memories_fts USING fts5(
-        summary, detail, content=shared_memories, content_rowid=rowid
+      CREATE VIRTUAL TABLE IF NOT EXISTS collaborative_knowledge_fts USING fts5(
+        summary, detail, content=collaborative_knowledge, content_rowid=rowid
       );
 
-      CREATE TABLE IF NOT EXISTS shared_memory_meta (
+      CREATE TABLE IF NOT EXISTS ck_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_shared_memories_type ON shared_memories(type);
-      CREATE INDEX IF NOT EXISTS idx_shared_memories_dismissed ON shared_memories(dismissed);
-      CREATE INDEX IF NOT EXISTS idx_shared_memories_updated ON shared_memories(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_shared_memories_category ON shared_memories(category);
+      CREATE INDEX IF NOT EXISTS idx_ck_type ON collaborative_knowledge(type);
+      CREATE INDEX IF NOT EXISTS idx_ck_dismissed ON collaborative_knowledge(dismissed);
+      CREATE INDEX IF NOT EXISTS idx_ck_updated ON collaborative_knowledge(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_ck_category ON collaborative_knowledge(category);
 
-      CREATE TRIGGER IF NOT EXISTS shared_memories_ai AFTER INSERT ON shared_memories BEGIN
-        INSERT INTO shared_memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
+      CREATE TRIGGER IF NOT EXISTS ck_ai AFTER INSERT ON collaborative_knowledge BEGIN
+        INSERT INTO collaborative_knowledge_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
 
-      CREATE TRIGGER IF NOT EXISTS shared_memories_ad AFTER DELETE ON shared_memories BEGIN
-        INSERT INTO shared_memories_fts(shared_memories_fts, rowid, summary, detail) VALUES('delete', old.rowid, old.summary, old.detail);
+      CREATE TRIGGER IF NOT EXISTS ck_ad AFTER DELETE ON collaborative_knowledge BEGIN
+        INSERT INTO collaborative_knowledge_fts(collaborative_knowledge_fts, rowid, summary, detail) VALUES('delete', old.rowid, old.summary, old.detail);
       END;
 
-      CREATE TRIGGER IF NOT EXISTS shared_memories_au AFTER UPDATE ON shared_memories BEGIN
-        INSERT INTO shared_memories_fts(shared_memories_fts, rowid, summary, detail) VALUES('delete', old.rowid, old.summary, old.detail);
-        INSERT INTO shared_memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
+      CREATE TRIGGER IF NOT EXISTS ck_au AFTER UPDATE ON collaborative_knowledge BEGIN
+        INSERT INTO collaborative_knowledge_fts(collaborative_knowledge_fts, rowid, summary, detail) VALUES('delete', old.rowid, old.summary, old.detail);
+        INSERT INTO collaborative_knowledge_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
     `);
 
     this.db.pragma('foreign_keys = ON');
     this.initFriendAccess();
-    logger.info('Shared memory database initialized');
+    logger.info('Collaborative knowledge database initialized');
   }
 
   // --- Friend Access Control ---
@@ -181,9 +181,9 @@ export class SharedMemoryDB {
     return map;
   }
 
-  insert(row: Omit<SharedMemoryRow, 'rowid'> & { rowid?: never }): void {
+  insert(row: Omit<CollaborativeKnowledgeRow, 'rowid'> & { rowid?: never }): void {
     const stmt = this.db.prepare(`
-      INSERT INTO shared_memories (
+      INSERT INTO collaborative_knowledge (
         id, type, category, summary, detail, evidence_kind,
         confidence, importance, durability, evidence_count,
         dismissed, created_at, updated_at,
@@ -215,7 +215,7 @@ export class SharedMemoryDB {
     });
   }
 
-  update(row: Partial<SharedMemoryRow> & { id: string }): void {
+  update(row: Partial<CollaborativeKnowledgeRow> & { id: string }): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id: row.id };
 
@@ -235,78 +235,78 @@ export class SharedMemoryDB {
 
     if (fields.length === 0) return;
 
-    const stmt = this.db.prepare(`UPDATE shared_memories SET ${fields.join(', ')} WHERE id = @id`);
+    const stmt = this.db.prepare(`UPDATE collaborative_knowledge SET ${fields.join(', ')} WHERE id = @id`);
     stmt.run(values);
   }
 
-  getActive(): SharedMemoryRow[] {
-    const stmt = this.db.prepare('SELECT * FROM shared_memories WHERE dismissed = 0 ORDER BY updated_at DESC');
-    return stmt.all() as SharedMemoryRow[];
+  getActive(): CollaborativeKnowledgeRow[] {
+    const stmt = this.db.prepare('SELECT * FROM collaborative_knowledge WHERE dismissed = 0 ORDER BY updated_at DESC');
+    return stmt.all() as CollaborativeKnowledgeRow[];
   }
 
-  getById(id: string): SharedMemoryRow | undefined {
-    const stmt = this.db.prepare('SELECT * FROM shared_memories WHERE id = ?');
-    return stmt.get(id) as SharedMemoryRow | undefined;
+  getById(id: string): CollaborativeKnowledgeRow | undefined {
+    const stmt = this.db.prepare('SELECT * FROM collaborative_knowledge WHERE id = ?');
+    return stmt.get(id) as CollaborativeKnowledgeRow | undefined;
   }
 
-  getByType(type: string): SharedMemoryRow[] {
-    const stmt = this.db.prepare('SELECT * FROM shared_memories WHERE type = ? AND dismissed = 0 ORDER BY updated_at DESC');
-    return stmt.all(type) as SharedMemoryRow[];
+  getByType(type: string): CollaborativeKnowledgeRow[] {
+    const stmt = this.db.prepare('SELECT * FROM collaborative_knowledge WHERE type = ? AND dismissed = 0 ORDER BY updated_at DESC');
+    return stmt.all(type) as CollaborativeKnowledgeRow[];
   }
 
-  getByCategory(category: string): SharedMemoryRow[] {
-    const stmt = this.db.prepare('SELECT * FROM shared_memories WHERE category = ? AND dismissed = 0 ORDER BY updated_at DESC');
-    return stmt.all(category) as SharedMemoryRow[];
+  getByCategory(category: string): CollaborativeKnowledgeRow[] {
+    const stmt = this.db.prepare('SELECT * FROM collaborative_knowledge WHERE category = ? AND dismissed = 0 ORDER BY updated_at DESC');
+    return stmt.all(category) as CollaborativeKnowledgeRow[];
   }
 
-  findMergeCandidate(type: string, normalizedTerms: string[]): SharedMemoryRow | undefined {
+  findMergeCandidate(type: string, normalizedTerms: string[]): CollaborativeKnowledgeRow | undefined {
     const stmt = this.db.prepare(`
-      SELECT * FROM shared_memories WHERE type = ? AND dismissed = 0
+      SELECT * FROM collaborative_knowledge WHERE type = ? AND dismissed = 0
       AND (summary LIKE ? OR ${normalizedTerms.map(() => 'summary LIKE ?').join(' OR ')})
       LIMIT 5
     `);
     const likeAny = normalizedTerms.map(t => `%${t}%`);
-    const rows = stmt.all(type, `%${normalizedTerms.slice(0, 3).join('%')}%`, ...likeAny) as SharedMemoryRow[];
+    const rows = stmt.all(type, `%${normalizedTerms.slice(0, 3).join('%')}%`, ...likeAny) as CollaborativeKnowledgeRow[];
     return rows.find(row => !this.rowHasNegationMismatch(row.summary, normalizedTerms));
   }
 
-  findConflictCandidate(type: string, summaryTerms: string[]): SharedMemoryRow | undefined {
+  findConflictCandidate(type: string, summaryTerms: string[]): CollaborativeKnowledgeRow | undefined {
     const stmt = this.db.prepare(`
-      SELECT * FROM shared_memories WHERE type = ? AND dismissed = 0
+      SELECT * FROM collaborative_knowledge WHERE type = ? AND dismissed = 0
       AND (${summaryTerms.map(() => 'summary LIKE ?').join(' OR ')})
       LIMIT 5
     `);
     const likes = summaryTerms.map(t => `%${t}%`);
-    const rows = stmt.all(type, ...likes) as SharedMemoryRow[];
+    const rows = stmt.all(type, ...likes) as CollaborativeKnowledgeRow[];
     return rows.find(row => this.rowHasNegationMismatch(row.summary, summaryTerms));
   }
 
-  searchRelevant(query: string, limit: number = 10): SharedMemoryRow[] {
+  searchRelevant(query: string, limit: number = 10): CollaborativeKnowledgeRow[] {
     const tokens = query.split(/\s+/).filter(t => t.length > 0).map(t => t.replace(/"/g, '""'));
     if (tokens.length === 0) {
-      const stmt = this.db.prepare('SELECT * FROM shared_memories WHERE dismissed = 0 ORDER BY updated_at DESC LIMIT ?');
-      return stmt.all(limit) as SharedMemoryRow[];
+      const stmt = this.db.prepare('SELECT * FROM collaborative_knowledge WHERE dismissed = 0 ORDER BY updated_at DESC LIMIT ?');
+      return stmt.all(limit) as CollaborativeKnowledgeRow[];
     }
     const ftsQuery = tokens.join(' OR ');
     const ftsStmt = this.db.prepare(`
-      SELECT m.* FROM shared_memories m
-      JOIN shared_memories_fts fts ON m.rowid = fts.rowid
-      WHERE shared_memories_fts MATCH ? AND m.dismissed = 0
+      SELECT m.* FROM collaborative_knowledge m
+      JOIN collaborative_knowledge_fts fts ON m.rowid = fts.rowid
+      WHERE collaborative_knowledge_fts MATCH ? AND m.dismissed = 0
       ORDER BY rank
       LIMIT ?
     `);
     try {
-      return ftsStmt.all(ftsQuery, limit) as SharedMemoryRow[];
+      return ftsStmt.all(ftsQuery, limit) as CollaborativeKnowledgeRow[];
     } catch {
       const likeClauses = tokens.map(() => '(summary LIKE ? OR detail LIKE ?)').join(' OR ');
-      const stmt = this.db.prepare(`SELECT * FROM shared_memories WHERE dismissed = 0 AND (${likeClauses}) ORDER BY updated_at DESC LIMIT ?`);
+      const stmt = this.db.prepare(`SELECT * FROM collaborative_knowledge WHERE dismissed = 0 AND (${likeClauses}) ORDER BY updated_at DESC LIMIT ?`);
       const likeValues = tokens.flatMap(t => [`%${t}%`, `%${t}%`]);
-      return stmt.all(...likeValues, limit) as SharedMemoryRow[];
+      return stmt.all(...likeValues, limit) as CollaborativeKnowledgeRow[];
     }
   }
 
   softDelete(id: string): boolean {
-    const stmt = this.db.prepare('UPDATE shared_memories SET dismissed = 1, updated_at = ? WHERE id = ?');
+    const stmt = this.db.prepare('UPDATE collaborative_knowledge SET dismissed = 1, updated_at = ? WHERE id = ?');
     const result = stmt.run(Date.now(), id);
     if (result.changes > 0) this.pruneEmptyCategories();
     return result.changes > 0;
@@ -314,25 +314,25 @@ export class SharedMemoryDB {
 
   clearByType(type?: string): number {
     if (type) {
-      const stmt = this.db.prepare('UPDATE shared_memories SET dismissed = 1, updated_at = ? WHERE type = ? AND dismissed = 0');
+      const stmt = this.db.prepare('UPDATE collaborative_knowledge SET dismissed = 1, updated_at = ? WHERE type = ? AND dismissed = 0');
       const result = stmt.run(Date.now(), type);
       if (result.changes > 0) this.pruneEmptyCategories();
       return result.changes;
     }
-    const stmt = this.db.prepare('UPDATE shared_memories SET dismissed = 1, updated_at = ? WHERE dismissed = 0');
+    const stmt = this.db.prepare('UPDATE collaborative_knowledge SET dismissed = 1, updated_at = ? WHERE dismissed = 0');
     const result = stmt.run(Date.now());
     if (result.changes > 0) this.pruneEmptyCategories();
     return result.changes;
   }
 
   totalActive(): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM shared_memories WHERE dismissed = 0');
+    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM collaborative_knowledge WHERE dismissed = 0');
     const row = stmt.get() as { count: number };
     return row.count;
   }
 
   countByType(): Record<string, number> {
-    const stmt = this.db.prepare("SELECT type, COUNT(*) as count FROM shared_memories WHERE dismissed = 0 GROUP BY type");
+    const stmt = this.db.prepare("SELECT type, COUNT(*) as count FROM collaborative_knowledge WHERE dismissed = 0 GROUP BY type");
     const rows = stmt.all() as Array<{ type: string; count: number }>;
     const result: Record<string, number> = {};
     for (const row of rows) {
@@ -342,7 +342,7 @@ export class SharedMemoryDB {
   }
 
   countByCategory(): Record<string, number> {
-    const stmt = this.db.prepare("SELECT category, COUNT(*) as count FROM shared_memories WHERE dismissed = 0 GROUP BY category");
+    const stmt = this.db.prepare("SELECT category, COUNT(*) as count FROM collaborative_knowledge WHERE dismissed = 0 GROUP BY category");
     const rows = stmt.all() as Array<{ category: string; count: number }>;
     const result: Record<string, number> = {};
     for (const row of rows) {
@@ -419,12 +419,12 @@ export class SharedMemoryDB {
   }
 
   setMeta(key: string, value: string): void {
-    const stmt = this.db.prepare('INSERT OR REPLACE INTO shared_memory_meta (key, value) VALUES (@key, @value)');
+    const stmt = this.db.prepare('INSERT OR REPLACE INTO ck_meta (key, value) VALUES (@key, @value)');
     stmt.run({ key, value });
   }
 
   getMeta(key: string): string | null {
-    const stmt = this.db.prepare('SELECT value FROM shared_memory_meta WHERE key = ?');
+    const stmt = this.db.prepare('SELECT value FROM ck_meta WHERE key = ?');
     const row = stmt.get(key) as { value: string } | undefined;
     return row?.value ?? null;
   }

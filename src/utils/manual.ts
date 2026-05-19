@@ -103,7 +103,10 @@ export function getManual(): string {
 
   const chat = [
     ['/start', 'Start Telegram pairing or request Telegram access'],
-    ['/pair', 'Start Telegram pairing or request Telegram access'],
+    ['/pair <CODE>', 'Pair agent with relay dashboard account using a pairing code'],
+    ['/relay', 'Connect/disconnect from relay (or start registration)'],
+    ['/relay status', 'Show relay connection status'],
+    ['/relay reset', 'Deregister from relay and clear credentials'],
     ['/', 'Open the CLI command picker with arrow-key navigation'],
     ['/menu', 'Open the CLI command picker with arrow-key navigation'],
     ['/help', 'Show this manual'],

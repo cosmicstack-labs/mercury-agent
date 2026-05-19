@@ -17,7 +17,7 @@ import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
-import sharedMemoryRoutes, { setSharedMemory, setRelayClient } from './api/shared-memory.js';
+import ckRoutes, { setWebCollaborativeKnowledge, setRelayClient } from './api/collaborative-knowledge.js';
 import relayRoutes, { setRelayClientForRelay } from './api/relay.js';
 import notificationRoutes, { setNotificationsStore } from './api/notifications.js';
 import messageRoutes, { setMessagesStore } from './api/messages.js';
@@ -63,7 +63,7 @@ app.route('/', agentRoutes);
 app.route('/', spotifyRoutes);
 app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);
-app.route('/', sharedMemoryRoutes);
+app.route('/', ckRoutes);
 app.route('/', relayRoutes);
 app.route('/', notificationRoutes);
 app.route('/', messageRoutes);
@@ -162,7 +162,7 @@ if (spaAvailable) {
   });
 }
 
-export { updateStatus, setUserMemory, setSharedMemory, setRelayClient, setRelayClientForRelay, setNotificationsStore, setMessagesStore, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
+export { updateStatus, setUserMemory, setWebCollaborativeKnowledge, setRelayClient, setRelayClientForRelay, setNotificationsStore, setMessagesStore, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
