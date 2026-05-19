@@ -456,10 +456,12 @@ function GitPanel() {
   const [showBranches, setShowBranches] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (showToast: boolean = false) => {
+    setRefreshing(true);
     try {
       const [statusData, branchData, logData] = await Promise.all([
         api.git.status(),
@@ -469,10 +471,15 @@ function GitPanel() {
       setGitStatus(statusData);
       setBranches(branchData.branches);
       setCommits(logData.commits);
+      if (showToast) {
+        setFeedback({ type: "success", msg: "Refreshed" });
+        setTimeout(() => setFeedback(null), 1500);
+      }
     } catch (err: any) {
       setFeedback({ type: "error", msg: err.message });
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -614,8 +621,16 @@ function GitPanel() {
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handlePush} disabled={!!actionLoading}>
             <Upload className="h-3 w-3" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={refresh} disabled={!!actionLoading}>
-            <RefreshCw className="h-3 w-3" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => refresh(true)}
+            disabled={!!actionLoading || refreshing}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
           </Button>
         </div>
       </div>
@@ -1336,7 +1351,8 @@ export function WorkspacePage() {
     direction: "horizontal" | "vertical",
     setValue: React.Dispatch<React.SetStateAction<number>>,
     min: number,
-    max: number
+    max: number,
+    invert: boolean = false
   ) {
     const dragging = useRef(false);
 
@@ -1349,9 +1365,10 @@ export function WorkspacePage() {
 
       function onMouseMove(e2: MouseEvent) {
         if (!dragging.current) return;
-        const delta = direction === "horizontal"
+        const rawDelta = direction === "horizontal"
           ? e2.clientX - startPos
           : startPos - e2.clientY; // inverted for bottom panel
+        const delta = invert ? -rawDelta : rawDelta;
         setValue(Math.min(max, Math.max(min, currentValue! + delta)));
       }
 
@@ -1363,13 +1380,14 @@ export function WorkspacePage() {
 
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
-    }, [direction, setValue, min, max]);
+    }, [direction, setValue, min, max, invert]);
 
     return { onMouseDown };
   }
 
   const leftResizer = useResizer("horizontal", setLeftWidth, 160, 400);
-  const rightResizer = useResizer("horizontal", setRightWidth, 200, 450);
+  // Right panel's resizer sits on its LEFT edge, so mouse delta is inverted
+  const rightResizer = useResizer("horizontal", setRightWidth, 200, 450, true);
   const bottomResizer = useResizer("vertical", setBottomHeight, 120, 500);
 
   return (
