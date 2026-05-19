@@ -3,9 +3,60 @@ id: coding-workspace
 title: Coding Workspace (IDE Mode)
 ---
 
-Mercury includes a CLI IDE-style workspace mode for repository-focused coding.
+Mercury offers two ways to work on a repository: a **CLI workspace** (terminal-based IDE with keyboard navigation) and a **Web Workspace IDE** (full graphical editor in the browser). Both share the same backend tools and Git operations.
 
-## Enter Workspace Mode
+## Web Workspace IDE
+
+Open `http://127.0.0.1:6174/workspace` in the dashboard to launch the browser-based editor.
+
+### Folder picker
+
+Click **Change Folder** at the top to pick the repository you want to work on. The path is persisted to `web-chat-settings.json` in your Mercury home directory, so the workspace remembers it across restarts.
+
+### File Explorer (left)
+
+- A collapsible tree of the current workspace folder.
+- Click a folder to expand/collapse; click a file to open it in a new tab.
+- The **refresh icon** rescans the tree.
+- The left panel is resizable — drag the right edge to grow or shrink it.
+
+### Editor (center)
+
+- **Multi-tab** — every file you open becomes a tab. A dot next to the filename means unsaved changes.
+- **Syntax highlighting** for TypeScript, JavaScript, Python, Rust, Go, Ruby, Swift, Java, C/C++, JSON, YAML, Markdown, and more (powered by `react-syntax-highlighter`).
+- **Editable overlay** — click anywhere in the code to start editing. `Cmd/Ctrl+S` saves the active file.
+- The bottom info bar shows the file path, language, and a `Save` button for dirty files.
+
+### Bottom panel — Terminal + Chat
+
+- **Terminal** tab — runs shell commands in the workspace root using `/api/terminal/exec`. Includes command history (↑/↓ to recall).
+- **Chat** tab — a focused conversation thread scoped to this workspace. The agent sees the open file and can apply edits directly.
+- **Maximize / Minimize** — click the `Maximize` icon in the top-right of the panel header to expand the bottom panel to fill the whole workspace area. Click again to restore.
+- The panel is resizable — drag the top border to set its height.
+
+### Source Control panel (right)
+
+The Git panel mirrors the most useful parts of VS Code's Source Control view.
+
+- **Pull**, **Push**, **Refresh** icons across the top.
+  - The refresh icon spins while it loads and shows a brief *Refreshed* confirmation.
+- **Status** — staged and unstaged files are listed separately. Hover a file to stage / unstage it. Click to view a unified diff.
+- **Branches** — see the current branch and switch to another (with optional `create` to make a new branch).
+- **Commit log** — the last 15 commits with author and message.
+- **Commit message box** with two helpers:
+  - The **sparkle icon** runs **AI Commit Message Generation** (`POST /api/git/generate-commit-message`). Mercury auto-stages any unstaged changes first, then asks the configured default provider to draft a conventional-commit message from the diff. The generated message is inserted into the box for you to review or edit before committing.
+  - `Commit` button — commits the staged files with the message.
+- The right panel's resizer sits on its left edge — drag it left to grow the panel, right to shrink.
+
+### Resizable layout
+
+All three panels (Explorer, Bottom, Source Control) are independently resizable. Drag the divider between any two panels to adjust.
+
+## CLI Workspace Mode
+
+If you prefer staying in the terminal, Mercury includes a CLI IDE-style workspace mode for repository-focused coding.
+
+### Enter Workspace Mode
 
 You can enter workspace mode in multiple ways:
 
@@ -15,7 +66,7 @@ You can enter workspace mode in multiple ways:
 
 Once active, Mercury switches to coding context for that repository. Agent responses appear in the normal scrollable chat view so you can always see full output.
 
-## Modes
+### Modes
 
 Use programming modes to control behavior:
 
@@ -54,7 +105,7 @@ Use programming modes to control behavior:
 | Git | `↑` `↓` | Move through changed files |
 | Git | `Enter` | Stage selected file |
 
-## Workspace Commands
+### Workspace Commands
 
 | Command | Description |
 |---------|-------------|
@@ -70,7 +121,7 @@ Use programming modes to control behavior:
 
 ## Sub-Agents + Background in Coding
 
-Workspace mode supports explicit delegation and backgrounding:
+Workspace mode (CLI and web) supports explicit delegation and backgrounding:
 
 - `/code agent <task>` — delegate coding work to a sub-agent
 - `/bg current` — move active in-flight work to background
@@ -90,3 +141,21 @@ During long-running tasks, Mercury shows real-time progress:
 - Heartbeat messages escalate timing (20s → 30s → 45s → 60s) to reduce noise
 - Use `/progress` to see the last 10 completed steps with timing
 - Consecutive identical tool calls are collapsed (e.g., "Read 3 files")
+
+## Git API endpoints (web)
+
+The Source Control panel calls these endpoints under the hood. They are useful if you want to script against the local instance.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/git/status` | Staged + unstaged file list |
+| `GET` | `/api/git/branches` | All branches with current + upstream |
+| `POST` | `/api/git/checkout` | Switch branch (`{ branch, create? }`) |
+| `GET` | `/api/git/diff?path=...&staged=...` | Unified diff |
+| `GET` | `/api/git/log?limit=15` | Commit log |
+| `POST` | `/api/git/stage` | Stage files (`{ files: [...] }` or `["."]` for all) |
+| `POST` | `/api/git/unstage` | Unstage files |
+| `POST` | `/api/git/commit` | Commit (`{ message }`) |
+| `POST` | `/api/git/push` | Push (`{ remote?, branch?, setUpstream? }`) |
+| `POST` | `/api/git/pull` | Pull from upstream |
+| `POST` | `/api/git/generate-commit-message` | AI-generated conventional commit from staged diff |

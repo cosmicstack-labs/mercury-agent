@@ -3,29 +3,134 @@ id: skills
 title: Skills
 ---
 
-Skills are markdown-based extensions that live in `~/.mercury/skills/<name>/SKILL.md`.
+Skills are Markdown-based extensions that teach Mercury how to do a specific task. Each skill is a single `SKILL.md` file in `~/.mercury/skills/<name>/` and follows the [Agent Skills specification](https://agentskills.io).
 
-## Default skills
+A skill bundles:
 
-On first run, Mercury seeds a built-in `web-search` skill at:
+- **Frontmatter** describing the skill, its tags/intents, and which tools it is allowed to call.
+- **Markdown instructions** that get injected into Mercury's context when the skill is invoked.
+- Optional `scripts/` and `references/` subdirectories that the skill can read at runtime.
 
-`~/.mercury/skills/web-search/SKILL.md`
+## Where skills live
 
-If you already have your own `web-search` skill, Mercury does not overwrite it.
+```
+~/.mercury/skills/
+├── _template/        # Seeded template you can copy
+├── web-search/       # Seeded default skill
+└── <your-skill>/
+    ├── SKILL.md
+    ├── scripts/      # optional
+    └── references/   # optional
+```
 
-## Installing
+On first run, Mercury seeds a `_template` directory and a built-in `web-search` skill. If `web-search/SKILL.md` already exists, it is left alone — your customizations are never overwritten.
 
-Tell Mercury in conversation:
+## SKILL.md format
+
+```markdown
+---
+name: daily-digest
+description: Summarize the user's day from chat history and memory.
+version: 0.1.0
+category: productivity
+categories:
+  - productivity
+  - reporting
+intents:
+  - daily summary
+  - end of day report
+tags:
+  - digest
+  - summary
+allowed-tools:
+  - read_file
+  - list_dir
+  - web_search
+---
+
+# Daily Digest
+
+## What It Does
+
+Generates a structured summary of the user's day from chat history and memory.
+
+## Instructions
+
+1. Read today's chat threads.
+2. Pull memories created or referenced today.
+3. Group by topic, list decisions made, and propose next-day priorities.
+```
+
+### Required frontmatter
+
+- `name` — unique slug across installed skills
+- `description` — one-line summary used in listings and intent routing
+
+### Optional frontmatter
+
+- `version` — semver string
+- `category` / `categories` — used for grouping in the UI
+- `intents` — natural-language hints used for automatic routing
+- `tags` — arbitrary labels
+- `allowed-tools` — the only tool names this skill may call when invoked (elevated permissions are granted from this list)
+
+Mercury uses **progressive disclosure**: only the frontmatter and a short summary are kept in context until the skill is actually invoked, at which point the full Markdown body is loaded. This keeps token usage low even with many skills installed.
+
+## Installing skills
+
+### From the web dashboard
+
+Open **Configure → Skills** (`/skills`) in the dashboard.
+
+- The page lists every installed skill with its description, version, active state, and `allowed-tools`.
+- Click **Install from URL** and paste a URL pointing to a raw `SKILL.md` file. Mercury fetches it (`http://` or `https://`), validates the frontmatter, and saves it to `~/.mercury/skills/<name>/SKILL.md`.
+- Use the **toggle** to activate or deactivate a skill without deleting it. Deactivated skills are not loaded into Mercury's intent router.
+- Use the **trash icon** to delete a skill (removes the directory from disk).
+
+### From chat
+
+Tell Mercury in any channel:
 
 - "Install skill from https://example.com/my-skill.md"
-- Or paste the SKILL.md content directly
+- Or paste the SKILL.md content directly into a message and ask Mercury to install it.
 
-## Invoking
+### Manually
 
-- "Use the daily-digest skill"
+Drop a directory containing a valid `SKILL.md` into `~/.mercury/skills/` and Mercury will pick it up on its next discovery scan.
 
-## Scheduling a skill
+## Invoking a skill
 
-- "Remind me daily at 9am to run the daily-digest skill"
+- Ask in natural language: "Use the daily-digest skill" — intent routing matches against the skill's `intents`, `categories`, and `tags`.
+- Schedule it: "Remind me daily at 9am to run the daily-digest skill" — see the [Schedules](../integrations/web-dashboard) page.
 
-Skills follow the [Agent Skills specification](https://agentskills.io). They get elevated permissions via `allowed-tools` and are loaded with progressive disclosure to save tokens.
+When invoked, Mercury injects the skill's Markdown body into context as guidance, and the tools listed in `allowed-tools` are granted elevated permissions for the duration of that turn.
+
+## API
+
+The web dashboard talks to the skill loader through these endpoints:
+
+```
+GET    /api/skills                    # list installed skills with active state
+POST   /api/skills/install            # { url } — fetch and install from a URL
+POST   /api/skills/:name/activate
+POST   /api/skills/:name/deactivate
+DELETE /api/skills/:name
+```
+
+## Writing your own
+
+Copy the seeded template:
+
+```bash
+cp -r ~/.mercury/skills/_template ~/.mercury/skills/my-skill
+$EDITOR ~/.mercury/skills/my-skill/SKILL.md
+```
+
+Edit the frontmatter (especially `name`, `description`, `intents`, and `allowed-tools`), rewrite the Markdown body, and the skill will be available on Mercury's next discovery scan. From the web dashboard, hit the refresh icon on the Skills page.
+
+### Tips
+
+- Keep instructions concise — every token in the body is loaded when the skill is invoked.
+- Only list the tools you actually need in `allowed-tools` (least-privilege).
+- Use `intents` to make the skill discoverable from natural language without the user having to remember the exact name.
+- Use `scripts/` for reusable shell snippets and `references/` for data files the skill can read.

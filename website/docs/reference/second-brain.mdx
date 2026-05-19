@@ -3,7 +3,7 @@ id: second-brain
 title: Second Brain
 ---
 
-Mercury has a persistent, structured memory that grows with every conversation. When enabled, it automatically extracts, stores, and retrieves facts about you — your preferences, goals, projects, habits, and more.
+Mercury has a persistent, structured memory that grows with every conversation. When enabled, it automatically extracts, stores, and retrieves facts about you — your preferences, goals, projects, habits, the people in your life, and the relationships between them.
 
 ## How it works
 
@@ -12,10 +12,28 @@ Mercury has a persistent, structured memory that grows with every conversation. 
 3. **Consolidation** — Every 60 minutes, Mercury builds a profile summary, an active-state summary, and generates `reflection` memories from detected patterns.
 4. **Pruning** — Active-scope memories stale after 21 days. Inferred memories decay. Low-confidence durable memories are dismissed after 120 days. Memories reinforced 3+ times are promoted to durable.
 
+## Memory Tiers
+
+Mercury models memory in two tiers, mirroring how human memory works:
+
+| Tier | Scope values | Behavior |
+|------|--------------|----------|
+| **Conscious** | `durable`, `active` | Always available for retrieval. Top-of-mind. |
+| **Subconscious** | `subconscious` | Out of active recall. Confidence does **not** decay here. Recalled automatically when relevant to the current conversation. |
+
+### Subconscious mechanics
+
+- After **30 days** without being referenced, an active memory is moved to the subconscious instead of being deleted.
+- Subconscious memories are preserved with their original confidence — no further decay applies while they sit there.
+- During retrieval, if conscious results are weak, Mercury also searches the subconscious and surfaces the strongest matches. When a subconscious memory is recalled into a relevant conversation, it is **promoted back to the conscious tier**.
+- Subconscious memories are only hard-deleted if explicitly dismissed. Otherwise they remain available forever.
+
+This is why Mercury can resurface "I told you that two years ago" facts without polluting day-to-day reasoning.
+
 ## Memory Types
 
-| Type | Scope | What it stores |
-|------|-------|---------------|
+| Type | Default scope | What it stores |
+|------|---------------|---------------|
 | `identity` | durable | Who you are — name, role, background |
 | `preference` | durable | What you like and dislike |
 | `goal` | active | What you're working toward |
@@ -35,10 +53,44 @@ When Mercury detects opposing memories (e.g. "prefers TypeScript" vs "prefers Py
 
 - **direct** — Explicitly stated by you (highest confidence)
 - **inferred** — Pattern Mercury detected (decays over time)
-- **manual** — Added via `/memory` command
+- **manual** — Added via `/memory` command or the web UI
 - **system** — Auto-generated reflections from consolidation
 
-## Managing Memory
+## Web Dashboard Views
+
+The Second Brain is exposed through four interconnected pages in the web dashboard.
+
+### Memory (`/second-brain/memory`)
+
+A full browser for every memory item.
+
+- **Scope filter** — toggle between `conscious` and `subconscious` views. A 💤 badge marks subconscious entries.
+- **Search** — full-text search across memory summaries; results merge conscious and subconscious matches.
+- **Inline edit** — change summary, type, importance, confidence, or scope.
+- **Add memory** — manually create a memory with type, summary, and evidence.
+- **Delete** — soft-dismiss a memory (only explicit dismissal hard-deletes; otherwise items just move to subconscious).
+
+### Persons (`/second-brain/persons`, `/second-brain/persons/:id`)
+
+People Mercury has encountered are extracted into a structured table.
+
+- The listing shows each person's name, last-seen timestamp, and the number of memories associated with them.
+- Click a person to open their detail page with their facts, related memories, and links to other persons (via `relationship` memories).
+
+### Goals (`/second-brain/goals`)
+
+A tabbed view that filters memories by type:
+
+- **Goals tab** — every memory with `type: goal`
+- **Projects tab** — every memory with `type: project`
+
+You can add new goals/projects directly from this page — they are stored as standard memories so the agent can reason over them.
+
+### Graph (`/second-brain/graph`)
+
+A force-directed graph visualization that draws nodes for memories, persons, and goals, and edges for their relationships. Useful for spotting clusters (e.g. all goals connected to a particular project, or all persons connected to a company).
+
+## Managing Memory from chat channels
 
 Use `/memory` in any channel:
 
@@ -46,10 +98,31 @@ Use `/memory` in any channel:
 |--------|-----|----------|
 | Overview | Arrow-key menu → Overview | Inline button: 📋 Overview |
 | Recent memories | Arrow-key menu → Recent | Inline button: 🔍 Recent |
+| Subconscious | Arrow-key menu → Subconscious | Inline button: 💤 Subconscious |
 | Search | Arrow-key menu → Search | Not available (ask Mercury to search) |
 | Pause learning | Arrow-key menu → Pause | Inline button: ⏸ Pause |
 | Resume learning | Arrow-key menu → Resume | Inline button: ▶ Resume |
 | Clear all | Arrow-key menu → Clear (with confirmation) | Inline button: 🗑 Clear → Yes |
+
+## API Endpoints
+
+The web dashboard talks to the brain through a small REST surface:
+
+```
+GET    /api/brain/status
+GET    /api/brain/memory                 # ?scope=conscious|subconscious
+GET    /api/brain/memory/search?q=...
+GET    /api/brain/memory/:id
+PUT    /api/brain/memory/:id
+DELETE /api/brain/memory/:id
+POST   /api/brain/memory                 # manual add
+GET    /api/brain/persons
+GET    /api/brain/persons/:id
+GET    /api/brain/persons/:id/memories
+GET    /api/brain/graph
+```
+
+Goals and projects are not a separate resource — they are memories filtered by `type=goal` or `type=project` against `/api/brain/memory`.
 
 ## Enable / Disable
 
