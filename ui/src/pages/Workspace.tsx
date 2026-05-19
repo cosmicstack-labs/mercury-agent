@@ -361,7 +361,7 @@ function EditorPanel({
           </div>
 
           {/* Code content — syntax highlighted with editable overlay */}
-          <div className="flex-1 min-h-0 overflow-auto bg-[#282c34]" ref={scrollRef}>
+          <div className="flex-1 min-h-0 overflow-auto bg-[#282c34]" ref={scrollRef} onClick={() => textareaRef.current?.focus()}>
             <div className="relative" style={{ minWidth: "fit-content" }}>
               {/* Syntax highlighted layer (visual) */}
               <SyntaxHighlighter
@@ -405,12 +405,33 @@ function EditorPanel({
                   "absolute top-0 left-0 w-full h-full resize-none bg-transparent text-transparent caret-white",
                   "font-mono text-[13px] leading-[20px]",
                   "focus:outline-none",
-                  "whitespace-pre overflow-hidden"
+                  "whitespace-pre",
+                  "pointer-events-none focus:pointer-events-auto"
                 )}
                 style={{
                   tabSize: 2,
                   padding: "0.5rem 0 0.5rem 4.5em",
                   fontFamily: "var(--font-mono, 'Geist Mono', ui-monospace, monospace)",
+                  overflow: "hidden",
+                }}
+                onFocus={() => {
+                  // Enable pointer events while editing
+                  if (textareaRef.current) {
+                    textareaRef.current.style.pointerEvents = "auto";
+                  }
+                }}
+                onBlur={() => {
+                  // Disable pointer events when not editing so scroll passes through
+                  if (textareaRef.current) {
+                    textareaRef.current.style.pointerEvents = "none";
+                  }
+                }}
+                onWheel={(e) => {
+                  // Forward wheel events to parent scroll container while focused
+                  if (scrollRef.current) {
+                    scrollRef.current.scrollTop += e.deltaY;
+                    scrollRef.current.scrollLeft += e.deltaX;
+                  }
                 }}
               />
             </div>

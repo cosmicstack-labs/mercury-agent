@@ -10,17 +10,15 @@ export default defineConfig({
       registerType: "autoUpdate",
       injectRegister: "auto",
       workbox: {
-        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-        runtimeCaching: [
-          {
-            urlPattern: /\/api\//,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-cache",
-              expiration: { maxEntries: 50, maxAgeSeconds: 300 },
-            },
-          },
-        ],
+        // Don't precache anything - always fetch fresh from network
+        globPatterns: [],
+        navigateFallback: null,
+        runtimeCaching: [],
+        // Take control immediately and skip waiting so updates apply on next load
+        skipWaiting: true,
+        clientsClaim: true,
+        // Clean up any existing precaches from previous SW versions
+        cleanupOutdatedCaches: true,
       },
       manifest: {
         name: "Mercury — AI Agent",

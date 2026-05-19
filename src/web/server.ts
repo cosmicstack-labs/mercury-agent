@@ -186,21 +186,13 @@ process.on('exit', () => {
 });
 
 process.on('uncaughtException', (err) => {
-  if (webServer) {
-    try { webServer.close(); } catch {}
-    webServer = null;
-  }
-  logger.error({ err: err.message }, 'Uncaught exception — web server terminated');
-  process.exit(1);
+  logger.error({ err: err.message }, 'Uncaught exception in web server');
+  // Don't exit — let Mercury's main process handler decide
 });
 
 process.on('unhandledRejection', (reason: any) => {
-  logger.error({ err: reason?.message || reason }, 'Unhandled rejection — shutting down');
-  if (webServer) {
-    try { webServer.close(); } catch {}
-    webServer = null;
-  }
-  process.exit(1);
+  logger.warn({ err: reason?.message || reason }, 'Unhandled rejection in web server (non-fatal)');
+  // Don't exit — unhandled rejections from API routes should not kill Mercury
 });
 
 export function startWebServer(): { port: number; url: string } {

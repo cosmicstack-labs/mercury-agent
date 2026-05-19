@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -411,6 +412,8 @@ function ChatInput({
 // ─── Main Page ───────────────────────────────────────────────
 
 export function ChatPage() {
+  const { threadId: urlThreadId } = useParams<{ threadId?: string }>();
+  const navigate = useNavigate();
   const { connected } = useSSE();
   const { threads, loading: threadsLoading, reload: reloadThreads } = useThreads();
 
@@ -432,6 +435,13 @@ export function ChatPage() {
   const clearStreaming = useChatStore((s) => s.clearStreaming);
   const resetSteps = useChatStore((s) => s.resetSteps);
   const bumpThreadVersion = useChatStore((s) => s.bumpThreadVersion);
+
+  // Sync URL param → active thread
+  useEffect(() => {
+    if (urlThreadId && urlThreadId !== activeThreadId) {
+      setActiveThread(urlThreadId);
+    }
+  }, [urlThreadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Panel state
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -520,6 +530,13 @@ export function ChatPage() {
     const newId = `web:${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setActiveThread(newId);
     clearMessages();
+    reloadThreads();
+    navigate(`/chat/${newId}`);
+  }
+
+  function handleSelectThread(id: string) {
+    setActiveThread(id);
+    navigate(`/chat/${id}`);
   }
 
   function handleExportThread(id: string) {
@@ -545,28 +562,23 @@ export function ChatPage() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       {/* ── Thread Sidebar (desktop) ── */}
-      <AnimatePresence mode="wait">
-        {sidebarOpen && (
-          <motion.div
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 240, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="hidden h-full shrink-0 overflow-hidden border-r border-border bg-background md:block"
-          >
-            <div className="h-full w-[240px]">
-              <ThreadList
-                threads={threads}
-                activeThreadId={activeThreadId}
-                onSelect={setActiveThread}
-                onDelete={handleDeleteThread}
-                onNew={handleNewThread}
-                onExport={handleExportThread}
-              />
-            </div>
-          </motion.div>
+      <div
+        className={cn(
+          "hidden h-full shrink-0 border-r border-border bg-background transition-[width] duration-200 ease-in-out md:block overflow-hidden",
+          sidebarOpen ? "w-[240px]" : "w-0 border-r-0"
         )}
-      </AnimatePresence>
+      >
+        <div className="h-full w-[240px]">
+          <ThreadList
+            threads={threads}
+            activeThreadId={activeThreadId}
+            onSelect={handleSelectThread}
+            onDelete={handleDeleteThread}
+            onNew={handleNewThread}
+            onExport={handleExportThread}
+          />
+        </div>
+      </div>
 
       {/* ── Mobile sidebar overlay ── */}
       <AnimatePresence>
@@ -590,7 +602,7 @@ export function ChatPage() {
                 threads={threads}
                 activeThreadId={activeThreadId}
                 onSelect={(id) => {
-                  setActiveThread(id);
+                  handleSelectThread(id);
                   setSidebarOpen(false);
                 }}
                 onDelete={handleDeleteThread}

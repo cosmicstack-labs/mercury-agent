@@ -65,6 +65,7 @@ function AnimatedRoutes() {
           <Route element={<AppLayout />}>
             <Route index element={<AnimatedPage><DashboardPage /></AnimatedPage>} />
             <Route path="chat" element={<ChatPage />} />
+            <Route path="chat/:threadId" element={<ChatPage />} />
             <Route path="tasks" element={<AnimatedPage><TasksPage /></AnimatedPage>} />
             <Route path="board" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
             <Route path="board/:boardId" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { authenticate, createSession, destroySession, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge } from '../auth.js';
 
 const __authDir = dirname(fileURLToPath(import.meta.url));
-const spaLoginIndex = join(__authDir, '..', 'ui', 'index.html');
+const spaLoginIndex = join(__authDir, 'web', 'ui', 'index.html');
 
 function renderLoginPage(error?: string): string {
   return `<!DOCTYPE html>

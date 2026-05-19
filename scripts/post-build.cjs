@@ -59,4 +59,22 @@ if (!fs.existsSync(uiDistSrc)) {
 }
 copyDirSync(uiDistSrc, uiDistDest);
 
+// 5. Write a self-unregistering service worker.
+// PWA is currently disabled — any previously-installed SW would keep serving
+// stale cached assets. This SW unregisters itself and clears all caches on
+// activation, then reloads any controlled window clients.
+const killSwitchSW = `// Self-unregistering service worker.
+self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+    await self.registration.unregister();
+    const clients = await self.clients.matchAll({ type: 'window' });
+    clients.forEach((client) => client.navigate(client.url));
+  })());
+});
+`;
+fs.writeFileSync(path.join(uiDistDest, 'sw.js'), killSwitchSW);
+
 console.log('  ✓ Build complete');
