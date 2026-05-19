@@ -1,6 +1,12 @@
 import { Hono } from 'hono';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
+import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { authenticate, createSession, destroySession, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge } from '../auth.js';
+
+const __authDir = dirname(fileURLToPath(import.meta.url));
+const spaLoginIndex = join(__authDir, 'web', 'ui', 'index.html');
 
 function renderLoginPage(error?: string): string {
   return `<!DOCTYPE html>
@@ -32,6 +38,11 @@ ${error ? `<div class="err">${error}</div>` : ''}
 const auth = new Hono();
 
 auth.get('/login', (c) => {
+  if (existsSync(spaLoginIndex)) {
+    return new Response(readFileSync(spaLoginIndex), {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
   return c.html(renderLoginPage());
 });
 
@@ -63,7 +74,13 @@ auth.post('/api/auth/login', async (c) => {
 auth.get('/api/auth/logout', (c) => {
   const token = getCookie(c, getSessionCookieName());
   if (token) destroySession(token);
-  deleteCookie(c, getSessionCookieName(), { path: '/' });
+  setCookie(c, getSessionCookieName(), '', {
+    httpOnly: true,
+    secure: false,
+    sameSite: 'Strict',
+    maxAge: 0,
+    path: '/',
+  });
   return c.redirect('/login');
 });
 

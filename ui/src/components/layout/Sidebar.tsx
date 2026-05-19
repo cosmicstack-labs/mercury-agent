@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useThemeStore } from "@/stores/theme";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   LayoutDashboard,
@@ -11,7 +12,7 @@ import {
   Users,
   Target,
   Share2,
-  Calculator,
+  
   Cpu,
   Puzzle,
   Shield,
@@ -56,12 +57,6 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    title: "Tools",
-    items: [
-      { to: "/profit-sharing", icon: Calculator, label: "Profit Sharing" },
-    ],
-  },
-  {
     title: "Configure",
     items: [
       { to: "/providers", icon: Cpu, label: "Providers" },
@@ -75,6 +70,7 @@ const NAV_SECTIONS = [
 
 export function Sidebar({ open, onToggle }: SidebarProps) {
   const location = useLocation();
+  const resolved = useThemeStore((s) => s.resolved);
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -98,17 +94,18 @@ export function Sidebar({ open, onToggle }: SidebarProps) {
         >
           {open ? (
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg mercury-gradient flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-[#00d4ff]/20">
-                ☿
-              </div>
-              <span className="text-lg font-semibold tracking-tight mercury-gradient-text">
-                Mercury
-              </span>
+              <img
+                src={resolved === "dark" ? "/logo-full-dark.png" : "/logo-full-light.png"}
+                alt="Mercury Agent"
+                className="h-10 w-auto"
+              />
             </div>
           ) : (
-            <div className="w-8 h-8 rounded-lg mercury-gradient flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-[#00d4ff]/20">
-              ☿
-            </div>
+            <img
+              src={resolved === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+              alt="Mercury"
+              className="w-8 h-8"
+            />
           )}
 
           {/* Collapse toggle — desktop only */}
@@ -242,12 +239,12 @@ export function Sidebar({ open, onToggle }: SidebarProps) {
             <ThemeToggle collapsed={!open} />
             {(() => {
               const btn = (
-                <a
-                  href="/api/auth/logout"
+                <button
+                  onClick={() => { window.location.href = "/api/auth/logout"; }}
                   className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                 >
                   <LogOut size={18} />
-                </a>
+                </button>
               );
               return !open ? (
                 <Tooltip>

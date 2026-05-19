@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { validateSession, getSessionCookieName } from './auth.js';
 
-const PUBLIC_PATHS = new Set(['/login', '/api/auth/login']);
+const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout']);
 
 export async function authGuard(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname;

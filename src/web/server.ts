@@ -97,7 +97,7 @@ if (spaAvailable) {
   });
 
   // Serve top-level SPA files (favicon, manifest, service worker, etc.)
-  const SPA_TOP_LEVEL_FILES = ['favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'registerSW.js', 'sw.js', 'sw.js.map', 'robots.txt'];
+  const SPA_TOP_LEVEL_FILES = ['favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'registerSW.js', 'sw.js', 'sw.js.map', 'robots.txt', 'logo-dark.png', 'logo-light.png', 'logo-full-dark.png', 'logo-full-light.png'];
 
   // Also pick up workbox files dynamically
   try {
@@ -141,6 +141,19 @@ if (spaAvailable) {
   app.get('*', (c) => {
     // Don't catch API routes
     if (c.req.path.startsWith('/api/')) return c.notFound();
+
+    // Serve top-level static files from ui dir if they exist
+    const reqPath = c.req.path.slice(1); // strip leading /
+    if (reqPath && !reqPath.includes('/') && !reqPath.includes('..')) {
+      const filePath = join(uiDir, reqPath);
+      if (existsSync(filePath)) {
+        const ext = reqPath.split('.').pop() || '';
+        return new Response(readFileSync(filePath), {
+          headers: { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
+        });
+      }
+    }
+
     return new Response(readFileSync(spaIndexPath), {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
@@ -156,6 +169,34 @@ if (spaAvailable) {
 
 export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
+let webServer: ReturnType<typeof createAdaptorServer> | null = null;
+
+// Ensure web server is always terminated with the Mercury process
+process.on('exit', () => {
+  if (webServer) {
+    try { webServer.close(); } catch {}
+    webServer = null;
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  if (webServer) {
+    try { webServer.close(); } catch {}
+    webServer = null;
+  }
+  logger.error({ err: err.message }, 'Uncaught exception — web server terminated');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  logger.error({ err: reason?.message || reason }, 'Unhandled rejection — shutting down');
+  if (webServer) {
+    try { webServer.close(); } catch {}
+    webServer = null;
+  }
+  process.exit(1);
+});
+
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
   initWebAuth();
@@ -167,6 +208,7 @@ export function startWebServer(): { port: number; url: string } {
   }
 
   const server = createAdaptorServer({ fetch: app.fetch });
+  webServer = server;
 
   server.on('error', (err: any) => {
     if (err?.code === 'EADDRINUSE') {
@@ -181,4 +223,13 @@ export function startWebServer(): { port: number; url: string } {
   });
 
   return { port, url: `http://127.0.0.1:${port}` };
+}
+
+export function stopWebServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!webServer) return resolve();
+    webServer.close(() => resolve());
+    // Force-close connections after 2s
+    setTimeout(() => resolve(), 2000);
+  });
 }
