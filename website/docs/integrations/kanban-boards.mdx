@@ -1,0 +1,92 @@
+---
+title: "Kanban Boards"
+sidebar_label: "Kanban Boards"
+---
+
+# Kanban Boards
+
+Mercury's Kanban Board system provides persistent task management with agent-driven execution. Boards are stored in SQLite (with JSON fallback) and accessible via the Web Dashboard UI or API.
+
+## Cards
+
+Each card supports the following properties:
+
+| Property | Description |
+|----------|-------------|
+| Title | Card name |
+| Description | Detailed task description |
+| Status | `todo`, `doing`, `done`, `blocked` |
+| Priority | `critical`, `high`, `normal`, `low` |
+| Labels | Arbitrary tags for categorization |
+| Comments | Threaded comments with author tracking |
+| Attachments | Linked files |
+| Dependencies | Blocks/blocked-by relationships between cards |
+| Parent-child | Hierarchical card relationships |
+
+## Board Operations
+
+- **Create/Delete** — manage multiple boards
+- **Activate/Deactivate** — control which boards are live
+- **Generate from natural language** — describe a project and Mercury creates the board
+- **Execution plans** — preview what the agent will do before running
+- **Smart execution** — agent processes cards sequentially
+- **Cascade execution** — run a card and all its dependents
+- **Run all / Halt all** — batch control over card execution
+
+## Card Operations
+
+- Add, bulk add, update, delete, reorder cards
+- Clear done cards
+- Run individual cards (agent executes the task described)
+- Halt running cards mid-execution
+
+## Agent Execution
+
+When a card is run, the agent autonomously processes the task:
+
+1. Card status moves to `doing`
+2. Agent executes the described task within a configurable **token budget**
+3. On completion, status moves to `done` with a comment containing results
+4. If the token budget is exhausted, execution auto-pauses
+
+## Collaboration
+
+- **Comments** — add notes with automatic author tracking
+- **Attachments** — link files to cards
+- **Dependencies** — define blocks/blocked-by relationships to enforce ordering
+
+## Board Context
+
+Each board can define:
+
+- **Working directory** — where file operations execute
+- **Custom variables** — key-value pairs available during execution
+- **Instructions** — system-level guidance for the agent
+- **Structure definition** — expected project layout
+- **Knowledge base** — reference material the agent can consult
+
+## Access
+
+### Web Dashboard
+
+Manage boards visually through the Mercury Web Dashboard UI.
+
+### API
+
+All board operations are available via REST endpoints:
+
+```
+GET    /api/boards
+POST   /api/boards
+GET    /api/boards/:id
+DELETE /api/boards/:id
+POST   /api/boards/:id/cards
+PATCH  /api/boards/:id/cards/:cardId
+DELETE /api/boards/:id/cards/:cardId
+POST   /api/boards/:id/run
+POST   /api/boards/:id/halt
+```
+
+### Real-time Updates
+
+Subscribe to board changes via Server-Sent Events (SSE) for live status updates as cards are processed.

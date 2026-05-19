@@ -1,0 +1,54 @@
+---
+title: "Web Dashboard"
+sidebar_label: "Web Dashboard"
+---
+
+# Web Dashboard
+
+Mercury Web is a React single-page application dashboard that provides a visual interface for managing and interacting with Mercury. It is accessible at `http://127.0.0.1:6174`.
+
+## Enabling the Dashboard
+
+Enable the web dashboard using either method:
+
+- Run `mercury doctor` and follow the prompts
+- Set `web.enabled: true` in your `mercury.yaml` configuration
+
+## Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `web.enabled` | `false` | Enable or disable the web dashboard |
+| `web.port` | `6174` | Port the dashboard listens on |
+| `MERCURY_PORT` | `6174` | Environment variable override for port |
+
+The server binds to `127.0.0.1` only and is not exposed to the network. The web server lifecycle is tied to the Mercury process — it stops when Mercury stops.
+
+## Authentication
+
+The dashboard is protected by username/password authentication.
+
+**Default credentials:**
+
+- Username: `mercury`
+- Password: `Mercury@123`
+
+## Features
+
+- **Status Overview** — High-level view of Mercury's current state
+- **Chat Interface** — Conversational interface with SSE streaming support
+- **Kanban Boards** — Task and workflow management
+- **Second Brain** — Memory, Persons, Goals, and Graph views
+- **Workspace IDE** — In-browser code and file editing
+- **Provider Management** — Configure and manage LLM providers
+- **Skill Management** — View and manage available skills
+- **Permission Management** — Control access and permissions
+- **Schedule Management** — Manage scheduled tasks
+- **Usage Tracking** — Monitor resource and token usage
+- **Settings** — Configure Mercury preferences
+- **Dark/Light Theme** — Toggle between themes
+
+## Tech Stack
+
+- **Server:** Hono
+- **Frontend:** React + Vite + Tailwind CSS

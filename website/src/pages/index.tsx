@@ -401,11 +401,11 @@ export default function LandingPage(): React.ReactElement {
           </div>
         </section>
 
-        {/* Channels — CLI + Telegram */}
+        {/* Channels — CLI + Web + Telegram */}
         <section id="channels" className="lp-section lp-section-alt">
           <div className="lp-container">
-            <h2 className="lp-section-title">Two Channels, One Agent</h2>
-            <p className="lp-section-sub">Same capabilities. Different interfaces. Both real-time.</p>
+            <h2 className="lp-section-title">Three Channels, One Agent</h2>
+            <p className="lp-section-sub">Same capabilities. Different interfaces. All real-time.</p>
             <div className="lp-channels-grid lp-reveal">
               <div className="lp-channel-card">
                 <div className="lp-channel-header">
@@ -419,6 +419,20 @@ export default function LandingPage(): React.ReactElement {
                   <li>Keyboard shortcuts: Ctrl+B (background), Ctrl+T (view), Ctrl+P (plan)</li>
                   <li>Multi-line input, input history, streaming output</li>
                   <li>Interactive Spotify player with seek and volume</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">◧</span>
+                  <h3>Web Dashboard</h3>
+                </div>
+                <ul>
+                  <li>React SPA at localhost:6174 with dark/light theme</li>
+                  <li>Chat interface with real-time SSE streaming</li>
+                  <li>Kanban boards with agent-powered card execution</li>
+                  <li>Second Brain visualization with memory graph</li>
+                  <li>Workspace IDE with file tree and git integration</li>
+                  <li>Provider, skill, schedule, and permission management</li>
                 </ul>
               </div>
               <div className="lp-channel-card">

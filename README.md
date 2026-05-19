@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  Remembers what matters. Asks before it acts. Runs 24/7 from CLI or Telegram. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
+  Remembers what matters. Asks before it acts. Runs 24/7 from CLI, Telegram, or Web. 31 built-in tools, Kanban boards, extensible skills, SQLite-backed Second Brain memory.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>🔖 Current Stable: v1.1.6</strong>
+  <strong>🔖 Current Stable: v1.1.8</strong>
 </p>
 
 <p align="center">
@@ -179,11 +179,44 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | **Scheduler** | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
 | **System** | `budget_status` |
 
+## Web Dashboard
+
+Mercury includes a built-in web UI at `http://127.0.0.1:6174`:
+
+```bash
+mercury doctor   # Enable web during setup
+```
+
+Or set in `~/.mercury/mercury.yaml`:
+
+```yaml
+web:
+  enabled: true
+  port: 6174
+```
+
+Features: Chat with SSE streaming, Kanban boards, Second Brain visualization, Workspace IDE, provider/skill/permission/schedule management, usage tracking, dark/light theme.
+
+Default credentials: `mercury` / `Mercury@123`. Binds to localhost only.
+
+## Kanban Boards
+
+Persistent task boards with agent execution. Create boards, add cards, and let Mercury process them autonomously.
+
+- **Cards** — title, description, status (todo/doing/done/blocked), priority, labels, comments, attachments, dependencies
+- **Smart execution** — Mercury processes cards sequentially, updating status and leaving result comments
+- **Cascade execution** — process dependent cards in dependency order
+- **Token budget** — per-card token tracking with auto-pause when exhausted
+- **Storage** — SQLite with per-board context, variables, and instructions
+
+Access via Web Dashboard or API (`/api/boards/*`).
+
 ## Channels
 
 | Channel | Features |
 |---------|----------|
 | **CLI** | Ink TUI, startup permission mode picker, interactive permission prompts (arrow keys + Enter; Y/N/A shortcuts), progress views (balanced/detailed), real-time streaming |
+| **Web** | React SPA dashboard, chat with SSE streaming, Kanban boards, Second Brain visualization, Workspace IDE, dark/light theme |
 | **Telegram** | HTML formatting, editable streaming messages, file uploads, typing indicators, multi-user access with admin/member roles |
 
 ### Workspace/Coding Shortcuts (CLI)
@@ -254,6 +287,7 @@ All runtime data lives in `~/.mercury/` — not in your project directory.
 | `~/.mercury/memory/second-brain/` | Structured memory database (SQLite + FTS5) |
 | `~/.mercury/daemon.pid` | Background process PID |
 | `~/.mercury/daemon.log` | Daemon mode logs |
+| `~/.mercury/boards.db` | Kanban boards database (SQLite) |
 
 ## Provider Fallback
 

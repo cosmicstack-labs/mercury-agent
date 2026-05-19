@@ -37,3 +37,20 @@ This command:
 If you see `ENOTEMPTY: directory not empty, rename` when running `npm i -g` manually, use `mercury upgrade` instead — it removes the old package directory before installing the new one.
 
 :::
+
+## Enable Web Dashboard
+
+After installation, enable the web dashboard during setup or reconfiguration:
+
+```bash
+mercury doctor
+```
+
+Or add to `~/.mercury/mercury.yaml`:
+
+```yaml
+web:
+  enabled: true
+```
+
+The dashboard will be available at `http://127.0.0.1:6174` when Mercury is running.

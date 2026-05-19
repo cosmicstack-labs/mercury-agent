@@ -1,0 +1,65 @@
+---
+title: "v1.1.8 — Mercury Web & Kanban"
+sidebar_label: "v1.1.8"
+---
+
+Release `1.1.8` introduces the Mercury Web Dashboard — a full React SPA accessible at `localhost:6174` — along with a persistent Kanban board system, an in-browser Workspace IDE, major Second Brain enhancements, and intelligent skill batching.
+
+## Highlights
+
+- **Mercury Web Dashboard** — full React SPA with authentication, dark/light theme, and real-time SSE updates at `localhost:6174`.
+- **Kanban Board System** — persistent task boards backed by SQLite with card dependencies, comments, attachments, labels, smart execution, and cascade execution.
+- **Workspace IDE** — in-browser code workspace with file tree, editor, and git integration.
+- **Second Brain Enhancements** — conscious/subconscious memory model, person tracking with aliases and relationships, graph visualization, and goal tracking.
+- **Skill Batching & Intent Router** — automatic skill grouping and intelligent routing for multi-skill invocations.
+
+## Mercury Web Dashboard
+
+- New React SPA web UI served at `localhost:6174` with full authentication flow.
+- Dark and light theme support with persistent preference.
+- Real-time updates via Server-Sent Events (SSE) for live agent activity streaming.
+- Web channel added alongside CLI and Telegram — Mercury is now accessible via browser.
+
+## Kanban Board System
+
+- Persistent board storage with SQLite and JSON serialization.
+- Full card lifecycle: create, move, archive, delete with drag-and-drop support.
+- Card dependencies with blocking/unblocking semantics.
+- Comments, attachments, and labels on cards.
+- Smart execution: automatic task progression based on card state.
+- Cascade execution: dependent cards trigger downstream execution on completion.
+- Per-card token budget tracking with auto-pause when budget is exceeded.
+- Context tracking per board for scoped agent interactions.
+
+## Workspace IDE
+
+- In-browser code workspace with file tree navigation.
+- Integrated code editor with syntax highlighting.
+- Git integration: view diffs, stage changes, and commit from the browser.
+
+## Second Brain Enhancements
+
+- Conscious/subconscious memory model — separates active working memory from long-term recall.
+- Person tracking with alias resolution and relationship mapping.
+- Graph visualization for memory connections and entity relationships.
+- Goal tracking with progress indicators and sub-goal decomposition.
+- Improved memory extraction: better person extraction, deduplication, and multi-type extraction in a single pass.
+
+## Skill Batching & Intent Router
+
+- Automatic skill grouping: related skills are batched together for efficient execution.
+- Intelligent intent router classifies user input and dispatches to the appropriate skill or skill batch.
+
+## Sub-Agent Improvements
+
+- Background task management with improved lifecycle handling.
+- Human-readable task IDs carried forward from 1.1.7 with additional stability fixes.
+
+## Build System
+
+- Clean production build output with reduced artifact size and clearer build logs.
+
+## Notes
+
+- The web channel is experimental — feedback welcome via `/feedback` or GitHub issues.
+- Board data is stored locally in SQLite; no external database required.

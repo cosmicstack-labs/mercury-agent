@@ -30,6 +30,8 @@ const sidebars: SidebarsConfig = {
       label: 'Integrations',
       collapsed: false,
       items: [
+        'integrations/web-dashboard',
+        'integrations/kanban-boards',
         'integrations/github-companion',
         'integrations/telegram',
         'integrations/spotify',
@@ -57,6 +59,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'releases/releases',
+        'releases/1.1.8',
         'releases/1.1.7',
         'releases/1.1.6',
       ],
