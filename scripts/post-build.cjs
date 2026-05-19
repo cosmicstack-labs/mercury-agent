@@ -34,18 +34,20 @@ fs.copyFileSync(wasmSrc, wasmDest);
 const uiDir = path.join(__dirname, '..', 'ui');
 if (!fs.existsSync(path.join(uiDir, 'node_modules'))) {
   console.log('  Installing UI dependencies...');
-  execSync('npm install', { cwd: uiDir, stdio: 'inherit' });
+  execSync('npm install', { cwd: uiDir, stdio: 'pipe' });
 }
 console.log('  Building UI...');
 try {
-  execSync('npx vite build', { cwd: uiDir, stdio: 'inherit' });
+  execSync('npx vite build', { cwd: uiDir, stdio: 'pipe' });
 } catch (e) {
   // PWA terser plugin fails on Node <20 (crypto not defined) but assets are still built
   if (!fs.existsSync(path.join(uiDir, 'dist', 'index.html'))) {
+    // Real failure — show output for debugging
+    if (e.stdout) process.stderr.write(e.stdout);
+    if (e.stderr) process.stderr.write(e.stderr);
     console.error('ERROR: Vite build failed and no output was produced');
     process.exit(1);
   }
-  console.log('  ⚠ Vite exited non-zero (PWA service worker) but assets exist — continuing');
 }
 
 // 4. Copy ui/dist -> dist/web/ui
