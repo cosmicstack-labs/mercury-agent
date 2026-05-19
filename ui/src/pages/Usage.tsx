@@ -346,7 +346,7 @@ export function UsagePage() {
                             </Badge>
                           </td>
                           <td className="py-2.5 text-right font-medium tabular-nums">
-                            {formatTokens(entry.tokens)}
+                            {formatTokens(entry.totalTokens)}
                           </td>
                         </motion.tr>
                       ))}

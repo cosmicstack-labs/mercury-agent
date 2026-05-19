@@ -642,7 +642,16 @@ export interface UsageData {
   dailyUsed: number;
   dailyBudget: number;
   remaining: number;
-  requestLog: { timestamp: string; tokens: number; provider: string }[];
+  lastResetDate?: string;
+  requestLog: {
+    timestamp: number;
+    provider: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens: number;
+    channelType?: string;
+  }[];
   byProvider: Record<string, number>;
   byChannel: Record<string, number>;
 }
