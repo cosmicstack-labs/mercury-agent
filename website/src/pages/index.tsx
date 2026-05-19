@@ -509,14 +509,64 @@ export default function LandingPage(): React.ReactElement {
         <section id="memory" className="lp-section lp-section-alt">
           <div className="lp-container">
             <h2 className="lp-section-title">Second Brain</h2>
-            <p className="lp-section-sub">Mercury remembers — modeled after the conscious, subconscious, and unconscious mind.</p>
+            <p className="lp-section-sub">Mercury remembers — modeled after the conscious and subconscious mind.</p>
+
+            {/* Split brain diagram */}
+            <div className="lp-brain-diagram lp-reveal" style={{ display: 'flex', justifyContent: 'center', margin: '3rem 0' }}>
+              <svg viewBox="0 0 440 320" width="440" height="320" style={{ maxWidth: '100%' }}>
+                {/* Brain outline — left hemisphere (Conscious) */}
+                <path
+                  d="M220 40 C160 40, 60 80, 60 180 C60 260, 140 290, 220 290"
+                  fill="rgba(236, 72, 153, 0.06)" stroke="rgba(236, 72, 153, 0.5)" strokeWidth="2"
+                />
+                {/* Brain outline — right hemisphere (Subconscious) */}
+                <path
+                  d="M220 40 C280 40, 380 80, 380 180 C380 260, 300 290, 220 290"
+                  fill="rgba(99, 102, 241, 0.06)" stroke="rgba(99, 102, 241, 0.5)" strokeWidth="2"
+                />
+                {/* Center divider */}
+                <line x1="220" y1="40" x2="220" y2="290" stroke="rgba(148, 163, 184, 0.3)" strokeWidth="1" strokeDasharray="4 3" />
+
+                {/* Left label — Conscious */}
+                <text x="140" y="150" textAnchor="middle" fill="rgba(236, 72, 153, 0.9)" fontSize="14" fontFamily="monospace" fontWeight="bold">CONSCIOUS</text>
+                <text x="140" y="170" textAnchor="middle" fill="rgba(236, 72, 153, 0.6)" fontSize="10" fontFamily="monospace">active memory</text>
+                <text x="140" y="195" textAnchor="middle" fill="rgba(236, 72, 153, 0.5)" fontSize="9" fontFamily="monospace">current reasoning</text>
+                <text x="140" y="210" textAnchor="middle" fill="rgba(236, 72, 153, 0.5)" fontSize="9" fontFamily="monospace">immediate recall</text>
+                <text x="140" y="225" textAnchor="middle" fill="rgba(236, 72, 153, 0.5)" fontSize="9" fontFamily="monospace">working context</text>
+
+                {/* Right label — Subconscious */}
+                <text x="300" y="150" textAnchor="middle" fill="rgba(99, 102, 241, 0.9)" fontSize="14" fontFamily="monospace" fontWeight="bold">SUBCONSCIOUS</text>
+                <text x="300" y="170" textAnchor="middle" fill="rgba(99, 102, 241, 0.6)" fontSize="10" fontFamily="monospace">long-term recall</text>
+                <text x="300" y="195" textAnchor="middle" fill="rgba(99, 102, 241, 0.5)" fontSize="9" fontFamily="monospace">patterns &amp; habits</text>
+                <text x="300" y="210" textAnchor="middle" fill="rgba(99, 102, 241, 0.5)" fontSize="9" fontFamily="monospace">learned preferences</text>
+                <text x="300" y="225" textAnchor="middle" fill="rgba(99, 102, 241, 0.5)" fontSize="9" fontFamily="monospace">contextual retrieval</text>
+
+                {/* Title at top */}
+                <text x="220" y="25" textAnchor="middle" fill="rgba(148, 163, 184, 0.8)" fontSize="11" fontFamily="monospace" fontWeight="bold">MERCURY SECOND BRAIN</text>
+
+                {/* Animated data nodes — conscious side */}
+                <circle cx="110" cy="130" r="3" fill="rgba(236, 72, 153, 0.6)"><animate attributeName="opacity" values="0.4;1;0.4" dur="2s" repeatCount="indefinite" /></circle>
+                <circle cx="160" cy="240" r="2.5" fill="rgba(236, 72, 153, 0.5)"><animate attributeName="opacity" values="0.3;0.8;0.3" dur="2.5s" repeatCount="indefinite" /></circle>
+                <circle cx="90" cy="200" r="2" fill="rgba(236, 72, 153, 0.4)"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite" /></circle>
+
+                {/* Animated data nodes — subconscious side */}
+                <circle cx="330" cy="130" r="3" fill="rgba(99, 102, 241, 0.6)"><animate attributeName="opacity" values="0.3;0.9;0.3" dur="3s" repeatCount="indefinite" /></circle>
+                <circle cx="280" cy="240" r="2.5" fill="rgba(99, 102, 241, 0.5)"><animate attributeName="opacity" values="0.5;1;0.5" dur="2.2s" repeatCount="indefinite" /></circle>
+                <circle cx="350" cy="200" r="2" fill="rgba(99, 102, 241, 0.4)"><animate attributeName="opacity" values="0.4;0.8;0.4" dur="2.8s" repeatCount="indefinite" /></circle>
+
+                {/* Connection lines crossing hemispheres */}
+                <line x1="170" y1="240" x2="270" y2="130" stroke="rgba(148, 163, 184, 0.15)" strokeWidth="1"><animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" repeatCount="indefinite" /></line>
+                <line x1="160" y1="130" x2="280" y2="240" stroke="rgba(148, 163, 184, 0.15)" strokeWidth="1"><animate attributeName="opacity" values="0.15;0.35;0.15" dur="3.5s" repeatCount="indefinite" /></line>
+              </svg>
+            </div>
+
             <div className="lp-brain-grid">
               {[
                 { title: 'Conscious Mind', desc: 'Active working memory — facts Mercury is currently reasoning about and can immediately surface in conversation.' },
-                { title: 'Subconscious Mind', desc: 'Long-term recall — memories not currently active but retrieved automatically when contextually relevant.' },
-                { title: 'Unconscious Mind', desc: 'Deep patterns and instincts — auto-extracted habits, preferences, and behavioral patterns that shape responses.' },
+                { title: 'Subconscious Mind', desc: 'Long-term recall — memories stored persistently and retrieved automatically when contextually relevant.' },
                 { title: 'Resolves Conflicts', desc: 'When Mercury detects a contradiction, the higher-confidence memory wins. No stale data.' },
-                { title: 'Auto-Consolidation', desc: 'Hourly synthesis of profile summaries and reflections from detected patterns across all memory layers.' },
+                { title: 'Auto-Consolidation', desc: 'Hourly synthesis of profile summaries and reflections from detected patterns across memory layers.' },
+                { title: 'Person Tracking', desc: 'Tracks people you mention with alias resolution, relationship mapping, and graph visualization.' },
                 { title: 'Fully Local', desc: 'All data stays on your machine in SQLite. /memory gives you overview, search, pause, and clear.' },
               ].map((c, i) => (
                 <div key={i} className="lp-brain-card lp-reveal">
