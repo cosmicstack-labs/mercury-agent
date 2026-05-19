@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build:ui": "cd ui && npm run build",
-    "build": "tsup && cp -r src/web/static dist/web/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/ && (cd ui && npx vite build 2>&1 | grep -E '^✓' || true) && mkdir -p dist/web/ui && cp -r ui/dist/* dist/web/ui/ && echo '  ✓ Build complete'",
+    "build": "tsup && mkdir -p dist/web/static/vendor && cp -r src/web/static dist/web/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/web/static/vendor/ && (cd ui && npx vite build 2>&1 | grep -E '^✓' || true) && mkdir -p dist/web/ui && cp -r ui/dist/* dist/web/ui/ && echo '  ✓ Build complete'",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
