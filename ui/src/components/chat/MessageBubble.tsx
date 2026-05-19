@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Copy, Check } from "lucide-react";
 import type { ChatMessage } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
+import { useThemeStore } from "@/stores/theme";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolCallCard } from "./ToolCallCard";
 
@@ -14,6 +15,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, isLast }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
+  const resolved = useThemeStore((s) => s.resolved);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(message.content);
@@ -34,13 +36,21 @@ export function MessageBubble({ message, isLast }: MessageBubbleProps) {
       {/* Avatar */}
       <div
         className={cn(
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+          "flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-semibold",
           isUser
             ? "bg-primary text-primary-foreground"
-            : "bg-gradient-to-br from-mercury-500 to-accent-400 text-white"
+            : "bg-card"
         )}
       >
-        {isUser ? "U" : "\u263F"}
+        {isUser ? (
+          "U"
+        ) : (
+          <img
+            src={resolved === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+            alt="Mercury"
+            className="h-full w-full object-contain"
+          />
+        )}
       </div>
 
       {/* Content column */}

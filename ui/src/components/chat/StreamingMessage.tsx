@@ -1,5 +1,6 @@
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolCallCard } from "./ToolCallCard";
+import { useThemeStore } from "@/stores/theme";
 
 interface StreamingMessageProps {
   text: string;
@@ -8,12 +9,17 @@ interface StreamingMessageProps {
 
 export function StreamingMessage({ text, steps }: StreamingMessageProps) {
   const isThinking = !text;
+  const resolved = useThemeStore((s) => s.resolved);
 
   return (
     <div className="flex gap-3">
       {/* Avatar */}
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-mercury-500 to-accent-400 text-xs font-semibold text-white">
-        {"\u263F"}
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-card">
+        <img
+          src={resolved === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+          alt="Mercury"
+          className="h-full w-full object-contain"
+        />
       </div>
 
       {/* Content */}
