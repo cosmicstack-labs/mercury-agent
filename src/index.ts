@@ -1512,12 +1512,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider) => agent.switchProvider(provider));
   setWebCurrentProvider(() => agent.getCurrentProvider());
+  // IDE provider registry powers features like commit message generation.
+  // It does not require a supervisor, so wire it up unconditionally.
+  setWebIDEProviders(providers);
   if (supervisor) {
     setWebSupervisor(supervisor);
     setWebKanban(supervisor);
     setWebBoardManager(boardMgr);
     setWebKanbanProviders(providers);
-    setWebIDEProviders(providers);
 
     // Lifecycle callback: sync agent results back to board cards
     const { getAgentCardMap } = await import('./web/api/kanban.js');

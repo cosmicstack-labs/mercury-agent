@@ -394,10 +394,22 @@ Rules:
       messages: [
         { role: 'user', content: `Generate a commit message for these changes:\n\nStat:\n${diff}\n\nDiff:\n${detailedDiff}` },
       ],
-      maxOutputTokens: 200,
+      maxOutputTokens: 2000,
     });
 
-    const message = result.text.trim();
+    const message = (result.text ?? '').trim();
+    if (!message) {
+      // Surface a useful error instead of an empty string so the UI shows why
+      const finishReason = (result as any).finishReason ?? 'unknown';
+      console.warn('[generate-commit-message] empty response', {
+        finishReason,
+        usage: (result as any).usage,
+      });
+      return c.json(
+        { error: `Model returned no text (finishReason: ${finishReason})` },
+        502,
+      );
+    }
     return c.json({ message });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

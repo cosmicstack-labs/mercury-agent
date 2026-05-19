@@ -33,6 +33,8 @@ import {
   Play,
   Sparkles,
   FolderInput,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -343,7 +345,7 @@ function EditorPanel({
 
       {/* Editor area */}
       {current && (
-        <div className="relative flex-1 min-h-0">
+        <div className="relative flex flex-col flex-1 min-h-0">
           {/* Info bar */}
           <div className="flex items-center justify-between border-b border-border/30 bg-muted/10 px-3 py-1">
             <span className="text-xs text-muted-foreground font-mono">{current.path}</span>
@@ -862,9 +864,13 @@ function GitPanel() {
 function BottomPanel({
   projectInfo,
   codeMode,
+  isMaximized,
+  onToggleMaximize,
 }: {
   projectInfo: WorkspaceInfo | null;
   codeMode: { state: string; active: boolean } | null;
+  isMaximized: boolean;
+  onToggleMaximize: () => void;
 }) {
   const [activeBottomTab, setActiveBottomTab] = useState<"terminal" | "chat">("terminal");
   const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
@@ -1055,31 +1061,45 @@ function BottomPanel({
       </div>
 
       {/* Tab headers */}
-      <div className="flex items-center border-b border-border bg-muted/10">
+      <div className="flex items-center justify-between border-b border-border bg-muted/10">
+        <div className="flex items-center">
+          <button
+            onClick={() => setActiveBottomTab("terminal")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
+              activeBottomTab === "terminal"
+                ? "border-b-primary text-foreground"
+                : "border-b-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <TerminalIcon className="h-3.5 w-3.5" />
+            Terminal
+          </button>
+          <button
+            onClick={() => setActiveBottomTab("chat")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
+              activeBottomTab === "chat"
+                ? "border-b-primary text-foreground"
+                : "border-b-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            Chat
+            {isBusy && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+          </button>
+        </div>
         <button
-          onClick={() => setActiveBottomTab("terminal")}
-          className={cn(
-            "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
-            activeBottomTab === "terminal"
-              ? "border-b-primary text-foreground"
-              : "border-b-transparent text-muted-foreground hover:text-foreground"
-          )}
+          onClick={onToggleMaximize}
+          className="mr-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          title={isMaximized ? "Restore panel" : "Maximize panel"}
+          aria-label={isMaximized ? "Restore panel" : "Maximize panel"}
         >
-          <TerminalIcon className="h-3.5 w-3.5" />
-          Terminal
-        </button>
-        <button
-          onClick={() => setActiveBottomTab("chat")}
-          className={cn(
-            "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
-            activeBottomTab === "chat"
-              ? "border-b-primary text-foreground"
-              : "border-b-transparent text-muted-foreground hover:text-foreground"
+          {isMaximized ? (
+            <Minimize2 className="h-3.5 w-3.5" />
+          ) : (
+            <Maximize2 className="h-3.5 w-3.5" />
           )}
-        >
-          <MessageSquare className="h-3.5 w-3.5" />
-          Chat
-          {isBusy && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
         </button>
       </div>
 
@@ -1211,6 +1231,7 @@ export function WorkspacePage() {
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(280);
   const [bottomHeight, setBottomHeight] = useState(260);
+  const [bottomMaximized, setBottomMaximized] = useState(false);
   const [showLeft, setShowLeft] = useState(true);
   const [showRight, setShowRight] = useState(true);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
@@ -1435,58 +1456,73 @@ export function WorkspacePage() {
       </AnimatePresence>
 
       {/* Main content area (horizontal split) */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Left Panel — File Explorer */}
-        {showLeft && (
-          <>
-            <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-border">
-              <FileExplorer key={workspaceKey} onOpenFile={openFile} openFiles={tabs.map((t) => t.path)} />
-            </div>
-            {/* Left resizer */}
+      {!bottomMaximized && (
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {/* Left Panel — File Explorer */}
+          {showLeft && (
+            <>
+              <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-border">
+                <FileExplorer key={workspaceKey} onOpenFile={openFile} openFiles={tabs.map((t) => t.path)} />
+              </div>
+              {/* Left resizer */}
+              <div
+                {...leftResizer}
+                className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+              />
+            </>
+          )}
+
+          {/* Center Panel — Editor Tabs */}
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <EditorPanel
+              tabs={tabs}
+              activeTab={activeTab}
+              onSelectTab={setActiveTab}
+              onCloseTab={closeTab}
+              onSave={saveTab}
+              onContentChange={updateTabContent}
+            />
+          </div>
+
+          {/* Right resizer */}
+          {showRight && (
             <div
-              {...leftResizer}
+              {...rightResizer}
               className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
             />
-          </>
-        )}
+          )}
 
-        {/* Center Panel — Editor Tabs */}
-        <div className="flex-1 min-w-0 overflow-hidden">
-          <EditorPanel
-            tabs={tabs}
-            activeTab={activeTab}
-            onSelectTab={setActiveTab}
-            onCloseTab={closeTab}
-            onSave={saveTab}
-            onContentChange={updateTabContent}
-          />
+          {/* Right Panel — Git */}
+          {showRight && (
+            <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden border-l border-border">
+              <GitPanel key={workspaceKey} />
+            </div>
+          )}
         </div>
+      )}
 
-        {/* Right resizer */}
-        {showRight && (
-          <div
-            {...rightResizer}
-            className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
-          />
-        )}
-
-        {/* Right Panel — Git */}
-        {showRight && (
-          <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden border-l border-border">
-            <GitPanel key={workspaceKey} />
-          </div>
-        )}
-      </div>
-
-      {/* Bottom resizer */}
-      <div
-        {...bottomResizer}
-        className="h-1 shrink-0 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors border-t border-border"
-      />
+      {/* Bottom resizer (hidden when maximized) */}
+      {!bottomMaximized && (
+        <div
+          {...bottomResizer}
+          className="h-1 shrink-0 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors border-t border-border"
+        />
+      )}
 
       {/* Bottom Panel — Terminal + Chat */}
-      <div style={{ height: bottomHeight }} className="shrink-0 overflow-hidden">
-        <BottomPanel projectInfo={projectInfo} codeMode={codeMode} />
+      <div
+        style={bottomMaximized ? undefined : { height: bottomHeight }}
+        className={cn(
+          "overflow-hidden",
+          bottomMaximized ? "flex-1 min-h-0" : "shrink-0"
+        )}
+      >
+        <BottomPanel
+          projectInfo={projectInfo}
+          codeMode={codeMode}
+          isMaximized={bottomMaximized}
+          onToggleMaximize={() => setBottomMaximized((v) => !v)}
+        />
       </div>
     </div>
   );

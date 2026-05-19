@@ -17,7 +17,6 @@ import { cn } from "@/lib/utils";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { useThemeStore } from "@/stores/theme";
 
@@ -252,32 +251,19 @@ export function SettingsPage() {
         </Card>
       )}
 
-      {/* ── Identity Section ── */}
+      {/* ── Defaults Section ── */}
       <motion.div {...fadeIn} transition={{ ...fadeIn.transition, delay: 0 }}>
         <Card className="border-border/50 bg-card/60 backdrop-blur">
           <CardHeader className="pb-4">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-[#a78bfa]" />
-              <h2 className="text-lg font-medium text-foreground">Identity</h2>
+              <h2 className="text-lg font-medium text-foreground">Defaults</h2>
             </div>
             <p className="text-sm text-muted-foreground">
-              Define your agent's personality and defaults
+              Default provider and daily token budget
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
-                Agent Identity / Personality
-              </label>
-              <Textarea
-                rows={5}
-                placeholder="You are a helpful AI assistant..."
-                value={identity}
-                onChange={(e) => setIdentity(e.target.value)}
-                className="bg-background/50 resize-y"
-              />
-            </div>
-
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">
@@ -317,7 +303,7 @@ export function SettingsPage() {
                 {identitySaving && (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 )}
-                Save Identity
+                Save
               </Button>
             </div>
           </CardContent>

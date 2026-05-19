@@ -291,7 +291,9 @@ function BoardListView({ onSelect }: { onSelect: (id: string) => void }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Columns3 className="h-6 w-6 text-[#00d4ff]" />
-          <h1 className="text-2xl font-semibold text-foreground">Kanban Boards</h1>
+          <h1 className="text-2xl font-semibold text-foreground">
+            Kanban Boards <span className="text-sm font-normal text-muted-foreground">(Beta mode)</span>
+          </h1>
         </div>
         <Button onClick={() => setCreateOpen(true)} className="gap-2 bg-[#00d4ff] text-black hover:bg-[#00d4ff]/80">
           <Plus className="h-4 w-4" /> Create Board
@@ -408,6 +410,7 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState("");
+  const [showFullDesc, setShowFullDesc] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
@@ -639,18 +642,67 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
               </div>
             </div>
           ) : (
-            <div
-              className="flex items-start gap-2 cursor-pointer hover:bg-muted/30 rounded-md px-2 py-1 -mx-2 transition-colors"
-              onClick={() => { setDescDraft(board?.description ?? ""); setEditingDesc(true); }}
-            >
-              <div className="text-sm text-muted-foreground flex-1">
+            <div className="flex items-start gap-2 rounded-md px-2 py-1 -mx-2 transition-colors hover:bg-muted/30">
+              <div className="flex-1 min-w-0 text-sm text-muted-foreground">
                 {board?.description ? (
-                  <MarkdownRenderer content={board.description} className="prose-sm prose-invert max-w-none" />
+                  (() => {
+                    const DESC_PREVIEW_LIMIT = 280;
+                    const desc = board.description;
+                    const isLong = desc.length > DESC_PREVIEW_LIMIT;
+                    const preview = isLong
+                      ? desc.slice(0, DESC_PREVIEW_LIMIT).trimEnd() + "\u2026"
+                      : desc;
+                    return (
+                      <>
+                        <div
+                          className={cn(isLong && "cursor-pointer")}
+                          onClick={() => {
+                            if (isLong) setShowFullDesc(true);
+                          }}
+                        >
+                          <MarkdownRenderer
+                            content={preview}
+                            className="prose-sm prose-invert max-w-none"
+                          />
+                        </div>
+                        {isLong && (
+                          <div className="mt-2 flex justify-center">
+                            <button
+                              type="button"
+                              onClick={() => setShowFullDesc(true)}
+                              className="text-sm font-medium text-[#00d4ff] hover:underline"
+                            >
+                              See more
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()
                 ) : (
-                  <p className="text-muted-foreground/60 italic">Click to add a description...</p>
+                  <p
+                    className="cursor-pointer italic text-muted-foreground/60"
+                    onClick={() => {
+                      setDescDraft("");
+                      setEditingDesc(true);
+                    }}
+                  >
+                    Click to add a description...
+                  </p>
                 )}
               </div>
-              <Pencil className="h-3.5 w-3.5 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 shrink-0" />
+              <button
+                type="button"
+                onClick={() => {
+                  setDescDraft(board?.description ?? "");
+                  setEditingDesc(true);
+                }}
+                className="mt-0.5 shrink-0 rounded p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                title="Edit description"
+                aria-label="Edit description"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
             </div>
           )}
         </div>
@@ -762,7 +814,7 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
 
       {/* Kanban Columns */}
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-        <div className="hidden md:flex flex-1 gap-4 overflow-x-auto pb-4">
+        <div className="hidden md:flex flex-1 min-h-0 gap-4 overflow-x-auto pb-4">
           {displayColumns.map((col) => (
             <KanbanColumn
               key={col.key}
@@ -868,6 +920,32 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Full Board Description Dialog */}
+      <Dialog open={showFullDesc} onOpenChange={setShowFullDesc}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{board?.name ?? "Board"} — Description</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto pr-2">
+            {board?.description ? (
+              <MarkdownRenderer
+                content={board.description}
+                className="prose-sm prose-invert max-w-none"
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground italic">
+                No description.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost" size="sm">Close</Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -892,7 +970,7 @@ function KanbanColumn({ status, label, cards, allCards, boardId, onRun, onHalt, 
   const statusColor = status === "running" ? "text-[#00d4ff]" : status === "done" ? "text-emerald-400" : status === "failed" ? "text-red-400" : "text-muted-foreground";
 
   return (
-    <div className="flex min-w-[260px] flex-1 flex-col rounded-lg border border-border/50 bg-muted/20">
+    <div className="flex min-w-[260px] flex-1 flex-col min-h-0 rounded-lg border border-border/50 bg-muted/20">
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/30">
         <div className="flex items-center gap-2">
           <span className={cn("text-sm font-medium", statusColor)}>{label}</span>
@@ -900,7 +978,7 @@ function KanbanColumn({ status, label, cards, allCards, boardId, onRun, onHalt, 
         </div>
       </div>
       <SortableContext items={cards.map((c) => c.id)} strategy={verticalListSortingStrategy} id={status}>
-        <ScrollArea className="flex-1 p-2">
+        <ScrollArea className="flex-1 min-h-0 p-2">
           <div className="space-y-2 min-h-[60px]">
             <AnimatePresence mode="popLayout">
               {cards.map((card, i) => (
