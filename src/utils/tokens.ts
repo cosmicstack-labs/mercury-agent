@@ -178,8 +178,12 @@ export class TokenBudget {
       }
       if (data.lastResetDate === today) {
         const restored = safeNumber(data.dailyUsed);
-        if (!isNaN(restored)) {
+        if (data.dailyUsed != null && !isNaN(restored) && restored > 0) {
           this.dailyUsed = restored;
+        } else {
+          // Recompute from valid log entries when dailyUsed is corrupted/null
+          this.dailyUsed = restoredLogs.reduce((sum, entry) => sum + entry.totalTokens, 0);
+          repaired = true;
         }
         this.requestLog = (data.requestLog ?? []).map((entry: any) => ({
           ...entry,
