@@ -29,6 +29,7 @@ export interface TuiState {
   permissionMode: PermissionMode;
   workspace: WorkspaceState | null;
   backgroundTasks: BackgroundTaskInfo[];
+  web: { enabled: boolean; port: number } | null;
 }
 
 const defaultState: TuiState = {
@@ -50,6 +51,7 @@ const defaultState: TuiState = {
   permissionMode: 'ask-me',
   workspace: null,
   backgroundTasks: [],
+  web: null,
 };
 
 export class CLIChannel extends BaseChannel {
@@ -542,6 +544,10 @@ export class CLIChannel extends BaseChannel {
 
   setTokenInfo(used: number, budget: number, percentage: number): void {
     this.update({ tokenInfo: { used, budget, percentage } });
+  }
+
+  setWebInfo(enabled: boolean, port: number): void {
+    this.update({ web: { enabled, port } });
   }
 
   setSubAgents(agents: SubAgentInfo[]): void {

@@ -670,6 +670,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
             {state.tokenInfo && (
               <Text>Budget: <Text color="green">{state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()} ({state.tokenInfo.percentage}%)</Text></Text>
             )}
+            <Text>Web: {state.web?.enabled ? <Text color="green">Serving · http://127.0.0.1:{state.web.port}</Text> : <Text color="gray">Disabled</Text>}</Text>
             <Text color="gray">{'─'.repeat(56)}</Text>
             <Text bold color="white">Capabilities</Text>
             <Text>Skills loaded: <Text color="cyan">{skillsLoaded}</Text> / {state.skills.length}</Text>
