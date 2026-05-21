@@ -9,9 +9,18 @@ import cron from 'node-cron';
 
 const system = new Hono();
 let scheduler: Scheduler | null = null;
+let permissionManager: PermissionManager | null = null;
 
 export function setScheduler(s: Scheduler | null): void {
   scheduler = s;
+}
+
+export function setPermissionManager(manager: PermissionManager | null): void {
+  permissionManager = manager;
+}
+
+function getPermissionManager(): PermissionManager {
+  return permissionManager ?? new PermissionManager();
 }
 
 system.get('/api/skills', (c) => {
@@ -79,14 +88,14 @@ system.delete('/api/skills/:name', (c) => {
 });
 
 system.get('/api/permissions', (c) => {
-  const manager = new PermissionManager();
+  const manager = getPermissionManager();
   const manifest = manager.getManifest();
   return c.json({ manifest });
 });
 
 system.put('/api/permissions', async (c) => {
   const body = await c.req.json();
-  const manager = new PermissionManager();
+  const manager = getPermissionManager();
   const current = manager.getManifest();
   const next: PermissionsManifest = {
     capabilities: {

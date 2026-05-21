@@ -10,7 +10,7 @@ import authRoutes from './api/auth.js';
 import statusRoutes, { updateStatus } from './api/status.js';
 import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
-import systemRoutes, { setScheduler } from './api/system.js';
+import systemRoutes, { setScheduler, setPermissionManager } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
 import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback } from './api/chat.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
@@ -173,7 +173,7 @@ if (spaAvailable) {
   });
 }
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setPermissionManager, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
 let webServer: ReturnType<typeof createAdaptorServer> | null = null;
 

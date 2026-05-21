@@ -48,17 +48,28 @@ export function PermissionPrompt({
 
           {resolved ? (
             <p className="text-xs text-muted-foreground">
-              {resolved === "allow" ? "Allowed" : "Denied"}
+              {resolved === "always"
+                ? "Always allowed and saved"
+                : resolved === "yes"
+                  ? "Allowed for this request"
+                  : "Denied"}
             </p>
           ) : (
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => handleAction("allow")}>
-                Allow
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={() => handleAction("yes")}>
+                Allow Once
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleAction("always")}
+              >
+                Always
               </Button>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => handleAction("deny")}
+                onClick={() => handleAction("no")}
               >
                 Deny
               </Button>
