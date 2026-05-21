@@ -16,13 +16,18 @@ const UNSUPPORTED_FIELDS = [
 /**
  * Sanitise an outgoing request body for the ChatGPT codex/responses endpoint.
  */
-function sanitiseBody(raw: string): string {
+export function sanitiseBody(raw: string): string {
   const body = JSON.parse(raw);
 
-  // Required
+  // The ChatGPT Codex endpoint rejects persisted responses, so the AI SDK must
+  // inline prior messages/tool results instead of sending item_reference rows.
   body.store = false;
   body.stream = true;
   if (!body.instructions) body.instructions = 'You are a helpful assistant.';
+
+  if (Array.isArray(body.input)) {
+    body.input = body.input.filter((item: any) => item?.type !== 'item_reference');
+  }
 
   // Strip unsupported & undefined/null
   for (const key of UNSUPPORTED_FIELDS) delete body[key];
