@@ -197,6 +197,7 @@ process.on('unhandledRejection', (reason: any) => {
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
+  const host = process.env.MERCURY_WEB_HOST || '127.0.0.1';
   initWebAuth();
 
   if (spaAvailable) {
@@ -216,11 +217,11 @@ export function startWebServer(): { port: number; url: string } {
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    logger.info(`Web dashboard: http://127.0.0.1:${port}`);
+  server.listen(port, host, () => {
+    logger.info(`Web dashboard: http://${host}:${port}`);
   });
 
-  return { port, url: `http://127.0.0.1:${port}` };
+  return { port, url: `http://${host}:${port}` };
 }
 
 export function stopWebServer(): Promise<void> {
