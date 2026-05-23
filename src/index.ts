@@ -55,7 +55,16 @@ import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUser
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
+let pkgVersion: string;
+try {
+  // Normal (npm) install: package.json sits one level above dist/.
+  pkgVersion = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version;
+} catch {
+  // Standalone binary (Bun --compile / pkg / SEA): package.json is not on
+  // disk next to the embedded bundle. Use the version injected at build
+  // time, falling back to 'unknown' so the CLI still launches.
+  pkgVersion = (globalThis as any).__MERCURY_VERSION__ ?? 'unknown';
+}
 
 function hr() {
   console.log(chalk.dim('─'.repeat(50)));

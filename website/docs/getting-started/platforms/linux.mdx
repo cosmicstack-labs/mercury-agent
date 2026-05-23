@@ -1,0 +1,91 @@
+---
+id: linux
+title: Linux
+sidebar_label: Linux
+---
+
+Mercury runs on any modern Linux distro with glibc ≥ 2.31 (Ubuntu 20.04+, Debian 11+, Fedora 34+, Arch, etc.) on **x86_64** or **arm64**.
+
+## Quickest install (recommended)
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
+
+The installer picks the right binary for your CPU, verifies the SHA-256 checksum, places it at `~/.mercury/bin/mercury`, and adds that directory to your shell `PATH` (`~/.bashrc`, `~/.zshrc`, or `~/.config/fish/config.fish`).
+
+After install:
+
+```bash
+exec $SHELL -l
+mercury --version
+```
+
+## Via npm (if you already have Node)
+
+```bash
+npm i -g @cosmicstack/mercury-agent
+```
+
+Requires **Node.js 20+**. Recommended via [nvm](https://github.com/nvm-sh/nvm) so you avoid `sudo` for global packages.
+
+## Architecture matrix
+
+| CPU | Asset |
+|---|---|
+| x86_64 | `mercury-linux-x64` |
+| aarch64 / arm64 (Raspberry Pi 4/5 64-bit, AWS Graviton, etc.) | `mercury-linux-arm64` |
+
+Check yours:
+
+```bash
+uname -m   # x86_64 or aarch64
+```
+
+For armv7 (32-bit Pi, older boards), use the [npm route](#via-npm-if-you-already-have-node) — there's no prebuilt 32-bit ARM binary yet.
+
+## Pinning a version
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | MERCURY_VERSION=1.1.9 sh
+```
+
+## System-wide install
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | \
+  sudo MERCURY_INSTALL=/usr/local MERCURY_NO_PATH=1 sh
+```
+
+This puts `mercury` at `/usr/local/bin/mercury` (already on most users' PATH).
+
+## Running as a service
+
+To run Mercury as a long-lived daemon under systemd, see the [Daemon Mode → System Service](../../daemon-mode/system-service) guide.
+
+## Headless / SSH usage
+
+Mercury's TUI works fine over SSH. For long sessions, run it inside `tmux` or `screen`:
+
+```bash
+tmux new -s mercury
+mercury
+# detach: Ctrl-b d
+# reattach: tmux attach -t mercury
+```
+
+## Uninstall
+
+```bash
+rm -rf ~/.mercury
+# remove the PATH line from your shell rc
+```
+
+```bash
+npm uninstall -g @cosmicstack/mercury-agent
+```
+
+## Next steps
+
+- [Setup](../setup)
+- [Daemon Mode](../../daemon-mode/daemon-mode) for 24/7 operation

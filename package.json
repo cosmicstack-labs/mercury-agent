@@ -10,6 +10,10 @@
   "scripts": {
     "build:ui": "cd ui && npm run build",
     "build": "tsup && node scripts/post-build.cjs",
+    "build:bin": "npm run build && node scripts/build-bin.cjs",
+    "build:bin:all": "npm run build && node scripts/build-bin.cjs --all",
+    "build:bin:force": "npm run build && node scripts/build-bin.cjs --force",
+    "build:bin:all:force": "npm run build && node scripts/build-bin.cjs --all --force",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -87,6 +91,7 @@
     "@types/node": "^22.13.0",
     "@types/node-cron": "^3.0.11",
     "@types/react": "^18.3.28",
+    "react-devtools-core": "^4.28.5",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

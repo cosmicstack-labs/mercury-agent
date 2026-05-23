@@ -4,10 +4,62 @@ title: Installation
 slug: /
 ---
 
-Mercury requires **Node.js 20+**. Install with npm:
+Mercury runs anywhere Node.js 20+ runs, plus everywhere a single binary can live — including phones via Termux.
+
+## Pick your platform
+
+- **[macOS](/docs/getting-started/platforms/macos)** — `curl | sh` installer, Homebrew-style PATH setup, Apple Silicon & Intel binaries.
+- **[Linux](/docs/getting-started/platforms/linux)** — works on any glibc distro; static x64/arm64 binaries.
+- **[Windows](/docs/getting-started/platforms/windows)** — PowerShell installer, native `.exe`, optional WSL path.
+- **[Termux & lightweight devices](/docs/getting-started/platforms/termux)** — Android (Termux), iSH, Alpine containers, Raspberry Pi.
+
+## Two install paths
+
+Every platform supports two routes — pick whichever fits.
+
+### 1. Standalone binary (no Node.js required)
+
+A one-line installer downloads the latest pre-built binary, verifies its SHA-256, and puts it on your `PATH`.
+
+```bash
+# macOS / Linux
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+The installer:
+
+- Detects your OS and CPU architecture (macOS arm64/x64, Linux x64/arm64, Windows x64).
+- Resolves the latest GitHub release.
+- Verifies the SHA-256 checksum against `checksums.txt`.
+- Installs to `~/.mercury/bin/mercury` (or `%USERPROFILE%\.mercury\bin\mercury.exe`) and updates your shell `PATH`.
+
+#### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MERCURY_VERSION` | latest | Pin to a specific version, e.g. `MERCURY_VERSION=1.1.9` |
+| `MERCURY_INSTALL` | `$HOME/.mercury` | Install prefix (binary lands at `$MERCURY_INSTALL/bin/mercury`) |
+| `MERCURY_NO_PATH` | _(unset)_ | Set to `1` to skip modifying your shell rc / user PATH |
+
+### 2. npm package (requires Node.js 20+)
+
+If you already have Node.js, the npm route is the simplest:
 
 ```bash
 npm i -g @cosmicstack/mercury-agent
+```
+
+Other package managers:
+
+```bash
+bun  add -g @cosmicstack/mercury-agent
+pnpm add -g @cosmicstack/mercury-agent
+yarn global add @cosmicstack/mercury-agent
 ```
 
 Or run without installing:
@@ -18,37 +70,34 @@ npx @cosmicstack/mercury-agent
 
 ## Upgrade
 
-Mercury includes a built-in upgrade command that handles the full update cycle:
+Mercury includes a built-in upgrade command for npm installs:
 
 ```bash
 mercury upgrade
 ```
 
-This command:
+It stops the daemon if running, removes the old package to avoid `ENOTEMPTY`, installs the latest version, and reports the version diff.
 
-- **Checks npm** for the latest published version
-- **Stops the daemon** if running, to avoid conflicts
-- **Removes the old package** first to prevent `ENOTEMPTY` errors
-- **Installs** the latest version globally
-- **Shows** the before/after version comparison
+:::tip[Binary installs]
 
-:::tip[ENOTEMPTY fix]
+`mercury upgrade` is npm-aware. If you installed via the shell installer, re-run it to get the latest binary:
 
-If you see `ENOTEMPTY: directory not empty, rename` when running `npm i -g` manually, use `mercury upgrade` instead — it removes the old package directory before installing the new one.
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
 
 :::
 
-## Enable Web Dashboard
+## Enable the web dashboard
 
-After installation, enable the web dashboard during setup or reconfiguration:
+After installation, run the doctor or edit your config:
 
 ```bash
 mercury doctor
 ```
 
-Or add to `~/.mercury/mercury.yaml`:
-
 ```yaml
+# ~/.mercury/mercury.yaml
 web:
   enabled: true
 ```

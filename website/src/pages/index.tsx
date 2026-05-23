@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from '@docusaurus/Link';
 import Head from '@docusaurus/Head';
 import Killipi from '@site/src/components/Killipi';
@@ -170,6 +170,172 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
   nextLine();
 }
 
+type PmId = 'npm' | 'bun' | 'pnpm' | 'yarn';
+type OsId = 'macos' | 'linux' | 'windows';
+
+const PM_BASE: Record<PmId, string> = {
+  npm: 'npm i -g @cosmicstack/mercury-agent',
+  bun: 'bun add -g @cosmicstack/mercury-agent',
+  pnpm: 'pnpm add -g @cosmicstack/mercury-agent',
+  yarn: 'yarn global add @cosmicstack/mercury-agent',
+};
+
+function pmCommand(pm: PmId, os: OsId): string {
+  // PowerShell (default Windows shell) doesn't support `&&` until v7; use `;` to be safe.
+  const sep = os === 'windows' ? '; ' : ' && ';
+  return `${PM_BASE[pm]}${sep}mercury`;
+}
+
+const PM_LABELS: Record<PmId, string> = {
+  npm: 'npm',
+  bun: 'Bun',
+  pnpm: 'pnpm',
+  yarn: 'Yarn',
+};
+
+const OS_LABELS: Record<OsId, string> = {
+  macos: 'macOS',
+  linux: 'Linux',
+  windows: 'Windows',
+};
+
+const RELEASES_BASE = 'https://github.com/cosmicstack-labs/mercury-agent/releases/latest/download';
+
+function detectOs(): OsId {
+  if (typeof navigator === 'undefined') return 'macos';
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('win')) return 'windows';
+  if (ua.includes('mac')) return 'macos';
+  return 'linux';
+}
+
+function osBinaryAsset(os: OsId): string {
+  switch (os) {
+    case 'macos':
+      return 'mercury-darwin-arm64';
+    case 'linux':
+      return 'mercury-linux-x64';
+    case 'windows':
+      return 'mercury-windows-x64.exe';
+  }
+}
+
+function osInstallSnippet(os: OsId): string {
+  if (os === 'windows') {
+    return 'irm https://mercury.cosmicstack.org/install.ps1 | iex';
+  }
+  return 'curl -fsSL https://mercury.cosmicstack.org/install.sh | sh';
+}
+
+function HeroInstall(): React.ReactElement {
+  const [pm, setPm] = useState<PmId>('npm');
+  const [os, setOs] = useState<OsId>('macos');
+  const [copied, setCopied] = useState<'pm' | 'os' | null>(null);
+
+  useEffect(() => {
+    setOs(detectOs());
+  }, []);
+
+  const pmCmd = pmCommand(pm, os);
+  const osCmd = osInstallSnippet(os);
+  const binaryAsset = osBinaryAsset(os);
+  const binaryUrl = `${RELEASES_BASE}/${binaryAsset}`;
+  const prompt = os === 'windows' ? 'PS>' : '$';
+
+  const copy = async (text: string, which: 'pm' | 'os') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied(null), 1400);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <div className="lp-hero-install" data-os={os}>
+      <div className="lp-install-head">
+        <div className="lp-install-tabs" role="tablist" aria-label="Package manager">
+          {(Object.keys(PM_LABELS) as PmId[]).map((id) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={pm === id}
+              className={`lp-install-tab ${pm === id ? 'is-active' : ''}`}
+              onClick={() => setPm(id)}
+              type="button"
+            >
+              {PM_LABELS[id]}
+            </button>
+          ))}
+        </div>
+        <div className="lp-install-os" role="tablist" aria-label="Operating system">
+          {(Object.keys(OS_LABELS) as OsId[]).map((id) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={os === id}
+              className={`lp-install-pill ${os === id ? 'is-active' : ''}`}
+              onClick={() => setOs(id)}
+              type="button"
+            >
+              {OS_LABELS[id]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="lp-install-block lp-install-block-primary">
+        <div className="lp-install-block-label">
+          <span className="lp-install-block-num">1</span>
+          Install with {PM_LABELS[pm]} on {OS_LABELS[os]}
+        </div>
+        <div className="lp-install-cmd">
+          <span className="lp-install-prompt">{prompt}</span>
+          <code>{pmCmd}</code>
+          <button
+            type="button"
+            className="lp-install-copy"
+            onClick={() => copy(pmCmd, 'pm')}
+            aria-label="Copy install command"
+          >
+            {copied === 'pm' ? '✓ Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+
+      <div className="lp-install-block lp-install-block-alt">
+        <div className="lp-install-block-label">
+          Or install the standalone binary
+          <span className="lp-install-block-hint">· no Node.js required</span>
+        </div>
+        <div className="lp-install-cmd">
+          <span className="lp-install-prompt">{prompt}</span>
+          <code>{osCmd}</code>
+          <button
+            type="button"
+            className="lp-install-copy"
+            onClick={() => copy(osCmd, 'os')}
+            aria-label="Copy installer command"
+          >
+            {copied === 'os' ? '✓ Copied' : 'Copy'}
+          </button>
+        </div>
+        <div className="lp-install-actions">
+          <a className="lp-install-binary" href={binaryUrl} rel="noopener">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download <code className="lp-install-binary-asset">{binaryAsset}</code>
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LandingPage(): React.ReactElement {
   const heroTermRef = useRef<HTMLDivElement>(null);
   const agentTermRef = useRef<HTMLDivElement>(null);
@@ -304,9 +470,7 @@ export default function LandingPage(): React.ReactElement {
               <Link href="#live-demo" className="lp-btn lp-btn-primary">See It Work</Link>
               <Link to="/docs" className="lp-btn lp-btn-secondary">Get Started</Link>
             </div>
-            <div className="lp-hero-install">
-              <code>npm i -g @cosmicstack/mercury-agent && mercury</code>
-            </div>
+            <HeroInstall />
           </div>
         </section>
 

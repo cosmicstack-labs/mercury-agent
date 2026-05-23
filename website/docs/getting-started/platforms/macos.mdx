@@ -1,0 +1,91 @@
+---
+id: macos
+title: macOS
+sidebar_label: macOS
+---
+
+Mercury supports macOS 11 (Big Sur) and later, on both **Apple Silicon (arm64)** and **Intel (x64)**.
+
+## Quickest install (recommended)
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
+
+This downloads the latest binary for your CPU, verifies its SHA-256 against the published `checksums.txt`, and installs to `~/.mercury/bin/mercury`. Your shell `PATH` is updated in `~/.zshrc` (or `~/.bashrc` if you use bash).
+
+After install:
+
+```bash
+exec $SHELL -l   # reload PATH
+mercury --version
+```
+
+## Via npm (if you already have Node)
+
+```bash
+npm i -g @cosmicstack/mercury-agent
+mercury
+```
+
+Requires **Node.js 20+**. Install Node via [nvm](https://github.com/nvm-sh/nvm), Homebrew (`brew install node@20`), or the official installer.
+
+## Apple Silicon vs Intel
+
+The installer auto-selects:
+
+| CPU | Asset |
+|---|---|
+| Apple Silicon (M1/M2/M3/M4) | `mercury-darwin-arm64` |
+| Intel | `mercury-darwin-x64` |
+
+To verify which architecture your Mac uses:
+
+```bash
+uname -m   # arm64 or x86_64
+```
+
+## Pinning a version
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | MERCURY_VERSION=1.1.9 sh
+```
+
+## Custom install location
+
+```bash
+curl -fsSL https://mercury.cosmicstack.org/install.sh | \
+  MERCURY_INSTALL=/opt/mercury MERCURY_NO_PATH=1 sh
+```
+
+Add `/opt/mercury/bin` to your `PATH` manually.
+
+## Gatekeeper / "unidentified developer"
+
+The binary is currently unsigned. On first run macOS may quarantine it. Either:
+
+```bash
+xattr -d com.apple.quarantine ~/.mercury/bin/mercury
+```
+
+…or right-click the binary in Finder and choose **Open** to whitelist it once.
+
+A signed/notarized build is on the roadmap.
+
+## Uninstall
+
+```bash
+rm -rf ~/.mercury
+# then remove the PATH line added to ~/.zshrc or ~/.bashrc
+```
+
+For npm installs:
+
+```bash
+npm uninstall -g @cosmicstack/mercury-agent
+```
+
+## Next steps
+
+- [Setup](../setup) — configure your first provider
+- [Starting Mercury](../starting)

@@ -3,8 +3,20 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docsSidebar: [
     'getting-started/installation',
+    {
+      type: 'category',
+      label: 'Platforms',
+      collapsed: false,
+      items: [
+        'getting-started/platforms/macos',
+        'getting-started/platforms/linux',
+        'getting-started/platforms/windows',
+        'getting-started/platforms/termux',
+      ],
+    },
     'getting-started/setup',
     'getting-started/starting',
+    'getting-started/build-from-source',
     {
       type: 'category',
       label: 'CLI Commands',

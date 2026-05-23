@@ -32,11 +32,25 @@
 
 ## Quick Start
 
+**One-liner install (no Node.js required)** — downloads the latest standalone binary for your OS:
+
+```bash
+# macOS / Linux
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+Or via npm if you already have Node.js 20+:
+
 ```bash
 npx @cosmicstack/mercury-agent
 ```
 
-Or install globally:
+Or install the npm package globally:
 
 ```bash
 npm i -g @cosmicstack/mercury-agent
@@ -315,6 +329,57 @@ When a provider fails, Mercury automatically tries the next one. It remembers th
 - **JSONL** — Short-term, long-term, and episodic conversation memory
 - **Daemon manager** — Background spawn + PID file + watchdog crash recovery
 - **System services** — macOS LaunchAgent, Linux systemd, Windows Task Scheduler
+
+## Build From Source
+
+You can build Mercury yourself from source — either the standard Node bundle (for `npm link` / local development) or a **standalone executable** that bundles the entire runtime, so end-users don't need Node.js installed at all.
+
+### Prerequisites
+
+- **Node.js ≥ 20** (for the build toolchain)
+- **[Bun](https://bun.sh) ≥ 1.3** (only required for standalone binaries; install with `curl -fsSL https://bun.sh/install | bash`)
+
+### Standard build (ESM bundle)
+
+```bash
+git clone https://github.com/cosmicstack-labs/mercury-agent.git
+cd mercury-agent
+npm install
+npm run build           # builds dist/ via tsup + post-build (UI, static assets)
+npm start               # node dist/index.js
+```
+
+### Standalone executable (no Node.js required for end users)
+
+Mercury can be compiled into a single self-contained binary using `bun build --compile`. The resulting file embeds the Bun runtime and the full Mercury bundle.
+
+```bash
+npm run build:bin            # host platform only
+npm run build:bin:all        # all 5 targets (macOS arm64/x64, Linux x64/arm64, Windows x64)
+npm run build:bin:force      # rebuild (overwrite existing binary for the same version)
+npm run build:bin:all:force  # rebuild all targets
+```
+
+Output is **versioned** so older builds are never overwritten:
+
+```
+release/
+├── latest                       → symlink to most-recent version
+├── v1.1.9/
+│   ├── mercury-macos-arm64
+│   ├── mercury-macos-x64
+│   ├── mercury-linux-x64
+│   ├── mercury-linux-arm64
+│   ├── mercury-win-x64.exe
+│   └── checksums.txt            (SHA-256 for every binary)
+└── v1.2.0/ …
+```
+
+The version is read from `package.json` — bump it before building to produce a fresh folder. Re-running for the same version skips already-built targets unless `--force` is passed.
+
+**Cross-compilation**: Bun produces binaries for every target from a single host. Native modules (`better-sqlite3`) can't cross-compile, but Mercury gracefully falls back to `sql.js` (pure JS + wasm) so the cross-compiled binaries still work end-to-end.
+
+**macOS Gatekeeper**: unsigned binaries trigger a warning on first launch. For distribution, sign with `codesign --sign "Developer ID" release/v<version>/mercury-macos-arm64` and notarize.
 
 ## License
 

@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "docusaurus": "docusaurus",
+    "prestart": "node scripts/copy-installers.cjs",
     "start": "docusaurus start",
+    "prebuild": "node scripts/copy-installers.cjs",
     "build": "docusaurus build",
     "build:prod": "docusaurus build && rm -rf ../docs && cp -r build ../docs && touch ../docs/.nojekyll",
     "swizzle": "docusaurus swizzle",

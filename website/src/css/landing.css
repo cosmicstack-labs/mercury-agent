@@ -70,9 +70,267 @@
 .lp-hero-title { font-size: clamp(2.2em, 5vw, 3.8em); font-weight: 800; line-height: 1.15; margin-bottom: 20px; color: var(--white-bright); letter-spacing: -0.02em; }
 .lp-hero-highlight { background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 .lp-hero-sub { color: var(--gray); max-width: 560px; margin: 0 auto 36px; font-size: 1.1em; line-height: 1.65; }
-.lp-hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 28px; }
-.lp-hero-install { display: inline-block; background: var(--bg-terminal); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 28px; }
-.lp-hero-install code { background: none; padding: 0; font-size: 0.95em; }
+.lp-hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 40px; }
+.lp-hero-install {
+  display: block;
+  margin: 0 auto;
+  background: linear-gradient(180deg, rgba(13,13,20,0.95) 0%, var(--bg-terminal) 100%);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius);
+  padding: 0;
+  text-align: left;
+  max-width: 100%;
+  width: min(820px, 100%);
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(0, 212, 255, 0.08),
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 80px rgba(0, 212, 255, 0.08);
+  position: relative;
+}
+.lp-hero-install::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: var(--radius);
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(0,212,255,0.4) 0%, transparent 40%, transparent 60%, rgba(167,139,250,0.25) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.6;
+}
+.lp-hero-install code { background: none; padding: 0; font-size: 1em; color: var(--white-bright); }
+
+.lp-install-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  flex-wrap: wrap;
+}
+.lp-install-tabs { display: flex; gap: 4px; }
+.lp-install-tab {
+  font-family: var(--font);
+  font-size: 0.92em;
+  font-weight: 600;
+  color: var(--gray);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 12px 18px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  letter-spacing: 0.01em;
+  margin-bottom: -1px;
+}
+.lp-install-tab:hover { color: var(--white); background: rgba(255,255,255,0.02); }
+.lp-install-tab.is-active { color: var(--cyan); border-bottom-color: var(--cyan); }
+.lp-install-os { display: flex; gap: 6px; padding: 8px 0; }
+.lp-install-pill {
+  font-family: var(--font-body);
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--gray);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.02em;
+}
+.lp-install-pill:hover { color: var(--white); border-color: var(--border-hover); }
+.lp-install-pill.is-active { color: var(--cyan); border-color: var(--cyan-dim); background: var(--cyan-glow); }
+
+/* ---- Install blocks (numbered "1" primary, "2" alt) ---- */
+.lp-install-block { padding: 20px 24px 22px; }
+.lp-install-block-primary { background: transparent; }
+.lp-install-block-alt {
+  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid var(--border);
+  padding: 14px 24px 16px;
+  opacity: 0.78;
+  transition: opacity 0.2s;
+}
+.lp-install-block-alt:hover,
+.lp-install-block-alt:focus-within { opacity: 1; }
+.lp-install-block-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--white);
+  font-family: var(--font-body);
+  font-size: 0.92em;
+  font-weight: 600;
+  margin-bottom: 12px;
+  letter-spacing: 0.01em;
+  flex-wrap: wrap;
+}
+.lp-install-block-alt .lp-install-block-label {
+  color: var(--gray);
+  font-size: 0.78em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+.lp-install-block-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--cyan);
+  color: var(--bg);
+  font-family: var(--font);
+  font-size: 0.78em;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.lp-install-block-alt .lp-install-block-num { display: none; }
+.lp-install-block-hint {
+  font-family: var(--font-body);
+  font-size: 0.82em;
+  font-weight: 500;
+  color: var(--gray);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  padding: 2px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.lp-install-block-alt .lp-install-block-hint {
+  font-size: 0.92em;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--gray-dim);
+}
+
+.lp-install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  font-family: var(--font);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.lp-install-block-alt .lp-install-cmd {
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-color: transparent;
+  border-top: 1px solid var(--border);
+  border-radius: 6px;
+}
+.lp-install-prompt {
+  color: var(--cyan);
+  opacity: 0.75;
+  font-family: var(--font);
+  font-size: 0.95em;
+  font-weight: 700;
+  flex-shrink: 0;
+  user-select: none;
+}
+.lp-install-block-alt .lp-install-prompt { opacity: 0.5; font-size: 0.85em; }
+.lp-install-cmd code {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1em;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  word-break: break-all;
+  white-space: normal;
+  line-height: 1.5;
+}
+.lp-install-block-alt .lp-install-cmd code {
+  font-size: 0.85em;
+  color: var(--gray);
+}
+.lp-install-copy {
+  font-family: var(--font-body);
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--cyan);
+  background: var(--cyan-glow);
+  border: 1px solid var(--cyan-dim);
+  border-radius: 8px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+.lp-install-copy:hover { background: var(--cyan-glow-strong); color: var(--white-bright); }
+.lp-install-block-alt .lp-install-copy {
+  font-size: 0.72em;
+  padding: 4px 10px;
+  color: var(--gray);
+  background: transparent;
+  border-color: var(--border);
+}
+.lp-install-block-alt .lp-install-copy:hover {
+  color: var(--white);
+  border-color: var(--border-hover);
+  background: rgba(255,255,255,0.04);
+}
+
+.lp-install-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+}
+.lp-install-binary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.78em;
+  color: var(--gray) !important;
+  font-weight: 500;
+  text-decoration: none !important;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  transition: color 0.15s;
+}
+.lp-install-binary:hover { color: var(--cyan) !important; background: rgba(0,212,255,0.04); text-decoration: none !important; }
+.lp-install-binary svg { flex-shrink: 0; opacity: 0.7; }
+.lp-install-binary:hover svg { opacity: 1; }
+.lp-install-binary-asset {
+  font-family: var(--font) !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: 0.95em !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  opacity: 0.85;
+}
+
+@media (max-width: 640px) {
+  .lp-install-os { padding: 6px 0 8px; }
+  .lp-install-head { padding: 6px 10px 0 10px; }
+  .lp-install-tab { padding: 10px 12px; font-size: 0.85em; }
+  .lp-install-block { padding: 16px 14px 18px; }
+  .lp-install-cmd { padding: 12px; gap: 10px; flex-wrap: wrap; }
+  .lp-install-cmd code { font-size: 0.92em; flex-basis: 100%; }
+  .lp-install-copy { width: 100%; padding: 9px 16px; }
+  .lp-install-prompt { display: none; }
+  .lp-install-actions { justify-content: stretch; }
+  .lp-install-binary { width: 100%; justify-content: center; }
+}
 
 /* ---- Buttons ---- */
 .lp-btn { font-family: var(--font-body); font-size: 0.95em; font-weight: 600; padding: 12px 28px; border-radius: var(--radius-sm); border: none; cursor: pointer; text-decoration: none !important; transition: all 0.25s; display: inline-block; }

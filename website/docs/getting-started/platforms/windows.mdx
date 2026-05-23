@@ -1,0 +1,99 @@
+---
+id: windows
+title: Windows
+sidebar_label: Windows
+---
+
+Mercury runs natively on Windows 10 (build 1809+) and Windows 11, on **x64**. Native arm64 binaries are not yet published — on Windows on ARM, use WSL or the npm route.
+
+## Quickest install (recommended)
+
+Open PowerShell (any version) and run:
+
+```powershell
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+This downloads `mercury-windows-x64.exe`, verifies its SHA-256, installs it to `%USERPROFILE%\.mercury\bin\mercury.exe`, and prepends that directory to your **user** `PATH`. No admin required.
+
+After install, **open a new terminal window** and run:
+
+```powershell
+mercury --version
+```
+
+:::tip[Execution policy]
+
+If PowerShell blocks the script, allow user scripts for the current session:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+:::
+
+## Via npm (if you already have Node)
+
+```powershell
+npm i -g @cosmicstack/mercury-agent
+mercury
+```
+
+Requires **Node.js 20+**. Install from [nodejs.org](https://nodejs.org) or via [`winget install OpenJS.NodeJS.LTS`](https://winget.run/pkg/OpenJS/NodeJS.LTS).
+
+## Pinning a version
+
+```powershell
+$env:MERCURY_VERSION = '1.1.9'
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+## Custom install location
+
+```powershell
+$env:MERCURY_INSTALL = 'C:\Tools\mercury'
+$env:MERCURY_NO_PATH = '1'
+irm https://mercury.cosmicstack.org/install.ps1 | iex
+```
+
+Then add `C:\Tools\mercury\bin` to your `PATH` manually via **System Properties → Environment Variables**.
+
+## Windows Terminal recommended
+
+Mercury's TUI uses Unicode, true color, and ANSI escapes. For best results, use **Windows Terminal** (default on Windows 11, [free from the Store](https://aka.ms/terminal) on Windows 10). The legacy `cmd.exe` window may render box-drawing characters incorrectly.
+
+## WSL alternative
+
+If you prefer a Linux environment, install Mercury inside WSL2:
+
+```bash
+wsl --install -d Ubuntu
+# inside WSL:
+curl -fsSL https://mercury.cosmicstack.org/install.sh | sh
+```
+
+Follow the [Linux guide](./linux.mdx) from there.
+
+## SmartScreen / antivirus
+
+The `.exe` is unsigned today. SmartScreen may show "Windows protected your PC" on first run — click **More info → Run anyway**. A code-signed build is on the roadmap.
+
+## Uninstall
+
+```powershell
+Remove-Item -Recurse -Force $env:USERPROFILE\.mercury
+```
+
+Then remove the entry from your user `PATH` (System Properties → Environment Variables).
+
+For npm installs:
+
+```powershell
+npm uninstall -g @cosmicstack/mercury-agent
+```
+
+## Next steps
+
+- [Setup](../setup)
+- [Daemon Mode → System Service](../../daemon-mode/system-service) for running Mercury as a Windows service
