@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>🔖 Current Stable: v1.1.6</strong>
+  <strong>🔖 Current Stable: v1.1.9</strong>
 </p>
 
 <p align="center">
