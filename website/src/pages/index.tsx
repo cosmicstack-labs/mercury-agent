@@ -212,11 +212,11 @@ function detectOs(): OsId {
 function osBinaryAsset(os: OsId): string {
   switch (os) {
     case 'macos':
-      return 'mercury-darwin-arm64';
+      return 'mercury-macos-arm64';
     case 'linux':
       return 'mercury-linux-x64';
     case 'windows':
-      return 'mercury-windows-x64.exe';
+      return 'mercury-win-x64.exe';
   }
 }
 
