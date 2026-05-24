@@ -67,7 +67,6 @@ export class CLIChannel extends BaseChannel {
   private stepStartTime = 0;
   private state: TuiState = { ...defaultState };
   private spotifyClient: any = null;
-  private rawModeWatchdog: NodeJS.Timeout | null = null;
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -86,23 +85,10 @@ export class CLIChannel extends BaseChannel {
   }
 
   async stop(): Promise<void> {
-    this.stopRawModeWatchdog();
     this.inkInstance?.unmount();
     this.inkInstance = null;
     this.releaseRawMode();
     this.ready = false;
-  }
-
-  private ensureRawMode(): void {
-    if (!process.stdin.isTTY) return;
-    const stdin = process.stdin as NodeJS.ReadStream;
-    if (typeof stdin.setRawMode !== 'function') return;
-    try {
-      stdin.setRawMode(true);
-      stdin.resume();
-    } catch {
-      // Ignore transient raw mode failures.
-    }
   }
 
   private releaseRawMode(): void {
@@ -116,19 +102,19 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
-  private startRawModeWatchdog(): void {
-    this.stopRawModeWatchdog();
-    this.ensureRawMode();
-    this.rawModeWatchdog = setInterval(() => {
-      if (!this.inkInstance) return;
-      this.ensureRawMode();
-    }, 250);
-  }
+  private syncTerminalInputMode(): void {
+    if (!process.stdin.isTTY) return;
+    const stdin = process.stdin as NodeJS.ReadStream;
+    if (typeof stdin.setRawMode !== 'function') return;
 
-  private stopRawModeWatchdog(): void {
-    if (this.rawModeWatchdog) {
-      clearInterval(this.rawModeWatchdog);
-      this.rawModeWatchdog = null;
+    const shouldUseRawMode = Boolean(this.state.permissionPrompt)
+      || (this.state.mode !== 'chat' && this.state.mode !== 'coding');
+
+    try {
+      stdin.setRawMode(shouldUseRawMode);
+      stdin.resume();
+    } catch {
+      // Ignore transient raw mode failures.
     }
   }
 
@@ -151,7 +137,6 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
-          this.stopRawModeWatchdog();
           this.inkInstance?.unmount();
           this.inkInstance = null;
           this.releaseRawMode();
@@ -266,7 +251,6 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
-          this.stopRawModeWatchdog();
           this.inkInstance?.unmount();
           this.inkInstance = null;
           this.releaseRawMode();
@@ -276,8 +260,6 @@ export class CLIChannel extends BaseChannel {
       }),
       { exitOnCtrlC: false, patchConsole: false },
     );
-
-    this.startRawModeWatchdog();
   }
 
   async send(content: string, _targetId?: string, _elapsedMs?: number): Promise<void> {
@@ -436,7 +418,7 @@ export class CLIChannel extends BaseChannel {
       if (this.menuDepth === 0) {
         this.menuAbortController = null;
       }
-      this.ensureRawMode();
+      this.syncTerminalInputMode();
     }
   }
 
