@@ -16,6 +16,27 @@ export function getMercuryHome(): string {
   return process.env.MERCURY_HOME || MERCURY_HOME;
 }
 
+export function appendToMercuryEnv(key: string, value: string): void {
+  const dir = getMercuryHome();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  const envPath = join(dir, '.env');
+  let envContent = '';
+  if (existsSync(envPath)) {
+    envContent = readFileSync(envPath, 'utf-8');
+  }
+
+  const lines = envContent
+    .split('\n')
+    .filter((line) => !line.startsWith(`${key}=`) && line.trim() !== '');
+
+  lines.push(`${key}=${value}`);
+  process.env[key] = value;
+  writeFileSync(envPath, lines.join('\n') + '\n', 'utf-8');
+}
+
 export function getMemoryDir(): string {
   return join(getMercuryHome(), 'memory');
 }
