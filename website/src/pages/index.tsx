@@ -438,6 +438,7 @@ export default function LandingPage(): React.ReactElement {
               <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
               <Link to="/#live-demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
               <Link to="/#channels" onClick={() => setMobileMenuOpen(false)}>Channels</Link>
+              <Link to="/#skills" onClick={() => setMobileMenuOpen(false)}>Skills</Link>
               <Link to="/#agents" onClick={() => setMobileMenuOpen(false)}>Multi-Agent</Link>
               <Link to="/#compare" onClick={() => setMobileMenuOpen(false)}>Compare</Link>
               <Link to="/docs" onClick={() => setMobileMenuOpen(false)}>Docs</Link>
@@ -613,6 +614,72 @@ export default function LandingPage(): React.ReactElement {
                   <li>Organization access model with admin/member roles</li>
                 </ul>
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Skills Registry */}
+        <section id="skills" className="lp-section">
+          <div className="lp-container">
+            <h2 className="lp-section-title">Skills Registry</h2>
+            <p className="lp-section-sub">
+              Install vetted, single-purpose capabilities from <a href="https://skills.mercuryagent.sh" target="_blank" rel="noopener noreferrer">skills.mercuryagent.sh</a> — 126+ skills across 23 categories. Review the source, then install with one command.
+            </p>
+
+            <div className="lp-channels-grid lp-reveal" style={{ marginTop: '2rem' }}>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">{'>'}_</span>
+                  <h3>From the CLI</h3>
+                </div>
+                <div className="lp-terminal-inline" style={{ marginBottom: '0.75rem' }}>
+                  <code>mercury skills search contract</code>
+                </div>
+                <div className="lp-terminal-inline" style={{ marginBottom: '0.75rem' }}>
+                  <code>mercury skills view finance-legal/contract-review</code>
+                </div>
+                <div className="lp-terminal-inline">
+                  <code>mercury skills install finance-legal/contract-review</code>
+                </div>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">◧</span>
+                  <h3>From the Dashboard</h3>
+                </div>
+                <ul>
+                  <li>Open <strong>Skills</strong> in the sidebar at <code>localhost:6174</code>.</li>
+                  <li>Paste <code>category/slug</code> into the registry installer.</li>
+                  <li>Toggle skills on/off without removing them.</li>
+                  <li>Or use the URL installer for raw <code>SKILL.md</code> files.</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">✈</span>
+                  <h3>From Telegram</h3>
+                </div>
+                <ul>
+                  <li><code>/skills</code> — list installed skills</li>
+                  <li><code>/skills search &lt;query&gt;</code> — search the registry</li>
+                  <li><code>/skills view &lt;id&gt;</code> — show details + registry URL</li>
+                  <li><code>/skills install &lt;id&gt;</code> — admin only</li>
+                </ul>
+              </div>
+            </div>
+
+            <div style={{ textAlign: 'center', marginTop: '2.5rem' }}>
+              <a
+                href="https://skills.mercuryagent.sh"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="lp-btn lp-btn-primary"
+              >
+                Browse the registry →
+              </a>{' '}
+              <Link to="/docs/reference/skills" className="lp-btn lp-btn-secondary">
+                Read the docs
+              </Link>
             </div>
           </div>
         </section>

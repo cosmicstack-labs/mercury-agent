@@ -22,6 +22,9 @@ import {
 import { logger } from '../utils/logger.js';
 import { mdToTelegram } from '../utils/markdown.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
+import { RegistryClient, isValidSkillId, searchFeed, type RegistrySkillSummary } from '../skills/registry.js';
+import { SkillStore } from '../skills/store.js';
+import { SkillLoader } from '../skills/loader.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
@@ -180,6 +183,11 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/skills') {
+        await this.handleSkillsCommand(chatId, userId, text);
+        return;
+      }
+
       if (command === '/permissions') {
         this.askPermissionMode(`telegram:${chatId}`).then((mode) => {
           this.permissionModes.set(chatId, mode);
@@ -269,6 +277,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'agents', description: 'List and manage sub-agents' },
       { command: 'bg', description: 'Background tasks (list / cancel / run)' },
       { command: 'spotify', description: 'Spotify playback controls' },
+      { command: 'skills', description: 'Browse and install skills from the registry' },
       { command: 'unpair', description: 'Reset all Telegram access (admin only)' },
     ];
 
@@ -1048,6 +1057,189 @@ export class TelegramChannel extends BaseChannel {
 
   private getCommandName(text: string): string {
     return text.trim().split(/\s+/)[0]?.toLowerCase() || '';
+  }
+
+  private async handleSkillsCommand(chatId: number, userId: number, text: string): Promise<void> {
+    const parts = text.trim().split(/\s+/).slice(1);
+    const sub = (parts[0] || 'list').toLowerCase();
+    const args = parts.slice(1);
+    const arg = args.join(' ').trim();
+
+    const registry = new RegistryClient();
+    const store = new SkillStore({ registry });
+    const loader = new SkillLoader();
+
+    try {
+      switch (sub) {
+        case 'help':
+        case '-h':
+        case '--help': {
+          await this.sendDirectMessage(
+            chatId,
+            [
+              '*Mercury Skills — Telegram*',
+              '',
+              '`/skills` — list installed skills',
+              '`/skills search <query>` — search the registry',
+              '`/skills view <id>` — show details + registry URL',
+              '`/skills install <id>` — admin only',
+              '`/skills remove <id>` — admin only',
+              '',
+              'Registry: https://skills.mercuryagent.sh',
+            ].join('\n'),
+          );
+          return;
+        }
+
+        case 'list': {
+          const installed = loader.getAllSkills();
+          if (installed.length === 0) {
+            await this.sendDirectMessage(
+              chatId,
+              'No skills installed.\n\nTry `/skills search <query>` to browse https://skills.mercuryagent.sh.',
+            );
+            return;
+          }
+          const lines = installed
+            .slice(0, 25)
+            .map((s) => `• \`${s.name}\` — ${s.active ? 'active' : 'inactive'}${s.description ? ` — ${s.description}` : ''}`);
+          const more = installed.length > 25 ? `\n\n_…and ${installed.length - 25} more. Run \`mercury skills list\` for the full set._` : '';
+          await this.sendDirectMessage(
+            chatId,
+            `*Installed skills (${installed.length})*\n\n${lines.join('\n')}${more}`,
+          );
+          return;
+        }
+
+        case 'search':
+        case 'find': {
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills search <query>`');
+            return;
+          }
+          const feed = await registry.getFeed();
+          const scored = searchFeed(feed, arg, 5);
+          if (scored.length === 0) {
+            await this.sendDirectMessage(chatId, `No results for "${arg}".`);
+            return;
+          }
+          const results = scored.map((s) => s.skill);
+          const lines = results.map(
+            (r: RegistrySkillSummary) =>
+              `• \`${r.id}\` (v${r.version})\n  ${r.description}\n  ${registry.webUrl(r.id)}`,
+          );
+          await this.sendDirectMessage(
+            chatId,
+            `*Top ${results.length} matches for "${arg}"*\n\n${lines.join('\n\n')}\n\nReview a skill before installing: \`/skills view <id>\``,
+          );
+          return;
+        }
+
+        case 'view':
+        case 'show':
+        case 'info': {
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills view <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          const detail = await registry.getSkill(arg);
+          const tags = detail.tags?.length ? `\n*Tags:* ${detail.tags.join(', ')}` : '';
+          const author = detail.author ? `\n*Author:* ${detail.author}` : '';
+          await this.sendDirectMessage(
+            chatId,
+            [
+              `*${detail.title}* (\`${detail.id}\`)`,
+              `*Version:* ${detail.version}`,
+              `*Category:* ${detail.category}`,
+              author,
+              tags,
+              '',
+              detail.description,
+              '',
+              `🔗 ${registry.webUrl(detail.id)}`,
+              '',
+              this.isAdminUser(userId)
+                ? 'Install with: `/skills install ' + detail.id + '`'
+                : 'Ask an admin to install: `/skills install ' + detail.id + '`',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          );
+          return;
+        }
+
+        case 'install':
+        case 'add': {
+          if (!this.isAdminUser(userId)) {
+            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can install skills.');
+            return;
+          }
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills install <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          await this.sendDirectMessage(chatId, `Installing \`${arg}\`…`);
+          const result = await store.install(arg);
+          const verb =
+            result.status === 'already-installed'
+              ? 'Already installed'
+              : result.status === 'updated'
+                ? 'Updated'
+                : result.status === 'reinstalled'
+                  ? 'Reinstalled'
+                  : 'Installed';
+          await this.sendDirectMessage(
+            chatId,
+            `✅ ${verb} \`${result.id}\` (v${result.version})\n\n🔗 ${registry.webUrl(result.id)}`,
+          );
+          return;
+        }
+
+        case 'remove':
+        case 'rm':
+        case 'delete':
+        case 'uninstall': {
+          if (!this.isAdminUser(userId)) {
+            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can remove skills.');
+            return;
+          }
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills remove <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          const removed = store.remove(arg);
+          if (!removed) {
+            await this.sendDirectMessage(chatId, `Skill \`${arg}\` is not installed.`);
+            return;
+          }
+          await this.sendDirectMessage(chatId, `🗑 Removed \`${arg}\`.`);
+          return;
+        }
+
+        default: {
+          await this.sendDirectMessage(
+            chatId,
+            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Skill registry request failed';
+      logger.warn({ err: msg, sub, arg }, 'Telegram /skills command failed');
+      await this.sendDirectMessage(chatId, `⚠️ ${msg}`);
+    }
   }
 
   private getPendingStatusMessage(request?: TelegramPendingRequest): string {

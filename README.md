@@ -221,6 +221,13 @@ Overrides: `--registry <url>` (or `MERCURY_SKILLS_REGISTRY`) for self-hosted
 registries, `MERCURY_SKILLS_INSTALL_ROOT` for an alternate install path,
 `--json` for machine-readable output.
 
+**Also installable from:**
+
+- **Web dashboard** — `http://127.0.0.1:6174/skills` has a registry installer (paste `category/slug`) and a URL installer side by side.
+- **Telegram** — `/skills`, `/skills search <q>`, `/skills view <id>`, `/skills install <id>` (admin-only). Every result includes the registry URL so you can review before installing.
+
+See the [Skills reference](https://mercuryagent.sh/docs/reference/skills) for the full command surface, frontmatter spec, and API endpoints.
+
 ## Web Dashboard
 
 Mercury includes a built-in web UI at `http://127.0.0.1:6174`:
