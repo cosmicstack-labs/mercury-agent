@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text, Spacer, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, Spacer, useApp, useInput, useStdin, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
 import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
@@ -8,6 +8,7 @@ import { renderMarkdown } from '../utils/markdown.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
+import { extractCookedSubmission, sanitizePrintableInput, shouldUseCookedTextInput } from './input-mode.js';
 
 const MERCURY_LOGO = [
   '    __  _____________  ________  ________  __',
@@ -78,6 +79,7 @@ export interface TuiAppProps {
 
 export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
   const { exit } = useApp();
+  const { isRawModeSupported, setRawMode } = useStdin();
   const [input, setInput] = React.useState('');
   const [cursorPos, setCursorPos] = React.useState(0);
   const setInputAndCursor = (text: string, pos?: number) => {
@@ -102,6 +104,33 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   const [workspacePane, setWorkspacePane] = React.useState<'files' | 'details' | 'git'>('files');
   const [detailCursor, setDetailCursor] = React.useState(0);
   const [gitCursor, setGitCursor] = React.useState(0);
+  const cookedTextInput = shouldUseCookedTextInput(state.mode, Boolean(state.permissionPrompt));
+
+  React.useEffect(() => {
+    if (!cookedTextInput || !isRawModeSupported) return;
+    setRawMode(false);
+    return () => {
+      setRawMode(true);
+    };
+  }, [cookedTextInput, isRawModeSupported, setRawMode]);
+
+  const submitInput = React.useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setInputAndCursor('');
+      return false;
+    }
+
+    onInput(trimmed);
+    setInputHistory((prev) => {
+      if (prev[prev.length - 1] === trimmed) return prev;
+      return [...prev.slice(-99), trimmed];
+    });
+    setHistoryIndex(-1);
+    setHistoryDraft('');
+    setInputAndCursor('');
+    return true;
+  }, [onInput]);
 
   const slashCommands = React.useMemo(() => [
     '/help',
@@ -297,6 +326,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    if (cookedTextInput) {
+      const submitted = ch ? extractCookedSubmission(ch) : null;
+      if (submitted !== null) {
+        submitInput(submitted);
+      }
+      return;
+    }
+
     if (state.mode === 'splash') {
       if (ch === 'd' || ch === 'D') {
         setShowStartupDetails((v) => !v);
@@ -414,26 +451,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
 
     if (isEnter) {
-      const trimmed = input.trim();
-
       // If autocomplete popup is showing and input doesn't exactly match the selected suggestion,
       // fill the suggestion into the input instead of submitting
-      if (slashSuggestions.length > 0 && trimmed !== slashSuggestions[slashSelIdx]) {
+      if (slashSuggestions.length > 0 && input.trim() !== slashSuggestions[slashSelIdx]) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
         return;
       }
 
-      if (trimmed) {
-        onInput(trimmed);
-        setInputHistory((prev) => {
-          if (prev[prev.length - 1] === trimmed) return prev;
-          return [...prev.slice(-99), trimmed];
-        });
-        setHistoryIndex(-1);
-        setHistoryDraft('');
-        setInputAndCursor('');
-        return;
-      }
+      if (submitInput(input)) return;
     }
 
     if (state.mode === 'workspace') {
@@ -634,8 +659,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.ctrl || key.meta) return;
 
     if (ch && ch.length > 0 && !key.escape) {
-      // Strip control chars but keep printable content (handles paste)
-      const clean = ch.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+      const clean = sanitizePrintableInput(ch);
       if (clean) {
         setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
         setCursorPos((p) => p + clean.length);
@@ -719,9 +743,10 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           mode={state.mode}
           programmingMode={state.programmingMode}
           projectContext={state.projectContext}
+          nativeLineEditor={cookedTextInput}
         />
       )}
-      {showInput && slashSuggestions.length > 0 && (
+      {showInput && !cookedTextInput && slashSuggestions.length > 0 && (
         <Box flexDirection="column" paddingX={1}>
           <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
           {slashSuggestions.map((cmd, idx) => (
@@ -1627,12 +1652,14 @@ function InputBox({
   mode,
   programmingMode,
   projectContext,
+  nativeLineEditor,
 }: {
   input: string;
   cursorPos: number;
   mode: AppMode;
   programmingMode: ProgrammingModeState;
   projectContext: string | null;
+  nativeLineEditor: boolean;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
@@ -1667,23 +1694,30 @@ function InputBox({
         </Text>
       </Box>
       <Box paddingX={1} flexDirection="column">
-        {lines.map((line, i) => (
-          <Box key={i}>
-            <Text color={promptColor} bold>{i === 0 ? '> ' : '  '}</Text>
-            {i === cursorLine ? (
-              <>
-                <Text>{line.slice(0, cursorCol)}</Text>
-                <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
-                <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
-              </>
-            ) : (
-              <Text>{line}</Text>
-            )}
+        {nativeLineEditor ? (
+          <Box>
+            <Text color={promptColor} bold>{'> '}</Text>
+            <Text dimColor>Native terminal input active — compose with your IME, then press Enter to send.</Text>
           </Box>
-        ))}
+        ) : (
+          lines.map((line, i) => (
+            <Box key={i}>
+              <Text color={promptColor} bold>{i === 0 ? '> ' : '  '}</Text>
+              {i === cursorLine ? (
+                <>
+                  <Text>{line.slice(0, cursorCol)}</Text>
+                  <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
+                  <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
+                </>
+              ) : (
+                <Text>{line}</Text>
+              )}
+            </Box>
+          ))
+        )}
       </Box>
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
+        <Text dimColor>{nativeLineEditor ? 'Native terminal editing active · IME/paste supported · Enter send' : inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
       </Box>
     </Box>
   );
