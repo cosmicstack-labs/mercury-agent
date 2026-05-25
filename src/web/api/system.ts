@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SkillLoader } from '../../skills/loader.js';
+import { RegistryClient, isValidSkillId } from '../../skills/registry.js';
+import { SkillStore } from '../../skills/store.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
 import type { Scheduler } from '../../core/scheduler.js';
@@ -51,6 +53,36 @@ system.post('/api/skills/install', async (c) => {
     return c.json({ success: true, name: installed.name, path: installed.skillDir });
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Failed to install skill' }, 400);
+  }
+});
+
+system.post('/api/skills/install-from-registry', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const id = String(body?.id || '').trim();
+  if (!id) return c.json({ success: false, error: 'id is required' }, 400);
+
+  if (!isValidSkillId(id)) {
+    return c.json(
+      { success: false, error: 'Invalid skill id (expected "<category>/<slug>")' },
+      400,
+    );
+  }
+
+  try {
+    const registry = new RegistryClient();
+    const store = new SkillStore({ registry });
+    const result = await store.install(id, { force: Boolean(body?.force) });
+    return c.json({
+      success: true,
+      id: result.id,
+      version: result.version,
+      status: result.status,
+      path: result.path,
+      webUrl: registry.webUrl(id),
+    });
+  } catch (err: any) {
+    const status = err?.status === 404 ? 404 : 400;
+    return c.json({ success: false, error: err?.message || 'Failed to install skill' }, status);
   }
 });
 

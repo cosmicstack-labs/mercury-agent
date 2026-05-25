@@ -243,6 +243,15 @@ export const skills = {
   list: () => get<{ skills: Skill[]; total: number }>("/api/skills"),
   install: (url: string) =>
     post<{ success: boolean; name: string }>("/api/skills/install", { url }),
+  installFromRegistry: (id: string, force = false) =>
+    post<{
+      success: boolean;
+      id: string;
+      version: string;
+      status: "installed" | "updated" | "reinstalled" | "already-installed";
+      path: string;
+      webUrl: string;
+    }>("/api/skills/install-from-registry", { id, force }),
   activate: (name: string) =>
     post<{ success: boolean }>(`/api/skills/${name}/activate`),
   deactivate: (name: string) =>

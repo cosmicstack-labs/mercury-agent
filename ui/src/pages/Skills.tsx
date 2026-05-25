@@ -11,6 +11,8 @@ import {
   FolderOpen,
   CheckCircle2,
   XCircle,
+  ExternalLink,
+  Store,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -118,6 +120,8 @@ export function SkillsPage() {
   const [loading, setLoading] = useState(true);
   const [installUrl, setInstallUrl] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [registryId, setRegistryId] = useState("");
+  const [installingRegistry, setInstallingRegistry] = useState(false);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -156,6 +160,30 @@ export function SkillsPage() {
       toast("error", err instanceof Error ? err.message : "Installation failed");
     } finally {
       setInstalling(false);
+    }
+  };
+
+  const handleRegistryInstall = async () => {
+    const id = registryId.trim();
+    if (!id) return;
+    setInstallingRegistry(true);
+    try {
+      const res = await api.skills.installFromRegistry(id);
+      const verb =
+        res.status === "already-installed"
+          ? "Already installed"
+          : res.status === "updated"
+            ? "Updated"
+            : res.status === "reinstalled"
+              ? "Reinstalled"
+              : "Installed";
+      toast("success", `${verb} "${res.id}" (v${res.version})`);
+      setRegistryId("");
+      await fetchSkills();
+    } catch (err: unknown) {
+      toast("error", err instanceof Error ? err.message : "Registry install failed");
+    } finally {
+      setInstallingRegistry(false);
     }
   };
 
@@ -218,38 +246,100 @@ export function SkillsPage() {
         transition={{ delay: 0.1, duration: 0.3 }}
       >
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Download className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium text-foreground">
-                Install a Skill
-              </span>
+          <CardContent className="p-5 space-y-5">
+            {/* Registry install */}
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <Store className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">
+                    Install from registry
+                  </span>
+                </div>
+                <a
+                  href="https://skills.mercuryagent.sh"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-[#00d4ff] transition-colors"
+                >
+                  Browse skills.mercuryagent.sh
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleRegistryInstall();
+                }}
+                className="flex gap-3"
+              >
+                <Input
+                  placeholder="category/skill-slug   e.g. finance-legal/contract-review"
+                  value={registryId}
+                  onChange={(e) => setRegistryId(e.target.value)}
+                  disabled={installingRegistry}
+                  className="flex-1 font-mono text-sm"
+                />
+                <Button
+                  type="submit"
+                  disabled={installingRegistry || !registryId.trim()}
+                >
+                  {installingRegistry ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Installing
+                    </>
+                  ) : (
+                    "Install"
+                  )}
+                </Button>
+              </form>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Review any skill on the registry before installing — they execute
+                with your agent&apos;s privileges.
+              </p>
             </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleInstall();
-              }}
-              className="flex gap-3"
-            >
-              <Input
-                placeholder="https://github.com/user/skill-package"
-                value={installUrl}
-                onChange={(e) => setInstallUrl(e.target.value)}
-                disabled={installing}
-                className="flex-1"
-              />
-              <Button type="submit" disabled={installing || !installUrl.trim()}>
-                {installing ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Installing
-                  </>
-                ) : (
-                  "Install"
-                )}
-              </Button>
-            </form>
+
+            <div className="h-px bg-border" />
+
+            {/* URL install */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Download className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium text-foreground">
+                  Install from URL
+                </span>
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleInstall();
+                }}
+                className="flex gap-3"
+              >
+                <Input
+                  placeholder="https://github.com/user/skill-package"
+                  value={installUrl}
+                  onChange={(e) => setInstallUrl(e.target.value)}
+                  disabled={installing}
+                  className="flex-1"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  disabled={installing || !installUrl.trim()}
+                >
+                  {installing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Installing
+                    </>
+                  ) : (
+                    "Install"
+                  )}
+                </Button>
+              </form>
+            </div>
           </CardContent>
         </Card>
       </motion.div>
