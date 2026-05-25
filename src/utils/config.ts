@@ -111,6 +111,9 @@ export interface MercuryConfig {
       enabled: boolean;
       apiUrl: string;
       number: string;
+      groupId: string;        // The `id` field from groups list (group.xxx) — used for sending
+      groupInternalId: string; // The `internal_id` — matches groupInfo.groupId in envelopes
+      groupName: string;      // Display name of the group
       admins: SignalAccessUser[];
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
@@ -291,6 +294,9 @@ export function getDefaultConfig(): MercuryConfig {
         enabled: getEnvBool('SIGNAL_ENABLED', false),
         apiUrl: getEnv('SIGNAL_API_URL', ''),
         number: getEnv('SIGNAL_NUMBER', ''),
+        groupId: '',
+        groupInternalId: '',
+        groupName: '',
         admins: [],
         members: [],
         pending: [],

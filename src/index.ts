@@ -667,16 +667,18 @@ async function testSignalConnection(apiUrl: string, number: string): Promise<{ o
   }
 }
 
-async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstalled: boolean; containerRunning: boolean; apiReachable: boolean; accounts: string[]; error?: string }> {
+async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstalled: boolean; containerRunning: boolean; apiReachable: boolean; accounts: string[]; detectedUrl?: string; containerName?: string; error?: string }> {
   // Check if Docker is installed
   let dockerInstalled = false;
+  let detectedUrl: string | undefined;
+  let containerName: string | undefined;
   try {
     const { execSync } = await import('node:child_process');
     execSync('docker --version', { stdio: 'pipe' });
     dockerInstalled = true;
   } catch { /* docker not found */ }
 
-  // Check if signal-cli-rest-api is reachable (container running)
+  // Check if signal-cli-rest-api is reachable at the given URL
   let containerRunning = false;
   let apiReachable = false;
   let accounts: string[] = [];
@@ -691,9 +693,67 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
     }
   } catch { /* not reachable */ }
 
-  if (apiReachable) {
+  // If the given URL is not reachable but Docker is installed,
+  // check if signal-cli-rest-api is actually running on a different port
+  if (!apiReachable && dockerInstalled) {
     try {
-      const res = await fetch(`${apiUrl}/v1/accounts`, {
+      const { execSync } = await import('node:child_process');
+      // Find running containers with the signal-cli-rest-api image
+      const output = execSync(
+        'docker ps --filter "ancestor=bbernhard/signal-cli-rest-api" --format "{{.Names}}\\t{{.Ports}}"',
+        { stdio: 'pipe', encoding: 'utf-8' },
+      ).trim();
+
+      if (!output) {
+        // Also try filtering by container name patterns
+        const altOutput = execSync(
+          'docker ps --format "{{.Names}}\\t{{.Image}}\\t{{.Ports}}"',
+          { stdio: 'pipe', encoding: 'utf-8' },
+        ).trim();
+
+        for (const line of altOutput.split('\n')) {
+          if (!line) continue;
+          const [name, image, ports] = line.split('\t');
+          if (image?.includes('signal-cli') || name?.includes('signal')) {
+            containerRunning = true;
+            containerName = name;
+            const hostPort = extractHostPort(ports);
+            if (hostPort) {
+              detectedUrl = `http://localhost:${hostPort}`;
+            }
+            break;
+          }
+        }
+      } else {
+        // Found by image name
+        const firstLine = output.split('\n')[0];
+        const [name, ports] = firstLine.split('\t');
+        containerRunning = true;
+        containerName = name;
+        const hostPort = extractHostPort(ports);
+        if (hostPort) {
+          detectedUrl = `http://localhost:${hostPort}`;
+        }
+      }
+
+      // If we detected a URL, try to reach it
+      if (detectedUrl && detectedUrl !== apiUrl) {
+        try {
+          const response = await fetch(`${detectedUrl}/v1/about`, {
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (response.ok) {
+            apiReachable = true;
+          }
+        } catch { /* not reachable at detected URL either */ }
+      }
+    } catch { /* docker ps failed */ }
+  }
+
+  if (apiReachable) {
+    const checkUrl = detectedUrl && detectedUrl !== apiUrl ? detectedUrl : apiUrl;
+    try {
+      const res = await fetch(`${checkUrl}/v1/accounts`, {
         signal: AbortSignal.timeout(5_000),
       });
       if (res.ok) {
@@ -702,7 +762,19 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
     } catch { /* ignore */ }
   }
 
-  return { dockerInstalled, containerRunning, apiReachable, accounts };
+  return { dockerInstalled, containerRunning, apiReachable, accounts, detectedUrl: detectedUrl !== apiUrl ? detectedUrl : undefined, containerName };
+}
+
+/** Extract host port from Docker port mapping string like "0.0.0.0:8080->8080/tcp" */
+function extractHostPort(portsStr: string | undefined): string | undefined {
+  if (!portsStr) return undefined;
+  // Match patterns like "0.0.0.0:8080->8080/tcp" or ":::8080->8080/tcp"
+  const match = portsStr.match(/(?:0\.0\.0\.0|127\.0\.0\.1|:::?)(\d+)->(\d+)/);
+  if (match) return match[1];
+  // Simpler pattern: just "host:port->container"
+  const simpleMatch = portsStr.match(/:(\d+)->/);
+  if (simpleMatch) return simpleMatch[1];
+  return undefined;
 }
 
 async function completeInitialSignalPairing(config: MercuryConfig): Promise<void> {
@@ -727,7 +799,7 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       console.log(chalk.white('       docker run -d --name signal-api --restart=always \\'));
       console.log(chalk.white('         -p 8080:8080 \\'));
       console.log(chalk.white('         -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-      console.log(chalk.white('         -e MODE=json-rpc \\'));
+      console.log(chalk.white('         -e MODE=normal \\'));
       console.log(chalk.white('         bbernhard/signal-cli-rest-api'));
       console.log('');
       console.log(chalk.dim(`    3. Link your Signal number by opening in browser:`));
@@ -743,7 +815,7 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
       console.log(chalk.white('      -p 8080:8080 \\'));
       console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-      console.log(chalk.white('      -e MODE=json-rpc \\'));
+      console.log(chalk.white('      -e MODE=normal \\'));
       console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
       console.log('');
       console.log(chalk.dim(`  Then link your Signal number:`));
@@ -769,18 +841,83 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
     return;
   }
 
-  // Everything is ready — start pairing via "Note to Self"
+  // ─── Group Detection ─────────────────────────────────────────
   console.log('');
   console.log(chalk.bold.white('  Signal Pairing'));
   console.log(chalk.green('  ✓ signal-cli-rest-api is running'));
   console.log(chalk.green(`  ✓ Number ${number} is linked`));
   console.log('');
+
+  // Check if group is already configured
+  if (!config.channels.signal.groupId) {
+    console.log(chalk.dim('  Scanning Signal groups...'));
+
+    let groupFound = false;
+    let groupName = 'mercury';
+
+    // Auto-scan for a group named "Mercury" (case-insensitive)
+    let matches = await SignalChannel.findGroupsByName(apiUrl, number, groupName);
+
+    if (matches.length === 1) {
+      console.log(chalk.green(`  ✓ Found group "${matches[0].name}"`));
+      config.channels.signal.groupId = matches[0].id;
+      config.channels.signal.groupInternalId = matches[0].internalId;
+      config.channels.signal.groupName = matches[0].name;
+      groupFound = true;
+    } else if (matches.length > 1) {
+      console.log(chalk.yellow(`  Found ${matches.length} groups named "Mercury". Using the first one.`));
+      config.channels.signal.groupId = matches[0].id;
+      config.channels.signal.groupInternalId = matches[0].internalId;
+      config.channels.signal.groupName = matches[0].name;
+      groupFound = true;
+    }
+
+    if (!groupFound) {
+      console.log(chalk.dim('  No group named "Mercury" found.'));
+      console.log('');
+      console.log(chalk.white('  To use Signal with Mercury, create a dedicated group:'));
+      console.log(chalk.dim('    1. Open Signal → New Group → name it "Mercury"'));
+      console.log(chalk.dim('    2. You can be the only member'));
+      console.log(chalk.dim('    3. Press Enter below to re-scan, or type a custom group name'));
+      console.log('');
+
+      while (!groupFound) {
+        const input = await ask(chalk.white('  Group name [Mercury] or "skip": '));
+
+        if (input.toLowerCase() === 'skip') {
+          console.log(chalk.dim('  Signal group setup skipped. Run: mercury doctor'));
+          console.log('');
+          return;
+        }
+
+        const searchName = input || 'mercury';
+        console.log(chalk.dim(`  Scanning for group "${searchName}"...`));
+        matches = await SignalChannel.findGroupsByName(apiUrl, number, searchName);
+
+        if (matches.length >= 1) {
+          console.log(chalk.green(`  ✓ Found group "${matches[0].name}"`));
+          config.channels.signal.groupId = matches[0].id;
+          config.channels.signal.groupInternalId = matches[0].internalId;
+          config.channels.signal.groupName = matches[0].name;
+          groupFound = true;
+        } else {
+          console.log(chalk.red(`  No group named "${searchName}" found. Create it in Signal and try again.`));
+        }
+      }
+    }
+
+    saveConfig(config);
+  } else {
+    console.log(chalk.green(`  ✓ Group "${config.channels.signal.groupName}" configured`));
+  }
+
+  // ─── Pairing via Group Message ───────────────────────────────
+  console.log('');
   console.log(chalk.white('  To pair Mercury with your Signal:'));
-  console.log(chalk.dim('    1. Open Signal on your phone'));
-  console.log(chalk.dim('    2. Go to "Note to Self" (message yourself)'));
-  console.log(chalk.dim(`    3. Send the word: `) + chalk.bold.white('mercury'));
-  console.log(chalk.dim('    4. Mercury will reply with a pairing code in that same chat'));
-  console.log(chalk.dim('    5. Enter the code below'));
+  console.log(chalk.dim(`    1. Open the "${config.channels.signal.groupName}" group in Signal`));
+  console.log(chalk.dim(`    2. Send: `) + chalk.bold.white('mercury pair'));
+  console.log(chalk.dim('    3. Mercury will reply with a pairing code in that group'));
+  console.log(chalk.dim('    4. Enter the code below'));
   console.log('');
 
   // Start a temporary Signal channel in pairing mode
@@ -788,11 +925,11 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
   let pairingCode: string | null = null;
   let receivedPairingMessage = false;
 
-  signal.enablePairingMode((source: string, text: string) => {
-    const normalized = text.toLowerCase().trim();
-    if (normalized === 'mercury' || normalized === 'mercury pair') {
+  signal.enablePairingMode((source: string, text: string, _groupId?: string) => {
+    const normalized = text.toLowerCase().trim().replace(/[^a-z\s]/g, '');
+    if (normalized === 'mercury pair' || normalized === 'mercurypair' || normalized === 'mercury') {
       receivedPairingMessage = true;
-      // Generate pairing code and send it back to self
+      // Generate pairing code and send it back to the group
       pairingCode = Math.floor(100000 + Math.random() * 900000).toString();
       addSignalPendingRequest(config, {
         phoneNumber: source,
@@ -800,30 +937,25 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       });
       saveConfig(config);
 
-      // Send the code back to the user (Note to Self)
-      signal.send(`Your Mercury pairing code: ${pairingCode}\n\nEnter this code in the Mercury terminal to complete setup.`, `signal:${source}`);
+      // Send the code to the group
+      signal.sendToGroup(`Your Mercury pairing code: ${pairingCode}\n\nEnter this code in the Mercury terminal to complete setup.`);
     }
   });
 
   try {
     await signal.start();
-    // Give WebSocket a moment to connect
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Give the poll loop a moment to start
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     if (!signal.isReady()) {
-      console.log(chalk.yellow('  ⚠ Signal WebSocket not yet connected. Retrying...'));
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-    }
-
-    if (!signal.isReady()) {
-      console.log(chalk.red('  ✗ Could not connect to Signal WebSocket.'));
+      console.log(chalk.red('  ✗ Could not connect to Signal receive endpoint.'));
       console.log(chalk.dim('  You can pair later with: mercury signal approve <pairing-code>'));
       console.log('');
       await signal.stop();
       return;
     }
 
-    console.log(chalk.dim('  Waiting for your "mercury" message in Signal...'));
+    console.log(chalk.dim(`  Waiting for "mercury pair" in the "${config.channels.signal.groupName}" group...`));
     console.log('');
 
     // Wait for the user to enter the code
@@ -831,7 +963,7 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       const userCode = await ask(chalk.white('  Pairing Code (or "skip" to pair later): '));
       if (!userCode) {
         if (!receivedPairingMessage) {
-          console.log(chalk.dim('  Still waiting... Send "mercury" to yourself in Signal first.'));
+          console.log(chalk.dim(`  Still waiting... Send "mercury pair" in the "${config.channels.signal.groupName}" group first.`));
         } else {
           console.log(chalk.red('  Pairing code is required.'));
         }
@@ -847,9 +979,9 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       const approved = approveSignalPendingRequestByPairingCode(config, userCode.trim());
       if (!approved) {
         if (!receivedPairingMessage) {
-          console.log(chalk.red('  No pairing code generated yet. Send "mercury" to yourself in Signal first.'));
+          console.log(chalk.red(`  No pairing code generated yet. Send "mercury pair" in the "${config.channels.signal.groupName}" group first.`));
         } else {
-          console.log(chalk.red('  Invalid code. Check the code Mercury sent you in Signal.'));
+          console.log(chalk.red('  Invalid code. Check the code Mercury sent in the group.'));
         }
         continue;
       }
@@ -1334,14 +1466,20 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   const defaultApiUrl = config.channels.signal.apiUrl || 'http://localhost:8080';
   const prereqCheck = await checkSignalPrerequisites(defaultApiUrl);
 
+  // Determine the actual working URL (might differ from what was entered)
+  const workingApiUrl = prereqCheck.apiReachable
+    ? (prereqCheck.detectedUrl || defaultApiUrl)
+    : undefined;
+
   if (!isReconfig && prereqCheck.apiReachable && prereqCheck.accounts.length > 0) {
     // Auto-detected a running instance!
+    const effectiveUrl = workingApiUrl!;
     const detectedNumber = prereqCheck.accounts[0];
-    console.log(chalk.green(`  ✓ Detected signal-cli-rest-api at ${defaultApiUrl}`));
+    console.log(chalk.green(`  ✓ Detected signal-cli-rest-api at ${effectiveUrl}`));
     console.log(chalk.green(`  ✓ Found linked number: ${detectedNumber}`));
     const useDetected = await ask(chalk.white(`  Use this Signal setup? (Y/n): `));
     if (useDetected.toLowerCase() !== 'n') {
-      config.channels.signal.apiUrl = defaultApiUrl;
+      config.channels.signal.apiUrl = effectiveUrl;
       config.channels.signal.number = detectedNumber;
       config.channels.signal.enabled = true;
     }
@@ -1358,8 +1496,14 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
       // Check what's available
       const check = await checkSignalPrerequisites(config.channels.signal.apiUrl);
+
+      // If the entered URL wasn't reachable but we found the container elsewhere, use that
+      if (check.detectedUrl) {
+        config.channels.signal.apiUrl = check.detectedUrl;
+      }
+
       if (check.apiReachable && check.accounts.length > 0) {
-        console.log(chalk.green(`  ✓ Connected to signal-cli-rest-api`));
+        console.log(chalk.green(`  ✓ Connected to signal-cli-rest-api at ${config.channels.signal.apiUrl}`));
         // Auto-fill number if only one account
         if (check.accounts.length === 1) {
           config.channels.signal.number = check.accounts[0];
@@ -1386,23 +1530,57 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         if (!check.dockerInstalled) {
           console.log(chalk.dim('  Docker is not installed. Install Docker first:'));
           console.log(chalk.white('    https://docs.docker.com/get-docker/'));
+        } else if (check.containerRunning && check.detectedUrl) {
+          // Container is running but on a different URL
+          console.log(chalk.yellow(`  ⚠ signal-cli-rest-api is running${check.containerName ? ` (container: ${check.containerName})` : ''} but at a different URL:`));
+          console.log(chalk.green(`    ${check.detectedUrl}`));
+          const useDetected = await ask(chalk.white(`  Use ${check.detectedUrl} instead? (Y/n): `));
+          if (useDetected.toLowerCase() !== 'n') {
+            config.channels.signal.apiUrl = check.detectedUrl;
+            if (check.accounts.length === 1) {
+              config.channels.signal.number = check.accounts[0];
+              console.log(chalk.green(`  ✓ Using number: ${check.accounts[0]}`));
+            } else if (check.accounts.length > 1) {
+              console.log(chalk.dim(`  Available numbers: ${check.accounts.join(', ')}`));
+              const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
+              const signalNumber = await ask(chalk.white(`  Signal Number${signalNumMask}: `));
+              if (signalNumber) config.channels.signal.number = signalNumber;
+            } else {
+              console.log(chalk.yellow('  ⚠ No Signal numbers linked yet.'));
+              console.log(chalk.dim(`  Link your number: open ${check.detectedUrl}/v1/qrcodelink?device_name=mercury`));
+              const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
+              const signalNumber = await ask(chalk.white(`  Signal Number (enter after linking)${signalNumMask}: `));
+              if (signalNumber) config.channels.signal.number = signalNumber;
+            }
+            config.channels.signal.enabled = true;
+          }
+        } else if (check.containerRunning) {
+          // Container running but couldn't detect the port
+          console.log(chalk.yellow(`  ⚠ A signal-cli-rest-api container is running${check.containerName ? ` (${check.containerName})` : ''} but is not reachable at the URL you entered.`));
+          console.log(chalk.dim('  Check the container port mapping with: docker ps'));
+          const proceed = await ask(chalk.white('  Enable Signal anyway (configure later)? (y/N): '));
+          if (proceed.toLowerCase() === 'y') {
+            const signalNumber = await ask(chalk.white('  Signal Number: '));
+            if (signalNumber) config.channels.signal.number = signalNumber;
+            config.channels.signal.enabled = true;
+          }
         } else {
-          console.log(chalk.dim('  Docker is installed but the container is not running.'));
-        }
-        console.log('');
-        console.log(chalk.dim('  Start signal-cli-rest-api:'));
-        console.log(chalk.white('    mkdir -p ~/.signal-api'));
-        console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
-        console.log(chalk.white('      -p 8080:8080 \\'));
-        console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-        console.log(chalk.white('      -e MODE=json-rpc \\'));
-        console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
-        console.log('');
-        const proceed = await ask(chalk.white('  Enable Signal anyway (configure later)? (y/N): '));
-        if (proceed.toLowerCase() === 'y') {
-          const signalNumber = await ask(chalk.white('  Signal Number: '));
-          if (signalNumber) config.channels.signal.number = signalNumber;
-          config.channels.signal.enabled = true;
+          console.log(chalk.dim('  Docker is installed but no signal-cli-rest-api container is running.'));
+          console.log('');
+          console.log(chalk.dim('  Start signal-cli-rest-api:'));
+          console.log(chalk.white('    mkdir -p ~/.signal-api'));
+          console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
+          console.log(chalk.white('      -p 8080:8080 \\'));
+          console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
+          console.log(chalk.white('      -e MODE=normal \\'));
+          console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
+          console.log('');
+          const proceed = await ask(chalk.white('  Enable Signal anyway (configure later)? (y/N): '));
+          if (proceed.toLowerCase() === 'y') {
+            const signalNumber = await ask(chalk.white('  Signal Number: '));
+            if (signalNumber) config.channels.signal.number = signalNumber;
+            config.channels.signal.enabled = true;
+          }
         }
       }
     }
@@ -2865,6 +3043,7 @@ signalCmd
     console.log(`  Enabled:   ${config.channels.signal.enabled ? chalk.green('yes') : chalk.dim('no')}`);
     console.log(`  API URL:   ${config.channels.signal.apiUrl ? chalk.white(config.channels.signal.apiUrl) : chalk.dim('(not set)')}`);
     console.log(`  Number:    ${config.channels.signal.number ? chalk.white(config.channels.signal.number) : chalk.dim('(not set)')}`);
+    console.log(`  Group:     ${config.channels.signal.groupName ? chalk.white(`"${config.channels.signal.groupName}"`) : chalk.dim('(not set)')}`);
 
     if (config.channels.signal.apiUrl) {
       const prereqs = await checkSignalPrerequisites(config.channels.signal.apiUrl);
@@ -2875,9 +3054,6 @@ signalCmd
         if (prereqs.accounts.length > 0) {
           const linked = prereqs.accounts.includes(config.channels.signal.number) ? chalk.green('yes') : chalk.red('no');
           console.log(`  Number linked: ${linked}`);
-          if (prereqs.accounts.length > 1) {
-            console.log(`  All accounts: ${chalk.dim(prereqs.accounts.join(', '))}`);
-          }
         } else {
           console.log(`  Number linked: ${chalk.red('no accounts found')}`);
         }
@@ -3045,8 +3221,10 @@ signalCmd
     console.log(chalk.green('  ✓ Signal API reachable'));
     console.log(chalk.green(`  ✓ Number ${config.channels.signal.number} is registered`));
 
-    // Send a test message to self
-    console.log(chalk.dim('  Sending test message to self...'));
+    // Send a test message to the group (or self if no group)
+    const sendTarget = config.channels.signal.groupId || config.channels.signal.number;
+    const targetLabel = config.channels.signal.groupId ? `"${config.channels.signal.groupName}" group` : 'Note to Self';
+    console.log(chalk.dim(`  Sending test message to ${targetLabel}...`));
     try {
       const res = await fetch(`${config.channels.signal.apiUrl}/v2/send`, {
         method: 'POST',
@@ -3054,12 +3232,12 @@ signalCmd
         body: JSON.stringify({
           message: `Mercury Signal test — ${new Date().toLocaleString()}`,
           number: config.channels.signal.number,
-          recipients: [config.channels.signal.number],
+          recipients: [sendTarget],
         }),
         signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
-        console.log(chalk.green('  ✓ Test message sent (check "Note to Self" in Signal)'));
+        console.log(chalk.green(`  ✓ Test message sent (check the ${targetLabel} in Signal)`));
       } else {
         const body = await res.text().catch(() => '');
         console.log(chalk.red(`  ✗ Send failed: ${body || res.status}`));

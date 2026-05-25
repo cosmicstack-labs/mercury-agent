@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import WebSocket from 'ws';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import type { MercuryConfig, SignalAccessUser, SignalPendingRequest } from '../utils/config.js';
@@ -13,7 +12,6 @@ import {
   findSignalPendingRequest,
   getSignalAccessSummary,
   getSignalAdmins,
-  getSignalApprovedNumbers,
   hasSignalAdmins,
   rejectSignalPendingRequest,
   saveConfig,
@@ -30,16 +28,17 @@ type PendingReply = {
 
 export class SignalChannel extends BaseChannel {
   readonly type = 'signal' as const;
-  private ws: WebSocket | null = null;
+  private pollController: AbortController | null = null;
+  private polling = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 20;
   private baseReconnectDelay = 2000;
   private shouldReconnect = true;
 
-  // Pairing mode: allows self-messages to trigger pairing
+  // Pairing mode: allows messages to trigger pairing
   private pairingMode = false;
-  private pairingHandler?: (source: string, text: string) => void;
+  private pairingHandler?: (source: string, text: string, groupId?: string) => void;
 
   // Permission / continuation prompts — keyed by sender phone number
   private pendingReplies = new Map<string, PendingReply>();
@@ -57,8 +56,8 @@ export class SignalChannel extends BaseChannel {
     super();
   }
 
-  /** Enable pairing mode — allows self-messages and routes them to a handler */
-  enablePairingMode(handler: (source: string, text: string) => void): void {
+  /** Enable pairing mode — allows messages and routes them to a handler */
+  enablePairingMode(handler: (source: string, text: string, groupId?: string) => void): void {
     this.pairingMode = true;
     this.pairingHandler = handler;
   }
@@ -72,7 +71,7 @@ export class SignalChannel extends BaseChannel {
   // ─── Lifecycle ───────────────────────────────────────────────
 
   async start(): Promise<void> {
-    if (this.ws) return;
+    if (this.polling) return;
 
     const { apiUrl, number } = this.config.channels.signal;
     if (!apiUrl || !number) {
@@ -81,69 +80,86 @@ export class SignalChannel extends BaseChannel {
     }
 
     this.shouldReconnect = true;
-    this.connect();
+    this.startPolling();
   }
 
   async stop(): Promise<void> {
     this.shouldReconnect = false;
+    this.polling = false;
+    if (this.pollController) {
+      this.pollController.abort();
+      this.pollController = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
     this.ready = false;
   }
 
-  private connect(): void {
-    const { apiUrl, number } = this.config.channels.signal;
-    const wsUrl = apiUrl.replace(/^http/, 'ws') + `/v1/receive/${encodeURIComponent(number)}`;
-
-    logger.info({ url: wsUrl }, 'Signal: connecting to WebSocket');
-
-    const ws = new WebSocket(wsUrl);
-
-    ws.on('open', () => {
-      logger.info('Signal: WebSocket connected');
-      this.ready = true;
-      this.reconnectAttempts = 0;
-    });
-
-    ws.on('message', (data) => {
-      try {
-        const raw = data.toString();
-        const envelope = JSON.parse(raw);
-        this.handleEnvelope(envelope);
-      } catch (err: any) {
-        logger.warn({ err: err.message }, 'Signal: failed to parse incoming message');
-      }
-    });
-
-    ws.on('close', (code, reason) => {
-      logger.info({ code, reason: reason?.toString() }, 'Signal: WebSocket closed');
-      this.ready = false;
-      this.ws = null;
-      this.scheduleReconnect();
-    });
-
-    ws.on('error', (err) => {
-      logger.error({ err: err.message }, 'Signal: WebSocket error');
-      // close event will fire after this, triggering reconnect
-    });
-
-    ws.on('ping', () => {
-      ws.pong();
-    });
-
-    this.ws = ws;
+  private startPolling(): void {
+    if (this.polling) return;
+    this.polling = true;
+    this.ready = true;
+    this.reconnectAttempts = 0;
+    logger.info('Signal: starting HTTP long-poll receive loop');
+    this.pollLoop();
   }
 
-  private scheduleReconnect(): void {
+  private async pollLoop(): Promise<void> {
+    const { apiUrl, number } = this.config.channels.signal;
+    const receiveUrl = `${apiUrl}/v1/receive/${encodeURIComponent(number)}`;
+
+    while (this.polling && this.shouldReconnect) {
+      this.pollController = new AbortController();
+      try {
+        const response = await fetch(receiveUrl, {
+          signal: this.pollController.signal,
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+        if (!response.ok) {
+          logger.warn({ status: response.status }, 'Signal: receive poll returned error');
+          await this.pollBackoff();
+          continue;
+        }
+
+        const envelopes = await response.json() as any[];
+        this.reconnectAttempts = 0; // Reset on success
+
+        if (Array.isArray(envelopes)) {
+          for (const envelope of envelopes) {
+            try {
+              this.handleEnvelope(envelope);
+            } catch (err: any) {
+              logger.warn({ err: err.message }, 'Signal: error handling envelope');
+            }
+          }
+        }
+
+        // Small delay between polls to avoid hammering when no messages
+        if (!envelopes || envelopes.length === 0) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          // Intentional abort (stop() called)
+          break;
+        }
+        logger.error({ err: err.message }, 'Signal: poll request failed');
+        await this.pollBackoff();
+      }
+    }
+
+    this.polling = false;
+    this.ready = false;
+  }
+
+  private async pollBackoff(): Promise<void> {
     if (!this.shouldReconnect) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       logger.error('Signal: max reconnect attempts reached, giving up');
+      this.polling = false;
       return;
     }
 
@@ -152,40 +168,69 @@ export class SignalChannel extends BaseChannel {
       60_000,
     );
     this.reconnectAttempts++;
-    logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: scheduling reconnect');
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
+    logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: backing off before next poll');
+    await new Promise((r) => setTimeout(r, delay));
   }
 
   // ─── Incoming Message Handling ──────────────────────────────
 
   private handleEnvelope(envelope: any): void {
-    // signal-cli-rest-api sends envelopes with various structures
-    // The data message is typically at envelope.envelope.dataMessage
+    // signal-cli-rest-api sends envelopes in format:
+    // { envelope: { source, dataMessage, syncMessage, ... }, account }
     const env = envelope.envelope || envelope;
     const source = env.source || env.sourceNumber;
-    const dataMessage = env.dataMessage;
 
-    if (!source || !dataMessage) return;
+    if (!source) return;
 
-    const text = dataMessage.message?.trim();
-    if (!text) return;
+    // Extract text and group info from either dataMessage (incoming from others)
+    // or syncMessage.sentMessage (self-sent from phone / linked device)
+    let text: string | undefined;
+    let timestamp: number;
+    let groupId: string | undefined;
 
-    // Ignore messages from ourselves UNLESS in pairing mode
-    const ownNumber = this.config.channels.signal.number;
-    if (source === ownNumber) {
-      if (this.pairingMode && this.pairingHandler) {
-        this.pairingHandler(source, text);
-        return;
-      }
-      logger.debug({ source }, 'Signal: ignoring message from self');
+    if (env.dataMessage) {
+      text = env.dataMessage.message?.trim();
+      timestamp = env.dataMessage.timestamp || env.timestamp || Date.now();
+      groupId = env.dataMessage.groupInfo?.groupId;
+    } else if (env.syncMessage?.sentMessage) {
+      const sent = env.syncMessage.sentMessage;
+      text = sent.message?.trim();
+      timestamp = sent.timestamp || env.timestamp || Date.now();
+      groupId = sent.groupInfo?.groupId;
+    } else {
       return;
     }
 
-    const timestamp = dataMessage.timestamp || env.timestamp || Date.now();
+    if (!text) return;
+
+    // Group-based filtering:
+    // Only process messages from the configured Mercury group.
+    // Ignore all DMs, Note to Self, and other groups.
+    const configuredGroupId = this.config.channels.signal.groupInternalId;
+
+    if (configuredGroupId) {
+      // Group is configured — only accept messages from that group
+      if (groupId !== configuredGroupId) {
+        // Exception: pairing mode allows messages from the group during setup
+        // (but we still require the group match)
+        logger.debug({ groupId, configuredGroupId }, 'Signal: ignoring message from non-Mercury group or DM');
+        return;
+      }
+    } else {
+      // No group configured yet — only allow pairing mode
+      if (this.pairingMode && this.pairingHandler) {
+        this.pairingHandler(source, text, groupId);
+        return;
+      }
+      logger.debug('Signal: no group configured and not in pairing mode, ignoring');
+      return;
+    }
+
+    // Pairing mode: route to pairing handler (for "mercury pair" trigger)
+    if (this.pairingMode && this.pairingHandler) {
+      this.pairingHandler(source, text, groupId);
+      return;
+    }
 
     // Check if this is a reply to a pending prompt
     const pendingReply = this.pendingReplies.get(source);
@@ -208,11 +253,11 @@ export class SignalChannel extends BaseChannel {
 
     if (command === '/unpair') {
       if (!this.isAdminUser(source)) {
-        this.sendToNumber(source, 'Only Signal admins can reset access.');
+        this.sendToGroup('Only Signal admins can reset access.');
         return;
       }
       this.resetAccess();
-      this.sendToNumber(source, 'Signal access reset. New users can message to request access.');
+      this.sendToGroup('Signal access reset. New users can message to request access.');
       return;
     }
 
@@ -225,7 +270,13 @@ export class SignalChannel extends BaseChannel {
 
     if (command === '/status') {
       const summary = getSignalAccessSummary(this.config);
-      this.sendToNumber(source, `Signal access: ${summary}`);
+      this.sendToGroup(`Signal access: ${summary}`);
+      return;
+    }
+
+    // Admin commands: "approve +number", "/approve +number", "/signal approve +number"
+    const adminText = text.replace(/^\/(signal\s+)?/i, '').trim();
+    if (/^(approve|reject)\s/i.test(adminText) && this.handleAdminCommand(source, adminText)) {
       return;
     }
 
@@ -238,7 +289,7 @@ export class SignalChannel extends BaseChannel {
       senderName: approvedUser.name || source,
       content: text,
       timestamp,
-      metadata: { phoneNumber: source },
+      metadata: { phoneNumber: source, groupId },
     };
     this.emit(msg);
   }
@@ -246,14 +297,13 @@ export class SignalChannel extends BaseChannel {
   private async handleUnapprovedMessage(source: string, text: string): Promise<void> {
     const pending = findSignalPendingRequest(this.config, source);
     if (pending) {
-      await this.sendToNumber(source, this.getPendingStatusMessage(pending));
+      await this.sendToGroup(this.getPendingStatusMessage(pending));
       return;
     }
 
     // New access request
     if (!hasSignalAdmins(this.config) && this.config.channels.signal.pending.length > 0) {
-      await this.sendToNumber(
-        source,
+      await this.sendToGroup(
         'Initial Signal pairing is already in progress for another user. Ask the Mercury operator to finish setup or reset Signal access first.',
       );
       return;
@@ -266,7 +316,7 @@ export class SignalChannel extends BaseChannel {
     saveConfig(this.config);
     logger.info({ source }, 'Signal access request recorded');
 
-    await this.sendToNumber(source, this.getPendingStatusMessage(request));
+    await this.sendToGroup(this.getPendingStatusMessage(request));
 
     if (hasSignalAdmins(this.config)) {
       await this.notifyAdminsOfPendingRequest(request);
@@ -283,20 +333,42 @@ export class SignalChannel extends BaseChannel {
       `Reply "approve ${request.phoneNumber}" or "reject ${request.phoneNumber}" to respond.`,
     ].join('\n');
 
-    for (const admin of getSignalAdmins(this.config)) {
-      await this.sendToNumber(admin.phoneNumber, message);
-    }
+    // Notify in the group
+    await this.sendToGroup(message);
   }
 
   // ─── Sending ────────────────────────────────────────────────
 
-  async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
-    const recipients = this.resolveTargetNumbers(targetId);
-    if (recipients.length === 0) {
-      logger.warn({ targetId }, 'Signal send: no valid recipients');
+  /** Send a message to the configured Mercury group */
+  async sendToGroup(message: string): Promise<void> {
+    const { apiUrl, number, groupId } = this.config.channels.signal;
+    if (!groupId) {
+      logger.warn('Signal: no group configured, cannot send');
       return;
     }
 
+    const url = `${apiUrl}/v2/send`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          number,
+          recipients: [groupId],
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        logger.warn({ status: response.status, body }, 'Signal: sendToGroup failed');
+      }
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'Signal: sendToGroup request error');
+    }
+  }
+
+  async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
     const key = targetId || 'notification';
 
     // During active task, route through status mechanism
@@ -322,22 +394,18 @@ export class SignalChannel extends BaseChannel {
     if (!fullContent.trim()) return;
 
     const chunks = this.splitMessage(fullContent, MAX_MESSAGE_LENGTH);
-    for (const recipient of recipients) {
-      for (const chunk of chunks) {
-        await this.sendToNumber(recipient, chunk);
-      }
+    for (const chunk of chunks) {
+      await this.sendToGroup(chunk);
     }
   }
 
   async sendFile(filePath: string, targetId?: string): Promise<void> {
-    const recipients = this.resolveTargetNumbers(targetId);
-    if (recipients.length === 0) return;
+    const { groupId } = this.config.channels.signal;
+    if (!groupId) return;
 
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) {
-      for (const recipient of recipients) {
-        await this.sendToNumber(recipient, `File not found: ${filePath}`);
-      }
+      await this.sendToGroup(`File not found: ${filePath}`);
       return;
     }
 
@@ -345,9 +413,7 @@ export class SignalChannel extends BaseChannel {
     const base64 = fileBuffer.toString('base64');
     const filename = path.basename(resolved);
 
-    for (const recipient of recipients) {
-      await this.sendWithAttachment(recipient, filename, base64);
-    }
+    await this.sendWithAttachment(groupId, filename, base64);
   }
 
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
@@ -376,32 +442,27 @@ export class SignalChannel extends BaseChannel {
   // ─── Permission / Continuation Prompts ──────────────────────
 
   async askPermission(prompt: string, targetId?: string): Promise<string> {
-    const recipients = this.resolveTargetNumbers(targetId);
-    const recipient = recipients[0];
-    if (!recipient) return 'no';
+    // For group-based messaging, we use the source phone number for reply tracking
+    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
 
     const message = `${prompt}\n\nReply: yes / no / always`;
-    await this.sendToNumber(recipient, message);
+    await this.sendToGroup(message);
 
-    return this.waitForReply(recipient, 120_000, 'no');
+    return this.waitForReply(source, 120_000, 'no');
   }
 
   async askToContinue(question: string, targetId?: string): Promise<boolean> {
-    const recipients = this.resolveTargetNumbers(targetId);
-    const recipient = recipients[0];
-    if (!recipient) return false;
+    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
 
     const message = `${question}\n\nReply: yes / no`;
-    await this.sendToNumber(recipient, message);
+    await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(recipient, 120_000, 'no');
+    const reply = await this.waitForReply(source, 120_000, 'no');
     return reply === 'yes' || reply === 'y' || reply === 'continue';
   }
 
   async askPermissionMode(targetId?: string): Promise<PermissionMode> {
-    const recipients = this.resolveTargetNumbers(targetId);
-    const recipient = recipients[0];
-    if (!recipient) return 'ask-me';
+    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
 
     const message = [
       'Permission Mode',
@@ -412,9 +473,9 @@ export class SignalChannel extends BaseChannel {
       '',
       'Reply: 1 or 2',
     ].join('\n');
-    await this.sendToNumber(recipient, message);
+    await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(recipient, 120_000, '1');
+    const reply = await this.waitForReply(source, 120_000, '1');
     return reply === '2' || reply === 'allow-all' || reply === 'allow all' ? 'allow-all' : 'ask-me';
   }
 
@@ -479,10 +540,7 @@ export class SignalChannel extends BaseChannel {
         ...recentHistory.map(h => `✓ ${h}`),
         `⏳ ${label}…`,
       ];
-      const recipients = this.resolveTargetNumbers(targetId);
-      for (const recipient of recipients) {
-        await this.sendToNumber(recipient, lines.join('\n'));
-      }
+      await this.sendToGroup(lines.join('\n'));
     }
   }
 
@@ -526,24 +584,18 @@ export class SignalChannel extends BaseChannel {
     // End task so normal send works
     this.endTask(targetId);
 
-    const recipients = this.resolveTargetNumbers(targetId);
-
     // Flush deferred response first
     const deferred = this.deferredResponses.get(key);
     if (deferred && deferred.trim()) {
       this.deferredResponses.delete(key);
       const chunks = this.splitMessage(deferred, MAX_MESSAGE_LENGTH);
-      for (const recipient of recipients) {
-        for (const chunk of chunks) {
-          await this.sendToNumber(recipient, chunk);
-        }
+      for (const chunk of chunks) {
+        await this.sendToGroup(chunk);
       }
     }
 
     // Send completion summary
-    for (const recipient of recipients) {
-      await this.sendToNumber(recipient, lines.join('\n'));
-    }
+    await this.sendToGroup(lines.join('\n'));
 
     // Cleanup
     this.stepCounters.delete(key);
@@ -572,28 +624,26 @@ export class SignalChannel extends BaseChannel {
 
     const approveMatch = lower.match(/^approve\s+(\+?\d+)$/);
     if (approveMatch) {
-      const phoneNumber = approveMatch[1];
+      const phoneNumber = approveMatch[1].startsWith('+') ? approveMatch[1] : `+${approveMatch[1]}`;
       const approved = approveSignalPendingRequest(this.config, phoneNumber, 'member');
       if (approved) {
         saveConfig(this.config);
-        this.sendToNumber(source, `Approved Signal access for ${phoneNumber}.`);
-        this.sendToNumber(phoneNumber, `Signal access approved. You can now chat with Mercury.\n\nSignal access: ${getSignalAccessSummary(this.config)}`);
+        this.sendToGroup(`Approved Signal access for ${phoneNumber}.`);
       } else {
-        this.sendToNumber(source, `No pending request found for ${phoneNumber}.`);
+        this.sendToGroup(`No pending request found for ${phoneNumber}.`);
       }
       return true;
     }
 
     const rejectMatch = lower.match(/^reject\s+(\+?\d+)$/);
     if (rejectMatch) {
-      const phoneNumber = rejectMatch[1];
+      const phoneNumber = rejectMatch[1].startsWith('+') ? rejectMatch[1] : `+${rejectMatch[1]}`;
       const rejected = rejectSignalPendingRequest(this.config, phoneNumber);
       if (rejected) {
         saveConfig(this.config);
-        this.sendToNumber(source, `Rejected Signal access for ${phoneNumber}.`);
-        this.sendToNumber(phoneNumber, 'Your Signal access request was rejected.');
+        this.sendToGroup(`Rejected Signal access for ${phoneNumber}.`);
       } else {
-        this.sendToNumber(source, `No pending request found for ${phoneNumber}.`);
+        this.sendToGroup(`No pending request found for ${phoneNumber}.`);
       }
       return true;
     }
@@ -660,21 +710,29 @@ export class SignalChannel extends BaseChannel {
 
   // ─── Resolution / Utilities ─────────────────────────────────
 
-  private resolveTargetNumbers(targetId?: string): string[] {
-    if (!targetId || targetId === 'notification') {
-      return getSignalApprovedNumbers(this.config);
+  /**
+   * Scan Signal groups and find one matching the given name (case-insensitive).
+   * Returns matching groups with their id (for sending) and internal_id (for envelope matching).
+   */
+  static async findGroupsByName(apiUrl: string, number: string, targetName: string): Promise<Array<{ name: string; id: string; internalId: string; members: string[] }>> {
+    try {
+      const response = await fetch(`${apiUrl}/v1/groups/${encodeURIComponent(number)}`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return [];
+      const groups = await response.json() as any[];
+      const normalized = targetName.toLowerCase();
+      return groups
+        .filter((g: any) => g.name?.toLowerCase() === normalized)
+        .map((g: any) => ({
+          name: g.name,
+          id: g.id,
+          internalId: g.internal_id,
+          members: g.members || [],
+        }));
+    } catch {
+      return [];
     }
-
-    if (targetId.startsWith('signal:')) {
-      return [targetId.split(':')[1]];
-    }
-
-    // If it looks like a phone number, use directly
-    if (targetId.startsWith('+')) {
-      return [targetId];
-    }
-
-    return [];
   }
 
   private isAdminUser(phoneNumber: string): boolean {
