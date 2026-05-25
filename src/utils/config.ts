@@ -46,6 +46,20 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
+export interface SignalAccessUser {
+  phoneNumber: string;
+  name?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface SignalPendingRequest {
+  phoneNumber: string;
+  name?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
 export type ProviderName =
   | 'openai'
   | 'anthropic'
@@ -92,6 +106,14 @@ export interface MercuryConfig {
       pairedUserId?: number;
       pairedChatId?: number;
       pairedUsername?: string;
+    };
+    signal: {
+      enabled: boolean;
+      apiUrl: string;
+      number: string;
+      admins: SignalAccessUser[];
+      members: SignalAccessUser[];
+      pending: SignalPendingRequest[];
     };
   };
   github: {
@@ -261,6 +283,14 @@ export function getDefaultConfig(): MercuryConfig {
           .filter(Boolean)
           .map(Number),
         streaming: getEnvBool('TELEGRAM_STREAMING', true),
+        admins: [],
+        members: [],
+        pending: [],
+      },
+      signal: {
+        enabled: getEnvBool('SIGNAL_ENABLED', false),
+        apiUrl: getEnv('SIGNAL_API_URL', ''),
+        number: getEnv('SIGNAL_NUMBER', ''),
         admins: [],
         members: [],
         pending: [],
@@ -611,5 +641,150 @@ export function migrateLegacyOllamaCloudBaseUrl(config: MercuryConfig): MercuryC
     config.providers.ollamaCloud.baseUrl = 'https://ollama.com/v1';
     saveConfig(config);
   }
+  return config;
+}
+
+// ═══════════════════════════════════════════
+// Signal Access Helpers
+// ═══════════════════════════════════════════
+
+export function getSignalApprovedUsers(config: MercuryConfig): SignalAccessUser[] {
+  return [
+    ...config.channels.signal.admins,
+    ...config.channels.signal.members,
+  ];
+}
+
+export function getSignalApprovedNumbers(config: MercuryConfig): string[] {
+  return [...new Set(getSignalApprovedUsers(config).map((user) => user.phoneNumber))];
+}
+
+export function getSignalAdmins(config: MercuryConfig): SignalAccessUser[] {
+  return config.channels.signal.admins;
+}
+
+export function getSignalPendingRequests(config: MercuryConfig): SignalPendingRequest[] {
+  return config.channels.signal.pending;
+}
+
+export function findSignalApprovedUser(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
+  return getSignalApprovedUsers(config).find((user) => user.phoneNumber === phoneNumber);
+}
+
+export function findSignalAdmin(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
+  return config.channels.signal.admins.find((user) => user.phoneNumber === phoneNumber);
+}
+
+export function findSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | undefined {
+  return config.channels.signal.pending.find((request) => request.phoneNumber === phoneNumber);
+}
+
+export function findSignalPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): SignalPendingRequest | undefined {
+  return config.channels.signal.pending.find((request) => request.pairingCode === pairingCode);
+}
+
+export function hasSignalAdmins(config: MercuryConfig): boolean {
+  return config.channels.signal.admins.length > 0;
+}
+
+export function getSignalAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.signal.admins.length} admin${config.channels.signal.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.signal.members.length} member${config.channels.signal.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.signal.pending.length} pending`;
+}
+
+export function addSignalPendingRequest(
+  config: MercuryConfig,
+  request: Omit<SignalPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): SignalPendingRequest {
+  const existing = findSignalPendingRequest(config, request.phoneNumber);
+  if (existing) {
+    existing.name = request.name || existing.name;
+    existing.pairingCode = request.pairingCode || existing.pairingCode;
+    return existing;
+  }
+
+  const created: SignalPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.signal.pending.push(created);
+  return created;
+}
+
+export function approveSignalPendingRequest(
+  config: MercuryConfig,
+  phoneNumber: string,
+  role: 'admin' | 'member' = 'member',
+): SignalAccessUser | null {
+  const request = findSignalPendingRequest(config, phoneNumber);
+  if (!request) return null;
+
+  const approvedUser: SignalAccessUser = {
+    phoneNumber: request.phoneNumber,
+    name: request.name,
+    requestedAt: request.requestedAt,
+    approvedAt: new Date().toISOString(),
+  };
+
+  config.channels.signal.pending = config.channels.signal.pending
+    .filter((entry) => entry.phoneNumber !== phoneNumber);
+  config.channels.signal.admins = config.channels.signal.admins
+    .filter((entry) => entry.phoneNumber !== phoneNumber);
+  config.channels.signal.members = config.channels.signal.members
+    .filter((entry) => entry.phoneNumber !== phoneNumber);
+
+  if (role === 'admin') {
+    config.channels.signal.admins.push(approvedUser);
+  } else {
+    config.channels.signal.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+export function approveSignalPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): SignalAccessUser | null {
+  const request = findSignalPendingRequestByPairingCode(config, pairingCode);
+  if (!request) return null;
+  const role = hasSignalAdmins(config) ? 'member' : 'admin';
+  return approveSignalPendingRequest(config, request.phoneNumber, role);
+}
+
+export function rejectSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | null {
+  const request = findSignalPendingRequest(config, phoneNumber);
+  if (!request) return null;
+  config.channels.signal.pending = config.channels.signal.pending
+    .filter((entry) => entry.phoneNumber !== phoneNumber);
+  return request;
+}
+
+export function removeSignalUser(config: MercuryConfig, phoneNumber: string): SignalAccessUser | null {
+  const admin = config.channels.signal.admins.find((entry) => entry.phoneNumber === phoneNumber);
+  if (admin) {
+    config.channels.signal.admins = config.channels.signal.admins
+      .filter((entry) => entry.phoneNumber !== phoneNumber);
+    return admin;
+  }
+
+  const member = config.channels.signal.members.find((entry) => entry.phoneNumber === phoneNumber);
+  if (member) {
+    config.channels.signal.members = config.channels.signal.members
+      .filter((entry) => entry.phoneNumber !== phoneNumber);
+    return member;
+  }
+
+  return null;
+}
+
+export function clearSignalAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.signal.admins = [];
+  config.channels.signal.members = [];
+  config.channels.signal.pending = [];
   return config;
 }

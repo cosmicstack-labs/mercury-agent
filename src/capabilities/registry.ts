@@ -134,6 +134,12 @@ export class CapabilityRegistry {
     this.sendMessageHandler = handler;
   }
 
+  private activeChannelNames: string[] = [];
+
+  setActiveChannels(channels: string[]): void {
+    this.activeChannelNames = channels;
+  }
+
   setMemoryStores(
     userMemory: () => import('../memory/user-memory.js').UserMemoryStore | null,
     ck: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null,
@@ -190,7 +196,7 @@ export class CapabilityRegistry {
     }
 
     if (this.sendMessageHandler) {
-      this.tools.send_message = createSendMessageTool(this.sendMessageHandler);
+      this.tools.send_message = createSendMessageTool(this.sendMessageHandler, this.activeChannelNames);
       logger.info('Messaging tool registered');
     }
 

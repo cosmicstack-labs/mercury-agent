@@ -24,6 +24,16 @@ import {
   demoteTelegramAdmin,
   hasTelegramAdmins,
   getTelegramApprovedChatIds,
+  clearSignalAccess,
+  getSignalAccessSummary,
+  getSignalApprovedUsers,
+  getSignalPendingRequests,
+  addSignalPendingRequest,
+  approveSignalPendingRequest,
+  approveSignalPendingRequestByPairingCode,
+  rejectSignalPendingRequest,
+  removeSignalUser,
+  hasSignalAdmins,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -41,6 +51,7 @@ import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { SignalChannel } from './channels/signal.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -597,6 +608,263 @@ function restartDaemonIfRunning(message?: string): void {
   restartDaemon();
 }
 
+function formatSignalUser(user: {
+  phoneNumber: string;
+  name?: string;
+}): string {
+  const name = user.name ? ` (${user.name})` : '';
+  return `${user.phoneNumber}${name}`;
+}
+
+function printSignalAccessState(config: MercuryConfig): void {
+  const admins = config.channels.signal.admins;
+  const members = config.channels.signal.members;
+  const pending = config.channels.signal.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => {
+        const code = entry.pairingCode ? ` [code: ${entry.pairingCode}]` : '';
+        return `${formatSignalUser(entry)}${code}`;
+      }).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+  console.log(`  Admins:        ${admins.length > 0 ? chalk.green(admins.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:       ${members.length > 0 ? chalk.green(members.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:       ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
+async function testSignalConnection(apiUrl: string, number: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${apiUrl}/v1/about`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      return { ok: false, error: `API returned HTTP ${response.status}` };
+    }
+    const data = await response.json() as any;
+    if (!data.versions) {
+      return { ok: false, error: 'Invalid signal-cli-rest-api response' };
+    }
+
+    // Check if the number is registered
+    const accountsRes = await fetch(`${apiUrl}/v1/accounts`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (accountsRes.ok) {
+      const accounts = await accountsRes.json() as string[];
+      if (!accounts.includes(number)) {
+        return { ok: false, error: `Number ${number} is not registered in signal-cli-rest-api. Link it first at ${apiUrl}/v1/qrcodelink?device_name=mercury` };
+      }
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      return { ok: false, error: `Connection timed out — is signal-cli-rest-api running at ${apiUrl}?` };
+    }
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstalled: boolean; containerRunning: boolean; apiReachable: boolean; accounts: string[]; error?: string }> {
+  // Check if Docker is installed
+  let dockerInstalled = false;
+  try {
+    const { execSync } = await import('node:child_process');
+    execSync('docker --version', { stdio: 'pipe' });
+    dockerInstalled = true;
+  } catch { /* docker not found */ }
+
+  // Check if signal-cli-rest-api is reachable (container running)
+  let containerRunning = false;
+  let apiReachable = false;
+  let accounts: string[] = [];
+
+  try {
+    const response = await fetch(`${apiUrl}/v1/about`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.ok) {
+      containerRunning = true;
+      apiReachable = true;
+    }
+  } catch { /* not reachable */ }
+
+  if (apiReachable) {
+    try {
+      const res = await fetch(`${apiUrl}/v1/accounts`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.ok) {
+        accounts = await res.json() as string[];
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { dockerInstalled, containerRunning, apiReachable, accounts };
+}
+
+async function completeInitialSignalPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.signal.enabled || !config.channels.signal.apiUrl || !config.channels.signal.number || hasSignalAdmins(config)) {
+    return;
+  }
+
+  const { apiUrl, number } = config.channels.signal;
+
+  // Test connection
+  const prereqs = await checkSignalPrerequisites(apiUrl);
+  if (!prereqs.apiReachable) {
+    console.log(chalk.red(`\n  ✗ Cannot reach signal-cli-rest-api at ${apiUrl}`));
+    if (!prereqs.dockerInstalled) {
+      console.log(chalk.red('  ✗ Docker is not installed.'));
+      console.log('');
+      console.log(chalk.dim('  To use Signal with Mercury, you need:'));
+      console.log(chalk.dim('    1. Install Docker: https://docs.docker.com/get-docker/'));
+      console.log(chalk.dim('    2. Run the signal-cli-rest-api container:'));
+      console.log('');
+      console.log(chalk.white('       mkdir -p ~/.signal-api'));
+      console.log(chalk.white('       docker run -d --name signal-api --restart=always \\'));
+      console.log(chalk.white('         -p 8080:8080 \\'));
+      console.log(chalk.white('         -v ~/.signal-api:/home/.local/share/signal-cli \\'));
+      console.log(chalk.white('         -e MODE=json-rpc \\'));
+      console.log(chalk.white('         bbernhard/signal-cli-rest-api'));
+      console.log('');
+      console.log(chalk.dim(`    3. Link your Signal number by opening in browser:`));
+      console.log(chalk.white(`       ${apiUrl}/v1/qrcodelink?device_name=mercury`));
+      console.log(chalk.dim('       Then scan the QR code in Signal > Settings > Linked Devices'));
+      console.log('');
+    } else {
+      console.log(chalk.dim('  Docker is installed but the container is not running.'));
+      console.log('');
+      console.log(chalk.dim('  Start the signal-cli-rest-api container:'));
+      console.log('');
+      console.log(chalk.white('    mkdir -p ~/.signal-api'));
+      console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
+      console.log(chalk.white('      -p 8080:8080 \\'));
+      console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
+      console.log(chalk.white('      -e MODE=json-rpc \\'));
+      console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
+      console.log('');
+      console.log(chalk.dim(`  Then link your Signal number:`));
+      console.log(chalk.white(`    Open: ${apiUrl}/v1/qrcodelink?device_name=mercury`));
+      console.log(chalk.dim('    Scan QR code in Signal > Settings > Linked Devices'));
+      console.log('');
+    }
+    console.log(chalk.dim('  After setup, run: mercury doctor'));
+    console.log('');
+    return;
+  }
+
+  // Check if number is registered
+  if (!prereqs.accounts.includes(number)) {
+    console.log(chalk.red(`\n  ✗ Number ${number} is not linked in signal-cli-rest-api.`));
+    console.log('');
+    console.log(chalk.dim('  Link your Signal number:'));
+    console.log(chalk.white(`    Open in browser: ${apiUrl}/v1/qrcodelink?device_name=mercury`));
+    console.log(chalk.dim('    Then scan the QR code in Signal > Settings > Linked Devices'));
+    console.log('');
+    console.log(chalk.dim('  After linking, run: mercury doctor'));
+    console.log('');
+    return;
+  }
+
+  // Everything is ready — start pairing via "Note to Self"
+  console.log('');
+  console.log(chalk.bold.white('  Signal Pairing'));
+  console.log(chalk.green('  ✓ signal-cli-rest-api is running'));
+  console.log(chalk.green(`  ✓ Number ${number} is linked`));
+  console.log('');
+  console.log(chalk.white('  To pair Mercury with your Signal:'));
+  console.log(chalk.dim('    1. Open Signal on your phone'));
+  console.log(chalk.dim('    2. Go to "Note to Self" (message yourself)'));
+  console.log(chalk.dim(`    3. Send the word: `) + chalk.bold.white('mercury'));
+  console.log(chalk.dim('    4. Mercury will reply with a pairing code in that same chat'));
+  console.log(chalk.dim('    5. Enter the code below'));
+  console.log('');
+
+  // Start a temporary Signal channel in pairing mode
+  const signal = new SignalChannel(config);
+  let pairingCode: string | null = null;
+  let receivedPairingMessage = false;
+
+  signal.enablePairingMode((source: string, text: string) => {
+    const normalized = text.toLowerCase().trim();
+    if (normalized === 'mercury' || normalized === 'mercury pair') {
+      receivedPairingMessage = true;
+      // Generate pairing code and send it back to self
+      pairingCode = Math.floor(100000 + Math.random() * 900000).toString();
+      addSignalPendingRequest(config, {
+        phoneNumber: source,
+        pairingCode,
+      });
+      saveConfig(config);
+
+      // Send the code back to the user (Note to Self)
+      signal.send(`Your Mercury pairing code: ${pairingCode}\n\nEnter this code in the Mercury terminal to complete setup.`, `signal:${source}`);
+    }
+  });
+
+  try {
+    await signal.start();
+    // Give WebSocket a moment to connect
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    if (!signal.isReady()) {
+      console.log(chalk.yellow('  ⚠ Signal WebSocket not yet connected. Retrying...'));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+
+    if (!signal.isReady()) {
+      console.log(chalk.red('  ✗ Could not connect to Signal WebSocket.'));
+      console.log(chalk.dim('  You can pair later with: mercury signal approve <pairing-code>'));
+      console.log('');
+      await signal.stop();
+      return;
+    }
+
+    console.log(chalk.dim('  Waiting for your "mercury" message in Signal...'));
+    console.log('');
+
+    // Wait for the user to enter the code
+    while (true) {
+      const userCode = await ask(chalk.white('  Pairing Code (or "skip" to pair later): '));
+      if (!userCode) {
+        if (!receivedPairingMessage) {
+          console.log(chalk.dim('  Still waiting... Send "mercury" to yourself in Signal first.'));
+        } else {
+          console.log(chalk.red('  Pairing code is required.'));
+        }
+        continue;
+      }
+
+      if (userCode.toLowerCase() === 'skip') {
+        console.log(chalk.dim('  Signal pairing skipped. Pair later with: mercury signal approve <pairing-code>'));
+        console.log('');
+        break;
+      }
+
+      const approved = approveSignalPendingRequestByPairingCode(config, userCode.trim());
+      if (!approved) {
+        if (!receivedPairingMessage) {
+          console.log(chalk.red('  No pairing code generated yet. Send "mercury" to yourself in Signal first.'));
+        } else {
+          console.log(chalk.red('  Invalid code. Check the code Mercury sent you in Signal.'));
+        }
+        continue;
+      }
+
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Signal paired! You are now the admin (${formatSignalUser(approved)}).`));
+      console.log('');
+      break;
+    }
+  } finally {
+    signal.disablePairingMode();
+    await signal.stop();
+  }
+}
+
 async function completeInitialTelegramPairing(config: MercuryConfig): Promise<void> {
   if (!config.channels.telegram.enabled || !config.channels.telegram.botToken || hasTelegramAdmins(config)) {
     return;
@@ -1052,6 +1320,98 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
   hr();
   console.log('');
+  console.log(chalk.bold.white('  Signal (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Connect Mercury to Signal Messenger via signal-cli-rest-api.'));
+    console.log(chalk.dim('  Requires Docker + the signal-cli-rest-api container running.'));
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with: mercury doctor'));
+  }
+  console.log('');
+
+  // Auto-detect: try default localhost:8080 first
+  const defaultApiUrl = config.channels.signal.apiUrl || 'http://localhost:8080';
+  const prereqCheck = await checkSignalPrerequisites(defaultApiUrl);
+
+  if (!isReconfig && prereqCheck.apiReachable && prereqCheck.accounts.length > 0) {
+    // Auto-detected a running instance!
+    const detectedNumber = prereqCheck.accounts[0];
+    console.log(chalk.green(`  ✓ Detected signal-cli-rest-api at ${defaultApiUrl}`));
+    console.log(chalk.green(`  ✓ Found linked number: ${detectedNumber}`));
+    const useDetected = await ask(chalk.white(`  Use this Signal setup? (Y/n): `));
+    if (useDetected.toLowerCase() !== 'n') {
+      config.channels.signal.apiUrl = defaultApiUrl;
+      config.channels.signal.number = detectedNumber;
+      config.channels.signal.enabled = true;
+    }
+  } else {
+    const signalApiMask = isReconfig && config.channels.signal.apiUrl ? ` [${config.channels.signal.apiUrl}]` : '';
+    const signalApiUrl = await ask(chalk.white(`  Signal API URL (e.g. http://localhost:8080)${signalApiMask}: `));
+    if (isReconfig && signalApiUrl.toLowerCase() === 'none') {
+      config.channels.signal.enabled = false;
+      config.channels.signal.apiUrl = '';
+      config.channels.signal.number = '';
+      clearSignalAccess(config);
+    } else if (signalApiUrl) {
+      config.channels.signal.apiUrl = signalApiUrl.replace(/\/+$/, '');
+
+      // Check what's available
+      const check = await checkSignalPrerequisites(config.channels.signal.apiUrl);
+      if (check.apiReachable && check.accounts.length > 0) {
+        console.log(chalk.green(`  ✓ Connected to signal-cli-rest-api`));
+        // Auto-fill number if only one account
+        if (check.accounts.length === 1) {
+          config.channels.signal.number = check.accounts[0];
+          console.log(chalk.green(`  ✓ Using number: ${check.accounts[0]}`));
+        } else {
+          console.log(chalk.dim(`  Available numbers: ${check.accounts.join(', ')}`));
+          const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
+          const signalNumber = await ask(chalk.white(`  Signal Number${signalNumMask}: `));
+          if (signalNumber) config.channels.signal.number = signalNumber;
+        }
+        config.channels.signal.enabled = true;
+      } else if (check.apiReachable) {
+        console.log(chalk.yellow('  ⚠ API reachable but no Signal numbers linked.'));
+        console.log(chalk.dim(`  Link your number: open ${config.channels.signal.apiUrl}/v1/qrcodelink?device_name=mercury`));
+        console.log(chalk.dim('  Then scan QR in Signal > Settings > Linked Devices'));
+        const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
+        const signalNumber = await ask(chalk.white(`  Signal Number (enter after linking)${signalNumMask}: `));
+        if (signalNumber) {
+          config.channels.signal.number = signalNumber;
+          config.channels.signal.enabled = true;
+        }
+      } else {
+        console.log(chalk.red(`  ✗ Cannot reach ${config.channels.signal.apiUrl}`));
+        if (!check.dockerInstalled) {
+          console.log(chalk.dim('  Docker is not installed. Install Docker first:'));
+          console.log(chalk.white('    https://docs.docker.com/get-docker/'));
+        } else {
+          console.log(chalk.dim('  Docker is installed but the container is not running.'));
+        }
+        console.log('');
+        console.log(chalk.dim('  Start signal-cli-rest-api:'));
+        console.log(chalk.white('    mkdir -p ~/.signal-api'));
+        console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
+        console.log(chalk.white('      -p 8080:8080 \\'));
+        console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
+        console.log(chalk.white('      -e MODE=json-rpc \\'));
+        console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
+        console.log('');
+        const proceed = await ask(chalk.white('  Enable Signal anyway (configure later)? (y/N): '));
+        if (proceed.toLowerCase() === 'y') {
+          const signalNumber = await ask(chalk.white('  Signal Number: '));
+          if (signalNumber) config.channels.signal.number = signalNumber;
+          config.channels.signal.enabled = true;
+        }
+      }
+    }
+  }
+
+  await completeInitialSignalPairing(config);
+
+  hr();
+  console.log('');
   console.log(chalk.bold.white('  GitHub Integration (optional)'));
   console.log(chalk.dim('  Connect Mercury to GitHub so it can create PRs, manage issues,'));
   console.log(chalk.dim('  review code, and co-author commits on your behalf.'));
@@ -1494,17 +1854,32 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   capabilities.setSendMessageHandler(async (content: string) => {
     const telegram = channels.get('telegram');
+    const signal = channels.get('signal');
+    const sentVia: string[] = [];
 
-    if (!config.channels.telegram.enabled || !telegram) {
-      throw new Error('Telegram is not configured. Add a bot token in setup or run `mercury doctor`.');
+    // Send via Telegram if available
+    if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
+      await telegram.send(content);
+      sentVia.push('Telegram');
     }
 
-    if (getTelegramApprovedUsers(config).length === 0) {
-      throw new Error('Telegram has no approved users. Ask someone to send /start, then approve the request from Mercury.');
+    // Send via Signal if available
+    if (config.channels.signal.enabled && signal && getSignalApprovedUsers(config).length > 0) {
+      await signal.send(content);
+      sentVia.push('Signal');
     }
 
-    await telegram.send(content);
+    if (sentVia.length === 0) {
+      throw new Error('No messaging channels configured with approved users. Set up Telegram or Signal via `mercury doctor`.');
+    }
   });
+
+  // Tell the capability registry which channels are active for tool descriptions
+  const activeMessagingChannels: string[] = [];
+  if (config.channels.telegram.enabled && channels.get('telegram')) activeMessagingChannels.push('Telegram');
+  if (config.channels.signal.enabled && channels.get('signal')) activeMessagingChannels.push('Signal');
+  capabilities.setActiveChannels(activeMessagingChannels);
+
   if (process.env.GITHUB_TOKEN) {
     setGitHubToken(process.env.GITHUB_TOKEN);
   }
@@ -2239,7 +2614,11 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
-    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled · http://localhost:${config.web.port}`) + chalk.dim(` · user: mercury`) : chalk.dim('disabled') + chalk.dim(' — run ') + chalk.white('mercury doctor') + chalk.dim(' to enable')}`);
+    console.log(`  Signal:   ${config.channels.signal.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.signal.enabled) {
+      console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+      console.log(`  Signal API: ${chalk.dim(config.channels.signal.apiUrl || '(not set)')}`);
+    }    console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled · http://localhost:${config.web.port}`) + chalk.dim(` · user: mercury`) : chalk.dim('disabled') + chalk.dim(' — run ') + chalk.white('mercury doctor') + chalk.dim(' to enable')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
     const spotify = config.spotify;
@@ -2258,6 +2637,9 @@ program
     console.log(`  Daemon:   ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
     console.log(`  Home:     ${chalk.dim(home)}`);
     printTelegramAccessState(config);
+    if (config.channels.signal.enabled) {
+      printSignalAccessState(config);
+    }
     console.log('');
   });
 
@@ -2463,6 +2845,227 @@ telegramCmd
     if (!getDaemonStatus().running) {
       console.log(chalk.dim('  New private Telegram users can send /start to request access.'));
       console.log(chalk.dim('  The first request must be approved from the CLI with `mercury telegram approve <pairing-code>`.'));
+    }
+    console.log('');
+  });
+
+// ─── Signal CLI Commands ─────────────────────────────────────
+
+const signalCmd = program
+  .command('signal')
+  .description('Manage Signal access approvals and connection');
+
+signalCmd
+  .command('status')
+  .description('Show Signal connection status and access list')
+  .action(async () => {
+    const config = loadConfig();
+    console.log('');
+    console.log(chalk.bold.white('  Signal Channel Status'));
+    console.log(`  Enabled:   ${config.channels.signal.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  API URL:   ${config.channels.signal.apiUrl ? chalk.white(config.channels.signal.apiUrl) : chalk.dim('(not set)')}`);
+    console.log(`  Number:    ${config.channels.signal.number ? chalk.white(config.channels.signal.number) : chalk.dim('(not set)')}`);
+
+    if (config.channels.signal.apiUrl) {
+      const prereqs = await checkSignalPrerequisites(config.channels.signal.apiUrl);
+      console.log(`  Docker:    ${prereqs.dockerInstalled ? chalk.green('installed') : chalk.red('not installed')}`);
+      console.log(`  Container: ${prereqs.containerRunning ? chalk.green('running') : chalk.red('not running')}`);
+      if (prereqs.apiReachable) {
+        console.log(`  API:       ${chalk.green('reachable')}`);
+        if (prereqs.accounts.length > 0) {
+          const linked = prereqs.accounts.includes(config.channels.signal.number) ? chalk.green('yes') : chalk.red('no');
+          console.log(`  Number linked: ${linked}`);
+          if (prereqs.accounts.length > 1) {
+            console.log(`  All accounts: ${chalk.dim(prereqs.accounts.join(', '))}`);
+          }
+        } else {
+          console.log(`  Number linked: ${chalk.red('no accounts found')}`);
+        }
+      } else {
+        console.log(`  API:       ${chalk.red('not reachable')}`);
+      }
+    }
+
+    printSignalAccessState(config);
+    console.log('');
+  });
+
+signalCmd
+  .command('list')
+  .description('Show approved Signal users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    printSignalAccessState(config);
+    console.log('');
+  });
+
+signalCmd
+  .command('approve <codeOrNumber>')
+  .description('Approve a pending Signal access request by pairing code or phone number')
+  .action((codeOrNumber: string) => {
+    const config = loadConfig();
+    const hasAdmins = hasSignalAdmins(config);
+
+    if (!hasAdmins) {
+      // First user — approve by pairing code
+      const approved = approveSignalPendingRequestByPairingCode(config, codeOrNumber.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending first-time Signal pairing found for code ${codeOrNumber}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Signal admin ${formatSignalUser(approved)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    // Subsequent users — approve by phone number
+    const phoneNumber = codeOrNumber.startsWith('+') ? codeOrNumber : `+${codeOrNumber}`;
+    const approved = approveSignalPendingRequest(config, phoneNumber, 'member');
+    if (!approved) {
+      // Try as pairing code fallback
+      const approvedByCode = approveSignalPendingRequestByPairingCode(config, codeOrNumber.trim());
+      if (!approvedByCode) {
+        console.log('');
+        console.log(chalk.red(`  No pending Signal request found for ${codeOrNumber}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved Signal member ${formatSignalUser(approvedByCode)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Approved Signal member ${formatSignalUser(approved)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('reject <phoneNumber>')
+  .description('Reject a pending Signal access request')
+  .action((phoneNumber: string) => {
+    const config = loadConfig();
+    const number = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+
+    const rejected = rejectSignalPendingRequest(config, number);
+    if (!rejected) {
+      console.log('');
+      console.log(chalk.red(`  No pending Signal request found for ${phoneNumber}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Rejected Signal request for ${formatSignalUser(rejected)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('remove <phoneNumber>')
+  .description('Remove an approved Signal user')
+  .action((phoneNumber: string) => {
+    const config = loadConfig();
+    const number = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+
+    const removed = removeSignalUser(config, number);
+    if (!removed) {
+      console.log('');
+      console.log(chalk.red(`  No approved Signal user found for ${phoneNumber}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Removed Signal access for ${formatSignalUser(removed)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('unpair')
+  .description('Reset all Signal access for this Mercury instance')
+  .action(() => {
+    const config = loadConfig();
+    const hasAnyAccess = getSignalApprovedUsers(config).length > 0 || getSignalPendingRequests(config).length > 0;
+    if (!hasAnyAccess) {
+      console.log('');
+      console.log(chalk.dim('  Signal access is already empty.'));
+      console.log('');
+      return;
+    }
+
+    clearSignalAccess(config);
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.green('  ✓ Signal access reset.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    if (!getDaemonStatus().running) {
+      console.log(chalk.dim('  New Signal users can send a message to request access.'));
+      console.log(chalk.dim('  The first request must be approved from the CLI with `mercury signal approve <pairing-code>`.'));
+    }
+    console.log('');
+  });
+
+signalCmd
+  .command('test')
+  .description('Test Signal API connection and send a test message')
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.channels.signal.apiUrl || !config.channels.signal.number) {
+      console.log('');
+      console.log(chalk.red('  Signal is not configured. Run: mercury doctor'));
+      console.log('');
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.dim('  Testing Signal connection...'));
+    const test = await testSignalConnection(config.channels.signal.apiUrl, config.channels.signal.number);
+    if (!test.ok) {
+      console.log(chalk.red(`  ✗ ${test.error}`));
+      console.log('');
+      return;
+    }
+    console.log(chalk.green('  ✓ Signal API reachable'));
+    console.log(chalk.green(`  ✓ Number ${config.channels.signal.number} is registered`));
+
+    // Send a test message to self
+    console.log(chalk.dim('  Sending test message to self...'));
+    try {
+      const res = await fetch(`${config.channels.signal.apiUrl}/v2/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `Mercury Signal test — ${new Date().toLocaleString()}`,
+          number: config.channels.signal.number,
+          recipients: [config.channels.signal.number],
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        console.log(chalk.green('  ✓ Test message sent (check "Note to Self" in Signal)'));
+      } else {
+        const body = await res.text().catch(() => '');
+        console.log(chalk.red(`  ✗ Send failed: ${body || res.status}`));
+      }
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message}`));
     }
     console.log('');
   });
