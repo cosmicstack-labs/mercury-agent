@@ -2249,6 +2249,200 @@ Is this productive iteration or a stuck loop?`,
     }
   }
 
+  private async handleSkillsSlashCommand(
+    trimmed: string,
+    channel: any,
+    channelId: string,
+    ctx: { skillNames: () => string[] },
+  ): Promise<void> {
+    const parts = trimmed.split(/\s+/).slice(1);
+    const sub = (parts[0] || 'list').toLowerCase();
+    const args = parts.slice(1);
+    const arg = args.join(' ').trim();
+
+    const { RegistryClient, isValidSkillId, searchFeed } = await import('../skills/registry.js');
+    const { SkillStore } = await import('../skills/store.js');
+    const registry = new RegistryClient();
+    const store = new SkillStore({ registry });
+
+    try {
+      switch (sub) {
+        case 'help':
+        case '-h':
+        case '--help': {
+          await channel.send(
+            [
+              '**Mercury Skills — in-chat commands**',
+              '',
+              '`/skills` — list installed skills',
+              '`/skills search <query>` — search the registry',
+              '`/skills view <id>` — show details + registry URL',
+              '`/skills install <id>` — install from the registry',
+              '`/skills install <url>` — install raw SKILL.md from a URL',
+              '`/skills remove <id>` — uninstall',
+              '',
+              'Browse the full catalog at https://skills.mercuryagent.sh',
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'list': {
+          const names = ctx.skillNames();
+          if (names.length === 0) {
+            await channel.send(
+              'No skills installed. Try `/skills search <query>` to browse https://skills.mercuryagent.sh.',
+              channelId,
+            );
+            return;
+          }
+          const lines = [
+            `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
+            '',
+            ...names.map((n) => `• ${n}`),
+            '',
+            '_Run `/skills search <query>` to find more on the registry._',
+          ];
+          await channel.send(lines.join('\n'), channelId);
+          return;
+        }
+
+        case 'search':
+        case 'find': {
+          if (!arg) {
+            await channel.send('Usage: `/skills search <query>`', channelId);
+            return;
+          }
+          await channel.send(`🔍 Searching the registry for "${arg}"…`, channelId);
+          const feed = await registry.getFeed();
+          const scored = searchFeed(feed, arg, 5);
+          if (scored.length === 0) {
+            await channel.send(`No matches for "${arg}".`, channelId);
+            return;
+          }
+          const lines = scored.map(({ skill }) =>
+            [
+              `• \`${skill.id}\` (v${skill.version})`,
+              `  ${skill.description}`,
+              `  ${registry.webUrl(skill.id)}`,
+            ].join('\n'),
+          );
+          await channel.send(
+            [
+              `**Top ${scored.length} matches for "${arg}":**`,
+              '',
+              lines.join('\n\n'),
+              '',
+              'Inspect one with `/skills view <id>`, install with `/skills install <id>`.',
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'view':
+        case 'show':
+        case 'info': {
+          if (!arg) {
+            await channel.send('Usage: `/skills view <category/slug>`', channelId);
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
+            return;
+          }
+          const detail = await registry.getSkill(arg);
+          const author = detail.author ? `\n**Author:** ${detail.author}` : '';
+          const tags = detail.tags?.length ? `\n**Tags:** ${detail.tags.join(', ')}` : '';
+          await channel.send(
+            [
+              `**${detail.title}** (\`${detail.id}\`)`,
+              `**Version:** ${detail.version}`,
+              `**Category:** ${detail.category}${author}${tags}`,
+              '',
+              detail.description,
+              '',
+              `🔗 ${registry.webUrl(detail.id)}`,
+              '',
+              `Install with \`/skills install ${detail.id}\``,
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'install':
+        case 'add': {
+          if (!arg) {
+            await channel.send('Usage: `/skills install <category/slug>` or `/skills install <url>`', channelId);
+            return;
+          }
+          // URL install → delegate to the existing capability path
+          if (/^https?:\/\//i.test(arg)) {
+            const { SkillLoader } = await import('../skills/loader.js');
+            const loader = new SkillLoader();
+            await channel.send(`📦 Installing from \`${arg}\`…`, channelId);
+            const installed = await loader.installFromUrl(arg);
+            await channel.send(
+              `✅ Installed \`${installed.name}\` from URL.\n${installed.skillDir}`,
+              channelId,
+            );
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>` or a `https://` URL.', channelId);
+            return;
+          }
+          await channel.send(`📦 Installing \`${arg}\` from the registry…`, channelId);
+          const result = await store.install(arg);
+          const verb =
+            result.status === 'already-installed'
+              ? 'Already installed'
+              : result.status === 'updated'
+                ? 'Updated'
+                : result.status === 'reinstalled'
+                  ? 'Reinstalled'
+                  : 'Installed';
+          await channel.send(
+            `✅ ${verb} \`${result.id}\` (v${result.version})\n🔗 ${registry.webUrl(result.id)}`,
+            channelId,
+          );
+          return;
+        }
+
+        case 'remove':
+        case 'rm':
+        case 'delete':
+        case 'uninstall': {
+          if (!arg) {
+            await channel.send('Usage: `/skills remove <category/slug>`', channelId);
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
+            return;
+          }
+          const removed = store.remove(arg);
+          await channel.send(
+            removed ? `🗑 Removed \`${arg}\`.` : `Skill \`${arg}\` is not installed.`,
+            channelId,
+          );
+          return;
+        }
+
+        default:
+          await channel.send(
+            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
+            channelId,
+          );
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Skill registry request failed';
+      await channel.send(`⚠️ ${msg}`, channelId);
+    }
+  }
+
   private async handleChatCommand(content: string, channelType: string, channelId: string): Promise<boolean> {
     const trimmed = content.trim();
     const cmd = trimmed.toLowerCase();
@@ -2614,18 +2808,8 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
-    if (cmd === '/skills') {
-      const names = ctx.skillNames();
-      if (names.length === 0) {
-        await channel.send('No skills installed. Ask me to "install skill from <url>" to add one.', channelId);
-      } else {
-        const lines = [
-          `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
-          '',
-          ...names.map(n => `• ${n}`),
-        ];
-        await channel.send(lines.join('\n'), channelId);
-      }
+    if (cmd === '/skills' || cmd.startsWith('/skills ')) {
+      await this.handleSkillsSlashCommand(trimmed, channel, channelId, ctx);
       return true;
     }
 
