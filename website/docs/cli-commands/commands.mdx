@@ -21,3 +21,23 @@ title: Full Command Reference
 | `mercury service uninstall` | Uninstall the system service |
 | `mercury service status` | Show system service status |
 | `mercury --verbose` | Start with debug logging on stderr |
+
+## Skills registry
+
+The `mercury skills` command tree talks to [skills.mercuryagent.sh](https://skills.mercuryagent.sh) directly. See the dedicated [Skills page](./skills) for the full surface, examples, and the in-chat / dashboard / Telegram equivalents.
+
+| Command | Description |
+|---------|-------------|
+| `mercury skills info` | Registry stats and reachability |
+| `mercury skills list` | Show locally installed skills (from `~/.mercury/skills/.index.json`) |
+| `mercury skills categories` | List all registry categories |
+| `mercury skills browse [category] [--page N --limit N]` | Paginated catalog browse |
+| `mercury skills search <query> [--limit N]` | Full-text search |
+| `mercury skills view <id> [--web] [--raw]` | Render `SKILL.md`; `--web` opens the registry page |
+| `mercury skills install <ids...> [--force]` | Install one or many; `--force` reinstalls same version |
+| `mercury skills install --from <urlOrPath>` | Install from a local file or arbitrary URL |
+| `mercury skills update [id]` | Update all installed skills, or just one |
+| `mercury skills remove <id>` | Uninstall a skill |
+| `mercury skills doctor` | Check install root, registry connectivity, cache |
+
+Shared flags: `--json`, `--registry <url>`, `-q`, `-y`. Environment overrides: `MERCURY_SKILLS_REGISTRY`, `MERCURY_SKILLS_INSTALL_ROOT`.

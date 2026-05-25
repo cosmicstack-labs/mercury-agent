@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'cli-commands/cli-commands',
         'cli-commands/doctor',
+        'cli-commands/skills',
         'cli-commands/in-chat-commands',
       ],
     },
