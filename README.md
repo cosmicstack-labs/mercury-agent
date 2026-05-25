@@ -193,6 +193,34 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | **Scheduler** | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
 | **System** | `budget_status` |
 
+## Installing Skills
+
+Mercury can pull community-contributed skills from the registry at
+**[skills.mercuryagent.sh](https://skills.mercuryagent.sh)** (126+ skills, no auth required).
+
+```bash
+mercury skills search prompt                  # search the registry
+mercury skills browse ai-ml                   # browse by category
+mercury skills view ai-ml/prompt-engineering  # render SKILL.md in the terminal
+mercury skills view ai-ml/prompt-engineering --web   # open the registry page
+mercury skills install ai-ml/prompt-engineering      # install to ~/.mercury/skills/
+mercury skills list                           # show installed skills
+mercury skills update                         # refresh all installed skills
+mercury skills remove ai-ml/prompt-engineering
+mercury skills doctor                         # check install root + registry
+```
+
+Installed skills land at `~/.mercury/skills/<category>/<slug>/SKILL.md` and are
+picked up by the agent on the next boot — they're treated identically to
+built-in skills.
+
+> **Review before you ship.** Skills are community-contributed and unaudited.
+> Run `mercury skills view <id>` before installing.
+
+Overrides: `--registry <url>` (or `MERCURY_SKILLS_REGISTRY`) for self-hosted
+registries, `MERCURY_SKILLS_INSTALL_ROOT` for an alternate install path,
+`--json` for machine-readable output.
+
 ## Web Dashboard
 
 Mercury includes a built-in web UI at `http://127.0.0.1:6174`:

@@ -44,6 +44,7 @@ import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
+import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
@@ -2285,5 +2286,7 @@ program
     console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
     console.log('');
   });
+
+registerSkillsCommand(program);
 
 program.parse();
