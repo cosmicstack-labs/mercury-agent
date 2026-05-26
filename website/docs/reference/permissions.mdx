@@ -3,23 +3,100 @@ id: permissions
 title: Permissions
 ---
 
-Mercury has a three-tier permission system for shell commands:
-
-1. **Blocked** — Commands like `sudo`, `rm -rf /`, `mkfs` are never executed
-2. **Auto-approved** — Safe commands like `ls`, `cat`, `git status` run without asking
-3. **Pending approval** — Unknown commands pause and ask you. Say **"always"** to permanently approve a command type
-
-Edit `~/.mercury/permissions.yaml` to customize. Skill elevation: skills with `allowed-tools` in their SKILL.md get automatic approval for those tools during execution.
+Mercury has a layered permission system that controls what actions the agent can take. The behavior differs significantly between **Ask Me** and **Allow All** modes.
 
 ## Permission Modes
 
 At session start, Mercury asks you to choose a permission mode:
 
-- **🔒 Ask Me** — Mercury asks for confirmation before file writes, shell commands that need approval, and scope changes. Default on both CLI and Telegram.
-- **✅ Allow All** — Mercury auto-approves all directory scopes, all shell commands (except blocked), and loop-continuation prompts. No interruptions during the session. Resets on restart.
+- **🔒 Ask Me** — Mercury asks for confirmation before risky actions. Default on both CLI and Telegram.
+- **✅ Allow All** — Mercury auto-approves everything for this session. No interruptions. Resets on restart.
 
 On **CLI**: an arrow-key menu appears at startup before the first prompt.
 
 On **Telegram**: inline keyboard buttons appear with the first message. Use `/permissions` to change mode at any time.
 
-**Scheduled tasks** always run in Allow All mode — filesystem access and shell commands are auto-approved. You receive a notification before each task executes.
+**Scheduled tasks** always run in Allow All mode — filesystem access and shell commands are auto-approved.
+
+### How Modes Differ
+
+| Action | Ask Me | Allow All |
+|--------|--------|-----------|
+| File reads | Auto-approved (via scope matching) | Auto-approved |
+| File writes | **Always prompts** | Auto-approved (via scope matching) |
+| Safe shell commands (`ls`, `cat`, `grep`, `git status`) | Auto-approved | Auto-approved |
+| Other shell commands | **Prompts** | Auto-approved |
+| New directory scope | **Prompts** | Auto-approved |
+| Loop continuation | **Prompts** | AI self-check (Mercury Autopilot) |
+
+### "Always" Response
+
+When prompted in Ask Me mode, choosing **"Always"** (or pressing `A`) flips to auto-approve for the rest of the session — equivalent to switching to Allow All mode.
+
+## Shell Command Tiers
+
+### 1. Blocked (never executed)
+
+Commands like `sudo`, `rm -rf /`, `mkfs` are never executed regardless of mode.
+
+### 2. Safe Read Commands (auto-approved in any mode)
+
+Mercury maintains a whitelist of safe read-only commands that never require approval:
+
+`ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `wc`, `file`, `stat`, `which`, `echo`, `pwd`, `env`, `printenv`, `date`, `whoami`, `hostname`, `uname`, `git status`, `git diff`, `git log`, `git branch`, `git show`, `git remote`, `node --version`, `npm list`, `npx tsc --noEmit`, and similar read-only operations.
+
+### 3. Everything Else
+
+- **Ask Me mode**: Prompts for approval. Approval options: Yes / No / Always.
+- **Allow All mode**: Auto-approved (except blocked commands).
+
+Edit `~/.mercury/permissions.yaml` to customize blocked and auto-approved command patterns. Skill elevation: skills with `allowed-tools` in their SKILL.md get automatic approval for those tools during execution.
+
+## File System Scopes
+
+Mercury uses directory scopes to control file access. When the agent tries to access files in a new directory:
+
+- **Ask Me mode**: Prompts for scope approval (reads and writes)
+- **Allow All mode**: Auto-approves scope access
+
+Approved scopes persist for the session. The current working directory is always in scope.
+
+## Mercury Autopilot (Loop Detection)
+
+Mercury includes an intelligent loop detection system called **Mercury Autopilot** that prevents the agent from getting stuck in repetitive tool call patterns.
+
+### How It Works
+
+Instead of simply counting repeated tool calls, Autopilot analyzes:
+
+- **Parameter diversity** — Are the arguments changing between calls, or is it calling the same thing over and over?
+- **Success rate** — Are the calls succeeding or failing repeatedly?
+
+This produces a verdict:
+
+| Verdict | Criteria | Action |
+|---------|----------|--------|
+| **Productive** | Diversity ≥ 60%, success ≥ 70% | Continue without interruption |
+| **Suspicious** | Between productive and stuck | Monitor (Allow All: AI self-check, Ask Me: prompt user) |
+| **Stuck** | Low diversity and/or low success | Stop the current execution path |
+
+### AI Self-Check (Allow All Mode)
+
+In Allow All mode, when Autopilot detects suspicious patterns, it asks the AI model itself to evaluate whether it's making progress. The AI sees its recent tool calls and decides whether to continue or stop. This runs up to 3 times before Autopilot forces a stop.
+
+### User Prompt (Ask Me Mode)
+
+In Ask Me mode, suspicious patterns trigger a user prompt asking whether to continue. On Telegram, this appears as an inline keyboard with Continue / Stop buttons.
+
+### Hard Limits
+
+Regardless of mode, Mercury enforces absolute limits:
+
+| Limit | Value | Description |
+|-------|-------|-------------|
+| Max steps per task | 25 | Normal tool call limit |
+| Absolute max | 75 | Hard ceiling (never exceeded) |
+| Failed absolute max | 20 | Max steps if all are failing |
+| Max self-checks | 3 | AI self-check attempts before forced stop |
+
+All Autopilot messages are branded with `☿ Mercury Autopilot` for easy identification.

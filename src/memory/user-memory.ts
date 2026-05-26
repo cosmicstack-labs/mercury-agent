@@ -1,6 +1,6 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { getMemoryDir } from '../utils/config.js';
-import { SecondBrainDB, type MemoryRow } from './second-brain-db.js';
+import { SecondBrainDB, type MemoryRow, type PersonListRow } from './second-brain-db.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
@@ -21,7 +21,7 @@ export interface UserMemoryRecord {
   type: UserMemoryType;
   summary: string;
   detail?: string | null;
-  scope: 'durable' | 'active';
+  scope: 'durable' | 'active' | 'subconscious';
   evidenceKind: 'direct' | 'inferred' | 'manual' | 'system';
   source: 'conversation' | 'system';
   confidence: number;
@@ -50,6 +50,7 @@ export interface UserMemoryCandidate {
 
 export interface UserMemorySummary {
   total: number;
+  subconsciousTotal: number;
   byType: Partial<Record<UserMemoryType, number>>;
   learningPaused: boolean;
   profileSummary?: string;
@@ -61,18 +62,32 @@ export interface RetrievedUserMemory {
   context: string;
 }
 
+export interface UserPersonRecord {
+  id: string;
+  name: string;
+  canonicalName: string;
+  relationshipToUser: string | null;
+  description: string | null;
+  confidence: number;
+  memoryCount: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 const MIN_CONFIDENCE = 0.55;
+const SUBCONSCIOUS_RECALL_THRESHOLD = 0.5;
+const PERSON_INDEX_VERSION = '7';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
-  private maxRecords: number;
   private userKey: string;
   private consolidateThrottleMs: number;
   private lastConsolidateAt: number = 0;
 
   constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
-    this.maxRecords = config.memory.secondBrain?.maxRecords ?? 50;
     this.consolidateThrottleMs = 5 * 60 * 1000;
     const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'second-brain', 'second-brain.db');
     this.db = new SecondBrainDB(resolvedDbPath);
@@ -83,6 +98,7 @@ export class UserMemoryStore {
     const byType = this.db.countByType(this.userKey) as Partial<Record<UserMemoryType, number>>;
     return {
       total: this.db.totalActive(this.userKey),
+      subconsciousTotal: this.db.countSubconscious(this.userKey),
       byType,
       learningPaused: this.isLearningPaused(),
       profileSummary: this.db.getMeta(`${this.userKey}:profile_summary`) ?? undefined,
@@ -108,9 +124,46 @@ export class UserMemoryStore {
     return rows.map(row => this.toRecord(row));
   }
 
+  searchAll(query: string, limit: number = 20): UserMemoryRecord[] {
+    const conscious = this.db.searchFTS(this.userKey, query, limit);
+    const subconscious = this.db.searchSubconscious(this.userKey, query, limit);
+    return [...conscious, ...subconscious].map(row => this.toRecord(row));
+  }
+
   getByType(type: UserMemoryType): UserMemoryRecord[] {
     const rows = this.db.getByType(this.userKey, type);
     return rows.map(row => this.toRecord(row));
+  }
+
+  listPersons(query?: string, limit: number = 100): UserPersonRecord[] {
+    this.ensurePersonsBackfilled();
+    const rows = this.db.listPersons(this.userKey, query, limit);
+    return rows.map(row => this.toPersonRecord(row));
+  }
+
+  getPerson(personId: string): UserPersonRecord | null {
+    this.ensurePersonsBackfilled();
+    const row = this.db.getPersonWithCount(this.userKey, personId);
+    if (!row) return null;
+    return this.toPersonRecord(row);
+  }
+
+  getPersonMemories(personId: string, limit: number = 50): UserMemoryRecord[] {
+    this.ensurePersonsBackfilled();
+    const rows = this.db.getMemoriesForPerson(this.userKey, personId, limit);
+    return rows.map(row => this.toRecord(row));
+  }
+
+  rebuildPersonsFromMemory(): number {
+    this.db.clearUserPersonGraph(this.userKey);
+    const rows = this.db.getRelationshipMemoryRows(this.userKey);
+    for (const row of rows) {
+      this.indexPersonsForMemoryRow(row);
+    }
+    this.db.deleteOrphanPersons(this.userKey);
+    this.db.setMeta(`${this.userKey}:persons_backfilled`, '1');
+    this.db.setMeta(`${this.userKey}:persons_backfilled_version`, PERSON_INDEX_VERSION);
+    return rows.length;
   }
 
   retrieveRelevant(
@@ -125,12 +178,35 @@ export class UserMemoryStore {
 
     const selected: MemoryRow[] = [];
     let currentLength = 0;
+    const consciousScores: number[] = [];
     for (const row of ranked) {
       const line = `- [${row.type}] ${row.summary}`;
       if (selected.length >= maxRecords) break;
       if (selected.length > 0 && currentLength + line.length > maxChars) break;
       selected.push(row);
+      consciousScores.push(memoryHealthScore(row));
       currentLength += line.length + 1;
+    }
+
+    const strongConsciousMatches = consciousScores.filter(s => s > SUBCONSCIOUS_RECALL_THRESHOLD).length;
+
+    if (strongConsciousMatches < 3) {
+      const subconsciousResults = this.db.searchSubconscious(this.userKey, query, Math.max(maxRecords * 2, 10));
+      if (subconsciousResults.length > 0) {
+        const subconsciousRanked = this.scoreAndRankSubconscious(subconsciousResults, query);
+
+        for (const row of subconsciousRanked) {
+          const line = `- [${row.type}] ${row.summary}`;
+          if (selected.length >= maxRecords) break;
+          if (currentLength + line.length > maxChars) break;
+          selected.push(row);
+          currentLength += line.length + 1;
+
+          const newScope = inferScope({ type: row.type as UserMemoryType, summary: row.summary, confidence: row.confidence, importance: row.importance, durability: row.durability });
+          this.db.promoteToConscious(row.id, newScope);
+          logger.debug({ id: row.id, type: row.type, summary: row.summary.slice(0, 50), newScope }, 'Recalled memory from subconscious');
+        }
+      }
     }
 
     if (selected.length === 0) {
@@ -183,7 +259,10 @@ export class UserMemoryStore {
       const mergeTarget = this.db.findMergeCandidate(this.userKey, candidate.type, terms);
       if (mergeTarget && overlapScore(normalize(mergeTarget.summary), normalize(candidate.summary)) >= 0.74) {
         const merged = this.mergeRecord(mergeTarget, candidate);
-        if (merged) remembered.push(merged);
+        if (merged) {
+          remembered.push(merged);
+          this.indexPersonsForMemory(merged);
+        }
         continue;
       }
 
@@ -194,10 +273,11 @@ export class UserMemoryStore {
       }
 
       const record = this.insertRecord(candidate, source);
-      if (record) remembered.push(record);
+      if (record) {
+        remembered.push(record);
+        this.indexPersonsForMemory(record);
+      }
     }
-
-    this.enforceMaxRecords();
 
     return remembered;
   }
@@ -259,14 +339,36 @@ export class UserMemoryStore {
     return { profileUpdated, reflectionCount };
   }
 
-  prune(): { activePruned: number; durablePruned: number; promoted: number } {
+  softDeleteMemory(id: string): boolean {
+    return this.db.softDelete(id);
+  }
+
+  updateMemory(id: string, updates: Record<string, any>): UserMemoryRecord | null {
+    const existing = this.db.getById(id);
+    if (!existing) return null;
+    this.db.update({ id, ...updates, updated_at: Date.now() });
+    const updated = this.db.getById(id);
+    if (!updated) return null;
+    const record = this.toRecord(updated);
+    this.indexPersonsForMemory(record);
+    return record;
+  }
+
+  prune(): { movedToSubconscious: number; promoted: number; hardDeleted: number } {
     const promoted = this.db.promoteToDurable(this.userKey);
-    const { activePruned, durablePruned } = this.db.pruneStale(this.userKey);
+    const movedToSubconscious = this.db.moveToSubconscious(this.userKey);
     const hardDeleted = this.db.hardDeleteDismissed(this.userKey);
     if (hardDeleted > 0) {
       logger.debug({ hardDeleted, userKey: this.userKey }, 'Hard deleted dismissed memories');
     }
-    return { activePruned, durablePruned, promoted };
+    if (movedToSubconscious > 0) {
+      logger.debug({ movedToSubconscious, userKey: this.userKey }, 'Moved stale memories to subconscious');
+    }
+    return { movedToSubconscious, promoted, hardDeleted };
+  }
+
+  getSubconscious(limit: number = 10): UserMemoryRecord[] {
+    return this.db.getSubconscious(this.userKey).slice(0, limit).map(row => this.toRecord(row));
   }
 
   close(): void {
@@ -392,24 +494,6 @@ export class UserMemoryStore {
     return 'incoming';
   }
 
-  private enforceMaxRecords(): void {
-    const total = this.db.totalActive(this.userKey);
-    if (total <= this.maxRecords) return;
-
-    const allActive = this.db.getActive(this.userKey);
-    const toDismiss = allActive
-      .sort((a, b) => memoryHealthScore(b) - memoryHealthScore(a))
-      .slice(this.maxRecords);
-
-    for (const row of toDismiss) {
-      this.db.softDelete(row.id);
-    }
-
-    if (toDismiss.length > 0) {
-      logger.debug({ dismissed: toDismiss.length, userKey: this.userKey }, 'Enforced max records limit');
-    }
-  }
-
   private markUsed(ids: string[], query?: string): void {
     const now = Date.now();
     for (const id of ids) {
@@ -442,13 +526,123 @@ export class UserMemoryStore {
       .map(r => r.row);
   }
 
+  private scoreAndRankSubconscious(rows: MemoryRow[], query: string): MemoryRow[] {
+    const now = Date.now();
+    const tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+    return rows
+      .map(row => {
+        let score = 0;
+        score += row.confidence * 0.20;
+        score += row.importance * 0.20;
+        score += row.durability * 0.10;
+        const recallAgeDays = Math.min((now - row.last_seen_at) / (1000 * 60 * 60 * 24), 365);
+        score += Math.max(0, 0.20 - recallAgeDays * 0.001);
+        const lower = (row.summary + ' ' + (row.detail ?? '')).toLowerCase();
+        const matchCount = tokens.filter(t => lower.includes(t)).length;
+        score += (matchCount / Math.max(tokens.length, 1)) * 0.30;
+        return { row, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.row);
+  }
+
+  private ensurePersonsBackfilled(): void {
+    const done = this.db.getMeta(`${this.userKey}:persons_backfilled`) === '1';
+    const version = this.db.getMeta(`${this.userKey}:persons_backfilled_version`);
+    if (done && version === PERSON_INDEX_VERSION) return;
+    this.rebuildPersonsFromMemory();
+  }
+
+  private toPersonRecord(row: PersonListRow): UserPersonRecord {
+    return {
+      id: row.id,
+      name: row.display_name,
+      canonicalName: row.canonical_name,
+      relationshipToUser: row.relationship_to_user,
+      description: row.description,
+      confidence: row.confidence,
+      memoryCount: row.memory_count,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private indexPersonsForMemory(memory: UserMemoryRecord): void {
+    const row = this.db.getById(memory.id);
+    if (row) this.indexPersonsForMemoryRow(row);
+  }
+
+  private indexPersonsForMemoryRow(memory: MemoryRow): void {
+    if (memory.dismissed === 1) return;
+    if (!['relationship', 'episode', 'identity', 'project'].includes(memory.type)) return;
+
+    const text = `${memory.summary} ${memory.detail ?? ''}`.trim();
+    if (!text) return;
+
+    this.db.clearMemoryPersons(memory.id);
+    this.db.clearRelationshipsByMemory(memory.id);
+
+    if (memory.type === 'relationship') {
+      const relationMentions = extractUserRelationshipMentions(text);
+      if (relationMentions.length > 0) {
+        for (const mention of relationMentions) {
+          const person = this.db.upsertPerson({
+            userKey: this.userKey,
+            name: mention.name,
+            relationshipToUser: mention.relation,
+            confidence: memory.confidence,
+          });
+          this.db.addPersonAlias(person.id, mention.name, 'memory');
+          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+        }
+      } else {
+        // Fallback: extract any capitalized names from relationship memories
+        const names = extractHumanNames(text);
+        for (const name of names) {
+          const person = this.db.upsertPerson({
+            userKey: this.userKey,
+            name,
+            relationshipToUser: 'known',
+            confidence: memory.confidence,
+          });
+          this.db.addPersonAlias(person.id, name, 'memory');
+          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
+        }
+      }
+      return;
+    }
+
+    // For identity/project/episode: extract names and create/link persons
+    const names = extractHumanNames(text);
+    for (const name of names) {
+      const person = this.db.upsertPerson({
+        userKey: this.userKey,
+        name,
+        relationshipToUser: 'known',
+        confidence: memory.confidence,
+      });
+      this.db.addPersonAlias(person.id, name, 'memory');
+      this.db.linkMemoryPerson(memory.id, person.id, 'mention', memory.confidence);
+    }
+
+    // Also link to already-known persons by alias/name match
+    const knownPersons = this.db.listPersons(this.userKey, '', 300);
+    for (const person of knownPersons) {
+      if (mentionsPerson(text, person.display_name) || mentionsPerson(text, person.canonical_name)) {
+        this.db.linkMemoryPerson(memory.id, person.id, 'interaction', memory.confidence);
+      }
+    }
+  }
+
   private toRecord(row: MemoryRow): UserMemoryRecord {
     return {
       id: row.id,
       type: row.type as UserMemoryType,
       summary: row.summary,
       detail: row.detail,
-      scope: row.scope as 'durable' | 'active',
+      scope: row.scope as 'durable' | 'active' | 'subconscious',
       evidenceKind: row.evidence_kind as UserMemoryRecord['evidenceKind'],
       source: row.source as UserMemoryRecord['source'],
       confidence: row.confidence,
@@ -465,6 +659,168 @@ export class UserMemoryStore {
       lastUsedQuery: row.last_used_query,
     };
   }
+}
+
+const USER_RELATION_ROLE_MAP: Record<string, string> = {
+  wife: 'wife',
+  wives: 'wife',
+  husband: 'husband',
+  husbands: 'husband',
+  mother: 'mother',
+  mothers: 'mother',
+  mom: 'mother',
+  moms: 'mother',
+  father: 'father',
+  fathers: 'father',
+  dad: 'father',
+  dads: 'father',
+  brother: 'family',
+  brothers: 'family',
+  sister: 'family',
+  sisters: 'family',
+  son: 'family',
+  sons: 'family',
+  daughter: 'family',
+  daughters: 'family',
+  family: 'family',
+  families: 'family',
+  cousin: 'family',
+  cousins: 'family',
+  friend: 'friend',
+  friends: 'friend',
+  colleague: 'colleague',
+  colleagues: 'colleague',
+  coworker: 'colleague',
+  coworkers: 'colleague',
+  teammate: 'colleague',
+  teammates: 'colleague',
+  partner: 'partner',
+  partners: 'partner',
+  developer: 'colleague',
+  developers: 'colleague',
+  'co-founder': 'partner',
+  cofounder: 'partner',
+  cofounders: 'partner',
+  boss: 'colleague',
+  manager: 'colleague',
+  mentor: 'colleague',
+  mentee: 'colleague',
+  cto: 'colleague',
+  ceo: 'colleague',
+  lover: 'partner',
+  girlfriend: 'partner',
+  boyfriend: 'partner',
+  fiancee: 'partner',
+  fiance: 'partner',
+  spouse: 'partner',
+};
+
+const NON_PERSON_TERMS = new Set([
+  'User', 'Users',
+  'I', 'The', 'This', 'That', 'Today', 'Tomorrow', 'Yesterday', 'Monday', 'Tuesday',
+  'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'January', 'February',
+  'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+  'November', 'December', 'Mercury', 'Openai', 'Anthropic', 'Kashmir', 'Article', 'Covid',
+]);
+
+interface UserRelationMention {
+  name: string;
+  relation: string;
+}
+
+function extractUserRelationshipMentions(text: string): UserRelationMention[] {
+  const mentions = new Map<string, UserRelationMention>();
+  const rolePattern = Object.keys(USER_RELATION_ROLE_MAP)
+    .sort((a, b) => b.length - a.length)
+    .map(r => r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  const normalizedText = text.replace(/[\r\n]+/g, ' ').trim();
+
+  const patterns = [
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\b`, 'gi'),
+    new RegExp(`\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\s+is\\s+my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\s*,\\s*my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s*,\\s*([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2})\\b`, 'gi'),
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalizedText)) !== null) {
+      const first = match[1]?.trim();
+      const second = match[2]?.trim();
+      if (!first || !second) continue;
+
+      const firstIsRole = USER_RELATION_ROLE_MAP[first.toLowerCase()];
+      const role = firstIsRole ? first.toLowerCase() : second.toLowerCase();
+      const name = firstIsRole ? second : first;
+      const relation = USER_RELATION_ROLE_MAP[role];
+      if (!relation || !isLikelyHumanName(name)) continue;
+
+      const key = name.toLowerCase();
+      mentions.set(key, { name, relation });
+    }
+  }
+
+  const groupedPatterns = [
+    new RegExp(`\\bmy\\s+(${rolePattern})\\s+(?:is|are|named|called)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(?:our|user(?:'s)?|users?)\\s+(${rolePattern})\\s+(?:is|are|named|called|include|includes)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(${rolePattern})\\s+(?:is|are|named|called|include|includes)\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b(?:i|we)\\s+have\\s+(${rolePattern})\\s+([^.!?;]+)`, 'gi'),
+    new RegExp(`\\b([^.!?;]+?)\\s+(?:is|are)\\s+my\\s+(${rolePattern})\\b`, 'gi'),
+    new RegExp(`\\b([^.!?;]+?)\\s+(?:is|are)\\s+(?:our|user(?:'s)?)\\s+(${rolePattern})\\b`, 'gi'),
+  ];
+
+  for (const pattern of groupedPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalizedText)) !== null) {
+      const first = match[1]?.trim();
+      const second = match[2]?.trim();
+      if (!first || !second) continue;
+
+      const firstRole = USER_RELATION_ROLE_MAP[first.toLowerCase()];
+      const roleToken = firstRole ? first.toLowerCase() : second.toLowerCase();
+      const namesSegment = firstRole ? second : first;
+      const relation = USER_RELATION_ROLE_MAP[roleToken];
+      if (!relation) continue;
+
+      for (const name of extractHumanNames(namesSegment)) {
+        const key = name.toLowerCase();
+        mentions.set(key, { name, relation });
+      }
+    }
+  }
+
+  return [...mentions.values()];
+}
+
+function extractHumanNames(segment: string): string[] {
+  const found = new Set<string>();
+  const nameRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = nameRegex.exec(segment)) !== null) {
+    const name = match[1].trim();
+    if (isLikelyHumanName(name)) found.add(name);
+  }
+  return [...found.values()];
+}
+
+function isLikelyHumanName(name: string): boolean {
+  if (!name || name.length < 2 || name.length > 48) return false;
+  if (NON_PERSON_TERMS.has(name)) return false;
+  const parts = name.split(' ').filter(Boolean);
+  if (parts.length === 1 && parts[0].length < 3) return false;
+  return parts.every(part => /^[A-Z][a-z]+$/.test(part));
+}
+
+function mentionsPerson(text: string, name: string): boolean {
+  if (!name) return false;
+  const escaped = name
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  if (!escaped) return false;
+  const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+  return regex.test(text);
 }
 
 function shouldStoreCandidate(candidate: UserMemoryCandidate): boolean {
@@ -492,11 +848,14 @@ function memoryHealthScore(row: MemoryRow): number {
     + (effectiveConfidence(row) * 0.25)
     + (Math.min(row.evidence_count, 5) / 5 * 0.15)
     + (row.scope === 'active' ? 0.08 : 0)
+    - (row.scope === 'subconscious' ? 0.2 : 0)
     - (row.superseded_by ? 0.3 : 0)
     - (isRowStale(row) ? 0.12 : 0);
 }
 
 function effectiveConfidence(row: MemoryRow): number {
+  if (row.scope === 'subconscious') return row.confidence;
+
   const ageDays = (Date.now() - row.updated_at) / (1000 * 60 * 60 * 24);
   let confidence = row.confidence;
 
@@ -516,14 +875,9 @@ function effectiveConfidence(row: MemoryRow): number {
 }
 
 function isRowStale(row: MemoryRow): boolean {
+  if (row.scope === 'subconscious') return true;
   const ageDays = (Date.now() - row.updated_at) / (1000 * 60 * 60 * 24);
-  if (row.scope === 'active') {
-    return ageDays > 21;
-  }
-  if (row.evidence_kind === 'inferred') {
-    return ageDays > 120;
-  }
-  return ageDays > 365;
+  return ageDays > 30;
 }
 
 function tokenize(input: string): string[] {

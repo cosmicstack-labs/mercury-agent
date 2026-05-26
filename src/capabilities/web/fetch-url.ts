@@ -53,7 +53,7 @@ export function createFetchUrlTool() {
 
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+        const timeout = setTimeout(() => controller.abort(), 30000);
 
         const resp = await fetch(url, {
           signal: controller.signal,
@@ -96,7 +96,7 @@ export function createFetchUrlTool() {
           : body;
       } catch (err: any) {
         if (err.name === 'AbortError') {
-          return `Request to ${url} timed out after 15 seconds.`;
+          return `Request to ${url} timed out after 30 seconds.`;
         }
         return `Error fetching ${url}: ${err.message}`;
       }

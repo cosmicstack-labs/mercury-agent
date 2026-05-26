@@ -5,8 +5,10 @@ title: GitHub Companion
 
 Mercury can act as your GitHub companion — creating pull requests, reviewing PRs, managing issues, and making co-authored commits — all through natural conversation. When configured, five GitHub tools are registered alongside Mercury's built-in toolset, letting you manage repositories without leaving the terminal or Telegram.
 
-:::info Conditional availability
+:::info[Conditional availability]
+
 GitHub tools **only appear when `GITHUB_TOKEN` is configured** via `mercury doctor`. Without a token, these tools are not registered and won't be available in conversation.
+
 :::
 
 ## Why set up GitHub?
@@ -43,7 +45,7 @@ You can customize the email in `~/.mercury/.env` by setting `GITHUB_EMAIL` if yo
 
 You need a token so Mercury can authenticate with the GitHub API. **Never share this token.** It's stored locally in `~/.mercury/.env` and never sent anywhere except GitHub's API.
 
-:::warning Where to create your token
+:::warning[Where to create your token]
 
 **Fine-grained PAT (recommended):**
 
@@ -62,6 +64,7 @@ You need a token so Mercury can authenticate with the GitHub API. **Never share 
 2. Give it a name (e.g. `mercury-agent`) and set an expiration
 3. Select the **repo** scope (full control of private repositories)
 4. Click **Generate token** and copy it immediately
+
 :::
 
 ### 4. Default repo (optional)
@@ -97,6 +100,8 @@ When Mercury commits code using `git_commit`, it automatically appends a `Co-aut
 
 ## Security
 
-:::warning PAT storage
+:::warning[PAT storage]
+
 Your GitHub PAT is stored in `~/.mercury/mercury.yaml` alongside your other configuration. It is never sent to any external service — only to the GitHub API directly from your machine. Treat this file like any other credential: don't commit it, don't share it, and rotate the token if you suspect it's compromised.
+
 :::

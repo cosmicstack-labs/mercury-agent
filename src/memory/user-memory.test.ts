@@ -14,7 +14,7 @@ function createStore(): UserMemoryStore {
   const dir = mkdtempSync(join(tmpdir(), 'mercury-sb-'));
   tempDirs.push(dir);
   const config = getDefaultConfig();
-  config.memory.secondBrain = { enabled: true, maxRecords: 50 };
+  config.memory.secondBrain = { enabled: true };
   const dbPath = join(dir, 'second-brain', 'second-brain.db');
   const store = new UserMemoryStore(config, 'user:owner', dbPath);
   return store;
@@ -240,5 +240,126 @@ describe('UserMemoryStore', () => {
 
   it('reports better-sqlite3 availability status', () => {
     expect(typeof sqliteAvailable).toBe('boolean');
+  });
+
+  it.skipIf(!sqliteAvailable)('moves stale memories to subconscious instead of deleting them', () => {
+    const store = createStore();
+
+    store.remember([
+      { type: 'preference', summary: 'User prefers dark mode for coding.', confidence: 0.9, importance: 0.8, durability: 0.9 },
+    ]);
+
+    expect(store.getSummary().total).toBe(1);
+    expect(store.getSummary().subconsciousTotal).toBe(0);
+
+    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
+    const row = db.getActive('user:owner')[0];
+    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
+
+    const result = store.prune();
+    expect(result.movedToSubconscious).toBe(1);
+
+    expect(store.getSummary().total).toBe(0);
+    expect(store.getSummary().subconsciousTotal).toBe(1);
+  });
+
+  it.skipIf(!sqliteAvailable)('recalls subconscious memories when conscious is weak', () => {
+    const store = createStore();
+
+    store.remember([
+      { type: 'preference', summary: 'User prefers TypeScript for backend projects.', confidence: 0.9, importance: 0.85, durability: 0.9 },
+    ]);
+
+    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
+    const row = db.getActive('user:owner')[0];
+    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
+
+    store.prune();
+    expect(store.getSummary().total).toBe(0);
+    expect(store.getSummary().subconsciousTotal).toBe(1);
+
+    const result = store.retrieveRelevant('TypeScript backend', { maxRecords: 5, maxChars: 900 });
+    expect(result.records.length).toBeGreaterThanOrEqual(1);
+
+    expect(store.getSummary().total).toBeGreaterThanOrEqual(1);
+    expect(store.getSummary().subconsciousTotal).toBe(0);
+  });
+
+  it.skipIf(!sqliteAvailable)('does not enforce a hard cap on memory count', () => {
+    const store = createStore();
+    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
+    const now = Date.now();
+
+    for (let i = 0; i < 60; i++) {
+      db.insert({
+        id: `mem_test_${i}`,
+        user_key: 'user:owner',
+        type: i % 2 === 0 ? 'preference' : 'identity',
+        summary: `Distinct memory observation number ${i} with completely different content about topic ${i}.`,
+        detail: null,
+        scope: i % 3 === 0 ? 'active' : 'durable',
+        evidence_kind: 'direct',
+        source: 'conversation',
+        confidence: 0.85,
+        importance: 0.75,
+        durability: 0.8,
+        evidence_count: 1,
+        provenance: null,
+        dismissed: 0,
+        superseded_by: null,
+        created_at: now,
+        updated_at: now,
+        last_seen_at: now,
+        last_used_at: null,
+        last_used_query: null,
+      });
+    }
+
+    expect(store.getSummary().total).toBe(60);
+  });
+
+  it.skipIf(!sqliteAvailable)('preserves memories in subconscious without confidence decay', () => {
+    const store = createStore();
+
+    store.remember([
+      { type: 'identity', summary: 'User is a software engineer specializing in distributed systems.', confidence: 0.92, importance: 0.9, durability: 0.95 },
+    ]);
+
+    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
+    const row = db.getActive('user:owner')[0];
+    const originalConfidence = row.confidence;
+
+    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
+    store.prune();
+
+    expect(store.getSummary().subconsciousTotal).toBe(1);
+
+    const subconsciousRow = db.getSubconscious('user:owner')[0];
+    expect(subconsciousRow.confidence).toBeCloseTo(originalConfidence, 2);
+  });
+
+  it.skipIf(!sqliteAvailable)('hard deletes only explicitly dismissed memories, not just subconscious ones', () => {
+    const store = createStore();
+
+    store.remember([
+      { type: 'preference', summary: 'User prefers dark mode for coding.', confidence: 0.9, importance: 0.8, durability: 0.9 },
+    ]);
+
+    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
+    const row = db.getActive('user:owner')[0];
+    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
+
+    store.prune();
+    expect(store.getSummary().subconsciousTotal).toBe(1);
+
+    store.prune();
+    expect(store.getSummary().subconsciousTotal).toBe(1);
+
+    store.remember([
+      { type: 'preference', summary: 'User does not prefer dark mode for coding.', confidence: 0.95, importance: 0.85, durability: 0.9 },
+    ]);
+
+    const recentConscious = store.getSummary().total;
+    expect(recentConscious).toBe(1);
   });
 });

@@ -55,7 +55,9 @@ export type ProviderName =
   | 'ollamaLocal'
   | 'openaiCompat'
   | 'mimo'
-  | 'mimoTokenPlan';
+  | 'mimoTokenPlan'
+  | 'chatgptWeb'
+  | 'githubCopilot';
 
 export interface MercuryConfig {
   identity: {
@@ -74,6 +76,8 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    chatgptWeb: ProviderConfig;
+    githubCopilot: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -100,7 +104,6 @@ export interface MercuryConfig {
     shortTermMaxMessages: number;
     secondBrain: {
       enabled: boolean;
-      maxRecords: number;
     };
   };
   heartbeat: {
@@ -108,6 +111,29 @@ export interface MercuryConfig {
   };
   tokens: {
     dailyBudget: number;
+  };
+  subagents: {
+    enabled: boolean;
+    maxConcurrent: number;
+    mode: 'auto' | 'manual';
+  };
+  spotify: {
+    enabled: boolean;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: string;
+    scopes: string[];
+    deviceId: string;
+    accountName: string;
+    accountId: string;
+    product: string;
+  };
+  web: {
+    enabled: boolean;
+    port: number;
   };
 }
 
@@ -176,7 +202,7 @@ export function getDefaultConfig(): MercuryConfig {
         name: 'ollamaLocal',
         apiKey: '',
         baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/api'),
-        model: getEnv('OLLAMA_LOCAL_MODEL', 'gpt-oss:20b'),
+        model: getEnv('OLLAMA_LOCAL_MODEL', ''),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
       },
       openaiCompat: {
@@ -199,6 +225,20 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('MIMO_TOKEN_PLAN_BASE_URL', 'https://token-plan-cn.xiaomimimo.com/v1'),
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
+      },
+      chatgptWeb: {
+        name: 'chatgptWeb',
+        apiKey: '', // not used — auth is via OAuth
+        baseUrl: 'https://chatgpt.com/backend-api',
+        model: getEnv('CHATGPT_WEB_MODEL', 'gpt-5.4-mini'),
+        enabled: getEnvBool('CHATGPT_WEB_ENABLED', false),
+      },
+      githubCopilot: {
+        name: 'githubCopilot',
+        apiKey: '', // not used — auth is via GitHub OAuth
+        baseUrl: '', // dynamic — resolved from Copilot token exchange
+        model: getEnv('GITHUB_COPILOT_MODEL', 'gpt-4o'),
+        enabled: getEnvBool('GITHUB_COPILOT_ENABLED', false),
       },
     },
     channels: {
@@ -226,7 +266,6 @@ export function getDefaultConfig(): MercuryConfig {
       shortTermMaxMessages: getEnvNum('SHORT_TERM_MAX_MESSAGES', 20),
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
-        maxRecords: getEnvNum('SECOND_BRAIN_MAX_RECORDS', 50),
       },
     },
     heartbeat: {
@@ -234,6 +273,29 @@ export function getDefaultConfig(): MercuryConfig {
     },
     tokens: {
       dailyBudget: getEnvNum('DAILY_TOKEN_BUDGET', 1_000_000),
+    },
+    subagents: {
+      enabled: getEnvBool('SUBAGENTS_ENABLED', true),
+      maxConcurrent: getEnvNum('SUBAGENTS_MAX_CONCURRENT', 0),
+      mode: (process.env.SUBAGENTS_MODE as 'auto' | 'manual') || 'auto',
+    },
+    spotify: {
+      enabled: getEnvBool('SPOTIFY_ENABLED', false),
+      clientId: getEnv('SPOTIFY_CLIENT_ID'),
+      clientSecret: getEnv('SPOTIFY_CLIENT_SECRET'),
+      redirectUri: getEnv('SPOTIFY_REDIRECT_URI', 'http://127.0.0.1:8888/callback'),
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: '',
+      scopes: [],
+      deviceId: '',
+      accountName: '',
+      accountId: '',
+      product: '',
+    },
+    web: {
+      enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
+      port: getEnvNum('MERCURY_PORT', 6174),
     },
   };
 }
@@ -311,6 +373,17 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   }
   if (provider.name === 'openaiCompat') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'chatgptWeb') {
+    // ChatGPT Web uses browser session auth, not API keys.
+    // Considered "configured" if enabled with a model selected.
+    // Actual session validity is checked at runtime via isAvailable().
+    return provider.model.length > 0;
+  }
+  if (provider.name === 'githubCopilot') {
+    // GitHub Copilot uses GitHub OAuth, not API keys.
+    // Considered "configured" if enabled with a model selected.
+    return provider.model.length > 0;
   }
   return provider.apiKey.length > 0;
 }

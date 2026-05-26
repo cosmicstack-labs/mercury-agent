@@ -14,7 +14,7 @@ export function createGitDiffTool(getCwd: () => string) {
         let cmd = 'git diff';
         if (staged) cmd += ' --cached';
         if (path) cmd += ` -- "${path}"`;
-        const result = execSync(cmd, { encoding: 'utf-8', timeout: 15000, cwd: getCwd() });
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000, cwd: getCwd() });
         if (!result.trim()) return 'No differences found.';
         const truncated = result.length > 15000 ? result.slice(0, 15000) + '\n... (truncated)' : result;
         return truncated;

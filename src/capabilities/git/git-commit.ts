@@ -20,7 +20,7 @@ export function createGitCommitTool(getCwd: () => string) {
         writeFileSync(msgFilePath, fullMessage, 'utf-8');
         const result = execSync(`git commit -F "${msgFilePath}"`, {
           encoding: 'utf-8',
-          timeout: 10000,
+          timeout: 20000,
           cwd,
         });
         try { unlinkSync(msgFilePath); } catch {}

@@ -1,4 +1,5 @@
 import { generateText, streamText, stepCountIs } from 'ai';
+import path from 'node:path';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -9,14 +10,24 @@ import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
+import { ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
+import { ProgrammingMode } from './programming-mode.js';
+import { BackgroundTaskManager } from './background-tasks.js';
+import { SkillBatcher } from '../skills/batcher.js';
+import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
-import { formatToolStep } from '../utils/tool-label.js';
+import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
 import { getReasoningProviderOptions } from '../utils/provider-options.js';
+import { getTelegramHelp } from '../utils/manual.js';
+import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
+import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
+import type { SpotifyClient } from '../spotify/client.js';
+import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -29,49 +40,43 @@ import {
   rejectTelegramPendingRequest,
   removeTelegramUser,
   saveConfig,
+  getActiveProviders,
 } from '../utils/config.js';
 
 class ToolCallLoopDetector {
-  private recentCalls: Array<{ tool: string; params: string; failed: boolean }> = [];
+  private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
   private totalCalls = 0;
   private hardAborted = false;
   private recentStepTexts: Array<string> = [];
   private consecutiveNoActionSteps = 0;
 
-  private static readonly ABSOLUTE_MAX = 25;
-  private static readonly FAILED_ABSOLUTE_MAX = 12;
-  private static readonly NO_ACTION_MAX = 5;
+  // --- Limits ---
+  private static readonly ABSOLUTE_MAX = 75;
+  private static readonly FAILED_ABSOLUTE_MAX = 20;
+  private static readonly NO_ACTION_MAX = 6;
 
+  // Tools that naturally repeat in productive work
   private static readonly HIGH_TOLERANCE_TOOLS = new Set([
-    'fetch_url',
-    'read_file',
-    'list_dir',
-    'web_search',
-    'github_api',
+    'fetch_url', 'read_file', 'list_dir', 'web_search', 'github_api',
+    'run_command', 'edit_file', 'write_file', 'create_file',
+    'git_status', 'git_diff', 'git_log',
   ]);
 
-  private static readonly IDENTICAL_THRESHOLD = 3;
-  private static readonly SIMILAR_THRESHOLD = 4;
-  private static readonly TEXT_REPEAT_THRESHOLD = 3;
-  private static readonly MAX_STEP_TEXTS = 12;
-
-  private static getSameToolThreshold(toolName: string, failingCount: number): number {
-    const baseHigh = 5;
-    const baseNormal = 3;
-    const isHigh = ToolCallLoopDetector.HIGH_TOLERANCE_TOOLS.has(toolName);
-    let threshold = isHigh ? baseHigh : baseNormal;
-    if (failingCount >= 3) {
-      threshold = Math.min(threshold, isHigh ? 3 : 2);
-    }
-    return threshold;
-  }
+  // --- Thresholds ---
+  // Identical = same tool + same params (always a true loop)
+  private static readonly IDENTICAL_THRESHOLD = 4;
+  // Similar = same tool, all failing
+  private static readonly SIMILAR_THRESHOLD = 6;
+  // Text repetition in model output
+  private static readonly TEXT_REPEAT_THRESHOLD = 4;
+  private static readonly MAX_STEP_TEXTS = 15;
 
   record(toolName: string, params: Record<string, any>, failed: boolean = false): void {
-    const paramsKey = JSON.stringify(params).slice(0, 200);
-    this.recentCalls.push({ tool: toolName, params: paramsKey, failed });
+    const paramsKey = JSON.stringify(params).slice(0, 300);
+    this.recentCalls.push({ tool: toolName, params: paramsKey, failed, timestamp: Date.now() });
     this.totalCalls++;
     this.consecutiveNoActionSteps = 0;
-    if (this.recentCalls.length > 30) {
+    if (this.recentCalls.length > 40) {
       this.recentCalls.shift();
     }
   }
@@ -98,11 +103,13 @@ class ToolCallLoopDetector {
     return false;
   }
 
+  /**
+   * Identical loop: same tool + exact same params repeated.
+   * This is always a true stuck loop — no productive work produces identical calls.
+   */
   detectIdentical(): { tool: string; count: number; message: string } | null {
     if (this.recentCalls.length < 3) return null;
-
     const last = this.recentCalls[this.recentCalls.length - 1];
-
     let identicalCount = 0;
     for (let i = this.recentCalls.length - 1; i >= 0; i--) {
       if (this.recentCalls[i].tool === last.tool && this.recentCalls[i].params === last.params) {
@@ -111,77 +118,60 @@ class ToolCallLoopDetector {
         break;
       }
     }
-
     if (identicalCount >= ToolCallLoopDetector.IDENTICAL_THRESHOLD) {
       this.hardAborted = true;
       return {
         tool: last.tool,
         count: identicalCount,
-        message: `[SYSTEM] You called "${last.tool}" ${identicalCount} times with identical parameters and got the same result. This is a hard loop — stop immediately.`,
+        message: `Identical call detected: "${last.tool}" called ${identicalCount}x with the exact same parameters.`,
       };
     }
-
     return null;
   }
 
+  /**
+   * Failing loop: same tool called repeatedly, all calls failing.
+   * Different params but consistently failing = stuck on a broken approach.
+   */
   detectSimilarLoop(): { tool: string; count: number; message: string } | null {
     if (this.recentCalls.length < 4) return null;
-
     const last = this.recentCalls[this.recentCalls.length - 1];
-    let similarCount = 0;
-
+    let failCount = 0;
     for (let i = this.recentCalls.length - 1; i >= 0; i--) {
       const call = this.recentCalls[i];
       if (call.tool !== last.tool) break;
-      if (call.failed || last.failed) {
-        similarCount++;
-      } else {
-        break;
-      }
+      if (call.failed) failCount++;
+      else break;
     }
-
-    if (similarCount >= ToolCallLoopDetector.SIMILAR_THRESHOLD) {
+    if (failCount >= ToolCallLoopDetector.SIMILAR_THRESHOLD) {
       this.hardAborted = true;
       return {
         tool: last.tool,
-        count: similarCount,
-        message: `[SYSTEM] You called "${last.tool}" ${similarCount} times with different params but all are failing. This is a failing loop — stop immediately. Tell the user you cannot complete this task.`,
+        count: failCount,
+        message: `Failing loop: "${last.tool}" called ${failCount}x, all failing.`,
       };
     }
-
     return null;
   }
 
   detectTextRepetition(): { pattern: string; count: number } | null {
     if (this.recentStepTexts.length < ToolCallLoopDetector.TEXT_REPEAT_THRESHOLD) return null;
-
     const texts = this.recentStepTexts;
     const last = texts[texts.length - 1];
-
     let repeatCount = 0;
     for (let i = texts.length - 1; i >= 0; i--) {
-      const similarity = this.textSimilarity(last, texts[i]);
-      if (similarity >= 0.7) {
-        repeatCount++;
-      } else {
-        break;
-      }
+      if (this.textSimilarity(last, texts[i]) >= 0.7) repeatCount++;
+      else break;
     }
-
     if (repeatCount >= ToolCallLoopDetector.TEXT_REPEAT_THRESHOLD) {
-      return {
-        pattern: last.slice(0, 60),
-        count: repeatCount,
-      };
+      return { pattern: last.slice(0, 60), count: repeatCount };
     }
-
     return null;
   }
 
   private textSimilarity(a: string, b: string): number {
     if (a === b) return 1;
     if (!a || !b) return 0;
-
     const setA = new Set(a.split(' '));
     const setB = new Set(b.split(' '));
     const intersection = [...setA].filter(w => setB.has(w)).length;
@@ -189,47 +179,88 @@ class ToolCallLoopDetector {
     return union === 0 ? 0 : intersection / union;
   }
 
-  detectSameTool(): { tool: string; count: number } | null {
-    if (this.recentCalls.length < 3) return null;
+  /**
+   * Smart repetition analysis: detects same-tool runs but evaluates whether
+   * the work is productive based on parameter diversity and success rate.
+   *
+   * Returns null if no concern, or an analysis object with:
+   * - tool, count: what's repeating
+   * - paramDiversity: 0-1, how varied the parameters are (1 = all unique)
+   * - successRate: 0-1, fraction of calls that succeeded
+   * - verdict: 'productive' | 'suspicious' | 'stuck'
+   */
+  analyzeRepetition(): {
+    tool: string;
+    count: number;
+    paramDiversity: number;
+    successRate: number;
+    verdict: 'productive' | 'suspicious' | 'stuck';
+  } | null {
+    if (this.recentCalls.length < 5) return null;
 
+    // Find the consecutive run of the same tool
     const last = this.recentCalls[this.recentCalls.length - 1];
-
-    let consecutiveCount = 0;
-    let failingConsecutive = 0;
+    const run: typeof this.recentCalls = [];
     for (let i = this.recentCalls.length - 1; i >= 0; i--) {
-      if (this.recentCalls[i].tool === last.tool) {
-        consecutiveCount++;
-        if (this.recentCalls[i].failed) failingConsecutive++;
-      } else {
-        break;
-      }
+      if (this.recentCalls[i].tool === last.tool) run.unshift(this.recentCalls[i]);
+      else break;
     }
 
-    const threshold = ToolCallLoopDetector.getSameToolThreshold(last.tool, failingConsecutive);
-    if (consecutiveCount >= threshold) {
-      return { tool: last.tool, count: consecutiveCount };
+    // Need a meaningful run length to analyze
+    const isHigh = ToolCallLoopDetector.HIGH_TOLERANCE_TOOLS.has(last.tool);
+    const minRun = isHigh ? 10 : 6;
+    if (run.length < minRun) return null;
+
+    // Parameter diversity: how many unique param sets vs total calls
+    const uniqueParams = new Set(run.map(c => c.params));
+    const paramDiversity = uniqueParams.size / run.length;
+
+    // Success rate
+    const successes = run.filter(c => !c.failed).length;
+    const successRate = successes / run.length;
+
+    // Verdict logic
+    let verdict: 'productive' | 'suspicious' | 'stuck';
+    if (paramDiversity >= 0.6 && successRate >= 0.7) {
+      // High diversity + mostly succeeding = productive iteration
+      // e.g., fetching 20 different URLs, reading 15 different files
+      verdict = 'productive';
+    } else if (successRate < 0.3) {
+      // Mostly failing = stuck
+      verdict = 'stuck';
+    } else if (paramDiversity < 0.2 && successRate < 0.5) {
+      // Low diversity + mediocre success = suspicious
+      verdict = 'stuck';
+    } else if (paramDiversity < 0.3) {
+      // Low diversity but succeeding — suspicious (might be retrying similar things)
+      verdict = 'suspicious';
+    } else {
+      // Moderate diversity, moderate success — let it run but flag
+      verdict = 'suspicious';
     }
 
-    if (this.recentCalls.length >= 6) {
-      const lastN = this.recentCalls.slice(-6);
-      const toolCounts: Record<string, number> = {};
-      for (const call of lastN) {
-        toolCounts[call.tool] = (toolCounts[call.tool] || 0) + 1;
-      }
-      for (const [tool, count] of Object.entries(toolCounts)) {
-        if (count >= 5) {
-          return { tool, count };
-        }
-      }
-    }
-
-    return null;
+    return {
+      tool: last.tool,
+      count: run.length,
+      paramDiversity,
+      successRate,
+      verdict,
+    };
   }
 
   isHardAborted(): boolean {
     return this.hardAborted;
   }
 
+  /** Return human-readable summaries of recent calls for AI self-check */
+  getRecentCallSummaries(): string[] {
+    return this.recentCalls.slice(-10).map(c => {
+      const params = c.params.length > 100 ? c.params.slice(0, 97) + '...' : c.params;
+      return `${c.tool}(${params})${c.failed ? ' [FAILED]' : ' [OK]'}`;
+    });
+  }
+
+  /** Reset all loop detection state */
   reset(): void {
     this.recentCalls = [];
     this.totalCalls = 0;
@@ -239,7 +270,14 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 10;
+const MAX_STEPS = 25;
+const MAX_RESPONSE_TOKENS = 4096;
+const HEARTBEAT_INITIAL_MS = 20000;
+const HEARTBEAT_MAX_MS = 60000;
+const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
+const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
+const MAX_STALL_MS = 4 * 60 * 1000;
+const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
 export class Agent {
   readonly lifecycle: Lifecycle;
@@ -249,6 +287,18 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private currentMessage: ChannelMessage | null = null;
+  private currentAbort: AbortController | null = null;
+  private lastProgressAt = 0;
+  private currentActivity = '';
+  private completedStepCount = 0;
+  private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
+  private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
+  readonly programmingMode: ProgrammingMode;
+  private spotifyClient?: SpotifyClient;
+  private skillBatcher: SkillBatcher | null = null;
+  private skillLoader?: SkillLoader;
+  readonly backgroundTasks: BackgroundTaskManager;
 
   constructor(
     private config: MercuryConfig,
@@ -267,6 +317,12 @@ export class Agent {
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.programmingMode = new ProgrammingMode();
+    this.backgroundTasks = new BackgroundTaskManager();
+
+    this.backgroundTasks.onGlobalComplete((task) => {
+      this.notifyBackgroundTaskComplete(task);
+    });
 
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
@@ -275,12 +331,452 @@ export class Agent {
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
     });
+
+    setAskUserHandler(async (question, choices, channelId, channelType) => {
+      return this.presentChoice(question, choices, channelId, channelType);
+    });
+  }
+
+  setSkillLoader(skillLoader: SkillLoader): void {
+    this.skillLoader = skillLoader;
+    if (this.supervisor) {
+      this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
+    }
+  }
+
+  setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
+    this.supervisor = supervisor;
+    if (this.skillLoader) {
+      this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
+    }
+    supervisor.setNotifyCallback(async (channelType, channelId, message) => {
+      const channel = this.channels.get(channelType as any);
+      if (channel) {
+        await channel.send(message, channelId).catch(() => {});
+      }
+    });
+    supervisor.setLifecycleCallback((event) => {
+      const bgTask = this.backgroundTasks.getByAgentId(event.agentId);
+      if (!bgTask) return;
+
+      if (event.type === 'progress' && event.progress) {
+        this.backgroundTasks.updateAgentProgress(bgTask.id, event.progress);
+        this.syncBgTasksToTui();
+        return;
+      }
+
+      if (event.type === 'complete' && event.result) {
+        const result = event.result;
+        const status = result.status === 'completed' ? 'completed' : result.status === 'halted' ? 'cancelled' : 'failed';
+        this.backgroundTasks.completeAgentTask(bgTask.id, status === 'completed' ? 0 : 1, status, result.output);
+        this.syncBgTasksToTui();
+      }
+    });
   }
 
   private enqueueMessage(msg: ChannelMessage): void {
     logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
+
+    const trimmed = msg.content.trim();
+
+    if (this.processing && trimmed.startsWith('/')) {
+      this.handleFastPathCommand(msg).catch((err) => {
+        logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
+      });
+      return;
+    }
+
     this.messageQueue.push(msg);
     this.processQueue();
+  }
+
+  private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
+    const trimmed = msg.content.trim();
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel) return;
+
+    const activeAgents = this.supervisor ? this.supervisor.getActiveAgents() : [];
+    const hasActiveAgents = activeAgents.length > 0;
+    const busyPrefix = hasActiveAgents ? '' : '';
+
+    if (trimmed === '/agents' || trimmed === '/status') {
+      if (this.supervisor) {
+        const agents = this.supervisor.getActiveAgents();
+        if (agents.length === 0) {
+          await channel.send('No active sub-agents.', msg.channelId);
+        } else {
+          let text = '**Sub-Agents:**\n\n';
+          for (const a of agents) {
+            const icon = a.status === 'running' ? '🔄' : a.status === 'pending' ? '⏳' : a.status === 'completed' ? '✅' : '❌';
+            text += `${icon} **${a.id}**: ${a.task.slice(0, 60)}${a.task.length > 60 ? '...' : ''} — ${a.status}${a.progress ? ` (${a.progress})` : ''}\n`;
+          }
+          await channel.send(text, msg.channelId);
+        }
+      } else {
+        await channel.send('Sub-agents not enabled.', msg.channelId);
+      }
+      return;
+    }
+
+    if (trimmed === '/halt' || trimmed === '/stop') {
+      if (this.supervisor) {
+        await this.supervisor.haltAll();
+        if (trimmed === '/stop') {
+          this.supervisor.clearTaskBoard();
+        }
+        await channel.send(trimmed === '/halt' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.', msg.channelId);
+      }
+      return;
+    }
+
+    if (trimmed.startsWith('/bg')) {
+      await this.handleBgCommand(trimmed, msg, channel);
+      return;
+    }
+
+    if (trimmed === '/progress' || trimmed === '/still') {
+      if (!this.processing || !this.currentMessage) {
+        await channel.send('No active foreground task.', msg.channelId);
+        return;
+      }
+      const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
+      const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 10);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
+      await channel.send(
+        `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
+        msg.channelId,
+      );
+      return;
+    }
+
+    if (trimmed === '/help') {
+      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /memory, /bg', msg.channelId);
+      return;
+    }
+
+    if (trimmed.startsWith('/spotify')) {
+      await this.handleFastPathSpotify(trimmed, msg, channel);
+      return;
+    }
+
+    if (trimmed.startsWith('/code')) {
+      await this.handleFastPathCode(trimmed, msg, channel);
+      return;
+    }
+
+    if (trimmed === '/memory') {
+      await channel.send('Agent is busy. Memory management will be available after current task completes.', msg.channelId);
+      return;
+    }
+
+    if (hasActiveAgents) {
+      const agentList = activeAgents.map(a => `**${a.id}**: ${a.task.slice(0, 40)}`).join(', ');
+      await channel.send(`I'm busy working on sub-agent tasks (${agentList}). Your message has been queued — I'll respond once I'm free. Use /agents to check status.`, msg.channelId);
+    } else {
+      const elapsedSec = this.currentMessage ? Math.round((Date.now() - this.currentMessage.timestamp) / 1000) : 0;
+      await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
+    }
+
+    this.messageQueue.push(msg);
+  }
+
+  private async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+    if (!this.spotifyClient) {
+      await channel.send('Spotify is not connected.', msg.channelId);
+      return;
+    }
+    const rawArgs = trimmed.slice('/spotify'.length).trim().toLowerCase();
+    if (!rawArgs || rawArgs === 'status') {
+      const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
+      const accountName = this.spotifyClient.getAccountName();
+      const product = this.spotifyClient.getProduct();
+      let status = `Spotify: **${auth}**`;
+      if (accountName) status += `\nAccount: **${accountName}**`;
+      if (product) status += `\nPlan: ${product}`;
+      status += `\nDevice: ${this.spotifyClient.getDeviceId() || 'none selected'}`;
+      await channel.send(status, msg.channelId);
+      return;
+    }
+    if (rawArgs === 'logout') {
+      this.spotifyClient.logout();
+      await channel.send('Spotify disconnected. Run `/spotify auth` to reconnect.', msg.channelId);
+      return;
+    }
+    if (rawArgs === 'now' || rawArgs === 'playing' || rawArgs === 'np') {
+      try {
+        const text = await this.spotifyClient.getNowPlayingText();
+        await channel.send(text, msg.channelId);
+      } catch (err: any) {
+        await channel.send(`Failed: ${err.message}`, msg.channelId);
+      }
+      return;
+    }
+    await channel.send('Agent is busy. Full Spotify controls will be available after current task completes.', msg.channelId);
+  }
+
+  private async handleFastPathCode(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+    const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
+    if (rawArgs === 'status') {
+      await channel.send(this.programmingMode.getStatusText(), msg.channelId);
+      return;
+    }
+    await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
+  }
+
+  private async handleBgCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+    const parts = trimmed.trim().split(/\s+/);
+    const sub = parts.length > 1 ? parts[1] : '';
+    const args = parts.slice(1).join(' ');
+
+    if (sub === 'current') {
+      if (!this.processing || !this.currentMessage) {
+        await channel.send('No active task to background.', msg.channelId);
+        return;
+      }
+      const taskDescription = this.currentMessage.content.trim();
+      const sourceChannelId = this.currentMessage.channelId;
+      const sourceChannelType = this.currentMessage.channelType as any;
+
+      if (this.currentAbort) {
+        this.currentAbort.abort();
+      }
+
+      if (this.supervisor) {
+        const agentId = await this.supervisor.spawn({
+          task: taskDescription,
+          sourceChannelId,
+          sourceChannelType,
+        });
+        const bgId = this.backgroundTasks.spawnAgent(taskDescription, this.capabilities.getCwd(), agentId);
+        await channel.send(`📋 Active task moved to background as ${bgId}. I'll notify you when it completes.`, msg.channelId);
+      } else {
+        await channel.send('Cannot background: sub-agents not available. The active task has been aborted.', msg.channelId);
+      }
+
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    if (sub === 'list' || sub === '' || sub === 'ls') {
+      const tasks = this.backgroundTasks.getAllSummaries();
+      if (tasks.length === 0) {
+        await channel.send('No background tasks.', msg.channelId);
+        return;
+      }
+      const lines = tasks.map((t) => {
+        const icon = t.status === 'running' ? '⏳' : t.status === 'completed' ? '✅' : t.status === 'failed' ? '❌' : t.status === 'timed_out' ? '⏱' : '⛔';
+        const label = t.command || t.task || t.id;
+        const elapsed = t.runningMs ? ` (${Math.round(t.runningMs / 1000)}s)` : t.completedAt ? ` (${((t.completedAt - t.startedAt) / 1000).toFixed(1)}s)` : '';
+        const short = label.length > 60 ? label.slice(0, 57) + '...' : label;
+        return `${icon} ${t.id}: ${short}${elapsed} — ${t.status}`;
+      });
+      await channel.send(`**Background Tasks:**\n${lines.join('\n')}\n\nUse /bg <id> for details, /bg cancel <id> to cancel, /bg clear to prune completed tasks.`, msg.channelId);
+      return;
+    }
+
+    if (sub === 'clear') {
+      const cleared = this.backgroundTasks.clearCompleted();
+      await channel.send(`Cleared ${cleared} completed task(s).`, msg.channelId);
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    if (sub === 'cancel' || sub === 'stop' || sub === 'kill') {
+      const taskId = parts[2];
+      if (!taskId) {
+        await channel.send(`Usage: /bg ${sub} <id>`, msg.channelId);
+        return;
+      }
+      const cancelled = this.backgroundTasks.cancel(taskId);
+      if (cancelled) {
+        await channel.send(`⛔ Stopped background task ${taskId}.`, msg.channelId);
+      } else {
+        await channel.send(`Task "${taskId}" not found or not running.`, msg.channelId);
+      }
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    if (sub === 'killall' || sub === 'stopall') {
+      const count = this.backgroundTasks.cancelAll();
+      if (count === 0) {
+        await channel.send('No running background tasks to stop.', msg.channelId);
+      } else {
+        await channel.send(`⛔ Stopped ${count} background task${count === 1 ? '' : 's'}.`, msg.channelId);
+      }
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    const specificTask = this.backgroundTasks.getSummary(sub);
+    if (specificTask) {
+      const task = this.backgroundTasks.get(sub)!;
+      const label = task.command || task.task || task.id;
+      const elapsed = task.status === 'running'
+        ? `Running for ${Math.round((Date.now() - task.startedAt) / 1000)}s`
+        : task.completedAt
+          ? `Completed in ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
+          : task.status;
+      const output = (task.stdout + '\n' + task.stderr).trim();
+      const preview = output.length > 2000 ? output.slice(-2000) : output;
+      await channel.send(`**${specificTask.id}**: ${label}\nStatus: ${elapsed}\nExit code: ${task.exitCode ?? 'N/A'}\n\n${preview || '(no output)'}`, msg.channelId);
+      return;
+    }
+
+    const colonIdx = trimmed.indexOf(':');
+    if (colonIdx !== -1 && trimmed[colonIdx + 1] === ' ') {
+      const taskDescription = trimmed.slice(colonIdx + 1).trim();
+      if (!taskDescription) {
+        await channel.send('Usage: /bg: <natural language task> or /bg <shell command>', msg.channelId);
+        return;
+      }
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available. Use /bg <command> for shell commands.', msg.channelId);
+        return;
+      }
+      const agentId = await this.supervisor.spawn({
+        task: taskDescription,
+        sourceChannelId: msg.channelId,
+        sourceChannelType: msg.channelType as any,
+      });
+      const bgId = this.backgroundTasks.spawnAgent(taskDescription, this.capabilities.getCwd(), agentId);
+      this.backgroundTasks.registerComplete(bgId, (task) => {
+        if (task.status === 'running') return;
+      });
+      await channel.send(`📋 Background agent ${bgId} started: "${taskDescription.slice(0, 50)}${taskDescription.length > 50 ? '...' : ''}"`, msg.channelId);
+      this.syncBgTasksToTui();
+      return;
+    }
+
+    const command = args || '';
+    if (!command) {
+      await channel.send('Usage:\n• /bg <command> — run a shell command in the background\n• /bg: <task> — delegate an LLM task to the background\n• /bg current — move the active task to the background\n• /bg list — show all background tasks\n• /bg <id> — show task details\n• /bg stop <id> — stop a running task\n• /bg killall — stop all running tasks\n• /bg clear — prune completed tasks', msg.channelId);
+      return;
+    }
+
+    const cwd = this.capabilities.getCwd();
+    const bgId = this.backgroundTasks.spawnShell(command, cwd);
+    await channel.send(`📋 Background task ${bgId} started: "${command.slice(0, 50)}${command.length > 50 ? '...' : ''}"`, msg.channelId);
+    this.syncBgTasksToTui();
+  }
+
+  private syncBgTasksToTui(): void {
+    const cliChannel = this.channels.get('cli');
+    if (cliChannel && cliChannel instanceof CLIChannel) {
+      (cliChannel as CLIChannel).updateBackgroundTasks(this.backgroundTasks.getAllSummaries());
+    }
+  }
+
+  private markProgress(activity?: string): void {
+    this.lastProgressAt = Date.now();
+    if (activity) {
+      this.currentActivity = activity;
+    }
+  }
+
+  private withProgressStream(content: AsyncIterable<string>): AsyncIterable<string> {
+    const self = this;
+    return (async function* () {
+      for await (const chunk of content) {
+        self.markProgress('Streaming response...');
+        yield chunk;
+      }
+    })();
+  }
+
+  private startForegroundHeartbeat(msg: ChannelMessage): () => void {
+    if (msg.channelType === 'internal') return () => {};
+
+    let heartbeatCount = 0;
+    let currentIntervalMs = HEARTBEAT_INITIAL_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = () => {
+      if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
+      const channel = this.channels.getChannelForMessage(msg);
+      if (!channel) return;
+
+      const elapsedMs = Date.now() - this.currentMessage.timestamp;
+      const stallMs = Date.now() - this.lastProgressAt;
+      const elapsedSec = Math.round(elapsedMs / 1000);
+      const stallSec = Math.round(stallMs / 1000);
+
+      if (stallMs >= MAX_STALL_MS && this.currentAbort && !this.currentAbort.signal.aborted) {
+        logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
+        this.currentAbort.abort();
+        void channel.send(
+          `⚠ Task stalled (no progress for ${stallSec}s). Stopped to avoid hanging. You can retry or use /bg current sooner for long tasks.`,
+          msg.channelId,
+        ).catch(() => {});
+        return;
+      }
+
+      heartbeatCount++;
+      const handoffHint = elapsedMs >= LONG_TASK_HANDOFF_SUGGEST_MS
+        ? '\nUse /bg current to move to background.'
+        : '';
+      const stepInfo = this.completedStepCount > 0
+        ? ` · step ${this.completedStepCount}/${MAX_STEPS}`
+        : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 3);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
+      void channel.send(
+        `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`,
+        msg.channelId,
+      ).catch(() => {});
+
+      // Escalate: 20s → 30s → 45s → 60s (cap)
+      if (heartbeatCount <= 2) {
+        currentIntervalMs = 30000;
+      } else if (heartbeatCount <= 4) {
+        currentIntervalMs = 45000;
+      } else {
+        currentIntervalMs = HEARTBEAT_MAX_MS;
+      }
+      timer = setTimeout(tick, currentIntervalMs);
+    };
+
+    timer = setTimeout(tick, HEARTBEAT_INITIAL_MS);
+
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }
+
+  private notifyBackgroundTaskComplete(task: import('./background-tasks.js').BackgroundTask): void {
+    const label = task.command || task.task || task.id;
+    const duration = task.completedAt ? ` in ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : '';
+    let message: string;
+
+    if (task.status === 'completed') {
+      message = `✅ Background task ${task.id} completed${duration}: "${label}"`;
+    } else if (task.status === 'failed') {
+      message = `❌ Background task ${task.id} failed${duration}: "${label}" (exit code ${task.exitCode ?? 'unknown'})`;
+    } else if (task.status === 'timed_out') {
+      message = `⏱ Background task ${task.id} timed out: "${label}"`;
+    } else if (task.status === 'cancelled') {
+      message = `⛔ Background task ${task.id} cancelled: "${label}"`;
+    } else {
+      message = `Background task ${task.id}: ${task.status} — "${label}"`;
+    }
+
+    const output = (task.stdout + '\n' + task.stderr).trim();
+    if (output) {
+      const preview = output.length > 500 ? '\n' + output.slice(-500) : '\n' + output;
+      message += preview;
+    }
+
+    const cliCh = this.channels.get('cli');
+    if (cliCh) {
+      (cliCh as CLIChannel).send(message).catch(() => {});
+    }
+    const tgCh = this.channels.get('telegram');
+    if (tgCh) {
+      tgCh.send(message).catch(() => {});
+    }
+
+    this.syncBgTasksToTui();
   }
 
   private async processQueue(): Promise<void> {
@@ -300,6 +796,40 @@ export class Agent {
     }
 
     this.processing = false;
+  }
+
+  private async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
+    const active = getActiveProviders(this.config).map((p) => p.name);
+    if (!active.includes(providerName)) {
+      return { ok: false, message: `Provider \`${providerName}\` is not configured. Run \`mercury doctor\` to add/configure models.` };
+    }
+
+    this.config.providers.default = providerName as any;
+    this.providers = await ProviderRegistryImpl.create(this.config);
+    const selected = this.providers.getDefault();
+    const model = selected.getModel();
+
+    const cliChannel = this.channels.get('cli');
+    if (cliChannel && cliChannel instanceof CLIChannel) {
+      cliChannel.setProvider(providerName, model);
+    }
+
+    return { ok: true, message: `Session model switched to **${providerName}** · **${model}**.` };
+  }
+
+  /** Returns the currently active provider name and model. */
+  getCurrentProvider(): { name: string; model: string } {
+    try {
+      const p = this.providers.getDefault();
+      return { name: this.config.providers.default as string || p.name, model: p.getModel() };
+    } catch {
+      return { name: this.config.providers.default as string || 'unknown', model: '' };
+    }
+  }
+
+  /** Public wrapper for web API model switching. */
+  async switchProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
+    return this.switchSessionProvider(providerName);
   }
 
   async birth(): Promise<void> {
@@ -332,6 +862,24 @@ export class Agent {
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
+    this.currentActivity = '';
+    this.completedStepCount = 0;
+    this.stepNarrative = [];
+    const stopHeartbeat = this.startForegroundHeartbeat(msg);
+    this.markProgress('Starting...');
+    let wallTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    if (this.supervisor && msg.channelType !== 'internal') {
+      const activeAgents = this.supervisor.getActiveAgents();
+      const runningAgents = activeAgents.filter(a => a.status === 'running');
+      if (runningAgents.length > 0) {
+        const channel = this.channels.getChannelForMessage(msg);
+        if (channel) {
+          const agentLines = runningAgents.map(a => `  🔄 ${a.id}: ${a.task.slice(0, 45)}${a.task.length > 45 ? '...' : ''}`);
+          await channel.send(`**Multi-agent mode** — ${runningAgents.length} agent${runningAgents.length > 1 ? 's' : ''} active:\n${agentLines.join('\n')}`, msg.channelId).catch(() => {});
+        }
+      }
+    }
 
       const isInternal = msg.channelType === 'internal';
       const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
@@ -386,6 +934,11 @@ export class Agent {
       }
 
       if (await this.handleChatCommand(trimmed, msg.channelType, msg.channelId)) {
+        this.lifecycle.transition('idle');
+        return;
+      }
+
+      if (await this.handleWorkspaceNaturalLanguage(trimmed, msg.channelType, msg.channelId)) {
         this.lifecycle.transition('idle');
         return;
       }
@@ -462,7 +1015,7 @@ export class Agent {
         if (memoryContext.context) {
           messages.push({
             role: 'user',
-            content: memoryContext.context,
+            content: `[Second Brain — auto-retrieved context]\n${memoryContext.context}\n[End auto-retrieved context]`,
           });
           messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
         }
@@ -488,11 +1041,57 @@ export class Agent {
 
       messages.push({ role: 'user', content: msg.content });
 
+      // ── Skill Intent Routing & Batch Execution ──
+      if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
+        try {
+          const intentRouter = this.skillLoader.intentRouter;
+          if (intentRouter && intentRouter.isInitialized()) {
+            const batches = intentRouter.matchToBatches(trimmed, 0.4);
+            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
+
+            if (batches.length > 0 && totalMatchedSkills >= 1) {
+              const matchedSkillNames = batches.flatMap(b => b.skills.map(s => s.name));
+              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
+
+              // For 2+ skills, batch execute via sub-agents
+              // For single skill, let the LLM handle it normally via use_skill
+              if (totalMatchedSkills >= 2) {
+                const plan = this.skillBatcher.planExecution(batches);
+                if (plan.batches.length > 0) {
+                  const channel = this.channels.getChannelForMessage(msg);
+                  if (channel) {
+                    await channel.send(`🧠 Intent routing matched **${totalMatchedSkills}** skills: ${matchedSkillNames.join(', ')}. Executing batch in background...`, msg.channelId).catch(() => {});
+                  }
+
+                  // Execute and wait for results
+                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
+                  const summary = this.skillBatcher.summarizeResults(batchResults);
+
+                  if (summary) {
+                    messages.push({
+                      role: 'user',
+                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
+                    });
+                    messages.push({
+                      role: 'assistant',
+                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
+        }
+      }
+
       this.lifecycle.transition('responding');
 
       const channel = this.channels.getChannelForMessage(msg);
       if (channel) {
         await channel.typing(msg.channelId).catch(() => {});
+        this.markProgress();
       }
 
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
@@ -506,16 +1105,27 @@ export class Agent {
       const loopDetector = new ToolCallLoopDetector();
       const loopAbortController = new AbortController();
       let loopWarningSent = false;
+      let selfCheckCount = 0;
 
-      const canStream = msg.channelType === 'cli' || (msg.channelType === 'telegram' && this.telegramStreaming);
+      this.currentMessage = msg;
+      this.currentAbort = loopAbortController;
+      wallTimeout = setTimeout(() => {
+        if (!loopAbortController.signal.aborted) {
+          loopAbortController.abort();
+        }
+      }, MAX_FOREGROUND_WALL_MS);
+
+      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming);
 
       const tgChannel = this.channels.get('telegram');
       if (msg.channelType === 'telegram' && tgChannel) {
         (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
+        (tgChannel as TelegramChannel).beginTask(msg.channelId);
       }
 
       for (const provider of fallbackIterator) {
         try {
+          this.markProgress(`Calling ${provider.name}...`);
           const deepseekProviderOptions = getReasoningProviderOptions(provider);
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
@@ -525,11 +1135,22 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.capabilities.getTools(),
+              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
+                this.completedStepCount++;
+                if (toolCalls && toolCalls.length > 0) {
+                  for (const tc of toolCalls as any[]) {
+                    this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
+                  }
+                  const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+                  this.markProgress(labels.join(' → '));
+                } else {
+                  this.markProgress('Thinking...');
+                }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
@@ -562,7 +1183,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Repeated call detected — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -572,34 +1193,86 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Failing loop detected — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
                   }
-                  const softLoop = loopDetector.detectSameTool();
-                  if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
-                    if (this.capabilities.permissions.isAutoApproveAll()) {
-                      loopDetector.reset();
-                      loopWarningSent = false;
-                    } else {
-                      loopWarningSent = true;
-                      const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop.`,
-                        msg.channelId,
-                      ).catch(() => false);
-                      if (shouldContinue) {
+                  // ── Mercury Autopilot: intelligent repetition analysis ──
+                  const analysis = loopDetector.analyzeRepetition();
+                  if (analysis && !loopWarningSent && channel && msg.channelType !== 'internal') {
+                    if (analysis.verdict === 'productive') {
+                      // Productive iteration — diverse params, high success rate
+                      // Let it run, just log for transparency
+                      logger.info({
+                        tool: analysis.tool,
+                        count: analysis.count,
+                        diversity: analysis.paramDiversity.toFixed(2),
+                        successRate: analysis.successRate.toFixed(2),
+                      }, 'Mercury Autopilot: productive iteration detected — continuing');
+                    } else if (analysis.verdict === 'suspicious') {
+                      // Suspicious but not definitively stuck — observe further
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        selfCheckCount++;
+                        if (selfCheckCount >= MAX_SELF_CHECKS) {
+                          // Escalate: ask AI for final verdict
+                          const recentCalls = loopDetector.getRecentCallSummaries();
+                          const shouldContinue = await this.aiSelfCheck({
+                            toolName: analysis.tool,
+                            callCount: analysis.count,
+                            recentCalls,
+                            taskDescription: msg.content.slice(0, 300),
+                          });
+                          if (!shouldContinue) {
+                            logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
+                            loopAbortController.abort();
+                            return;
+                          }
+                        }
+                        // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
                       } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} called ${analysis.count}x (${Math.round(analysis.paramDiversity * 100)}% param diversity, ${Math.round(analysis.successRate * 100)}% success rate). Continue?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
+                      }
+                    } else {
+                      // verdict === 'stuck'
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
+                        return;
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} appears stuck (${analysis.count} calls, ${Math.round(analysis.successRate * 100)}% success). Continue anyway?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
                       }
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
+                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -613,7 +1286,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
+                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -624,14 +1297,29 @@ export class Agent {
                           }
                         }
                       }
+                    } else if (channel instanceof WebChannel) {
+                      const webCh = channel as WebChannel;
+                      for (const tc of toolCalls) {
+                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                          }
+                        }
+                      }
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
+                    this.markProgress();
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
-                  const stepText = (toolResults as any)?.text ?? '';
-                  if (stepText) {
-                    loopDetector.recordStepText(String(stepText));
+                  const stepText_step = (toolResults as any)?.text ?? '';
+                  if (stepText_step) {
+                    loopDetector.recordStepText(String(stepText_step));
                   }
                   const noActionLoop = loopDetector.recordNoActionResult();
                   if (noActionLoop) {
@@ -665,15 +1353,15 @@ export class Agent {
                   ? Number(msg.channelId.split(':')[1])
                   : Number(msg.channelId);
                 if (!isNaN(chatId)) {
-                  fullText = await (tgChannel as any).sendStreamToChat(chatId, streamResult.textStream);
+                  fullText = await (tgChannel as any).sendStreamToChat(chatId, this.withProgressStream(streamResult.textStream));
                 } else {
-                  fullText = await channel.stream(streamResult.textStream, msg.channelId);
+                  fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
                 }
               } else {
-                fullText = await channel.stream(streamResult.textStream, msg.channelId);
+                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
               }
             } else {
-              fullText = await channel.stream(streamResult.textStream, msg.channelId);
+              fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
             }
 
             const [usage] = await Promise.all([
@@ -690,11 +1378,22 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.capabilities.getTools(),
+              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
+                this.completedStepCount++;
+                if (toolCalls && toolCalls.length > 0) {
+                  for (const tc of toolCalls as any[]) {
+                    this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
+                  }
+                  const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+                  this.markProgress(labels.join(' → '));
+                } else {
+                  this.markProgress('Thinking...');
+                }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
@@ -727,7 +1426,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Repeated call detected — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -737,34 +1436,86 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`⚠ Failing loop detected — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping.`, msg.channelId).catch(() => {});
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
                   }
-                  const softLoop = loopDetector.detectSameTool();
-                  if (softLoop && !loopWarningSent && channel && msg.channelType !== 'internal') {
-                    if (this.capabilities.permissions.isAutoApproveAll()) {
-                      loopDetector.reset();
-                      loopWarningSent = false;
-                    } else {
-                      loopWarningSent = true;
-                      const shouldContinue = await channel.askToContinue(
-                        `${softLoop.tool} has been called ${softLoop.count}x in a row. This might be a loop.`,
-                        msg.channelId,
-                      ).catch(() => false);
-                      if (shouldContinue) {
+                  // ── Mercury Autopilot: intelligent repetition analysis ──
+                  const analysis = loopDetector.analyzeRepetition();
+                  if (analysis && !loopWarningSent && channel && msg.channelType !== 'internal') {
+                    if (analysis.verdict === 'productive') {
+                      // Productive iteration — diverse params, high success rate
+                      // Let it run, just log for transparency
+                      logger.info({
+                        tool: analysis.tool,
+                        count: analysis.count,
+                        diversity: analysis.paramDiversity.toFixed(2),
+                        successRate: analysis.successRate.toFixed(2),
+                      }, 'Mercury Autopilot: productive iteration detected — continuing');
+                    } else if (analysis.verdict === 'suspicious') {
+                      // Suspicious but not definitively stuck — observe further
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        selfCheckCount++;
+                        if (selfCheckCount >= MAX_SELF_CHECKS) {
+                          // Escalate: ask AI for final verdict
+                          const recentCalls = loopDetector.getRecentCallSummaries();
+                          const shouldContinue = await this.aiSelfCheck({
+                            toolName: analysis.tool,
+                            callCount: analysis.count,
+                            recentCalls,
+                            taskDescription: msg.content.slice(0, 300),
+                          });
+                          if (!shouldContinue) {
+                            logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
+                            loopAbortController.abort();
+                            return;
+                          }
+                        }
+                        // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
                       } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} called ${analysis.count}x (${Math.round(analysis.paramDiversity * 100)}% param diversity, ${Math.round(analysis.successRate * 100)}% success rate). Continue?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
+                      }
+                    } else {
+                      // verdict === 'stuck'
+                      if (this.capabilities.permissions.isAutoApproveAll()) {
+                        logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
+                        return;
+                      } else {
+                        loopWarningSent = true;
+                        const shouldContinue = await channel.askToContinue(
+                          `☿ Mercury Autopilot: ${analysis.tool} appears stuck (${analysis.count} calls, ${Math.round(analysis.successRate * 100)}% success). Continue anyway?`,
+                          msg.channelId,
+                        ).catch(() => false);
+                        if (shouldContinue) {
+                          loopDetector.reset();
+                          loopWarningSent = false;
+                        } else {
+                          loopAbortController.abort();
+                        }
                       }
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
                     if (channel instanceof CLIChannel) {
                       for (const tc of toolCalls) {
-                        await (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
+                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -778,7 +1529,7 @@ export class Agent {
                     } else if (channel instanceof TelegramChannel) {
                       const tgCh = channel as TelegramChannel;
                       for (const tc of toolCalls) {
-                        await tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
+                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -789,14 +1540,29 @@ export class Agent {
                           }
                         }
                       }
+                    } else if (channel instanceof WebChannel) {
+                      const webCh = channel as WebChannel;
+                      for (const tc of toolCalls) {
+                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                          }
+                        }
+                      }
                     } else {
                       await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
+                    this.markProgress();
                   }
                 } else if (toolResults === undefined || (toolCalls === undefined)) {
-                  const stepText = (toolResults as any)?.text ?? '';
-                  if (stepText) {
-                    loopDetector.recordStepText(String(stepText));
+                  const stepText_nostream = (toolResults as any)?.text ?? '';
+                  if (stepText_nostream) {
+                    loopDetector.recordStepText(String(stepText_nostream));
                   }
                   const noActionLoop = loopDetector.recordNoActionResult();
                   if (noActionLoop) {
@@ -823,6 +1589,9 @@ export class Agent {
           }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
+          if (channel instanceof WebChannel) {
+            (channel as WebChannel).sendProviderInfo(usedProvider.name, usedProvider.model, msg.channelId);
+          }
           this.providers.markSuccess(provider.name);
           break;
         } catch (err: any) {
@@ -832,7 +1601,14 @@ export class Agent {
               result = { text: streamedText, usage: undefined };
             }
             if (!result) {
-              result = { text: 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.', usage: undefined };
+              const elapsedMs = Date.now() - startTime;
+              const timedOut = elapsedMs >= MAX_FOREGROUND_WALL_MS;
+              result = {
+                text: timedOut
+                  ? 'I stopped because this request exceeded the foreground time limit. Please retry with a narrower scope, or move it to background with /bg current sooner.'
+                  : 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.',
+                usage: undefined,
+              };
             }
             if (usedProvider) {
               this.providers.markSuccess(usedProvider.name);
@@ -851,6 +1627,11 @@ export class Agent {
         const errMsg = `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
         if (channel && msg.channelType !== 'internal') {
+          // End task before sending error so it goes through as a normal message
+          if (channel instanceof TelegramChannel) {
+            (channel as TelegramChannel).endTask(msg.channelId);
+            (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          }
           await channel.send(errMsg, msg.channelId);
         }
         this.lifecycle.transition('idle');
@@ -858,6 +1639,13 @@ export class Agent {
       }
 
       const finalText = (streamedText || result.text || '').trim() || '(no text response)';
+      this.markProgress('Finalizing response...');
+
+      // Store plan output when in plan mode for later execution
+      if (this.programmingMode.isPlan() && finalText !== '(no text response)') {
+        this.programmingMode.storePlan(finalText);
+        logger.info({ planLength: finalText.length }, 'Plan captured from plan-mode response');
+      }
 
       this.tokenBudget.recordUsage({
         provider: usedProvider!.name,
@@ -898,11 +1686,68 @@ export class Agent {
 
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
-        if (streamedText && streamedText.trim()) {
-          logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
+        const stepCount = this.completedStepCount;
+
+        // Send completion banner only for substantial tasks (3+ steps AND >30s)
+        // Simple responses (greetings, quick answers) don't need a banner
+        const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
+        if (isSubstantialTask && channel instanceof TelegramChannel) {
+          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
+          const completionMeta = {
+            provider: usedProvider?.name ?? 'unknown',
+            model: usedProvider?.model ?? 'unknown',
+            inputTokens: result.usage?.inputTokens ?? 0,
+            outputTokens: result.usage?.outputTokens ?? 0,
+            totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+            budgetUsed: this.tokenBudget.getDailyUsed(),
+            budgetTotal: this.tokenBudget.getBudget(),
+            budgetPercentage: this.tokenBudget.getUsagePercentage(),
+          };
+          // If there's a non-streamed response that wasn't deferred, defer it now
+          if (!streamedText && finalText && finalText.trim()) {
+            // send() during active task already deferred it — nothing to do
+          }
+          await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
+        } else if (channel instanceof TelegramChannel) {
+          // For non-substantial Telegram tasks: end task, flush deferred, clean up
+          (channel as TelegramChannel).endTask(msg.channelId);
+          // Flush deferred response
+          const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
+          const responseText = deferred || (!streamedText && finalText ? finalText : null);
+          if (responseText && responseText.trim()) {
+            await channel.send(responseText, msg.channelId, elapsed);
+          }
+          if (stepCount > 0) {
+            await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
+            (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          }
+          this.markProgress();
         } else {
-          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
-          await channel.send(finalText, msg.channelId, elapsed);
+          // CLI or other channels — original flow
+          if (streamedText && streamedText.trim()) {
+            logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
+            // Web channel needs text_done after streaming to reset frontend state
+            if (channel instanceof WebChannel) {
+              await channel.send(streamedText, msg.channelId, elapsed);
+            }
+          } else {
+            logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
+            await channel.send(finalText, msg.channelId, elapsed);
+            this.markProgress();
+          }
+          if (isSubstantialTask && channel instanceof CLIChannel) {
+            const completionMeta = {
+              provider: usedProvider?.name ?? 'unknown',
+              model: usedProvider?.model ?? 'unknown',
+              inputTokens: result.usage?.inputTokens ?? 0,
+              outputTokens: result.usage?.outputTokens ?? 0,
+              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+              budgetUsed: this.tokenBudget.getDailyUsed(),
+              budgetTotal: this.tokenBudget.getBudget(),
+              budgetPercentage: this.tokenBudget.getUsagePercentage(),
+            };
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+          }
         }
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
@@ -913,6 +1758,13 @@ export class Agent {
       logger.error({ err }, 'Error handling message');
       this.lifecycle.transition('idle');
     } finally {
+      if (wallTimeout) clearTimeout(wallTimeout);
+      stopHeartbeat();
+      this.currentMessage = null;
+      this.currentAbort = null;
+      this.currentActivity = '';
+      this.completedStepCount = 0;
+      this.stepNarrative = [];
       if (isInternal || isScheduled) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
@@ -926,25 +1778,58 @@ export class Agent {
     if (skillContext) {
       prompt += '\n\n' + skillContext;
     }
+    const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
+    if (programmingSuffix) {
+      prompt += programmingSuffix;
+    }
     const budgetStatus = this.tokenBudget.getStatusText();
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
       prompt += '\nBe concise to conserve tokens.';
     }
 
-    prompt += `\n\nEnvironment:\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    prompt += `\n\nEnvironment:\n- Date: ${dateStr}, ${timeStr} (${timezone})\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
+
+    prompt += `\n\n**Tool Usage Guidelines:**
+- Use write_file, create_file, and edit_file tools DIRECTLY to create and modify files. Do NOT create intermediary scripts (Python, bash, Node.js) whose sole purpose is to generate other files — you have native file tools for this.
+- Use run_command for: building, testing, installing dependencies, running the project, git operations, and other system tasks that require a shell.
+- Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
+- Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
+- When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
 
     if (this.userMemory) {
       const summary = this.userMemory.getSummary();
-      prompt += `\n\nSecond Brain is ENABLED. You have a persistent, structured memory of ${summary.total} facts about this user.`;
+      prompt += `\n\nSecond Brain (SQLite-backed long-term memory) is ENABLED. You have ${summary.total} persistent memories about this user.`;
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
-      prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
-      prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
+      prompt += `\n\nCRITICAL — Memory storage rules:`;
+      prompt += `\n- ALL persistent user knowledge lives in the Second Brain SQLite database — this is the single source of truth.`;
+      prompt += `\n- NEVER use create_file, write_file, edit_file, or any file tool to store memories, notes, facts, preferences, or brain data. Files are for code and documents, not for knowledge storage.`;
+      prompt += `\n- New memories are extracted AUTOMATICALLY after each conversation turn. You do not need to ask the user if they want to save something.`;
+      prompt += `\n- When the user explicitly asks you to "save/remember/note/keep this," use the save_memory tool to store it directly — no follow-up questions needed.`;
+      prompt += `\n- When you need to actively recall something beyond auto-injected context (e.g. "do you remember...", "what do I know about..."), use the search_memory tool.`;
+      prompt += `\n- Relevant memories are auto-injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
+      prompt += `\n- Users can manage memory with: /memory (overview, search, pause learning, clear).`;
       if (summary.learningPaused) {
-        prompt += `\nLearning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
+        prompt += `\n\nLearning is currently PAUSED — no new memories will be extracted or saved until resumed.`;
       }
     } else {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
+    }
+
+    // Notification routing guidance for tweet-notifier skill
+    const skillNames = this.capabilities.getSkillContext();
+    if (skillNames.includes('tweet-notifier')) {
+      prompt += `\n\n**Tweet Notification System Available** — The tweet-notifier skill is installed.
+When you need to schedule tweets, manage approvals, or notify founders/supporters:
+1. Use the \`use_skill\` tool to invoke the \`tweet-notifier\` skill for detailed instructions
+2. The skill provides templates for scheduling tweets, notifying founders (via send_message), and alerting supporters (approved Telegram users)
+3. Key tools used by this system: schedule_task (for timing), send_message (for notifications to Telegram), save_memory (for tweet state tracking), search_memory (for checking existing tweets)
+4. Supporters are all approved Telegram users — send_message will reach them
+5. The founder (Optimus Prime) receives notifications via send_message (Telegram)`;
     }
 
     const toolNames = this.capabilities.getToolNames();
@@ -1035,7 +1920,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         }
 
         const pruning = this.userMemory.prune();
-        if (pruning.activePruned > 0 || pruning.durablePruned > 0 || pruning.promoted > 0) {
+        if (pruning.movedToSubconscious > 0 || pruning.hardDeleted > 0 || pruning.promoted > 0) {
           logger.info({ pruning }, 'Second brain pruned');
         }
       } catch (err) {
@@ -1088,7 +1973,29 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       const provider = this.providers.getDefault();
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0). Extract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array, no markdown.`,
+        system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
+
+Each candidate: { type, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
+
+TYPE DEFINITIONS (pick the single most specific one):
+- identity: who the user IS — their name, role, job title, self-description
+- relationship: other people the user knows — MUST include the person's name in summary
+- preference: likes, dislikes, style choices, opinions
+- goal: aspirations, targets, things they want to achieve
+- project: specific ongoing work, initiatives, things being built
+- habit: routines, recurring behaviors, schedules
+- decision: choices made, commitments, selected approaches
+- constraint: limitations, rules they follow, things they avoid
+- episode: notable one-time events worth remembering
+
+RULES:
+- Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
+- If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
+- "identity" is ONLY for the user themselves.
+- For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
+- Only extract specific, durable, user-specific information.
+- Do NOT extract trivial observations, greetings, or assistant behavior.
+- Output pure JSON array, no markdown fences.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
@@ -1119,12 +2026,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 
       try {
         const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-        candidates = JSON.parse(jsonStr);
+        const parsed = JSON.parse(jsonStr);
+        // Handle both single object and array of objects
+        candidates = Array.isArray(parsed) ? parsed : [parsed];
       } catch {
         const facts = text
           .split('\n')
           .map(l => l.replace(/^-\s*/, '').trim())
-          .filter(f => f.length > 10 && f.length < 200);
+          // Skip JSON-like lines (key-value pairs, braces, brackets)
+          .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
           summary: f,
@@ -1161,8 +2071,142 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   }
 
   async shutdown(): Promise<void> {
+    if (this.supervisor) {
+      await this.supervisor.haltAll();
+    }
+    this.backgroundTasks.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
+  }
+
+  /**
+   * AI self-check: ask the model itself whether repeated tool usage is productive or a loop.
+   * Used in allow-all mode instead of prompting the user.
+   * Returns true if the AI thinks it should continue, false if it should stop.
+   */
+  private async aiSelfCheck(context: {
+    toolName: string;
+    callCount: number;
+    recentCalls: string[];
+    taskDescription: string;
+  }): Promise<boolean> {
+    try {
+      const provider = this.providers.getDefault();
+      if (!provider) return true; // no provider = let it continue
+
+      const selfCheckResult = await generateText({
+        model: provider.getModelInstance(),
+        system: `You are Mercury Autopilot, a monitoring system inside an AI coding agent. Your job is to determine whether repeated tool usage is productive iteration or a stuck loop.
+
+Productive patterns (CONTINUE):
+- Fetching multiple different URLs (e.g., scraping articles, reading docs)
+- Reading multiple different files to understand a codebase
+- Editing different sections of code across files
+- Running different commands (build, test, lint, deploy)
+- Creating multiple files for a project
+
+Stuck patterns (STOP):
+- Same exact call repeated with identical parameters
+- Retrying the same failing operation with minor variations
+- Reading the same file over and over
+- Running the same failing command repeatedly
+
+Respond with ONLY "CONTINUE" or "STOP" followed by a one-line reason.`,
+        messages: [{
+          role: 'user',
+          content: `Tool "${context.toolName}" called ${context.callCount} times consecutively.
+
+User's task: ${context.taskDescription}
+
+Recent calls (newest last):
+${context.recentCalls.join('\n')}
+
+Is this productive iteration or a stuck loop?`,
+        }],
+        maxOutputTokens: 80,
+      });
+
+      const answer = (selfCheckResult.text || '').trim().toUpperCase();
+      const shouldContinue = answer.startsWith('CONTINUE');
+      logger.info({
+        toolName: context.toolName,
+        count: context.callCount,
+        decision: shouldContinue ? 'continue' : 'stop',
+        reason: selfCheckResult.text?.trim().slice(0, 120),
+      }, 'Mercury Autopilot verdict');
+      return shouldContinue;
+    } catch (err) {
+      logger.warn({ err }, 'Mercury Autopilot self-check failed — defaulting to continue');
+      return true; // on failure, be permissive
+    }
+  }
+
+  setSpotifyClient(client: SpotifyClient): void {
+    this.spotifyClient = client;
+  }
+
+  async presentChoice(question: string, choices: string[], channelId: string, channelType: string): Promise<string> {
+    const channel = this.channels.get(channelType as any);
+
+    if (channelType === 'cli' && channel instanceof CLIChannel) {
+      const options = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
+
+      const selected = await channel.presentChoicePrompt(question, options);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
+    }
+
+    if (channelType === 'telegram' && channel instanceof TelegramChannel) {
+      const { InlineKeyboard } = await import('grammy');
+      const kb = new InlineKeyboard();
+      for (let i = 0; i < choices.length; i++) {
+        const callbackData = `choice_${Date.now()}_${i}`;
+        kb.text(choices[i].slice(0, 60), callbackData);
+        if (i < choices.length - 1 && (i + 1) % 2 === 0) {
+          kb.row();
+        }
+      }
+
+      return new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => {
+          (channel as any).pendingApprovals?.delete(`choice_timeout_${question}`);
+          resolve(choices[0]);
+        }, 120000);
+
+        channel.send(question, channelId).catch(() => {});
+
+        const tgBot = (channel as any).bot;
+        if (tgBot) {
+          const chatId = channelId.startsWith('telegram:')
+            ? Number(channelId.split(':')[1])
+            : Number(channelId);
+
+          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch(() => {});
+
+          const handler = async (ctx: any) => {
+            const data = ctx.callbackQuery?.data;
+            if (!data || !data.startsWith('choice_')) return;
+            const parts = data.split('_');
+            if (parts.length < 3) return;
+            const index = parseInt(parts[2], 10);
+            if (isNaN(index)) return;
+            clearTimeout(timeout);
+            try { await ctx.answerCallbackQuery(); } catch {}
+            resolve(choices[index]);
+          };
+
+          if ((channel as any).pendingCallbacks) {
+            (channel as any).pendingCallbacks.push(handler);
+          }
+        }
+      });
+    }
+
+    await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch(() => {});
+    return choices[0];
   }
 
   private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {
@@ -1203,6 +2247,200 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
   }
 
+  private async handleSkillsSlashCommand(
+    trimmed: string,
+    channel: any,
+    channelId: string,
+    ctx: { skillNames: () => string[] },
+  ): Promise<void> {
+    const parts = trimmed.split(/\s+/).slice(1);
+    const sub = (parts[0] || 'list').toLowerCase();
+    const args = parts.slice(1);
+    const arg = args.join(' ').trim();
+
+    const { RegistryClient, isValidSkillId, searchFeed } = await import('../skills/registry.js');
+    const { SkillStore } = await import('../skills/store.js');
+    const registry = new RegistryClient();
+    const store = new SkillStore({ registry });
+
+    try {
+      switch (sub) {
+        case 'help':
+        case '-h':
+        case '--help': {
+          await channel.send(
+            [
+              '**Mercury Skills — in-chat commands**',
+              '',
+              '`/skills` — list installed skills',
+              '`/skills search <query>` — search the registry',
+              '`/skills view <id>` — show details + registry URL',
+              '`/skills install <id>` — install from the registry',
+              '`/skills install <url>` — install raw SKILL.md from a URL',
+              '`/skills remove <id>` — uninstall',
+              '',
+              'Browse the full catalog at https://skills.mercuryagent.sh',
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'list': {
+          const names = ctx.skillNames();
+          if (names.length === 0) {
+            await channel.send(
+              'No skills installed. Try `/skills search <query>` to browse https://skills.mercuryagent.sh.',
+              channelId,
+            );
+            return;
+          }
+          const lines = [
+            `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
+            '',
+            ...names.map((n) => `• ${n}`),
+            '',
+            '_Run `/skills search <query>` to find more on the registry._',
+          ];
+          await channel.send(lines.join('\n'), channelId);
+          return;
+        }
+
+        case 'search':
+        case 'find': {
+          if (!arg) {
+            await channel.send('Usage: `/skills search <query>`', channelId);
+            return;
+          }
+          await channel.send(`🔍 Searching the registry for "${arg}"…`, channelId);
+          const feed = await registry.getFeed();
+          const scored = searchFeed(feed, arg, 5);
+          if (scored.length === 0) {
+            await channel.send(`No matches for "${arg}".`, channelId);
+            return;
+          }
+          const lines = scored.map(({ skill }) =>
+            [
+              `• \`${skill.id}\` (v${skill.version})`,
+              `  ${skill.description}`,
+              `  ${registry.webUrl(skill.id)}`,
+            ].join('\n'),
+          );
+          await channel.send(
+            [
+              `**Top ${scored.length} matches for "${arg}":**`,
+              '',
+              lines.join('\n\n'),
+              '',
+              'Inspect one with `/skills view <id>`, install with `/skills install <id>`.',
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'view':
+        case 'show':
+        case 'info': {
+          if (!arg) {
+            await channel.send('Usage: `/skills view <category/slug>`', channelId);
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
+            return;
+          }
+          const detail = await registry.getSkill(arg);
+          const author = detail.author ? `\n**Author:** ${detail.author}` : '';
+          const tags = detail.tags?.length ? `\n**Tags:** ${detail.tags.join(', ')}` : '';
+          await channel.send(
+            [
+              `**${detail.title}** (\`${detail.id}\`)`,
+              `**Version:** ${detail.version}`,
+              `**Category:** ${detail.category}${author}${tags}`,
+              '',
+              detail.description,
+              '',
+              `🔗 ${registry.webUrl(detail.id)}`,
+              '',
+              `Install with \`/skills install ${detail.id}\``,
+            ].join('\n'),
+            channelId,
+          );
+          return;
+        }
+
+        case 'install':
+        case 'add': {
+          if (!arg) {
+            await channel.send('Usage: `/skills install <category/slug>` or `/skills install <url>`', channelId);
+            return;
+          }
+          // URL install → delegate to the existing capability path
+          if (/^https?:\/\//i.test(arg)) {
+            const { SkillLoader } = await import('../skills/loader.js');
+            const loader = new SkillLoader();
+            await channel.send(`📦 Installing from \`${arg}\`…`, channelId);
+            const installed = await loader.installFromUrl(arg);
+            await channel.send(
+              `✅ Installed \`${installed.name}\` from URL.\n${installed.skillDir}`,
+              channelId,
+            );
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>` or a `https://` URL.', channelId);
+            return;
+          }
+          await channel.send(`📦 Installing \`${arg}\` from the registry…`, channelId);
+          const result = await store.install(arg);
+          const verb =
+            result.status === 'already-installed'
+              ? 'Already installed'
+              : result.status === 'updated'
+                ? 'Updated'
+                : result.status === 'reinstalled'
+                  ? 'Reinstalled'
+                  : 'Installed';
+          await channel.send(
+            `✅ ${verb} \`${result.id}\` (v${result.version})\n🔗 ${registry.webUrl(result.id)}`,
+            channelId,
+          );
+          return;
+        }
+
+        case 'remove':
+        case 'rm':
+        case 'delete':
+        case 'uninstall': {
+          if (!arg) {
+            await channel.send('Usage: `/skills remove <category/slug>`', channelId);
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
+            return;
+          }
+          const removed = store.remove(arg);
+          await channel.send(
+            removed ? `🗑 Removed \`${arg}\`.` : `Skill \`${arg}\` is not installed.`,
+            channelId,
+          );
+          return;
+        }
+
+        default:
+          await channel.send(
+            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
+            channelId,
+          );
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Skill registry request failed';
+      await channel.send(`⚠️ ${msg}`, channelId);
+    }
+  }
+
   private async handleChatCommand(content: string, channelType: string, channelId: string): Promise<boolean> {
     const trimmed = content.trim();
     const cmd = trimmed.toLowerCase();
@@ -1213,7 +2451,29 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     if (!ctx) return false;
 
     if (cmd === '/help') {
-      await channel.send(ctx.manual(), channelId);
+      const helpText = channelType === 'telegram' ? getTelegramHelp() : ctx.manual();
+      await channel.send(helpText, channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/bg')) {
+      await this.handleBgCommand(trimmed, { content: trimmed, channelId, channelType: channelType as any, id: Date.now().toString(36), senderId: 'user', timestamp: Date.now() }, channel);
+      return true;
+    }
+
+    if (cmd === '/progress' || cmd === '/still') {
+      if (!this.processing || !this.currentMessage) {
+        await channel.send('No active foreground task.', channelId);
+        return true;
+      }
+      const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
+      const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
+      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 10);
+      const narrativeBlock = narrative ? `\n${narrative}` : '';
+      await channel.send(
+        `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
+        channelId,
+      );
       return true;
     }
 
@@ -1256,9 +2516,71 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd === '/models' || cmd === '/model' || cmd.startsWith('/models ') || cmd.startsWith('/model ')) {
+      const base = cmd.startsWith('/model ') || cmd === '/model' ? '/model' : '/models';
+      const rawArgs = trimmed.slice(base.length).trim();
+      const activeProviders = getActiveProviders(this.config);
+      const current = this.providers.getDefault();
+
+      if (!rawArgs) {
+        const lines = [
+          '**Session Models**',
+          '',
+          ...activeProviders.map((p) => {
+            const marker = p.name === current.name ? ' ← current' : '';
+            return `• ${p.name} · ${p.model}${marker}`;
+          }),
+          '',
+          'Use `/models use <provider>` to switch for this session.',
+          'Use `mercury doctor` to add/configure models.',
+        ];
+        await channel.send(lines.join('\n'), channelId);
+
+        if (channelType === 'cli' && channel instanceof CLIChannel && activeProviders.length > 1) {
+          const choices = [
+            ...activeProviders.map((p) => `${p.name} · ${p.model}${p.name === current.name ? ' (current)' : ''}`),
+            'Open doctor instructions',
+            'Keep current model',
+          ];
+          const picked = await this.presentChoice('Switch session model?', choices, channelId, channelType);
+          if (picked === 'Open doctor instructions') {
+            await channel.send('Run `mercury doctor` and update provider/model settings. Then restart Mercury to persist defaults.', channelId);
+            return true;
+          }
+          if (picked === 'Keep current model') return true;
+          const providerName = picked.split(' · ')[0].trim();
+          if (providerName && providerName !== current.name) {
+            const switched = await this.switchSessionProvider(providerName);
+            await channel.send(switched.message, channelId);
+          }
+        }
+        return true;
+      }
+
+      if (rawArgs === 'doctor' || rawArgs === 'add') {
+        await channel.send('Use `mercury doctor` to add/configure models. Then use `/models` to switch active session model.', channelId);
+        return true;
+      }
+
+      const target = rawArgs.replace(/^use\s+/i, '').trim();
+      if (!target) {
+        await channel.send('Usage: `/models` or `/models use <provider>`', channelId);
+        return true;
+      }
+
+      const switched = await this.switchSessionProvider(target);
+      await channel.send(switched.message, channelId);
+      return true;
+    }
+
     if (cmd === '/memory') {
       if (!this.userMemory) {
-        await channel.send('Second brain is not enabled.', channelId);
+        const cfg = ctx.config();
+        if (cfg.memory.secondBrain?.enabled === false) {
+          await channel.send('Second brain is disabled in configuration.', channelId);
+        } else {
+          await channel.send('Second brain dependency issue: SQLite backend (better-sqlite3) is not available.', channelId);
+        }
         return true;
       }
 
@@ -1484,18 +2806,404 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
-    if (cmd === '/skills') {
-      const names = ctx.skillNames();
-      if (names.length === 0) {
-        await channel.send('No skills installed. Ask me to "install skill from <url>" to add one.', channelId);
-      } else {
-        const lines = [
-          `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
-          '',
-          ...names.map(n => `• ${n}`),
-        ];
-        await channel.send(lines.join('\n'), channelId);
+    if (cmd === '/skills' || cmd.startsWith('/skills ')) {
+      await this.handleSkillsSlashCommand(trimmed, channel, channelId, ctx);
+      return true;
+    }
+
+    if (cmd.startsWith('/code')) {
+      const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
+      const cliChannel = channelType === 'cli' && channel instanceof CLIChannel ? channel : null;
+
+      if (!rawArgs) {
+        if (cliChannel) {
+          const choice = await this.presentChoice(
+            'Code mode: open workspace IDE now?',
+            ['Yes, open current workspace', 'No, keep classic coding mode'],
+            channelId,
+            channelType,
+          );
+          if (choice.toLowerCase().startsWith('yes')) {
+            const current = this.capabilities.getCwd();
+            const opened = cliChannel.openWorkspace(current);
+            if (opened.ok) {
+              this.capabilities.permissions.addTempScope(current, true, true);
+              this.programmingMode.setExecute();
+              this.programmingMode.setProjectContext(current);
+              cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+              await channel.send(`${opened.message}\nWorkspace IDE mode enabled.`, channelId);
+              return true;
+            }
+            await channel.send(opened.message, channelId);
+            return true;
+          }
+        }
+        await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
       }
+
+      if (rawArgs === 'status') {
+        await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs === 'workspace' || rawArgs === 'ws') {
+        if (!cliChannel) {
+          await channel.send('Workspace IDE mode is currently available in CLI only.', channelId);
+          return true;
+        }
+        const current = this.capabilities.getCwd();
+        const opened = cliChannel.openWorkspace(current);
+        if (opened.ok) {
+          this.programmingMode.setExecute();
+          cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+          await channel.send(`${opened.message}\nWorkspace IDE mode enabled.`, channelId);
+        } else {
+          await channel.send(opened.message, channelId);
+        }
+        return true;
+      }
+
+      if (rawArgs === 'plan') {
+        this.programmingMode.setPlan();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` to switch to execution.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'execute' || rawArgs === 'exec') {
+        this.programmingMode.setExecute();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Execute**\nI will implement the plan step by step, verifying with builds/tests. Use `/code off` to exit.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'build') {
+        this.programmingMode.setExecute();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Build**\nExecution mode is active for implementation/build tasks.', channelId);
+        return true;
+      }
+
+      if (rawArgs.startsWith('agent ') || rawArgs.startsWith('delegate ')) {
+        if (!this.supervisor) {
+          await channel.send('Sub-agents are not enabled in this environment.', channelId);
+          return true;
+        }
+        const taskDescription = rawArgs.replace(/^(agent|delegate)\s+/, '').trim();
+        if (!taskDescription) {
+          await channel.send('Usage: `/code agent <task>`', channelId);
+          return true;
+        }
+        const cwd = this.capabilities.getCwd();
+        const agentId = await this.supervisor.spawn({
+          task: taskDescription,
+          sourceChannelId: channelId,
+          sourceChannelType: channelType as any,
+          workingDirectory: cwd,
+        });
+        const bgId = this.backgroundTasks.spawnAgent(taskDescription, cwd, agentId);
+        this.syncBgTasksToTui();
+        await channel.send(`Started coding sub-agent ${agentId} in background task ${bgId}. Use /bg ${bgId} for progress.`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'off' || rawArgs === 'exit') {
+        this.programmingMode.setOff();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
+        return true;
+      }
+
+      if (rawArgs === 'toggle') {
+        const newState = this.programmingMode.toggle();
+        const labels: Record<string, string> = { off: 'Off', plan: 'Plan', execute: 'Execute' };
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send(`Programming mode: **${labels[newState]}**`, channelId);
+        return true;
+      }
+
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code workspace, /code agent <task>, /code off, /code toggle', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/ws') || cmd.startsWith('/workspace')) {
+      const cliChannel = channelType === 'cli' && channel instanceof CLIChannel ? channel : null;
+      if (!cliChannel) {
+        await channel.send('Workspace IDE mode is currently available in CLI only.', channelId);
+        return true;
+      }
+
+      const base = cmd.startsWith('/workspace') ? '/workspace' : '/ws';
+      const rawArgs = trimmed.slice(base.length).trim();
+      const rawLower = rawArgs.toLowerCase();
+
+      if (!rawArgs || rawLower === 'status') {
+        const ws = cliChannel.getWorkspace();
+        await channel.send(ws?.active ? `Workspace active: ${ws.rootPath}` : 'No active workspace. Use `/ws open <path>`.', channelId);
+        return true;
+      }
+
+      if (rawLower.startsWith('open ')) {
+        const target = rawArgs.slice(5).trim();
+        const opened = cliChannel.openWorkspace(target);
+        if (opened.ok) {
+          this.capabilities.setCwd(path.resolve(target.replace(/^~(?=$|\/)/, process.env.HOME || '~')));
+          this.capabilities.permissions.addTempScope(this.capabilities.getCwd(), true, true);
+          this.programmingMode.setExecute();
+          this.programmingMode.setProjectContext(this.capabilities.getCwd());
+          cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+          await channel.send(`${opened.message}\nWorkspace IDE is ready.`, channelId);
+        } else {
+          await channel.send(opened.message, channelId);
+        }
+        return true;
+      }
+
+      if (rawLower === 'refresh') {
+        cliChannel.refreshWorkspace();
+        await channel.send('Workspace refreshed.', channelId);
+        return true;
+      }
+
+      if (rawLower.startsWith('stage ')) {
+        const fileArg = rawArgs.slice(6).trim();
+        const result = cliChannel.stageWorkspaceFile(fileArg || 'all');
+        await channel.send(result.message, channelId);
+        return true;
+      }
+
+      if (rawLower.startsWith('commit ')) {
+        const message = rawArgs.slice(7).trim();
+        const result = cliChannel.commitWorkspace(message);
+        await channel.send(result.message, channelId);
+        return true;
+      }
+
+      if (rawLower.startsWith('undo ')) {
+        const fileArg = rawArgs.slice(5).trim();
+        const result = cliChannel.undoWorkspaceFile(fileArg);
+        await channel.send(result.message, channelId);
+        return true;
+      }
+
+      if (rawLower === 'help') {
+        await channel.send('Workspace commands:\n`/ws open <path>`\n`/ws refresh`\n`/ws stage <file|all>`\n`/ws commit <message>`\n`/ws undo <file>`\n`/ws status`', channelId);
+        return true;
+      }
+
+      await channel.send('Unknown workspace command. Use `/ws help`.', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/spotify')) {
+      if (!this.spotifyClient) {
+        await channel.send('Spotify is not connected. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your config, then run /spotify auth.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/spotify'.length).trim().toLowerCase();
+
+      if (!rawArgs || rawArgs === 'status') {
+        const auth = this.spotifyClient.isAuthenticated() ? 'Connected' : 'Not connected';
+        const device = this.spotifyClient.getDeviceId() || 'none';
+
+        let accountName = this.spotifyClient.getAccountName();
+        let accountId = this.spotifyClient.getAccountId();
+        let product = this.spotifyClient.getProduct();
+        let accountError = '';
+
+        if (!accountName) {
+          try {
+            await this.spotifyClient.saveAccountInfo();
+            accountName = this.spotifyClient.getAccountName();
+            accountId = this.spotifyClient.getAccountId();
+            product = this.spotifyClient.getProduct();
+          } catch (err: any) {
+            accountError = err.message;
+            logger.warn({ err: err.message }, 'Failed to fetch Spotify account info');
+          }
+        }
+
+        let premium = this.spotifyClient.getPremiumStatus();
+        if (premium === null) {
+          premium = await this.spotifyClient.checkPremium();
+        }
+
+        let status = `Spotify: **${auth}**`;
+        if (accountName) status += `\nAccount: **${accountName}**`;
+        if (accountId) status += `\nUser ID: ${accountId}`;
+        if (product) status += `\nPlan: ${product}`;
+        if (premium === true) {
+          status += ' — all features available';
+        } else if (premium === false) {
+          status += ' — playback control requires Premium';
+        }
+        if (accountError) status += `\n⚠ Could not verify account: ${accountError}`;
+        status += `\nDevice: ${device !== 'none' ? device : 'none selected'}`;
+        await channel.send(status, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'auth') {
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          try {
+            const choice = await channel.withMenu(async (select) => {
+              return select('Spotify Authorization', [
+                { value: 'browser', label: 'Open browser (recommended)' },
+                { value: 'manual', label: 'Paste authorization code manually' },
+                { value: 'cancel', label: 'Cancel' },
+              ]);
+            });
+            if (!choice || choice === 'cancel') {
+              await channel.send('Spotify auth cancelled.', channelId);
+              return true;
+            }
+            if (choice === 'manual') {
+              const authUrl = this.spotifyClient.getAuthUrl();
+              await channel.send('1. Open this URL in your browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — it may show an error page, that is OK.\n3. Copy the `code` parameter from the URL in your browser address bar.\n4. Paste it below:', channelId);
+              const code = await channel.prompt('Authorization code: ');
+              if (!code || !code.trim()) {
+                await channel.send('No code provided. Auth cancelled.', channelId);
+                return true;
+              }
+              await this.spotifyClient.authenticateWithCode(code.trim());
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            } else {
+              await channel.send('Opening browser for Spotify authorization...', channelId);
+              await this.spotifyClient.authenticate();
+              await channel.send('Spotify connected successfully! Try: play some music', channelId);
+            }
+          } catch (err: any) {
+            await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+          }
+        } else {
+          const authUrl = this.spotifyClient.getAuthUrl();
+          await channel.send(
+            '**Connect Spotify**\n\n1. Open this URL on any device with a browser:\n' + authUrl + '\n\n2. After authorizing, you will be redirected to localhost — that page may show an error, that is OK.\n3. Copy the `code` from the URL, then type:\n`/spotify code <paste-code-here>`',
+            channelId
+          );
+        }
+        return true;
+      }
+
+      if (rawArgs.startsWith('code ')) {
+        const code = rawArgs.slice('code '.length).trim();
+        if (!code) {
+          await channel.send('Usage: /spotify code <authorization-code>', channelId);
+          return true;
+        }
+        try {
+          await this.spotifyClient.authenticateWithCode(code);
+          await channel.send('Spotify connected successfully! Try: play some music', channelId);
+        } catch (err: any) {
+          await channel.send(`Spotify auth failed: ${err.message}`, channelId);
+        }
+        return true;
+      }
+
+      if (rawArgs === 'devices') {
+        try {
+          const data = await this.spotifyClient.getDevices();
+          if (!data?.devices?.length) { await channel.send('No active devices. Open Spotify on a device first.', channelId); return true; }
+          const lines = ['**Spotify Devices:**\n'];
+          for (const d of data.devices) {
+            lines.push(`${d.is_active ? '▶' : '○'} **${d.name}** (${d.type}) — \`${d.id}\`${d.is_active ? ' [active]' : ''}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      if (rawArgs.startsWith('device ')) {
+        const id = rawArgs.slice('device '.length).trim();
+        this.spotifyClient.setDevice(id);
+        await channel.send(`Active device set to: ${id}`, channelId);
+        return true;
+      }
+
+      if (rawArgs === 'player' && channelType === 'cli' && channel instanceof CLIChannel) {
+        await channel.withMenu(async (select) => {
+          while (true) {
+            try {
+              const np = await this.spotifyClient!.getCurrentlyPlaying();
+              if (np) {
+                await channel.send(formatNowPlaying(np), channelId);
+              }
+            } catch {}
+            const action = await select('Spotify Player', PLAYER_CONTROLS);
+            if (action === 'exit' || !action) return;
+            if (action === 'search') {
+              const query = await channel.prompt('Search: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results found.', channelId); continue; }
+                const trackOptions = tracks.map((t: any, i: number) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Play which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.play([picked]);
+                }
+              } catch (err: any) { await channel.send(`Search failed: ${err.message}`, channelId); }
+              continue;
+            }
+            if (action === 'volume') {
+              const vol = await channel.prompt('Volume (0-100): ');
+              const n = parseInt(vol, 10);
+              if (!isNaN(n) && n >= 0 && n <= 100) {
+                await this.spotifyClient!.setVolume(n);
+                await channel.send(`Volume: ${n}%`, channelId);
+              }
+              continue;
+            }
+            if (action === 'queue') {
+              const query = await channel.prompt('Search track to queue: ');
+              if (!query) continue;
+              try {
+                const results = await this.spotifyClient!.search(query, 'track', 5);
+                const tracks = results?.tracks?.items || [];
+                if (tracks.length === 0) { await channel.send('No results.', channelId); continue; }
+                const trackOptions = tracks.map((t: any) => ({
+                  value: t.uri,
+                  label: `${t.artists?.map((a: any) => a.name).join(', ')} — ${t.name}`,
+                }));
+                const picked = await select('Queue which track?', [...trackOptions, { value: 'back', label: 'Back' }]);
+                if (picked && picked !== 'back') {
+                  await this.spotifyClient!.addToQueue(picked);
+                  await channel.send('Added to queue.', channelId);
+                }
+              } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+              continue;
+            }
+            try {
+              const result = await handlePlayerAction(action, this.spotifyClient!);
+              await channel.send(result, channelId);
+            } catch (err: any) {
+              await channel.send(`Failed: ${err.message}`, channelId);
+            }
+          }
+        });
+        return true;
+      }
+
+      if (rawArgs === 'now' || rawArgs === 'playing' || rawArgs === 'np') {
+        try {
+          const text = await this.spotifyClient.getNowPlayingText();
+          await channel.send(text, channelId);
+        } catch (err: any) { await channel.send(`Failed: ${err.message}`, channelId); }
+        return true;
+      }
+
+      if (rawArgs === 'logout') {
+        this.spotifyClient.logout();
+        await channel.send('Spotify disconnected. Run `/spotify auth` to reconnect.', channelId);
+        return true;
+      }
+
+      await channel.send('Unknown /spotify command. Available: /spotify, /spotify auth, /spotify code <code>, /spotify logout, /spotify player, /spotify devices, /spotify device <id>, /spotify now', channelId);
       return true;
     }
 
@@ -1527,7 +3235,181 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
       return true;
     }
 
+    if (cmd.startsWith('/agents')) {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      const rawArgs = trimmed.slice('/agents'.length).trim();
+
+      if (!rawArgs) {
+        const agents = this.supervisor.getActiveAgents();
+        const resourceInfo = this.supervisor.getResourceUsage();
+        if (agents.length === 0) {
+          await channel.send(`No active sub-agents.\nMax concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`, channelId);
+          return true;
+        }
+        const statusIcons: Record<string, string> = { pending: '🔵', running: '🟢', paused: '🟡', completed: '✅', failed: '❌', halted: '⛔' };
+        const lines = [`**Sub-Agents** (${agents.length})`, ''];
+        for (const agent of agents) {
+          const icon = statusIcons[agent.status] || '❓';
+          const taskPreview = agent.task.length > 40 ? agent.task.slice(0, 40) + '...' : agent.task;
+          lines.push(`${icon} **${agent.id}**  ${taskPreview}`);
+          if (agent.progress) lines.push(`   ${agent.progress}`);
+        }
+        lines.push('');
+        lines.push(`Max concurrent: ${resourceInfo.maxConcurrentAgents} (auto) | CPU: ${resourceInfo.cpuCores} cores`);
+        lines.push(`Active: ${resourceInfo.activeAgents} | Queued: ${resourceInfo.queuedAgents}`);
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const parts = rawArgs.split(/\s+/);
+      const action = parts[0]?.toLowerCase();
+
+      if (action === 'stop') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents stop <id> or /agents stop all', channelId);
+          return true;
+        }
+        if (target === 'all') {
+          await this.supervisor.haltAll();
+          await channel.send('All sub-agents halted. They will finish their current tool step before stopping.', channelId);
+        } else {
+          const halted = await this.supervisor.halt(target);
+          if (!halted) {
+            await channel.send(`No active agent found with ID "${target}".`, channelId);
+          } else {
+            await channel.send(`Agent ${target} halt signal sent. It will finish its current step then stop.`, channelId);
+          }
+        }
+        return true;
+      }
+
+      if (action === 'pause') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents pause <id>', channelId);
+          return true;
+        }
+        const paused = await this.supervisor.pause(target);
+        await channel.send(paused ? `Agent ${target} paused. Use /agents resume ${target} to continue.` : `No running agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'resume') {
+        const target = parts[1]?.toLowerCase();
+        if (!target) {
+          await channel.send('Usage: /agents resume <id>', channelId);
+          return true;
+        }
+        const resumed = await this.supervisor.resume(target);
+        await channel.send(resumed ? `Agent ${target} resumed.` : `No paused agent found with ID "${target}".`, channelId);
+        return true;
+      }
+
+      if (action === 'config') {
+        const info = this.supervisor.getResourceUsage();
+        const lines = [
+          '**Sub-Agent Configuration**',
+          `CPU cores: ${info.cpuCores}`,
+          `System RAM: ${info.systemMemoryMB}MB`,
+          `Available RAM: ${info.availableMemoryMB}MB`,
+          `Max concurrent: ${info.maxConcurrentAgents}`,
+          `Active agents: ${info.activeAgents}`,
+          `Queued agents: ${info.queuedAgents}`,
+          `Token budget remaining: ${info.tokenBudgetRemaining.toLocaleString()}`,
+        ];
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      if (action === 'set' && parts[1]?.toLowerCase() === 'max') {
+        const n = parseInt(parts[2], 10);
+        if (isNaN(n) || n < 1) {
+          await channel.send('Usage: /agents set max <number>', channelId);
+          return true;
+        }
+        this.supervisor.setMaxConcurrent(n);
+        await channel.send(`Max concurrent sub-agents set to ${n}.`, channelId);
+        return true;
+      }
+
+      await channel.send(`Unknown /agents command "${action}". Available: /agents, /agents stop <id|all>, /agents pause <id>, /agents resume <id>, /agents config, /agents set max <n>`, channelId);
+      return true;
+    }
+
+    if (cmd === '/halt') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      await channel.send('All sub-agents halted and queue cleared.', channelId);
+      return true;
+    }
+
+    if (cmd === '/stop') {
+      if (!this.supervisor) {
+        await channel.send('Sub-agents are not available.', channelId);
+        return true;
+      }
+      await this.supervisor.haltAll();
+      this.supervisor.clearTaskBoard();
+      this.lifecycle.transition('idle');
+      await channel.send('All sub-agents stopped, queue cleared, locks released, task board cleared. Short-term memory preserved.', channelId);
+      return true;
+    }
+
+    if (cmd === '/reset') {
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        const confirmed = await channel.askToContinue(
+          '⚠ /reset will halt ALL agents, clear queues, release locks, clear task board, and wipe conversation context. Continue? (y/n)',
+          channelId,
+        ).catch(() => false);
+        if (!confirmed) {
+          await channel.send('Reset cancelled.', channelId);
+          return true;
+        }
+      }
+      if (this.supervisor) {
+        await this.supervisor.haltAll();
+        this.supervisor.clearTaskBoard();
+      }
+      this.shortTerm.clearAll();
+      this.lifecycle.transition('idle');
+      await channel.send('Mercury reset. All agents stopped, all state cleared. Long-term memory preserved. Ready for a fresh start.', channelId);
+      return true;
+    }
+
     return false;
+  }
+
+  private async handleWorkspaceNaturalLanguage(content: string, channelType: string, channelId: string): Promise<boolean> {
+    const channel = this.channels.get(channelType as any);
+    if (!channel || channelType !== 'cli' || !(channel instanceof CLIChannel)) return false;
+
+    const trimmed = content.trim();
+    const commandMatch = trimmed.match(/^(?:open|use|enter)\s+workspace(?:\s+(.+))?$/i);
+    if (!commandMatch) return false;
+
+    const targetRaw = (commandMatch[1] || '').trim();
+    const target = targetRaw || this.capabilities.getCwd();
+    const opened = channel.openWorkspace(target);
+    if (!opened.ok) {
+      await channel.send(opened.message, channelId);
+      return true;
+    }
+
+    const resolved = path.resolve(target.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    this.capabilities.setCwd(resolved);
+    this.capabilities.permissions.addTempScope(resolved, true, true);
+    this.programmingMode.setExecute();
+    this.programmingMode.setProjectContext(resolved);
+    channel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+    await channel.send(`Workspace opened from conversation intent: ${resolved}`, channelId);
+    return true;
   }
 
   private async openCliCommandMenu(channel: CLIChannel, channelId: string): Promise<void> {
@@ -1563,7 +3445,12 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
           if (this.userMemory) {
             await this.openCliMemoryMenu(channel, channelId, select);
           } else {
-            await channel.send('Second brain is not enabled.', channelId);
+            const cfg = ctx.config();
+            if (cfg.memory.secondBrain?.enabled === false) {
+              await channel.send('Second brain is disabled in configuration.', channelId);
+            } else {
+              await channel.send('Second brain dependency issue: SQLite backend (better-sqlite3) is not available.', channelId);
+            }
           }
           continue;
         }

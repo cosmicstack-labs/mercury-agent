@@ -1,0 +1,81 @@
+---
+id: 1.1.7
+title: v1.1.7
+---
+
+Release `1.1.7` brings two new providers (ChatGPT Web and GitHub Copilot), a redesigned real-time progress system, Mercury Autopilot with intelligent loop detection, major Telegram improvements, and a full landing page redesign with the interactive Killipi mascot.
+
+## Highlights
+
+- **ChatGPT Web provider** — use your ChatGPT Plus/Pro subscription directly, with OAuth device flow authentication.
+- **GitHub Copilot provider** — authenticate via GitHub OAuth and use Copilot models as a Mercury provider.
+- **Mercury Autopilot** — AI-based loop detection that analyzes parameter diversity and success rates to distinguish productive work from stuck loops, with auto-abort capability.
+- **Real-time progress system** — live status cards with step tracking, elapsed timers, and collapsed tool execution history.
+- **Completion banners** — task summaries with elapsed time, step count, model used, and token usage/budget metrics.
+- **Interactive Killipi mascot** — hero centerpiece on the landing page with cursor tracking, expressions, and ambient glow effects.
+
+## New Providers
+
+- Added **ChatGPT Web** provider with full OAuth device flow. Authenticate with your ChatGPT Plus or Pro subscription and use it as a Mercury backend.
+- Added **GitHub Copilot** provider with OAuth device flow and Copilot token exchange.
+- Moved ChatGPT Plus/Pro OAuth option under the OpenAI provider group during onboarding.
+- Fixed ChatGPT Web inclusion in the configured providers list and default selector.
+
+## Mercury Autopilot (Loop Detection)
+
+- Implemented AI-based loop detection with auto-abort capability.
+- Replaced inline tool loop detection with a dedicated `ToolCallLoopDetector` module.
+- Smart repetition analysis evaluates parameter diversity and success rate to classify work as productive, suspicious, or stuck.
+- Added strict tool usage guidelines to the system prompt to reduce unnecessary repetition.
+- Increased tool loop tolerance thresholds to avoid false positives on legitimate multi-step tasks.
+
+## Real-Time Progress & Completion
+
+- New progress tracking system with `/progress` command and foreground heartbeat alerts.
+- Live status bar displays a "processing" label before the first tool step occurs.
+- Tool steps are hidden while the agent is in thinking state, shown only when actively executing.
+- Collapsed tool execution history tracked and displayed in agent progress notifications.
+- Completion banners now include elapsed time, step count, and token usage/budget metrics.
+- Completion banners are constrained to substantial tasks — minor step-based interactions no longer trigger them.
+
+## CLI / TUI Improvements
+
+- **Slash command suggestions** — type `/` and get autocomplete suggestions with arrow-key navigation and Enter selection.
+- **Multi-line input** — Shift+Enter for new lines (later rebound to Ctrl+N).
+- **Input cursor support** — proper cursor positioning in the TUI input field.
+- **Choice prompt selection** — interactive prompts for CLI agent interactions.
+- **Scrollable Agent Output panel** — replaces the old static chat view in the workspace.
+- **Workspace focus management** — keyboard navigation between panels with scrolling and chat toggling.
+- **View toggle** rebound to Ctrl+T with improved input sanitization.
+- **Dynamic thinking status indicators** in the UI header.
+
+## Telegram
+
+- Implemented Telegram-specific task lifecycle with message deferral and structured help documentation.
+- Ephemeral message tracking and cleanup — permission prompts and transient messages auto-delete after handling.
+- Telegram help command now shows a clean, Telegram-formatted reference with only Telegram-relevant commands.
+
+## Permissions & Safety
+
+- **Interactive write approval** — file write operations now prompt with a clear approval flow.
+- **Safe read-only allowlist** — shell commands like `ls`, `cat`, `find`, `grep`, `git status`, `git log`, and `git diff` are auto-approved without prompting.
+- **Persistent plan tracking** and read-only tool restrictions for programming mode.
+
+## Background Tasks
+
+- Human-readable background task IDs (e.g., `task-alpha`, `task-bravo`) replace opaque numeric IDs.
+- Mass task termination support via `/bg cancel all`.
+
+## Documentation & Website
+
+- Full visual redesign of the landing page with updated color palette and refined layout.
+- Interactive Killipi mascot added to the hero section — eyes follow cursor, click for expressions, ambient particle effects.
+- Fixed Docusaurus admonition rendering — updated all `:::tip`, `:::info`, `:::warning` blocks to use the v3 directive label syntax (`:::type[Title]`).
+- Fixed mobile sidebar visibility in dark mode with explicit background and text color overrides.
+- Expanded documentation for sub-agents, Spotify integration, autopilot, and provider configuration.
+
+## Notes
+
+- This release includes 35 commits with +3,829 lines of new source code across 25 files.
+- New keyboard shortcut for multi-line input: Ctrl+N (changed from Shift+Enter).
+- View toggle shortcut changed to Ctrl+T.

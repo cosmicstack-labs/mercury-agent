@@ -126,7 +126,7 @@ export function stopDaemon(): void {
   console.log('');
 }
 
-export function restartDaemon(): void {
+export async function restartDaemon(): Promise<void> {
   const status = getDaemonStatus();
 
   if (status.running && status.pid) {
@@ -142,6 +142,9 @@ export function restartDaemon(): void {
     }
     try { unlinkSync(pidPath()); } catch {}
     console.log(chalk.green('  Mercury stopped.'));
+    // Wait for port release before restarting
+    const waitMs = process.platform === 'win32' ? 2000 : 1000;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));

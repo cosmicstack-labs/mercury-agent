@@ -19,6 +19,8 @@ import { createScheduleTaskTool } from './scheduler/schedule-task.js';
 import { createListTasksTool } from './scheduler/list-tasks.js';
 import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
+import { createSaveMemoryTool } from './system/save-memory.js';
+import { createSearchMemoryTool } from './system/search-memory.js';
 import { createGitStatusTool } from './git/git-status.js';
 import { createGitDiffTool } from './git/git-diff.js';
 import { createGitLogTool } from './git/git-log.js';
@@ -31,10 +33,31 @@ import { createListIssuesTool } from './github/list-issues.js';
 import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
+import {
+  createSpotifySearchTool,
+  createSpotifyPlayTool,
+  createSpotifyPauseTool,
+  createSpotifyNextTool,
+  createSpotifyPreviousTool,
+  createSpotifyNowPlayingTool,
+  createSpotifyDevicesTool,
+  createSpotifyQueueTool,
+  createSpotifyLikeTool,
+  createSpotifyVolumeTool,
+  createSpotifyShuffleTool,
+  createSpotifyRepeatTool,
+  createSpotifyTopTracksTool,
+  createSpotifyPlaylistsTool,
+} from './spotify/index.js';
+import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
 import type { TokenBudget } from '../utils/tokens.js';
+import type { SubAgentSupervisor } from '../core/supervisor.js';
+import type { SpotifyClient } from '../spotify/client.js';
+import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
+import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
 
 export interface ChatCommandContext {
@@ -48,6 +71,7 @@ export interface ChatCommandContext {
   memorySearch: (query: string, limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
   memorySetLearningPaused: (paused: boolean) => void;
   memoryClear: () => number;
+  memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
 }
 
 export class CapabilityRegistry {
@@ -56,6 +80,9 @@ export class CapabilityRegistry {
   private skillLoader?: SkillLoader;
   private scheduler?: Scheduler;
   private tokenBudget?: TokenBudget;
+  private supervisor?: SubAgentSupervisor;
+  private spotifyClient?: SpotifyClient;
+  private userMemory?: UserMemoryStore;
   private sendFileHandler?: (filePath: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private currentChannelId = 'cli';
@@ -63,11 +90,13 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
 
-  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget) {
+  constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
+    this.supervisor = supervisor;
+    this.userMemory = userMemory;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -101,6 +130,33 @@ export class CapabilityRegistry {
 
   setSendMessageHandler(handler: (content: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
+  }
+
+  setSupervisor(supervisor: SubAgentSupervisor): void {
+    this.supervisor = supervisor;
+  }
+
+  setSpotifyClient(client: SpotifyClient): void {
+    this.spotifyClient = client;
+  }
+
+  registerSpotifyTools(): void {
+    if (!this.spotifyClient) return;
+    this.tools.spotify_search = createSpotifySearchTool(this.spotifyClient);
+    this.tools.spotify_play = createSpotifyPlayTool(this.spotifyClient);
+    this.tools.spotify_pause = createSpotifyPauseTool(this.spotifyClient);
+    this.tools.spotify_next = createSpotifyNextTool(this.spotifyClient);
+    this.tools.spotify_previous = createSpotifyPreviousTool(this.spotifyClient);
+    this.tools.spotify_now_playing = createSpotifyNowPlayingTool(this.spotifyClient);
+    this.tools.spotify_devices = createSpotifyDevicesTool(this.spotifyClient);
+    this.tools.spotify_queue = createSpotifyQueueTool(this.spotifyClient);
+    this.tools.spotify_like = createSpotifyLikeTool(this.spotifyClient);
+    this.tools.spotify_volume = createSpotifyVolumeTool(this.spotifyClient);
+    this.tools.spotify_shuffle = createSpotifyShuffleTool(this.spotifyClient);
+    this.tools.spotify_repeat = createSpotifyRepeatTool(this.spotifyClient);
+    this.tools.spotify_top_tracks = createSpotifyTopTracksTool(this.spotifyClient);
+    this.tools.spotify_playlists = createSpotifyPlaylistsTool(this.spotifyClient);
+    logger.info('Spotify tools registered');
   }
 
   registerAll(): void {
@@ -154,6 +210,12 @@ export class CapabilityRegistry {
       logger.info('Budget tool registered');
     }
 
+    if (this.userMemory) {
+      this.tools.save_memory = createSaveMemoryTool(this.userMemory);
+      this.tools.search_memory = createSearchMemoryTool(this.userMemory);
+      logger.info('Second Brain tools registered (save_memory, search_memory)');
+    }
+
     if (manifest.capabilities.git?.enabled) {
       this.tools.git_status = createGitStatusTool(() => this.getCwd());
       this.tools.git_diff = createGitDiffTool(() => this.getCwd());
@@ -175,10 +237,36 @@ export class CapabilityRegistry {
 
     this.tools.fetch_url = createFetchUrlTool();
     logger.info('Web fetch tool registered');
+
+    if (this.supervisor) {
+      this.tools.delegate_task = createDelegateTaskTool(this.supervisor, this);
+      this.tools.list_agents = createListAgentsTool(this.supervisor);
+      this.tools.stop_agent = createStopAgentTool(this.supervisor);
+      logger.info('Sub-agent tools registered');
+    }
+
+    this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
+    logger.info('Interaction tools registered');
   }
 
   getTools(): Record<string, Tool> {
     return this.tools;
+  }
+
+  /** Return tools filtered for plan mode — read-only tools only */
+  getPlanTools(): Record<string, Tool> {
+    const blocked = new Set([
+      'write_file', 'create_file', 'delete_file', 'edit_file',
+      'run_command', 'cd',
+      'git_add', 'git_commit', 'git_push',
+      'create_pr', 'create_issue',
+      'delegate_task',
+    ]);
+    const filtered: Record<string, Tool> = {};
+    for (const [name, tool] of Object.entries(this.tools)) {
+      if (!blocked.has(name)) filtered[name] = tool;
+    }
+    return filtered;
   }
 
   getToolNames(): string[] {

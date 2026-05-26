@@ -19,4 +19,4 @@ Build output goes to `../docs/` for GitHub Pages deployment.
 
 ## Deploy
 
-The site is deployed to `mercury.cosmicstack.org` via GitHub Pages from the `docs/` directory on the `main` branch.
+The site is deployed to `mercuryagent.sh` via GitHub Pages from the `docs/` directory on the `main` branch.

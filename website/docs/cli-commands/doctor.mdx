@@ -13,3 +13,21 @@ title: Doctor (Reconfigure)
 ```bash
 mercury doctor
 ```
+
+## Platform Diagnostics
+
+Use `--platform` to run a non-destructive compatibility check for your current environment:
+
+```bash
+mercury doctor --platform
+```
+
+This prints:
+
+- OS + architecture
+- Node.js version
+- Terminal + TTY/raw-mode capability
+- SSH/CI detection
+- Daemon status
+- Spotify inline-art support status
+- Keybinding fallbacks (`/view`, `/ws exit`, etc.)

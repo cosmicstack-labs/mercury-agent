@@ -15,6 +15,8 @@ const VALID_TRANSITIONS: Transition[] = [
   { from: 'awakening', to: 'idle' },
   { from: 'thinking', to: 'idle' },
   { from: 'idle', to: 'onboarding' },
+  { from: 'idle', to: 'delegating' },
+  { from: 'delegating', to: 'idle' },
 ];
 
 export class Lifecycle {

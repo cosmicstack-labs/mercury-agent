@@ -14,7 +14,7 @@ export function createGitLogTool(getCwd: () => string) {
         const n = count ?? 10;
         let cmd = `git log --oneline --decorate -${n}`;
         if (path) cmd += ` -- "${path}"`;
-        const result = execSync(cmd, { encoding: 'utf-8', timeout: 10000, cwd: getCwd() });
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 20000, cwd: getCwd() });
         if (!result.trim()) return 'No commits found.';
         return result.trim();
       } catch (err: any) {

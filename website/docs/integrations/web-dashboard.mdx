@@ -1,0 +1,106 @@
+---
+title: "Web Dashboard"
+sidebar_label: "Web Dashboard"
+---
+
+# Web Dashboard
+
+Mercury Web is a React single-page application that provides a visual interface for managing every part of the agent — chat, memory, tasks, code, and configuration. It runs locally at `http://127.0.0.1:6174`.
+
+## Enabling the Dashboard
+
+Enable the web dashboard using either method:
+
+- Run `mercury doctor` and follow the prompts
+- Set `web.enabled: true` in your `mercury.yaml` configuration
+
+## Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `web.enabled` | `false` | Enable or disable the web dashboard |
+| `web.port` | `6174` | Port the dashboard listens on |
+| `MERCURY_PORT` | `6174` | Environment variable override for port |
+
+The server binds to `127.0.0.1` only and is not exposed to the network. The web server lifecycle is tied to the Mercury process — it stops when Mercury stops.
+
+## Authentication
+
+The dashboard is protected by username/password authentication.
+
+**Default credentials:**
+
+- Username: `mercury`
+- Password: `Mercury@123`
+
+You will be redirected to `/login` for any unauthenticated request. After logging in, an HTTP-only session cookie is set. Sign out from **Settings → Account** or by closing the session in your browser.
+
+You can change your credentials from **Settings → Account**.
+
+## Install as a PWA
+
+Mercury Web is a Progressive Web App. In Chrome, Edge, or Safari, look for the **Install** icon in the address bar (or **File → Install Mercury Agent**) to add it to your launcher. The PWA runs in its own window without browser chrome.
+
+## Pages
+
+### Status
+
+Landing page at `/`. Shows Mercury's current process state, active provider, daily token usage, recent activity, and quick links to other sections.
+
+### Chat (`/chat` and `/chat/:threadId`)
+
+A multi-thread chat interface with SSE streaming.
+
+- **Thread sidebar** — Lists all conversations. Click any thread to switch; the URL updates to `/chat/<id>` so you can bookmark or share links.
+- **New Chat** button — Creates a new thread and navigates to its URL.
+- **Delete** — Hover a thread (or open it) to reveal a trash icon. Confirmation dialog prevents accidents.
+- **Model switcher** — Top of the chat header. Pick any configured provider; the choice is per-thread.
+- **Code Mode toggle** — Switches the agent into coding mode for the active thread (file edits, shell calls allowed under your permission policy).
+- **Streaming** — Assistant tokens arrive via Server-Sent Events; you can interrupt mid-stream.
+
+### Tasks (`/tasks`)
+
+View and manage background and scheduled tasks the agent has created or that you queued via Telegram or chat.
+
+### Board (`/board` and `/board/:boardId`)
+
+The Kanban Boards view for visually planning and executing agent work. See the [Kanban Boards](./kanban-boards) page for full details.
+
+### Workspace (`/workspace`)
+
+A browser-based IDE for editing project files, running terminal commands, and managing Git — all without leaving Mercury. See the [Coding Workspace](./coding-workspace) page for full details.
+
+### Second Brain
+
+Mercury's memory and knowledge views — see the [Second Brain](../reference/second-brain) reference.
+
+- **Memory** (`/second-brain/memory`) — Browse, search, edit, promote, or prune memory items. Filter by scope (`conscious`, `subconscious`) and by tag.
+- **Persons** (`/second-brain/persons`, `/second-brain/persons/:id`) — People Mercury has met, with their facts, last-seen timestamps, and relationships.
+- **Goals** (`/second-brain/goals`) — Long-running goals with progress, sub-tasks, and linked memories.
+- **Graph** (`/second-brain/graph`) — Force-directed graph visualization of memories, persons, and goals with their relationships.
+
+### Configure
+
+- **Providers** (`/providers`) — List configured LLM providers, their priority order, and switch the default.
+- **Permissions** (`/permissions`) — Review and adjust the YOLO/strict permission policy for tools.
+- **Skills** (`/skills`) — Install, list, and remove agent skills. See the [Skills](../reference/skills) page.
+- **Schedules** (`/schedules`) — Manage recurring or one-shot scheduled commands.
+- **Usage** (`/usage`) — Per-day token usage charts.
+- **Profit Sharing** (`/profit-sharing`) — Cooperative revenue-share settings (if enabled).
+
+### Settings (`/settings`)
+
+Three sections:
+
+- **Defaults** — Default provider and daily token budget.
+- **Account** — Change your username or password.
+- **Appearance** — Light / Dark / System theme toggle.
+
+The agent personality is no longer editable from the web UI — modify it in `mercury.yaml` if you need to customise it.
+
+## Tech Stack
+
+- **Server:** Hono on Node.js
+- **Frontend:** React 19 + Vite + Tailwind CSS, shadcn/ui components
+- **State:** Zustand for client state, SSE for streaming
+- **PWA:** vite-plugin-pwa
