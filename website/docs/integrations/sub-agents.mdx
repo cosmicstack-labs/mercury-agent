@@ -1,0 +1,188 @@
+---
+id: sub-agents
+title: Sub-Agents (Multi-Agent Mode)
+---
+
+Mercury isn't just a chatbot — it's an **orchestrator**. It can spawn parallel AI agents to handle tasks concurrently while continuing the conversation. This is sub-agent mode, and it changes how Mercury works fundamentally.
+
+## Why Sub-Agents Matter
+
+Traditional AI agents are single-threaded: one context window, one task at a time. If you ask Mercury to "research this topic, write the code, and review the result," it does them sequentially — each step blocks the next.
+
+Sub-agents break this bottleneck:
+
+- **Parallel execution** — Multiple tasks run simultaneously across isolated context windows
+- **LLM-driven delegation** — Mercury itself decides when to delegate based on task complexity
+- **Non-blocking** — You can keep chatting with Mercury while sub-agents work in the background
+- **File locks** — Reader-writer locks prevent concurrent write conflicts between agents
+- **Resource-aware** — Max concurrent agents is auto-detected from your system's CPU and RAM
+
+## How It Works
+
+```
+You: "Build a REST API for users and write integration tests"
+
+Mercury decides to delegate:
+  🤖 Multi-agent mode activated.
+  **Agent a1** is now working on: "Build REST API endpoints for users"
+  **Agent a2** is now working on: "Write integration tests for user endpoints"
+  Active agents: 2/4
+
+  You can continue chatting while the agents work.
+  Use /agents to check status.
+
+Mercury: I've delegated both tasks to parallel agents. Agent a1 is building the API
+  and agent a2 is writing tests. They'll work independently.
+
+  (you continue chatting normally)
+
+  🔄 Agent a1: Using: read_file, create_file
+  🔄 Agent a2: Using: list_dir, read_file
+
+  ✅ **Agent a1** completed (12.3s): "REST API built with 5 endpoints"
+  ✅ **Agent a2** completed (18.7s): "12 integration tests passing"
+
+  Both agents are done. Want me to review the results together?
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/agents` | List all sub-agents (running and completed) |
+| `/agents stop <id\|all>` | Stop a sub-agent or all sub-agents |
+| `/agents pause <id>` | Pause a running sub-agent |
+| `/agents resume <id>` | Resume a paused sub-agent |
+| `/agents config` | Show sub-agent resource allocation (max concurrent, mode) |
+| `/agents set max <n>` | Set max concurrent sub-agents |
+| `/code agent <task>` | Delegate a coding task to a sub-agent immediately |
+| `/bg: <task>` | Run a natural-language sub-agent task in background |
+| `/bg current` | Move current in-flight task to a background sub-agent |
+| `/bg list` | List shell + sub-agent background tasks |
+| `/halt` | Emergency: halt all sub-agents and clear the task queue |
+| `/stop` | Full stop: halt agents, clear queue, release file locks, clear task board |
+| `/reset` | Full reset: stop all + clear conversation context (requires confirmation) |
+
+:::tip[`/halt` vs `/stop` vs `/reset`]
+
+**`/halt`** stops all agents but preserves conversation context and file locks. **`/stop`** goes further — it also releases file locks and clears the task board. **`/reset`** does everything `/stop` does plus clears the conversation context (requires confirmation).
+
+:::
+
+Slash commands like `/agents`, `/halt`, `/stop`, `/spotify`, and `/code` work **even while the main agent is busy** — they're processed immediately on a fast path.
+
+## Delegation Tools
+
+Mercury uses these tools to manage sub-agents:
+
+| Tool | Description |
+|------|-------------|
+| `delegate_task` | Spawn a sub-agent with a task description and optional context |
+| `list_agents` | Show all running and completed sub-agents |
+| `stop_agent` | Halt a specific running sub-agent by ID |
+
+When Mercury decides a task is complex enough to benefit from parallel execution, it calls `delegate_task`. You'll see a response like:
+
+```
+🤖 Multi-agent mode activated.
+
+**Agent a1** is now working on: "Analyze the codebase structure for..."
+Active agents: 1/4
+
+You can continue chatting while the agent works. I'll notify you when it's done.
+Use /agents to check status.
+```
+
+## Architecture
+
+```
+User message → Main Agent (orchestrator)
+                 ├─ delegate_task("research X")  → Sub-Agent a1 (isolated context)
+                 ├─ delegate_task("implement Y")  → Sub-Agent a2 (isolated context)
+                 └─ continues conversation       → responds to user
+                         │
+                    a1: "🔄 Using: read_file"
+                    a1: "🔄 Using: edit_file"
+                    a2: "🔄 Using: list_dir"
+                    a1: "✅ completed (8.2s)"
+                    a2: "🔄 Using: create_file"
+                    a2: "✅ completed (15.1s)"
+```
+
+Each sub-agent:
+
+- Has its **own context window** — the main agent's conversation doesn't pollute it
+- Runs an independent **10-step agentic loop** with the same tool access
+- Uses the **same permission system** — but with auto-approve for the task's scope
+- Reports progress via the **notification channel** (CLI or Telegram)
+- Respects **file locks** — if a1 is writing a file, a2 waits for the lock
+
+## When Mercury Uses Sub-Agents
+
+Mercury decides to delegate when:
+
+- A task is **naturally parallelizable** (e.g., "research X while I code Y")
+- The task benefits from an **isolated context window** (no pollution from the main conversation)
+- A task is **complex enough** to warrant dedicated focus
+- Multiple **independent investigations** would save time
+
+You can also ask Mercury explicitly: "Use two agents for this" or "Delegate this task."
+
+## What Happens While Agents Work
+
+You can keep chatting normally. Mercury processes your messages as they come in. Sub-agent progress and completion appear as notification messages in your channel:
+
+```
+🔄 Agent a1: Starting task...
+🔄 Agent a1: Using: read_file, edit_file
+🔄 Agent a2: Using: fetch_url, create_file
+✅ Agent a1 completed (8.2s): "Analyzed the codebase..."
+🔄 Agent a2: Using: run_command
+✅ Agent a2 completed (14.5s): "Tests passing..."
+```
+
+If you send `/agents`, you'll see the full status:
+
+```
+**Sub-Agents:**
+
+🔄 a1: Build REST API endpoints — running (Using: read_file)
+⏳ a2: Write integration tests — pending
+```
+
+Background-tracked agent tasks also appear in `/bg list` so shell jobs and delegated coding work share one progress surface.
+
+## Configuration
+
+Sub-agents are configured in `~/.mercury/mercury.yaml`:
+
+```yaml
+subagents:
+  enabled: true
+  maxConcurrent: auto    # auto-detected from CPU/RAM, or set manually (e.g., 4)
+  mode: auto             # "auto" (LLM decides) or "manual" (user controls)
+```
+
+Environment variable overrides:
+
+| Variable | Description |
+|----------|------------|
+| `SUBAGENTS_ENABLED` | Enable/disable sub-agents |
+| `SUBAGENTS_MAX_CONCURRENT` | Max number of concurrent agents |
+| `SUBAGENTS_MODE` | `auto` or `manual` |
+
+## Programming Mode
+
+Sub-agents pair well with Mercury's programming mode for code tasks:
+
+| Command | Mode | Behavior |
+|---------|------|----------|
+| `/code plan` | Plan | Analyze without writing code |
+| `/code execute` | Execute | Implement step by step |
+| `/code off` | Off | Normal conversation |
+| `/code toggle` | — | Cycle through modes |
+| `/code status` | — | Show current mode |
+
+## Programming Mode + Sub-Agents
+
+When `/code plan` is active, Mercury will analyze a task and present a plan. If the plan involves parallel work, Mercury can delegate parts to sub-agents during `/code execute`. The `ask_user` tool lets Mercury present choices at decision points — on CLI this is an arrow-key menu, on Telegram it's inline buttons.

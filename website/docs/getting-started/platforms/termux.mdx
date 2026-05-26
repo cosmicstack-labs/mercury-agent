@@ -1,0 +1,133 @@
+---
+id: termux
+title: Termux & Lightweight Devices
+sidebar_label: Termux & Mobile
+---
+
+Mercury runs on **Android via [Termux](https://termux.dev/)**, giving you a real coding agent in your pocket. It also works in other minimal environments like iSH (iOS), Alpine containers, and Raspberry Pi.
+
+## Termux (Android)
+
+### Requirements
+
+- Android 7.0+
+- Termux installed from **[F-Droid](https://f-droid.org/en/packages/com.termux/)** or **[GitHub Releases](https://github.com/termux/termux-app/releases)** (the Play Store build is unmaintained — do not use it)
+- ~150 MB free storage
+- Network access
+
+### Install Node.js + Mercury
+
+Termux is the recommended path on Android because the prebuilt Linux binaries target glibc, while Termux uses bionic libc. **Use the npm route:**
+
+```bash
+pkg update && pkg upgrade -y
+pkg install nodejs-lts git -y
+npm i -g @cosmicstack/mercury-agent
+mercury
+```
+
+That's it. `nodejs-lts` ships Node 20+, which is what Mercury requires.
+
+### Storage access (optional but recommended)
+
+Let Mercury read/write files in your Android storage:
+
+```bash
+termux-setup-storage
+# grants ~/storage/ symlinks: ~/storage/shared, ~/storage/downloads, etc.
+```
+
+Now you can point Mercury at projects in `~/storage/shared/Projects/...`.
+
+### Keep Mercury running in the background
+
+Termux kills processes when the app is swiped away unless you:
+
+1. Enable **Termux:Boot** (from F-Droid) for auto-start on boot.
+2. Acquire a wakelock so Android doesn't suspend the process:
+
+   ```bash
+   termux-wake-lock
+   ```
+
+3. Disable battery optimization for Termux in **Settings → Apps → Termux → Battery**.
+
+For full 24/7 operation, run Mercury in daemon mode:
+
+```bash
+mercury daemon start
+```
+
+See [Daemon Mode](../../daemon-mode/daemon-mode) for details.
+
+### Telegram bot on the go
+
+A common Termux setup: run Mercury's [Telegram integration](../../integrations/telegram) on your phone so you can chat with it from any device.
+
+```bash
+mercury doctor   # enable Telegram, paste bot token
+mercury daemon start
+```
+
+### Known limitations
+
+- **No prebuilt binary** — must use npm. The standalone installer (`install.sh`) won't work on Termux because of glibc/bionic differences.
+- **TUI rendering** — Mercury's interface assumes a wide terminal. Rotate landscape or pair Termux with an external keyboard for the best experience.
+- **Background limits** — Aggressive OEMs (Xiaomi, Oppo, Huawei) need extra battery-optimization tweaks beyond the standard Android settings.
+- **Storage permission** — Required for accessing project files outside `$HOME`.
+
+### Updating
+
+```bash
+mercury upgrade
+```
+
+…or:
+
+```bash
+npm i -g @cosmicstack/mercury-agent@latest
+```
+
+## iSH (iOS)
+
+[iSH](https://ish.app/) runs an Alpine Linux user-space on iOS. Mercury works there via npm:
+
+```sh
+apk add nodejs npm
+npm i -g @cosmicstack/mercury-agent
+mercury
+```
+
+Performance is limited — iSH emulates x86 via usermode, so expect slow startup. Best used for read-only / chat-style sessions.
+
+## Alpine Linux / minimal containers
+
+Alpine uses musl libc, so the standalone Linux binary won't load. Use npm:
+
+```sh
+apk add --no-cache nodejs npm git
+npm i -g @cosmicstack/mercury-agent
+```
+
+This applies to Docker images based on `alpine:*` as well.
+
+## Raspberry Pi
+
+- **64-bit Pi OS (Pi 3/4/5)**: the standard [Linux installer](./linux.mdx) works — pulls `mercury-linux-arm64`.
+- **32-bit Pi OS or armv6 (Pi Zero, Pi 1)**: no prebuilt binary; install via npm:
+
+  ```bash
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  sudo apt install -y nodejs
+  npm i -g @cosmicstack/mercury-agent
+  ```
+
+## Other lightweight environments
+
+If your platform isn't listed and the binary doesn't run (`Exec format error`, missing libc), the npm route always works as long as Node.js 20+ is available. If Node isn't packaged for your OS, see [Build From Source](../build-from-source).
+
+## Next steps
+
+- [Setup](../setup)
+- [Telegram integration](../../integrations/telegram) — control Mercury from anywhere
+- [Daemon Mode](../../daemon-mode/daemon-mode) — keep it running 24/7

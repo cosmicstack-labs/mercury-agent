@@ -1,0 +1,161 @@
+---
+id: coding-workspace
+title: Coding Workspace (IDE Mode)
+---
+
+Mercury offers two ways to work on a repository: a **CLI workspace** (terminal-based IDE with keyboard navigation) and a **Web Workspace IDE** (full graphical editor in the browser). Both share the same backend tools and Git operations.
+
+## Web Workspace IDE
+
+Open `http://127.0.0.1:6174/workspace` in the dashboard to launch the browser-based editor.
+
+### Folder picker
+
+Click **Change Folder** at the top to pick the repository you want to work on. The path is persisted to `web-chat-settings.json` in your Mercury home directory, so the workspace remembers it across restarts.
+
+### File Explorer (left)
+
+- A collapsible tree of the current workspace folder.
+- Click a folder to expand/collapse; click a file to open it in a new tab.
+- The **refresh icon** rescans the tree.
+- The left panel is resizable — drag the right edge to grow or shrink it.
+
+### Editor (center)
+
+- **Multi-tab** — every file you open becomes a tab. A dot next to the filename means unsaved changes.
+- **Syntax highlighting** for TypeScript, JavaScript, Python, Rust, Go, Ruby, Swift, Java, C/C++, JSON, YAML, Markdown, and more (powered by `react-syntax-highlighter`).
+- **Editable overlay** — click anywhere in the code to start editing. `Cmd/Ctrl+S` saves the active file.
+- The bottom info bar shows the file path, language, and a `Save` button for dirty files.
+
+### Bottom panel — Terminal + Chat
+
+- **Terminal** tab — runs shell commands in the workspace root using `/api/terminal/exec`. Includes command history (↑/↓ to recall).
+- **Chat** tab — a focused conversation thread scoped to this workspace. The agent sees the open file and can apply edits directly.
+- **Maximize / Minimize** — click the `Maximize` icon in the top-right of the panel header to expand the bottom panel to fill the whole workspace area. Click again to restore.
+- The panel is resizable — drag the top border to set its height.
+
+### Source Control panel (right)
+
+The Git panel mirrors the most useful parts of VS Code's Source Control view.
+
+- **Pull**, **Push**, **Refresh** icons across the top.
+  - The refresh icon spins while it loads and shows a brief *Refreshed* confirmation.
+- **Status** — staged and unstaged files are listed separately. Hover a file to stage / unstage it. Click to view a unified diff.
+- **Branches** — see the current branch and switch to another (with optional `create` to make a new branch).
+- **Commit log** — the last 15 commits with author and message.
+- **Commit message box** with two helpers:
+  - The **sparkle icon** runs **AI Commit Message Generation** (`POST /api/git/generate-commit-message`). Mercury auto-stages any unstaged changes first, then asks the configured default provider to draft a conventional-commit message from the diff. The generated message is inserted into the box for you to review or edit before committing.
+  - `Commit` button — commits the staged files with the message.
+- The right panel's resizer sits on its left edge — drag it left to grow the panel, right to shrink.
+
+### Resizable layout
+
+All three panels (Explorer, Bottom, Source Control) are independently resizable. Drag the divider between any two panels to adjust.
+
+## CLI Workspace Mode
+
+If you prefer staying in the terminal, Mercury includes a CLI IDE-style workspace mode for repository-focused coding.
+
+### Enter Workspace Mode
+
+You can enter workspace mode in multiple ways:
+
+- `/code` and choose workspace
+- `/code workspace`
+- `/ws open <path>`
+
+Once active, Mercury switches to coding context for that repository. Agent responses appear in the normal scrollable chat view so you can always see full output.
+
+### Modes
+
+Use programming modes to control behavior:
+
+- `/code plan` — analysis/planning first, minimal code changes
+- `/code execute` — implementation mode
+- `/code off` — return to normal conversation behavior
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+P` | Plan mode |
+| `Ctrl+X` | Execute mode |
+| `Ctrl+E` | Focus explorer pane |
+| `Ctrl+G` | Focus git pane |
+| `Ctrl+J` | Toggle right panel between chat and git |
+| `Tab` | Cycle focus: explorer → code → right panel |
+| `Esc` | Return to explorer (or exit workspace from explorer) |
+| `Ctrl+Q` | Exit workspace |
+| `Shift+Enter` | Insert newline (multi-line input) |
+| `Alt+Enter` | Insert newline (fallback for terminals that don't distinguish Shift+Enter) |
+
+### Navigation (when input is empty)
+
+| Focus | Keys | Action |
+|-------|------|--------|
+| Explorer | `↑` `↓` | Move selection |
+| Explorer | `←` `→` | Collapse / expand folder |
+| Explorer | `Enter` | Open selected file |
+| Code | `↑` `↓` | Scroll code ±1 line |
+| Code | `PgUp` `PgDn` | Scroll code ±15 lines |
+| Code | `Ctrl+U` `Ctrl+D` | Scroll code ±10 lines (vim-style) |
+| Chat | `↑` `↓` | Scroll agent output ±1 line |
+| Chat | `PgUp` `PgDn` | Scroll agent output ±10 lines |
+| Chat | `Ctrl+U` `Ctrl+D` | Scroll agent output ±8 lines |
+| Git | `↑` `↓` | Move through changed files |
+| Git | `Enter` | Stage selected file |
+
+### Workspace Commands
+
+| Command | Description |
+|---------|-------------|
+| `/ws open <path>` | Open a directory in workspace mode |
+| `/ws refresh` | Refresh file tree + git status |
+| `/ws focus <area>` | Focus a panel: `explorer`, `code`, `git`, or `chat` |
+| `/ws stage <file\|all>` | Stage one file or all changes |
+| `/ws commit <message>` | Commit staged changes |
+| `/ws undo <file>` | Revert file changes |
+| `/ws toggle-chat` | Toggle right panel between chat and git |
+| `/ws chat-scroll <n>` | Scroll agent output by n lines |
+| `/ws exit` | Exit workspace mode back to general chat |
+
+## Sub-Agents + Background in Coding
+
+Workspace mode (CLI and web) supports explicit delegation and backgrounding:
+
+- `/code agent <task>` — delegate coding work to a sub-agent
+- `/bg current` — move active in-flight work to background
+- `/bg list` — inspect all background tasks (shell + sub-agent)
+- `/bg <id>` — view task details/output (IDs use friendly names like `swift-fox`)
+- `/bg cancel <id>` — cancel running background work
+- `/bg stop <id>` / `/bg kill <id>` — aliases for cancel
+- `/bg killall` / `/bg stopall` — cancel all running background tasks
+
+This lets you continue coding/chatting while long operations run asynchronously.
+
+## Progress Tracking
+
+During long-running tasks, Mercury shows real-time progress:
+
+- The status bar displays the current tool/action (e.g., `● step 5 · ✂️ Editing App.tsx`)
+- Heartbeat messages escalate timing (20s → 30s → 45s → 60s) to reduce noise
+- Use `/progress` to see the last 10 completed steps with timing
+- Consecutive identical tool calls are collapsed (e.g., "Read 3 files")
+
+## Git API endpoints (web)
+
+The Source Control panel calls these endpoints under the hood. They are useful if you want to script against the local instance.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/git/status` | Staged + unstaged file list |
+| `GET` | `/api/git/branches` | All branches with current + upstream |
+| `POST` | `/api/git/checkout` | Switch branch (`{ branch, create? }`) |
+| `GET` | `/api/git/diff?path=...&staged=...` | Unified diff |
+| `GET` | `/api/git/log?limit=15` | Commit log |
+| `POST` | `/api/git/stage` | Stage files (`{ files: [...] }` or `["."]` for all) |
+| `POST` | `/api/git/unstage` | Unstage files |
+| `POST` | `/api/git/commit` | Commit (`{ message }`) |
+| `POST` | `/api/git/push` | Push (`{ remote?, branch?, setUpstream? }`) |
+| `POST` | `/api/git/pull` | Pull from upstream |
+| `POST` | `/api/git/generate-commit-message` | AI-generated conventional commit from staged diff |

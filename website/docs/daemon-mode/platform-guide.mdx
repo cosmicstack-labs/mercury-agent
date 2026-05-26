@@ -62,3 +62,14 @@ schtasks /delete /tn "MercuryAgent" /f
 
 </TabItem>
 </Tabs>
+
+## Docker Status
+
+Mercury does not currently ship first-party Docker assets in this repository (no `Dockerfile` or `docker-compose.yml` by default).
+
+If you run Mercury in a container, treat it as an advanced/custom deployment:
+
+- Prefer foreground mode (`mercury start --foreground`) inside the container
+- Let the container runtime handle restart policy
+- Mount `~/.mercury` as persistent storage
+- Validate terminal/TTY behavior separately for interactive CLI usage

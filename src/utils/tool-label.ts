@@ -126,3 +126,115 @@ function trimFirst(s: string): string {
   const first = s.split('\n')[0];
   return first.length > 80 ? first.slice(0, 77) + '…' : first;
 }
+
+// ── Narrative formatting ────────────────────────────────────────────
+
+/** A single recorded step for narrative building. */
+export interface NarrativeStep {
+  /** Raw tool name (e.g. "read_file") */
+  tool: string;
+  /** Human label produced by formatToolStep */
+  label: string;
+}
+
+/**
+ * Collapse consecutive runs of the same tool into grouped summaries.
+ *
+ * e.g. 3× read_file → "📄 Read 3 files"
+ *      2× edit_file on same file → "✂️ Edited Button.tsx (2 changes)"
+ *      2× run_command → kept separate (commands are distinct)
+ */
+function collapseSteps(steps: NarrativeStep[]): string[] {
+  if (steps.length === 0) return [];
+
+  // Tools where consecutive calls should be collapsed
+  const COLLAPSIBLE: Record<string, { verb: string; noun: string }> = {
+    read_file:   { verb: 'Read', noun: 'file' },
+    write_file:  { verb: 'Wrote', noun: 'file' },
+    create_file: { verb: 'Created', noun: 'file' },
+    edit_file:   { verb: 'Edited', noun: 'file' },
+    delete_file: { verb: 'Deleted', noun: 'file' },
+    list_dir:    { verb: 'Listed', noun: 'directory' },
+    fetch_url:   { verb: 'Fetched', noun: 'URL' },
+  };
+
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < steps.length) {
+    const current = steps[i];
+    const collapsible = COLLAPSIBLE[current.tool];
+
+    if (!collapsible) {
+      // Non-collapsible: keep as-is
+      result.push(current.label);
+      i++;
+      continue;
+    }
+
+    // Count consecutive same-tool calls
+    let runEnd = i + 1;
+    while (runEnd < steps.length && steps[runEnd].tool === current.tool) {
+      runEnd++;
+    }
+    const runLen = runEnd - i;
+
+    if (runLen === 1) {
+      result.push(current.label);
+    } else if (runLen <= 3 && current.tool === 'edit_file') {
+      // For edits, check if same file — extract filename from label
+      const files = new Set(steps.slice(i, runEnd).map(s => {
+        const parts = s.label.split(' ');
+        return parts[parts.length - 1] || '';
+      }));
+      if (files.size === 1) {
+        const fileName = [...files][0];
+        result.push(`✂️ Edited ${fileName} (${runLen} changes)`);
+      } else {
+        result.push(`✂️ Edited ${runLen} files`);
+      }
+    } else {
+      const icon = TOOL_LABELS[current.tool]?.icon || '•';
+      const plural = runLen > 1 ? `${collapsible.noun}s` : collapsible.noun;
+      result.push(`${icon} ${collapsible.verb} ${runLen} ${plural}`);
+    }
+
+    i = runEnd;
+  }
+
+  return result;
+}
+
+/**
+ * Format a progress narrative from accumulated steps.
+ *
+ * @param steps       All completed steps so far
+ * @param current     Current activity string (or empty)
+ * @param maxVisible  Max completed steps to show (rest collapsed as "... and N earlier steps")
+ * @returns Formatted multi-line narrative string
+ */
+export function formatNarrative(
+  steps: NarrativeStep[],
+  current: string,
+  maxVisible: number,
+): string {
+  const collapsed = collapseSteps(steps);
+  const lines: string[] = [];
+
+  const hiddenCount = Math.max(0, collapsed.length - maxVisible);
+  const visible = hiddenCount > 0 ? collapsed.slice(hiddenCount) : collapsed;
+
+  if (hiddenCount > 0) {
+    lines.push(`  ... and ${hiddenCount} earlier step${hiddenCount === 1 ? '' : 's'}`);
+  }
+
+  for (const step of visible) {
+    lines.push(`  ✓ ${step}`);
+  }
+
+  if (current) {
+    lines.push(`  → ${current}`);
+  }
+
+  return lines.join('\n');
+}

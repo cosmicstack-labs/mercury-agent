@@ -1,0 +1,191 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════
+   Mercury Design Tokens — Fortune 100 grade
+   Brand: #00d4ff (Cyan) + #a78bfa (Purple)
+   ═══════════════════════════════════════════════════════════════ */
+
+@layer base {
+  :root {
+    /* ── Backgrounds ── */
+    --background: 200 20% 98%;
+    --foreground: 200 25% 9%;
+
+    --card: 200 15% 100%;
+    --card-foreground: 200 25% 9%;
+
+    --popover: 200 15% 100%;
+    --popover-foreground: 200 25% 9%;
+
+    /* ── Brand ── */
+    --primary: 192 100% 50%;
+    --primary-foreground: 200 25% 9%;
+
+    --secondary: 200 15% 95%;
+    --secondary-foreground: 200 20% 25%;
+
+    --muted: 200 12% 92%;
+    --muted-foreground: 200 12% 45%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    /* ── UI ── */
+    --border: 200 15% 90%;
+    --input: 200 15% 90%;
+    --ring: 192 100% 50%;
+
+    --radius: 0.625rem;
+
+    /* ── Sidebar ── */
+    --sidebar-width: 260px;
+    --sidebar-collapsed-width: 72px;
+
+    /* ── Mercury Glow ── */
+    --glow-cyan: rgba(0, 212, 255, 0.08);
+    --glow-cyan-strong: rgba(0, 212, 255, 0.18);
+    --glow-purple: rgba(167, 139, 250, 0.08);
+  }
+
+  .dark {
+    --background: 210 30% 6%;
+    --foreground: 200 15% 93%;
+
+    --card: 210 25% 9%;
+    --card-foreground: 200 15% 93%;
+
+    --popover: 210 25% 9%;
+    --popover-foreground: 200 15% 93%;
+
+    --primary: 192 100% 50%;
+    --primary-foreground: 210 30% 6%;
+
+    --secondary: 210 20% 14%;
+    --secondary-foreground: 200 15% 80%;
+
+    --muted: 210 18% 14%;
+    --muted-foreground: 200 10% 55%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 210 18% 16%;
+    --input: 210 18% 16%;
+    --ring: 192 100% 50%;
+
+    --glow-cyan: rgba(0, 212, 255, 0.06);
+    --glow-cyan-strong: rgba(0, 212, 255, 0.15);
+    --glow-purple: rgba(167, 139, 250, 0.06);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════════ */
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/30;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Geist Font Face
+   ═══════════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/vendor/geist/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist";
+  src: url("/vendor/geist/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/vendor/geist/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Utility Classes
+   ═══════════════════════════════════════════════════════════════ */
+
+@layer utilities {
+  /* Mercury gradient — brand signature */
+  .mercury-gradient {
+    @apply bg-gradient-to-r from-[#00d4ff] to-[#a78bfa];
+  }
+
+  .mercury-gradient-text {
+    @apply bg-gradient-to-r from-[#00d4ff] to-[#a78bfa] bg-clip-text text-transparent;
+  }
+
+  /* Glow effects */
+  .mercury-glow {
+    box-shadow: 0 0 20px var(--glow-cyan), 0 0 40px var(--glow-purple);
+  }
+
+  .mercury-glow-sm {
+    box-shadow: 0 0 8px var(--glow-cyan);
+  }
+
+  /* Glass morphism */
+  .glass {
+    @apply bg-card/80 backdrop-blur-xl border border-border/50;
+  }
+
+  .glass-strong {
+    @apply bg-card/90 backdrop-blur-2xl border border-border/60;
+  }
+}

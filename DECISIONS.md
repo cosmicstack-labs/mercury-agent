@@ -81,3 +81,27 @@
   - SQLite-only (SecondBrainDB as-is) — good storage but no merge/conflict/reflection logic
   - Vector embeddings — overkill for current scale, adds heavy dependency
 - **Consequence**: SQLite with WAL mode gives fast reads for prompt injection (microseconds). FTS5 enables fast search. The business logic (merge, conflict, reflection, tiering, staleness) is inherited from UserMemoryStore. One native dependency (better-sqlite3). The user's only controls are: observe (overview, recent, search), pause/resume learning, and clear all.
+
+## ADR-011: Conscious/Subconscious Memory Model
+
+- **Context**: The original second brain used a hard cap of 50 memories with staleness-based pruning that permanently deleted memories. This caused irreversible data loss — a 3-month-old project goal that was still relevant would be destroyed after 21-120 days of not being referenced. The cap was a blunt instrument on top of an already precise scalpel (merge, conflict resolution, confidence decay).
+- **Decision**: Remove the hard cap entirely. Replace staleness-based deletion with a conscious/subconscious two-layer model. Memories that haven't been seen in 30 days move from conscious to subconscious (scope change, not deletion). Subconscious memories can be recalled to conscious when they match a query strongly. Nothing is permanently deleted except via explicit user action or conflict resolution.
+- **Key changes**:
+  - **Removed**: `SECOND_BRAIN_MAX_RECORDS` config, `enforceMaxRecords()` method, `pruneStale()` method
+  - **Added**: `subconscious` as a third scope value (alongside `active` and `durable`)
+  - **Added**: `moveToSubconscious()` — moves memories not seen in 30 days to subconscious scope
+  - **Added**: `searchSubconscious()` — FTS5 search on subconscious memories
+  - **Added**: `promoteToConscious()` — promotes a subconscious memory back to active/durable
+  - **Added**: Conditional subconscious recall in `retrieveRelevant()` — searches subconscious only when conscious results are weak (<3 results with healthScore > 0.5)
+  - **Added**: Separate subconscious scoring formula with keyword match weighted at 0.30 (vs 0.10 for conscious)
+  - **Changed**: All conscious-only queries (`getActive`, `getByType`, `searchRelevant`, `totalActive`, `countByType`) now filter `scope IN ('active', 'durable')`
+  - **Changed**: `prune()` return type changed from `{ activePruned, durablePruned, promoted }` to `{ movedToSubconscious, promoted, hardDeleted }`
+  - **Changed**: Confidence is frozen when a memory enters subconscious — no further decay
+  - **Changed**: `memoryHealthScore()` gives a -0.2 penalty to subconscious scope
+- **Staleness threshold**: Flat 30 days regardless of evidence kind or scope (previously 21d active/inferred, 42d active/direct, 120d durable/inferred)
+- **Recall mechanism**: Shared budget — subconscious recalled memories compete for the same 5 slots / 900 chars as conscious memories
+- **Alternatives considered**:
+  - Keep the 50 cap but remove hard-delete — still limits knowledge breadth
+  - Increase cap to 200 — more headroom but still arbitrary
+  - Tier-based caps (e.g., 20 durable + 30 active) — more complex, harder to tune
+- **Consequence**: No memory is ever permanently lost to time. The subconscious layer archives everything, and the recall mechanism surfaces dormant memories when context demands it. The 30-day threshold is configurable and the recall scoring weights can be tuned based on real-world usage.

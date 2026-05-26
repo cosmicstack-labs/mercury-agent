@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/card-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/card-light.png">
-    <img alt="Mercury — Soul-Driven AI Agent" src="docs/card-light.png" width="600">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/card-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/img/card-light.png">
+    <img alt="Mercury — Soul-Driven AI Agent" src="docs/img/card-light.png" width="600">
   </picture>
 </p>
 
@@ -11,13 +11,17 @@
 </p>
 
 <p align="center">
-  Remembers what matters. Asks before it acts. Runs 24/7 from CLI or Telegram. 31 built-in tools, extensible skills, SQLite-backed Second Brain memory.
+  Remembers what matters. Asks before it acts. Runs 24/7 from CLI, Telegram, or Web. 31 built-in tools, Kanban boards, extensible skills, SQLite-backed Second Brain memory.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@cosmicstack/mercury-agent"><img src="https://img.shields.io/npm/v/@cosmicstack/mercury-agent" alt="npm"></a>
   <a href="https://github.com/cosmicstack-labs/mercury-agent"><img src="https://img.shields.io/github/license/cosmicstack-labs/mercury-agent" alt="license"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/node/v/@cosmicstack/mercury-agent" alt="node"></a>
+</p>
+
+<p align="center">
+  <strong>🔖 Current Stable: v1.1.9</strong>
 </p>
 
 <p align="center">
@@ -28,23 +32,38 @@
 
 ## Quick Start
 
+**One-liner install (no Node.js required)** — downloads the latest standalone binary for your OS:
+
+```bash
+# macOS / Linux
+curl -fsSL https://mercuryagent.sh/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://mercuryagent.sh/install.ps1 | iex
+```
+
+Or via npm if you already have Node.js 20+:
+
 ```bash
 npx @cosmicstack/mercury-agent
 ```
 
-Or install globally:
+Or install the npm package globally:
 
 ```bash
 npm i -g @cosmicstack/mercury-agent
 mercury
 ```
 
-First run triggers the setup wizard — enter your name, an API key, and optionally a Telegram bot token. Takes 30 seconds.
+First run triggers the setup wizard (name, provider, optional Telegram). After setup, Mercury opens the Ink TUI startup screen and asks for your permission mode (`Ask Me` or `Allow All`) before chat starts.
 
 To reconfigure later (change keys, name, settings):
 
 ```bash
 mercury doctor
+mercury doctor --platform
 ```
 
 ## Why Mercury?
@@ -58,6 +77,8 @@ Every AI agent can read files, run commands, and fetch URLs. Most do it silently
 - **Live streaming** — Real-time token streaming on CLI with cursor-save/restore and markdown re-rendering. Telegram streaming with editable status messages.
 - **Always on** — Run as a background daemon on any OS. Auto-restarts on crash. Starts on boot. Cron scheduling, heartbeat monitoring, and proactive notifications.
 - **Extensible** — Install community skills with a single command. Schedule skills as recurring tasks. Based on the [Agent Skills](https://agentskills.io) specification.
+
+Mercury now seeds a default `web-search` skill on first run in `~/.mercury/skills/web-search/SKILL.md`.
 
 ## Daemon Mode
 
@@ -115,7 +136,8 @@ In daemon mode, Telegram becomes your primary channel — CLI is log-only since 
 | `mercury restart` | Restart the background process |
 | `mercury stop` | Stop a background process |
 | `mercury logs` | View recent daemon logs |
-| `mercury doctor` | Reconfigure (Enter to keep current values) |
+| `mercury doctor` | Reconfigure setup (name, providers, channels, permissions defaults) |
+| `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
 | `mercury setup` | Re-run the setup wizard |
 | `mercury status` | Show config and daemon status |
 | `mercury help` | Show full manual |
@@ -149,6 +171,11 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | `/budget reset` | Reset usage to zero |
 | `/budget set <n>` | Change daily token budget |
 | `/permissions` | Change permission mode (Ask Me / Allow All) |
+| `/view` | Toggle progress view (balanced/detailed) |
+| `/view balanced` | Set compact progress view |
+| `/view detailed` | Set full progress view |
+| `/code agent <task>` | Delegate a coding task to a sub-agent in background |
+| `/ws exit` | Exit workspace IDE mode back to general chat |
 | `/tasks` | List scheduled tasks |
 | `/memory` | View and manage second brain memory |
 | `/unpair` | Telegram: reset all access |
@@ -166,12 +193,95 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | **Scheduler** | `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` |
 | **System** | `budget_status` |
 
+## Installing Skills
+
+Mercury can pull community-contributed skills from the registry at
+**[skills.mercuryagent.sh](https://skills.mercuryagent.sh)** (126+ skills, no auth required).
+
+```bash
+mercury skills search prompt                  # search the registry
+mercury skills browse ai-ml                   # browse by category
+mercury skills view ai-ml/prompt-engineering  # render SKILL.md in the terminal
+mercury skills view ai-ml/prompt-engineering --web   # open the registry page
+mercury skills install ai-ml/prompt-engineering      # install to ~/.mercury/skills/
+mercury skills list                           # show installed skills
+mercury skills update                         # refresh all installed skills
+mercury skills remove ai-ml/prompt-engineering
+mercury skills doctor                         # check install root + registry
+```
+
+Installed skills land at `~/.mercury/skills/<category>/<slug>/SKILL.md` and are
+picked up by the agent on the next boot — they're treated identically to
+built-in skills.
+
+> **Review before you ship.** Skills are community-contributed and unaudited.
+> Run `mercury skills view <id>` before installing.
+
+Overrides: `--registry <url>` (or `MERCURY_SKILLS_REGISTRY`) for self-hosted
+registries, `MERCURY_SKILLS_INSTALL_ROOT` for an alternate install path,
+`--json` for machine-readable output.
+
+**Also installable from:**
+
+- **Web dashboard** — `http://127.0.0.1:6174/skills` has a registry installer (paste `category/slug`) and a URL installer side by side.
+- **Telegram** — `/skills`, `/skills search <q>`, `/skills view <id>`, `/skills install <id>` (admin-only). Every result includes the registry URL so you can review before installing.
+
+See the [Skills reference](https://mercuryagent.sh/docs/reference/skills) for the full command surface, frontmatter spec, and API endpoints.
+
+## Web Dashboard
+
+Mercury includes a built-in web UI at `http://127.0.0.1:6174`:
+
+```bash
+mercury doctor   # Enable web during setup
+```
+
+Or set in `~/.mercury/mercury.yaml`:
+
+```yaml
+web:
+  enabled: true
+  port: 6174
+```
+
+Features: Chat with SSE streaming, Kanban boards, Second Brain visualization, Workspace IDE, provider/skill/permission/schedule management, usage tracking, dark/light theme.
+
+Default credentials: `mercury` / `Mercury@123`. Binds to localhost only.
+
+## Kanban Boards
+
+Persistent task boards with agent execution. Create boards, add cards, and let Mercury process them autonomously.
+
+- **Cards** — title, description, status (todo/doing/done/blocked), priority, labels, comments, attachments, dependencies
+- **Smart execution** — Mercury processes cards sequentially, updating status and leaving result comments
+- **Cascade execution** — process dependent cards in dependency order
+- **Token budget** — per-card token tracking with auto-pause when exhausted
+- **Storage** — SQLite with per-board context, variables, and instructions
+
+Access via Web Dashboard or API (`/api/boards/*`).
+
 ## Channels
 
 | Channel | Features |
 |---------|----------|
-| **CLI** | Readline prompt, arrow-key command menus, real-time text streaming with markdown re-rendering, permission mode picker |
+| **CLI** | Ink TUI, startup permission mode picker, interactive permission prompts (arrow keys + Enter; Y/N/A shortcuts), progress views (balanced/detailed), real-time streaming |
+| **Web** | React SPA dashboard, chat with SSE streaming, Kanban boards, Second Brain visualization, Workspace IDE, dark/light theme |
 | **Telegram** | HTML formatting, editable streaming messages, file uploads, typing indicators, multi-user access with admin/member roles |
+
+### Workspace/Coding Shortcuts (CLI)
+
+- `Ctrl+P` → switch to Plan mode
+- `Ctrl+X` → switch to Execute mode
+- `Esc` or `Ctrl+Q` → exit workspace to general chat
+- `Ctrl+V` → toggle progress view (`/view` is fallback when terminal intercepts Ctrl+V)
+
+### Spotify UI Notes (CLI)
+
+- Spotify deck supports keyboard shortcuts: `N` next, `P` previous, `+/-` volume, `Z` now playing.
+- Inline album art is optional and safe-gated:
+  - Enable with `MERCURY_SPOTIFY_ART=1`
+  - Currently renders only in local iTerm sessions
+  - Automatically falls back to text-only UI in SSH/mobile/light terminals
 
 ### Telegram Access
 
@@ -226,6 +336,7 @@ All runtime data lives in `~/.mercury/` — not in your project directory.
 | `~/.mercury/memory/second-brain/` | Structured memory database (SQLite + FTS5) |
 | `~/.mercury/daemon.pid` | Background process PID |
 | `~/.mercury/daemon.log` | Daemon mode logs |
+| `~/.mercury/boards.db` | Kanban boards database (SQLite) |
 
 ## Provider Fallback
 
@@ -253,6 +364,57 @@ When a provider fails, Mercury automatically tries the next one. It remembers th
 - **JSONL** — Short-term, long-term, and episodic conversation memory
 - **Daemon manager** — Background spawn + PID file + watchdog crash recovery
 - **System services** — macOS LaunchAgent, Linux systemd, Windows Task Scheduler
+
+## Build From Source
+
+You can build Mercury yourself from source — either the standard Node bundle (for `npm link` / local development) or a **standalone executable** that bundles the entire runtime, so end-users don't need Node.js installed at all.
+
+### Prerequisites
+
+- **Node.js ≥ 20** (for the build toolchain)
+- **[Bun](https://bun.sh) ≥ 1.3** (only required for standalone binaries; install with `curl -fsSL https://bun.sh/install | bash`)
+
+### Standard build (ESM bundle)
+
+```bash
+git clone https://github.com/cosmicstack-labs/mercury-agent.git
+cd mercury-agent
+npm install
+npm run build           # builds dist/ via tsup + post-build (UI, static assets)
+npm start               # node dist/index.js
+```
+
+### Standalone executable (no Node.js required for end users)
+
+Mercury can be compiled into a single self-contained binary using `bun build --compile`. The resulting file embeds the Bun runtime and the full Mercury bundle.
+
+```bash
+npm run build:bin            # host platform only
+npm run build:bin:all        # all 5 targets (macOS arm64/x64, Linux x64/arm64, Windows x64)
+npm run build:bin:force      # rebuild (overwrite existing binary for the same version)
+npm run build:bin:all:force  # rebuild all targets
+```
+
+Output is **versioned** so older builds are never overwritten:
+
+```
+release/
+├── latest                       → symlink to most-recent version
+├── v1.1.9/
+│   ├── mercury-macos-arm64
+│   ├── mercury-macos-x64
+│   ├── mercury-linux-x64
+│   ├── mercury-linux-arm64
+│   ├── mercury-win-x64.exe
+│   └── checksums.txt            (SHA-256 for every binary)
+└── v1.2.0/ …
+```
+
+The version is read from `package.json` — bump it before building to produce a fresh folder. Re-running for the same version skips already-built targets unless `--force` is passed.
+
+**Cross-compilation**: Bun produces binaries for every target from a single host. Native modules (`better-sqlite3`) can't cross-compile, but Mercury gracefully falls back to `sql.js` (pure JS + wasm) so the cross-compiled binaries still work end-to-end.
+
+**macOS Gatekeeper**: unsigned binaries trigger a warning on first launch. For distribution, sign with `codesign --sign "Developer ID" release/v<version>/mercury-macos-arm64` and notarize.
 
 ## License
 

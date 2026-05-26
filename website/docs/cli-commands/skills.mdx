@@ -1,0 +1,237 @@
+---
+id: skills
+title: Skills (CLI, in-chat, dashboard, Telegram)
+sidebar_label: Skills
+---
+
+Mercury skills are Markdown-based extensions (`SKILL.md` files) that teach the
+agent how to do a specific task. The registry at
+[**skills.mercuryagent.sh**](https://skills.mercuryagent.sh) hosts 126+
+community-contributed skills across 23 categories, and Mercury can install
+them from four surfaces — they all share the same install path under the hood.
+
+> **Review before you ship.** Skills run with elevated permissions when
+> invoked. Open the registry page (`mercury skills view <id> --web`) and read
+> the `SKILL.md` body before installing.
+
+For the file format, frontmatter spec, and runtime behavior, see
+[Reference → Skills](../reference/skills).
+
+## The four surfaces
+
+| Surface | Best for | Entry point |
+|---------|----------|-------------|
+| CLI subcommand (`mercury skills …`) | Scripting, batch installs, JSON output | `mercury skills install <id>` |
+| In-chat slash command (`/skills …`) | Quick browse while chatting with the agent | `/skills search <q>` |
+| Web dashboard | Visual browse + activate/deactivate toggle | `http://127.0.0.1:6174/skills` |
+| Telegram bot | Browse and install while away from the machine | `/skills install <id>` (admin-only) |
+
+All four hit the same `SkillStore.install(id)` code path, write to the same
+`~/.mercury/skills/<category>/<slug>/SKILL.md` location, and update the same
+`~/.mercury/skills/.index.json`.
+
+---
+
+## CLI: `mercury skills …`
+
+The fastest surface, available before or after starting the agent. No browser
+required.
+
+### Discover
+
+```bash
+mercury skills info                     # registry stats + reachability
+mercury skills categories               # all 23 categories
+mercury skills browse finance-legal     # paginated list
+mercury skills browse --page 2 --limit 20
+mercury skills search "contract review" # full-text search
+mercury skills search --limit 3 prompt
+```
+
+### Inspect before installing
+
+```bash
+mercury skills view finance-legal/contract-review
+mercury skills view finance-legal/contract-review --web    # opens registry page
+mercury skills view finance-legal/contract-review --raw    # prints raw SKILL.md
+```
+
+### Install, update, remove
+
+```bash
+# From the registry
+mercury skills install finance-legal/contract-review
+mercury skills install ai-ml/prompt-engineering finance-legal/contract-review  # batch
+mercury skills install finance-legal/contract-review --force                   # reinstall same version
+
+# From a local file or arbitrary URL
+mercury skills install --from ./SKILL.md
+mercury skills install --from https://example.com/my-skill.md
+
+# Update
+mercury skills update                                  # all installed
+mercury skills update finance-legal/contract-review    # just one
+
+# Remove
+mercury skills remove finance-legal/contract-review
+
+# Observability
+mercury skills list                          # what's installed locally
+mercury skills doctor                        # install root + registry + cache
+```
+
+### Shared flags and environment variables
+
+| Flag | Purpose |
+|------|---------|
+| `--json` | Machine-readable output (useful for scripting / piping). |
+| `--registry <url>` | Use a different registry; also accepts `MERCURY_SKILLS_REGISTRY`. |
+| `-q`, `--quiet` | Suppress progress output. |
+| `-y`, `--yes` | Skip interactive confirmations. |
+
+| Environment variable | Purpose |
+|----------------------|---------|
+| `MERCURY_SKILLS_REGISTRY` | Default registry URL (overridden by `--registry`). |
+| `MERCURY_SKILLS_INSTALL_ROOT` | Alternate install root (defaults to `~/.mercury/skills`). |
+
+---
+
+## In-chat: `/skills …`
+
+Available in **every channel** — the CLI TUI, the web dashboard chat, and
+Telegram (subject to the Telegram-specific gating below). The slash command
+list autocompletes when you type `/skills` and press <kbd>Tab</kbd> in the
+CLI.
+
+```
+/skills                           # list installed skills
+/skills search <query>            # top 5 registry matches with URLs
+/skills view <id>                 # title, version, description, registry URL
+/skills install <id>              # install from the registry
+/skills install <url>             # install raw SKILL.md from a URL
+/skills remove <id>               # uninstall
+/skills help                      # subcommand list
+```
+
+Every `search` hit and every `view` response prints the
+`https://skills.mercuryagent.sh/skills/<id>` URL so you can review on the web
+before installing.
+
+Examples in a real chat session:
+
+```
+> /skills search contract
+🔍 Searching the registry for "contract"…
+
+Top 3 matches for "contract":
+
+• `finance-legal/contract-review` (v1.0.0)
+  Review contracts and surface risky clauses.
+  https://skills.mercuryagent.sh/skills/finance-legal/contract-review
+
+• `finance-legal/saas-agreement` (v0.2.1)
+  …
+
+> /skills install finance-legal/contract-review
+📦 Installing `finance-legal/contract-review` from the registry…
+✅ Installed `finance-legal/contract-review` (v1.0.0)
+🔗 https://skills.mercuryagent.sh/skills/finance-legal/contract-review
+```
+
+> Installs run **without a confirmation prompt** — same as the existing
+> in-chat URL-install behavior. The `view` step (or the registry URL printed
+> in `search` results) is where you should review before committing.
+
+---
+
+## Dashboard: `http://127.0.0.1:6174/skills`
+
+The Skills page in the web dashboard has two installers stacked in one card:
+
+1. **Install from registry** — paste a `category/slug` id and click Install.
+   The toast reports the install status (`installed`, `updated`,
+   `reinstalled`, `already-installed`) and the version.
+2. **Install from URL** — paste a URL pointing to a raw `SKILL.md`. Mercury
+   fetches it, validates the frontmatter, and saves it to disk.
+
+The page header has a **Browse skills.mercuryagent.sh** link that opens the
+registry in a new tab.
+
+Each installed skill card has:
+
+- A status badge (active / inactive).
+- A **toggle** to activate or deactivate without deleting.
+- A **trash** button to delete (with confirmation dialog).
+
+The dashboard talks to these endpoints:
+
+```
+GET    /api/skills                          # list installed with active state
+POST   /api/skills/install                  # { url }         — fetch and install from a URL
+POST   /api/skills/install-from-registry    # { id, force? }  — install by registry id
+POST   /api/skills/:name/activate
+POST   /api/skills/:name/deactivate
+DELETE /api/skills/:name
+```
+
+---
+
+## Telegram: `/skills …`
+
+Same subcommand surface as in-chat, with one extra rule:
+
+- `list`, `search`, `view` are available to **every approved user**.
+- `install` and `remove` are **admin-only** (same gate as `/unpair`).
+
+```
+/skills                           # list installed
+/skills search <query>            # registry search
+/skills view <id>                 # details + URL
+/skills install <id>              # admin only
+/skills remove <id>               # admin only
+/skills help
+```
+
+The bot includes the `https://skills.mercuryagent.sh/skills/<id>` URL in every
+`search` result and every `view` response, so non-admin members can review a
+skill on a browser and then ask an admin to install it.
+
+`/skills` is registered in the Telegram command menu (between `/spotify` and
+`/unpair`), so it appears in autocomplete next to all the other bot commands.
+
+---
+
+## What happens on install (one paragraph)
+
+`SkillStore.install(id)` calls `GET /api/skills/<id>` for the JSON detail,
+short-circuits with `'already-installed'` if the local index already has the
+same version (unless `--force`), reconstructs the canonical `SKILL.md` from
+the JSON `frontmatter + body` fields, **atomically** writes it to
+`~/.mercury/skills/<category>/<slug>/SKILL.md` (tmp file + rename),
+verification-reads the file back, then updates
+`~/.mercury/skills/.index.json`. If either write fails, both the file and the
+index are rolled back so they never disagree. Skill ids must match
+`^[a-z0-9-]+/[a-z0-9-]+$` — that's the path-traversal guard.
+
+The agent picks up newly installed skills on its next discovery scan (next
+agent boot or `/skills` view in the dashboard).
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `Invalid skill id` | The id must be `<category>/<slug>`, lowercase, hyphen-separated. Don't include the full URL. |
+| `Registry 404` | The id doesn't exist on the registry. Run `mercury skills search <q>` to find the right id. |
+| `Registry timeout` / `unreachable` | Run `mercury skills doctor` to confirm reachability and cache state. Pass `--registry` or set `MERCURY_SKILLS_REGISTRY` if you self-host. |
+| Install succeeded but the agent doesn't see the new skill | The skill loader scans on boot. Restart Mercury or open the dashboard's Skills page (it triggers a re-scan). |
+| `Post-install verification failed` | The disk write didn't round-trip. Usually disk-full or a permission issue under `~/.mercury/skills/`. The CLI rolls back automatically. |
+
+---
+
+## Related
+
+- [Reference → Skills](../reference/skills) — file format, frontmatter spec, runtime behavior, writing your own.
+- [CLI Commands](./cli-commands) — full `mercury` command reference.
+- [In-chat commands](./in-chat-commands) — all slash commands in chat.

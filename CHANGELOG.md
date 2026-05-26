@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.1.5 — Smoother Onboarding
+
+### Fixed: Onboarding no longer blocks users without Ollama
+
+The onboarding flow had a critical UX problem: if a user didn't have Ollama running locally or an API key handy, they'd get stuck in infinite loops with no way to skip. This release makes onboarding smooth and forgiving.
+
+**Key changes:**
+
+1. **Ollama Local is now skippable** — If Ollama isn't running, you can skip it entirely or manually enter a model name. No more infinite retry loops.
+
+2. **All provider setups allow skipping** — Every API key prompt now offers manual model name entry when the provider API is unreachable, and a clear skip option. The error messages changed from red (failure) to yellow (warning) to reduce frustration.
+
+3. **"No provider" trap removed** — Previously, if you couldn't configure any provider, you were stuck in an infinite loop. Now you can type "skip" to save your config and return later with `mercury doctor`. A hint about DeepSeek's free API is shown.
+
+4. **Ollama Local default model cleared** — The default was `gpt-oss:20b` (a non-standard model). Now defaults to empty, and the preferred model list uses common names like `llama3.2`, `mistral`, `phi3`, etc.
+
+5. **Clearer first-run instructions** — The LLM Providers step now says "You can skip any provider by pressing Enter" and notes DeepSeek offers free keys.
+
+### Summary of Changes
+
+| File | Change |
+|------|--------|
+| `src/index.ts` | `promptOllamaLocalModelSelection` — allow skipping base URL, manual model entry on fetch failure |
+| `src/index.ts` | `promptApiKeyWithModelSelection` — manual model entry on API fetch failure, skip option |
+| `src/index.ts` | `configure()` — "skip" option when no providers configured, hint about free keys |
+| `src/utils/config.ts` | Ollama Local default model changed from `gpt-oss:20b` to empty string |
+| `src/utils/provider-models.ts` | Ollama Local preferred models updated to common names |
+
 ## 1.1.4 — OpenAI Compilations & Provider Visibility
 
 ### New: OpenAI Compilations Provider

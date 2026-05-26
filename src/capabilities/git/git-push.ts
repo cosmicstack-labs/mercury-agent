@@ -18,7 +18,7 @@ export function createGitPushTool(permissions: PermissionManager, getCwd: () => 
       }
 
       try {
-        const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000, cwd: getCwd() });
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 60000, cwd: getCwd() });
         return result.trim() || 'Pushed successfully.';
       } catch (err: any) {
         return `Error: ${err.stderr?.trim() || err.message}`;

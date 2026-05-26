@@ -11,7 +11,7 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://mercury.cosmicstack.org',
+  url: 'https://mercuryagent.sh',
   baseUrl: '/',
   trailingSlash: false,
 
@@ -67,10 +67,6 @@ const config: Config = {
     },
     navbar: {
       title: '☿ Mercury',
-      logo: {
-        alt: 'Mercury',
-        src: 'img/favicon.svg',
-      },
       items: [
         {to: '/docs', label: 'Docs', position: 'left'},
         {

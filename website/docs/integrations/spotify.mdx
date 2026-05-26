@@ -1,0 +1,234 @@
+---
+id: spotify
+title: Spotify Integration
+---
+
+Mercury connects to your Spotify account natively — control playback, search music, manage playlists, and DJ on your devices through natural conversation. No browser tabs, no app switching. Just say "play some chill music" and Mercury handles the rest.
+
+:::info[Spotify Premium]
+
+Read-only features (search, top tracks, playlists, now playing) work on **free** Spotify accounts. **Playback control** (play, pause, skip, volume, shuffle, repeat, queue) requires a **Spotify Premium** subscription — this is a Spotify API limitation, not a Mercury restriction.
+
+:::
+
+## Setup
+
+### Step 1: Create a Spotify Developer App
+
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+2. Log in with your Spotify account
+3. Click **"Create app"**
+4. Fill in:
+   - **App name**: `Mercury` (or anything you like)
+   - **App description**: `Mercury Agent Spotify Integration`
+   - **Redirect URI**: `http://127.0.0.1:8888/callback` — this must match exactly
+5. Click **Save**
+6. On the app's settings page, copy the **Client ID** and **Client Secret**
+
+:::tip[Development Mode]
+
+When your Spotify Developer app is in **development mode** (the default), you can grant access to up to **25 users**. Go to your app's settings → **User Management** → add the Spotify email addresses of anyone who should be able to connect. This is perfect for personal use or small teams. If you need more than 25 users, you'll need to request **extended quota** from Spotify.
+
+:::
+
+### Step 2: Configure Mercury
+
+Run `mercury doctor` (or `mercury setup` for first-time setup):
+
+```bash
+mercury doctor
+```
+
+When prompted for Spotify, choose **Yes** and enter:
+
+- **Spotify Client ID** — paste the Client ID from Step 1
+- **Spotify Client Secret** — paste the Client Secret from Step 1
+
+Press Enter on any other field to keep its current value. After setup, you'll see:
+
+```
+Spotify: not connected — run /spotify auth to link your account
+```
+
+### Step 3: Connect Your Spotify Account
+
+Start Mercury and run:
+
+```
+/spotify auth
+```
+
+Choose your authorization method:
+
+| Method | When to use |
+|--------|------------|
+| **Open browser** (recommended) | When Mercury is running locally on your machine |
+| **Paste authorization code** | When browser auto-open fails, or via SSH |
+
+For SSH or Telegram, Mercury will give you the auth URL. Open it on any device with a browser, then paste the `code` parameter from the redirect URL:
+
+```
+/spotify code <paste-your-code-here>
+```
+
+After successful auth, Mercury shows:
+
+```
+Spotify: connected as YourName
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/spotify` | Show connection status, account name, plan, and active device |
+| `/spotify auth` | Start OAuth flow (browser or manual code) |
+| `/spotify code <code>` | Complete auth with a pasted authorization code |
+| `/spotify logout` | Disconnect Spotify and clear saved tokens |
+| `/spotify player` | Interactive player with arrow-key controls (CLI only) |
+| `/spotify devices` | List available Spotify devices |
+| `/spotify device <id>` | Set active device |
+| `/spotify now` | Show what is currently playing |
+
+## Spotify Tools
+
+These are the tools Mercury uses when you talk about music:
+
+### Read-only (works on free accounts)
+
+| Tool | What it does |
+|------|-------------|
+| `spotify_search` | Search tracks, artists, albums, playlists |
+| `spotify_now_playing` | Show what's currently playing |
+| `spotify_devices` | List available Spotify devices |
+| `spotify_top_tracks` | Get your top tracks (time_range: short/medium/long term) |
+| `spotify_playlists` | Get your playlists |
+| `spotify_like` | Save a track to your library |
+
+### Playback control (requires Spotify Premium)
+
+| Tool | What it does |
+|------|-------------|
+| `spotify_play` | Play a track, album, or playlist on a device |
+| `spotify_pause` | Pause playback |
+| `spotify_next` | Skip to next track |
+| `spotify_previous` | Skip to previous track |
+| `spotify_volume` | Set volume (0-100) |
+| `spotify_shuffle` | Toggle shuffle on/off |
+| `spotify_repeat` | Set repeat mode (off, track, context) |
+| `spotify_queue` | Add a track to the playback queue |
+
+## Using It
+
+Just talk to Mercury naturally about music:
+
+| You say | Mercury does |
+|---------|-------------|
+| "play some chill music" | Searches "lo-fi chill", picks tracks, plays on your device |
+| "what are my top tracks?" | Calls `spotify_top_tracks`, shows results |
+| "skip this song" | Calls `spotify_next` |
+| "pause" | Calls `spotify_pause` |
+| "play my playlist Road Trip" | Searches your playlists, plays the match |
+| "set volume to 50" | Calls `spotify_volume(50)` |
+| "what's playing?" | Calls `spotify_now_playing`, shows artist — track + progress bar |
+| "add this to my queue" | Calls `spotify_queue` with current track |
+| "shuffle on" | Calls `spotify_shuffle(true)` |
+
+## Interactive Player (CLI)
+
+The `/spotify player` command launches an interactive arrow-key player in your terminal:
+
+```
+  ▶ Play/Pause     ◀ Previous     ▶▶ Next
+  🔊 Volume        🔀 Shuffle     🔁 Repeat
+  🔍 Search        📋 Queue       ✕ Exit
+```
+
+Every action shows real-time feedback with track info and a progress bar.
+
+## DJ Mode
+
+Mercury's Spotify flow supports a practical **DJ mode** pattern in conversation and in the CLI player:
+
+- Queue songs while current playback continues
+- Skip/recover quickly with next/previous controls
+- Adjust energy with volume/shuffle/repeat in-session
+- Keep steering by prompts like:
+  - "Queue 3 upbeat tracks"
+  - "Skip this and play something calmer"
+  - "Keep this vibe for the next 20 minutes"
+
+Use `/spotify player` for hands-on control, or use natural-language prompts to keep the set moving.
+
+### Player shortcuts
+
+Inside the Spotify player (CLI):
+
+- `N` → next track
+- `P` → previous track
+- `+` / `-` → volume up/down by 10%
+- `Z` → refresh now playing
+- `Esc` → exit player
+
+### Optional inline album art
+
+Mercury supports inline album art as a progressive enhancement (text UI remains the default).
+
+- Enable with: `MERCURY_SPOTIFY_ART=1`
+- Currently rendered only in local iTerm sessions
+- Automatically falls back to text-only view in SSH/mobile/light terminals
+
+## Managing Devices
+
+Spotify plays on **your devices** — phone, desktop, TV, speaker. Mercury never plays audio locally. Before playing, Mercury checks what devices are available:
+
+```
+/spotify devices
+```
+
+If no device is active, Mercury will tell you to open Spotify on a device first. You can set a default device:
+
+```
+/spotify device <device-id>
+```
+
+The device ID persists across sessions — Mercury remembers your preferred device.
+
+## Token Management
+
+Mercury stores your Spotify tokens in `~/.mercury/mercury.yaml`:
+
+- **Access token** — short-lived, auto-refreshed
+- **Refresh token** — long-lived, used to get new access tokens
+- **Account info** — display name, user ID, plan (Premium/Free)
+
+Tokens refresh automatically before they expire. If the refresh token itself expires (rare), run `/spotify auth` again.
+
+### Disconnecting
+
+```
+/spotify logout
+```
+
+This clears all tokens and account info. Run `/spotify auth` to reconnect later.
+
+## Security
+
+:::warning[Client credentials]
+
+Your Spotify Client ID and Client Secret are stored in `~/.mercury/mercury.yaml`. They are only used to authenticate with Spotify's API from your machine — never shared externally. Treat this file like any other credential.
+
+:::
+
+Your access and refresh tokens are also stored locally. Mercury never sends them anywhere except Spotify's API endpoints.
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "Spotify Premium is required" error | You need Premium for playback control. Read-only features still work on free accounts. |
+| 403 errors on play/pause/skip | Your account is on Spotify's free tier. Playback APIs are Premium-only. |
+| "No active device" | Open Spotify on your phone/computer, play any song, then try again. |
+| Browser doesn't open for auth | Use the manual code flow: `/spotify auth` → choose "Paste code" |
+| Token expired after long idle | Run `/spotify auth` to get fresh tokens |
+| Account name not showing | Run `/spotify` and Mercury will fetch it live from Spotify's API |

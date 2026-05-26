@@ -3,18 +3,22 @@ id: telegram
 title: Telegram
 ---
 
-Mercury connects to Telegram via a bot token, providing a mobile-first interface with streaming, file uploads, and inline approval keyboards.
+Mercury connects to Telegram via a bot token, providing a mobile-first interface with streaming, file uploads, inline approval keyboards, and real-time task progress.
 
 ## Access Model
 
 Mercury uses an **organization access model** with admins and members. The first user becomes the admin by completing a pairing-code flow during setup. Additional users request access by sending `/start`, which admins can approve or reject.
 
-:::info First-time pairing
+:::info[First-time pairing]
+
 When no admins exist yet, sending `/start` creates a **pairing code** that must be entered in the CLI to complete setup. This ensures only the legitimate owner can gain initial access. Once an admin exists, new users send `/start` to create a pending request that admins can approve or reject.
+
 :::
 
-:::warning Private chats only
+:::warning[Private chats only]
+
 Mercury only works in private (one-to-one) chats. Messages in groups or channels are always ignored.
+
 :::
 
 ### Roles
@@ -37,23 +41,110 @@ Mercury only works in private (one-to-one) chats. Messages in groups or channels
 | `mercury telegram demote <userId>` | Demote an admin to member (at least one admin must remain) |
 | `mercury telegram reset` | Clear all Telegram access (admins, members, pending). Start fresh. |
 
-### In-Chat Commands
+## Bot Commands Menu
+
+Mercury registers 15 commands in Telegram's bot menu for quick access:
 
 | Command | Description |
 |---------|-------------|
-| `/start` or `/pair` | Request access (new users) or check status (approved users) |
-| `/unpair` | Admin only: Reset all Telegram access for this Mercury instance |
+| `/start` | Request access to this Mercury instance |
+| `/help` | Show Telegram-specific command reference |
+| `/status` | Config, budget, and uptime |
+| `/progress` | Live status for the current task |
+| `/stop` | Stop all agents and clear queue |
+| `/budget` | Token budget status and management |
+| `/stream` | Toggle text streaming on/off |
+| `/memory` | Second brain memory |
+| `/permissions` | Switch Ask Me / Allow All mode |
+| `/models` | List providers or switch AI model |
+| `/code` | Programming mode (plan / execute / off) |
+| `/agents` | List and manage sub-agents |
+| `/bg` | Background tasks |
+| `/spotify` | Spotify playback controls |
+| `/unpair` | Reset all Telegram access (admin only) |
+
+:::tip[Telegram-specific help]
+
+Running `/help` on Telegram shows a clean, Telegram-formatted command reference with only Telegram-relevant commands — no CLI-only features like workspace IDE or progress views.
+
+:::
+
+## Real-Time Task Progress
+
+During multi-step tasks, Mercury uses a **single status card** that updates in place. This keeps the chat clean — you see one message that shows what's happening, not a flood of separate updates.
+
+### How It Works
+
+1. **Step 1 begins** — Mercury creates a status card: `⚙️ Mercury working (step 1)`
+2. **Steps progress** — The same message is edited to show the latest steps with checkmarks
+3. **Step 3+ (substantial task)** — The status card is **pinned** to the top of the chat so you can always see progress without scrolling
+4. **Notices** — System messages like Mercury Autopilot warnings are folded into the status card instead of creating separate messages
+5. **Task completes** — The status card is unpinned and deleted. The AI response and completion banner appear as fresh messages
+
+### What the Status Card Looks Like
+
+```
+⚙️ Mercury working (step 5)
+
+✅ read_file · src/index.ts
+✅ edit_file · src/utils.ts
+✅ run_command · npm test
+✅ read_file · package.json
+⏳ write_file · src/config.ts…
+```
+
+### Single-Message Design
+
+During an active task, **no new messages are created** in the chat. Everything is consolidated into the pinned status card:
+
+- **Tool progress** — edited in place with a rolling window of the last 5 completed steps
+- **Autopilot warnings** — shown as notice lines in the status card (last 3 notices)
+- **AI responses** — deferred until the task completes, then sent as a clean message
+- **Permission prompts** — shown as ephemeral inline keyboard messages, deleted after you respond
+
+This means you never have to scroll up to find the progress indicator — it stays pinned at the top until the task is done.
+
+### Completion
+
+When a substantial task finishes (3+ steps and 30+ seconds), Mercury sends a completion banner:
+
+```
+✅ Task complete (8 steps · 45s)
+☿ claude-sonnet via anthropic · 12.4k tokens
+Budget: ██████████░░░░░ 67% (67.2k / 100.0k)
+
+  ✓ read_file · src/index.ts
+  ✓ edit_file · src/utils.ts
+  ✓ run_command · npm test
+```
+
+## Permission Mode
+
+At the start of each Telegram session, Mercury shows an inline keyboard to choose a permission mode:
+
+- **🔒 Ask Me** — Mercury asks before file writes, shell commands, and scope changes. Prompts appear as inline keyboards with Allow / Always / Deny buttons.
+- **✅ Allow All** — Auto-approve everything for this session. No interruptions.
+
+Use `/permissions` at any time to switch modes. Choosing "Always" on any permission prompt flips to auto-approve for the rest of the session.
+
+### Ephemeral Messages
+
+Permission prompts, loop-continuation prompts, and mode-selection cards are **ephemeral** — they're deleted automatically after you respond (or after a 2-minute timeout). This keeps the chat clean.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
+| Single status card | One message edited in place during multi-step tasks — no message clutter |
+| Pinned progress | Status card pinned to chat top for tasks with 3+ steps |
 | Text streaming | Real-time response editing with typing indicators (toggle with `/stream`) |
 | File uploads | Photos, audio, video, and documents auto-detected and sent with the right API |
 | HTML formatting | Markdown automatically converted to Telegram-compatible HTML |
-| Inline keyboards | Shell command and scope approvals shown as Allow / Always / Deny buttons |
-| Multi-user access | Organization model with admins and members. `send_message` broadcasts to all approved users. |
-| Bot commands menu | 12 commands registered in Telegram's bot menu for quick access |
+| Inline keyboards | Permission and mode prompts shown as tappable buttons |
+| Ephemeral prompts | Permission and mode cards auto-deleted after response |
+| Completion banners | Token usage and budget stats for substantial tasks |
+| Multi-user access | Organization model with admins and members |
+| Bot commands menu | 15 commands registered in Telegram's bot menu for quick access |
 
 ## Configuration
 
