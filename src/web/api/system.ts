@@ -138,6 +138,10 @@ system.put('/api/permissions', async (c) => {
         autoApproveRead: body?.capabilities?.git?.autoApproveRead ?? current.capabilities.git.autoApproveRead,
         approveWrite: body?.capabilities?.git?.approveWrite ?? current.capabilities.git.approveWrite,
       },
+      browser: {
+        enabled: body?.capabilities?.browser?.enabled ?? current.capabilities.browser.enabled,
+        allowedDomains: body?.capabilities?.browser?.allowedDomains ?? current.capabilities.browser.allowedDomains,
+      },
     },
   };
   manager.save(next);

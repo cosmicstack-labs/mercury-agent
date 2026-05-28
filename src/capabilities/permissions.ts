@@ -30,11 +30,22 @@ export interface GitPermissions {
   approveWrite: boolean;
 }
 
+export interface BrowserPermissions {
+  enabled: boolean;
+  /**
+   * Hostnames the user has approved for the browser_* tools. Matches as suffix
+   * so approving `example.com` also covers `www.example.com`. Sensitive domains
+   * may appear here but are still forced to the Local backend.
+   */
+  allowedDomains: string[];
+}
+
 export interface PermissionsManifest {
   capabilities: {
     filesystem: FsPermissions;
     shell: ShellPermissions;
     git: GitPermissions;
+    browser: BrowserPermissions;
   };
 }
 
@@ -139,6 +150,10 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
       enabled: true,
       autoApproveRead: true,
       approveWrite: true,
+    },
+    browser: {
+      enabled: true,
+      allowedDomains: [],
     },
   },
 };
@@ -305,6 +320,11 @@ export class PermissionManager {
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
     this.askHandler = handler;
+  }
+
+  /** Returns the currently registered ask-the-user handler (if any). Used by tools that need to prompt for per-action approval (e.g. browser_open allowing a new domain). */
+  getAskHandler(): ((prompt: string) => Promise<string>) | undefined {
+    return this.askHandler;
   }
 
   setAutoApproveAll(value: boolean): void {
@@ -652,6 +672,10 @@ export class PermissionManager {
           enabled: parsed.capabilities?.git?.enabled ?? DEFAULT_MANIFEST.capabilities.git.enabled,
           autoApproveRead: parsed.capabilities?.git?.autoApproveRead ?? DEFAULT_MANIFEST.capabilities.git.autoApproveRead,
           approveWrite: parsed.capabilities?.git?.approveWrite ?? DEFAULT_MANIFEST.capabilities.git.approveWrite,
+        },
+        browser: {
+          enabled: parsed.capabilities?.browser?.enabled ?? DEFAULT_MANIFEST.capabilities.browser.enabled,
+          allowedDomains: parsed.capabilities?.browser?.allowedDomains ?? DEFAULT_MANIFEST.capabilities.browser.allowedDomains,
         },
       },
     };

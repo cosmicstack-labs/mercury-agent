@@ -60,6 +60,8 @@ class ToolCallLoopDetector {
     'fetch_url', 'read_file', 'list_dir', 'web_search', 'github_api',
     'run_command', 'edit_file', 'write_file', 'create_file',
     'git_status', 'git_diff', 'git_log',
+    // Browser interaction tools repeat by design (click → state → click → state ...).
+    'browser_state', 'browser_click', 'browser_type', 'browser_extract', 'browser_screenshot',
   ]);
 
   // --- Thresholds ---

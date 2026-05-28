@@ -34,6 +34,19 @@ import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
 import {
+  createBrowserOpenTool,
+  createBrowserStateTool,
+  createBrowserClickTool,
+  createBrowserTypeTool,
+  createBrowserExtractTool,
+  createBrowserScreenshotTool,
+  createBrowserCloseTool,
+  createBrowserTaskTool,
+  createApproveUrlScopeTool,
+  type BrowserToolContext,
+} from './browser/index.js';
+import { isBrowserUseConfigured } from '../auth/browser-use-auth.js';
+import {
   createSpotifySearchTool,
   createSpotifyPlayTool,
   createSpotifyPauseTool,
@@ -238,6 +251,31 @@ export class CapabilityRegistry {
     this.tools.fetch_url = createFetchUrlTool();
     logger.info('Web fetch tool registered');
 
+    // Browser tools — gated on permission manifest. Cloud sub-tools additionally
+    // require BROWSER_USE_API_KEY (checked at execute-time by the router so users
+    // can add the key without restarting Mercury).
+    const browserEnabled = manifest.capabilities.browser?.enabled ?? true;
+    if (browserEnabled) {
+      const browserCtx: BrowserToolContext = {
+        permissions: this.permissions,
+        ask: this.permissions.getAskHandler(),
+        sendFile: this.sendFileHandler,
+        getCwd: () => this.getCwd(),
+      };
+      this.tools.browser_open = createBrowserOpenTool(browserCtx);
+      this.tools.browser_state = createBrowserStateTool();
+      this.tools.browser_click = createBrowserClickTool();
+      this.tools.browser_type = createBrowserTypeTool();
+      this.tools.browser_extract = createBrowserExtractTool();
+      this.tools.browser_screenshot = createBrowserScreenshotTool(browserCtx);
+      this.tools.browser_close = createBrowserCloseTool();
+      this.tools.approve_url_scope = createApproveUrlScopeTool(this.permissions);
+      if (isBrowserUseConfigured()) {
+        this.tools.browser_task = createBrowserTaskTool(browserCtx);
+      }
+      logger.info({ cloud: isBrowserUseConfigured() }, 'Browser tools registered');
+    }
+
     if (this.supervisor) {
       this.tools.delegate_task = createDelegateTaskTool(this.supervisor, this);
       this.tools.list_agents = createListAgentsTool(this.supervisor);
@@ -261,6 +299,9 @@ export class CapabilityRegistry {
       'git_add', 'git_commit', 'git_push',
       'create_pr', 'create_issue',
       'delegate_task',
+      // Browser: keep read-only inspection allowed (state/extract/screenshot/close),
+      // block anything that opens a session or mutates page state.
+      'browser_open', 'browser_click', 'browser_type', 'browser_task',
     ]);
     const filtered: Record<string, Tool> = {};
     for (const [name, tool] of Object.entries(this.tools)) {

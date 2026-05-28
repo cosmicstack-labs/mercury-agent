@@ -43,6 +43,8 @@ import { TelegramChannel } from './channels/telegram.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
+import { shutdownBrowserSessions } from './capabilities/browser/index.js';
+import { getBrowserUseAuthState } from './auth/browser-use-auth.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
@@ -1786,6 +1788,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       } catch {}
     }
     await stopWebServer();
+    try { await shutdownBrowserSessions(); } catch {}
     await agent.shutdown();
     process.exit(0);
   };
@@ -1952,6 +1955,15 @@ program
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
+    // Browser capability summary (one line; details via `mercury browser status`)
+    {
+      const bAuth = getBrowserUseAuthState();
+      const parts: string[] = [];
+      parts.push(bAuth.hasKey ? chalk.green('cloud') : chalk.dim('cloud off'));
+      const def = config.browserUse?.defaultBackend ?? 'auto';
+      parts.push(chalk.dim(`default: ${def}`));
+      console.log(`  Browser:  ${parts.join(chalk.dim(' · '))}`);
+    }
     const spotify = config.spotify;
     if (spotify.clientId && spotify.clientSecret) {
       if (spotify.enabled && (spotify.accessToken || spotify.refreshToken)) {
@@ -2175,6 +2187,254 @@ telegramCmd
       console.log(chalk.dim('  The first request must be approved from the CLI with `mercury telegram approve <pairing-code>`.'));
     }
     console.log('');
+  });
+
+const browserCmd = program
+  .command('browser')
+  .description('Manage Mercury\'s browser automation (Browser-Use Cloud + local Chromium)');
+
+browserCmd
+  .command('status')
+  .description('Show the configured backend, API key state, and installed local browser')
+  .action(async () => {
+    const { getBrowserUseAuthState } = await import('./auth/browser-use-auth.js');
+    const { probeLocalBackend } = await import('./capabilities/browser/backends/local.js');
+    const { getBrowserUseUsageTracker } = await import('./utils/browser-use-usage.js');
+    const cfg = loadConfig();
+    const auth = getBrowserUseAuthState();
+    const local = await probeLocalBackend();
+    const tracker = getBrowserUseUsageTracker(cfg);
+
+    console.log('');
+    console.log(chalk.cyan('  Browser status'));
+    console.log('');
+    console.log(`  Cloud (Browser-Use):  ${auth.hasKey ? chalk.green('configured') : chalk.dim('not configured')}`);
+    if (auth.hasKey) {
+      console.log(chalk.dim(`    Source: ${auth.source}`));
+      console.log(chalk.dim(`    Key:    ${auth.keyHint}`));
+    }
+    console.log(`  Local Chromium:       ${local.ok ? chalk.green('ready') : chalk.dim(local.reason ?? 'not available')}`);
+    if (local.ok && local.browserPath) console.log(chalk.dim(`    Path: ${local.browserPath}`));
+    console.log(`  Default backend:      ${chalk.white(cfg.browserUse?.defaultBackend ?? 'auto')}`);
+    if (auth.hasKey) {
+      console.log(`  Cloud usage:          ${chalk.dim(tracker.getStatusText())}`);
+      const gate = tracker.canStartCloudSession();
+      if (!gate.ok) console.log(chalk.yellow(`    ⚠ ${gate.reason}`));
+    }
+    console.log('');
+  });
+
+browserCmd
+  .command('doctor')
+  .description('Run live health checks for the browser capability (Cloud auth, Local Chromium, budgets)')
+  .action(async () => {
+    const auth = await import('./auth/browser-use-auth.js');
+    const { probeLocalBackend } = await import('./capabilities/browser/backends/local.js');
+    const { getBrowserUseUsageTracker } = await import('./utils/browser-use-usage.js');
+    const { PermissionManager } = await import('./capabilities/permissions.js');
+    const cfg = loadConfig();
+
+    console.log('');
+    console.log(chalk.cyan('  Browser doctor'));
+    console.log('');
+
+    let problems = 0;
+
+    // Cloud auth
+    const authState = auth.getBrowserUseAuthState();
+    if (!authState.hasKey) {
+      console.log(`  Cloud auth:        ${chalk.dim('not configured')}`);
+      console.log(chalk.dim('    → Run `mercury browser auth` to enable Cloud sessions and browser_task.'));
+    } else {
+      process.stdout.write(`  Cloud auth:        ${chalk.dim('validating...')}`);
+      const result = await auth.validateBrowserUseApiKey();
+      process.stdout.write('\r\x1b[K');
+      if (result.ok) {
+        console.log(`  Cloud auth:        ${chalk.green('ok')} ${chalk.dim(`(${authState.keyHint}, source: ${authState.source})`)}`);
+        if (result.balance != null) console.log(chalk.dim(`    Credit balance: ${result.balance}`));
+      } else {
+        problems++;
+        console.log(`  Cloud auth:        ${chalk.red('invalid')} ${chalk.dim(`— ${result.reason}`)}`);
+        console.log(chalk.dim('    → Run `mercury browser auth --set <key>` with a fresh key from browser-use.com.'));
+      }
+    }
+
+    // Local backend
+    const local = await probeLocalBackend();
+    if (local.ok) {
+      console.log(`  Local Chromium:    ${chalk.green('ready')}`);
+      if (local.browserPath) console.log(chalk.dim(`    Path: ${local.browserPath}`));
+    } else {
+      console.log(`  Local Chromium:    ${chalk.yellow('not installed')} ${chalk.dim(`— ${local.reason ?? 'unknown'}`)}`);
+      console.log(chalk.dim('    → Run `mercury browser install` to enable offline + sensitive-domain browsing.'));
+    }
+
+    // Default routing & budgets
+    console.log(`  Default backend:   ${chalk.white(cfg.browserUse?.defaultBackend ?? 'auto')}`);
+    if (authState.hasKey) {
+      const tracker = getBrowserUseUsageTracker(cfg);
+      console.log(`  Cloud usage:       ${chalk.dim(tracker.getStatusText())}`);
+      const gate = tracker.canStartCloudSession();
+      if (!gate.ok) {
+        problems++;
+        console.log(chalk.yellow(`    ⚠ ${gate.reason}`));
+        console.log(chalk.dim('    → Raise BROWSER_USE_DAILY_USD / BROWSER_USE_MONTHLY_USD, or wait for rollover.'));
+      }
+    }
+
+    // Allowed domains
+    const manifest = new PermissionManager().getManifest();
+    const allowed = manifest.capabilities.browser?.allowedDomains ?? [];
+    const enabled = manifest.capabilities.browser?.enabled ?? false;
+    console.log(`  Capability:        ${enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    console.log(`  Approved domains:  ${allowed.length > 0 ? chalk.white(String(allowed.length)) : chalk.dim('none yet')}`);
+
+    // Overall verdict
+    console.log('');
+    const cloudOk = authState.hasKey && problems === 0;
+    if (cloudOk || local.ok) {
+      console.log(chalk.green(`  ✓ Browser capability is operational (${cloudOk && local.ok ? 'Cloud + Local' : cloudOk ? 'Cloud only' : 'Local only'}).`));
+    } else if (!authState.hasKey && !local.ok) {
+      console.log(chalk.yellow('  ⚠ No backend available. Configure Cloud auth or install Local Chromium.'));
+      process.exitCode = 1;
+    } else {
+      console.log(chalk.yellow('  ⚠ See issues above.'));
+      process.exitCode = 1;
+    }
+    console.log('');
+  });
+
+browserCmd
+  .command('auth')
+  .description('Set, test, or clear the Browser-Use Cloud API key')
+  .option('--set <key>', 'Save the API key directly (non-interactive)')
+  .option('--clear', 'Remove the saved API key')
+  .option('--test', 'Validate the saved key against the Browser-Use API')
+  .action(async (opts: { set?: string; clear?: boolean; test?: boolean }) => {
+    const auth = await import('./auth/browser-use-auth.js');
+
+    if (opts.clear) {
+      auth.clearBrowserUseApiKey();
+      console.log(chalk.green('  ✓ Browser-Use API key cleared'));
+      return;
+    }
+
+    if (opts.test) {
+      console.log(chalk.dim('  Validating key against browser-use Cloud...'));
+      const result = await auth.validateBrowserUseApiKey();
+      if (result.ok) {
+        console.log(chalk.green('  ✓ Key is valid'));
+        if (result.balance != null) console.log(chalk.dim(`    Credit balance: ${result.balance}`));
+      } else {
+        console.log(chalk.red(`  ✗ Key invalid: ${result.reason}`));
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    let key = opts.set?.trim();
+    if (!key) {
+      console.log('');
+      console.log(chalk.cyan('  Browser-Use Cloud authentication'));
+      console.log(chalk.dim(`  Get a key at: ${auth.BROWSER_USE_SIGNUP_URL}`));
+      console.log('');
+      key = await ask(chalk.white('  Paste your API key (starts with bu_): '));
+    }
+    if (!key) {
+      console.log(chalk.yellow('  Aborted — no key entered'));
+      return;
+    }
+    try {
+      auth.setBrowserUseApiKey(key);
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(chalk.dim('  Key saved. Testing connection...'));
+    const result = await auth.validateBrowserUseApiKey();
+    if (result.ok) {
+      console.log(chalk.green('  ✓ Browser-Use Cloud configured'));
+      if (result.balance != null) console.log(chalk.dim(`    Credit balance: ${result.balance}`));
+    } else {
+      console.log(chalk.yellow(`  Saved, but validation failed: ${result.reason}`));
+    }
+  });
+
+browserCmd
+  .command('install')
+  .description('Install a local Chromium for offline / sensitive-domain browsing')
+  .option('--force', 'Reinstall even if a working Chromium is already detected')
+  .action(async (opts: { force?: boolean }) => {
+    const { probeLocalBackend, installLocalChromium } = await import('./capabilities/browser/backends/local.js');
+    if (!opts.force) {
+      const probe = await probeLocalBackend();
+      if (probe.ok) {
+        console.log(chalk.green('  ✓ Local Chromium already available'));
+        if (probe.browserPath) console.log(chalk.dim(`    Path: ${probe.browserPath}`));
+        return;
+      }
+      console.log(chalk.dim(`  Local Chromium not detected: ${probe.reason}`));
+    }
+    console.log('');
+    console.log(chalk.dim('  Mercury will install Playwright + Chromium (~170 MB) into its cache.'));
+    const proceed = await ask(chalk.white('  Continue? [Y/n]: '));
+    if (proceed.toLowerCase() === 'n') {
+      console.log(chalk.yellow('  Aborted'));
+      return;
+    }
+    console.log(chalk.dim('  Installing — this can take a few minutes...'));
+    const result = await installLocalChromium();
+    if (result.ok) {
+      console.log(chalk.green('  ✓ Local browser installed'));
+      if (result.browserPath) console.log(chalk.dim(`    Path: ${result.browserPath}`));
+    } else {
+      console.log(chalk.red(`  ✗ Install failed: ${result.reason}`));
+      process.exitCode = 1;
+    }
+  });
+
+browserCmd
+  .command('domains')
+  .description('List domains approved for the browser_* tools')
+  .action(async () => {
+    const { PermissionManager } = await import('./capabilities/permissions.js');
+    const m = new PermissionManager().getManifest();
+    const list = m.capabilities.browser?.allowedDomains ?? [];
+    console.log('');
+    if (list.length === 0) {
+      console.log(chalk.dim('  No approved domains yet. Use `mercury browser allow <domain>`.'));
+    } else {
+      console.log(chalk.cyan('  Approved browser domains:'));
+      for (const d of list) console.log(chalk.dim(`    • ${d}`));
+    }
+    console.log('');
+  });
+
+browserCmd
+  .command('allow <domain>')
+  .description('Approve a domain (or hostname suffix) for the browser_* tools')
+  .action(async (domain: string) => {
+    const { PermissionManager } = await import('./capabilities/permissions.js');
+    const { addAllowedDomain } = await import('./capabilities/browser/router.js');
+    const { extractHost, looksLikeSensitiveHost } = await import('./capabilities/browser/backends/base.js');
+    let host = domain.trim().toLowerCase();
+    if (host.startsWith('http://') || host.startsWith('https://')) {
+      const parsed = extractHost(host);
+      if (!parsed) { console.log(chalk.red(`  ✗ Invalid domain: ${domain}`)); process.exitCode = 1; return; }
+      host = parsed;
+    }
+    if (!host || host.includes('/') || host.includes(' ')) {
+      console.log(chalk.red(`  ✗ Invalid domain: ${domain}`));
+      process.exitCode = 1;
+      return;
+    }
+    const manager = new PermissionManager();
+    addAllowedDomain(manager, host);
+    console.log(chalk.green(`  ✓ ${host} approved`));
+    if (looksLikeSensitiveHost(host)) {
+      console.log(chalk.dim('    Note: this domain is treated as sensitive and will route to Local only.'));
+    }
   });
 
 const serviceCmd = program

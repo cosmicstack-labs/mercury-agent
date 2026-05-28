@@ -135,6 +135,24 @@ export interface MercuryConfig {
     enabled: boolean;
     port: number;
   };
+  /**
+   * Browser-Use Cloud integration. The API key is stored here when the user
+   * runs `mercury browser auth set …`. Optional cost guardrails track Cloud
+   * spend in USD per UTC day / calendar month and refuse new Cloud sessions
+   * once exhausted (Mercury falls back to the Local backend).
+   */
+  browserUse: {
+    apiKey: string;
+    /** Hard cost ceilings; 0 disables that ceiling. Both default to 0. */
+    budgets: {
+      dailyUsd: number;
+      monthlyUsd: number;
+      /** Override the USD/hour rate used to compute Cloud cost. 0 = use default ($0.06/hr). */
+      hourlyRateUsd: number;
+    };
+    /** Default routing override: 'auto' | 'cloud' | 'local'. */
+    defaultBackend: 'auto' | 'cloud' | 'local';
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -296,6 +314,15 @@ export function getDefaultConfig(): MercuryConfig {
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
+    },
+    browserUse: {
+      apiKey: getEnv('BROWSER_USE_API_KEY', ''),
+      budgets: {
+        dailyUsd: getEnvNum('BROWSER_USE_DAILY_USD', 0),
+        monthlyUsd: getEnvNum('BROWSER_USE_MONTHLY_USD', 0),
+        hourlyRateUsd: getEnvNum('BROWSER_USE_HOURLY_RATE_USD', 0),
+      },
+      defaultBackend: ((process.env.BROWSER_USE_DEFAULT_BACKEND ?? 'auto') as 'auto' | 'cloud' | 'local'),
     },
   };
 }
