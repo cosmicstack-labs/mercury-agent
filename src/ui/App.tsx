@@ -905,31 +905,100 @@ function StatusBarView({ state }: { state: TuiState }) {
 }
 
 function TokenBarView({ state }: { state: TuiState }) {
-  if (!state.tokenInfo) return null;
+  if (!state.tokenInfo && !state.provider) return null;
+
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
-  const filled = Math.min(20, Math.round(state.tokenInfo.percentage / 5));
-  const tokenBar = `[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${state.tokenInfo.percentage}%`;
+
+  // Color the percentage based on usage thresholds (or saver state if active)
+  const pct = state.tokenInfo?.percentage ?? 0;
+  const pctColor = saverActive
+    ? saverColor
+    : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
+
+  // Sub-agent count (running only)
+  const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
+  // Background task count (running only)
+  const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
+  // Memory proxy: number of messages in current context window
+  const ctxSize = state.chatMessages.length;
+
+  const isWorkspace = state.mode === 'workspace' && state.workspace;
+
   return (
     <Box flexDirection="column">
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
       <Box paddingX={1} paddingBottom={0}>
-        <Text color={saverActive ? saverColor : 'cyan'} bold={saverActive}>
-          {saverActive ? '⚡ Tokens ' : 'Tokens '}
-        </Text>
-        <Text color={saverActive ? saverColor : undefined}>{tokenBar}</Text>
-        <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
-        {state.saverInfo && state.saverInfo.savedToday > 0 && (
-          <Text color="green" bold> · saved ~{state.saverInfo.savedToday.toLocaleString()}</Text>
+        {state.tokenInfo && (
+          <>
+            <Text color={saverActive ? saverColor : 'cyan'} bold={saverActive}>
+              {saverActive ? '⚡' : '◷'} Tokens{' '}
+            </Text>
+            <Text color={pctColor} bold>{pct}%</Text>
+            {saverActive && state.saverInfo!.savedToday > 0 && (
+              <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
+            )}
+            {saverActive && state.saverInfo!.savedToday === 0 && (
+              <Text color={saverColor}> · SAVER</Text>
+            )}
+          </>
         )}
-        {saverActive && state.saverInfo!.savedToday === 0 && (
-          <Text color={saverColor}> · SAVER ACTIVE</Text>
+
+        {state.provider && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="magenta">{state.provider.model}</Text>
+          </>
+        )}
+
+        {isWorkspace && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="blue">⎇ {state.workspace!.branch}</Text>
+            {(state.workspace!.ahead > 0 || state.workspace!.behind > 0) && (
+              <Text color="yellow">
+                {state.workspace!.ahead > 0 ? ` ↑${state.workspace!.ahead}` : ''}
+                {state.workspace!.behind > 0 ? ` ↓${state.workspace!.behind}` : ''}
+              </Text>
+            )}
+            {(state.workspace!.stagedCount > 0 || state.workspace!.unstagedCount > 0) && (
+              <Text color="gray">
+                {state.workspace!.stagedCount > 0 ? <Text color="green"> S{state.workspace!.stagedCount}</Text> : null}
+                {state.workspace!.unstagedCount > 0 ? <Text color="yellow"> M{state.workspace!.unstagedCount}</Text> : null}
+              </Text>
+            )}
+          </>
+        )}
+
+        {!isWorkspace && runningBg > 0 && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="cyan">⏳ {runningBg} bg</Text>
+          </>
+        )}
+        {!isWorkspace && runningAgents > 0 && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
+          </>
+        )}
+        {!isWorkspace && ctxSize > 0 && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text dimColor>🧠 {ctxSize} msg{ctxSize !== 1 ? 's' : ''}</Text>
+          </>
         )}
       </Box>
     </Box>
   );
+}
+
+function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 function ChatBody({ state }: { state: TuiState }) {

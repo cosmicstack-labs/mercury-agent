@@ -721,7 +721,7 @@ export class CLIChannel extends BaseChannel {
     const nodes = this.buildTreeNodes(rootPath, expanded, 0);
     const selectedIndex = Math.max(0, nodes.findIndex((n) => n.path === selectedPath));
     const selectedNode = nodes[selectedIndex] || nodes[0] || null;
-    const { files, branch, stagedCount, unstagedCount } = this.readGitState(rootPath);
+    const { files, branch, stagedCount, unstagedCount, ahead, behind } = this.readGitState(rootPath);
     return {
       active: true,
       rootPath,
@@ -734,6 +734,8 @@ export class CLIChannel extends BaseChannel {
       stagedCount,
       unstagedCount,
       branch,
+      ahead,
+      behind,
       lastAction,
       codeScrollOffset: this.state.workspace?.codeScrollOffset ?? 0,
       focusArea: this.state.workspace?.focusArea ?? 'explorer',
@@ -832,12 +834,21 @@ export class CLIChannel extends BaseChannel {
     return nodes;
   }
 
-  private readGitState(rootPath: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number } {
+  private readGitState(rootPath: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number } {
     try {
       const branch = execSync('git branch --show-current', { cwd: rootPath, stdio: 'pipe' }).toString().trim() || 'detached';
-      const out = execSync('git status --porcelain', { cwd: rootPath, stdio: 'pipe' }).toString();
-      const files: WorkspaceGitFile[] = out
-        .split('\n')
+      const out = execSync('git status --porcelain=v1 --branch', { cwd: rootPath, stdio: 'pipe' }).toString();
+      const lines = out.split('\n');
+      let ahead = 0;
+      let behind = 0;
+      // First line: "## branch...origin/branch [ahead 1, behind 2]"
+      const header = lines[0] || '';
+      const aheadMatch = header.match(/ahead (\d+)/);
+      const behindMatch = header.match(/behind (\d+)/);
+      if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
+      if (behindMatch) behind = parseInt(behindMatch[1], 10);
+      const files: WorkspaceGitFile[] = lines
+        .slice(1)
         .map((line) => line.trimEnd())
         .filter(Boolean)
         .map((line) => {
@@ -850,9 +861,9 @@ export class CLIChannel extends BaseChannel {
         });
       const stagedCount = files.filter((f) => f.staged).length;
       const unstagedCount = files.length - stagedCount;
-      return { files, branch, stagedCount, unstagedCount };
+      return { files, branch, stagedCount, unstagedCount, ahead, behind };
     } catch {
-      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0 };
+      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0, ahead: 0, behind: 0 };
     }
   }
 

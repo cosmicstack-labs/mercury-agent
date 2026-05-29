@@ -32,6 +32,8 @@ export interface WorkspaceState {
   stagedCount: number;
   unstagedCount: number;
   branch: string;
+  ahead: number;
+  behind: number;
   lastAction: string;
   codeScrollOffset: number;
   focusArea: 'explorer' | 'code' | 'git' | 'chat';
