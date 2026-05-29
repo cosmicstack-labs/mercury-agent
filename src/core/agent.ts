@@ -1042,42 +1042,120 @@ export class Agent {
       messages.push({ role: 'user', content: msg.content });
 
       // ── Skill Intent Routing & Batch Execution ──
+      //
+      // Routing strategy:
+      //   1. Explicit pick via `#skill-name` prefix → run that skill directly,
+      //      no ambiguity resolution needed.
+      //   2. Otherwise consult the intent router:
+      //      - Clear winner (high confidence + clear gap) → let the LLM invoke
+      //        it normally via use_skill (single skill) OR batch-execute when
+      //        the top batch is multi-skill in the same category.
+      //      - Ambiguous (multiple contenders bunched near the top) → ask the
+      //        user to disambiguate before doing anything.
+      //      - No usable match → fall through to the normal LLM loop.
       if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
         try {
           const intentRouter = this.skillLoader.intentRouter;
-          if (intentRouter && intentRouter.isInitialized()) {
-            const batches = intentRouter.matchToBatches(trimmed, 0.4);
-            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
 
-            if (batches.length > 0 && totalMatchedSkills >= 1) {
-              const matchedSkillNames = batches.flatMap(b => b.skills.map(s => s.name));
-              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
+          // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
+          const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
+          if (intentRouter && intentRouter.isInitialized() && hashMatch) {
+            const skillName = hashMatch[1];
+            const rest = hashMatch[2].trim();
+            const knownSkills = this.skillLoader.getDiscovered?.() || [];
+            const known = knownSkills.some((s: any) => s.name === skillName);
+            if (known) {
+              messages[messages.length - 1] = {
+                role: 'user',
+                content: rest || trimmed,
+              };
+              messages.push({
+                role: 'user',
+                content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
+              });
+              // Skip the rest of routing — explicit pick wins.
+            } else {
+              // Unknown #tag: just strip it and let routing proceed on the rest.
+              const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
+              if (stripped) {
+                messages[messages.length - 1] = { role: 'user', content: stripped };
+              }
+            }
+          }
 
-              // For 2+ skills, batch execute via sub-agents
-              // For single skill, let the LLM handle it normally via use_skill
-              if (totalMatchedSkills >= 2) {
-                const plan = this.skillBatcher.planExecution(batches);
-                if (plan.batches.length > 0) {
-                  const channel = this.channels.getChannelForMessage(msg);
-                  if (channel) {
-                    await channel.send(`🧠 Intent routing matched **${totalMatchedSkills}** skills: ${matchedSkillNames.join(', ')}. Executing batch in background...`, msg.channelId).catch(() => {});
-                  }
+          if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
+            const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
 
-                  // Execute and wait for results
-                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
-                  const summary = this.skillBatcher.summarizeResults(batchResults);
+            // (2a) Ambiguous → ask the user to pick before executing anything.
+            if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
+              const contenders = analysis.closeContenders.slice(0, 5);
+              const choices = [
+                ...contenders.map(c => {
+                  const desc = intentRouter.getSkillDescription?.(c.name) || '';
+                  return desc ? `${c.name} — ${desc}` : c.name;
+                }),
+                'None of these — answer normally',
+              ];
+              const channel = this.channels.getChannelForMessage(msg);
+              let picked: string | null = null;
+              try {
+                picked = await this.presentChoice(
+                  `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
+                  choices,
+                  msg.channelId,
+                  msg.channelType,
+                );
+              } catch {
+                picked = null;
+              }
+              if (picked && !picked.startsWith('None of these')) {
+                const chosenName = picked.split(' — ')[0].trim();
+                messages.push({
+                  role: 'user',
+                  content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
+                });
+                if (channel) {
+                  await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch(() => {});
+                }
+              }
+              // If the user picked "None of these" we just fall through silently.
+            } else {
+              // (2b) Clear-enough match → use the existing batch path, but
+              //      only when the *top batch alone* has 2+ skills (genuine
+              //      multi-step request like "download and notify"). Cross-
+              //      category fan-out is what caused the 10-skill explosion.
+              const batches = intentRouter.matchToBatches(trimmed, 0.6);
+              const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
 
-                  if (summary) {
-                    messages.push({
-                      role: 'user',
-                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
-                    });
-                    messages.push({
-                      role: 'assistant',
-                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
-                    });
+              if (batches.length > 0 && totalMatchedSkills >= 1) {
+                const topBatch = batches[0];
+                const matchedSkillNames = topBatch.skills.map(s => s.name);
+                this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
+
+                if (topBatch.skills.length >= 2 && analysis.clearWinner) {
+                  const plan = this.skillBatcher.planExecution([topBatch]);
+                  if (plan.batches.length > 0) {
+                    const channel = this.channels.getChannelForMessage(msg);
+                    if (channel) {
+                      await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch(() => {});
+                    }
+
+                    const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
+                    const summary = this.skillBatcher.summarizeResults(batchResults);
+
+                    if (summary) {
+                      messages.push({
+                        role: 'user',
+                        content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
+                      });
+                      messages.push({
+                        role: 'assistant',
+                        content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
+                      });
+                    }
                   }
                 }
+                // Single clear-winner skill: let the LLM call use_skill itself.
               }
             }
           }

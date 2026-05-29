@@ -196,9 +196,12 @@ export class SkillLoader {
     }
 
     // Intent routing hint — tell the agent about the new system
-    text += '\n\n**Skill Intent Routing Available** — When a user request matches skill intents, '
-      + 'you can use intent matching to automatically route to the right skills. '
-      + 'For multi-skill requests, batch execution across sub-agents for parallel processing.';
+    text += '\n\n**Skill Intent Routing** — When a user request clearly matches a skill, '
+      + 'invoke it via `use_skill` immediately. If the request is ambiguous (could match '
+      + 'multiple skills equally well), prefer asking the user with the `ask_user` tool '
+      + 'over guessing or fanning out across many skills. '
+      + 'Users can also explicitly pick a skill by prefixing their message with '
+      + '`#skill-name` — when you see that prefix the choice is already made for you.';
 
     return text;
   }

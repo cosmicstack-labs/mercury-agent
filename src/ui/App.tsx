@@ -169,6 +169,47 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     setSlashSelIdx(0);
   }, [slashSuggestions.length, input]);
 
+  // ── Skill picker (`#name` prefix) ──
+  // Mirrors the slash picker. Triggered when input starts with `#`. Matches
+  // skills by name prefix first, then by name-substring, then by
+  // description-substring (case-insensitive). The selected entry inserts as
+  // `#skill-name ` so the user can continue typing their request.
+  const skillSuggestions = React.useMemo(() => {
+    if (!input.startsWith('#')) return [] as Array<{ name: string; description: string }>;
+    const q = input.slice(1).split(/\s/)[0].toLowerCase();
+    const skills = state.skills || [];
+    if (!q) {
+      return skills.slice(0, 8).map((s) => ({ name: s.name, description: s.description }));
+    }
+    const prefix: typeof skills = [];
+    const nameSub: typeof skills = [];
+    const descSub: typeof skills = [];
+    for (const s of skills) {
+      const n = s.name.toLowerCase();
+      if (n.startsWith(q)) prefix.push(s);
+      else if (n.includes(q)) nameSub.push(s);
+      else if ((s.description || '').toLowerCase().includes(q)) descSub.push(s);
+    }
+    return [...prefix, ...nameSub, ...descSub]
+      .slice(0, 8)
+      .map((s) => ({ name: s.name, description: s.description }));
+  }, [input, state.skills]);
+
+  const [skillSelIdx, setSkillSelIdx] = React.useState(0);
+  React.useEffect(() => {
+    setSkillSelIdx(0);
+  }, [skillSuggestions.length, input]);
+
+  const completeSkillSelection = React.useCallback(() => {
+    const picked = skillSuggestions[skillSelIdx];
+    if (!picked) return false;
+    // If the user already typed something after the hash-token, keep it.
+    const rest = input.slice(1).split(/\s(.*)/s)[1] || '';
+    const next = rest ? `#${picked.name} ${rest}` : `#${picked.name} `;
+    setInputAndCursor(next);
+    return true;
+  }, [skillSuggestions, skillSelIdx, input]);
+
   React.useEffect(() => {
     if (state.mode !== 'splash') return;
     if (splashPhase === 'logo') {
@@ -428,6 +469,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         return;
       }
 
+      // Skill picker: first Enter fills the selection (so the user can keep
+      // typing their request after the skill name); second Enter submits.
+      if (skillSuggestions.length > 0) {
+        const picked = skillSuggestions[skillSelIdx];
+        const expected = picked ? `#${picked.name}` : '';
+        if (picked && !trimmed.startsWith(expected + ' ') && trimmed !== expected) {
+          completeSkillSelection();
+          return;
+        }
+      }
+
       if (trimmed) {
         onInput(trimmed);
         setInputHistory((prev) => {
@@ -573,6 +625,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.tab) {
       if (input.startsWith('/') && slashSuggestions.length > 0) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
+      } else if (input.startsWith('#') && skillSuggestions.length > 0) {
+        completeSkillSelection();
       }
       return;
     }
@@ -595,6 +649,18 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
       if (key.downArrow) {
         setSlashSelIdx((i) => (i < slashSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+    }
+
+    // Up/down arrow: navigate skill (#) suggestions when popup is visible
+    if (skillSuggestions.length > 0) {
+      if (key.upArrow) {
+        setSkillSelIdx((i) => (i > 0 ? i - 1 : skillSuggestions.length - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSkillSelIdx((i) => (i < skillSuggestions.length - 1 ? i + 1 : 0));
         return;
       }
     }
@@ -731,6 +797,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
           {slashSuggestions.map((cmd, idx) => (
             <Text key={cmd} color={idx === slashSelIdx ? 'cyan' : 'gray'}>{idx === slashSelIdx ? '›' : ' '} {cmd}</Text>
+          ))}
+        </Box>
+      )}
+      {showInput && skillSuggestions.length > 0 && (
+        <Box flexDirection="column" paddingX={1}>
+          <Text dimColor>Skills (↑↓ navigate · Tab/Enter to select):</Text>
+          {skillSuggestions.map((s, idx) => (
+            <Text key={s.name} color={idx === skillSelIdx ? 'magenta' : 'gray'}>
+              {idx === skillSelIdx ? '›' : ' '} #{s.name}
+              {s.description ? <Text dimColor> — {s.description.slice(0, 70)}{s.description.length > 70 ? '…' : ''}</Text> : null}
+            </Text>
           ))}
         </Box>
       )}

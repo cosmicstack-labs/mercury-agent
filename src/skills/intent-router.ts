@@ -5,6 +5,19 @@ import { logger } from '../utils/logger.js';
  * IntentRouter — matches user input against skill intents to route requests
  * to the right skill(s) automatically.
  */
+/**
+ * Generic verbs / nouns that appear in many skill intents and would otherwise
+ * drag in unrelated skills on a single shared word. Indexed intents still keep
+ * these words (for exact-intent matching), but the per-word keyword index skips
+ * them so they cannot single-handedly score a skill at 0.70.
+ */
+const KEYWORD_STOPLIST = new Set([
+  'download', 'send', 'get', 'find', 'show', 'make', 'use', 'open', 'run',
+  'start', 'stop', 'create', 'fetch', 'list', 'add', 'remove', 'update',
+  'check', 'search', 'this', 'that', 'with', 'from', 'into', 'about',
+  'http', 'https', 'www', 'com', 'org', 'net',
+]);
+
 export class IntentRouter {
   private intentIndex: Map<string, Array<{ skillName: string; intent: string }>> = new Map();
   private tagIndex: Map<string, string[]> = new Map();    // tag -> skill names
@@ -56,8 +69,12 @@ export class IntentRouter {
         }
         this.intentIndex.get(normalized)!.push({ skillName: meta.name, intent: normalized });
 
-        // Also index individual words from the intent for fuzzy matching
-        const words = normalized.split(/\s+/).filter(w => w.length > 2);
+        // Also index individual words from the intent for fuzzy matching.
+        // Stoplist generic verbs (download, send, get, …) so a single shared
+        // word can't pull in 10 unrelated skills.
+        const words = normalized
+          .split(/\s+/)
+          .filter(w => w.length > 3 && !KEYWORD_STOPLIST.has(w));
         for (const word of words) {
           if (!this.keywordIndex.has(word)) {
             this.keywordIndex.set(word, []);
@@ -104,26 +121,34 @@ export class IntentRouter {
       }
     }
 
-    // 2. Word overlap match (medium confidence)
-    const inputWords = input.split(/\s+/).filter(w => w.length > 2);
+    // 2. Word overlap match — count how many indexed keywords are shared.
+    //    Single shared word = weak signal (0.55); ≥2 shared = strong (0.75).
+    const inputWords = input.split(/\s+/).filter(w => w.length > 3 && !KEYWORD_STOPLIST.has(w));
     const inputBigrams = this.getBigrams(input);
+    const overlapCount: Map<string, number> = new Map();
 
     for (const [word, skillNames] of this.keywordIndex.entries()) {
       if (inputWords.includes(word)) {
         for (const name of skillNames) {
-          const current = matches.get(name);
-          const currentConf = current?.confidence ?? 0;
-          this.addOrUpdateMatch(matches, name, Math.max(currentConf, 0.7), undefined);
+          overlapCount.set(name, (overlapCount.get(name) ?? 0) + 1);
         }
       }
     }
+    for (const [name, count] of overlapCount.entries()) {
+      const conf = count >= 2 ? 0.75 : 0.55;
+      const current = matches.get(name);
+      const currentConf = current?.confidence ?? 0;
+      this.addOrUpdateMatch(matches, name, Math.max(currentConf, conf), undefined);
+    }
 
-    // 3. Bigram similarity (lower confidence but catches paraphrases)
+    // 3. Bigram similarity — paraphrase catch. Tightened: word must be ≥4
+    //    chars and overlap ratio > 0.6 (was 0.3). Kills "research" → "NousResearch".
     for (const [word, skillNames] of this.keywordIndex.entries()) {
+      if (word.length < 4) continue;
       const wordBigrams = this.getBigrams(word);
       const overlap = inputBigrams.filter(b => wordBigrams.includes(b)).length;
       const maxLen = Math.max(inputBigrams.length, wordBigrams.length);
-      if (maxLen > 0 && overlap / maxLen > 0.3) {
+      if (maxLen > 0 && overlap / maxLen > 0.6) {
         for (const name of skillNames) {
           const current = matches.get(name);
           const currentConf = current?.confidence ?? 0;
@@ -132,9 +157,12 @@ export class IntentRouter {
       }
     }
 
-    // 4. Tag match
+    // 4. Tag match — require tag ≥4 chars and matched as a whole word
+    //    (not just substring) so short tags like "cli" don't match "clip".
     for (const [tag, skillNames] of this.tagIndex.entries()) {
-      if (input.includes(tag)) {
+      if (tag.length < 4) continue;
+      const wholeWord = new RegExp(`\\b${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      if (wholeWord.test(input)) {
         for (const name of skillNames) {
           const current = matches.get(name);
           const currentConf = current?.confidence ?? 0;
@@ -182,9 +210,42 @@ export class IntentRouter {
   }
 
   /**
+   * Get a skill's description (for clarification prompts, # picker, etc.).
+   */
+  getSkillDescription(name: string): string | undefined {
+    return this.skillMap.get(name)?.description;
+  }
+
+  /**
+   * Analyze the top matches for clear-winner vs ambiguous decision making.
+   * - clearWinner: top match >= clearThreshold AND >= gap above the second match
+   * - ambiguous: multiple matches clustered near the top with no clear winner
+   */
+  analyzeMatch(userInput: string, opts: { clearThreshold?: number; gap?: number } = {}): {
+    matches: MatchedSkill[];
+    top?: MatchedSkill;
+    clearWinner: boolean;
+    ambiguous: boolean;
+    closeContenders: MatchedSkill[];
+  } {
+    const clearThreshold = opts.clearThreshold ?? 0.85;
+    const gap = opts.gap ?? 0.15;
+    const matches = this.match(userInput);
+    if (matches.length === 0) {
+      return { matches, clearWinner: false, ambiguous: false, closeContenders: [] };
+    }
+    const top = matches[0];
+    const second = matches[1];
+    const closeContenders = matches.filter(m => top.confidence - m.confidence < gap);
+    const clearWinner = top.confidence >= clearThreshold && (!second || top.confidence - second.confidence >= gap);
+    const ambiguous = !clearWinner && closeContenders.length >= 2;
+    return { matches, top, clearWinner, ambiguous, closeContenders };
+  }
+
+  /**
    * Match user input and return category-grouped results.
    */
-  matchToBatches(userInput: string, threshold: number = 0.4): Array<{ category: string; categoryLabel: string; skills: MatchedSkill[] }> {
+  matchToBatches(userInput: string, threshold: number = 0.6): Array<{ category: string; categoryLabel: string; skills: MatchedSkill[] }> {
     const matched = this.match(userInput)
       .filter(m => m.confidence >= threshold);
 
