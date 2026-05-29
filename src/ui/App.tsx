@@ -933,9 +933,9 @@ function TokenBarView({ state }: { state: TuiState }) {
       <Box paddingX={1} paddingBottom={0}>
         {state.tokenInfo && (
           <>
-            <Text color={saverActive ? saverColor : 'cyan'} bold={saverActive}>
-              {saverActive ? '⚡T ' : 'T '}
-            </Text>
+            {saverActive && (
+              <Text color={saverColor} bold>⚡ </Text>
+            )}
             <Text color={pctColor}>
               [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
             </Text>
