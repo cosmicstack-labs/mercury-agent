@@ -936,10 +936,8 @@ function TokenBarView({ state }: { state: TuiState }) {
             {saverActive && (
               <Text color={saverColor} bold>⚡ </Text>
             )}
-            <Text color={pctColor}>
-              [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
-            </Text>
-            <Text color={pctColor} bold> {pct}%</Text>
+            <Text color={pctColor}>{pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'} </Text>
+            <Text color={pctColor} bold>{pct}%</Text>
             {saverActive && state.saverInfo!.savedToday > 0 && (
               <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
             )}
