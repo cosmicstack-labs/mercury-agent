@@ -820,6 +820,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
+      <TokenBarView state={state} />
     </Box>
   );
 }
@@ -860,11 +861,6 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
 function StatusBarView({ state }: { state: TuiState }) {
   const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
-  let tokenBar = '';
-  if (state.tokenInfo) {
-    const filled = Math.min(20, Math.round(state.tokenInfo.percentage / 5));
-    tokenBar = `[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${state.tokenInfo.percentage}%`;
-  }
   const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
   const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
 
@@ -904,16 +900,34 @@ function StatusBarView({ state }: { state: TuiState }) {
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
-      {state.tokenInfo && (
-        <Box paddingX={1}>
-          <Text color="cyan">Tokens </Text>
-          <Text>{tokenBar}</Text>
-          <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
-          {state.saverInfo && state.saverInfo.savedToday > 0 && (
-            <Text color="green"> · saved ~{state.saverInfo.savedToday.toLocaleString()}</Text>
-          )}
-        </Box>
-      )}
+    </Box>
+  );
+}
+
+function TokenBarView({ state }: { state: TuiState }) {
+  if (!state.tokenInfo) return null;
+  const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
+  const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
+  const filled = Math.min(20, Math.round(state.tokenInfo.percentage / 5));
+  const tokenBar = `[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${state.tokenInfo.percentage}%`;
+  return (
+    <Box flexDirection="column">
+      <Box paddingX={1}>
+        <Text color="gray">{'─'.repeat(50)}</Text>
+      </Box>
+      <Box paddingX={1} paddingBottom={0}>
+        <Text color={saverActive ? saverColor : 'cyan'} bold={saverActive}>
+          {saverActive ? '⚡ Tokens ' : 'Tokens '}
+        </Text>
+        <Text color={saverActive ? saverColor : undefined}>{tokenBar}</Text>
+        <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
+        {state.saverInfo && state.saverInfo.savedToday > 0 && (
+          <Text color="green" bold> · saved ~{state.saverInfo.savedToday.toLocaleString()}</Text>
+        )}
+        {saverActive && state.saverInfo!.savedToday === 0 && (
+          <Text color={saverColor}> · SAVER ACTIVE</Text>
+        )}
+      </Box>
     </Box>
   );
 }

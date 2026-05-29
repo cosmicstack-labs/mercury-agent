@@ -1764,6 +1764,7 @@ export class Agent {
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
       });
+      this.syncTokenInfoToCli();
 
       // Estimate tokens saved by Saver Mode (cap headroom + history trim).
       // Rough: (default_cap - actual_output) when capped, plus history-window delta.
@@ -2139,6 +2140,7 @@ RULES:
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
       });
+      this.syncTokenInfoToCli();
 
       const text = result.text.trim();
       if (!text) return;
@@ -2358,6 +2360,7 @@ Is this productive iteration or a stuck loop?`,
       await channel.send('Budget override applied — your next request will proceed.', channelId);
     } else if (action === 'reset' || action === '2') {
       this.tokenBudget.resetUsage();
+      this.syncTokenInfoToCli();
       await channel.send(`Usage reset to zero. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (action === 'set' || action === '3') {
       const newBudget = parseInt(parts[1], 10);
@@ -2366,6 +2369,7 @@ Is this productive iteration or a stuck loop?`,
         return;
       }
       this.tokenBudget.setBudget(newBudget);
+      this.syncTokenInfoToCli();
       await channel.send(`Daily budget updated to ${newBudget.toLocaleString()} tokens. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (action === 'cancel' || action === '4') {
       await channel.send(`Cancelled. ${this.tokenBudget.getStatusText()}`, channelId);
@@ -2499,6 +2503,17 @@ Is this productive iteration or a stuck loop?`,
         this.saverMode.getState(),
         this.tokenBudget.getSavedToday(),
         this.tokenBudget.getSavedLifetime(),
+      );
+    }
+  }
+
+  private syncTokenInfoToCli(): void {
+    const ch = this.channels.get('cli');
+    if (ch && (ch as any).setTokenInfo) {
+      (ch as any).setTokenInfo(
+        this.tokenBudget.getDailyUsed(),
+        this.tokenBudget.getBudget(),
+        Math.round(this.tokenBudget.getUsagePercentage()),
       );
     }
   }
