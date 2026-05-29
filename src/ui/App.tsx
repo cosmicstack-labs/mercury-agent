@@ -938,7 +938,7 @@ function ChatBody({ state }: { state: TuiState }) {
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
@@ -977,7 +977,7 @@ function CodingBody({ state }: { state: TuiState }) {
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
@@ -1558,7 +1558,22 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   );
 }
 
-function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed' }) {
+function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed'; idle?: boolean }) {
+  // When idle (task complete), collapse to a single summary line to free
+  // up screen space. Full history remains available via /progress.
+  if (idle) {
+    const last = [...steps].reverse().find((s) => s.status === 'done' || s.status === 'error') ?? steps[steps.length - 1];
+    if (!last) return null;
+    const totalDone = steps.filter((s) => s.status === 'done').length;
+    const icon = last.status === 'done' ? '✅' : last.status === 'error' ? '❌' : '·';
+    const more = totalDone > 1 ? ` · +${totalDone - 1} earlier` : '';
+    return (
+      <Box marginLeft={2} marginTop={1}>
+        <Text dimColor>{icon} {last.label}{last.elapsed != null ? ` (${last.elapsed.toFixed(1)}s)` : ''}{more} · /progress</Text>
+      </Box>
+    );
+  }
+
   const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
   const totalDone = steps.filter((s) => s.status === 'done').length;
   const totalRunning = steps.filter((s) => s.status === 'running').length;

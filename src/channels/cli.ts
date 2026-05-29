@@ -253,6 +253,12 @@ export class CLIChannel extends BaseChannel {
         this.update({ viewMode: this.state.viewMode === 'balanced' ? 'detailed' : 'balanced' });
         return;
       }
+      // Clear stale tool steps from the previous task so the activity
+      // panel starts fresh for each new user message.
+      if (this.state.toolSteps.length > 0) {
+        this.update({ toolSteps: [] });
+        this.stepCount = 0;
+      }
       onInput(trimmed);
     };
 
