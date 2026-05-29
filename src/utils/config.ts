@@ -111,6 +111,14 @@ export interface MercuryConfig {
   };
   tokens: {
     dailyBudget: number;
+    /** When true, Token Saver Mode is manually enabled. Persisted. */
+    saverMode?: boolean;
+    /** Percentage of daily budget at which saver auto-engages (0 disables). */
+    saverAutoThreshold?: number;
+    /** Master switch for automatic engagement (defaults to true). */
+    saverAutoEnabled?: boolean;
+    /** Lifetime estimated tokens saved by saver mode (informational). */
+    saverTokensSavedLifetime?: number;
   };
   subagents: {
     enabled: boolean;

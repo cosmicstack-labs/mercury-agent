@@ -10,6 +10,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { FileLockManager } from './file-lock.js';
 import type { TaskBoard } from './task-board.js';
+import type { SaverMode } from './saver-mode.js';
 import { logger } from '../utils/logger.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
@@ -39,6 +40,7 @@ export class SubAgent {
   private tokenBudget: TokenBudget;
   private fileLockManager: FileLockManager;
   private taskBoard: TaskBoard;
+  private saverMode?: SaverMode;
 
   private onProgress?: ProgressCallback;
   private onComplete?: CompletionCallback;
@@ -60,6 +62,7 @@ export class SubAgent {
       tokenBudget: TokenBudget;
       fileLockManager: FileLockManager;
       taskBoard: TaskBoard;
+      saverMode?: SaverMode;
     },
   ) {
     this.config = config;
@@ -76,6 +79,7 @@ export class SubAgent {
     this.tokenBudget = dependencies.tokenBudget;
     this.fileLockManager = dependencies.fileLockManager;
     this.taskBoard = dependencies.taskBoard;
+    this.saverMode = dependencies.saverMode;
   }
 
   getStatus(): SubAgentStatus {
@@ -145,7 +149,8 @@ export class SubAgent {
 
       try {
         const provider = this.providers.getDefault();
-        const maxSteps = this.config.maxSteps || 25;
+        const baseMaxSteps = this.config.maxSteps || 25;
+        const maxSteps = this.saverMode?.isActive() ? this.saverMode.adjustMaxSteps(baseMaxSteps) : baseMaxSteps;
         let stepsRemaining = maxSteps;
 
         logger.info({ agentId: this.config.id, provider: provider.name, maxSteps }, 'Sub-agent generating response');
@@ -404,6 +409,10 @@ export class SubAgent {
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
       prompt += '\nBe concise to conserve tokens.';
+    }
+    const saverSuffix = this.saverMode?.getSystemPromptSuffix() ?? '';
+    if (saverSuffix) {
+      prompt += saverSuffix;
     }
 
     prompt += `\n\nEnvironment:\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;

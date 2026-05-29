@@ -1,4 +1,5 @@
 import type { ProgrammingModeState } from '../core/programming-mode.js';
+import type { SaverModeState } from '../core/saver-mode.js';
 import type { SubAgentStatus } from '../types/agent.js';
 import type { PermissionMode } from '../channels/base.js';
 
@@ -104,6 +105,12 @@ export interface TokenInfo {
   used: number;
   budget: number;
   percentage: number;
+}
+
+export interface SaverInfo {
+  state: SaverModeState;
+  savedToday: number;
+  savedLifetime: number;
 }
 
 export interface MercuryAppState {

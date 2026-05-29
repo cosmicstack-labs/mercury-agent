@@ -133,6 +133,13 @@ export function getManual(): string {
     ['/stream', 'Toggle text streaming on/off (Telegram)'],
     ['/stream on', 'Enable streaming (live text updates)'],
     ['/stream off', 'Disable streaming (single message)'],
+    ['/saver', 'Show Token Saver Mode status and tokens saved'],
+    ['/saver on', 'Manually enable Token Saver Mode (terser, faster, cheaper)'],
+    ['/saver off', 'Disable Token Saver Mode'],
+    ['/saver toggle', 'Toggle Token Saver Mode on/off'],
+    ['/saver threshold <0-100>', 'Auto-engage threshold (default 75%; 0 to disable)'],
+    ['/saver auto on|off', 'Enable/disable automatic engagement at threshold'],
+    ['/saver routing on|off', 'Prefer cheap providers when saver is active (opt-in)'],
     ['/agents', 'List all sub-agents and their status'],
     ['/agents stop <id|all>', 'Stop a sub-agent or all sub-agents'],
     ['/agents pause <id>', 'Pause a running sub-agent'],
@@ -267,6 +274,16 @@ export function getTelegramHelp(): string {
   lines.push('/budget override — Allow one request past budget');
   lines.push('/budget reset — Reset usage to zero');
   lines.push('/budget set <n> — Set daily token budget');
+  lines.push('');
+
+  lines.push('**Token Saver**');
+  lines.push('/saver — Show saver status and tokens saved');
+  lines.push('/saver on — Manually enable Token Saver Mode');
+  lines.push('/saver off — Disable Token Saver Mode');
+  lines.push('/saver toggle — Toggle on/off');
+  lines.push('/saver threshold <0-100> — Auto-engage threshold (default 75%)');
+  lines.push('/saver auto on|off — Enable/disable automatic engagement');
+  lines.push('/saver routing on|off — Prefer cheap providers while active (opt-in)');
   lines.push('');
 
   lines.push('**Programming Mode**');

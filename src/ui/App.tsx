@@ -144,6 +144,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/skills remove ',
     '/skills help',
     '/stream',
+    '/saver',
+    '/saver on',
+    '/saver off',
+    '/saver toggle',
+    '/saver threshold ',
+    '/saver auto on',
+    '/saver auto off',
+    '/saver routing on',
+    '/saver routing off',
     '/view',
     '/view balanced',
     '/view detailed',
@@ -883,6 +892,9 @@ function StatusBarView({ state }: { state: TuiState }) {
         <Box flexGrow={1}>
           <Text bold color="cyan">{state.agentName}</Text>
           {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
+          {state.saverInfo && state.saverInfo.state !== 'off' && (
+            <Text> <Text color="gray">|</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
+          )}
           {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
           <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
           <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
@@ -897,6 +909,9 @@ function StatusBarView({ state }: { state: TuiState }) {
           <Text color="cyan">Tokens </Text>
           <Text>{tokenBar}</Text>
           <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
+          {state.saverInfo && state.saverInfo.savedToday > 0 && (
+            <Text color="green"> · saved ~{state.saverInfo.savedToday.toLocaleString()}</Text>
+          )}
         </Box>
       )}
     </Box>

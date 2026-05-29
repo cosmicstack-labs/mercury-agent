@@ -1496,6 +1496,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       bootCli.setSkills(skillInfos);
       bootCli.setProvider(getProviderLabel(defaultProvider), defaultModel);
       bootCli.setTokenInfo(tokenBudget.getDailyUsed(), tokenBudget.getBudget(), Math.round(tokenBudget.getUsagePercentage()));
+      bootCli.setSaverMode(agent.saverMode.getState(), tokenBudget.getSavedToday(), tokenBudget.getSavedLifetime());
       bootCli.setWebInfo(config.web.enabled, config.web.port);
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);

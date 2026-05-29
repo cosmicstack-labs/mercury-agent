@@ -7,7 +7,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 
 export interface TuiState {
@@ -30,6 +30,7 @@ export interface TuiState {
   workspace: WorkspaceState | null;
   backgroundTasks: BackgroundTaskInfo[];
   web: { enabled: boolean; port: number } | null;
+  saverInfo: SaverInfo | null;
 }
 
 const defaultState: TuiState = {
@@ -52,6 +53,7 @@ const defaultState: TuiState = {
   workspace: null,
   backgroundTasks: [],
   web: null,
+  saverInfo: null,
 };
 
 export class CLIChannel extends BaseChannel {
@@ -544,6 +546,15 @@ export class CLIChannel extends BaseChannel {
 
   setTokenInfo(used: number, budget: number, percentage: number): void {
     this.update({ tokenInfo: { used, budget, percentage } });
+  }
+
+  setSaverMode(state: import('../core/saver-mode.js').SaverModeState, savedToday: number, savedLifetime: number): void {
+    if (state === 'off' && savedToday === 0 && savedLifetime === 0) {
+      // Keep null to preserve zero-impact UI when saver has never been touched.
+      this.update({ saverInfo: null });
+      return;
+    }
+    this.update({ saverInfo: { state, savedToday, savedLifetime } });
   }
 
   setWebInfo(enabled: boolean, port: number): void {

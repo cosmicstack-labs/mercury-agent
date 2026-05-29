@@ -38,6 +38,22 @@ Type these during a conversation with Mercury. Most work in both CLI and Telegra
 | `/budget reset` | Reset usage to zero |
 | `/budget set <n>` | Change daily token budget |
 
+## Token Saver Mode
+
+A battery-saver-style mode that reduces token spend per request. When active, Mercury produces terser responses, runs fewer reasoning steps, and uses a shorter conversation history window. It also auto-engages at a configurable percentage of your daily budget.
+
+| Command | Description |
+|---------|-------------|
+| `/saver` | Show saver status, today's savings, and lifetime savings |
+| `/saver on` | Manually enable Token Saver Mode (persisted) |
+| `/saver off` | Disable Token Saver Mode (also clears any auto-engagement) |
+| `/saver toggle` | Toggle saver on/off |
+| `/saver threshold <0-100>` | Set auto-engage threshold as a percentage of daily budget (default `75`, `0` disables auto) |
+| `/saver auto on\|off` | Master switch for automatic engagement at threshold |
+| `/saver routing on\|off` | Opt-in: prefer cheaper providers while saver is active |
+
+When saver auto-engages, Mercury sends a one-time notification so you know responses may be shorter. Disable manually with `/saver off` or `/saver auto off`. See [Token Saver Mode reference](../reference/token-saver) for what changes when saver is active.
+
 ## Programming Mode
 
 | Command | Description |

@@ -269,6 +269,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'progress', description: 'Live status for the current task' },
       { command: 'stop', description: 'Stop all agents and clear queue' },
       { command: 'budget', description: 'Token budget status and management' },
+      { command: 'saver', description: 'Toggle Token Saver Mode (save tokens, terser responses)' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },

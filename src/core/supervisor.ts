@@ -33,6 +33,7 @@ export class SubAgentSupervisor {
   private capabilities: CapabilityRegistry;
   private tokenBudget: TokenBudget;
   private channels: ChannelRegistry;
+  private saverMode?: import('./saver-mode.js').SaverMode;
 
   private notifyCallback?: NotifyCallback;
   private lifecycleCallbacks: AgentLifecycleCallback[] = [];
@@ -74,6 +75,11 @@ export class SubAgentSupervisor {
 
   setNotifyCallback(cb: NotifyCallback): void {
     this.notifyCallback = cb;
+  }
+
+  /** Inject SaverMode so spawned sub-agents inherit the user's saver preferences. */
+  setSaverMode(saver: import('./saver-mode.js').SaverMode): void {
+    this.saverMode = saver;
   }
 
   setLifecycleCallback(cb: AgentLifecycleCallback): void {
@@ -170,6 +176,7 @@ export class SubAgentSupervisor {
       tokenBudget: this.tokenBudget,
       fileLockManager: this.fileLockManager,
       taskBoard: this.taskBoard,
+      saverMode: this.saverMode,
     });
 
     this.activeAgents.set(config.id, subAgent);

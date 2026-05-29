@@ -15,6 +15,7 @@ import { ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
+import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
@@ -295,6 +296,7 @@ export class Agent {
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
+  readonly saverMode: SaverMode;
   private spotifyClient?: SpotifyClient;
   private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
@@ -318,6 +320,7 @@ export class Agent {
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
+    this.saverMode = new SaverMode(config);
     this.backgroundTasks = new BackgroundTaskManager();
 
     this.backgroundTasks.onGlobalComplete((task) => {
@@ -349,6 +352,7 @@ export class Agent {
     if (this.skillLoader) {
       this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
     }
+    supervisor.setSaverMode(this.saverMode);
     supervisor.setNotifyCallback(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
       if (channel) {
@@ -964,8 +968,27 @@ export class Agent {
         return;
       }
 
+      // Token Saver Mode auto-engagement check. When usage crosses the
+      // configured threshold (default 75%), saver activates and the user
+      // is notified once so they understand response style may change.
+      {
+        const transition = this.saverMode.evaluateAuto(this.tokenBudget.getUsagePercentage());
+        if (transition.activated) {
+          const notice = this.saverMode.consumeAutoActivationNotice();
+          if (notice && msg.channelType !== 'internal') {
+            const ch = this.channels.get(msg.channelType as any);
+            if (ch) await ch.send(notice, msg.channelId).catch(() => {});
+          }
+          this.syncSaverToCli();
+        } else if (transition.deactivated && msg.channelType !== 'internal') {
+          const ch = this.channels.get(msg.channelType as any);
+          if (ch) await ch.send('⚡ Token Saver Mode auto-disengaged (usage dropped). Normal response settings restored.', msg.channelId).catch(() => {});
+          this.syncSaverToCli();
+        }
+      }
+
       const systemPrompt = this.buildSystemPrompt();
-      const recentMemory = this.shortTerm.getRecent(msg.channelId, 10);
+      const recentMemory = this.shortTerm.getRecent(msg.channelId, this.saverMode.adjustHistoryWindow(10));
 
       const messages: any[] = [];
 
@@ -1201,6 +1224,12 @@ export class Agent {
         (tgChannel as TelegramChannel).beginTask(msg.channelId);
       }
 
+      // Saver-mode-aware request limits. When saver is off these resolve to
+      // the original constants (byte-identical to pre-saver behavior).
+      const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
+      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS);
+      const saverWasActive = this.saverMode.isActive();
+
       for (const provider of fallbackIterator) {
         try {
           this.markProgress(`Calling ${provider.name}...`);
@@ -1216,8 +1245,8 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: MAX_RESPONSE_TOKENS,
-              stopWhen: stepCountIs(MAX_STEPS),
+              maxOutputTokens: effectiveMaxOutputTokens,
+              stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -1459,8 +1488,8 @@ export class Agent {
               system: systemPrompt,
               messages,
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: MAX_RESPONSE_TOKENS,
-              stopWhen: stepCountIs(MAX_STEPS),
+              maxOutputTokens: effectiveMaxOutputTokens,
+              stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -1736,6 +1765,22 @@ export class Agent {
         channelType: msg.channelType,
       });
 
+      // Estimate tokens saved by Saver Mode (cap headroom + history trim).
+      // Rough: (default_cap - actual_output) when capped, plus history-window delta.
+      if (saverWasActive) {
+        const actualOutput = result.usage?.outputTokens ?? 0;
+        const outputHeadroom = Math.max(0, MAX_RESPONSE_TOKENS - effectiveMaxOutputTokens);
+        const outputSaved = Math.max(0, Math.min(outputHeadroom, MAX_RESPONSE_TOKENS - actualOutput));
+        // Rough proxy: each trimmed history message ~120 tokens average.
+        const historyTrimMessages = Math.max(0, NORMAL_HISTORY_WINDOW - this.saverMode.adjustHistoryWindow(NORMAL_HISTORY_WINDOW));
+        const historySaved = historyTrimMessages * 120;
+        const estimated = outputSaved + historySaved;
+        if (estimated > 0) {
+          this.tokenBudget.recordSavings(estimated);
+          this.syncSaverToCli();
+        }
+      }
+
       this.shortTerm.add(msg.channelId, {
         id: msg.id,
         timestamp: msg.timestamp,
@@ -1866,6 +1911,10 @@ export class Agent {
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
       prompt += '\nBe concise to conserve tokens.';
+    }
+    const saverSuffix = this.saverMode.getSystemPromptSuffix();
+    if (saverSuffix) {
+      prompt += saverSuffix;
     }
 
     const now = new Date();
@@ -2327,6 +2376,133 @@ Is this productive iteration or a stuck loop?`,
     }
   }
 
+  /**
+   * Handle the /saver slash command — Token Saver Mode controls.
+   * Subcommands: (empty)|status|on|off|toggle|threshold <n>|auto on|off|routing on|off|stats
+   */
+  async handleSaverCommand(subcommand: string, channelType: string, channelId: string): Promise<void> {
+    const channel = this.channels.get(channelType as any);
+    if (!channel) return;
+
+    const parts = subcommand.trim().split(/\s+/).filter(Boolean);
+    const action = (parts[0] || '').toLowerCase();
+    const arg = (parts[1] || '').toLowerCase();
+
+    const showStatus = async () => {
+      const text = this.saverMode.getStatusText(
+        this.tokenBudget.getSavedLifetime(),
+        this.tokenBudget.getSavedToday(),
+      );
+      const usagePct = Math.round(this.tokenBudget.getUsagePercentage());
+      await channel.send(`${text}\nCurrent daily usage: ${usagePct}%`, channelId);
+      this.syncSaverToCli();
+    };
+
+    if (!action || action === 'status' || action === 'stats') {
+      await showStatus();
+      return;
+    }
+
+    if (action === 'on' || action === 'enable') {
+      this.saverMode.enable();
+      await channel.send(
+        '⚡ Token Saver Mode enabled. Responses will be terser, step limits lower, and history window shorter to conserve tokens.',
+        channelId,
+      );
+      this.syncSaverToCli();
+      return;
+    }
+
+    if (action === 'off' || action === 'disable') {
+      this.saverMode.disable();
+      await channel.send('Token Saver Mode disabled. Normal response settings restored.', channelId);
+      this.syncSaverToCli();
+      return;
+    }
+
+    if (action === 'toggle') {
+      const next = this.saverMode.toggle();
+      await channel.send(
+        next === 'on'
+          ? '⚡ Token Saver Mode enabled.'
+          : 'Token Saver Mode disabled.',
+        channelId,
+      );
+      this.syncSaverToCli();
+      return;
+    }
+
+    if (action === 'threshold') {
+      const n = parseInt(parts[1], 10);
+      if (isNaN(n) || n < 0 || n > 100) {
+        await channel.send('Usage: /saver threshold <0-100> — percentage of daily budget at which saver auto-engages. Set 0 to disable.', channelId);
+        return;
+      }
+      this.saverMode.setAutoThreshold(n);
+      await channel.send(
+        n === 0
+          ? 'Saver auto-engage disabled (threshold set to 0).'
+          : `Saver auto-engage threshold set to ${n}% of daily budget.`,
+        channelId,
+      );
+      return;
+    }
+
+    if (action === 'auto') {
+      if (arg === 'on' || arg === 'enable') {
+        this.saverMode.setAutoEnabled(true);
+        await channel.send(`Saver auto-engage enabled (at ${this.saverMode.getAutoThreshold()}% usage).`, channelId);
+      } else if (arg === 'off' || arg === 'disable') {
+        this.saverMode.setAutoEnabled(false);
+        await channel.send('Saver auto-engage disabled. Saver will only activate when you run /saver on.', channelId);
+        this.syncSaverToCli();
+      } else {
+        await channel.send(
+          `Saver auto-engage is currently ${this.saverMode.isAutoEnabled() ? 'ON' : 'OFF'} (threshold: ${this.saverMode.getAutoThreshold()}%).\nUse /saver auto on|off to change.`,
+          channelId,
+        );
+      }
+      return;
+    }
+
+    if (action === 'routing') {
+      if (arg === 'on' || arg === 'enable') {
+        this.saverMode.setRoutingEnabled(true);
+        await channel.send('Saver cheap-provider routing enabled (when saver is active, cheaper providers will be preferred).', channelId);
+      } else if (arg === 'off' || arg === 'disable') {
+        this.saverMode.setRoutingEnabled(false);
+        await channel.send('Saver cheap-provider routing disabled.', channelId);
+      } else {
+        await channel.send(`Saver cheap-provider routing is currently ${this.saverMode.isRoutingEnabled() ? 'ON' : 'OFF'}.\nUse /saver routing on|off to change.`, channelId);
+      }
+      return;
+    }
+
+    await channel.send(
+      'Unknown saver command. Available:\n' +
+      '  /saver — show status and savings\n' +
+      '  /saver on — manually enable\n' +
+      '  /saver off — disable\n' +
+      '  /saver toggle — flip on/off\n' +
+      '  /saver threshold <0-100> — auto-engage threshold (default 75)\n' +
+      '  /saver auto on|off — enable/disable auto-engagement\n' +
+      '  /saver routing on|off — prefer cheap providers while active (opt-in)',
+      channelId,
+    );
+  }
+
+  /** Push the current saver state to the CLI status bar if present. */
+  private syncSaverToCli(): void {
+    const ch = this.channels.get('cli');
+    if (ch && (ch as any).setSaverMode) {
+      (ch as any).setSaverMode(
+        this.saverMode.getState(),
+        this.tokenBudget.getSavedToday(),
+        this.tokenBudget.getSavedLifetime(),
+      );
+    }
+  }
+
   private async handleSkillsSlashCommand(
     trimmed: string,
     channel: any,
@@ -2536,6 +2712,11 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    if (cmd === '/saver' || cmd.startsWith('/saver ')) {
+      await this.handleSaverCommand(trimmed.slice('/saver'.length).trim(), channelType, channelId);
+      return true;
+    }
+
     if (cmd.startsWith('/bg')) {
       await this.handleBgCommand(trimmed, { content: trimmed, channelId, channelType: channelType as any, id: Date.now().toString(36), senderId: 'user', timestamp: Date.now() }, channel);
       return true;
@@ -2583,6 +2764,10 @@ Is this productive iteration or a stuck loop?`,
     if (cmd === '/status') {
       const config = ctx.config();
       const budget = ctx.tokenBudget();
+      const saver = this.saverMode.getState();
+      const saverLine = saver === 'off'
+        ? `Saver: off (auto at ${this.saverMode.getAutoThreshold()}%)`
+        : `Saver: ${saver.toUpperCase()} · saved today ~${this.tokenBudget.getSavedToday().toLocaleString()} tokens`;
       const lines = [
         `**${config.identity.name}** — Status`,
         `Owner: ${config.identity.owner || '(not set)'}`,
@@ -2590,6 +2775,7 @@ Is this productive iteration or a stuck loop?`,
         `Telegram: ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}`,
         `Telegram access: ${getTelegramAccessSummary(config)}`,
         `Budget: ${budget.getStatusText()}`,
+        saverLine,
         `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
       ];
       await channel.send(lines.join('\n'), channelId);
