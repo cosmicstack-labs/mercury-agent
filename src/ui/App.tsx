@@ -920,8 +920,6 @@ function TokenBarView({ state }: { state: TuiState }) {
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
   // Background task count (running only)
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
-  // Memory proxy: number of messages in current context window
-  const ctxSize = state.chatMessages.length;
 
   const isWorkspace = state.mode === 'workspace' && state.workspace;
 
@@ -986,12 +984,6 @@ function TokenBarView({ state }: { state: TuiState }) {
           <>
             <Text color="gray"> │ </Text>
             <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
-          </>
-        )}
-        {!isWorkspace && ctxSize > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text dimColor>🧠 {ctxSize} msg{ctxSize !== 1 ? 's' : ''}</Text>
           </>
         )}
       </Box>
