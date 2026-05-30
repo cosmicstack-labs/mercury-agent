@@ -994,7 +994,7 @@ export class Agent {
         return;
       }
 
-      const systemPrompt = this.buildSystemPrompt();
+      const systemPrompt = this.buildSystemPrompt(msg);
       const recentMemory = this.shortTerm.getRecent(msg.channelId, 10);
 
       const messages: any[] = [];
@@ -1711,7 +1711,7 @@ export class Agent {
       });
 
       if (msg.channelType !== 'internal') {
-        this.extractMemory(msg.content, finalText).catch(err => {
+        this.extractMemory(msg.content, finalText, msg).catch(err => {
           logger.warn({ err }, 'Memory extraction failed');
         });
       }
@@ -1804,8 +1804,47 @@ export class Agent {
     }
   }
 
-  private buildSystemPrompt(): string {
+  /**
+   * Build a per-turn note telling the agent WHO is currently speaking, so it
+   * doesn't treat every authorized group member as the owner.
+   *
+   * - No senderRole (CLI, internal, scheduled): single-user context, no note.
+   * - 'admin': the owner/operator — behave normally.
+   * - 'member': a guest. They are NOT the owner; the agent must address them
+   *   by their own name and speak about the owner and others in the third
+   *   person, never assuming the owner's facts belong to the guest.
+   */
+  private buildSpeakerContext(msg: ChannelMessage): string {
+    if (!msg.senderRole) return '';
+
+    const owner = this.config.identity?.owner || 'your owner';
+    const speakerName = msg.senderName || msg.senderId;
+
+    if (msg.senderRole === 'admin') {
+      return `\n\n# Current Speaker\nThe current message is from ${speakerName}, who is ${owner} — your owner/operator. Address them directly as you normally would.`;
+    }
+
+    // Guest (member): authorized to talk to you, but NOT the owner.
+    return [
+      '',
+      '',
+      '# Current Speaker',
+      `The current message is from ${speakerName}. They are a guest who has been authorized to talk to you in this shared conversation, but they are NOT your owner.`,
+      `Your owner is ${owner}. ${speakerName} is a different person.`,
+      '',
+      'Rules for this turn:',
+      `- Address ${speakerName} by their own identity. Do NOT call them "${owner}" and do NOT speak to them as if they were your owner.`,
+      `- When ${speakerName} asks about ${owner} or anyone else, answer in the third person (e.g. "${owner} likes…", NOT "you like…").`,
+      `- Personal facts and memories you hold about ${owner} belong to ${owner}, not to ${speakerName}. Do not attribute them to the guest.`,
+      `- You may still help ${speakerName} with general requests, but treat private information about ${owner} with discretion.`,
+    ].join('\n');
+  }
+
+  private buildSystemPrompt(msg?: ChannelMessage): string {
     let prompt = this.identity.getSystemPrompt(this.config.identity);
+    if (msg) {
+      prompt += this.buildSpeakerContext(msg);
+    }
     const skillContext = this.capabilities.getSkillContext();
     if (skillContext) {
       prompt += '\n\n' + skillContext;
@@ -2000,7 +2039,15 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
   }
 
-  private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
+  private async extractMemory(userMessage: string, agentResponse: string, msg?: ChannelMessage): Promise<void> {
+    // Only the owner's conversations feed the owner's Second Brain.
+    // A guest (group member who is not the owner) must not have their
+    // statements saved as the owner's personal facts.
+    if (msg?.senderRole === 'member') {
+      logger.debug({ sender: msg.senderId }, 'Skipping memory extraction for non-owner speaker');
+      return;
+    }
+
     const canSecondBrain = this.userMemory && !this.userMemory.isLearningPaused();
     const canCK = this.ck && !this.ck.isLearningPaused();
     if (!canSecondBrain && !canCK) return;

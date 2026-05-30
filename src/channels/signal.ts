@@ -176,9 +176,16 @@ export class SignalChannel extends BaseChannel {
 
   private handleEnvelope(envelope: any): void {
     // signal-cli-rest-api sends envelopes in format:
-    // { envelope: { source, dataMessage, syncMessage, ... }, account }
+    // { envelope: { source, sourceNumber, sourceUuid, sourceName, dataMessage, syncMessage, ... }, account }
     const env = envelope.envelope || envelope;
-    const source = env.source || env.sourceNumber;
+    // A sender can be identified by phone number (E.164) and/or a Signal ACI (UUID).
+    // Prefer the phone number for matching against the approval list, but keep
+    // the UUID and display name so we never lose track of WHO is speaking.
+    const sourcePhone: string | undefined = env.sourceNumber || (typeof env.source === 'string' && env.source.startsWith('+') ? env.source : undefined);
+    const sourceUuid: string | undefined = env.sourceUuid || (typeof env.source === 'string' && !env.source.startsWith('+') ? env.source : undefined);
+    const sourceName: string | undefined = env.sourceName;
+    // The identifier used for access-control matching and as the per-sender key.
+    const source = sourcePhone || sourceUuid || env.source;
 
     if (!source) return;
 
@@ -243,6 +250,23 @@ export class SignalChannel extends BaseChannel {
 
     // Access control
     const approvedUser = findSignalApprovedUser(this.config, source);
+    const isAdmin = this.isAdminUser(source);
+
+    // Diagnostic: make every gating decision fully traceable. This is the line
+    // to watch when investigating "why did Mercury respond to/ignore X".
+    logger.info(
+      {
+        sourcePhone,
+        sourceUuid,
+        sourceName,
+        matchKey: source,
+        approved: !!approvedUser,
+        role: approvedUser ? (isAdmin ? 'admin' : 'member') : 'none',
+        textPreview: text.slice(0, 40),
+      },
+      'Signal: access-control decision',
+    );
+
     if (!approvedUser) {
       this.handleUnapprovedMessage(source, text);
       return;
@@ -286,10 +310,11 @@ export class SignalChannel extends BaseChannel {
       channelId: `signal:${source}`,
       channelType: 'signal',
       senderId: source,
-      senderName: approvedUser.name || source,
+      senderName: approvedUser.name || sourceName || source,
+      senderRole: isAdmin ? 'admin' : 'member',
       content: text,
       timestamp,
-      metadata: { phoneNumber: source, groupId },
+      metadata: { phoneNumber: sourcePhone, uuid: sourceUuid, groupId },
     };
     this.emit(msg);
   }

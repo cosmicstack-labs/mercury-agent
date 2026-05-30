@@ -24,6 +24,14 @@ export interface ChannelMessage {
   channelType: ChannelType;
   senderId: string;
   senderName?: string;
+  /**
+   * The sender's access role within the channel.
+   * - 'admin': the owner/operator Mercury serves.
+   * - 'member': a guest authorized to talk to Mercury, but NOT the owner.
+   * Used to give the agent a sense of who is currently speaking so it does
+   * not treat every group member as the owner.
+   */
+  senderRole?: 'admin' | 'member';
   content: string;
   timestamp: number;
   metadata?: Record<string, unknown>;
