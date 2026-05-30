@@ -2,7 +2,7 @@ import React from 'react';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFile } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
@@ -56,6 +56,22 @@ const defaultState: TuiState = {
   saverInfo: null,
 };
 
+function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].status !== b[i].status || a[i].progress !== b[i].progress) return false;
+  }
+  return true;
+}
+
+function shallowEqualBgTasks(a: BackgroundTaskInfo[], b: BackgroundTaskInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].status !== b[i].status || a[i].runningMs !== b[i].runningMs) return false;
+  }
+  return true;
+}
+
 export class CLIChannel extends BaseChannel {
   readonly type = 'cli' as const;
   private agentName: string;
@@ -70,6 +86,14 @@ export class CLIChannel extends BaseChannel {
   private state: TuiState = { ...defaultState };
   private spotifyClient: any = null;
   private rawModeWatchdog: NodeJS.Timeout | null = null;
+  private statusPoller: NodeJS.Timeout | null = null;
+  private statusPollerBusy = false;
+  private statusProviders: {
+    tokens?: () => { used: number; budget: number; percentage: number };
+    saver?: () => { state: import('../core/saver-mode.js').SaverModeState; savedToday: number; savedLifetime: number };
+    subAgents?: () => SubAgentInfo[];
+    bgTasks?: () => BackgroundTaskInfo[];
+  } = {};
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -89,6 +113,7 @@ export class CLIChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.stopRawModeWatchdog();
+    this.stopStatusPoller();
     this.inkInstance?.unmount();
     this.inkInstance = null;
     this.releaseRawMode();
@@ -604,6 +629,120 @@ export class CLIChannel extends BaseChannel {
     this.update({ workspace });
   }
 
+  /**
+   * Register provider callbacks the poller will sample on every tick.
+   * Called once at boot from index.ts. Each callback should be cheap
+   * (just a getter on already-in-memory state).
+   */
+  setStatusProviders(providers: typeof this.statusProviders): void {
+    this.statusProviders = { ...this.statusProviders, ...providers };
+  }
+
+  /**
+   * Start the 2s status poller. Refreshes:
+   *  - token budget bar (every tick)
+   *  - saver mode state (every tick)
+   *  - sub-agent counts (every tick)
+   *  - background task counts (every tick)
+   *  - workspace git state (every tick, async, only if workspace is active)
+   *
+   * Each section diff-checks its values before calling update() so
+   * idle ticks cause zero React re-renders.
+   */
+  startStatusPoller(intervalMs = 2000): void {
+    this.stopStatusPoller();
+    this.statusPoller = setInterval(() => { void this.statusPollerTick(); }, intervalMs);
+    // Fire once immediately so the first paint is fresh.
+    void this.statusPollerTick();
+  }
+
+  stopStatusPoller(): void {
+    if (this.statusPoller) {
+      clearInterval(this.statusPoller);
+      this.statusPoller = null;
+    }
+  }
+
+  private async statusPollerTick(): Promise<void> {
+    // Re-entrancy guard: if a previous git read is still in flight we skip.
+    if (this.statusPollerBusy) return;
+    this.statusPollerBusy = true;
+    try {
+      const patch: Partial<TuiState> = {};
+
+      // 1. Token budget
+      if (this.statusProviders.tokens) {
+        const t = this.statusProviders.tokens();
+        const cur = this.state.tokenInfo;
+        if (!cur || cur.used !== t.used || cur.budget !== t.budget || cur.percentage !== t.percentage) {
+          patch.tokenInfo = { used: t.used, budget: t.budget, percentage: t.percentage };
+        }
+      }
+
+      // 2. Saver mode
+      if (this.statusProviders.saver) {
+        const s = this.statusProviders.saver();
+        const cur = this.state.saverInfo;
+        const shouldShow = !(s.state === 'off' && s.savedToday === 0 && s.savedLifetime === 0);
+        if (!shouldShow) {
+          if (cur !== null) patch.saverInfo = null;
+        } else if (!cur || cur.state !== s.state || cur.savedToday !== s.savedToday || cur.savedLifetime !== s.savedLifetime) {
+          patch.saverInfo = { state: s.state, savedToday: s.savedToday, savedLifetime: s.savedLifetime };
+        }
+      }
+
+      // 3. Sub-agents
+      if (this.statusProviders.subAgents) {
+        const agents = this.statusProviders.subAgents();
+        if (!shallowEqualSubAgents(this.state.subAgents, agents)) {
+          patch.subAgents = agents;
+        }
+      }
+
+      // 4. Background tasks
+      if (this.statusProviders.bgTasks) {
+        const tasks = this.statusProviders.bgTasks();
+        if (!shallowEqualBgTasks(this.state.backgroundTasks, tasks)) {
+          patch.backgroundTasks = tasks;
+        }
+      }
+
+      // 5. Workspace git state (async — branch/files/ahead/behind can
+      // change from outside Mercury, so we re-read every tick)
+      if (this.state.workspace?.active) {
+        const root = this.state.workspace.rootPath;
+        const fresh = await this.readGitStateAsync(root);
+        const cur = this.state.workspace;
+        if (
+          cur.branch !== fresh.branch ||
+          cur.ahead !== fresh.ahead ||
+          cur.behind !== fresh.behind ||
+          cur.stagedCount !== fresh.stagedCount ||
+          cur.unstagedCount !== fresh.unstagedCount ||
+          cur.gitFiles.length !== fresh.files.length
+        ) {
+          patch.workspace = {
+            ...cur,
+            branch: fresh.branch,
+            ahead: fresh.ahead,
+            behind: fresh.behind,
+            stagedCount: fresh.stagedCount,
+            unstagedCount: fresh.unstagedCount,
+            gitFiles: fresh.files,
+          };
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        this.update(patch);
+      }
+    } catch {
+      // Polling should never crash the UI loop.
+    } finally {
+      this.statusPollerBusy = false;
+    }
+  }
+
   stageWorkspaceFile(filePath: string): { ok: boolean; message: string } {
     if (!this.state.workspace?.active) return { ok: false, message: 'No active workspace.' };
     const root = this.state.workspace.rootPath;
@@ -838,30 +977,55 @@ export class CLIChannel extends BaseChannel {
     try {
       const branch = execSync('git branch --show-current', { cwd: rootPath, stdio: 'pipe' }).toString().trim() || 'detached';
       const out = execSync('git status --porcelain=v1 --branch', { cwd: rootPath, stdio: 'pipe' }).toString();
-      const lines = out.split('\n');
-      let ahead = 0;
-      let behind = 0;
-      // First line: "## branch...origin/branch [ahead 1, behind 2]"
-      const header = lines[0] || '';
-      const aheadMatch = header.match(/ahead (\d+)/);
-      const behindMatch = header.match(/behind (\d+)/);
-      if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
-      if (behindMatch) behind = parseInt(behindMatch[1], 10);
-      const files: WorkspaceGitFile[] = lines
-        .slice(1)
-        .map((line) => line.trimEnd())
-        .filter(Boolean)
-        .map((line) => {
-          const x = line[0] || ' ';
-          const y = line[1] || ' ';
-          const rel = line.slice(3).trim();
-          const staged = x !== ' ' && x !== '?';
-          const status = `${x}${y}`.trim() || '??';
-          return { path: rel, staged, status };
-        });
-      const stagedCount = files.filter((f) => f.staged).length;
-      const unstagedCount = files.length - stagedCount;
-      return { files, branch, stagedCount, unstagedCount, ahead, behind };
+      return this.parseGitOutput(branch, out);
+    } catch {
+      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0, ahead: 0, behind: 0 };
+    }
+  }
+
+  private parseGitOutput(branch: string, statusOut: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number } {
+    const lines = statusOut.split('\n');
+    let ahead = 0;
+    let behind = 0;
+    const header = lines[0] || '';
+    const aheadMatch = header.match(/ahead (\d+)/);
+    const behindMatch = header.match(/behind (\d+)/);
+    if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
+    if (behindMatch) behind = parseInt(behindMatch[1], 10);
+    const files: WorkspaceGitFile[] = lines
+      .slice(1)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => {
+        const x = line[0] || ' ';
+        const y = line[1] || ' ';
+        const rel = line.slice(3).trim();
+        const staged = x !== ' ' && x !== '?';
+        const status = `${x}${y}`.trim() || '??';
+        return { path: rel, staged, status };
+      });
+    const stagedCount = files.filter((f) => f.staged).length;
+    const unstagedCount = files.length - stagedCount;
+    return { files, branch, stagedCount, unstagedCount, ahead, behind };
+  }
+
+  private execAsync(cmd: string, args: string[], cwd: string, timeoutMs = 1500): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 512 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout.toString());
+      });
+    });
+  }
+
+  private async readGitStateAsync(rootPath: string): Promise<{ files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number }> {
+    try {
+      const [branchOut, statusOut] = await Promise.all([
+        this.execAsync('git', ['branch', '--show-current'], rootPath),
+        this.execAsync('git', ['status', '--porcelain=v1', '--branch'], rootPath),
+      ]);
+      const branch = branchOut.trim() || 'detached';
+      return this.parseGitOutput(branch, statusOut);
     } catch {
       return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0, ahead: 0, behind: 0 };
     }

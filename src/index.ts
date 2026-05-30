@@ -1498,6 +1498,29 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       bootCli.setTokenInfo(tokenBudget.getDailyUsed(), tokenBudget.getBudget(), Math.round(tokenBudget.getUsagePercentage()));
       bootCli.setSaverMode(agent.saverMode.getState(), tokenBudget.getSavedToday(), tokenBudget.getSavedLifetime());
       bootCli.setWebInfo(config.web.enabled, config.web.port);
+      // Wire live status providers so the bottom bar refreshes every 2s
+      // without waiting for an LLM call or queue completion.
+      bootCli.setStatusProviders({
+        tokens: () => ({
+          used: tokenBudget.getDailyUsed(),
+          budget: tokenBudget.getBudget(),
+          percentage: Math.round(tokenBudget.getUsagePercentage()),
+        }),
+        saver: () => ({
+          state: agent.saverMode.getState(),
+          savedToday: tokenBudget.getSavedToday(),
+          savedLifetime: tokenBudget.getSavedLifetime(),
+        }),
+        subAgents: () => supervisor ? supervisor.getActiveAgents().map((a) => ({
+          id: a.id,
+          task: a.task,
+          status: a.status,
+          progress: a.progress,
+          startedAt: 0,
+        })) : [],
+        bgTasks: () => agent.backgroundTasks.getAllSummaries(),
+      });
+      bootCli.startStatusPoller(2000);
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
