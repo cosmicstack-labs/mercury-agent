@@ -48,6 +48,8 @@ export interface TelegramPendingRequest {
 
 export interface SignalAccessUser {
   phoneNumber: string;
+  /** Signal ACI/UUID, when known. Used to match senders who appear without a phone number. */
+  uuid?: string;
   name?: string;
   requestedAt?: string;
   approvedAt: string;
@@ -55,9 +57,36 @@ export interface SignalAccessUser {
 
 export interface SignalPendingRequest {
   phoneNumber: string;
+  /** Signal ACI/UUID, when known. */
+  uuid?: string;
   name?: string;
   requestedAt: string;
   pairingCode?: string;
+}
+
+/** Voice-note / audio transcription settings (OpenAI Whisper-compatible). */
+export interface TranscriptionConfig {
+  enabled: boolean;
+  apiKey: string;
+  /** Base URL for the transcription API. Default: https://api.openai.com/v1 */
+  baseUrl: string;
+  /** Model name. Default: whisper-1 */
+  model: string;
+}
+
+/** Typed Signal channel configuration (parity with TelegramChannelConfig). */
+export interface SignalChannelConfig {
+  enabled: boolean;
+  apiUrl: string;
+  number: string;
+  groupId: string;        // The `id` field from groups list (group.xxx) — used for sending
+  groupInternalId: string; // The `internal_id` — matches groupInfo.groupId in envelopes
+  groupName: string;      // Display name of the group
+  admins: SignalAccessUser[];
+  members: SignalAccessUser[];
+  pending: SignalPendingRequest[];
+  /** Optional voice-note transcription. */
+  transcription?: TranscriptionConfig;
 }
 
 export type ProviderName =
@@ -117,6 +146,7 @@ export interface MercuryConfig {
       admins: SignalAccessUser[];
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
+      transcription?: TranscriptionConfig;
     };
   };
   github: {
@@ -300,6 +330,12 @@ export function getDefaultConfig(): MercuryConfig {
         admins: [],
         members: [],
         pending: [],
+        transcription: {
+          enabled: getEnvBool('SIGNAL_TRANSCRIPTION_ENABLED', false),
+          apiKey: getEnv('SIGNAL_TRANSCRIPTION_API_KEY', getEnv('OPENAI_API_KEY', '')),
+          baseUrl: getEnv('SIGNAL_TRANSCRIPTION_BASE_URL', 'https://api.openai.com/v1'),
+          model: getEnv('SIGNAL_TRANSCRIPTION_MODEL', 'whisper-1'),
+        },
       },
     },
     github: {
@@ -673,16 +709,30 @@ export function getSignalPendingRequests(config: MercuryConfig): SignalPendingRe
   return config.channels.signal.pending;
 }
 
-export function findSignalApprovedUser(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
-  return getSignalApprovedUsers(config).find((user) => user.phoneNumber === phoneNumber);
+/**
+ * Match a stored entry against an identifier that may be either a phone number
+ * (e.g. +1555…) or a Signal UUID/ACI (e.g. a43381d3-…). Signal group members
+ * are frequently identified by UUID only, so all identity lookups must accept
+ * both forms.
+ */
+export function matchesSignalIdentity(
+  entry: { phoneNumber?: string; uuid?: string },
+  identifier: string,
+): boolean {
+  if (!identifier) return false;
+  return entry.phoneNumber === identifier || (!!entry.uuid && entry.uuid === identifier);
 }
 
-export function findSignalAdmin(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
-  return config.channels.signal.admins.find((user) => user.phoneNumber === phoneNumber);
+export function findSignalApprovedUser(config: MercuryConfig, identifier: string): SignalAccessUser | undefined {
+  return getSignalApprovedUsers(config).find((user) => matchesSignalIdentity(user, identifier));
 }
 
-export function findSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | undefined {
-  return config.channels.signal.pending.find((request) => request.phoneNumber === phoneNumber);
+export function findSignalAdmin(config: MercuryConfig, identifier: string): SignalAccessUser | undefined {
+  return config.channels.signal.admins.find((user) => matchesSignalIdentity(user, identifier));
+}
+
+export function findSignalPendingRequest(config: MercuryConfig, identifier: string): SignalPendingRequest | undefined {
+  return config.channels.signal.pending.find((request) => matchesSignalIdentity(request, identifier));
 }
 
 export function findSignalPendingRequestByPairingCode(
@@ -723,25 +773,26 @@ export function addSignalPendingRequest(
 
 export function approveSignalPendingRequest(
   config: MercuryConfig,
-  phoneNumber: string,
+  identifier: string,
   role: 'admin' | 'member' = 'member',
 ): SignalAccessUser | null {
-  const request = findSignalPendingRequest(config, phoneNumber);
+  const request = findSignalPendingRequest(config, identifier);
   if (!request) return null;
 
   const approvedUser: SignalAccessUser = {
     phoneNumber: request.phoneNumber,
+    uuid: request.uuid,
     name: request.name,
     requestedAt: request.requestedAt,
     approvedAt: new Date().toISOString(),
   };
 
   config.channels.signal.pending = config.channels.signal.pending
-    .filter((entry) => entry.phoneNumber !== phoneNumber);
+    .filter((entry) => !matchesSignalIdentity(entry, identifier));
   config.channels.signal.admins = config.channels.signal.admins
-    .filter((entry) => entry.phoneNumber !== phoneNumber);
+    .filter((entry) => !matchesSignalIdentity(entry, identifier));
   config.channels.signal.members = config.channels.signal.members
-    .filter((entry) => entry.phoneNumber !== phoneNumber);
+    .filter((entry) => !matchesSignalIdentity(entry, identifier));
 
   if (role === 'admin') {
     config.channels.signal.admins.push(approvedUser);
@@ -762,26 +813,26 @@ export function approveSignalPendingRequestByPairingCode(
   return approveSignalPendingRequest(config, request.phoneNumber, role);
 }
 
-export function rejectSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | null {
-  const request = findSignalPendingRequest(config, phoneNumber);
+export function rejectSignalPendingRequest(config: MercuryConfig, identifier: string): SignalPendingRequest | null {
+  const request = findSignalPendingRequest(config, identifier);
   if (!request) return null;
   config.channels.signal.pending = config.channels.signal.pending
-    .filter((entry) => entry.phoneNumber !== phoneNumber);
+    .filter((entry) => !matchesSignalIdentity(entry, identifier));
   return request;
 }
 
-export function removeSignalUser(config: MercuryConfig, phoneNumber: string): SignalAccessUser | null {
-  const admin = config.channels.signal.admins.find((entry) => entry.phoneNumber === phoneNumber);
+export function removeSignalUser(config: MercuryConfig, identifier: string): SignalAccessUser | null {
+  const admin = config.channels.signal.admins.find((entry) => matchesSignalIdentity(entry, identifier));
   if (admin) {
     config.channels.signal.admins = config.channels.signal.admins
-      .filter((entry) => entry.phoneNumber !== phoneNumber);
+      .filter((entry) => !matchesSignalIdentity(entry, identifier));
     return admin;
   }
 
-  const member = config.channels.signal.members.find((entry) => entry.phoneNumber === phoneNumber);
+  const member = config.channels.signal.members.find((entry) => matchesSignalIdentity(entry, identifier));
   if (member) {
     config.channels.signal.members = config.channels.signal.members
-      .filter((entry) => entry.phoneNumber !== phoneNumber);
+      .filter((entry) => !matchesSignalIdentity(entry, identifier));
     return member;
   }
 

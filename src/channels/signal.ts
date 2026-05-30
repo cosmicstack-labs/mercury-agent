@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ChannelMessage } from '../types/channel.js';
+import os from 'node:os';
+import type { ChannelMessage, MessageAttachment } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import type { MercuryConfig, SignalAccessUser, SignalPendingRequest } from '../utils/config.js';
 import {
@@ -11,7 +12,6 @@ import {
   findSignalApprovedUser,
   findSignalPendingRequest,
   getSignalAccessSummary,
-  getSignalAdmins,
   hasSignalAdmins,
   rejectSignalPendingRequest,
   saveConfig,
@@ -20,6 +20,9 @@ import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
+const SEND_TIMEOUT_MS = 20_000;
+const SEND_MAX_ATTEMPTS = 3;
+const INTER_MESSAGE_DELAY_MS = 350;
 
 type PendingReply = {
   resolve: (value: string) => void;
@@ -130,7 +133,7 @@ export class SignalChannel extends BaseChannel {
         if (Array.isArray(envelopes)) {
           for (const envelope of envelopes) {
             try {
-              this.handleEnvelope(envelope);
+              await this.handleEnvelope(envelope);
             } catch (err: any) {
               logger.warn({ err: err.message }, 'Signal: error handling envelope');
             }
@@ -174,7 +177,7 @@ export class SignalChannel extends BaseChannel {
 
   // ─── Incoming Message Handling ──────────────────────────────
 
-  private handleEnvelope(envelope: any): void {
+  private async handleEnvelope(envelope: any): Promise<void> {
     // signal-cli-rest-api sends envelopes in format:
     // { envelope: { source, sourceNumber, sourceUuid, sourceName, dataMessage, syncMessage, ... }, account }
     const env = envelope.envelope || envelope;
@@ -189,26 +192,30 @@ export class SignalChannel extends BaseChannel {
 
     if (!source) return;
 
-    // Extract text and group info from either dataMessage (incoming from others)
-    // or syncMessage.sentMessage (self-sent from phone / linked device)
+    // Extract text, attachments and group info from either dataMessage
+    // (incoming from others) or syncMessage.sentMessage (self-sent from phone).
     let text: string | undefined;
     let timestamp: number;
     let groupId: string | undefined;
+    let rawAttachments: any[] = [];
 
     if (env.dataMessage) {
       text = env.dataMessage.message?.trim();
       timestamp = env.dataMessage.timestamp || env.timestamp || Date.now();
       groupId = env.dataMessage.groupInfo?.groupId;
+      rawAttachments = env.dataMessage.attachments || [];
     } else if (env.syncMessage?.sentMessage) {
       const sent = env.syncMessage.sentMessage;
       text = sent.message?.trim();
       timestamp = sent.timestamp || env.timestamp || Date.now();
       groupId = sent.groupInfo?.groupId;
+      rawAttachments = sent.attachments || [];
     } else {
       return;
     }
 
-    if (!text) return;
+    // Allow attachment-only messages (voice notes, photos with no caption).
+    if (!text && rawAttachments.length === 0) return;
 
     // Group-based filtering:
     // Only process messages from the configured Mercury group.
@@ -226,7 +233,7 @@ export class SignalChannel extends BaseChannel {
     } else {
       // No group configured yet — only allow pairing mode
       if (this.pairingMode && this.pairingHandler) {
-        this.pairingHandler(source, text, groupId);
+        this.pairingHandler(source, text || '', groupId);
         return;
       }
       logger.debug('Signal: no group configured and not in pairing mode, ignoring');
@@ -235,13 +242,13 @@ export class SignalChannel extends BaseChannel {
 
     // Pairing mode: route to pairing handler (for "mercury pair" trigger)
     if (this.pairingMode && this.pairingHandler) {
-      this.pairingHandler(source, text, groupId);
+      this.pairingHandler(source, text || '', groupId);
       return;
     }
 
-    // Check if this is a reply to a pending prompt
-    const pendingReply = this.pendingReplies.get(source);
-    if (pendingReply) {
+    // Check if this is a reply to a pending prompt (text replies only)
+    const pendingReply = text ? this.pendingReplies.get(source) : undefined;
+    if (pendingReply && text) {
       this.pendingReplies.delete(source);
       clearTimeout(pendingReply.timeout);
       pendingReply.resolve(text.toLowerCase());
@@ -262,18 +269,19 @@ export class SignalChannel extends BaseChannel {
         matchKey: source,
         approved: !!approvedUser,
         role: approvedUser ? (isAdmin ? 'admin' : 'member') : 'none',
-        textPreview: text.slice(0, 40),
+        textPreview: (text || '').slice(0, 40),
+        attachments: rawAttachments.length,
       },
       'Signal: access-control decision',
     );
 
     if (!approvedUser) {
-      this.handleUnapprovedMessage(source, text);
+      this.handleUnapprovedMessage({ source, sourcePhone, sourceUuid, sourceName }, text || '');
       return;
     }
 
-    // Commands
-    const command = text.startsWith('/') ? text.split(/\s+/)[0].toLowerCase() : null;
+    // Commands (text messages only)
+    const command = text && text.startsWith('/') ? text.split(/\s+/)[0].toLowerCase() : null;
 
     if (command === '/unpair') {
       if (!this.isAdminUser(source)) {
@@ -299,10 +307,27 @@ export class SignalChannel extends BaseChannel {
     }
 
     // Admin commands: "approve +number", "/approve +number", "/signal approve +number"
-    const adminText = text.replace(/^\/(signal\s+)?/i, '').trim();
-    if (/^(approve|reject)\s/i.test(adminText) && this.handleAdminCommand(source, adminText)) {
-      return;
+    if (text) {
+      const adminText = text.replace(/^\/(signal\s+)?/i, '').trim();
+      if (/^(approve|reject)\s/i.test(adminText) && this.handleAdminCommand(source, adminText)) {
+        return;
+      }
     }
+
+    // Process any attachments: download them, transcribe voice notes, and
+    // fold the results into the message content the agent receives.
+    let content = text || '';
+    let attachments: MessageAttachment[] | undefined;
+    if (rawAttachments.length > 0) {
+      const processed = await this.processAttachments(rawAttachments);
+      attachments = processed.attachments;
+      if (processed.contentAdditions) {
+        content = content ? `${content}\n${processed.contentAdditions}` : processed.contentAdditions;
+      }
+    }
+
+    // If after processing there's still nothing usable, drop it.
+    if (!content.trim() && (!attachments || attachments.length === 0)) return;
 
     // Normal message — emit to the agent
     const msg: ChannelMessage = {
@@ -312,14 +337,138 @@ export class SignalChannel extends BaseChannel {
       senderId: source,
       senderName: approvedUser.name || sourceName || source,
       senderRole: isAdmin ? 'admin' : 'member',
-      content: text,
+      content,
       timestamp,
+      attachments,
       metadata: { phoneNumber: sourcePhone, uuid: sourceUuid, groupId },
     };
     this.emit(msg);
   }
 
-  private async handleUnapprovedMessage(source: string, text: string): Promise<void> {
+  // ─── Incoming Attachments & Transcription ───────────────────
+
+  /**
+   * Download each attachment from signal-cli-rest-api, save it locally, and
+   * transcribe voice/audio notes. Returns the saved attachments plus a text
+   * block to append to the message content so the agent is aware of them.
+   */
+  private async processAttachments(
+    rawAttachments: any[],
+  ): Promise<{ attachments: MessageAttachment[]; contentAdditions: string }> {
+    const { apiUrl } = this.config.channels.signal;
+    const saved: MessageAttachment[] = [];
+    const notes: string[] = [];
+
+    const dir = path.join(os.homedir(), '.mercury', 'attachments');
+    await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
+
+    for (const att of rawAttachments) {
+      const id = att.id || att.attachmentId;
+      if (!id) continue;
+      const contentType: string = att.contentType || 'application/octet-stream';
+      const filename: string = att.filename || `${id}${this.extensionForType(contentType)}`;
+
+      try {
+        const res = await fetch(`${apiUrl}/v1/attachments/${encodeURIComponent(id)}`, {
+          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          logger.warn({ id, status: res.status }, 'Signal: attachment download failed');
+          continue;
+        }
+        const buffer = Buffer.from(await res.arrayBuffer());
+        const safeName = `${Date.now()}-${path.basename(filename)}`;
+        const filePath = path.join(dir, safeName);
+        await fs.promises.writeFile(filePath, buffer);
+
+        const entry: MessageAttachment = {
+          path: filePath,
+          filename,
+          contentType,
+          size: buffer.length,
+        };
+
+        // Voice / audio → transcribe into text the agent can act on.
+        if (contentType.startsWith('audio/')) {
+          const transcript = await this.transcribeAudio(buffer, contentType, filename);
+          if (transcript) {
+            entry.transcribed = true;
+            notes.push(`🎤 (voice) ${transcript}`);
+          } else {
+            notes.push(`🎤 [voice message received but transcription is unavailable — saved at ${filePath}]`);
+          }
+        } else if (contentType.startsWith('image/')) {
+          notes.push(`[Image received: ${filename} (${contentType}, ${buffer.length} bytes) — saved at ${filePath}]`);
+        } else {
+          notes.push(`[File received: ${filename} (${contentType}, ${buffer.length} bytes) — saved at ${filePath}]`);
+        }
+
+        saved.push(entry);
+      } catch (err: any) {
+        logger.warn({ id, err: err.message }, 'Signal: attachment processing error');
+      }
+    }
+
+    return { attachments: saved, contentAdditions: notes.join('\n') };
+  }
+
+  /** Transcribe audio via an OpenAI Whisper-compatible API. Returns null on failure. */
+  private async transcribeAudio(buffer: Buffer, contentType: string, filename: string): Promise<string | null> {
+    const tc = this.config.channels.signal.transcription;
+    if (!tc || !tc.enabled || !tc.apiKey) {
+      logger.debug('Signal: transcription disabled or no API key');
+      return null;
+    }
+
+    try {
+      const form = new FormData();
+      const blob = new Blob([buffer], { type: contentType });
+      form.append('file', blob, filename || 'audio');
+      form.append('model', tc.model || 'whisper-1');
+
+      const res = await fetch(`${tc.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tc.apiKey}` },
+        body: form,
+        signal: AbortSignal.timeout(60_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        logger.warn({ status: res.status, body }, 'Signal: transcription failed');
+        return null;
+      }
+
+      const data: any = await res.json().catch(() => null);
+      const transcript = data?.text?.trim();
+      return transcript || null;
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Signal: transcription request error');
+      return null;
+    }
+  }
+
+  private extensionForType(contentType: string): string {
+    const map: Record<string, string> = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'audio/aac': '.aac',
+      'audio/mpeg': '.mp3',
+      'audio/ogg': '.ogg',
+      'audio/mp4': '.m4a',
+      'video/mp4': '.mp4',
+      'application/pdf': '.pdf',
+    };
+    return map[contentType] || '';
+  }
+
+  private async handleUnapprovedMessage(
+    identity: { source: string; sourcePhone?: string; sourceUuid?: string; sourceName?: string },
+    text: string,
+  ): Promise<void> {
+    const { source, sourcePhone, sourceUuid, sourceName } = identity;
     const pending = findSignalPendingRequest(this.config, source);
     if (pending) {
       await this.sendToGroup(this.getPendingStatusMessage(pending));
@@ -335,11 +484,15 @@ export class SignalChannel extends BaseChannel {
     }
 
     const request = addSignalPendingRequest(this.config, {
-      phoneNumber: source,
+      // Store the phone number when we have one; otherwise fall back to the
+      // UUID so the request still has a stable, matchable identifier.
+      phoneNumber: sourcePhone || source,
+      uuid: sourceUuid,
+      name: sourceName,
       pairingCode: hasSignalAdmins(this.config) ? undefined : this.generatePairingCode(),
     });
     saveConfig(this.config);
-    logger.info({ source }, 'Signal access request recorded');
+    logger.info({ source, sourcePhone, sourceUuid }, 'Signal access request recorded');
 
     await this.sendToGroup(this.getPendingStatusMessage(request));
 
@@ -349,13 +502,17 @@ export class SignalChannel extends BaseChannel {
   }
 
   private async notifyAdminsOfPendingRequest(request: SignalPendingRequest): Promise<void> {
+    // Prefer the phone number as the approve/reject token, but fall back to the
+    // UUID for members who joined the group without sharing their number.
+    const token = request.phoneNumber || request.uuid || '';
+    const who = request.name ? `${request.name} (${token})` : token;
     const message = [
       'Signal access request pending approval.',
       '',
-      `Phone: ${request.phoneNumber}`,
+      `From: ${who}`,
       `Requested: ${new Date(request.requestedAt).toLocaleString()}`,
       '',
-      `Reply "approve ${request.phoneNumber}" or "reject ${request.phoneNumber}" to respond.`,
+      `Reply "approve ${token}" or "reject ${token}" to respond.`,
     ].join('\n');
 
     // Notify in the group
@@ -364,33 +521,59 @@ export class SignalChannel extends BaseChannel {
 
   // ─── Sending ────────────────────────────────────────────────
 
+  /**
+   * Resilient POST to the signal-cli-rest-api /v2/send endpoint.
+   * Adds a timeout and retries with exponential backoff on network errors,
+   * 5xx, and 429 (rate limit). Returns true on success.
+   */
+  private async signalPost(payload: Record<string, unknown>, label: string): Promise<boolean> {
+    const { apiUrl } = this.config.channels.signal;
+    const url = `${apiUrl}/v2/send`;
+
+    let lastError = '';
+    for (let attempt = 1; attempt <= SEND_MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        });
+
+        if (response.ok) return true;
+
+        const body = await response.text().catch(() => '');
+        lastError = `${response.status} ${body}`;
+
+        // Retry on rate limit and server errors; give up on client errors (4xx).
+        const retryable = response.status === 429 || response.status >= 500;
+        if (!retryable) {
+          logger.warn({ status: response.status, body, label }, `Signal: ${label} failed (no retry)`);
+          return false;
+        }
+      } catch (err: any) {
+        lastError = err?.message || String(err);
+      }
+
+      if (attempt < SEND_MAX_ATTEMPTS) {
+        const delay = 500 * Math.pow(2, attempt - 1); // 500ms, 1s
+        logger.debug({ label, attempt, delay, lastError }, `Signal: ${label} retrying`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+
+    logger.error({ label, attempts: SEND_MAX_ATTEMPTS, lastError }, `Signal: ${label} failed after retries`);
+    return false;
+  }
+
   /** Send a message to the configured Mercury group */
   async sendToGroup(message: string): Promise<void> {
-    const { apiUrl, number, groupId } = this.config.channels.signal;
+    const { number, groupId } = this.config.channels.signal;
     if (!groupId) {
       logger.warn('Signal: no group configured, cannot send');
       return;
     }
-
-    const url = `${apiUrl}/v2/send`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          number,
-          recipients: [groupId],
-        }),
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        logger.warn({ status: response.status, body }, 'Signal: sendToGroup failed');
-      }
-    } catch (err: any) {
-      logger.error({ err: err.message }, 'Signal: sendToGroup request error');
-    }
+    await this.signalPost({ message, number, recipients: [groupId] }, 'sendToGroup');
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
@@ -419,8 +602,12 @@ export class SignalChannel extends BaseChannel {
     if (!fullContent.trim()) return;
 
     const chunks = this.splitMessage(fullContent, MAX_MESSAGE_LENGTH);
-    for (const chunk of chunks) {
-      await this.sendToGroup(chunk);
+    for (let i = 0; i < chunks.length; i++) {
+      await this.sendToGroup(chunks[i]);
+      // Light rate limiting between chunks to avoid flooding signal-cli-rest-api.
+      if (i < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, INTER_MESSAGE_DELAY_MS));
+      }
     }
   }
 
@@ -434,7 +621,7 @@ export class SignalChannel extends BaseChannel {
       return;
     }
 
-    const fileBuffer = fs.readFileSync(resolved);
+    const fileBuffer = await fs.promises.readFile(resolved);
     const base64 = fileBuffer.toString('base64');
     const filename = path.basename(resolved);
 
@@ -467,31 +654,33 @@ export class SignalChannel extends BaseChannel {
   // ─── Permission / Continuation Prompts ──────────────────────
 
   async askPermission(prompt: string, targetId?: string): Promise<string> {
-    // For group-based messaging, we use the source phone number for reply tracking
-    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
+    const target = this.resolvePromptTarget(targetId);
+    if (!target) return 'no'; // No one to ask → safe default.
 
-    const message = `${prompt}\n\nReply: yes / no / always`;
+    const message = `${prompt}\n\n@${target.name}, reply: yes / no / always`;
     await this.sendToGroup(message);
 
-    return this.waitForReply(source, 120_000, 'no');
+    return this.waitForReply(target.source, 120_000, 'no');
   }
 
   async askToContinue(question: string, targetId?: string): Promise<boolean> {
-    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
+    const target = this.resolvePromptTarget(targetId);
+    if (!target) return false; // No one to ask → safe default.
 
-    const message = `${question}\n\nReply: yes / no`;
+    const message = `${question}\n\n@${target.name}, reply: yes / no`;
     await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(source, 120_000, 'no');
+    const reply = await this.waitForReply(target.source, 120_000, 'no');
     return reply === 'yes' || reply === 'y' || reply === 'continue';
   }
 
   async askPermissionMode(targetId?: string): Promise<PermissionMode> {
-    const source = targetId?.startsWith('signal:') ? targetId.split(':')[1] : this.config.channels.signal.number;
+    const target = this.resolvePromptTarget(targetId);
+    if (!target) return 'ask-me'; // No one to ask → safest mode.
 
     const message = [
       'Permission Mode',
-      'How should Mercury handle risky actions this session?',
+      `@${target.name}, how should Mercury handle risky actions this session?`,
       '',
       '1. Ask Me — confirm before file writes, commands, and scope changes',
       '2. Allow All — auto-approve everything',
@@ -500,8 +689,33 @@ export class SignalChannel extends BaseChannel {
     ].join('\n');
     await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(source, 120_000, '1');
+    const reply = await this.waitForReply(target.source, 120_000, '1');
     return reply === '2' || reply === 'allow-all' || reply === 'allow all' ? 'allow-all' : 'ask-me';
+  }
+
+  /**
+   * Resolve who a permission/continuation prompt should be bound to.
+   * - If a specific sender triggered the task (targetId = signal:<source>),
+   *   bind the prompt to THAT person so only they can answer.
+   * - Otherwise fall back to the first admin (owner) — NEVER the bot's own
+   *   number, which would make the prompt impossible to answer (silent timeout).
+   * - If there is no one to ask, return null so the caller uses a safe default.
+   */
+  private resolvePromptTarget(targetId?: string): { source: string; name: string } | null {
+    if (targetId?.startsWith('signal:')) {
+      const source = targetId.split(':')[1];
+      if (source) {
+        const user = findSignalApprovedUser(this.config, source);
+        return { source, name: user?.name || source };
+      }
+    }
+    const admins = this.config.channels.signal.admins;
+    if (admins.length > 0) {
+      const owner = admins[0];
+      const source = owner.phoneNumber || owner.uuid;
+      if (source) return { source, name: owner.name || source };
+    }
+    return null;
   }
 
   private waitForReply(phoneNumber: string, timeoutMs: number, defaultValue: string): Promise<string> {
@@ -606,6 +820,14 @@ export class SignalChannel extends BaseChannel {
       lines.push(...recentHistory.map(h => `  ✓ ${h}`));
     }
 
+    // Surface any system notices (budget warnings, scope changes, etc.) that
+    // were buffered during the task instead of silently dropping them.
+    const notices = this.statusNotices.get(key) || [];
+    if (notices.length > 0) {
+      lines.push('');
+      lines.push(...notices.map(n => `  ${n}`));
+    }
+
     // End task so normal send works
     this.endTask(targetId);
 
@@ -645,35 +867,46 @@ export class SignalChannel extends BaseChannel {
   handleAdminCommand(source: string, text: string): boolean {
     if (!this.isAdminUser(source)) return false;
 
-    const lower = text.toLowerCase().trim();
+    const trimmed = text.trim();
 
-    const approveMatch = lower.match(/^approve\s+(\+?\d+)$/);
+    // Token may be a phone number (+1555…) or a Signal UUID/ACI (8-4-4-4-12 hex).
+    const approveMatch = trimmed.match(/^approve\s+(\+?[\d-]+|[0-9a-f-]{36})$/i);
     if (approveMatch) {
-      const phoneNumber = approveMatch[1].startsWith('+') ? approveMatch[1] : `+${approveMatch[1]}`;
-      const approved = approveSignalPendingRequest(this.config, phoneNumber, 'member');
+      const token = this.normalizeAccessToken(approveMatch[1]);
+      const approved = approveSignalPendingRequest(this.config, token, 'member');
       if (approved) {
         saveConfig(this.config);
-        this.sendToGroup(`Approved Signal access for ${phoneNumber}.`);
+        this.sendToGroup(`Approved Signal access for ${approved.name || token}.`);
       } else {
-        this.sendToGroup(`No pending request found for ${phoneNumber}.`);
+        this.sendToGroup(`No pending request found for ${token}.`);
       }
       return true;
     }
 
-    const rejectMatch = lower.match(/^reject\s+(\+?\d+)$/);
+    const rejectMatch = trimmed.match(/^reject\s+(\+?[\d-]+|[0-9a-f-]{36})$/i);
     if (rejectMatch) {
-      const phoneNumber = rejectMatch[1].startsWith('+') ? rejectMatch[1] : `+${rejectMatch[1]}`;
-      const rejected = rejectSignalPendingRequest(this.config, phoneNumber);
+      const token = this.normalizeAccessToken(rejectMatch[1]);
+      const rejected = rejectSignalPendingRequest(this.config, token);
       if (rejected) {
         saveConfig(this.config);
-        this.sendToGroup(`Rejected Signal access for ${phoneNumber}.`);
+        this.sendToGroup(`Rejected Signal access for ${rejected.name || token}.`);
       } else {
-        this.sendToGroup(`No pending request found for ${phoneNumber}.`);
+        this.sendToGroup(`No pending request found for ${token}.`);
       }
       return true;
     }
 
     return false;
+  }
+
+  /**
+   * Normalize an approve/reject token. Phone numbers get a leading "+";
+   * UUIDs are lowercased and left otherwise untouched.
+   */
+  private normalizeAccessToken(raw: string): string {
+    const isUuid = /^[0-9a-f-]{36}$/i.test(raw);
+    if (isUuid) return raw.toLowerCase();
+    return raw.startsWith('+') ? raw : `+${raw}`;
   }
 
   getPermissionMode(phoneNumber: string): PermissionMode {
@@ -683,54 +916,17 @@ export class SignalChannel extends BaseChannel {
   // ─── HTTP Helpers (signal-cli-rest-api) ─────────────────────
 
   private async sendToNumber(recipient: string, message: string): Promise<void> {
-    const { apiUrl, number } = this.config.channels.signal;
-    const url = `${apiUrl}/v2/send`;
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          number,
-          recipients: [recipient],
-        }),
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        logger.warn({ status: response.status, body, recipient }, 'Signal: send failed');
-      }
-    } catch (err: any) {
-      logger.error({ err: err.message, recipient }, 'Signal: send request error');
-    }
+    const { number } = this.config.channels.signal;
+    await this.signalPost({ message, number, recipients: [recipient] }, 'sendToNumber');
   }
 
   private async sendWithAttachment(recipient: string, filename: string, base64Data: string): Promise<void> {
-    const { apiUrl, number } = this.config.channels.signal;
-    const url = `${apiUrl}/v2/send`;
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: filename,
-          number,
-          recipients: [recipient],
-          base64_attachments: [base64Data],
-        }),
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        logger.warn({ status: response.status, body, recipient }, 'Signal: sendFile failed');
-      } else {
-        logger.info({ file: filename, recipient }, 'File sent via Signal');
-      }
-    } catch (err: any) {
-      logger.error({ err: err.message, recipient }, 'Signal: sendFile request error');
-    }
+    const { number } = this.config.channels.signal;
+    const ok = await this.signalPost(
+      { message: filename, number, recipients: [recipient], base64_attachments: [base64Data] },
+      'sendWithAttachment',
+    );
+    if (ok) logger.info({ file: filename, recipient }, 'File sent via Signal');
   }
 
   // ─── Resolution / Utilities ─────────────────────────────────
