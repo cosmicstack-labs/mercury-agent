@@ -1623,6 +1623,52 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   );
 }
 
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/**
+ * Animated row for a currently-running tool step.
+ *
+ * Shows a braille spinner + live elapsed counter so the user gets
+ * continuous feedback during long operations (1-2 min tool calls
+ * like screenshots, large file ops, sub-agent dispatches).
+ *
+ * Color escalates to signal long runs:
+ *   < 30s : cyan       — normal
+ *   30-90s: yellow     — "still working" hint
+ *   > 90s : red        — long-op warning (mentions Ctrl+C)
+ */
+function RunningStepRow({ step }: { step: ToolStep }) {
+  const [frame, setFrame] = React.useState(0);
+  const [elapsed, setElapsed] = React.useState(() =>
+    step.startedAt ? Math.floor((Date.now() - step.startedAt) / 1000) : 0,
+  );
+
+  React.useEffect(() => {
+    const startedAt = step.startedAt ?? Date.now();
+    const timer = setInterval(() => {
+      setFrame((v) => (v + 1) % SPINNER_FRAMES.length);
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 80);
+    return () => clearInterval(timer);
+  }, [step.startedAt]);
+
+  const tone = elapsed >= 90 ? 'red' : elapsed >= 30 ? 'yellow' : 'cyan';
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const timeStr = mins > 0 ? `${mins}m${secs.toString().padStart(2, '0')}s` : `${secs}s`;
+
+  return (
+    <Box>
+      <Text color={tone}>{SPINNER_FRAMES[frame]}</Text>
+      <Text> </Text>
+      <Text color={tone} bold>{step.label}</Text>
+      <Text dimColor> · {timeStr}</Text>
+      {elapsed >= 30 && elapsed < 90 && <Text color="yellow" dimColor> · still working</Text>}
+      {elapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels)</Text>}
+    </Box>
+  );
+}
+
 function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed'; idle?: boolean }) {
   // When idle (task complete), collapse to a single summary line to free
   // up screen space. Full history remains available via /progress.
@@ -1639,6 +1685,7 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
     );
   }
 
+
   const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
   const totalDone = steps.filter((s) => s.status === 'done').length;
   const totalRunning = steps.filter((s) => s.status === 'running').length;
@@ -1650,18 +1697,20 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
         <Text dimColor> · {totalDone} done{totalRunning > 0 ? `, ${totalRunning} running` : ''}</Text>
         {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier steps hidden</Text>}
       </Box>
-      {visible.map((step) => (
-        <Box key={step.id}>
-          <Text>
-            {step.status === 'running' ? '⏳' : step.status === 'done' ? '✅' : '❌'}
-          </Text>
-          <Text> </Text>
-          <Text dimColor={step.status === 'done'} color={step.status === 'running' ? 'cyan' : undefined} bold={step.status === 'running'}>{step.label}</Text>
-          {step.status === 'running' && <Text color="yellow"> …</Text>}
-          {step.status === 'done' && step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
-          {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
-        </Box>
-      ))}
+      {visible.map((step) => {
+        if (step.status === 'running') {
+          return <RunningStepRow key={step.id} step={step} />;
+        }
+        return (
+          <Box key={step.id}>
+            <Text>{step.status === 'done' ? '✅' : '❌'}</Text>
+            <Text> </Text>
+            <Text dimColor={step.status === 'done'}>{step.label}</Text>
+            {step.status === 'done' && step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
+            {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
+          </Box>
+        );
+      })}
       <Text dimColor>Ctrl+T toggles view · /progress for full history</Text>
     </Box>
   );
@@ -1692,21 +1741,29 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
     ? runningStep.label
     : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
+  // Prefer per-step elapsed (more meaningful — "this tool has been running Ns")
+  // when a step is active; fall back to thinking-session elapsed otherwise.
+  const displayElapsed = runningStep?.startedAt
+    ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0) // depend on frame so it re-renders
+    : elapsed;
+  const actionTone = displayElapsed >= 90 ? 'red' : displayElapsed >= 30 ? 'yellow' : 'white';
+
   // Format elapsed time
-  const mins = Math.floor(elapsed / 60);
-  const secs = elapsed % 60;
+  const mins = Math.floor(displayElapsed / 60);
+  const secs = displayElapsed % 60;
   const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
       <Box>
-        <Text color="cyan">{spinner}</Text>
+        <Text color={actionTone === 'white' ? 'cyan' : actionTone}>{spinner}</Text>
         <Text> </Text>
         <Text color="cyan" bold>{totalSteps > 0 ? agentName : 'Processing'}</Text>
         <Text dimColor>{totalSteps > 0 ? ` · step ${totalSteps} · ${timeStr}` : ` · ${timeStr}`}</Text>
       </Box>
       <Box marginLeft={4}>
-        <Text color="white" bold>{currentAction}</Text>
+        <Text color={actionTone} bold>{currentAction}</Text>
+        {displayElapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels)</Text>}
       </Box>
       {doneSteps.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>

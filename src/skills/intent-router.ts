@@ -135,7 +135,10 @@ export class IntentRouter {
       }
     }
     for (const [name, count] of overlapCount.entries()) {
-      const conf = count >= 2 ? 0.75 : 0.55;
+      // Single shared content word is a weak signal. We deliberately keep it
+      // below the default ambiguity floor (0.75) so it can never be a sole
+      // contender on its own — it only helps boost an already-matched skill.
+      const conf = count >= 3 ? 0.85 : count >= 2 ? 0.75 : 0.45;
       const current = matches.get(name);
       const currentConf = current?.confidence ?? 0;
       this.addOrUpdateMatch(matches, name, Math.max(currentConf, conf), undefined);
@@ -220,8 +223,14 @@ export class IntentRouter {
    * Analyze the top matches for clear-winner vs ambiguous decision making.
    * - clearWinner: top match >= clearThreshold AND >= gap above the second match
    * - ambiguous: multiple matches clustered near the top with no clear winner
+   *
+   * IMPORTANT: "ambiguous" requires a *minimum floor of confidence* on the
+   * contenders. Without it, three weak 0.55 matches would trip the picker
+   * even though none of them is actually a plausible answer — better to
+   * fall through and let the LLM decide than to nag the user with a list
+   * of irrelevant skills.
    */
-  analyzeMatch(userInput: string, opts: { clearThreshold?: number; gap?: number } = {}): {
+  analyzeMatch(userInput: string, opts: { clearThreshold?: number; gap?: number; ambiguityFloor?: number } = {}): {
     matches: MatchedSkill[];
     top?: MatchedSkill;
     clearWinner: boolean;
@@ -230,13 +239,30 @@ export class IntentRouter {
   } {
     const clearThreshold = opts.clearThreshold ?? 0.85;
     const gap = opts.gap ?? 0.15;
+    // Default floor: 0.75. A 0.55 weak-keyword match is not a real candidate.
+    const ambiguityFloor = opts.ambiguityFloor ?? 0.75;
     const matches = this.match(userInput);
     if (matches.length === 0) {
       return { matches, clearWinner: false, ambiguous: false, closeContenders: [] };
     }
+
+    // Heuristic: if the user is asking to *build*, *create*, or *publish* a
+    // new skill, they're meta-discussing skills, not invoking one. Skip
+    // routing entirely so we don't show a picker for a request that is
+    // explicitly about authoring code.
+    const lower = userInput.toLowerCase();
+    const metaSkillIntent = /\b(create|build|make|write|publish|design|develop|implement|scaffold)\b[^.]{0,80}\b(skill|plugin|extension|tool|integration)\b/.test(lower)
+      || /\bnew skill\b/.test(lower);
+    if (metaSkillIntent) {
+      return { matches, top: matches[0], clearWinner: false, ambiguous: false, closeContenders: [] };
+    }
+
     const top = matches[0];
     const second = matches[1];
-    const closeContenders = matches.filter(m => top.confidence - m.confidence < gap);
+    // Only consider matches above the floor as real contenders.
+    const closeContenders = matches.filter(
+      m => m.confidence >= ambiguityFloor && top.confidence - m.confidence < gap,
+    );
     const clearWinner = top.confidence >= clearThreshold && (!second || top.confidence - second.confidence >= gap);
     const ambiguous = !clearWinner && closeContenders.length >= 2;
     return { matches, top, clearWinner, ambiguous, closeContenders };

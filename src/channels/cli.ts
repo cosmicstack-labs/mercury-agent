@@ -382,6 +382,7 @@ export class CLIChannel extends BaseChannel {
       toolName,
       label,
       status: 'running',
+      startedAt: Date.now(),
     };
     this.stepCount += 1;
     this.stepStartTime = Date.now();

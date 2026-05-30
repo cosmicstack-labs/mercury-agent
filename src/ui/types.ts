@@ -67,6 +67,7 @@ export interface ToolStep {
   toolName: string;
   label: string;
   status: 'running' | 'done' | 'error';
+  startedAt?: number;
   elapsed?: number;
   result?: string;
 }
