@@ -481,10 +481,22 @@ export class CLIChannel extends BaseChannel {
       return null;
     }
     const status = mgr.getStatus();
-    if (status.state !== 'ready' && status.state !== 'speaking') return null;
+    if (status.state !== 'ready' && status.state !== 'speaking') {
+      logger.debug(
+        { state: status.state, lastError: status.lastError },
+        'voice queue skipped: manager not ready',
+      );
+      return null;
+    }
 
     const { loadConfig } = await import('../utils/config.js');
-    if (!loadConfig().voice?.tts?.autoSpeakReplies) return null;
+    // Treat missing field as ON. The default in getDefaultConfig() is
+    // true, but configs that pre-date this field (or were ever written
+    // with the field absent) would otherwise silently drop all TTS.
+    if (loadConfig().voice?.tts?.autoSpeakReplies === false) {
+      logger.debug('voice queue skipped: autoSpeakReplies is explicitly false');
+      return null;
+    }
 
     const buffer: string[] = [];
     let producerDone = false;

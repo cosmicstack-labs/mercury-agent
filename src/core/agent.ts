@@ -3888,8 +3888,38 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
+      // Auto-speak toggle. Controls whether the CLI stream tee pumps
+      // agent replies into the TTS pipeline. Same default-on semantics
+      // as autosubmit; flipping this off is "muted reply" mode.
+      //   /voice autospeak             → show current
+      //   /voice autospeak on|off      → set and persist
+      if (sub.startsWith('autospeak')) {
+        const arg = sub.slice('autospeak'.length).trim().toLowerCase();
+        const cfg = ctx.config();
+        cfg.voice = cfg.voice ?? ({} as any);
+        cfg.voice!.tts = cfg.voice!.tts ?? ({} as any);
+        if (!arg) {
+          const cur = cfg.voice!.tts.autoSpeakReplies !== false;
+          await channel.send(
+            `Auto-speak replies is **${cur ? 'on' : 'off'}**. Toggle with \`/voice autospeak on|off\`.`,
+            channelId,
+          );
+          return true;
+        }
+        const on = arg === 'on' || arg === 'true' || arg === '1' || arg === 'yes';
+        const off = arg === 'off' || arg === 'false' || arg === '0' || arg === 'no';
+        if (!on && !off) {
+          await channel.send('Use `/voice autospeak on` or `/voice autospeak off`.', channelId);
+          return true;
+        }
+        (cfg.voice!.tts as any).autoSpeakReplies = on;
+        saveConfig(cfg);
+        await channel.send(`✓ Auto-speak replies set to **${on ? 'on' : 'off'}**.`, channelId);
+        return true;
+      }
+
       await channel.send(
-        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt|autosubmit]',
+        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt|autosubmit|autospeak]',
         channelId,
       );
       return true;

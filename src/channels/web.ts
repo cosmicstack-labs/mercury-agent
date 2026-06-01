@@ -165,7 +165,7 @@ export class WebChannel extends BaseChannel {
     if (status.state !== 'ready' && status.state !== 'speaking') return null;
 
     const { loadConfig } = await import('../utils/config.js');
-    if (!loadConfig().voice?.tts?.autoSpeakReplies) return null;
+    if (loadConfig().voice?.tts?.autoSpeakReplies === false) return null;
 
     const buffer: string[] = [];
     let producerDone = false;
