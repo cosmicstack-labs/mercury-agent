@@ -9,7 +9,7 @@
  *   macOS   — ffmpeg-streaming → (speaker-native, Phase 1b)
  *   Linux   — ffmpeg-streaming → (speaker-native, Phase 1b)
  *   Windows — ffmpeg-streaming
- *   Termux  — termux-api (Phase 5; not yet implemented)
+ *   Termux  — termux-api → ffmpeg-streaming (some users `pkg install ffmpeg`)
  *   SSH     — none (auto-disabled)
  *
  * Native backends (skipped when runtime.canLoadNative === false) land in
@@ -19,6 +19,7 @@
 import { runtime } from '../../runtime.js';
 import type { AudioBackend } from './base.js';
 import { FfmpegStreamingBackend } from './ffmpeg-streaming.js';
+import { TermuxAPIBackend } from './termux.js';
 
 export interface BackendDetectionResult {
   backend: AudioBackend | null;
@@ -36,18 +37,18 @@ export async function detectBackend(): Promise<BackendDetectionResult> {
       reason: 'Voice is disabled in SSH sessions (no local audio device).',
     };
   }
-  if (runtime.isTermux) {
-    return {
-      backend: null,
-      probed: [],
-      reason: 'Termux backend not yet implemented (Phase 5).',
-    };
-  }
 
-  const candidates: AudioBackend[] = [
-    // Phase 1b will prepend SpeakerNativeBackend here when canLoadNative.
-    new FfmpegStreamingBackend(),
-  ];
+  // Termux gets its own backend FIRST because Android audio isn't reachable
+  // through the standard ffmpeg device drivers — only the termux-api bridge
+  // owns the HAL. We still fall through to ffmpeg-streaming for users who
+  // have pkg-installed ffmpeg with working OpenSL ES; those installs are
+  // rare but extant.
+  const candidates: AudioBackend[] = runtime.isTermux
+    ? [new TermuxAPIBackend(), new FfmpegStreamingBackend()]
+    : [
+        // Phase 1b will prepend SpeakerNativeBackend here when canLoadNative.
+        new FfmpegStreamingBackend(),
+      ];
 
   const probed: BackendDetectionResult['probed'] = [];
   for (const b of candidates) {
@@ -67,6 +68,8 @@ export async function detectBackend(): Promise<BackendDetectionResult> {
   return {
     backend: null,
     probed,
-    reason: 'No audio backend available. Install ffmpeg to enable voice.',
+    reason: runtime.isTermux
+      ? 'Install termux-api: pkg install termux-api (and the Termux:API app from F-Droid).'
+      : 'No audio backend available. Install ffmpeg to enable voice.',
   };
 }
