@@ -3694,7 +3694,22 @@ Is this productive iteration or a stuck loop?`,
         await channel.send('Microphone grant flow is not yet wired. Coming in Phase 1.', channelId);
         return true;
       }
-      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|grant]', channelId);
+      if (sub === 'toggle') {
+        const cfg = ctx.config();
+        const currentlyOn = !!cfg.voice?.enabled;
+        cfg.voice = cfg.voice ?? ({} as any);
+        (cfg.voice as any).enabled = !currentlyOn;
+        saveConfig(cfg);
+        if (currentlyOn) {
+          await voice.disable();
+          await channel.send('Voice disabled.', channelId);
+        } else {
+          await voice.enable();
+          await channel.send(`Voice enabled. ${voice.formatStatusLine()}`, channelId);
+        }
+        return true;
+      }
+      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|toggle|grant]', channelId);
       return true;
     }
 

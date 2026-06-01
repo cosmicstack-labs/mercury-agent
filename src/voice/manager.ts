@@ -1,7 +1,7 @@
 /**
  * VoiceManager — the single object channels talk to for voice I/O.
  *
- * Responsibilities (filled in incrementally across phases):
+ * Responsibilities:
  *   • Own the active TTS and STT providers, with fallback chains.
  *   • Hold the audio backend (playback sink + recording source).
  *   • Manage the microphone lifecycle (probe → ready → recording → released).
@@ -9,14 +9,37 @@
  *     synthesized audio frames → speaker) with bounded backpressure.
  *   • Surface state to the UI (status bar, /voice status).
  *
- * Phase 0 scope: enable/disable lifecycle, state reporting, no real I/O.
+ * Pipeline (speakStream):
+ *   text deltas ──► SentenceBuffer ──► TTS provider ──► PlaybackSink
+ *                                                       (with abort signal)
+ *
+ * Backpressure: the TTS provider yields async — if the sink rejects writes
+ * (full queue), we await before requesting more chunks. SentenceBuffer
+ * holds the unsent text tail; channels call ttsTick() on a 50 ms timer
+ * to enforce time-based flush rules.
+ *
+ * Cancellation: cancelSpeaking() aborts the current AbortController which
+ * propagates to (a) the TTS provider's WebSocket/HTTP request,
+ * (b) the SentenceBuffer feeder, and (c) the PlaybackSink.flush(). All
+ * three are designed to return within ≤50 ms.
  */
 import { EventEmitter } from 'node:events';
 import { runtime } from './runtime.js';
 import { detectMicPermission, type MicPermission } from './audio/permissions.js';
 import { detectBackend, type BackendDetectionResult } from './audio/backends/detector.js';
-import type { VoiceState, MicState } from './types.js';
+import type { AudioBackend, PlaybackSink } from './audio/backends/base.js';
+import type { VoiceState, MicState, AudioChunk } from './types.js';
 import { loadConfig } from '../utils/config.js';
+import { logger } from '../utils/logger.js';
+import { SentenceBuffer } from './buffering.js';
+import { pickReadyTTS, disposeTTSProviders } from './tts/registry.js';
+import type { BaseTTSProvider } from './tts/base.js';
+
+// Module-load registration: importing the provider modules registers them
+// with the TTS registry. Keep these imports ordered so the preferred
+// provider lands first.
+import './tts/cartesia.js';
+import './tts/openai.js';
 
 export interface VoiceStatusSnapshot {
   state: VoiceState;
@@ -30,6 +53,13 @@ export interface VoiceStatusSnapshot {
   lastError?: string;
 }
 
+export interface SpeakOptions {
+  /** Optional external abort signal; combined with internal one. */
+  signal?: AbortSignal;
+  /** Skip pipeline entirely when false; useful for "muted" auto-speak. */
+  enabled?: boolean;
+}
+
 export class VoiceManager extends EventEmitter {
   private state: VoiceState = 'disabled';
   private micState: MicState = 'uninitialized';
@@ -37,13 +67,18 @@ export class VoiceManager extends EventEmitter {
   private backendInfo: BackendDetectionResult | null = null;
   private lastError: string | null = null;
 
-  // Provider slots, populated in Phase 1+ when registries land.
   private ttsProviderName: string | null = null;
   private sttProviderName: string | null = null;
 
+  private backend: AudioBackend | null = null;
+  private playback: PlaybackSink | null = null;
+  private playbackSampleRate = 0;
+
+  // Active speak controller — non-null while TTS is in flight.
+  private speakAbort: AbortController | null = null;
+
   /**
-   * Enable the voice subsystem. Idempotent — calling twice is a no-op once
-   * READY. Resolves when initialization completes (or errors out cleanly).
+   * Enable the voice subsystem. Idempotent.
    */
   async enable(): Promise<void> {
     if (this.state !== 'disabled' && this.state !== 'error') return;
@@ -53,34 +88,32 @@ export class VoiceManager extends EventEmitter {
     try {
       const cfg = loadConfig();
       if (!cfg.voice?.enabled) {
-        // Config flag overrides programmatic enable; useful for /voice on
-        // to actually persist the flag before calling enable().
         this.setState('disabled');
         return;
       }
 
-      // Step 1: probe permission (cheap, no allocation).
+      // 1. Probe mic permission (best-effort; TTS works without it).
       const perm = await detectMicPermission();
       this.micPermission = perm.status;
       this.micState = perm.status === 'authorized' ? 'ready'
                     : perm.status === 'denied' ? 'denied'
                     : 'probing';
 
-      // Step 2: detect audio backend.
+      // 2. Detect audio backend.
       this.backendInfo = await detectBackend();
-
-      // Step 3: TTS/STT providers come online in Phase 1.
-      this.ttsProviderName = cfg.voice.tts?.provider ?? null;
-      this.sttProviderName = cfg.voice.stt?.provider ?? null;
-
-      // Phase 0: even if everything probes successfully, we report 'ready'
-      // but no audio actually flows until later phases land providers.
       if (!this.backendInfo.backend) {
         this.setState('error');
         this.lastError = this.backendInfo.reason ?? 'No audio backend available.';
         return;
       }
+      this.backend = this.backendInfo.backend;
 
+      // 3. Pick TTS provider (with fallback walked by registry).
+      const tts = await pickReadyTTS();
+      this.ttsProviderName = tts ? tts.name : null;
+      this.sttProviderName = cfg.voice.stt?.provider ?? null; // wired in Phase 2
+
+      // TTS unavailability is non-fatal; user may still grant access later.
       this.setState('ready');
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -90,11 +123,21 @@ export class VoiceManager extends EventEmitter {
 
   /**
    * Disable voice; releases mic, drains TTS, closes backend handles.
-   * Idempotent. Must be safe to call from process-exit handlers.
+   * Idempotent.
    */
   async disable(): Promise<void> {
     if (this.state === 'disabled') return;
-    // Real teardown lands with the mic lifecycle brick. For now just flip state.
+    await this.cancelSpeaking().catch(() => {});
+    if (this.playback) {
+      await this.playback.close().catch(() => {});
+      this.playback = null;
+      this.playbackSampleRate = 0;
+    }
+    await disposeTTSProviders().catch(() => {});
+    this.backend = null;
+    this.backendInfo = null;
+    this.ttsProviderName = null;
+    this.sttProviderName = null;
     this.micState = 'released';
     this.setState('disabled');
   }
@@ -112,15 +155,15 @@ export class VoiceManager extends EventEmitter {
     };
   }
 
-  /** Short description for the status bar (e.g. "🔊 ready · cartesia"). */
+  /** Short description for the status bar. */
   formatStatusLine(): string {
     const s = this.getStatus();
     switch (s.state) {
       case 'disabled':     return 'Voice: off';
       case 'initializing': return 'Voice: warming…';
       case 'ready':        return `Voice: ready · ${s.ttsProvider ?? '-'}/${s.sttProvider ?? '-'}`;
-      case 'speaking':     return '🔊 speaking';
-      case 'listening':    return '🎙 listening';
+      case 'speaking':     return 'Voice: speaking';
+      case 'listening':    return 'Voice: listening';
       case 'error':        return `Voice: error · ${s.lastError ?? 'unknown'}`;
     }
   }
@@ -142,11 +185,165 @@ export class VoiceManager extends EventEmitter {
     return lines.join('\n');
   }
 
+  /* ── Speak pipeline ────────────────────────────────────────────────── */
+
+  /**
+   * Speak a streaming sequence of text deltas. Returns when the audio has
+   * finished playing (or playback was cancelled). Safe to call repeatedly;
+   * subsequent calls implicitly cancel the previous one.
+   */
+  async speakStream(
+    textDeltas: AsyncIterable<string>,
+    opts: SpeakOptions = {},
+  ): Promise<void> {
+    if (opts.enabled === false) {
+      // Drain the deltas so producer doesn't deadlock, but emit nothing.
+      for await (const _ of textDeltas) { /* discard */ }
+      return;
+    }
+    if (this.state !== 'ready' && this.state !== 'speaking') return;
+    if (!this.backend) return;
+
+    // Cancel any prior utterance.
+    await this.cancelSpeaking();
+
+    const tts = await pickReadyTTS();
+    if (!tts) {
+      logger.warn('voice.speak no TTS provider available');
+      // Still drain deltas to release the producer.
+      for await (const _ of textDeltas) { /* discard */ }
+      return;
+    }
+    this.ttsProviderName = tts.name;
+
+    const internal = new AbortController();
+    this.speakAbort = internal;
+    const externalAbort = () => internal.abort();
+    opts.signal?.addEventListener('abort', externalAbort, { once: true });
+
+    this.setState('speaking');
+
+    try {
+      const sink = await this.ensurePlayback(tts.capabilities.nativeSampleRate);
+      const buffer = new SentenceBuffer({ normalize: loadConfig().voice?.tts?.normalize !== false });
+
+      // Convert text deltas → sentence chunks (async iterator).
+      const chunkIter = pumpSentenceChunks(buffer, textDeltas, internal.signal);
+
+      // Synthesize and forward to sink with bounded backpressure.
+      const audioIter = tts.synthesizeStream(chunkIter, { signal: internal.signal });
+
+      for await (const frame of audioIter) {
+        if (internal.signal.aborted) break;
+        await sink.write(frame);
+      }
+      if (!internal.signal.aborted) {
+        await sink.drain();
+      }
+    } catch (err) {
+      logger.warn({ err }, 'voice.speak pipeline error');
+      // Try fallback once if Cartesia failed mid-utterance.
+      // (Phase 2 enhancement: actually retry with the next provider.)
+    } finally {
+      opts.signal?.removeEventListener('abort', externalAbort);
+      if (this.speakAbort === internal) this.speakAbort = null;
+      if (this.state === 'speaking') this.setState('ready');
+    }
+  }
+
+  /** Cancel the in-flight utterance (≤50 ms). */
+  async cancelSpeaking(): Promise<void> {
+    const ctrl = this.speakAbort;
+    this.speakAbort = null;
+    if (ctrl && !ctrl.signal.aborted) ctrl.abort();
+    if (this.playback) {
+      try { await this.playback.flush(); } catch { /* ignore */ }
+    }
+  }
+
+  /* ── Internal ──────────────────────────────────────────────────────── */
+
+  private async ensurePlayback(sampleRate: number): Promise<PlaybackSink> {
+    if (!this.backend) throw new Error('No audio backend');
+    if (this.playback && this.playbackSampleRate === sampleRate) {
+      return this.playback;
+    }
+    if (this.playback) {
+      await this.playback.close().catch(() => {});
+      this.playback = null;
+    }
+    this.playback = await this.backend.initPlayback({
+      sampleRate,
+      channels: 1,
+    });
+    this.playbackSampleRate = sampleRate;
+    return this.playback;
+  }
+
   private setState(next: VoiceState): void {
     if (this.state === next) return;
     const prev = this.state;
     this.state = next;
     this.emit('state', { from: prev, to: next });
+  }
+}
+
+/**
+ * Drive the SentenceBuffer from a text-delta async iterator and yield
+ * sentence-sized chunks. Also runs the 50 ms tick timer so time-based
+ * flushes fire when no new tokens arrive.
+ */
+async function* pumpSentenceChunks(
+  buffer: SentenceBuffer,
+  textDeltas: AsyncIterable<string>,
+  signal: AbortSignal,
+): AsyncIterable<string> {
+  // Concurrent: producer feeds buffer, ticker periodically nudges it,
+  // consumer (this generator) yields ready chunks.
+  const queue: string[] = [];
+  let producerDone = false;
+  let waiter: (() => void) | null = null;
+
+  const wake = () => { if (waiter) { const w = waiter; waiter = null; w(); } };
+
+  const tick = setInterval(() => {
+    for (const c of buffer.tick()) {
+      if (c.text) queue.push(c.text);
+    }
+    wake();
+  }, 50);
+
+  const producer = (async () => {
+    try {
+      for await (const delta of textDeltas) {
+        if (signal.aborted) break;
+        for (const c of buffer.push(delta)) {
+          if (c.text) queue.push(c.text);
+        }
+        wake();
+      }
+    } finally {
+      for (const c of buffer.end()) {
+        if (c.text) queue.push(c.text);
+      }
+      producerDone = true;
+      wake();
+    }
+  })();
+
+  try {
+    while (true) {
+      if (signal.aborted) return;
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        yield next;
+      }
+      if (producerDone) return;
+      await new Promise<void>((resolve) => { waiter = resolve; });
+    }
+  } finally {
+    clearInterval(tick);
+    await producer.catch(() => {});
   }
 }
 

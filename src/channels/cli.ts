@@ -422,17 +422,26 @@ export class CLIChannel extends BaseChannel {
       isThinking: true,
     });
 
-    for await (const chunk of content) {
-      full += chunk;
-      const now = Date.now();
-      if (now - lastRender >= 16) {
-        this.update({
-          chatMessages: this.state.chatMessages.map((m) =>
-            m.id === msgId ? { ...m, content: full, streaming: true } : m,
-          ),
-        });
-        lastRender = now;
+    // Tee the stream: deltas drive both the UI render loop and (optionally)
+    // the TTS pipeline. Voice subscribers consume via a bounded queue so a
+    // slow speaker can never stall the chat rendering.
+    const voiceQueue = await this.openVoiceQueue();
+    try {
+      for await (const chunk of content) {
+        full += chunk;
+        voiceQueue?.push(chunk);
+        const now = Date.now();
+        if (now - lastRender >= 16) {
+          this.update({
+            chatMessages: this.state.chatMessages.map((m) =>
+              m.id === msgId ? { ...m, content: full, streaming: true } : m,
+            ),
+          });
+          lastRender = now;
+        }
       }
+    } finally {
+      voiceQueue?.end();
     }
 
     this.update({
@@ -442,7 +451,73 @@ export class CLIChannel extends BaseChannel {
       isThinking: false,
     });
 
+    // Don't await TTS completion — it runs in the background so the chat
+    // loop is free to handle the next user input. cancelSpeaking() will
+    // interrupt it the moment input arrives.
+    voiceQueue?.flush();
+
     return full;
+  }
+
+  /**
+   * Open a voice tee for this turn. Returns null when voice is disabled
+   * or auto-speak is off. The returned object accepts `push()` / `end()`
+   * from the streaming loop and fires `flush()` to kick off background
+   * TTS playback once we know the stream is closed.
+   */
+  private async openVoiceQueue(): Promise<{
+    push(delta: string): void;
+    end(): void;
+    flush(): void;
+  } | null> {
+    let mgr: import('../voice/index.js').VoiceManager | null = null;
+    try {
+      const mod = await import('../voice/index.js');
+      mgr = mod.getVoiceManager();
+    } catch {
+      return null;
+    }
+    const status = mgr.getStatus();
+    if (status.state !== 'ready' && status.state !== 'speaking') return null;
+
+    const { loadConfig } = await import('../utils/config.js');
+    if (!loadConfig().voice?.tts?.autoSpeakReplies) return null;
+
+    const buffer: string[] = [];
+    let producerDone = false;
+    let waiter: (() => void) | null = null;
+
+    const iterator: AsyncIterable<string> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            while (true) {
+              if (buffer.length > 0) {
+                return { value: buffer.shift()!, done: false };
+              }
+              if (producerDone) return { value: undefined, done: true };
+              await new Promise<void>((resolve) => { waiter = resolve; });
+            }
+          },
+        };
+      },
+    };
+
+    return {
+      push(delta: string) {
+        if (!delta) return;
+        buffer.push(delta);
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      },
+      end() {
+        producerDone = true;
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      },
+      flush() {
+        // Fire and forget; failures are logged inside speakStream.
+        mgr!.speakStream(iterator).catch(() => { /* logged in manager */ });
+      },
+    };
   }
 
   async typing(_targetId?: string): Promise<void> {
@@ -1037,6 +1112,10 @@ export class CLIChannel extends BaseChannel {
   }
 
   sendUserMessage(content: string): void {
+    // Interrupt any in-flight TTS the moment the user starts a new turn.
+    // Fire-and-forget; cancel resolves within ~50 ms per VoiceManager contract.
+    void this.interruptVoice();
+
     const userMsg: ChatMessage = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       role: 'user',
@@ -1052,5 +1131,14 @@ export class CLIChannel extends BaseChannel {
       content,
       timestamp: userMsg.timestamp,
     });
+  }
+
+  private async interruptVoice(): Promise<void> {
+    try {
+      const mod = await import('../voice/index.js');
+      await mod.getVoiceManager().cancelSpeaking();
+    } catch {
+      /* voice module not loaded or no in-flight utterance */
+    }
   }
 }

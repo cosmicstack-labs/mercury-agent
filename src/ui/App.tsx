@@ -359,6 +359,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    // Ctrl+V — toggle voice on/off. Routes through the /voice slash so
+    // there's a single dispatcher and the chat log records the change.
+    if (key.ctrl && ((key as any).name === 'v' || ch?.toLowerCase?.() === 'v')) {
+      onInput('/voice toggle');
+      return;
+    }
+
     if (state.mode === 'splash') {
       if (ch === 'd' || ch === 'D') {
         setShowStartupDetails((v) => !v);
