@@ -1660,6 +1660,11 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       // it can't leak or be mistaken for an active account.
       config.channels.signal.number = '';
       config.channels.signal.enabled = false;
+      // The old admin/member list belonged to the previous linked account. A
+      // freshly linked device may be a different user, so clear access too;
+      // this also lets the group-pairing flow run again (it is skipped when
+      // admins already exist).
+      clearSignalAccess(config);
       saveConfig(config);
 
       console.log(chalk.yellow('  ⚠ A Signal account was previously linked here, but it is not linked right now.'));
@@ -3300,6 +3305,9 @@ signalCmd
         unlinked = true;
         config.channels.signal.number = '';
         config.channels.signal.enabled = false;
+        // Access list belonged to the now-unlinked account; clear it so a
+        // relink re-runs pairing and a stale admin can't retain access.
+        clearSignalAccess(config);
         saveConfig(config);
       }
     }
