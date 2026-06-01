@@ -46,6 +46,7 @@ export class SignalChannel extends BaseChannel {
   // Permission / continuation prompts — keyed by sender phone number
   private pendingReplies = new Map<string, PendingReply>();
   private permissionModes = new Map<string, PermissionMode>();
+  private onPermissionMode?: (mode: PermissionMode, source: string) => void;
 
   // Task progress tracking
   private stepCounters = new Map<string, number>();
@@ -296,6 +297,9 @@ export class SignalChannel extends BaseChannel {
     if (command === '/permissions') {
       this.askPermissionMode(`signal:${source}`).then((mode) => {
         this.permissionModes.set(source, mode);
+        // Propagate to the permission engine so "Allow All" actually takes
+        // effect at tool-execution time (mirrors the Telegram wiring).
+        this.onPermissionMode?.(mode, source);
       }).catch(() => {});
       return;
     }
@@ -911,6 +915,10 @@ export class SignalChannel extends BaseChannel {
 
   getPermissionMode(phoneNumber: string): PermissionMode {
     return this.permissionModes.get(phoneNumber) ?? 'ask-me';
+  }
+
+  setOnPermissionMode(handler: (mode: PermissionMode, source: string) => void): void {
+    this.onPermissionMode = handler;
   }
 
   // ─── HTTP Helpers (signal-cli-rest-api) ─────────────────────

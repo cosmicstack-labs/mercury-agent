@@ -2125,6 +2125,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
+  const signalChannel = channels.get('signal') as SignalChannel | undefined;
 
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
@@ -2537,6 +2538,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (channelType === 'web' && webChannel) {
       return webChannel.askPermission(prompt);
     }
+    if (channelType === 'signal' && signalChannel) {
+      // Bind the prompt to the exact sender that triggered the action so it
+      // reaches the right person in the Mercury group (not the CLI).
+      return signalChannel.askPermission(prompt, capabilities.permissions.getCurrentChannelId());
+    }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
     }
@@ -2549,6 +2555,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      }
+    });
+  }
+
+  if (signalChannel) {
+    signalChannel.setOnPermissionMode((mode, source) => {
+      if (mode === 'allow-all') {
+        capabilities.permissions.setAutoApproveAll(true);
+        capabilities.permissions.addTempScope('/', true, true);
+        logger.info({ source }, 'Signal: Allow All mode set for session');
       }
     });
   }

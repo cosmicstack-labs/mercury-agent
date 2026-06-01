@@ -152,6 +152,7 @@ export class PermissionManager {
   private autoApproveAll = false;
   private elevatedCommands: Set<string> = new Set();
   private currentChannelType: string = 'cli';
+  private currentChannelId?: string;
 
   private tempScopes: FileScope[] = [];
 
@@ -166,6 +167,17 @@ export class PermissionManager {
 
   getCurrentChannelType(): string {
     return this.currentChannelType;
+  }
+
+  /** The channelId (target) of the message currently being processed, so
+   * permission prompts can be routed back to the exact sender that triggered
+   * the action (used by channels like Signal that bind replies per-sender). */
+  setCurrentChannelId(channelId: string | undefined): void {
+    this.currentChannelId = channelId;
+  }
+
+  getCurrentChannelId(): string | undefined {
+    return this.currentChannelId;
   }
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
