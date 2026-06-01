@@ -8,6 +8,7 @@ import { renderMarkdown } from '../utils/markdown.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
+import { getVoiceManager } from '../voice/index.js';
 
 const MERCURY_LOGO = [
   '    __  _____________  ________  ________  __',
@@ -163,6 +164,12 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/ws stage all',
     '/ws commit ',
     '/ws help',
+    // Voice subsystem (Phase 0: stubs only; real audio in later phases).
+    '/voice',
+    '/voice on',
+    '/voice off',
+    '/voice status',
+    '/voice grant',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {
@@ -858,6 +865,37 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   );
 }
 
+/**
+ * Voice subsystem status badge.
+ *
+ * Renders nothing when voice is disabled, so configs that haven't enabled it
+ * (the default) see zero change in the status bar. Polls the VoiceManager
+ * singleton at 2 Hz; cheap because it just reads in-memory state.
+ */
+function VoiceBadge() {
+  const [snapshot, setSnapshot] = React.useState(() => getVoiceManager().getStatus());
+  React.useEffect(() => {
+    const t = setInterval(() => setSnapshot(getVoiceManager().getStatus()), 500);
+    return () => clearInterval(t);
+  }, []);
+  if (snapshot.state === 'disabled') return null;
+  const color =
+    snapshot.state === 'error' ? 'red' :
+    snapshot.state === 'speaking' ? 'green' :
+    snapshot.state === 'listening' ? 'magenta' :
+    snapshot.state === 'initializing' ? 'yellow' :
+    'cyan';
+  const icon =
+    snapshot.state === 'speaking' ? '🔊' :
+    snapshot.state === 'listening' ? '🎙' :
+    snapshot.state === 'error' ? '⚠' :
+    snapshot.state === 'initializing' ? '…' :
+    '🔈';
+  return (
+    <Text> <Text color="gray">|</Text> <Text color={color}>{icon} Voice</Text></Text>
+  );
+}
+
 function StatusBarView({ state }: { state: TuiState }) {
   const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
@@ -894,6 +932,7 @@ function StatusBarView({ state }: { state: TuiState }) {
           {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
           <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
           <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
+          <VoiceBadge />
         </Box>
         <Text color="magenta">{providerBadge}</Text>
       </Box>

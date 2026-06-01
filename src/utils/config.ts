@@ -143,6 +143,76 @@ export interface MercuryConfig {
     enabled: boolean;
     port: number;
   };
+  /**
+   * Voice subsystem (TTS + STT). Optional, defaults to disabled.
+   *
+   * Provider chains are symmetric: Cartesia primary, OpenAI fallback.
+   * A single CARTESIA_API_KEY (in ~/.mercury/.env) authorizes both
+   * Sonic (TTS) and Ink Whisper (STT). OpenAI key resolution order:
+   *   ChatGPT OAuth probe → providers.openai.apiKey → OPENAI_API_KEY.
+   *
+   * `voice` is optional on the type so existing configs (which predate
+   * this block) load without migration. getDefaultConfig() always supplies
+   * a fully-populated object.
+   */
+  voice?: VoiceConfig;
+}
+
+export interface VoiceConfig {
+  enabled: boolean;
+  /** Persist provider choices independently for TTS and STT. */
+  tts: {
+    /** Which provider to attempt first. */
+    provider: 'cartesia' | 'openai';
+    /** Fallback provider used on primary failure; null disables fallback. */
+    fallback: 'cartesia' | 'openai' | null;
+    /** Auto-speak agent replies (when channel is CLI). */
+    autoSpeakReplies: boolean;
+    /** Normalize numbers/URLs/symbols before synthesis. */
+    normalize: boolean;
+    cartesia: {
+      voiceId: string;
+      model: string;       // e.g. "sonic-2"
+      language?: string;
+    };
+    openai: {
+      voice: string;       // e.g. "sage"
+      model: string;       // e.g. "gpt-4o-mini-tts"
+    };
+  };
+  stt: {
+    provider: 'cartesia' | 'openai';
+    fallback: 'cartesia' | 'openai' | null;
+    /** Show partial transcripts in input box while holding PTT. */
+    liveCaptions: boolean;
+    /** Auto-send transcript on PTT release (vs. inject for editing). */
+    autoSubmit: boolean;
+    cartesia: {
+      model: string;       // e.g. "ink-whisper"
+      language: string;    // "auto" | ISO code
+    };
+    openai: {
+      model: string;       // e.g. "whisper-1"
+      language: string;    // "auto" | ISO code
+    };
+  };
+  /** Push-to-talk hotkey identifier (resolved by channel layer). */
+  pushToTalkKey: string;
+  microphone: {
+    /** null = system default. */
+    deviceId: string | null;
+    sampleRate: number;    // 16000 for Cartesia Ink Whisper
+    channels: number;      // 1
+    /** Trigger OS permission dialog on first PTT if status is not-determined. */
+    grantPromptOnFirstUse: boolean;
+    /** 0 = never release while voice is on (lowest latency). */
+    releaseOnIdleSeconds: number;
+  };
+  /** Termux-specific overrides; ignored on other platforms. */
+  termux?: {
+    /** Use Android's built-in TTS via termux-tts-speak (offline, ignores voice). */
+    useNativeTTS: boolean;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -304,6 +374,49 @@ export function getDefaultConfig(): MercuryConfig {
     web: {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
+    },
+    voice: {
+      enabled: getEnvBool('MERCURY_VOICE_ENABLED', false),
+      tts: {
+        provider: (getEnv('MERCURY_VOICE_TTS_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
+        fallback: 'openai',
+        autoSpeakReplies: getEnvBool('MERCURY_VOICE_AUTO_SPEAK', true),
+        normalize: getEnvBool('MERCURY_VOICE_NORMALIZE', true),
+        cartesia: {
+          voiceId: getEnv('CARTESIA_VOICE_ID', ''),
+          model: getEnv('CARTESIA_TTS_MODEL', 'sonic-2'),
+          language: getEnv('CARTESIA_TTS_LANGUAGE', 'en'),
+        },
+        openai: {
+          voice: getEnv('OPENAI_TTS_VOICE', 'sage'),
+          model: getEnv('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts'),
+        },
+      },
+      stt: {
+        provider: (getEnv('MERCURY_VOICE_STT_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
+        fallback: 'openai',
+        liveCaptions: getEnvBool('MERCURY_VOICE_LIVE_CAPTIONS', true),
+        autoSubmit: getEnvBool('MERCURY_VOICE_AUTO_SUBMIT', false),
+        cartesia: {
+          model: getEnv('CARTESIA_STT_MODEL', 'ink-whisper'),
+          language: getEnv('CARTESIA_STT_LANGUAGE', 'auto'),
+        },
+        openai: {
+          model: getEnv('OPENAI_STT_MODEL', 'whisper-1'),
+          language: getEnv('OPENAI_STT_LANGUAGE', 'auto'),
+        },
+      },
+      pushToTalkKey: getEnv('MERCURY_VOICE_PTT_KEY', 'ctrl+space'),
+      microphone: {
+        deviceId: getEnv('MERCURY_VOICE_MIC_DEVICE', '') || null,
+        sampleRate: getEnvNum('MERCURY_VOICE_MIC_SAMPLE_RATE', 16000),
+        channels: getEnvNum('MERCURY_VOICE_MIC_CHANNELS', 1),
+        grantPromptOnFirstUse: getEnvBool('MERCURY_VOICE_GRANT_PROMPT', true),
+        releaseOnIdleSeconds: getEnvNum('MERCURY_VOICE_MIC_IDLE_RELEASE', 0),
+      },
+      termux: {
+        useNativeTTS: getEnvBool('MERCURY_VOICE_TERMUX_NATIVE_TTS', false),
+      },
     },
   };
 }

@@ -29,6 +29,7 @@ import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
+import { getVoiceManager } from '../voice/index.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -3661,6 +3662,39 @@ Is this productive iteration or a stuck loop?`,
       this.shortTerm.clearAll();
       this.lifecycle.transition('idle');
       await channel.send('Mercury reset. All agents stopped, all state cleared. Long-term memory preserved. Ready for a fresh start.', channelId);
+      return true;
+    }
+
+    // Voice subsystem (Phase 0: stubs only — no audio I/O yet).
+    if (cmd === '/voice' || cmd.startsWith('/voice ')) {
+      const sub = trimmed.slice('/voice'.length).trim().toLowerCase();
+      const voice = getVoiceManager();
+      if (sub === '' || sub === 'status') {
+        await channel.send('```\n' + voice.describe() + '\n```\n\n_Voice subsystem is scaffolded but audio providers land in upcoming phases._', channelId);
+        return true;
+      }
+      if (sub === 'on') {
+        const cfg = ctx.config();
+        cfg.voice = cfg.voice ?? ({} as any);
+        (cfg.voice as any).enabled = true;
+        saveConfig(cfg);
+        await voice.enable();
+        await channel.send(`Voice flag enabled. ${voice.formatStatusLine()}`, channelId);
+        return true;
+      }
+      if (sub === 'off') {
+        const cfg = ctx.config();
+        if (cfg.voice) (cfg.voice as any).enabled = false;
+        saveConfig(cfg);
+        await voice.disable();
+        await channel.send('Voice flag disabled.', channelId);
+        return true;
+      }
+      if (sub === 'grant') {
+        await channel.send('Microphone grant flow is not yet wired. Coming in Phase 1.', channelId);
+        return true;
+      }
+      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|grant]', channelId);
       return true;
     }
 
