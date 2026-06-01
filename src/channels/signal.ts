@@ -17,6 +17,7 @@ import {
 } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
+import { redactPhone, redactUuid, redactIdentity } from '../utils/redact.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const SEND_TIMEOUT_MS = 20_000;
@@ -260,10 +261,10 @@ export class SignalChannel extends BaseChannel {
     // to watch when investigating "why did Mercury respond to/ignore X".
     logger.info(
       {
-        sourcePhone,
-        sourceUuid,
+        sourcePhone: redactPhone(sourcePhone),
+        sourceUuid: redactUuid(sourceUuid),
         sourceName,
-        matchKey: source,
+        matchKey: redactIdentity(source),
         approved: !!approvedUser,
         role: approvedUser ? (isAdmin ? 'admin' : 'member') : 'none',
         textPreview: (text || '').slice(0, 40),
@@ -356,7 +357,10 @@ export class SignalChannel extends BaseChannel {
       pairingCode: hasSignalAdmins(this.config) ? undefined : this.generatePairingCode(),
     });
     saveConfig(this.config);
-    logger.info({ source, sourcePhone, sourceUuid }, 'Signal access request recorded');
+    logger.info(
+      { source: redactIdentity(source), sourcePhone: redactPhone(sourcePhone), sourceUuid: redactUuid(sourceUuid) },
+      'Signal access request recorded',
+    );
 
     await this.sendToGroup(this.getPendingStatusMessage(request));
 
@@ -827,7 +831,7 @@ export class SignalChannel extends BaseChannel {
       { message: filename, number, recipients: [recipient], base64_attachments: [base64Data] },
       'sendWithAttachment',
     );
-    if (ok) logger.info({ file: filename, recipient }, 'File sent via Signal');
+    if (ok) logger.info({ file: filename, recipient: redactIdentity(recipient) }, 'File sent via Signal');
   }
 
   // ─── Resolution / Utilities ─────────────────────────────────
