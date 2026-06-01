@@ -3740,26 +3740,43 @@ Is this productive iteration or a stuck loop?`,
             });
             setPartial(null);
             const finalText = result.text.trim();
-            if (!result.aborted && finalText) {
-              const cfg = ctx.config();
-              // Default to ON when the field is missing. Existing configs
-              // that explicitly set false (e.g. older installs created
-              // before the default flipped) still print the transcript +
-              // a one-time hint instead of routing through the agent.
-              const autoSubmit = cfg.voice?.stt?.autoSubmit !== false;
-              if (autoSubmit && typeof (channel as any).sendUserMessage === 'function') {
-                // Inject the transcript as if the user typed it; the
-                // channel will emit a normal user message event, which
-                // then drives an agent reply → TTS via the stream tee.
-                (channel as any).sendUserMessage(finalText);
-              } else {
-                await channel.send(`Heard: ${finalText}`, channelId);
-                if (!autoSubmit) {
-                  await channel.send(
-                    'Tip: enable auto-submit so transcripts go straight to me — `/voice autosubmit on`',
-                    channelId,
-                  );
-                }
+            if (result.aborted && !finalText) {
+              // User cancelled or pipeline aborted before any audio
+              // arrived. Make it visible so the user doesn't think
+              // the keystroke was lost.
+              await channel.send('🎙️ Listening cancelled.', channelId);
+              return;
+            }
+            if (!finalText) {
+              // STT ran but heard nothing (silence, mic muted, wrong
+              // input device, or provider returned empty). Without
+              // this message the user sees only their own "/voice
+              // listen" echo and assumes the feature is broken.
+              const st = voice.getStatus();
+              await channel.send(
+                `🎙️ I didn't catch any audio. _(STT: ${st.sttProvider ?? 'none'}, mic: ${st.micPermission})_  Try \`/voice test\` to verify the pipeline, or check your input device + mic permission.`,
+                channelId,
+              );
+              return;
+            }
+            const cfg = ctx.config();
+            // Default to ON when the field is missing. Existing configs
+            // that explicitly set false (e.g. older installs created
+            // before the default flipped) still print the transcript +
+            // a one-time hint instead of routing through the agent.
+            const autoSubmit = cfg.voice?.stt?.autoSubmit !== false;
+            if (autoSubmit && typeof (channel as any).sendUserMessage === 'function') {
+              // Inject the transcript as if the user typed it; the
+              // channel will emit a normal user message event, which
+              // then drives an agent reply → TTS via the stream tee.
+              (channel as any).sendUserMessage(finalText);
+            } else {
+              await channel.send(`Heard: ${finalText}`, channelId);
+              if (!autoSubmit) {
+                await channel.send(
+                  'Tip: enable auto-submit so transcripts go straight to me — `/voice autosubmit on`',
+                  channelId,
+                );
               }
             }
           } catch (err) {

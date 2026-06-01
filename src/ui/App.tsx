@@ -930,28 +930,68 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
  * Renders nothing when voice is disabled, so configs that haven't enabled it
  * (the default) see zero change in the status bar. Polls the VoiceManager
  * singleton at 2 Hz; cheap because it just reads in-memory state.
+ *
+ * Surfaces three pieces of state the user cares about:
+ *   • SPEAK  — is auto-speak (TTS talkback) enabled?
+ *   • MIC    — is auto-submit (STT routing) enabled?
+ *   • LIVE   — is something actively speaking/listening right now?
+ *
+ * The two on/off bits answer "is this feature on?" at a glance. The live
+ * indicator overlays when the pipeline is mid-utterance. Without these,
+ * users have no way to know if a silent reply means "muted" vs "broken".
  */
 function VoiceBadge() {
   const [snapshot, setSnapshot] = React.useState(() => getVoiceManager().getStatus());
+  const [toggles, setToggles] = React.useState(() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { loadConfig } = require('../utils/config.js');
+      const v = loadConfig().voice ?? {};
+      return {
+        speak: v?.tts?.autoSpeakReplies !== false,
+        submit: v?.stt?.autoSubmit !== false,
+      };
+    } catch { return { speak: true, submit: true }; }
+  });
   React.useEffect(() => {
-    const t = setInterval(() => setSnapshot(getVoiceManager().getStatus()), 500);
+    const t = setInterval(() => {
+      setSnapshot(getVoiceManager().getStatus());
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { loadConfig } = require('../utils/config.js');
+        const v = loadConfig().voice ?? {};
+        setToggles({
+          speak: v?.tts?.autoSpeakReplies !== false,
+          submit: v?.stt?.autoSubmit !== false,
+        });
+      } catch { /* keep last */ }
+    }, 500);
     return () => clearInterval(t);
   }, []);
   if (snapshot.state === 'disabled') return null;
-  const color =
-    snapshot.state === 'error' ? 'red' :
-    snapshot.state === 'speaking' ? 'green' :
-    snapshot.state === 'listening' ? 'magenta' :
-    snapshot.state === 'initializing' ? 'yellow' :
-    'cyan';
-  const icon =
-    snapshot.state === 'speaking' ? '🔊' :
-    snapshot.state === 'listening' ? '🎙' :
-    snapshot.state === 'error' ? '⚠' :
-    snapshot.state === 'initializing' ? '…' :
-    '🔈';
+
+  const live =
+    snapshot.state === 'speaking' ? { icon: '🔊', label: 'speaking', color: 'green' as const } :
+    snapshot.state === 'listening' ? { icon: '🎙', label: 'listening', color: 'magenta' as const } :
+    snapshot.state === 'error' ? { icon: '⚠', label: snapshot.lastError ?? 'error', color: 'red' as const } :
+    snapshot.state === 'initializing' ? { icon: '…', label: 'warming', color: 'yellow' as const } :
+    null;
+
   return (
-    <Text> <Text color="gray">|</Text> <Text color={color}>{icon} Voice</Text></Text>
+    <Text>
+      {' '}<Text color="gray">|</Text>{' '}
+      <Text color="cyan">Voice</Text>{' '}
+      <Text color={toggles.speak ? 'green' : 'gray'}>{toggles.speak ? '🔊' : '🔇'}</Text>
+      <Text dimColor>{toggles.speak ? 'speak' : 'mute'}</Text>{' '}
+      <Text color={toggles.submit ? 'green' : 'gray'}>{toggles.submit ? '🎤' : '🚫'}</Text>
+      <Text dimColor>{toggles.submit ? 'mic' : 'mic-off'}</Text>
+      {live && (
+        <>
+          {' '}<Text color="gray">·</Text>{' '}
+          <Text color={live.color} bold>{live.icon} {live.label}</Text>
+        </>
+      )}
+    </Text>
   );
 }
 
