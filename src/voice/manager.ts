@@ -273,8 +273,12 @@ export class VoiceManager extends EventEmitter {
       }
     } catch (err) {
       logger.warn({ err }, 'voice.speak pipeline error');
-      // Try fallback once if Cartesia failed mid-utterance.
-      // (Phase 2 enhancement: actually retry with the next provider.)
+      this.lastError = err instanceof Error ? err.message : String(err);
+      // Record on state so /voice status surfaces it; also rethrow so
+      // callers like /voice test can report the actual cause instead
+      // of falsely claiming success. The catch-and-swallow behavior
+      // here was the reason TTS failures looked silent for so long.
+      throw err;
     } finally {
       opts.signal?.removeEventListener('abort', externalAbort);
       if (this.speakAbort === internal) this.speakAbort = null;

@@ -392,7 +392,12 @@ export function getDefaultConfig(): MercuryConfig {
         autoSpeakReplies: getEnvBool('MERCURY_VOICE_AUTO_SPEAK', true),
         normalize: getEnvBool('MERCURY_VOICE_NORMALIZE', true),
         cartesia: {
-          voiceId: getEnv('CARTESIA_VOICE_ID', ''),
+          // Cartesia Sonic-2 default voice ("Newsman" / 'a0e99841-…') is
+          // a free public voice that requires only an API key. Without
+          // a default here, fresh installs would throw 'voice ID not
+          // configured' the moment they try to speak — invisible to the
+          // user because the manager swallowed the error.
+          voiceId: getEnv('CARTESIA_VOICE_ID', 'a0e99841-438c-4a64-b679-ae501e7d6091'),
           model: getEnv('CARTESIA_TTS_MODEL', 'sonic-2'),
           language: getEnv('CARTESIA_TTS_LANGUAGE', 'en'),
         },

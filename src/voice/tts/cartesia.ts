@@ -142,7 +142,13 @@ class CartesiaTTS extends BaseTTSProvider {
     if (opts.signal?.aborted) return;
 
     const cfg = loadConfig().voice?.tts?.cartesia;
-    const voiceId = opts.voiceId ?? cfg?.voiceId;
+    // Cartesia "Newsman" — a free public Sonic-2 voice that needs only
+    // an API key. Used as a fallback so users who set CARTESIA_API_KEY
+    // but never configured a voice ID still get audio. The empty-string
+    // check covers existing configs whose voiceId field was bootstrapped
+    // before the default was added.
+    const DEFAULT_VOICE_ID = 'a0e99841-438c-4a64-b679-ae501e7d6091';
+    const voiceId = opts.voiceId || cfg?.voiceId || DEFAULT_VOICE_ID;
     const model = cfg?.model ?? 'sonic-2';
     const language = opts.language ?? cfg?.language ?? 'en';
 
