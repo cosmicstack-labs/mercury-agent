@@ -111,6 +111,25 @@ export function invalidateOpenAICredentialCache(): void {
   cached = null;
 }
 
+/**
+ * Resolve the Cartesia API key. Env wins (so production deployments can
+ * inject without editing YAML), config falls in second place (so the
+ * onboarding wizard's persisted value is honored). Whitespace is trimmed;
+ * empty strings count as missing.
+ */
+export function getCartesiaApiKey(): string | null {
+  const envKey = process.env.CARTESIA_API_KEY?.trim();
+  if (envKey) return envKey;
+  try {
+    const cfg = loadConfig();
+    const k = cfg.voice?.cartesiaApiKey?.trim();
+    if (k) return k;
+  } catch {
+    /* config load errors fall through to null */
+  }
+  return null;
+}
+
 function cache(value: OpenAICredential | null): void {
   cached = { value, at: Date.now() };
 }

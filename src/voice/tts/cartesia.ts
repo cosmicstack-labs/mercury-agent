@@ -30,6 +30,7 @@ import { BaseTTSProvider, type TTSCapabilities } from './base.js';
 import { registerTTSProvider } from './registry.js';
 import type { AudioChunk, TTSOptions, Voice } from '../types.js';
 import { loadConfig } from '../../utils/config.js';
+import { getCartesiaApiKey } from '../credentials.js';
 import { logger } from '../../utils/logger.js';
 
 const WS_URL = 'wss://api.cartesia.ai/tts/websocket';
@@ -67,14 +68,14 @@ class CartesiaTTS extends BaseTTSProvider {
 
   isAvailable(): Promise<boolean> {
     if (this.disposed) return Promise.resolve(false);
-    const key = process.env.CARTESIA_API_KEY?.trim();
+    const key = getCartesiaApiKey();
     if (!key) return Promise.resolve(false);
     // After 3 consecutive failures, mark unavailable until next process.
     return Promise.resolve(this.consecutiveFailures < 3);
   }
 
   async listVoices(): Promise<Voice[]> {
-    const key = process.env.CARTESIA_API_KEY?.trim();
+    const key = getCartesiaApiKey();
     if (!key) return [];
     try {
       const res = await fetch(`${REST_BASE}/voices`, {
@@ -289,7 +290,7 @@ class CartesiaTTS extends BaseTTSProvider {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return this.ws;
     if (this.wsReady) return this.wsReady;
 
-    const key = process.env.CARTESIA_API_KEY?.trim();
+    const key = getCartesiaApiKey();
     if (!key) throw new Error('CARTESIA_API_KEY is required');
 
     this.wsReady = new Promise<WebSocket>((resolve, reject) => {

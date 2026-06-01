@@ -160,6 +160,14 @@ export interface MercuryConfig {
 
 export interface VoiceConfig {
   enabled: boolean;
+  /**
+   * Cartesia API key (used for both TTS Sonic-2 and STT Ink Whisper).
+   * Sourced from env CARTESIA_API_KEY when present; the wizard/doctor
+   * write the value here so users don't have to maintain shell env vars.
+   * Env always wins so deployments can override per-host without editing
+   * the YAML.
+   */
+  cartesiaApiKey?: string;
   /** Persist provider choices independently for TTS and STT. */
   tts: {
     /** Which provider to attempt first. */
@@ -377,6 +385,7 @@ export function getDefaultConfig(): MercuryConfig {
     },
     voice: {
       enabled: getEnvBool('MERCURY_VOICE_ENABLED', false),
+      cartesiaApiKey: getEnv('CARTESIA_API_KEY', ''),
       tts: {
         provider: (getEnv('MERCURY_VOICE_TTS_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
         fallback: 'openai',

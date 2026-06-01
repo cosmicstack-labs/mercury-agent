@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — Voice (TTS + STT)
+
+Mercury now speaks and listens. The voice subsystem is plug-and-play:
+opt-in via `mercury doctor`, works in every channel (TUI, web, Telegram),
+and stays out of the way when disabled.
+
+### New
+
+- **Cartesia + OpenAI TTS/STT** — Cartesia Sonic-2 (TTS) and Ink Whisper
+  (STT) over persistent WebSockets are the primary providers; OpenAI
+  `gpt-4o-mini-tts` and `whisper-1` are the HTTP fallbacks. OpenAI keys
+  resolve in order ChatGPT OAuth → `providers.openai.apiKey` → env.
+- **Push-to-talk in the TUI** — `Ctrl+Space` toggles listening,
+  `Ctrl+V` toggles the voice subsystem. Live partial transcripts render
+  inline above the input box; final transcripts auto-submit unless you
+  set `voice.stt.autoSubmit: false`.
+- **Web channel voice** — new `/api/voice/{status,enable,disable,grant,speak,transcribe}`
+  endpoints plus `audio_chunk` / `audio_end` / `transcript_partial` /
+  `transcript_final` SSE events. A vanilla-JS helper at
+  `src/web/static/voice-client.js` wires WebAudio playback and
+  MediaRecorder push-to-talk for any frontend.
+- **Telegram voice mirroring** — `message:voice` updates are
+  transcribed (ffmpeg → Ink Whisper / Whisper) and emitted as normal
+  ChannelMessages; the agent's reply is also rendered as an OGG/Opus
+  voice note via `sendVoice` whenever the user spoke first.
+- **Termux backend** — `pkg install termux-api` is detected and used
+  for capture (`termux-microphone-record`) and playback (`play-audio`).
+  Streaming STT is disabled on Termux (file-based capture); final
+  transcripts work fine.
+- **`mercury doctor --voice`** — read-only diagnostic showing runtime
+  gates, detected backend, system binaries, provider readiness, and
+  microphone permission status.
+- **Voice step in `mercury doctor`** — opt-in wizard (default off) that
+  collects the Cartesia API key, sanity-checks ffmpeg, and notes
+  available fallbacks.
+- **Voice summary in `mercury status`** — one line showing
+  enabled/disabled, credential source, and active TTS/STT providers.
+
+### Internal
+
+- New `src/voice/` subtree: runtime detection, audio backend abstraction
+  (`AudioBackend`/`PlaybackSink`/`RecordingSource`), `ffmpeg-streaming`
+  + `termux-api` backends, sentence-buffered streaming pump with
+  markdown/code-fence stripping, persistent-WS providers for Cartesia
+  with `context_id` continuation, and a shared OpenAI credential
+  resolver with 5-minute cache.
+- `VoiceManager` singleton owns state (`disabled → ready → speaking |
+  listening`) with ≤50ms barge-in via an internal AbortController.
+- `voice.cartesiaApiKey` added to `VoiceConfig`; resolved via
+  `getCartesiaApiKey()` (env wins over config). Existing configs load
+  without migration — the `voice` field is optional and seeded by
+  `getDefaultConfig()` on first save.
+
 ## 1.1.12 — Daemon fix for standalone binaries
 
 Hotfix on top of 1.1.11. The standalone single-file binaries shipped in 1.1.11 could not start in the background — which also meant Telegram never came online when Mercury was installed via the one-line installer (the recommended path for servers).

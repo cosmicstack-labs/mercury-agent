@@ -3680,6 +3680,7 @@ Is this productive iteration or a stuck loop?`,
         saveConfig(cfg);
         await voice.enable();
         await channel.send(`Voice flag enabled. ${voice.formatStatusLine()}`, channelId);
+        await maybeSendVoiceSetupHint(channel, channelId);
         return true;
       }
       if (sub === 'off') {
@@ -3707,6 +3708,7 @@ Is this productive iteration or a stuck loop?`,
         } else {
           await voice.enable();
           await channel.send(`Voice enabled. ${voice.formatStatusLine()}`, channelId);
+          await maybeSendVoiceSetupHint(channel, channelId);
         }
         return true;
       }
@@ -4180,5 +4182,36 @@ Is this productive iteration or a stuck loop?`,
         continue;
       }
     }
+  }
+}
+
+/**
+ * One-time helper: if voice was just enabled but no usable TTS/STT
+ * credentials are configured, point the user at the doctor command with
+ * a focused fix-it message. Stays silent when credentials are present so
+ * we don't nag returning users on every /voice on.
+ */
+async function maybeSendVoiceSetupHint(
+  channel: { send: (msg: string, channelId: string) => Promise<void> },
+  channelId: string,
+): Promise<void> {
+  try {
+    const { getCartesiaApiKey, resolveOpenAICredential } = await import('../voice/credentials.js');
+    const cart = getCartesiaApiKey();
+    const oai  = await resolveOpenAICredential();
+    if (cart || oai) return; // already usable
+    const { findBinary } = await import('../voice/audio/system.js');
+    const ff = findBinary('ffmpeg');
+    const lines = [
+      '⚠ Voice is enabled but no TTS/STT provider is configured.',
+      '',
+      '  • Run `mercury doctor` to add a Cartesia API key (Sonic-2 + Ink Whisper).',
+      '  • Or configure an OpenAI key under `mercury doctor` → providers for the fallback.',
+    ];
+    if (!ff.path) lines.push(`  • Install ffmpeg: ${ff.installHint}`);
+    lines.push('  • `mercury doctor --voice` shows the full diagnostic.');
+    await channel.send(lines.join('\n'), channelId);
+  } catch {
+    /* silent — hint is best-effort */
   }
 }

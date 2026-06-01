@@ -178,7 +178,45 @@ Type these during a conversation — they don't consume API tokens. Work on both
 | `/ws exit` | Exit workspace IDE mode back to general chat |
 | `/tasks` | List scheduled tasks |
 | `/memory` | View and manage second brain memory |
+| `/voice` | Show voice subsystem status |
+| `/voice on` \| `/voice off` \| `/voice toggle` | Enable / disable voice (also `Ctrl+V` in the TUI) |
+| `/voice listen` \| `/voice stop` | Start / stop push-to-talk (also `Ctrl+Space` in the TUI) |
+| `/voice grant` | Trigger the OS microphone permission dialog |
 | `/unpair` | Telegram: reset all access |
+
+### Voice (TTS + STT)
+
+Mercury can speak and listen across all channels. Voice is opt-in —
+run `mercury doctor` and answer "yes" to the voice prompt to enable it,
+or set `voice.enabled: true` in `~/.mercury/mercury.yaml`.
+
+- **Providers** — [Cartesia](https://cartesia.ai) Sonic-2 (TTS) and
+  Ink Whisper (STT) over persistent WebSockets are the primary
+  providers. OpenAI `gpt-4o-mini-tts` and `whisper-1` are the HTTP
+  fallbacks, and the OpenAI key resolves in the order
+  ChatGPT OAuth → `providers.openai.apiKey` → `OPENAI_API_KEY` env.
+- **Cartesia key** — set `CARTESIA_API_KEY` in your environment, or let
+  `mercury doctor` persist it to `voice.cartesiaApiKey`. Env wins so
+  per-host overrides work without editing the YAML.
+- **Hotkeys (TUI)** — `Ctrl+V` toggles the subsystem, `Ctrl+Space`
+  toggles push-to-talk. Live partial transcripts render above the input
+  box; final transcripts auto-submit (set `voice.stt.autoSubmit: false`
+  to inject for editing instead).
+- **Web channel** — POST `/api/voice/enable` to turn it on, then
+  `/api/voice/transcribe` (multipart audio) and `/api/voice/speak` (JSON
+  `{text}`). Audio frames stream back as base64-encoded `audio_chunk`
+  SSE events on `/api/chat/events`; the bundled
+  `src/web/static/voice-client.js` decodes them with WebAudio.
+- **Telegram** — voice notes are auto-transcribed; replies come back as
+  voice notes whenever the user spoke first.
+- **Termux** — install the bridge with `pkg install termux-api` and the
+  Termux:API companion app from F-Droid. Streaming partials are
+  disabled on Termux; final transcripts work normally.
+- **Doctor** — run `mercury doctor --voice` for a full diagnostic
+  (backend, binaries, provider readiness, mic permission).
+- **Requirements** — `ffmpeg` must be on PATH. macOS: `brew install ffmpeg`.
+  Linux: `apt install ffmpeg` (or your distro equivalent). Windows:
+  `winget install Gyan.FFmpeg`. Termux: `pkg install ffmpeg`.
 
 ## Built-in Tools
 

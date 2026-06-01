@@ -23,6 +23,7 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getDefaultConfig,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -1214,6 +1215,17 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
   }
 
+  // ── Voice (opt-in, default off) ─────────────────────────────────────
+  // Inserted late so the user has already provided their OpenAI key (if
+  // any) when we tell them voice can fall back to it. The block is
+  // intentionally tiny — most users won't enable voice on first run.
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Voice (TTS + STT)'));
+  console.log(chalk.dim('  Cartesia (primary) + OpenAI (fallback). Press Enter to skip.'));
+  console.log('');
+  await runVoiceWizard(config, isReconfig);
+
   saveConfig(config);
 
   const home = getMercuryHome();
@@ -1258,6 +1270,74 @@ function autoDaemonize(): void {
     console.log(chalk.yellow('  Background mode not available. Run `mercury start` to set it up.'));
   }
   console.log('');
+}
+
+/**
+ * Voice wizard step for `configure()`. Opt-in, default off. Persists the
+ * Cartesia API key into voice.cartesiaApiKey so users don't need shell
+ * env vars; env still wins at runtime via getCartesiaApiKey() so per-host
+ * overrides keep working.
+ */
+async function runVoiceWizard(config: MercuryConfig, isReconfig: boolean): Promise<void> {
+  // Lazy import to keep the cold-start path lean for non-voice users.
+  const { findBinary } = await import('./voice/audio/system.js');
+
+  const currentEnabled = !!config.voice?.enabled;
+  const prompt = isReconfig && currentEnabled
+    ? chalk.white('  Enable voice? [Y/n]: ')
+    : chalk.white('  Enable voice? [y/N]: ');
+  const answer = (await ask(prompt)).trim().toLowerCase();
+  const wantsVoice = answer === ''
+    ? currentEnabled
+    : answer.startsWith('y');
+
+  if (!wantsVoice) {
+    if (config.voice) config.voice.enabled = false;
+    console.log(chalk.dim('  Voice disabled. Run `mercury doctor` later or `/voice on` in the TUI to enable.'));
+    return;
+  }
+
+  // Ensure the voice subtree exists; getDefaultConfig() already seeds it
+  // for new installs, but isReconfig on a pre-voice config may be empty.
+  if (!config.voice) {
+    config.voice = getDefaultConfig().voice;
+  }
+  config.voice!.enabled = true;
+
+  // Cartesia API key — persisted into config; env still wins at runtime.
+  const currentKey = config.voice!.cartesiaApiKey?.trim();
+  const mask = currentKey ? ` [${maskKey(currentKey)}]` : '';
+  const skipHint = isReconfig ? '' : ' (Enter to skip)';
+  const keyAnswer = (await ask(chalk.white(`  Cartesia API key${mask}${skipHint}: `))).trim();
+  if (keyAnswer) {
+    config.voice!.cartesiaApiKey = keyAnswer;
+    console.log(chalk.green('  ✓ Cartesia key saved (TTS Sonic-2 + STT Ink Whisper).'));
+  } else if (currentKey) {
+    console.log(chalk.dim('  Cartesia key unchanged.'));
+  } else if (process.env.CARTESIA_API_KEY?.trim()) {
+    console.log(chalk.dim('  Using CARTESIA_API_KEY from environment.'));
+  } else {
+    console.log(chalk.yellow('  No Cartesia key — falling back to OpenAI TTS/STT only.'));
+  }
+
+  if (config.providers?.openai?.apiKey || process.env.OPENAI_API_KEY) {
+    console.log(chalk.dim('  OpenAI TTS/STT fallback will use your existing OpenAI credentials automatically.'));
+  } else {
+    console.log(chalk.dim('  OpenAI fallback not available (no OpenAI key configured).'));
+  }
+
+  // Sanity-check ffmpeg — voice depends on it everywhere except native
+  // backends (which don't ship in Bun-compiled binaries anyway).
+  const ff = findBinary('ffmpeg');
+  if (ff.path) {
+    console.log(chalk.green(`  ✓ ffmpeg detected${ff.version ? ` (v${ff.version})` : ''}.`));
+  } else {
+    console.log(chalk.yellow(`  ⚠ ffmpeg not found — install with: ${ff.installHint}`));
+    console.log(chalk.dim('  Voice will load but be unable to play/record until ffmpeg is on PATH.'));
+  }
+
+  console.log(chalk.dim('  Toggle in the TUI with Ctrl+V (voice on/off) and Ctrl+Space (push-to-talk).'));
+  console.log(chalk.dim('  Run `mercury doctor --voice` anytime for the full diagnostic.'));
 }
 
 function runPlatformDoctor(): void {
@@ -1944,9 +2024,15 @@ program
   .command('doctor')
   .description('Reconfigure Mercury setup (name, providers, channels, permissions defaults)')
   .option('--platform', 'Show platform compatibility diagnostics')
+  .option('--voice', 'Show voice subsystem diagnostics (backend, providers, mic)')
   .action(async (opts) => {
     if (opts.platform) {
       runPlatformDoctor();
+      return;
+    }
+    if (opts.voice) {
+      const { runVoiceDoctor } = await import('./voice/doctor.js');
+      await runVoiceDoctor();
       return;
     }
     if (isSetupComplete()) {
@@ -1975,6 +2061,20 @@ program
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
+    {
+      // Voice summary. Kept on a single line so status output stays compact;
+      // detailed diagnostics live in `mercury doctor --voice`.
+      const v = config.voice;
+      if (v?.enabled) {
+        const hasCartesia = !!(v.cartesiaApiKey?.trim() || process.env.CARTESIA_API_KEY?.trim());
+        const tts = v.tts?.provider ?? 'cartesia';
+        const stt = v.stt?.provider ?? 'cartesia';
+        const cred = hasCartesia ? chalk.green('Cartesia') : chalk.yellow('OpenAI-only');
+        console.log(`  Voice:    ${chalk.green('enabled')} (${cred}, tts=${tts}, stt=${stt})`);
+      } else {
+        console.log(`  Voice:    ${chalk.dim('disabled')}`);
+      }
+    }
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
     const spotify = config.spotify;

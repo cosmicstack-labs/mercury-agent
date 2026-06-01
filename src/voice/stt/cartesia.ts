@@ -30,6 +30,7 @@ import { BaseSTTProvider, type STTCapabilities } from './base.js';
 import { registerSTTProvider } from './registry.js';
 import type { AudioChunk, STTOptions, TranscriptDelta } from '../types.js';
 import { loadConfig } from '../../utils/config.js';
+import { getCartesiaApiKey } from '../credentials.js';
 import { logger } from '../../utils/logger.js';
 
 const WS_URL = 'wss://api.cartesia.ai/stt/websocket';
@@ -51,14 +52,14 @@ class CartesiaSTT extends BaseSTTProvider {
 
   isAvailable(): Promise<boolean> {
     if (this.consecutiveFailures >= 3) return Promise.resolve(false);
-    return Promise.resolve(!!process.env.CARTESIA_API_KEY?.trim());
+    return Promise.resolve(Boolean(getCartesiaApiKey()));
   }
 
   async *transcribe(
     frames: AsyncIterable<AudioChunk>,
     opts: STTOptions,
   ): AsyncIterable<TranscriptDelta> {
-    const key = process.env.CARTESIA_API_KEY?.trim();
+    const key = getCartesiaApiKey();
     if (!key) throw new Error('Cartesia STT: CARTESIA_API_KEY required');
 
     const cfg = loadConfig().voice?.stt?.cartesia;
