@@ -292,6 +292,32 @@ export class CapabilityRegistry {
     return Object.keys(this.tools);
   }
 
+  /**
+   * Tools available to a non-admin group member ("guest").
+   *
+   * SECURITY BOUNDARY: this is a deny-by-default ALLOWLIST, not a blocklist.
+   * A guest is someone who was approved to talk to Mercury in a shared group
+   * but is NOT the owner/admin. They must never be able to touch the owner's
+   * machine, accounts, or data: no shell (run_command/cd), no filesystem
+   * (read/write/list/edit/delete), no git/github, no scheduling, skills,
+   * sub-agents, memory writes, Spotify, file sending, or cross-channel
+   * messaging. They get only conversation plus public, read-only information
+   * lookup. Any tool added in the future is inaccessible to guests until it is
+   * explicitly added here.
+   */
+  private static readonly GUEST_ALLOWED_TOOLS = new Set([
+    'fetch_url',  // read-only public web fetch
+    'ask_user',   // ask the guest a clarifying question in-channel
+  ]);
+
+  getGuestTools(): Record<string, Tool> {
+    const filtered: Record<string, Tool> = {};
+    for (const [name, tool] of Object.entries(this.tools)) {
+      if (CapabilityRegistry.GUEST_ALLOWED_TOOLS.has(name)) filtered[name] = tool;
+    }
+    return filtered;
+  }
+
   getSkillContext(): string {
     return this.skillLoader?.getSkillSummariesText() || '';
   }

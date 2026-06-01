@@ -1,4 +1,5 @@
 import { generateText, streamText, stepCountIs } from 'ai';
+import type { Tool } from 'ai';
 import path from 'node:path';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -1167,7 +1168,7 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              tools: this.getToolsForMessage(msg),
               maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
@@ -1378,7 +1379,7 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              tools: this.getToolsForMessage(msg),
               maxOutputTokens: MAX_RESPONSE_TOKENS,
               stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
@@ -1763,7 +1764,28 @@ export class Agent {
       `- When ${speakerName} asks about ${owner} or anyone else, answer in the third person (e.g. "${owner} likes…", NOT "you like…").`,
       `- Personal facts and memories you hold about ${owner} belong to ${owner}, not to ${speakerName}. Do not attribute them to the guest.`,
       `- You may still help ${speakerName} with general requests, but treat private information about ${owner} with discretion.`,
+      '',
+      '# Restricted Capabilities (guest)',
+      `${speakerName} is a guest and is NOT permitted to operate ${owner}'s computer. You have NO access this turn to the shell, filesystem, code, git, scheduling, or any system tools — only conversation and public web lookups.`,
+      `If ${speakerName} asks you to run a command, change or list directories, read/edit/create/delete files, run code, use git, schedule tasks, or otherwise act on ${owner}'s machine or accounts, you MUST clearly and politely decline. Say something like: "Sorry, that action is restricted to ${owner}. I can't run commands or access the filesystem for guests." Then offer to help with something you can do (answer questions, look things up, general conversation).`,
+      `Do NOT pretend to perform the action, fabricate output, or imply you did it. Just decline clearly.`,
     ].join('\n');
+  }
+
+  /**
+   * Choose the toolset for a turn based on WHO is speaking.
+   *
+   * A non-admin group member ("guest") is restricted to a deny-by-default
+   * allowlist (conversation + read-only public lookup). This is a hard security
+   * boundary: the dangerous tools (shell, filesystem, git, etc.) are not even
+   * present in the model's tool list, so a guest cannot run them regardless of
+   * what they ask for. Admins/owner get the full toolset (or plan-mode subset).
+   */
+  private getToolsForMessage(msg?: ChannelMessage): Record<string, Tool> {
+    if (msg?.senderRole === 'member') {
+      return this.capabilities.getGuestTools();
+    }
+    return this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools();
   }
 
   private buildSystemPrompt(msg?: ChannelMessage): string {
