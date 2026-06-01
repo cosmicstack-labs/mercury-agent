@@ -808,20 +808,112 @@ async function checkSignalLinkStatus(apiUrl: string, number: string): Promise<Si
   };
 }
 
+/**
+ * Wrap a URL in an OSC 8 terminal hyperlink so it's clickable (often via
+ * Cmd/Ctrl-click) in supporting terminals (iTerm2, modern Terminal.app,
+ * VS Code, etc.). Terminals that don't understand the escape simply render the
+ * label text, so this degrades gracefully.
+ */
+function terminalLink(url: string, label?: string): string {
+  const text = label ?? url;
+  if (!process.stdout.isTTY) {
+    return label && label !== url ? `${label} (${url})` : url;
+  }
+  const OSC = '\u001B]8;;';
+  const BEL = '\u0007';
+  return `${OSC}${url}${BEL}${text}${OSC}${BEL}`;
+}
+
+/** Open a URL in the user's default browser (best-effort, non-blocking). */
+async function openBrowser(url: string): Promise<boolean> {
+  try {
+    const { spawn } = await import('node:child_process');
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+    const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {}); // command missing (e.g. no xdg-open) — fall back to printed link
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The signal-cli-rest-api QR-code linking page for a given device name. */
+function signalQrLinkUrl(apiUrl: string, deviceName = 'mercury'): string {
+  return `${apiUrl}/v1/qrcodelink?device_name=${deviceName}`;
+}
+
+/**
+ * Interactive Signal device linking, number-first:
+ *   1. Ask for the Signal number (so the user knows what they're linking).
+ *   2. Explain that submitting opens a QR page in the browser.
+ *   3. Open the QR linking page automatically (clickable fallback link too).
+ *   4. Wait until the device shows up in /v1/accounts, then continue.
+ *
+ * Returns the actually-linked number (read back from the API, which is
+ * authoritative) on success.
+ */
+async function runSignalDeviceLinking(
+  apiUrl: string,
+  opts: { currentNumber?: string } = {},
+): Promise<{ linked: boolean; number?: string }> {
+  // Snapshot existing accounts so we can detect the *new* one after linking.
+  let baseline: string[] = [];
+  try {
+    const res = await fetch(`${apiUrl}/v1/accounts`, { signal: AbortSignal.timeout(5_000) });
+    if (res.ok) baseline = (await res.json()) as string[];
+  } catch { /* treat as empty baseline */ }
+
+  console.log('');
+  console.log(chalk.dim('  Enter your Signal phone number in international format (e.g. +14155552671).'));
+  console.log(chalk.dim('  After you enter it, Mercury opens a web page with a QR code — you scan it'));
+  console.log(chalk.dim('  from Signal to link this device. (Entering the number does not send a code.)'));
+  const mask = opts.currentNumber ? ` [${opts.currentNumber}]` : '';
+  const entered = (await ask(chalk.white(`  Signal number${mask}: `))).trim();
+  const number = entered || opts.currentNumber || '';
+  if (!number) {
+    console.log(chalk.yellow('  ⚠ No number entered — skipping Signal linking.'));
+    return { linked: false };
+  }
+
+  const linkUrl = signalQrLinkUrl(apiUrl);
+  console.log('');
+  console.log(chalk.dim('  Opening the QR linking page in your browser...'));
+  const opened = await openBrowser(linkUrl);
+  if (opened) {
+    console.log(chalk.dim('  If it did not open, click this link: ') + chalk.cyan(terminalLink(linkUrl)));
+  } else {
+    console.log(chalk.dim('  Open this link to show the QR code: ') + chalk.cyan(terminalLink(linkUrl)));
+  }
+  console.log(chalk.dim('  Then on your phone: Signal → Settings → Linked Devices → Link New Device (+),'));
+  console.log(chalk.dim('  and scan the QR code shown on that page.'));
+  console.log('');
+  console.log(chalk.dim('  Waiting for the device to be linked (up to 2 min)...'));
+
+  const result = await waitForSignalLink(apiUrl, baseline);
+  if (!result.linked) {
+    console.log(chalk.yellow('  ⚠ Linking timed out. You can re-run `mercury doctor` once you have scanned the code.'));
+    return { linked: false };
+  }
+  const linkedNumber = result.number || number;
+  if (entered && result.number && result.number !== entered) {
+    console.log(chalk.dim(`  Linked account is ${linkedNumber} (using the number that actually linked).`));
+  }
+  console.log(chalk.green(`  ✓ Signal account ${linkedNumber} is now linked.`));
+  return { linked: true, number: linkedNumber };
+}
+
 /** Print step-by-step instructions for linking Signal as a device. */
 function printSignalLinkInstructions(apiUrl: string, deviceName = 'mercury'): void {
+  const url = signalQrLinkUrl(apiUrl, deviceName);
   console.log(chalk.dim('  To (re)link your Signal account as a Mercury device:'));
-  console.log(chalk.dim('    1. Open this URL in a browser to display the linking QR code:'));
-  console.log(chalk.white(`       ${apiUrl}/v1/qrcodelink?device_name=${deviceName}`));
+  console.log(chalk.dim('    1. Open this page to display the linking QR code:'));
+  console.log('       ' + chalk.cyan(terminalLink(url)));
   console.log(chalk.dim('    2. On your phone: Signal → Settings → Linked Devices'));
   console.log(chalk.dim('    3. Tap "Link New Device" (the + button) and scan the QR code'));
 }
 
-/**
- * Poll /v1/accounts until the given number appears (i.e. the user finished
- * scanning the QR code), or the timeout elapses. Returns the linked number on
- * success so callers can pick up a freshly linked account.
- */
 /**
  * Poll /v1/accounts until a *new* account appears relative to a baseline set
  * (i.e. the user finished scanning the QR code), or the timeout elapses.
@@ -1566,7 +1658,6 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       // For privacy we do NOT echo the stale number back (someone else may now
       // be using this machine) and we silently drop it from the saved config so
       // it can't leak or be mistaken for an active account.
-      const baselineAccounts = status.accounts.slice();
       config.channels.signal.number = '';
       config.channels.signal.enabled = false;
       saveConfig(config);
@@ -1576,21 +1667,13 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       console.log('');
       const relink = await ask(chalk.white('  Link a Signal account now? (Y/n): '));
       if (relink.toLowerCase() !== 'n') {
-        console.log('');
-        printSignalLinkInstructions(effectiveUrl);
-        console.log('');
-        console.log(chalk.dim('  Waiting for a device to be linked (up to 2 min)...'));
-        const result = await waitForSignalLink(effectiveUrl, baselineAccounts);
+        const result = await runSignalDeviceLinking(effectiveUrl);
         if (result.linked && result.number) {
           config.channels.signal.number = result.number;
           config.channels.signal.enabled = true;
           saveConfig(config);
-          console.log(chalk.green(`  ✓ Signal account ${result.number} is now linked.`));
-          signalResolved = true;
-        } else {
-          console.log(chalk.yellow('  ⚠ No device linked yet. Run `mercury doctor` again once you have linked one.'));
-          signalResolved = true;
         }
+        signalResolved = true;
       } else {
         console.log(chalk.dim('  Skipped. Signal stays disabled until you link an account.'));
         signalResolved = true;
@@ -1663,13 +1746,12 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         }
         config.channels.signal.enabled = true;
       } else if (check.apiReachable) {
-        console.log(chalk.yellow('  ⚠ API reachable but no Signal numbers linked.'));
-        console.log(chalk.dim(`  Link your number: open ${config.channels.signal.apiUrl}/v1/qrcodelink?device_name=mercury`));
-        console.log(chalk.dim('  Then scan QR in Signal > Settings > Linked Devices'));
-        const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
-        const signalNumber = await ask(chalk.white(`  Signal Number (enter after linking)${signalNumMask}: `));
-        if (signalNumber) {
-          config.channels.signal.number = signalNumber;
+        console.log(chalk.yellow('  ⚠ API reachable, but no Signal device is linked yet.'));
+        const result = await runSignalDeviceLinking(config.channels.signal.apiUrl, {
+          currentNumber: config.channels.signal.number || undefined,
+        });
+        if (result.linked && result.number) {
+          config.channels.signal.number = result.number;
           config.channels.signal.enabled = true;
         }
       } else {
@@ -1693,13 +1775,15 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
               const signalNumber = await ask(chalk.white(`  Signal Number${signalNumMask}: `));
               if (signalNumber) config.channels.signal.number = signalNumber;
             } else {
-              console.log(chalk.yellow('  ⚠ No Signal numbers linked yet.'));
-              console.log(chalk.dim(`  Link your number: open ${check.detectedUrl}/v1/qrcodelink?device_name=mercury`));
-              const signalNumMask = isReconfig && config.channels.signal.number ? ` [${config.channels.signal.number}]` : '';
-              const signalNumber = await ask(chalk.white(`  Signal Number (enter after linking)${signalNumMask}: `));
-              if (signalNumber) config.channels.signal.number = signalNumber;
+              console.log(chalk.yellow('  ⚠ No Signal device is linked yet.'));
+              const result = await runSignalDeviceLinking(check.detectedUrl, {
+                currentNumber: config.channels.signal.number || undefined,
+              });
+              if (result.linked && result.number) {
+                config.channels.signal.number = result.number;
+              }
             }
-            config.channels.signal.enabled = true;
+            if (config.channels.signal.number) config.channels.signal.enabled = true;
           }
         } else if (check.containerRunning) {
           // Container running but couldn't detect the port
