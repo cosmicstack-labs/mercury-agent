@@ -231,3 +231,52 @@ export function mdToTelegram(text: string): string {
 
   return out;
 }
+
+/**
+ * Normalize Markdown for Signal's `text_mode: "styled"` send mode.
+ *
+ * signal-cli's styled parser natively understands `**bold**`, `*italic*`,
+ * `~~strike~~`, `||spoiler||` and `` `monospace` `` — so we keep those markers
+ * intact. The job here is to convert the constructs Signal does NOT support
+ * (headings, links, fenced code) into something sensible, and to avoid leaving
+ * markup that would render as literal noise.
+ */
+export function mdToSignal(text: string): string {
+  let out = text;
+
+  // Protect code so inner markup isn't touched, then restore at the end.
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
+    const placeholder = `\u0000CODEBLOCK_${codeBlocks.length}\u0000`;
+    // Signal monospace is a single backtick span; it spans newlines fine.
+    codeBlocks.push('`' + String(code).replace(/\n+$/, '') + '`');
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_m, code) => {
+    const placeholder = `\u0000INLINECODE_${inlineCodes.length}\u0000`;
+    inlineCodes.push('`' + code + '`');
+    return placeholder;
+  });
+
+  // Headings → bold (Signal has no heading concept).
+  out = out.replace(/^#{1,6}\s+(.+)$/gm, '**$1**');
+
+  // Links [label](url) → "label (url)" (no inline link entities in styled text).
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
+    return label === href ? label : `${label} (${href})`;
+  });
+
+  // bold / italic / strike markers are left as-is for Signal's parser.
+
+  // Restore protected code.
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`\u0000INLINECODE_${i}\u0000`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`\u0000CODEBLOCK_${i}\u0000`, codeBlocks[i]);
+  }
+
+  return out;
+}

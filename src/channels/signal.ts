@@ -18,6 +18,7 @@ import {
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 import { redactPhone, redactUuid, redactIdentity } from '../utils/redact.js';
+import { mdToSignal } from '../utils/markdown.js';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const SEND_TIMEOUT_MS = 20_000;
@@ -451,13 +452,17 @@ export class SignalChannel extends BaseChannel {
     const { apiUrl } = this.config.channels.signal;
     const url = `${apiUrl}/v2/send`;
 
+    // Render native Signal formatting (bold/italic/monospace/etc.) for every
+    // send path. signal-cli interprets the message markup in "styled" mode.
+    const requestBody = JSON.stringify({ text_mode: 'styled', ...payload });
+
     let lastError = '';
     for (let attempt = 1; attempt <= SEND_MAX_ATTEMPTS; attempt++) {
       try {
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: requestBody,
           signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         });
 
@@ -494,7 +499,7 @@ export class SignalChannel extends BaseChannel {
       logger.warn('Signal: no group configured, cannot send');
       return;
     }
-    await this.signalPost({ message, number, recipients: [groupId] }, 'sendToGroup');
+    await this.signalPost({ message: mdToSignal(message), number, recipients: [groupId] }, 'sendToGroup');
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
@@ -875,7 +880,7 @@ export class SignalChannel extends BaseChannel {
 
   private async sendToNumber(recipient: string, message: string): Promise<void> {
     const { number } = this.config.channels.signal;
-    await this.signalPost({ message, number, recipients: [recipient] }, 'sendToNumber');
+    await this.signalPost({ message: mdToSignal(message), number, recipients: [recipient] }, 'sendToNumber');
   }
 
   private async sendWithAttachment(recipient: string, filename: string, base64Data: string): Promise<void> {
