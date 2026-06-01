@@ -180,6 +180,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/voice stt',
     '/voice stt cartesia',
     '/voice stt openai',
+    '/voice autosubmit',
+    '/voice autosubmit on',
+    '/voice autosubmit off',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {

@@ -3742,17 +3742,24 @@ Is this productive iteration or a stuck loop?`,
             const finalText = result.text.trim();
             if (!result.aborted && finalText) {
               const cfg = ctx.config();
+              // Default to ON when the field is missing. Existing configs
+              // that explicitly set false (e.g. older installs created
+              // before the default flipped) still print the transcript +
+              // a one-time hint instead of routing through the agent.
               const autoSubmit = cfg.voice?.stt?.autoSubmit !== false;
-              if (autoSubmit) {
+              if (autoSubmit && typeof (channel as any).sendUserMessage === 'function') {
                 // Inject the transcript as if the user typed it; the
-                // channel will emit a normal user message event.
-                if (typeof (channel as any).sendUserMessage === 'function') {
-                  (channel as any).sendUserMessage(finalText);
-                } else {
-                  await channel.send(`Heard: ${finalText}`, channelId);
-                }
+                // channel will emit a normal user message event, which
+                // then drives an agent reply → TTS via the stream tee.
+                (channel as any).sendUserMessage(finalText);
               } else {
                 await channel.send(`Heard: ${finalText}`, channelId);
+                if (!autoSubmit) {
+                  await channel.send(
+                    'Tip: enable auto-submit so transcripts go straight to me — `/voice autosubmit on`',
+                    channelId,
+                  );
+                }
               }
             }
           } catch (err) {
@@ -3851,8 +3858,38 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
+      // Auto-submit toggle. STT transcripts route straight into the
+      // agent (so the conversation loop closes and TTS can speak the
+      // reply). Useful when an older config has it explicitly disabled.
+      //   /voice autosubmit            → show current
+      //   /voice autosubmit on|off     → set and persist
+      if (sub.startsWith('autosubmit')) {
+        const arg = sub.slice('autosubmit'.length).trim().toLowerCase();
+        const cfg = ctx.config();
+        cfg.voice = cfg.voice ?? ({} as any);
+        cfg.voice!.stt = cfg.voice!.stt ?? ({} as any);
+        if (!arg) {
+          const cur = cfg.voice!.stt.autoSubmit !== false;
+          await channel.send(
+            `Auto-submit STT is **${cur ? 'on' : 'off'}**. Toggle with \`/voice autosubmit on|off\`.`,
+            channelId,
+          );
+          return true;
+        }
+        const on = arg === 'on' || arg === 'true' || arg === '1' || arg === 'yes';
+        const off = arg === 'off' || arg === 'false' || arg === '0' || arg === 'no';
+        if (!on && !off) {
+          await channel.send('Use `/voice autosubmit on` or `/voice autosubmit off`.', channelId);
+          return true;
+        }
+        (cfg.voice!.stt as any).autoSubmit = on;
+        saveConfig(cfg);
+        await channel.send(`✓ Auto-submit STT set to **${on ? 'on' : 'off'}**.`, channelId);
+        return true;
+      }
+
       await channel.send(
-        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt]',
+        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt|autosubmit]',
         channelId,
       );
       return true;

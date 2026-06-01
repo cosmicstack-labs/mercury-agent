@@ -405,7 +405,7 @@ export function getDefaultConfig(): MercuryConfig {
         provider: (getEnv('MERCURY_VOICE_STT_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
         fallback: 'openai',
         liveCaptions: getEnvBool('MERCURY_VOICE_LIVE_CAPTIONS', true),
-        autoSubmit: getEnvBool('MERCURY_VOICE_AUTO_SUBMIT', false),
+        autoSubmit: getEnvBool('MERCURY_VOICE_AUTO_SUBMIT', true),
         cartesia: {
           model: getEnv('CARTESIA_STT_MODEL', 'ink-whisper'),
           language: getEnv('CARTESIA_STT_LANGUAGE', 'auto'),
