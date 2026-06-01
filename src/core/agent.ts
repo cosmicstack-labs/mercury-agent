@@ -2251,8 +2251,10 @@ Is this productive iteration or a stuck loop?`,
       });
     }
 
-    await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch(() => {});
-    return choices[0];
+    if (!channel) return choices[0];
+    // Signal (and any other buffering/text channel) implements requestChoice
+    // to actually await a numbered reply instead of silently defaulting.
+    return channel.requestChoice(question, choices, channelId).catch(() => choices[0]);
   }
 
   private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {

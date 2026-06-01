@@ -1401,16 +1401,11 @@ export class TelegramChannel extends BaseChannel {
   }
 
   private getAdminUser(): { chatId: number } | null {
-    // Access the first admin user from approved list
-    const users = (this as any).approvedUsers as Map<number, any> | undefined;
-    if (!users) return null;
-    for (const [chatId, user] of users) {
-      if (user.role === 'admin') return { chatId };
-    }
-    // Fallback: first user
-    for (const [chatId] of users) {
-      return { chatId };
-    }
+    // Prefer the first configured admin; fall back to any approved user.
+    const admins = getTelegramAdmins(this.config);
+    if (admins.length > 0) return { chatId: admins[0].chatId };
+    const approvedChatIds = getTelegramApprovedChatIds(this.config);
+    if (approvedChatIds.length > 0) return { chatId: approvedChatIds[0] };
     return null;
   }
 }

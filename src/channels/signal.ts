@@ -582,6 +582,35 @@ export class SignalChannel extends BaseChannel {
     return null;
   }
 
+  /**
+   * Interactive single-choice prompt. Signal has no inline buttons, so we send
+   * a numbered list and wait for the user to reply with a number (text
+   * equivalent of Telegram's inline keyboard). Returns the chosen label.
+   */
+  async requestChoice(question: string, choices: string[], targetId?: string): Promise<string> {
+    if (choices.length === 0) return '';
+    const target = this.resolvePromptTarget(targetId);
+    if (!target) return choices[0];
+
+    const message = [
+      question,
+      '',
+      ...choices.map((c, i) => `${i + 1}. ${c}`),
+      '',
+      `Reply: 1${choices.length > 1 ? `-${choices.length}` : ''}`,
+    ].join('\n');
+    await this.sendToGroup(message);
+
+    const reply = await this.waitForReply(target.source, 120_000, '1');
+    const index = parseInt(reply.trim(), 10);
+    if (!isNaN(index) && index >= 1 && index <= choices.length) {
+      return choices[index - 1];
+    }
+    // Allow replying with the option text itself.
+    const byLabel = choices.find((c) => c.toLowerCase() === reply.trim().toLowerCase());
+    return byLabel ?? choices[0];
+  }
+
   private waitForReply(phoneNumber: string, timeoutMs: number, defaultValue: string): Promise<string> {
     // Cancel any existing pending reply for this number
     const existing = this.pendingReplies.get(phoneNumber);

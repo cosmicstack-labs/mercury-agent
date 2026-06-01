@@ -36,6 +36,11 @@ export interface Channel {
   sendToolFeedback(toolName: string, args: Record<string, any>, targetId?: string): void | Promise<void>;
   sendStepDone(toolName: string, result: unknown, targetId?: string): void | Promise<void>;
   sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: CompletionMeta): void | Promise<void>;
+
+  // Interactive single-choice prompt. Returns the chosen label. Channels that
+  // can't block on a reply fall back to sending a numbered list and returning
+  // the first option (the safe default).
+  requestChoice(question: string, choices: string[], targetId?: string): Promise<string>;
 }
 
 export abstract class BaseChannel implements Channel {
@@ -92,4 +97,10 @@ export abstract class BaseChannel implements Channel {
   sendToolFeedback(_toolName: string, _args: Record<string, any>, _targetId?: string): void | Promise<void> {}
   sendStepDone(_toolName: string, _result: unknown, _targetId?: string): void | Promise<void> {}
   sendCompletion(_elapsedMs: number, _stepCount: number, _targetId?: string, _meta?: CompletionMeta): void | Promise<void> {}
+
+  async requestChoice(question: string, choices: string[], targetId?: string): Promise<string> {
+    const list = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+    await this.send(`${question}\n${list}`, targetId).catch(() => {});
+    return choices[0] ?? '';
+  }
 }
