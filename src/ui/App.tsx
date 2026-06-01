@@ -168,6 +168,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/voice',
     '/voice on',
     '/voice off',
+    '/voice toggle',
+    '/voice listen',
+    '/voice stop',
     '/voice status',
     '/voice grant',
   ], []);
@@ -363,6 +366,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     // there's a single dispatcher and the chat log records the change.
     if (key.ctrl && ((key as any).name === 'v' || ch?.toLowerCase?.() === 'v')) {
       onInput('/voice toggle');
+      return;
+    }
+
+    // Ctrl+Space — toggle listen. Terminals can't deliver key-up events,
+    // so PTT is implemented as press-once-to-start, press-again-to-stop.
+    // Detect via raw ch === '\u0000' (Ctrl+Space) which is what xterm
+    // emits on most platforms.
+    if (ch === '\u0000' || (key.ctrl && (key as any).name === 'space')) {
+      onInput('/voice listen');
       return;
     }
 
@@ -813,6 +825,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           mode={state.mode}
           programmingMode={state.programmingMode}
           projectContext={state.projectContext}
+          voicePartial={state.voicePartial}
         />
       )}
       {showInput && slashSuggestions.length > 0 && (
@@ -1921,12 +1934,14 @@ function InputBox({
   mode,
   programmingMode,
   projectContext,
+  voicePartial,
 }: {
   input: string;
   cursorPos: number;
   mode: AppMode;
   programmingMode: ProgrammingModeState;
   projectContext: string | null;
+  voicePartial: string | null;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
@@ -1976,8 +1991,16 @@ function InputBox({
           </Box>
         ))}
       </Box>
+      {voicePartial !== null && (
+        <Box paddingX={1}>
+          <Text color="magenta" bold>{'🎙 '}</Text>
+          <Text color="magenta" italic>
+            {voicePartial.length > 0 ? voicePartial : 'listening…'}
+          </Text>
+        </Box>
+      )}
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
+        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline · Ctrl+Space mic · Ctrl+V voice'}</Text>
       </Box>
     </Box>
   );

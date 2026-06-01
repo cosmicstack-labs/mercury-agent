@@ -33,13 +33,17 @@ import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { SentenceBuffer } from './buffering.js';
 import { pickReadyTTS, disposeTTSProviders } from './tts/registry.js';
-import type { BaseTTSProvider } from './tts/base.js';
+import { pickReadySTT, disposeSTTProviders } from './stt/registry.js';
+import type { TranscriptDelta } from './types.js';
+import type { RecordingSource } from './audio/backends/base.js';
 
 // Module-load registration: importing the provider modules registers them
-// with the TTS registry. Keep these imports ordered so the preferred
+// with the registries. Keep these imports ordered so the preferred
 // provider lands first.
 import './tts/cartesia.js';
 import './tts/openai.js';
+import './stt/cartesia.js';
+import './stt/openai.js';
 
 export interface VoiceStatusSnapshot {
   state: VoiceState;
@@ -60,6 +64,22 @@ export interface SpeakOptions {
   enabled?: boolean;
 }
 
+export interface ListenOptions {
+  /** Language hint passed to the STT provider ("auto" picks). */
+  language?: string;
+  /** Called for every partial / final transcript delta. */
+  onDelta?: (delta: TranscriptDelta) => void;
+  /** Optional external abort signal. */
+  signal?: AbortSignal;
+}
+
+export interface ListenResult {
+  /** Aggregated final transcript text (may be empty). */
+  text: string;
+  /** True if the user/system aborted before a final arrived. */
+  aborted: boolean;
+}
+
 export class VoiceManager extends EventEmitter {
   private state: VoiceState = 'disabled';
   private micState: MicState = 'uninitialized';
@@ -76,6 +96,11 @@ export class VoiceManager extends EventEmitter {
 
   // Active speak controller — non-null while TTS is in flight.
   private speakAbort: AbortController | null = null;
+  // Active listen controller — non-null while STT is in flight.
+  private listenAbort: AbortController | null = null;
+  private recording: RecordingSource | null = null;
+  // Cached permission probe so we can call request() without re-running detect.
+  private micPermissionHandle: MicPermission | null = null;
 
   /**
    * Enable the voice subsystem. Idempotent.
@@ -94,6 +119,7 @@ export class VoiceManager extends EventEmitter {
 
       // 1. Probe mic permission (best-effort; TTS works without it).
       const perm = await detectMicPermission();
+      this.micPermissionHandle = perm;
       this.micPermission = perm.status;
       this.micState = perm.status === 'authorized' ? 'ready'
                     : perm.status === 'denied' ? 'denied'
@@ -111,7 +137,10 @@ export class VoiceManager extends EventEmitter {
       // 3. Pick TTS provider (with fallback walked by registry).
       const tts = await pickReadyTTS();
       this.ttsProviderName = tts ? tts.name : null;
-      this.sttProviderName = cfg.voice.stt?.provider ?? null; // wired in Phase 2
+
+      // 4. Pick STT provider similarly.
+      const stt = await pickReadySTT();
+      this.sttProviderName = stt ? stt.name : null;
 
       // TTS unavailability is non-fatal; user may still grant access later.
       this.setState('ready');
@@ -128,12 +157,14 @@ export class VoiceManager extends EventEmitter {
   async disable(): Promise<void> {
     if (this.state === 'disabled') return;
     await this.cancelSpeaking().catch(() => {});
+    await this.stopListening().catch(() => {});
     if (this.playback) {
       await this.playback.close().catch(() => {});
       this.playback = null;
       this.playbackSampleRate = 0;
     }
     await disposeTTSProviders().catch(() => {});
+    await disposeSTTProviders().catch(() => {});
     this.backend = null;
     this.backendInfo = null;
     this.ttsProviderName = null;
@@ -261,6 +292,131 @@ export class VoiceManager extends EventEmitter {
     }
   }
 
+  /* ── Listen pipeline ───────────────────────────────────────────────── */
+
+  /**
+   * Open the mic, stream audio frames to the STT provider, and return the
+   * final transcript when `stopListening()` is called (or the external
+   * signal aborts). Idempotent: a second call cancels the first.
+   *
+   * Voice barge-in: starting a listen session implicitly cancels TTS so
+   * the user can talk over the agent without typing.
+   */
+  async startListening(opts: ListenOptions = {}): Promise<ListenResult> {
+    if (this.state !== 'ready' && this.state !== 'speaking' && this.state !== 'listening') {
+      return { text: '', aborted: true };
+    }
+    if (!this.backend) return { text: '', aborted: true };
+
+    // Cancel any prior listen + any TTS in progress.
+    await this.stopListening().catch(() => {});
+    await this.cancelSpeaking().catch(() => {});
+
+    // Ensure we actually have mic access; attempt prompt if not-determined.
+    if (this.micPermission !== 'authorized') {
+      const refreshed = await this.requestMicPermission();
+      if (refreshed !== 'authorized') {
+        this.lastError = this.micPermissionHandle?.hint() ?? 'Microphone access denied.';
+        return { text: '', aborted: true };
+      }
+    }
+
+    const stt = await pickReadySTT();
+    if (!stt) {
+      logger.warn('voice.listen no STT provider available');
+      return { text: '', aborted: true };
+    }
+    this.sttProviderName = stt.name;
+
+    const internal = new AbortController();
+    this.listenAbort = internal;
+    const externalAbort = () => internal.abort();
+    opts.signal?.addEventListener('abort', externalAbort, { once: true });
+
+    this.setMicState('recording');
+    this.setState('listening');
+
+    let aggregated = '';
+    let aborted = false;
+    let recording: RecordingSource | null = null;
+
+    try {
+      recording = await this.backend.initRecording({
+        sampleRate: stt.capabilities.requiredSampleRate,
+        channels: stt.capabilities.requiredChannels,
+        frameSize: 320, // 20ms @ 16kHz
+        signal: internal.signal,
+      });
+      this.recording = recording;
+
+      // STT consumes frames; we capture deltas and aggregate final text.
+      const deltaIter = stt.transcribe(recording.frames(), {
+        language: opts.language,
+        signal: internal.signal,
+      });
+
+      for await (const delta of deltaIter) {
+        if (internal.signal.aborted) { aborted = true; break; }
+        try { opts.onDelta?.(delta); } catch (err) {
+          logger.debug({ err }, 'voice.listen onDelta callback threw');
+        }
+        if (delta.isFinal && delta.text) {
+          aggregated = aggregated
+            ? `${aggregated} ${delta.text}`.trim()
+            : delta.text.trim();
+        }
+      }
+      if (internal.signal.aborted) aborted = true;
+    } catch (err) {
+      aborted = true;
+      logger.warn({ err }, 'voice.listen pipeline error');
+    } finally {
+      opts.signal?.removeEventListener('abort', externalAbort);
+      if (recording) {
+        this.setMicState('draining');
+        try { await recording.stop(); } catch { /* ignore */ }
+        this.setMicState('released');
+        // After release, mic is logically 'ready' again because the backend
+        // can re-init immediately on next press.
+        this.setMicState('ready');
+      }
+      if (this.recording === recording) this.recording = null;
+      if (this.listenAbort === internal) this.listenAbort = null;
+      if (this.state === 'listening') this.setState('ready');
+    }
+
+    return { text: aggregated, aborted };
+  }
+
+  /** Stop the current listen session (graceful flush). */
+  async stopListening(): Promise<void> {
+    const ctrl = this.listenAbort;
+    if (!ctrl) return;
+    // Signal the STT pipeline to wrap up; the loop will drain naturally
+    // because the recording source closes its frames() iterator on stop().
+    if (this.recording) {
+      try { await this.recording.stop(); } catch { /* ignore */ }
+    }
+    // If the provider is still waiting for a final after a few seconds,
+    // abort hard. The transcribe loop handles abort gracefully.
+    setTimeout(() => {
+      if (this.listenAbort === ctrl) ctrl.abort();
+    }, 1500);
+  }
+
+  /** Trigger an OS permission prompt where possible and refresh status. */
+  async requestMicPermission(): Promise<MicPermission['status']> {
+    // Always re-probe — permission may have changed in System Settings.
+    const handle = this.micPermissionHandle ?? (await detectMicPermission());
+    this.micPermissionHandle = handle;
+    const status = handle.canPrompt ? await handle.request() : handle.status;
+    this.micPermission = status;
+    this.micState = status === 'authorized' ? 'ready'
+                  : status === 'denied' ? 'denied'
+                  : 'probing';
+    return status;
+  }
+
   /* ── Internal ──────────────────────────────────────────────────────── */
 
   private async ensurePlayback(sampleRate: number): Promise<PlaybackSink> {
@@ -285,6 +441,13 @@ export class VoiceManager extends EventEmitter {
     const prev = this.state;
     this.state = next;
     this.emit('state', { from: prev, to: next });
+  }
+
+  private setMicState(next: MicState): void {
+    if (this.micState === next) return;
+    const prev = this.micState;
+    this.micState = next;
+    this.emit('micState', { from: prev, to: next });
   }
 }
 

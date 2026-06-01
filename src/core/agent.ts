@@ -3691,7 +3691,8 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
       if (sub === 'grant') {
-        await channel.send('Microphone grant flow is not yet wired. Coming in Phase 1.', channelId);
+        const status = await voice.requestMicPermission();
+        await channel.send(`Microphone permission: ${status}.`, channelId);
         return true;
       }
       if (sub === 'toggle') {
@@ -3709,7 +3710,61 @@ Is this productive iteration or a stuck loop?`,
         }
         return true;
       }
-      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|toggle|grant]', channelId);
+      if (sub === 'listen') {
+        // Toggle: if already listening, stop. Otherwise start.
+        const status = voice.getStatus();
+        if (status.state === 'listening') {
+          await voice.stopListening();
+          return true;
+        }
+        if (status.state !== 'ready' && status.state !== 'speaking') {
+          await channel.send('Voice is not ready. Try /voice on first.', channelId);
+          return true;
+        }
+        // Fire-and-forget so the dispatcher returns promptly; the listen
+        // result is auto-submitted as a user message on completion.
+        const cliChannel = channel as any; // best-effort: only CLI has setVoicePartial
+        const setPartial = (t: string | null) => {
+          if (typeof cliChannel.setVoicePartial === 'function') cliChannel.setVoicePartial(t);
+        };
+        void (async () => {
+          setPartial('');
+          try {
+            const result = await voice.startListening({
+              onDelta: (d) => {
+                if (!d.isFinal) setPartial(d.text || '…');
+                else if (d.text) setPartial(d.text);
+              },
+            });
+            setPartial(null);
+            const finalText = result.text.trim();
+            if (!result.aborted && finalText) {
+              const cfg = ctx.config();
+              const autoSubmit = cfg.voice?.stt?.autoSubmit !== false;
+              if (autoSubmit) {
+                // Inject the transcript as if the user typed it; the
+                // channel will emit a normal user message event.
+                if (typeof (channel as any).sendUserMessage === 'function') {
+                  (channel as any).sendUserMessage(finalText);
+                } else {
+                  await channel.send(`Heard: ${finalText}`, channelId);
+                }
+              } else {
+                await channel.send(`Heard: ${finalText}`, channelId);
+              }
+            }
+          } catch (err) {
+            setPartial(null);
+            logger.warn({ err }, '/voice listen error');
+          }
+        })();
+        return true;
+      }
+      if (sub === 'stop') {
+        await voice.stopListening();
+        return true;
+      }
+      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant]', channelId);
       return true;
     }
 

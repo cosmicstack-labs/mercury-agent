@@ -31,6 +31,8 @@ export interface TuiState {
   backgroundTasks: BackgroundTaskInfo[];
   web: { enabled: boolean; port: number } | null;
   saverInfo: SaverInfo | null;
+  /** Live partial transcript while STT is recording; null when not listening. */
+  voicePartial: string | null;
 }
 
 const defaultState: TuiState = {
@@ -54,6 +56,7 @@ const defaultState: TuiState = {
   backgroundTasks: [],
   web: null,
   saverInfo: null,
+  voicePartial: null,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -1140,5 +1143,10 @@ export class CLIChannel extends BaseChannel {
     } catch {
       /* voice module not loaded or no in-flight utterance */
     }
+  }
+
+  /** Public hook for the voice dispatcher to update the live caption strip. */
+  setVoicePartial(text: string | null): void {
+    this.update({ voicePartial: text });
   }
 }
