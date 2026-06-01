@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 type ApprovalResolver = () => void;
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'loop_warning' | 'error';
+  type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'loop_warning' | 'error' | 'audio_chunk' | 'audio_end' | 'transcript_partial' | 'transcript_final';
   data?: Record<string, unknown>;
 }
 
@@ -118,14 +118,164 @@ export class WebChannel extends BaseChannel {
 
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     let fullText = '';
-    for await (const chunk of content) {
-      fullText += chunk;
-      this.broadcast({
-        type: 'text_delta',
-        data: { text: chunk, targetId },
-      });
+    // Tee text deltas → SSE clients AND (optionally) the VoiceManager.
+    // The voice tee is opened lazily so users without voice configured
+    // pay zero overhead, and so a slow speaker can never back-pressure
+    // the SSE stream (the pipeline drains via its own queue).
+    const voiceQueue = await this.openVoiceQueue(targetId);
+    try {
+      for await (const chunk of content) {
+        fullText += chunk;
+        voiceQueue?.push(chunk);
+        this.broadcast({
+          type: 'text_delta',
+          data: { text: chunk, targetId },
+        });
+      }
+    } finally {
+      voiceQueue?.end();
     }
+    // Fire and forget — TTS playback finishes asynchronously and emits
+    // audio_end on the SSE stream when done.
+    voiceQueue?.flush();
     return fullText;
+  }
+
+  /**
+   * Open a voice tee for this turn. Returns null when voice is disabled
+   * or auto-speak is off. Audio frames are base64-encoded and broadcast
+   * as `audio_chunk` SSE events; an `audio_end` event closes the turn.
+   *
+   * Note: this is invoked per stream() call. The underlying VoiceManager
+   * keeps its TTS WebSocket warm across calls so there's no reconnect cost.
+   */
+  private async openVoiceQueue(targetId?: string): Promise<{
+    push(delta: string): void;
+    end(): void;
+    flush(): void;
+  } | null> {
+    let mgr: import('../voice/index.js').VoiceManager | null = null;
+    try {
+      const mod = await import('../voice/index.js');
+      mgr = mod.getVoiceManager();
+    } catch {
+      return null;
+    }
+    const status = mgr.getStatus();
+    if (status.state !== 'ready' && status.state !== 'speaking') return null;
+
+    const { loadConfig } = await import('../utils/config.js');
+    if (!loadConfig().voice?.tts?.autoSpeakReplies) return null;
+
+    const buffer: string[] = [];
+    let producerDone = false;
+    let waiter: (() => void) | null = null;
+
+    const iterator: AsyncIterable<string> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          while (true) {
+            if (buffer.length > 0) return { value: buffer.shift()!, done: false };
+            if (producerDone) return { value: undefined as unknown as string, done: true };
+            await new Promise<void>((resolve) => { waiter = resolve; });
+          }
+        },
+      }),
+    };
+
+    const self = this;
+    return {
+      push(delta: string) {
+        if (!delta) return;
+        buffer.push(delta);
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      },
+      end() {
+        producerDone = true;
+        if (waiter) { const w = waiter; waiter = null; w(); }
+      },
+      flush() {
+        // Tap the audio frames as they emerge from the TTS provider and
+        // broadcast each one to all connected SSE clients. We use the
+        // public `pipeTTSToWeb` helper on VoiceManager (added below).
+        void self.pipeTTSToSSE(mgr!, iterator, targetId).catch(() => {
+          // logged inside speakStream / pipeTTSToSSE
+        });
+      },
+    };
+  }
+
+  /**
+   * Run a TTS stream and forward each audio frame to SSE clients as a
+   * base64-encoded `audio_chunk` event. Emits `audio_end` when complete
+   * (success, abort, or error). Sample rate / channels are reported per
+   * chunk so the browser-side decoder can configure its AudioContext.
+   */
+  async pipeTTSToSSE(
+    mgr: import('../voice/index.js').VoiceManager,
+    textIter: AsyncIterable<string>,
+    targetId?: string,
+  ): Promise<void> {
+    // We re-implement the speakStream pipeline inline so we can intercept
+    // frames before they hit the (CLI-only) PlaybackSink. The provider
+    // chain + SentenceBuffer logic lives in the registry / buffering
+    // modules; we just compose them here.
+    const { pickReadyTTS } = await import('../voice/tts/registry.js');
+    const { SentenceBuffer } = await import('../voice/buffering.js');
+    const { loadConfig } = await import('../utils/config.js');
+
+    const tts = await pickReadyTTS();
+    if (!tts) {
+      this.broadcast({ type: 'audio_end', data: { reason: 'no-provider', targetId } });
+      // Drain the producer so it doesn't deadlock.
+      for await (const _ of textIter) { /* discard */ }
+      return;
+    }
+
+    const ac = new AbortController();
+    // Wire cancelSpeaking on VoiceManager to abort us if user interrupts.
+    mgr.on('state', (e: { from: string; to: string }) => {
+      if (e.to === 'ready' && !ac.signal.aborted) ac.abort();
+    });
+
+    const buffer = new SentenceBuffer({
+      normalize: loadConfig().voice?.tts?.normalize !== false,
+    });
+    const chunkIter = pumpSentenceChunksForWeb(buffer, textIter, ac.signal);
+
+    try {
+      let chunkIdx = 0;
+      for await (const frame of tts.synthesizeStream(chunkIter, { signal: ac.signal })) {
+        if (ac.signal.aborted) break;
+        this.broadcast({
+          type: 'audio_chunk',
+          data: {
+            // base64-encoded raw PCM s16le
+            pcm: frame.pcm.toString('base64'),
+            sampleRate: frame.sampleRate,
+            channels: frame.channels,
+            seq: chunkIdx++,
+            targetId,
+          },
+        });
+      }
+    } catch (err) {
+      logger.warn({ err }, 'web.voice.pipeTTSToSSE error');
+      this.broadcast({ type: 'audio_end', data: { reason: 'error', error: String(err), targetId } });
+      return;
+    }
+    this.broadcast({
+      type: 'audio_end',
+      data: { reason: ac.signal.aborted ? 'aborted' : 'done', targetId },
+    });
+  }
+
+  /** Broadcast a transcript delta from a /api/voice/transcribe stream. */
+  broadcastTranscript(text: string, isFinal: boolean, targetId?: string): void {
+    this.broadcast({
+      type: isFinal ? 'transcript_final' : 'transcript_partial',
+      data: { text, targetId },
+    });
   }
 
   async typing(_targetId?: string): Promise<void> {
@@ -282,5 +432,54 @@ export class WebChannel extends BaseChannel {
 
   getSettings(): { bypassPermissions: boolean; restrictUser: boolean } {
     return { bypassPermissions: this.bypassPermissions, restrictUser: this.restrictUser };
+  }
+}
+
+/**
+ * Sentence-chunk pump for the web stream variant. Same logic as the one
+ * in VoiceManager, replicated here so we can drive a per-request buffer
+ * without exporting internal manager state. Kept tiny on purpose — if
+ * it diverges meaningfully from the manager version, refactor both to
+ * share a helper module.
+ */
+async function* pumpSentenceChunksForWeb(
+  buffer: import('../voice/buffering.js').SentenceBuffer,
+  textDeltas: AsyncIterable<string>,
+  signal: AbortSignal,
+): AsyncIterable<string> {
+  const queue: string[] = [];
+  let producerDone = false;
+  let waiter: (() => void) | null = null;
+  const wake = () => { if (waiter) { const w = waiter; waiter = null; w(); } };
+
+  const tick = setInterval(() => {
+    for (const c of buffer.tick()) if (c.text) queue.push(c.text);
+    wake();
+  }, 50);
+
+  const producer = (async () => {
+    try {
+      for await (const delta of textDeltas) {
+        if (signal.aborted) break;
+        for (const c of buffer.push(delta)) if (c.text) queue.push(c.text);
+        wake();
+      }
+    } finally {
+      for (const c of buffer.end()) if (c.text) queue.push(c.text);
+      producerDone = true;
+      wake();
+    }
+  })();
+
+  try {
+    while (true) {
+      if (signal.aborted) return;
+      while (queue.length > 0) yield queue.shift()!;
+      if (producerDone) return;
+      await new Promise<void>((resolve) => { waiter = resolve; });
+    }
+  } finally {
+    clearInterval(tick);
+    await producer.catch(() => {});
   }
 }
