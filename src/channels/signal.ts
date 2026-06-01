@@ -24,6 +24,15 @@ const SEND_TIMEOUT_MS = 20_000;
 const SEND_MAX_ATTEMPTS = 3;
 const INTER_MESSAGE_DELAY_MS = 350;
 
+// How long the server holds an empty /v1/receive request open before returning
+// (true long-poll). The client adds a safety margin on top so a wedged TCP
+// connection can't hang the loop forever.
+const RECEIVE_TIMEOUT_SEC = 30;
+const RECEIVE_SAFETY_MS = (RECEIVE_TIMEOUT_SEC + 15) * 1000;
+// Guard against signal-cli builds that ignore ?timeout= and return instantly:
+// a tiny sleep prevents a hot reconnect loop in that degraded case.
+const IDLE_GUARD_MS = 250;
+
 type PendingReply = {
   resolve: (value: string) => void;
   timeout: NodeJS.Timeout;
@@ -34,8 +43,13 @@ export class SignalChannel extends BaseChannel {
   private pollController: AbortController | null = null;
   private polling = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectTimerReject: (() => void) | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 20;
+  // Below this many consecutive failures we log each retry at INFO; beyond it
+  // we throttle to an occasional WARN so a long outage doesn't flood logs. We
+  // never permanently give up — that would silently strand the channel.
+  private reconnectLogThreshold = 20;
+  private lastReconnectWarn = 0;
   private baseReconnectDelay = 2000;
   private shouldReconnect = true;
 
@@ -98,6 +112,11 @@ export class SignalChannel extends BaseChannel {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Interrupt an in-flight backoff sleep so shutdown isn't blocked up to 60s.
+    if (this.reconnectTimerReject) {
+      this.reconnectTimerReject();
+      this.reconnectTimerReject = null;
+    }
     this.ready = false;
   }
 
@@ -106,19 +125,25 @@ export class SignalChannel extends BaseChannel {
     this.polling = true;
     this.ready = true;
     this.reconnectAttempts = 0;
-    logger.info('Signal: starting HTTP long-poll receive loop');
+    logger.info({ timeoutSec: RECEIVE_TIMEOUT_SEC }, 'Signal: starting HTTP long-poll receive loop');
     this.pollLoop();
   }
 
   private async pollLoop(): Promise<void> {
     const { apiUrl, number } = this.config.channels.signal;
-    const receiveUrl = `${apiUrl}/v1/receive/${encodeURIComponent(number)}`;
+    // Server-side long-poll: the API holds the request open up to RECEIVE_TIMEOUT_SEC
+    // seconds and returns [] if nothing arrives, instead of returning immediately.
+    const receiveUrl = `${apiUrl}/v1/receive/${encodeURIComponent(number)}?timeout=${RECEIVE_TIMEOUT_SEC}`;
 
     while (this.polling && this.shouldReconnect) {
       this.pollController = new AbortController();
+      // Combine the stop() abort with a client-side safety timeout so a hung
+      // connection (server never responds) is torn down and retried.
+      const safety = AbortSignal.timeout(RECEIVE_SAFETY_MS);
+      const signal = AbortSignal.any([this.pollController.signal, safety]);
       try {
         const response = await fetch(receiveUrl, {
-          signal: this.pollController.signal,
+          signal,
           headers: { 'Content-Type': 'application/json' },
         });
 
@@ -141,14 +166,21 @@ export class SignalChannel extends BaseChannel {
           }
         }
 
-        // Small delay between polls to avoid hammering when no messages
+        // With a working long-poll the server already blocked for us. Only pause
+        // briefly for builds that ignore ?timeout= and return instantly when empty.
         if (!envelopes || envelopes.length === 0) {
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, IDLE_GUARD_MS));
         }
       } catch (err: any) {
-        if (err.name === 'AbortError') {
-          // Intentional abort (stop() called)
-          break;
+        if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+          if (!this.shouldReconnect) {
+            // Intentional abort (stop() called) — leave the loop.
+            break;
+          }
+          // Safety timeout fired on a wedged connection: reconnect immediately
+          // without backoff, since this isn't a server/network failure.
+          logger.debug('Signal: receive poll exceeded safety timeout, reconnecting');
+          continue;
         }
         logger.error({ err: err.message }, 'Signal: poll request failed');
         await this.pollBackoff();
@@ -161,19 +193,40 @@ export class SignalChannel extends BaseChannel {
 
   private async pollBackoff(): Promise<void> {
     if (!this.shouldReconnect) return;
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error('Signal: max reconnect attempts reached, giving up');
-      this.polling = false;
-      return;
-    }
 
+    // Exponential backoff capped at 60s. We retry indefinitely — losing the
+    // connection should degrade latency, never permanently silence the channel.
     const delay = Math.min(
-      this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts),
+      this.baseReconnectDelay * Math.pow(2, Math.min(this.reconnectAttempts, 5)),
       60_000,
     );
     this.reconnectAttempts++;
-    logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: backing off before next poll');
-    await new Promise((r) => setTimeout(r, delay));
+
+    if (this.reconnectAttempts <= this.reconnectLogThreshold) {
+      logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: backing off before next poll');
+    } else if (Date.now() - this.lastReconnectWarn > 5 * 60_000) {
+      this.lastReconnectWarn = Date.now();
+      logger.warn(
+        { attempt: this.reconnectAttempts, delayMs: delay },
+        'Signal: still retrying receive connection after extended outage',
+      );
+    }
+
+    // Interruptible sleep: stop() rejects this so shutdown never waits out a 60s delay.
+    await new Promise<void>((resolve, reject) => {
+      this.reconnectTimerReject = () => {
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        reject(new Error('reconnect-aborted'));
+      };
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.reconnectTimerReject = null;
+        resolve();
+      }, delay);
+    }).catch(() => {
+      // Aborted by stop(); the poll loop's while-condition will exit cleanly.
+    });
   }
 
   // ─── Incoming Message Handling ──────────────────────────────
