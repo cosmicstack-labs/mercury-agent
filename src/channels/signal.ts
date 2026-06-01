@@ -299,7 +299,7 @@ export class SignalChannel extends BaseChannel {
       return;
     }
 
-    if (command === '/status') {
+    if (command === '/access') {
       const summary = getSignalAccessSummary(this.config);
       this.sendToGroup(`Signal access: ${summary}`);
       return;

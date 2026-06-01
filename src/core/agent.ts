@@ -26,7 +26,7 @@ import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
-import { getTelegramHelp } from '../utils/manual.js';
+import { getTelegramHelp, getSignalHelp } from '../utils/manual.js';
 import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
@@ -2406,7 +2406,11 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/help') {
-      const helpText = channelType === 'telegram' ? getTelegramHelp() : ctx.manual();
+      const helpText = channelType === 'telegram'
+        ? getTelegramHelp()
+        : channelType === 'signal'
+          ? getSignalHelp()
+          : ctx.manual();
       await channel.send(helpText, channelId);
       return true;
     }
