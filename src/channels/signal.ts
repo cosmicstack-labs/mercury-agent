@@ -25,15 +25,6 @@ const SEND_TIMEOUT_MS = 20_000;
 const SEND_MAX_ATTEMPTS = 3;
 const INTER_MESSAGE_DELAY_MS = 350;
 
-// How long the server holds an empty /v1/receive request open before returning
-// (true long-poll). The client adds a safety margin on top so a wedged TCP
-// connection can't hang the loop forever.
-const RECEIVE_TIMEOUT_SEC = 30;
-const RECEIVE_SAFETY_MS = (RECEIVE_TIMEOUT_SEC + 15) * 1000;
-// Guard against signal-cli builds that ignore ?timeout= and return instantly:
-// a tiny sleep prevents a hot reconnect loop in that degraded case.
-const IDLE_GUARD_MS = 250;
-
 type PendingReply = {
   resolve: (value: string) => void;
   timeout: NodeJS.Timeout;
@@ -41,15 +32,13 @@ type PendingReply = {
 
 export class SignalChannel extends BaseChannel {
   readonly type = 'signal' as const;
-  private pollController: AbortController | null = null;
-  private polling = false;
-  // Receive transport: json-rpc mode exposes /v1/receive as a WebSocket and
-  // delivers in real time; normal/native mode uses an HTTP long-poll. We detect
-  // which at start() via /v1/about and pick the matching loop.
-  private receiveMode: 'websocket' | 'longpoll' = 'longpoll';
+  private running = false;
+  // Receive transport: we require the signal-cli-rest-api container to run in
+  // "json-rpc" mode, which exposes /v1/receive as a WebSocket and delivers
+  // messages in real time over a single persistent connection. We verify the
+  // mode at start() via /v1/about and refuse to start otherwise.
   private ws: WebSocket | null = null;
-  // Serialise envelope handling so WS messages are processed in arrival order,
-  // matching the sequential behaviour of the HTTP long-poll path.
+  // Serialise envelope handling so WS messages are processed in arrival order.
   private handleChain: Promise<void> = Promise.resolve();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectTimerReject: (() => void) | null = null;
@@ -82,7 +71,7 @@ export class SignalChannel extends BaseChannel {
   // ─── Lifecycle ───────────────────────────────────────────────
 
   async start(): Promise<void> {
-    if (this.polling) return;
+    if (this.running) return;
 
     const { apiUrl, number } = this.config.channels.signal;
     if (!apiUrl || !number) {
@@ -90,42 +79,46 @@ export class SignalChannel extends BaseChannel {
       return;
     }
 
-    this.shouldReconnect = true;
-    this.receiveMode = await this.detectReceiveMode(apiUrl);
-    if (this.receiveMode === 'websocket') {
-      this.startWebSocket();
-    } else {
-      this.startPolling();
+    // Mercury requires json-rpc mode. Verify it up front and refuse to start on
+    // anything else — silently degrading would only hide a misconfiguration.
+    const mode = await this.fetchApiMode(apiUrl);
+    if (mode !== 'json-rpc') {
+      logger.error(
+        { mode: mode ?? 'unknown' },
+        'Signal: signal-cli-rest-api must run in json-rpc mode (real-time WebSocket receive). ' +
+          'Recreate the container with: -e MODE=json-rpc. Signal channel NOT started.',
+      );
+      this.ready = false;
+      return;
     }
+
+    this.shouldReconnect = true;
+    this.startWebSocket();
   }
 
   /**
-   * signal-cli-rest-api runs in one of two modes. In "json-rpc" mode a single
-   * persistent signal-cli daemon streams messages over a WebSocket at
-   * /v1/receive — real time, no per-call config-file lock. In "normal"/"native"
-   * mode each request spawns a fresh signal-cli that holds a lock, so we fall
-   * back to HTTP long-poll. /v1/about reports the active mode.
+   * Reads the active container mode from /v1/about. We only support "json-rpc":
+   * a single persistent signal-cli daemon streams messages over a WebSocket at
+   * /v1/receive — real time, with no per-call config-file lock. "normal"/"native"
+   * mode spawns a fresh signal-cli per request and holds a lock, which serialises
+   * receive against send and causes pairing/throughput stalls.
    */
-  private async detectReceiveMode(apiUrl: string): Promise<'websocket' | 'longpoll'> {
+  private async fetchApiMode(apiUrl: string): Promise<string | null> {
     try {
       const res = await fetch(`${apiUrl}/v1/about`, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const about = (await res.json()) as { mode?: string };
-        if (about?.mode === 'json-rpc') return 'websocket';
+        return about?.mode ?? null;
       }
     } catch (err: any) {
-      logger.debug({ err: err?.message }, 'Signal: could not read /v1/about, defaulting to long-poll');
+      logger.debug({ err: err?.message }, 'Signal: could not read /v1/about');
     }
-    return 'longpoll';
+    return null;
   }
 
   async stop(): Promise<void> {
     this.shouldReconnect = false;
-    this.polling = false;
-    if (this.pollController) {
-      this.pollController.abort();
-      this.pollController = null;
-    }
+    this.running = false;
     if (this.ws) {
       try { this.ws.close(); } catch { /* already closing */ }
       this.ws = null;
@@ -145,8 +138,8 @@ export class SignalChannel extends BaseChannel {
   // ─── WebSocket receive (json-rpc mode) ───────────────────────
 
   private startWebSocket(): void {
-    if (this.polling) return;
-    this.polling = true;
+    if (this.running) return;
+    this.running = true;
     this.ready = true;
     this.reconnectAttempts = 0;
     logger.info('Signal: starting WebSocket receive loop (json-rpc mode)');
@@ -158,7 +151,7 @@ export class SignalChannel extends BaseChannel {
     // http(s)://host -> ws(s)://host, same /v1/receive path.
     const wsUrl = `${apiUrl.replace(/^http/, 'ws')}/v1/receive/${encodeURIComponent(number)}`;
 
-    while (this.polling && this.shouldReconnect) {
+    while (this.running && this.shouldReconnect) {
       try {
         await this.runWebSocketOnce(wsUrl);
       } catch (err: any) {
@@ -166,11 +159,12 @@ export class SignalChannel extends BaseChannel {
       }
       if (!this.shouldReconnect) break;
       // Connection dropped (server restart, network blip). Back off and retry
-      // indefinitely, exactly like the long-poll path.
-      await this.pollBackoff();
+      // indefinitely — losing the socket should degrade latency, never
+      // permanently silence the channel.
+      await this.reconnectBackoff();
     }
 
-    this.polling = false;
+    this.running = false;
     this.ready = false;
   }
 
@@ -219,80 +213,9 @@ export class SignalChannel extends BaseChannel {
     });
   }
 
-  // ─── HTTP long-poll receive (normal/native mode) ─────────────
+  // ─── Reconnect backoff ───────────────────────────────────────
 
-  private startPolling(): void {
-    if (this.polling) return;
-    this.polling = true;
-    this.ready = true;
-    this.reconnectAttempts = 0;
-    logger.info({ timeoutSec: RECEIVE_TIMEOUT_SEC }, 'Signal: starting HTTP long-poll receive loop');
-    this.pollLoop();
-  }
-
-  private async pollLoop(): Promise<void> {
-    const { apiUrl, number } = this.config.channels.signal;
-    // Server-side long-poll: the API holds the request open up to RECEIVE_TIMEOUT_SEC
-    // seconds and returns [] if nothing arrives, instead of returning immediately.
-    const receiveUrl = `${apiUrl}/v1/receive/${encodeURIComponent(number)}?timeout=${RECEIVE_TIMEOUT_SEC}`;
-
-    while (this.polling && this.shouldReconnect) {
-      this.pollController = new AbortController();
-      // Combine the stop() abort with a client-side safety timeout so a hung
-      // connection (server never responds) is torn down and retried.
-      const safety = AbortSignal.timeout(RECEIVE_SAFETY_MS);
-      const signal = AbortSignal.any([this.pollController.signal, safety]);
-      try {
-        const response = await fetch(receiveUrl, {
-          signal,
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (!response.ok) {
-          logger.warn({ status: response.status }, 'Signal: receive poll returned error');
-          await this.pollBackoff();
-          continue;
-        }
-
-        const envelopes = await response.json() as any[];
-        this.reconnectAttempts = 0; // Reset on success
-
-        if (Array.isArray(envelopes)) {
-          for (const envelope of envelopes) {
-            try {
-              await this.handleEnvelope(envelope);
-            } catch (err: any) {
-              logger.warn({ err: err.message }, 'Signal: error handling envelope');
-            }
-          }
-        }
-
-        // With a working long-poll the server already blocked for us. Only pause
-        // briefly for builds that ignore ?timeout= and return instantly when empty.
-        if (!envelopes || envelopes.length === 0) {
-          await new Promise((r) => setTimeout(r, IDLE_GUARD_MS));
-        }
-      } catch (err: any) {
-        if (err.name === 'AbortError' || err.name === 'TimeoutError') {
-          if (!this.shouldReconnect) {
-            // Intentional abort (stop() called) — leave the loop.
-            break;
-          }
-          // Safety timeout fired on a wedged connection: reconnect immediately
-          // without backoff, since this isn't a server/network failure.
-          logger.debug('Signal: receive poll exceeded safety timeout, reconnecting');
-          continue;
-        }
-        logger.error({ err: err.message }, 'Signal: poll request failed');
-        await this.pollBackoff();
-      }
-    }
-
-    this.polling = false;
-    this.ready = false;
-  }
-
-  private async pollBackoff(): Promise<void> {
+  private async reconnectBackoff(): Promise<void> {
     if (!this.shouldReconnect) return;
 
     // Exponential backoff capped at 60s. We retry indefinitely — losing the
@@ -304,7 +227,7 @@ export class SignalChannel extends BaseChannel {
     this.reconnectAttempts++;
 
     if (this.reconnectAttempts <= this.reconnectLogThreshold) {
-      logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: backing off before next poll');
+      logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Signal: backing off before reconnect');
     } else if (Date.now() - this.lastReconnectWarn > 5 * 60_000) {
       this.lastReconnectWarn = Date.now();
       logger.warn(

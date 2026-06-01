@@ -666,7 +666,7 @@ async function testSignalConnection(apiUrl: string, number: string): Promise<{ o
   }
 }
 
-async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstalled: boolean; containerRunning: boolean; apiReachable: boolean; accounts: string[]; detectedUrl?: string; containerName?: string; error?: string }> {
+async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstalled: boolean; containerRunning: boolean; apiReachable: boolean; accounts: string[]; mode?: string; detectedUrl?: string; containerName?: string; error?: string }> {
   // Check if Docker is installed
   let dockerInstalled = false;
   let detectedUrl: string | undefined;
@@ -681,6 +681,7 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
   let containerRunning = false;
   let apiReachable = false;
   let accounts: string[] = [];
+  let mode: string | undefined;
 
   try {
     const response = await fetch(`${apiUrl}/v1/about`, {
@@ -689,6 +690,9 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
     if (response.ok) {
       containerRunning = true;
       apiReachable = true;
+      try {
+        mode = ((await response.json()) as { mode?: string })?.mode;
+      } catch { /* ignore unparsable /v1/about */ }
     }
   } catch { /* not reachable */ }
 
@@ -743,6 +747,9 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
           });
           if (response.ok) {
             apiReachable = true;
+            try {
+              mode = ((await response.json()) as { mode?: string })?.mode;
+            } catch { /* ignore unparsable /v1/about */ }
           }
         } catch { /* not reachable at detected URL either */ }
       }
@@ -761,7 +768,7 @@ async function checkSignalPrerequisites(apiUrl: string): Promise<{ dockerInstall
     } catch { /* ignore */ }
   }
 
-  return { dockerInstalled, containerRunning, apiReachable, accounts, detectedUrl: detectedUrl !== apiUrl ? detectedUrl : undefined, containerName };
+  return { dockerInstalled, containerRunning, apiReachable, accounts, mode, detectedUrl: detectedUrl !== apiUrl ? detectedUrl : undefined, containerName };
 }
 
 /** Extract host port from Docker port mapping string like "0.0.0.0:8080->8080/tcp" */
@@ -964,7 +971,7 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       console.log(chalk.white('       docker run -d --name signal-api --restart=always \\'));
       console.log(chalk.white('         -p 8080:8080 \\'));
       console.log(chalk.white('         -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-      console.log(chalk.white('         -e MODE=normal \\'));
+      console.log(chalk.white('         -e MODE=json-rpc \\'));
       console.log(chalk.white('         bbernhard/signal-cli-rest-api'));
       console.log('');
       console.log(chalk.dim(`    3. Link your Signal number by opening in browser:`));
@@ -980,7 +987,7 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
       console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
       console.log(chalk.white('      -p 8080:8080 \\'));
       console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-      console.log(chalk.white('      -e MODE=normal \\'));
+      console.log(chalk.white('      -e MODE=json-rpc \\'));
       console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
       console.log('');
       console.log(chalk.dim(`  Then link your Signal number:`));
@@ -1011,6 +1018,27 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
   console.log(chalk.bold.white('  Signal Pairing'));
   console.log(chalk.green('  ✓ signal-cli-rest-api is running'));
   console.log(chalk.green(`  ✓ Number ${number} is linked`));
+
+  // Mercury requires json-rpc mode for real-time WebSocket receive. Any other
+  // mode (normal/native) will start but never deliver messages, so stop here
+  // with a precise fix instead of letting the daemon fail silently later.
+  if (prereqs.mode && prereqs.mode !== 'json-rpc') {
+    console.log(chalk.red(`  ✗ Container is in "${prereqs.mode}" mode — Mercury requires json-rpc mode.`));
+    console.log('');
+    console.log(chalk.dim('  Recreate the signal-cli-rest-api container in json-rpc mode'));
+    console.log(chalk.dim('  (your linked number and data are preserved in the volume):'));
+    console.log('');
+    console.log(chalk.white('    docker rm -f signal-api'));
+    console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
+    console.log(chalk.white('      -p 8080:8080 \\'));
+    console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
+    console.log(chalk.white('      -e MODE=json-rpc \\'));
+    console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
+    console.log('');
+    console.log(chalk.dim('  Then run: mercury doctor'));
+    console.log('');
+    return;
+  }
   console.log('');
 
   // Check if group is already configured
@@ -1752,7 +1780,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           console.log(chalk.white('    docker run -d --name signal-api --restart=always \\'));
           console.log(chalk.white('      -p 8080:8080 \\'));
           console.log(chalk.white('      -v ~/.signal-api:/home/.local/share/signal-cli \\'));
-          console.log(chalk.white('      -e MODE=normal \\'));
+          console.log(chalk.white('      -e MODE=json-rpc \\'));
           console.log(chalk.white('      bbernhard/signal-cli-rest-api'));
           console.log('');
           const proceed = await ask(chalk.white('  Enable Signal anyway (configure later)? (y/N): '));
