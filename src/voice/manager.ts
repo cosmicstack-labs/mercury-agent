@@ -425,7 +425,17 @@ export class VoiceManager extends EventEmitter {
 
   private async ensurePlayback(sampleRate: number): Promise<PlaybackSink> {
     if (!this.backend) throw new Error('No audio backend');
-    if (this.playback && this.playbackSampleRate === sampleRate) {
+    // Cached sink is only reusable if (a) the sample rate matches and
+    // (b) the underlying process is still alive. After drain() returns,
+    // ffplay/ffmpeg have exited cleanly — the sink object is still in
+    // memory but writes to its stdin would be dropped. Without this
+    // isAlive() check, only the FIRST utterance ever plays; every
+    // subsequent reply goes to a closed pipe and produces silence.
+    if (
+      this.playback &&
+      this.playbackSampleRate === sampleRate &&
+      this.playback.isAlive()
+    ) {
       return this.playback;
     }
     if (this.playback) {

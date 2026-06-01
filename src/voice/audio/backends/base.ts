@@ -24,6 +24,15 @@ export interface PlaybackSink {
   flush(): Promise<void>;
   /** Release resources. Must be idempotent. */
   close(): Promise<void>;
+  /**
+   * True when the underlying playback process/stream is still usable
+   * for new writes. False once it has exited, errored, or been closed.
+   * Callers should re-init the sink when this returns false — otherwise
+   * subsequent writes silently disappear (this was the second-message
+   * TTS bug: ffplay exits after drain(), the cached sink reads back as
+   * "dead", and any further frames go to a closed pipe).
+   */
+  isAlive(): boolean;
 }
 
 /** Source of incoming audio (STT capture). */

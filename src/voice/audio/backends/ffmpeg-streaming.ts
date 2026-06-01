@@ -253,6 +253,20 @@ class FfmpegPlaybackSink implements PlaybackSink {
     this.closed = true;
     await killProcess(this.proc);
   }
+
+  isAlive(): boolean {
+    // Dead once closed by caller, the child process has exited, or the
+    // child's stdin has been destroyed (which happens after drain()
+    // calls stdin.end() and ffplay reaches EOF). The cached sink in
+    // VoiceManager.ensurePlayback must check this and re-init —
+    // otherwise the second utterance writes to a closed pipe and the
+    // user hears nothing on every reply past the first.
+    if (this.closed || this.exited) return false;
+    const stdin = this.proc.stdin;
+    if (!stdin || stdin.destroyed || (stdin as any).writableEnded) return false;
+    if (this.proc.exitCode !== null) return false;
+    return true;
+  }
 }
 
 /* ── Recording source ─────────────────────────────────────────────────── */

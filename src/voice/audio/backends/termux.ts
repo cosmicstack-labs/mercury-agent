@@ -129,6 +129,14 @@ class TermuxPlaybackSink implements PlaybackSink {
     this.closed = true;
     await this.flush();
   }
+
+  isAlive(): boolean {
+    // Termux playback is fire-and-forget per write() — there's no
+    // long-lived child to outlive. Consider the sink alive until
+    // explicitly closed; ensurePlayback() will re-init on the next
+    // write anyway since each utterance spawns a fresh play-audio call.
+    return !this.closed;
+  }
 }
 
 /* ── Recording ─────────────────────────────────────────────────────── */
