@@ -52,8 +52,43 @@ export function stripMarkdownForTTS(input: string): string {
   // Leading list bullets / heading markers.
   out = out.replace(/^[\s>]*([*\-+]|\d+\.)\s+/gm, '');
   out = out.replace(/^#+\s+/gm, '');
-  // Collapse repeated whitespace.
+
+  // Markdown tables — without this, every `|` was read as the literal
+  // word "vertical bar" by Cartesia, and table-separator rows like
+  // `|---|---|---|` came out as a long string of "dash, dash, dash".
+  //   1. Drop whole separator rows (only pipes, dashes, colons, spaces).
+  //   2. Strip leading/trailing pipes on each line so we don't get
+  //      "vertical bar" at row boundaries.
+  //   3. Convert remaining internal pipes to ", " so cells read as a
+  //      natural list rather than running together.
+  out = out.replace(/^\s*\|?[\s\-:|]+\|?\s*$/gm, '');
+  out = out.replace(/^\s*\|/gm, '');
+  out = out.replace(/\|\s*$/gm, '');
+  out = out.replace(/\s*\|\s*/g, ', ');
+
+  // Box-drawing characters from ASCII art / nested CLI output tables.
+  out = out.replace(/[\u2500-\u257F\u2580-\u259F]/g, ' ');
+
+  // Long horizontal rules ("---", "***", "===" of >=3 chars on a line)
+  // would otherwise be read as "dash dash dash …".
+  out = out.replace(/^\s*[-*=]{3,}\s*$/gm, '');
+
+  // Markdown blockquote leader.
+  out = out.replace(/^\s*>\s?/gm, '');
+
+  // Backslash escapes -> drop the backslash, keep the char.
+  out = out.replace(/\\([\\`*_{}\[\]()#+\-.!|>])/g, '$1');
+
+  // Collapse repeated whitespace and punctuation runs introduced by the
+  // strips above (e.g. ", , ," after empty cells).
+  out = out.replace(/(,\s*){2,}/g, ', ');
   out = out.replace(/[ \t]+/g, ' ');
+  // Trim each line and drop blank lines that became blank after stripping.
+  out = out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l, i, arr) => l !== '' || (i > 0 && arr[i - 1] !== ''))
+    .join('\n');
   return out;
 }
 
