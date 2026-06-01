@@ -777,6 +777,73 @@ function extractHostPort(portsStr: string | undefined): string | undefined {
   return undefined;
 }
 
+type SignalLinkStatus = {
+  /** signal-cli-rest-api responded to /v1/about */
+  apiReachable: boolean;
+  /** the configured number is present in /v1/accounts (a live linked device) */
+  linked: boolean;
+  /** all numbers currently linked in the container */
+  accounts: string[];
+  /** the API was found at a different URL than the one configured */
+  detectedUrl?: string;
+};
+
+/**
+ * Determine whether a specific Signal number is actually linked, not just
+ * whether the API is reachable. A user can remove Mercury's linked device from
+ * their phone at any time; when that happens signal-cli-rest-api keeps running
+ * (API reachable) but the number drops out of /v1/accounts. This distinguishes
+ * "reachable" from "linked" so the doctor can tell the user to relink.
+ */
+async function checkSignalLinkStatus(apiUrl: string, number: string): Promise<SignalLinkStatus> {
+  const prereqs = await checkSignalPrerequisites(apiUrl);
+  if (!prereqs.apiReachable) {
+    return { apiReachable: false, linked: false, accounts: [], detectedUrl: prereqs.detectedUrl };
+  }
+  return {
+    apiReachable: true,
+    linked: !!number && prereqs.accounts.includes(number),
+    accounts: prereqs.accounts,
+    detectedUrl: prereqs.detectedUrl,
+  };
+}
+
+/** Print step-by-step instructions for linking Signal as a device. */
+function printSignalLinkInstructions(apiUrl: string, deviceName = 'mercury'): void {
+  console.log(chalk.dim('  To (re)link your Signal account as a Mercury device:'));
+  console.log(chalk.dim('    1. Open this URL in a browser to display the linking QR code:'));
+  console.log(chalk.white(`       ${apiUrl}/v1/qrcodelink?device_name=${deviceName}`));
+  console.log(chalk.dim('    2. On your phone: Signal → Settings → Linked Devices'));
+  console.log(chalk.dim('    3. Tap "Link New Device" (the + button) and scan the QR code'));
+}
+
+/**
+ * Poll /v1/accounts until the given number appears (i.e. the user finished
+ * scanning the QR code), or the timeout elapses. Returns the linked number on
+ * success so callers can pick up a freshly linked account.
+ */
+async function waitForSignalLink(
+  apiUrl: string,
+  number: string,
+  timeoutMs = 120_000,
+): Promise<{ linked: boolean; number?: string }> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const res = await fetch(`${apiUrl}/v1/accounts`, { signal: AbortSignal.timeout(5_000) });
+      if (!res.ok) continue;
+      const accounts = (await res.json()) as string[];
+      if (number && accounts.includes(number)) return { linked: true, number };
+      // The user may have linked a different number than the one configured.
+      if (accounts.length > 0) return { linked: true, number: accounts[0] };
+    } catch {
+      /* container may briefly hiccup while linking; keep polling */
+    }
+  }
+  return { linked: false };
+}
+
 async function completeInitialSignalPairing(config: MercuryConfig): Promise<void> {
   if (!config.channels.signal.enabled || !config.channels.signal.apiUrl || !config.channels.signal.number || hasSignalAdmins(config)) {
     return;
@@ -1462,6 +1529,74 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
   console.log('');
 
+  // ── Link-status check ───────────────────────────────────────────────
+  // Before re-prompting, find out whether an already-configured number is
+  // still a live linked device. The API can be reachable while the number is
+  // unlinked (the user removed Mercury's device from their phone). In that
+  // case we must say so plainly and offer to relink, instead of silently
+  // accepting stale config.
+  let signalResolved = false;
+  const existingNumber = config.channels.signal.number;
+  const existingUrl = config.channels.signal.apiUrl;
+  if (existingNumber && existingUrl) {
+    const status = await checkSignalLinkStatus(existingUrl, existingNumber);
+    const effectiveUrl = status.detectedUrl || existingUrl;
+    if (status.detectedUrl && status.detectedUrl !== existingUrl) {
+      config.channels.signal.apiUrl = status.detectedUrl;
+    }
+
+    if (status.linked) {
+      console.log(chalk.green(`  ✓ Signal account ${existingNumber} is linked at ${effectiveUrl}`));
+      config.channels.signal.enabled = true;
+      signalResolved = true;
+      if (isReconfig) {
+        // Let a reconfiguring user still change the URL/number if they want to.
+        const keep = await ask(chalk.white('  Keep this Signal setup? (Y/n): '));
+        if (keep.toLowerCase() === 'n') signalResolved = false;
+      }
+    } else if (status.apiReachable) {
+      // The key scenario: API up, but this number is no longer a linked device.
+      console.log(chalk.yellow(`  ⚠ Signal account ${existingNumber} is NOT linked.`));
+      console.log(chalk.dim(`  signal-cli-rest-api at ${effectiveUrl} is running, but this number is`));
+      console.log(chalk.dim('  no longer a linked device — it was removed/unlinked in the Signal app.'));
+      if (status.accounts.length > 0) {
+        console.log(chalk.dim(`  Currently linked here: ${status.accounts.join(', ')}`));
+      }
+      console.log('');
+      const relink = await ask(chalk.white('  Relink this Signal account now? (Y/n): '));
+      if (relink.toLowerCase() !== 'n') {
+        console.log('');
+        printSignalLinkInstructions(effectiveUrl);
+        console.log('');
+        console.log(chalk.dim(`  Waiting for ${existingNumber} to be relinked (up to 2 min)...`));
+        const result = await waitForSignalLink(effectiveUrl, existingNumber);
+        if (result.linked) {
+          if (result.number && result.number !== existingNumber) {
+            config.channels.signal.number = result.number;
+            console.log(chalk.green(`  ✓ Signal account ${result.number} is now linked.`));
+          } else {
+            console.log(chalk.green(`  ✓ Signal account ${existingNumber} is now linked.`));
+          }
+          config.channels.signal.enabled = true;
+          signalResolved = true;
+        } else {
+          console.log(chalk.yellow('  ⚠ Still not linked. Relink later, then run `mercury doctor` again.'));
+          console.log(chalk.dim('  Signal will stay disabled until the device is relinked.'));
+          config.channels.signal.enabled = false;
+          signalResolved = true;
+        }
+      } else {
+        console.log(chalk.dim('  Skipped relinking. Signal will not work until the device is relinked.'));
+        config.channels.signal.enabled = false;
+        signalResolved = true;
+      }
+    }
+    // If not reachable, fall through to the normal flow below, which already
+    // diagnoses Docker/container problems and offers to reconfigure the URL.
+    console.log('');
+  }
+
+  if (!signalResolved) {
   // Auto-detect: try default localhost:8080 first
   const defaultApiUrl = config.channels.signal.apiUrl || 'http://localhost:8080';
   const prereqCheck = await checkSignalPrerequisites(defaultApiUrl);
@@ -1585,6 +1720,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
       }
     }
   }
+  } // end if (!signalResolved)
 
   await completeInitialSignalPairing(config);
 
@@ -3067,11 +3203,20 @@ signalCmd
       console.log(`  Container: ${prereqs.containerRunning ? chalk.green('running') : chalk.red('not running')}`);
       if (prereqs.apiReachable) {
         console.log(`  API:       ${chalk.green('reachable')}`);
-        if (prereqs.accounts.length > 0) {
-          const linked = prereqs.accounts.includes(config.channels.signal.number) ? chalk.green('yes') : chalk.red('no');
-          console.log(`  Number linked: ${linked}`);
+        const effectiveUrl = prereqs.detectedUrl || config.channels.signal.apiUrl;
+        const isLinked = prereqs.accounts.length > 0 && prereqs.accounts.includes(config.channels.signal.number);
+        if (isLinked) {
+          console.log(`  Number linked: ${chalk.green('yes')}`);
+        } else if (prereqs.accounts.length > 0) {
+          console.log(`  Number linked: ${chalk.red('no')} ${chalk.dim(`(linked here: ${prereqs.accounts.join(', ')})`)}`);
         } else {
-          console.log(`  Number linked: ${chalk.red('no accounts found')}`);
+          console.log(`  Number linked: ${chalk.red('no accounts linked')}`);
+        }
+        if (!isLinked) {
+          console.log('');
+          console.log(chalk.yellow('  ⚠ This number is not a linked device. Signal will not work until you relink.'));
+          printSignalLinkInstructions(effectiveUrl);
+          console.log(chalk.dim('  Then run `mercury doctor` to finish setup.'));
         }
       } else {
         console.log(`  API:       ${chalk.red('not reachable')}`);
