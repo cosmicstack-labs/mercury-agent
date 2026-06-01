@@ -1625,8 +1625,15 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     }
   } else {
     const signalApiMask = isReconfig && config.channels.signal.apiUrl ? ` [${config.channels.signal.apiUrl}]` : '';
-    const signalApiUrl = await ask(chalk.white(`  Signal API URL (e.g. http://localhost:8080)${signalApiMask}: `));
-    if (isReconfig && signalApiUrl.toLowerCase() === 'none') {
+    const signalApiInput = await ask(chalk.white(`  Signal API URL (e.g. http://localhost:8080)${signalApiMask}: `));
+    const isNone = signalApiInput.toLowerCase() === 'none';
+    // "none" disables Signal. Empty input keeps the already-stored URL (during
+    // reconfig) and proceeds into Signal setup instead of silently exiting the
+    // step. In a fresh setup with nothing stored, empty still means "skip".
+    const signalApiUrl = isNone
+      ? ''
+      : (signalApiInput || (isReconfig ? config.channels.signal.apiUrl : ''));
+    if (isNone) {
       config.channels.signal.enabled = false;
       config.channels.signal.apiUrl = '';
       config.channels.signal.number = '';
