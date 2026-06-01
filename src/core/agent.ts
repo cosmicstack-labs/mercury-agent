@@ -3774,6 +3774,58 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
+      // End-to-end TTS smoke test. Synthesizes a fixed sentence and
+      // reports the exact failure point in chat so users don't have
+      // to dig through logs to understand why audio isn't reaching
+      // the speaker. This is the single most useful command when
+      // diagnosing "why isn't it speaking" — it walks the same code
+      // path as a real reply but with a known input and visible
+      // error reporting.
+      if (sub === 'test' || sub === 'test tts') {
+        const { pickReadyTTS } = await import('../voice/tts/registry.js');
+        const { detectBackend } = await import('../voice/audio/backends/detector.js');
+        const status = voice.getStatus();
+        const lines: string[] = ['**Voice TTS self-test**', ''];
+        lines.push(`manager state:   \`${status.state}\``);
+        if (status.lastError) lines.push(`last error:      \`${status.lastError}\``);
+        const cfg = ctx.config();
+        const autoSpeak = cfg.voice?.tts?.autoSpeakReplies !== false;
+        lines.push(`auto-speak:      \`${autoSpeak ? 'on' : 'off (explicit)'}\``);
+
+        const det = await detectBackend();
+        lines.push(`audio backend:   \`${det.backend?.name ?? 'NONE — ' + (det.reason ?? 'unknown')}\``);
+
+        const tts = await pickReadyTTS();
+        lines.push(`TTS provider:    \`${tts ? tts.name : 'NONE — no provider passed readiness probe'}\``);
+        if (!tts) {
+          lines.push('', 'Likely cause: missing API key.');
+          lines.push('  • Cartesia: set `CARTESIA_API_KEY` env var, or run `mercury doctor --voice`.');
+          lines.push('  • OpenAI:   set `OPENAI_API_KEY` env var, or sign in with ChatGPT.');
+          await channel.send(lines.join('\n'), channelId);
+          return true;
+        }
+        if (status.state !== 'ready' && status.state !== 'speaking') {
+          lines.push('', `Cannot speak: manager state is \`${status.state}\`. Try \`/voice on\`.`);
+          await channel.send(lines.join('\n'), channelId);
+          return true;
+        }
+
+        lines.push('', 'Attempting to speak: _"Voice test. If you can hear this, TTS is working."_');
+        await channel.send(lines.join('\n'), channelId);
+
+        try {
+          async function* once(): AsyncIterable<string> {
+            yield 'Voice test. If you can hear this, TTS is working.';
+          }
+          await voice.speakStream(once());
+          await channel.send('✓ TTS pipeline completed without errors. If you still heard nothing, the audio backend (`' + (det.backend?.name ?? '?') + '`) accepted bytes but your system audio is muted/routed elsewhere. Check OS volume + output device.', channelId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await channel.send(`✗ TTS pipeline threw: \`${msg}\``, channelId);
+        }
+        return true;
+      }
+
       // Provider switching:
       //   /voice tts            → list TTS providers
       //   /voice tts <name>     → set TTS provider (e.g. cartesia, openai)
@@ -3919,7 +3971,7 @@ Is this productive iteration or a stuck loop?`,
       }
 
       await channel.send(
-        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt|autosubmit|autospeak]',
+        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt|autosubmit|autospeak|test]',
         channelId,
       );
       return true;

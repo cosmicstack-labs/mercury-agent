@@ -186,6 +186,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/voice autospeak',
     '/voice autospeak on',
     '/voice autospeak off',
+    '/voice test',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {
