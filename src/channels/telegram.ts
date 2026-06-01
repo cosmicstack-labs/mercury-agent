@@ -65,6 +65,14 @@ export class TelegramChannel extends BaseChannel {
     this.chatCommandContext = ctx;
   }
 
+  usesTaskBuffering(): boolean {
+    return true;
+  }
+
+  supportsStreaming(): boolean {
+    return true;
+  }
+
   /** Mark a task as active — routes send() through the status card */
   beginTask(targetId?: string): void {
     const key = targetId || 'notification';

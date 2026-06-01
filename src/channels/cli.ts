@@ -282,6 +282,10 @@ export class CLIChannel extends BaseChannel {
     this.startRawModeWatchdog();
   }
 
+  supportsStreaming(): boolean {
+    return true;
+  }
+
   async send(content: string, _targetId?: string, _elapsedMs?: number): Promise<void> {
     const msg: ChatMessage = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -295,7 +299,7 @@ export class CLIChannel extends BaseChannel {
     });
   }
 
-  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta): void {
+  sendCompletion(elapsedMs: number, stepCount: number, _targetId?: string, meta?: CompletionMeta): void {
     const secs = Math.floor(elapsedMs / 1000);
     const mins = Math.floor(secs / 60);
     const remSecs = secs % 60;

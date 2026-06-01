@@ -201,6 +201,10 @@ export class WebChannel extends BaseChannel {
     });
   }
 
+  supportsStreaming(): boolean {
+    return true;
+  }
+
   sendToolFeedback(toolName: string, args: Record<string, unknown>, targetId?: string): void {
     const channelId = targetId || 'default';
     const step = (this.stepCounter.get(channelId) || 0) + 1;

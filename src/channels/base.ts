@@ -1,4 +1,5 @@
 import type { ChannelType, ChannelMessage } from '../types/channel.js';
+import type { CompletionMeta } from '../ui/types.js';
 
 export type PermissionMode = 'allow-all' | 'ask-me';
 
@@ -14,6 +15,27 @@ export interface Channel {
   askPermissionMode?(): Promise<PermissionMode>;
   isReady(): boolean;
   onMessage(handler: (msg: ChannelMessage) => void): void;
+
+  // ─── Capability contract ────────────────────────────────────────────────
+  // Channels that buffer tool feedback into a single live status message
+  // (Telegram, Signal) return true; streaming-only channels (CLI, Web) false.
+  usesTaskBuffering(): boolean;
+  // Channels that can stream the model's text token-by-token (CLI, Web,
+  // Telegram) return true; text-only channels (Signal) return false.
+  supportsStreaming(): boolean;
+
+  // Task lifecycle — no-ops on channels that don't buffer.
+  beginTask(targetId?: string): void;
+  endTask(targetId?: string): void;
+  isTaskActive(targetId?: string): boolean;
+  resetStepCounter(targetId?: string): void;
+  popDeferredResponse(targetId?: string): string | undefined;
+  cleanupEphemeralMessages(targetId?: string): Promise<void>;
+
+  // Progress + completion rendering.
+  sendToolFeedback(toolName: string, args: Record<string, any>, targetId?: string): void | Promise<void>;
+  sendStepDone(toolName: string, result: unknown, targetId?: string): void | Promise<void>;
+  sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: CompletionMeta): void | Promise<void>;
 }
 
 export abstract class BaseChannel implements Channel {
@@ -40,4 +62,34 @@ export abstract class BaseChannel implements Channel {
   protected emit(message: ChannelMessage): void {
     this.messageHandler?.(message);
   }
+
+  // ─── Capability contract defaults (no-ops) ───────────────────────────────
+  usesTaskBuffering(): boolean {
+    return false;
+  }
+
+  supportsStreaming(): boolean {
+    return false;
+  }
+
+  beginTask(_targetId?: string): void {}
+  endTask(_targetId?: string): void {}
+
+  isTaskActive(_targetId?: string): boolean {
+    return false;
+  }
+
+  resetStepCounter(_targetId?: string): void {}
+
+  popDeferredResponse(_targetId?: string): string | undefined {
+    return undefined;
+  }
+
+  cleanupEphemeralMessages(_targetId?: string): Promise<void> {
+    return Promise.resolve();
+  }
+
+  sendToolFeedback(_toolName: string, _args: Record<string, any>, _targetId?: string): void | Promise<void> {}
+  sendStepDone(_toolName: string, _result: unknown, _targetId?: string): void | Promise<void> {}
+  sendCompletion(_elapsedMs: number, _stepCount: number, _targetId?: string, _meta?: CompletionMeta): void | Promise<void> {}
 }

@@ -602,6 +602,10 @@ export class SignalChannel extends BaseChannel {
 
   // ─── Task Progress (Telegram Parity) ───────────────────────
 
+  usesTaskBuffering(): boolean {
+    return true;
+  }
+
   beginTask(targetId?: string): void {
     const key = targetId || 'notification';
     this.taskActive.set(key, true);

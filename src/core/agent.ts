@@ -1146,12 +1146,11 @@ export class Agent {
         }
       }, MAX_FOREGROUND_WALL_MS);
 
-      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming);
+      const canStream = !!channel && channel.supportsStreaming() && (msg.channelType !== 'telegram' || this.telegramStreaming);
 
-      const tgChannel = this.channels.get('telegram');
-      if (msg.channelType === 'telegram' && tgChannel) {
-        (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
-        (tgChannel as TelegramChannel).beginTask(msg.channelId);
+      if (channel && channel.usesTaskBuffering() && msg.channelType !== 'internal') {
+        channel.resetStepCounter(msg.channelId);
+        channel.beginTask(msg.channelId);
       }
 
       for (const provider of fallbackIterator) {
@@ -1303,49 +1302,17 @@ export class Agent {
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
-                    if (channel instanceof CLIChannel) {
-                      for (const tc of toolCalls) {
-                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
-                          }
+                    for (const tc of toolCalls) {
+                      void Promise.resolve(channel.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId)).catch(() => {});
+                    }
+                    if (toolResults) {
+                      for (let i = 0; i < toolResults.length; i++) {
+                        const tr = toolResults[i] as any;
+                        const tcName = toolCalls[i]?.toolName as string | undefined;
+                        if (tcName) {
+                          await Promise.resolve(channel.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch(() => {});
                         }
                       }
-                    } else if (channel instanceof TelegramChannel) {
-                      const tgCh = channel as TelegramChannel;
-                      for (const tc of toolCalls) {
-                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch(() => {});
-                          }
-                        }
-                      }
-                    } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
-                          }
-                        }
-                      }
-                    } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
                     this.markProgress();
                   }
@@ -1546,49 +1513,17 @@ export class Agent {
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
-                    if (channel instanceof CLIChannel) {
-                      for (const tc of toolCalls) {
-                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch(() => {});
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
-                          }
+                    for (const tc of toolCalls) {
+                      void Promise.resolve(channel.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId)).catch(() => {});
+                    }
+                    if (toolResults) {
+                      for (let i = 0; i < toolResults.length; i++) {
+                        const tr = toolResults[i] as any;
+                        const tcName = toolCalls[i]?.toolName as string | undefined;
+                        if (tcName) {
+                          await Promise.resolve(channel.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch(() => {});
                         }
                       }
-                    } else if (channel instanceof TelegramChannel) {
-                      const tgCh = channel as TelegramChannel;
-                      for (const tc of toolCalls) {
-                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch(() => {});
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch(() => {});
-                          }
-                        }
-                      }
-                    } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
-                          }
-                        }
-                      }
-                    } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch(() => {});
                     }
                     this.markProgress();
                   }
@@ -1724,39 +1659,38 @@ export class Agent {
         // Send completion banner only for substantial tasks (3+ steps AND >30s)
         // Simple responses (greetings, quick answers) don't need a banner
         const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
-        if (isSubstantialTask && channel instanceof TelegramChannel) {
-          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
-          const completionMeta = {
-            provider: usedProvider?.name ?? 'unknown',
-            model: usedProvider?.model ?? 'unknown',
-            inputTokens: result.usage?.inputTokens ?? 0,
-            outputTokens: result.usage?.outputTokens ?? 0,
-            totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-            budgetUsed: this.tokenBudget.getDailyUsed(),
-            budgetTotal: this.tokenBudget.getBudget(),
-            budgetPercentage: this.tokenBudget.getUsagePercentage(),
-          };
-          // If there's a non-streamed response that wasn't deferred, defer it now
-          if (!streamedText && finalText && finalText.trim()) {
-            // send() during active task already deferred it — nothing to do
+        const completionMeta = {
+          provider: usedProvider?.name ?? 'unknown',
+          model: usedProvider?.model ?? 'unknown',
+          inputTokens: result.usage?.inputTokens ?? 0,
+          outputTokens: result.usage?.outputTokens ?? 0,
+          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          budgetUsed: this.tokenBudget.getDailyUsed(),
+          budgetTotal: this.tokenBudget.getBudget(),
+          budgetPercentage: this.tokenBudget.getUsagePercentage(),
+        };
+
+        if (channel.usesTaskBuffering()) {
+          // Buffering channels (Telegram, Signal): the live status card flow.
+          if (isSubstantialTask) {
+            // sendCompletion handles endTask + deferred flush + cleanup
+            await Promise.resolve(channel.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta));
+          } else {
+            // Non-substantial task: end task, flush deferred, clean up
+            channel.endTask(msg.channelId);
+            const deferred = channel.popDeferredResponse(msg.channelId);
+            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            if (responseText && responseText.trim()) {
+              await channel.send(responseText, msg.channelId, elapsed);
+            }
+            if (stepCount > 0) {
+              await channel.cleanupEphemeralMessages(msg.channelId);
+              channel.resetStepCounter(msg.channelId);
+            }
+            this.markProgress();
           }
-          await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-        } else if (channel instanceof TelegramChannel) {
-          // For non-substantial Telegram tasks: end task, flush deferred, clean up
-          (channel as TelegramChannel).endTask(msg.channelId);
-          // Flush deferred response
-          const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || (!streamedText && finalText ? finalText : null);
-          if (responseText && responseText.trim()) {
-            await channel.send(responseText, msg.channelId, elapsed);
-          }
-          if (stepCount > 0) {
-            await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
-            (channel as TelegramChannel).resetStepCounter(msg.channelId);
-          }
-          this.markProgress();
         } else {
-          // CLI or other channels — original flow
+          // CLI / Web / other streaming channels — original flow
           if (streamedText && streamedText.trim()) {
             logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
             // Web channel needs text_done after streaming to reset frontend state
@@ -1768,18 +1702,9 @@ export class Agent {
             await channel.send(finalText, msg.channelId, elapsed);
             this.markProgress();
           }
-          if (isSubstantialTask && channel instanceof CLIChannel) {
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+          if (isSubstantialTask) {
+            // No-op on channels without a completion banner (e.g. Web).
+            await Promise.resolve(channel.sendCompletion(elapsed, stepCount, undefined, completionMeta));
           }
         }
       } else {
