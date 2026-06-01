@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
+import { getVoiceManager } from '../voice/index.js';
+import { pickReadySTT } from '../voice/stt/registry.js';
+import { pickReadyTTS } from '../voice/tts/registry.js';
+import { findBinary } from '../voice/audio/system.js';
+import type { AudioChunk } from '../voice/types.js';
 import { autoRetry } from '@grammyjs/auto-retry';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
@@ -59,6 +67,21 @@ export class TelegramChannel extends BaseChannel {
   private statusNotices = new Map<string, string[]>();
   /** Maximum number of notice lines to show in the status card */
   private static readonly MAX_STATUS_NOTICES = 3;
+  /**
+   * Last user-input modality per chat. When set to 'voice' we mirror
+   * the modality on the way out (send both text + a voice note) so the
+   * user can listen-respond without ever leaving voice mode. The
+   * fallback to 'text' is intentional — if STT fails or the user types,
+   * we don't surprise them with TTS audio.
+   */
+  private chatModality = new Map<number, 'voice' | 'text'>();
+  /**
+   * Max Telegram voice note (sendVoice) is 50MB at the API level, but
+   * we cap synthesized audio well below that to avoid runaway TTS on
+   * pathological multi-page responses. ~2 minutes @ 22050Hz s16le ≈ 5MB
+   * raw PCM → ~250KB after Opus VOIP, which fits well within limits.
+   */
+  private static readonly MAX_TTS_PCM_BYTES = 5 * 1024 * 1024;
 
   constructor(private config: MercuryConfig) {
     super();
@@ -211,6 +234,74 @@ export class TelegramChannel extends BaseChannel {
       this.emit(msg);
     });
 
+    // Voice notes — Telegram delivers them as OGG/Opus. We download,
+    // transcode to 16kHz s16le mono PCM via ffmpeg, run the active STT
+    // provider once, then emit the transcribed text as if the user had
+    // typed it. The chat's modality flips to 'voice' so subsequent
+    // replies will also come back as voice notes (see send/stream).
+    bot.on('message:voice', async (ctx) => {
+      const chatId = ctx.chat.id;
+      const userId = ctx.from?.id;
+      if (!userId) return;
+
+      if (ctx.chat.type !== 'private') {
+        await this.sendDirectMessage(chatId, 'This bot is only available in private one-to-one chats.');
+        return;
+      }
+      const approvedUser = findTelegramApprovedUser(this.config, userId);
+      if (!approvedUser) {
+        await this.sendDirectMessage(chatId, 'This bot is not available to you. Send /start to request access.');
+        return;
+      }
+
+      this.lastActiveChatId = chatId;
+
+      const mgr = getVoiceManager();
+      if (mgr.getStatus().state === 'disabled') {
+        await this.sendDirectMessage(chatId, 'Voice is disabled on this Mercury instance. Send text instead, or ask the operator to enable it.');
+        return;
+      }
+
+      try {
+        const text = await this.transcribeVoiceMessage(ctx);
+        if (!text) {
+          await this.sendDirectMessage(chatId, '🎙 (could not transcribe — try again or send text)');
+          return;
+        }
+
+        // Flip modality BEFORE emitting so the downstream agent's reply
+        // path (which lands back in send/stream) knows to also speak.
+        this.chatModality.set(chatId, 'voice');
+
+        // Echo what we heard so the user can confirm transcription. Italic
+        // hint keeps it visually distinct from the model's reply.
+        await this.bot!.api.sendMessage(chatId, `🎙 <i>${escapeHtml(text)}</i>`, { parse_mode: 'HTML' }).catch(() => {});
+
+        if (!this.permissionModes.has(chatId) && this.onPermissionMode) {
+          this.askPermissionMode(`telegram:${chatId}`).then((mode) => {
+            this.permissionModes.set(chatId, mode);
+            if (this.onPermissionMode) this.onPermissionMode(mode, chatId);
+          }).catch(() => {});
+          this.permissionModes.set(chatId, 'ask-me');
+        }
+
+        const msg: ChannelMessage = {
+          id: ctx.message.message_id.toString(),
+          channelId: `telegram:${chatId}`,
+          channelType: 'telegram',
+          senderId: userId.toString(),
+          senderName: ctx.from?.first_name,
+          content: text,
+          timestamp: ctx.message.date * 1000,
+          metadata: { chatId, messageId: ctx.message.message_id, modality: 'voice' },
+        };
+        this.emit(msg);
+      } catch (err: any) {
+        logger.warn({ err: err?.message }, 'Telegram voice transcription failed');
+        await this.sendDirectMessage(chatId, `🎙 Voice transcription failed: ${err?.message ?? 'unknown error'}`);
+      }
+    });
+
     bot.on('callback_query:data', async (ctx) => {
       const data = ctx.callbackQuery.data;
       if (data.startsWith(`${ACCESS_ACTION_PREFIX}:`)) {
@@ -351,6 +442,10 @@ export class TelegramChannel extends BaseChannel {
           }
         }
       }
+      // Mirror modality: if the user spoke, also reply in voice. We do
+      // this best-effort (errors warn but don't fail send) and use the
+      // plain content (sans the appended timeSuffix) for TTS prosody.
+      await this.maybeSendVoiceReply(chatId, content);
     }
   }
 
@@ -418,6 +513,7 @@ export class TelegramChannel extends BaseChannel {
       } catch (err: any) {
         await this.bot.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
       }
+      await this.maybeSendVoiceReply(chatId, full);
     }
     return full;
   }
@@ -1636,4 +1732,202 @@ export class TelegramChannel extends BaseChannel {
     }
     return null;
   }
+
+  /* ── Voice helpers ───────────────────────────────────────────────── */
+
+  /**
+   * Download the incoming voice note, transcode to 16kHz s16le mono PCM,
+   * and run STT once over the resulting buffer. We pick the first ready
+   * STT provider (Cartesia, then OpenAI Whisper). Streaming STT is
+   * intentionally not used here — Telegram delivers a finalized OGG/Opus
+   * blob, so one-shot is both simpler and more accurate.
+   */
+  private async transcribeVoiceMessage(ctx: any): Promise<string> {
+    const ffmpeg = findBinary('ffmpeg');
+    if (!ffmpeg.path) throw new Error(`ffmpeg not found. ${ffmpeg.installHint}`);
+
+    const file = await ctx.getFile();
+    // grammy gives us a tmp `file_path` we can fetch from the Telegram CDN.
+    const url = `https://api.telegram.org/file/bot${(this as any).bot.token}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Telegram file download failed: HTTP ${res.status}`);
+    const oggBytes = Buffer.from(await res.arrayBuffer());
+
+    const tmpDir = mkdtempSync(path.join(tmpdir(), 'mercury-tg-stt-'));
+    const inputPath = path.join(tmpDir, 'voice.oga');
+    try {
+      writeFileSync(inputPath, oggBytes);
+      const pcm = await runFfmpegToPCM(ffmpeg.path!, inputPath);
+      const stt = await pickReadySTT();
+      if (!stt) throw new Error('No STT provider available');
+
+      const frame: AudioChunk = {
+        pcm,
+        sampleRate: 16000,
+        channels: 1,
+        timestamp: performance.now(),
+      };
+      const frames: AsyncIterable<AudioChunk> = (async function* () { yield frame; })();
+
+      let text = '';
+      for await (const delta of stt.transcribe(frames, { language: 'auto' })) {
+        if (delta.isFinal && delta.text) {
+          text = text ? `${text} ${delta.text}`.trim() : delta.text.trim();
+        }
+      }
+      return text;
+    } finally {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * If the last user input for this chat was a voice note, synthesize
+   * `text` via the active TTS chain, transcode the resulting PCM to
+   * OGG/Opus (Telegram's preferred voice-note format), and send it
+   * alongside the text. Errors warn but never throw — voice mirroring
+   * is a UX nicety, not a correctness requirement.
+   */
+  private async maybeSendVoiceReply(chatId: number, text: string): Promise<void> {
+    if (this.chatModality.get(chatId) !== 'voice') return;
+    if (!this.bot) return;
+
+    const clean = sanitizeForTTS(text);
+    if (!clean) return;
+
+    const mgr = getVoiceManager();
+    if (mgr.getStatus().state === 'disabled') return;
+
+    try {
+      const tts = await pickReadyTTS();
+      if (!tts) return;
+
+      // Stream the whole text as a single chunk; Cartesia handles
+      // sentence-level prosody internally when given a full paragraph.
+      const textIter: AsyncIterable<string> = (async function* () { yield clean; })();
+      const pcmChunks: Buffer[] = [];
+      let sampleRate = tts.capabilities.nativeSampleRate || 22050;
+      let total = 0;
+      for await (const frame of tts.synthesizeStream(textIter, {})) {
+        sampleRate = frame.sampleRate || sampleRate;
+        pcmChunks.push(Buffer.from(frame.pcm));
+        total += frame.pcm.byteLength;
+        if (total > TelegramChannel.MAX_TTS_PCM_BYTES) {
+          logger.warn({ chatId, total }, 'TTS output exceeded MAX_TTS_PCM_BYTES; truncating voice reply');
+          break;
+        }
+      }
+      if (total === 0) return;
+
+      const ffmpeg = findBinary('ffmpeg');
+      if (!ffmpeg.path) {
+        logger.warn(`ffmpeg not found, skipping voice reply. ${ffmpeg.installHint}`);
+        return;
+      }
+      const opusBytes = await encodePCMToOpusOgg(ffmpeg.path!, Buffer.concat(pcmChunks, total), sampleRate);
+
+      await this.bot.api.sendVoice(chatId, new InputFile(opusBytes, 'reply.ogg')).catch((err: any) => {
+        logger.warn({ err: err?.message, chatId }, 'Telegram sendVoice failed');
+      });
+    } catch (err: any) {
+      logger.warn({ err: err?.message, chatId }, 'Voice reply pipeline failed');
+    }
+  }
+}
+
+/* ── Module-level helpers (shared between voice in/out) ─────────────── */
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Strip Markdown/HTML-ish noise so TTS pronounces a clean utterance.
+ * Mirrors what SentenceBuffer does for streamed deltas but applied to
+ * the whole pre-rendered reply.
+ */
+function sanitizeForTTS(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' (code block) ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[*_#>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Transcode an arbitrary audio file to raw 16kHz mono s16le PCM in
+ * memory. Mirrors the helper in web/api/voice.ts; if we add a third
+ * caller this should move into a shared module under src/voice/audio/.
+ */
+function runFfmpegToPCM(ffmpegPath: string, inputPath: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', inputPath,
+      '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let stderr = '';
+    let settled = false;
+    proc.stdout.on('data', (d: Buffer) => {
+      chunks.push(d); total += d.byteLength;
+      // 80MB cap = ~42 minutes of 16kHz mono PCM — well past Telegram's
+      // voice-note ceiling, leaves room for accidental long uploads.
+      if (total > 80 * 1024 * 1024) {
+        if (settled) return;
+        settled = true;
+        try { proc.kill('SIGKILL'); } catch {}
+        reject(new Error('Decoded PCM exceeds 80MB cap'));
+      }
+    });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
+    proc.on('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      if (code === 0) resolve(Buffer.concat(chunks, total));
+      else reject(new Error(`ffmpeg STT exited ${code}: ${stderr.trim().slice(0, 300)}`));
+    });
+  });
+}
+
+/**
+ * Encode raw s16le PCM into an OGG/Opus stream tuned for Telegram voice
+ * notes. We use the libopus VOIP application profile at 32kbps — enough
+ * for clean intelligible speech, small enough for instant upload over
+ * cellular. The `-application voip` flag enables aggressive in-band FEC
+ * which makes the audio robust to Telegram's re-encoding when forwarded.
+ */
+function encodePCMToOpusOgg(ffmpegPath: string, pcm: Buffer, sampleRate: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 's16le', '-ar', String(sampleRate), '-ac', '1', '-i', 'pipe:0',
+      '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip',
+      '-f', 'ogg', 'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let stderr = '';
+    let settled = false;
+    proc.stdout.on('data', (d: Buffer) => { chunks.push(d); total += d.byteLength; });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
+    proc.on('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      if (code === 0) resolve(Buffer.concat(chunks, total));
+      else reject(new Error(`ffmpeg opus exited ${code}: ${stderr.trim().slice(0, 300)}`));
+    });
+
+    proc.stdin.on('error', () => { /* ignore EPIPE */ });
+    proc.stdin.end(pcm);
+  });
 }
