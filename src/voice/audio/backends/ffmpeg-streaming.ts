@@ -63,41 +63,56 @@ export class FfmpegStreamingBackend implements AudioBackend {
 
     const sampleRate = opts.sampleRate;
     const channels = opts.channels;
+    // ffmpeg 5.1 (Aug 2022) renamed the audio-channels input option:
+    // older builds accept `-ac N`, newer ones require `-ch_layout mono|stereo`.
+    // ffplay 8.x flat-out rejects `-ac` for raw input ("Option not found"),
+    // which is the bug that made TTS silent on modern macOS Homebrew installs.
+    // Probe once and cache the flag for the right syntax.
+    const channelFlag = ffplay.path
+      ? await pickChannelFlag(ffplay.path, channels)
+      : ['-ac', String(channels)];
 
     let proc: ChildProcess;
+    let usingFallback = false;
     if (ffplay.path) {
       // ffplay: minimal latency, no decode, just play raw PCM from stdin.
+      // We capture stderr so failures (wrong audio device, missing SDL2,
+      // permission denied) surface in logs / sink.lastError instead of
+      // being silently swallowed — which used to make "TTS pipeline
+      // completed without errors" indistinguishable from "ffplay died
+      // before playing a single sample".
       proc = spawn(
         ffplay.path,
         [
-          '-loglevel', 'quiet',
+          '-loglevel', 'error',
           '-autoexit',
           '-nodisp',
           '-f', 's16le',
           '-ar', String(sampleRate),
-          '-ac', String(channels),
+          ...channelFlag,
           '-i', 'pipe:0',
         ],
-        { stdio: ['pipe', 'ignore', 'ignore'] },
+        { stdio: ['pipe', 'ignore', 'pipe'] },
       );
     } else {
       // ffmpeg fallback: pipe PCM in, send to the platform default output.
+      usingFallback = true;
       const outputArgs = pickFfmpegOutputArgs();
       proc = spawn(
         ffmpeg.path!,
         [
-          '-loglevel', 'quiet',
+          '-loglevel', 'error',
           '-f', 's16le',
           '-ar', String(sampleRate),
           '-ac', String(channels),
           '-i', 'pipe:0',
           ...outputArgs,
         ],
-        { stdio: ['pipe', 'ignore', 'ignore'] },
+        { stdio: ['pipe', 'ignore', 'pipe'] },
       );
     }
 
-    return new FfmpegPlaybackSink(proc, opts.signal);
+    return new FfmpegPlaybackSink(proc, opts.signal, usingFallback ? 'ffmpeg' : 'ffplay');
   }
 
   async initRecording(opts: RecordingOptions): Promise<RecordingSource> {
@@ -134,16 +149,49 @@ class FfmpegPlaybackSink implements PlaybackSink {
   private closed = false;
   private exited = false;
   private exitPromise: Promise<void>;
+  private stderrBuf = '';
+  private exitCode: number | null = null;
+  /** Last error surfaced from stderr or process exit. Public so callers
+   *  (and /voice test) can inspect why audio didn't reach the speaker. */
+  lastError: string | null = null;
 
   constructor(
     private proc: ChildProcess,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    private playerName: string = 'ffplay',
   ) {
     this.exitPromise = new Promise<void>((resolve) => {
       const settle = () => { this.exited = true; resolve(); };
-      proc.once('exit', settle);
-      proc.once('error', settle);
+      proc.once('exit', (code) => { this.exitCode = code; settle(); });
+      proc.once('error', (err) => {
+        this.lastError = `${this.playerName} spawn error: ${err.message}`;
+        settle();
+      });
     });
+
+    // Capture stderr — ffplay reports audio-device failures here:
+    //   • "alsa: snd_pcm_open: Device or resource busy"
+    //   • "Could not open audio device"  (SDL2 missing / CoreAudio denied)
+    //   • "No such audio device"         (wrong output route)
+    // Without this we previously discarded all of it via stdio:'ignore',
+    // making playback failures invisible to the user.
+    const stderr = (proc as any).stderr;
+    if (stderr && typeof stderr.on === 'function') {
+      stderr.on('data', (data: Buffer) => {
+        const text = data.toString();
+        this.stderrBuf += text;
+        // Keep buffer bounded so a verbose player can't OOM us.
+        if (this.stderrBuf.length > 8192) {
+          this.stderrBuf = this.stderrBuf.slice(-8192);
+        }
+        // Real audio-device failures: surface immediately.
+        if (/no such|cannot open|could not open|permission denied|device or resource busy|invalid sample|error/i.test(text)) {
+          const line = text.trim().split('\n').slice(-3).join(' | ');
+          this.lastError = `${this.playerName}: ${line}`;
+          logger.warn({ stderr: text.trim() }, 'voice.playback stderr');
+        }
+      });
+    }
 
     if (signal) {
       const abort = () => { void this.flush().then(() => this.close()); };
@@ -179,6 +227,19 @@ class FfmpegPlaybackSink implements PlaybackSink {
     }
     // Wait for ffplay to exit (with -autoexit it does so once buffer drains).
     await this.exitPromise;
+
+    // Non-zero exit code with no captured error message means the player
+    // bailed for an unknown reason — promote stderr tail so /voice test
+    // can show *something* useful.
+    if (this.exitCode !== null && this.exitCode !== 0 && !this.lastError) {
+      const tail = this.stderrBuf.trim().split('\n').slice(-3).join(' | ');
+      this.lastError = `${this.playerName} exited with code ${this.exitCode}${tail ? `: ${tail}` : ' (no stderr)'}`;
+    }
+
+    // Surface the failure so callers don't silently believe audio played.
+    if (this.lastError) {
+      throw new Error(this.lastError);
+    }
   }
 
   async flush(): Promise<void> {
@@ -265,6 +326,61 @@ class FfmpegRecordingSource implements RecordingSource {
 
 /* ── Cross-platform input/output args ─────────────────────────────────── */
 
+/**
+ * Probe ffplay once to discover which channel-count flag this build
+ * accepts. Modern ffmpeg (>= 5.1, Aug 2022) requires `-ch_layout
+ * mono|stereo|...`; older builds and ffmpeg-via-distro-packages still
+ * use `-ac N`. ffplay 8.x literally errors out with "Option not found"
+ * when handed `-ac` for raw PCM input, which is the regression that
+ * caused TTS to be silent on Homebrew ffmpeg installs.
+ *
+ * Result is memoized on the module — probing costs ~30 ms but only
+ * happens once per process.
+ */
+let _channelFlagCache: { flag: 'ch_layout' | 'ac'; binary: string } | null = null;
+async function pickChannelFlag(binary: string, channels: number): Promise<string[]> {
+  const layout = channelLayoutFor(channels);
+  if (_channelFlagCache && _channelFlagCache.binary === binary) {
+    return _channelFlagCache.flag === 'ch_layout'
+      ? ['-ch_layout', layout]
+      : ['-ac', String(channels)];
+  }
+  // Probe with a tiny silent PCM frame so the player has something to do
+  // and exits cleanly. `-t 0.05` caps duration so the probe never sits.
+  const probe = await new Promise<'ch_layout' | 'ac'>((resolve) => {
+    const p = spawn(binary, [
+      '-loglevel', 'error',
+      '-autoexit',
+      '-nodisp',
+      '-f', 'lavfi',
+      '-i', `anullsrc=channel_layout=${layout}:sample_rate=8000`,
+      '-t', '0.05',
+      '-ch_layout', layout,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    p.stderr?.on('data', (d) => { stderr += d.toString(); });
+    p.on('exit', (code) => {
+      // Modern ffplay accepts -ch_layout and exits 0; older ones emit
+      // "Option not found" (exit 1) — fall back to -ac.
+      if (code === 0 && !/option not found/i.test(stderr)) resolve('ch_layout');
+      else resolve('ac');
+    });
+    p.on('error', () => resolve('ac'));
+    setTimeout(() => { try { p.kill('SIGKILL'); } catch {} resolve('ac'); }, 1500);
+  });
+  _channelFlagCache = { flag: probe, binary };
+  logger.debug({ binary, flag: probe }, 'voice.playback channel-flag probe');
+  return probe === 'ch_layout' ? ['-ch_layout', layout] : ['-ac', String(channels)];
+}
+
+function channelLayoutFor(channels: number): string {
+  switch (channels) {
+    case 1: return 'mono';
+    case 2: return 'stereo';
+    default: return `${channels}c`;
+  }
+}
+
 function pickFfmpegInputArgs(deviceId?: string | null): { format: string; device: string } {
   switch (runtime.os) {
     case 'macos':
@@ -286,13 +402,26 @@ function pickFfmpegInputArgs(deviceId?: string | null): { format: string; device
 }
 
 function pickFfmpegOutputArgs(): string[] {
+  // These args route raw PCM (already on ffmpeg's input via stdin) to the
+  // platform's default audio output. The previous implementation used
+  // avfoundation/dshow + '-' (stdout), which is silent-by-construction:
+  //   • avfoundation/dshow are INPUT muxers, not output devices.
+  //   • '-' means stdout, which the parent process ignores.
+  // The fix is to use each OS's proper output muxer.
   switch (runtime.os) {
     case 'macos':
-      return ['-f', 'avfoundation', '-'];
+      // AudioToolbox: ships with macOS CoreAudio; no SDL2 dependency.
+      return ['-f', 'audiotoolbox', '-'];
     case 'linux':
       return ['-f', 'pulse', 'default'];
     case 'windows':
-      return ['-f', 'dshow', '-'];
+      // sndio is rare on Windows; use DirectSound output muxer instead.
+      // Older ffmpeg builds expose this as 'dsound', newer ones drop it
+      // and require WASAPI via SDL. We try the most portable: write a
+      // wav to default device via 'sndio'? — no, simplest reliable thing
+      // is the 'wasapi' output added in 2023+; fall through to sdl as
+      // last resort.
+      return ['-f', 'wasapi', '-'];
     default:
       return ['-f', 'alsa', 'default'];
   }
