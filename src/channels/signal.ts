@@ -62,10 +62,6 @@ export class SignalChannel extends BaseChannel {
   private baseReconnectDelay = 2000;
   private shouldReconnect = true;
 
-  // Pairing mode: allows messages to trigger pairing
-  private pairingMode = false;
-  private pairingHandler?: (source: string, text: string, groupId?: string) => void;
-
   // Permission / continuation prompts — keyed by sender phone number
   private pendingReplies = new Map<string, PendingReply>();
   private permissionModes = new Map<string, PermissionMode>();
@@ -81,18 +77,6 @@ export class SignalChannel extends BaseChannel {
 
   constructor(private config: MercuryConfig) {
     super();
-  }
-
-  /** Enable pairing mode — allows messages and routes them to a handler */
-  enablePairingMode(handler: (source: string, text: string, groupId?: string) => void): void {
-    this.pairingMode = true;
-    this.pairingHandler = handler;
-  }
-
-  /** Disable pairing mode — self-messages are filtered again */
-  disablePairingMode(): void {
-    this.pairingMode = false;
-    this.pairingHandler = undefined;
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────
@@ -399,18 +383,8 @@ export class SignalChannel extends BaseChannel {
         return;
       }
     } else {
-      // No group configured yet — only allow pairing mode
-      if (this.pairingMode && this.pairingHandler) {
-        this.pairingHandler(source, text || '', groupId);
-        return;
-      }
-      logger.debug('Signal: no group configured and not in pairing mode, ignoring');
-      return;
-    }
-
-    // Pairing mode: route to pairing handler (for the "/pair" trigger)
-    if (this.pairingMode && this.pairingHandler) {
-      this.pairingHandler(source, text || '', groupId);
+      // No group configured yet — nothing to route to.
+      logger.debug('Signal: no group configured, ignoring');
       return;
     }
 

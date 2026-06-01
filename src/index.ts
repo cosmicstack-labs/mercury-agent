@@ -28,7 +28,6 @@ import {
   getSignalAccessSummary,
   getSignalApprovedUsers,
   getSignalPendingRequests,
-  addSignalPendingRequest,
   approveSignalPendingRequest,
   approveSignalPendingRequestByPairingCode,
   rejectSignalPendingRequest,
@@ -1078,118 +1077,34 @@ async function completeInitialSignalPairing(config: MercuryConfig): Promise<void
   }
 
   // ─── Pairing via Group Message ───────────────────────────────
+  // Daemon-driven pairing: the running Mercury daemon owns the single Signal
+  // receive connection and already knows how to answer "/pair" with a pairing
+  // code (see handleUnapprovedMessage). We must NOT open a second receive
+  // listener here — in json-rpc mode the WebSocket broadcasts every message to
+  // all connected clients, so two listeners would each reply with a different
+  // code. Instead we just make sure the daemon has the freshly saved group
+  // config loaded, then hand the user the instructions.
   console.log('');
-  console.log(chalk.white('  To pair Mercury with your Signal:'));
-  console.log(chalk.dim(`    1. Open the "${config.channels.signal.groupName}" group in Signal`));
-  console.log(chalk.dim(`    2. Send: `) + chalk.bold.white('/pair'));
-  console.log(chalk.dim('    3. Mercury will reply with a pairing code in that group'));
-  console.log(chalk.dim('    4. Enter the code below'));
-  console.log('');
-
-  // Only ONE process may long-poll /v1/receive at a time — signal-cli-rest-api
-  // hands each incoming envelope to a single reader. If the background daemon
-  // is running it will swallow the "/pair" message before this setup listener
-  // ever sees it, leaving pairing stuck forever. Pause the daemon for the
-  // duration and resume it once pairing finishes.
-  const daemonBefore = getDaemonStatus();
-  const daemonWasRunning = daemonBefore.running;
-  if (daemonWasRunning) {
-    console.log(chalk.dim('  Pausing the background Mercury daemon so it does not intercept pairing...'));
+  if (getDaemonStatus().running) {
+    restartDaemonIfRunning('Restarting the background daemon so it picks up the Signal group...');
+  } else {
+    console.log(chalk.dim('  Starting the background Mercury daemon to handle pairing...'));
     try {
-      if (daemonBefore.pid) process.kill(daemonBefore.pid, 'SIGTERM');
+      ensureDaemonRunning();
     } catch {
-      // Already gone; nothing to do.
-    }
-    // Give signal-cli-rest-api a moment to release the daemon's open receive
-    // connection before we start our own.
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  // Start a temporary Signal channel in pairing mode
-  const signal = new SignalChannel(config);
-  let pairingCode: string | null = null;
-  let receivedPairingMessage = false;
-
-  signal.enablePairingMode((source: string, text: string, _groupId?: string) => {
-    const normalized = text.toLowerCase().trim();
-    if (normalized === '/pair' || normalized === 'pair') {
-      receivedPairingMessage = true;
-      // Generate pairing code and send it back to the group
-      pairingCode = Math.floor(100000 + Math.random() * 900000).toString();
-      addSignalPendingRequest(config, {
-        phoneNumber: source,
-        pairingCode,
-      });
-      saveConfig(config);
-
-      // Send the code to the group
-      signal.sendToGroup(`Your Mercury pairing code: ${pairingCode}\n\nEnter this code in the Mercury terminal to complete setup.`);
-    }
-  });
-
-  try {
-    await signal.start();
-    // Give the poll loop a moment to start
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    if (!signal.isReady()) {
-      console.log(chalk.red('  ✗ Could not connect to Signal receive endpoint.'));
-      console.log(chalk.dim('  You can pair later with: mercury signal approve <pairing-code>'));
-      console.log('');
-      await signal.stop();
-      return;
-    }
-
-    console.log(chalk.dim(`  Waiting for "/pair" in the "${config.channels.signal.groupName}" group...`));
-    console.log('');
-
-    // Wait for the user to enter the code
-    while (true) {
-      const userCode = await ask(chalk.white('  Pairing Code (or "skip" to pair later): '));
-      if (!userCode) {
-        if (!receivedPairingMessage) {
-          console.log(chalk.dim(`  Still waiting... Send "/pair" in the "${config.channels.signal.groupName}" group first.`));
-        } else {
-          console.log(chalk.red('  Pairing code is required.'));
-        }
-        continue;
-      }
-
-      if (userCode.toLowerCase() === 'skip') {
-        console.log(chalk.dim('  Signal pairing skipped. Pair later with: mercury signal approve <pairing-code>'));
-        console.log('');
-        break;
-      }
-
-      const approved = approveSignalPendingRequestByPairingCode(config, userCode.trim());
-      if (!approved) {
-        if (!receivedPairingMessage) {
-          console.log(chalk.red(`  No pairing code generated yet. Send "/pair" in the "${config.channels.signal.groupName}" group first.`));
-        } else {
-          console.log(chalk.red('  Invalid code. Check the code Mercury sent in the group.'));
-        }
-        continue;
-      }
-
-      saveConfig(config);
-      console.log(chalk.green(`  ✓ Signal paired! You are now the admin (${formatSignalUser(approved)}).`));
-      console.log('');
-      break;
-    }
-  } finally {
-    signal.disablePairingMode();
-    await signal.stop();
-    // Resume the daemon we paused above so we leave Mercury running as we
-    // found it (now with the freshly paired admin in config).
-    if (daemonWasRunning) {
-      console.log(chalk.dim('  Resuming the background Mercury daemon...'));
-      try {
-        ensureDaemonRunning();
-      } catch {
-        console.log(chalk.dim('  Could not auto-resume. Start it again with: mercury restart'));
-      }
+      console.log(chalk.yellow('  Could not start the daemon automatically. Start it with: mercury start'));
     }
   }
+  console.log('');
+
+  console.log(chalk.white('  To finish pairing Mercury with your Signal:'));
+  console.log(chalk.dim(`    1. Open the "${config.channels.signal.groupName}" group in Signal`));
+  console.log(chalk.dim('    2. Send: ') + chalk.bold.white('/pair'));
+  console.log(chalk.dim('    3. Mercury will reply in that group with a pairing code'));
+  console.log(chalk.dim('    4. Approve it from this terminal: ') + chalk.bold.white('mercury signal approve <code>'));
+  console.log('');
+  console.log(chalk.dim('  The daemon stays running and keeps listening — no need to keep this window open.'));
+  console.log('');
 }
 
 async function completeInitialTelegramPairing(config: MercuryConfig): Promise<void> {
