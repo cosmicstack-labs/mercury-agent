@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import type { ChannelMessage, MessageAttachment } from '../types/channel.js';
+import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import type { MercuryConfig, SignalAccessUser, SignalPendingRequest } from '../utils/config.js';
 import {
@@ -193,30 +192,27 @@ export class SignalChannel extends BaseChannel {
 
     if (!source) return;
 
-    // Extract text, attachments and group info from either dataMessage
-    // (incoming from others) or syncMessage.sentMessage (self-sent from phone).
+    // Extract text and group info from either dataMessage (incoming from
+    // others) or syncMessage.sentMessage (self-sent from phone).
     let text: string | undefined;
     let timestamp: number;
     let groupId: string | undefined;
-    let rawAttachments: any[] = [];
 
     if (env.dataMessage) {
       text = env.dataMessage.message?.trim();
       timestamp = env.dataMessage.timestamp || env.timestamp || Date.now();
       groupId = env.dataMessage.groupInfo?.groupId;
-      rawAttachments = env.dataMessage.attachments || [];
     } else if (env.syncMessage?.sentMessage) {
       const sent = env.syncMessage.sentMessage;
       text = sent.message?.trim();
       timestamp = sent.timestamp || env.timestamp || Date.now();
       groupId = sent.groupInfo?.groupId;
-      rawAttachments = sent.attachments || [];
     } else {
       return;
     }
 
-    // Allow attachment-only messages (voice notes, photos with no caption).
-    if (!text && rawAttachments.length === 0) return;
+    // Text-only channel (parity with Telegram): ignore messages without text.
+    if (!text) return;
 
     // Group-based filtering:
     // Only process messages from the configured Mercury group.
@@ -271,7 +267,6 @@ export class SignalChannel extends BaseChannel {
         approved: !!approvedUser,
         role: approvedUser ? (isAdmin ? 'admin' : 'member') : 'none',
         textPreview: (text || '').slice(0, 40),
-        attachments: rawAttachments.length,
       },
       'Signal: access-control decision',
     );
@@ -318,21 +313,6 @@ export class SignalChannel extends BaseChannel {
       }
     }
 
-    // Process any attachments: download them, transcribe voice notes, and
-    // fold the results into the message content the agent receives.
-    let content = text || '';
-    let attachments: MessageAttachment[] | undefined;
-    if (rawAttachments.length > 0) {
-      const processed = await this.processAttachments(rawAttachments);
-      attachments = processed.attachments;
-      if (processed.contentAdditions) {
-        content = content ? `${content}\n${processed.contentAdditions}` : processed.contentAdditions;
-      }
-    }
-
-    // If after processing there's still nothing usable, drop it.
-    if (!content.trim() && (!attachments || attachments.length === 0)) return;
-
     // Normal message — emit to the agent
     const msg: ChannelMessage = {
       id: `signal_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
@@ -341,131 +321,11 @@ export class SignalChannel extends BaseChannel {
       senderId: source,
       senderName: approvedUser.name || sourceName || source,
       senderRole: isAdmin ? 'admin' : 'member',
-      content,
+      content: text,
       timestamp,
-      attachments,
       metadata: { phoneNumber: sourcePhone, uuid: sourceUuid, groupId },
     };
     this.emit(msg);
-  }
-
-  // ─── Incoming Attachments & Transcription ───────────────────
-
-  /**
-   * Download each attachment from signal-cli-rest-api, save it locally, and
-   * transcribe voice/audio notes. Returns the saved attachments plus a text
-   * block to append to the message content so the agent is aware of them.
-   */
-  private async processAttachments(
-    rawAttachments: any[],
-  ): Promise<{ attachments: MessageAttachment[]; contentAdditions: string }> {
-    const { apiUrl } = this.config.channels.signal;
-    const saved: MessageAttachment[] = [];
-    const notes: string[] = [];
-
-    const dir = path.join(os.homedir(), '.mercury', 'attachments');
-    await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
-
-    for (const att of rawAttachments) {
-      const id = att.id || att.attachmentId;
-      if (!id) continue;
-      const contentType: string = att.contentType || 'application/octet-stream';
-      const filename: string = att.filename || `${id}${this.extensionForType(contentType)}`;
-
-      try {
-        const res = await fetch(`${apiUrl}/v1/attachments/${encodeURIComponent(id)}`, {
-          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-        });
-        if (!res.ok) {
-          logger.warn({ id, status: res.status }, 'Signal: attachment download failed');
-          continue;
-        }
-        const buffer = Buffer.from(await res.arrayBuffer());
-        const safeName = `${Date.now()}-${path.basename(filename)}`;
-        const filePath = path.join(dir, safeName);
-        await fs.promises.writeFile(filePath, buffer);
-
-        const entry: MessageAttachment = {
-          path: filePath,
-          filename,
-          contentType,
-          size: buffer.length,
-        };
-
-        // Voice / audio → transcribe into text the agent can act on.
-        if (contentType.startsWith('audio/')) {
-          const transcript = await this.transcribeAudio(buffer, contentType, filename);
-          if (transcript) {
-            entry.transcribed = true;
-            notes.push(`🎤 (voice) ${transcript}`);
-          } else {
-            notes.push(`🎤 [voice message received but transcription is unavailable — saved at ${filePath}]`);
-          }
-        } else if (contentType.startsWith('image/')) {
-          notes.push(`[Image received: ${filename} (${contentType}, ${buffer.length} bytes) — saved at ${filePath}]`);
-        } else {
-          notes.push(`[File received: ${filename} (${contentType}, ${buffer.length} bytes) — saved at ${filePath}]`);
-        }
-
-        saved.push(entry);
-      } catch (err: any) {
-        logger.warn({ id, err: err.message }, 'Signal: attachment processing error');
-      }
-    }
-
-    return { attachments: saved, contentAdditions: notes.join('\n') };
-  }
-
-  /** Transcribe audio via an OpenAI Whisper-compatible API. Returns null on failure. */
-  private async transcribeAudio(buffer: Buffer, contentType: string, filename: string): Promise<string | null> {
-    const tc = this.config.channels.signal.transcription;
-    if (!tc || !tc.enabled || !tc.apiKey) {
-      logger.debug('Signal: transcription disabled or no API key');
-      return null;
-    }
-
-    try {
-      const form = new FormData();
-      const blob = new Blob([buffer], { type: contentType });
-      form.append('file', blob, filename || 'audio');
-      form.append('model', tc.model || 'whisper-1');
-
-      const res = await fetch(`${tc.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${tc.apiKey}` },
-        body: form,
-        signal: AbortSignal.timeout(60_000),
-      });
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        logger.warn({ status: res.status, body }, 'Signal: transcription failed');
-        return null;
-      }
-
-      const data: any = await res.json().catch(() => null);
-      const transcript = data?.text?.trim();
-      return transcript || null;
-    } catch (err: any) {
-      logger.warn({ err: err.message }, 'Signal: transcription request error');
-      return null;
-    }
-  }
-
-  private extensionForType(contentType: string): string {
-    const map: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/gif': '.gif',
-      'image/webp': '.webp',
-      'audio/aac': '.aac',
-      'audio/mpeg': '.mp3',
-      'audio/ogg': '.ogg',
-      'audio/mp4': '.m4a',
-      'video/mp4': '.mp4',
-      'application/pdf': '.pdf',
-    };
-    return map[contentType] || '';
   }
 
   private async handleUnapprovedMessage(

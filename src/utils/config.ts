@@ -64,16 +64,6 @@ export interface SignalPendingRequest {
   pairingCode?: string;
 }
 
-/** Voice-note / audio transcription settings (OpenAI Whisper-compatible). */
-export interface TranscriptionConfig {
-  enabled: boolean;
-  apiKey: string;
-  /** Base URL for the transcription API. Default: https://api.openai.com/v1 */
-  baseUrl: string;
-  /** Model name. Default: whisper-1 */
-  model: string;
-}
-
 /** Typed Signal channel configuration (parity with TelegramChannelConfig). */
 export interface SignalChannelConfig {
   enabled: boolean;
@@ -85,8 +75,6 @@ export interface SignalChannelConfig {
   admins: SignalAccessUser[];
   members: SignalAccessUser[];
   pending: SignalPendingRequest[];
-  /** Optional voice-note transcription. */
-  transcription?: TranscriptionConfig;
 }
 
 export type ProviderName =
@@ -146,7 +134,6 @@ export interface MercuryConfig {
       admins: SignalAccessUser[];
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
-      transcription?: TranscriptionConfig;
     };
   };
   github: {
@@ -330,12 +317,6 @@ export function getDefaultConfig(): MercuryConfig {
         admins: [],
         members: [],
         pending: [],
-        transcription: {
-          enabled: getEnvBool('SIGNAL_TRANSCRIPTION_ENABLED', false),
-          apiKey: getEnv('SIGNAL_TRANSCRIPTION_API_KEY', getEnv('OPENAI_API_KEY', '')),
-          baseUrl: getEnv('SIGNAL_TRANSCRIPTION_BASE_URL', 'https://api.openai.com/v1'),
-          model: getEnv('SIGNAL_TRANSCRIPTION_MODEL', 'whisper-1'),
-        },
       },
     },
     github: {

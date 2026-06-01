@@ -18,20 +18,6 @@ export interface TelegramPendingRequest {
 
 export type ChannelType = 'cli' | 'telegram' | 'web' | 'internal' | 'signal' | 'discord' | 'slack' | 'whatsapp';
 
-/** A file/media attachment received with an incoming message. */
-export interface MessageAttachment {
-  /** Absolute path where the attachment was saved locally. */
-  path: string;
-  /** Original filename, if provided by the sender. */
-  filename?: string;
-  /** MIME type, e.g. image/jpeg, audio/aac, application/pdf. */
-  contentType?: string;
-  /** Size in bytes. */
-  size?: number;
-  /** True if this attachment was a voice/audio message that we transcribed. */
-  transcribed?: boolean;
-}
-
 export interface ChannelMessage {
   id: string;
   channelId: string;
@@ -48,8 +34,6 @@ export interface ChannelMessage {
   senderRole?: 'admin' | 'member';
   content: string;
   timestamp: number;
-  /** Files/media that arrived with this message (downloaded locally). */
-  attachments?: MessageAttachment[];
   metadata?: Record<string, unknown>;
 }
 
