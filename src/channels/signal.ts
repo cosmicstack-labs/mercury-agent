@@ -292,7 +292,7 @@ export class SignalChannel extends BaseChannel {
       return;
     }
 
-    // Pairing mode: route to pairing handler (for "mercury pair" trigger)
+    // Pairing mode: route to pairing handler (for the "/pair" trigger)
     if (this.pairingMode && this.pairingHandler) {
       this.pairingHandler(source, text || '', groupId);
       return;
