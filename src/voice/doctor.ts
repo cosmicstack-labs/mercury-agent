@@ -46,7 +46,7 @@ export async function runVoiceDoctor(): Promise<void> {
   // ── Config snapshot ─────────────────────────────────────────────────
   console.log(chalk.bold.white('  Configuration'));
   console.log(`  voice.enabled:      ${voice?.enabled ? chalk.green('true') : chalk.yellow('false (run `mercury doctor` to enable)')}`);
-  console.log(`  push-to-talk key:   ${chalk.white(voice?.pushToTalkKey ?? '(unset)')}`);
+  console.log(`  push-to-talk key:   ${chalk.white(voice?.pushToTalkKey ?? 'ctrl+space')} ${chalk.dim('(or Ctrl+G — universal fallback)')}`);
   console.log(`  TTS provider:       ${chalk.white(voice?.tts?.provider ?? 'cartesia')}  → fallback ${chalk.dim(voice?.tts?.fallback ?? 'none')}`);
   console.log(`  STT provider:       ${chalk.white(voice?.stt?.provider ?? 'cartesia')}  → fallback ${chalk.dim(voice?.stt?.fallback ?? 'none')}`);
   console.log(`  live captions:      ${voice?.stt?.liveCaptions ? chalk.green('on') : chalk.dim('off')}`);
