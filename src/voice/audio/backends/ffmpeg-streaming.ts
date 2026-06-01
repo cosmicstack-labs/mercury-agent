@@ -63,14 +63,13 @@ export class FfmpegStreamingBackend implements AudioBackend {
 
     const sampleRate = opts.sampleRate;
     const channels = opts.channels;
-    // ffmpeg 5.1 (Aug 2022) renamed the audio-channels input option:
-    // older builds accept `-ac N`, newer ones require `-ch_layout mono|stereo`.
-    // ffplay 8.x flat-out rejects `-ac` for raw input ("Option not found"),
-    // which is the bug that made TTS silent on modern macOS Homebrew installs.
-    // Probe once and cache the flag for the right syntax.
-    const channelFlag = ffplay.path
-      ? await pickChannelFlag(ffplay.path, channels)
-      : ['-ac', String(channels)];
+    // ffmpeg 5.1 (Aug 2022) renamed the channel-count option: modern
+    // builds want `-ch_layout mono|stereo`, older accept `-ac N`. We
+    // try the modern form first and lazy-fall-back to `-ac` only if
+    // the player exits with "Option not found" — see retry logic in
+    // FfmpegPlaybackSink. No upfront probe (the probe variant using
+    // anullsrc was unreliable; it hung on some ffplay builds).
+    const layout = channelLayoutFor(channels);
 
     let proc: ChildProcess;
     let usingFallback = false;
@@ -89,7 +88,7 @@ export class FfmpegStreamingBackend implements AudioBackend {
           '-nodisp',
           '-f', 's16le',
           '-ar', String(sampleRate),
-          ...channelFlag,
+          '-ch_layout', layout,
           '-i', 'pipe:0',
         ],
         { stdio: ['pipe', 'ignore', 'pipe'] },
@@ -185,7 +184,7 @@ class FfmpegPlaybackSink implements PlaybackSink {
           this.stderrBuf = this.stderrBuf.slice(-8192);
         }
         // Real audio-device failures: surface immediately.
-        if (/no such|cannot open|could not open|permission denied|device or resource busy|invalid sample|error/i.test(text)) {
+        if (/no such|cannot open|could not open|permission denied|device or resource busy|invalid sample|option not found|failed to set|unknown encoder|protocol not found|error/i.test(text)) {
           const line = text.trim().split('\n').slice(-3).join(' | ');
           this.lastError = `${this.playerName}: ${line}`;
           logger.warn({ stderr: text.trim() }, 'voice.playback stderr');
@@ -325,53 +324,6 @@ class FfmpegRecordingSource implements RecordingSource {
 }
 
 /* ── Cross-platform input/output args ─────────────────────────────────── */
-
-/**
- * Probe ffplay once to discover which channel-count flag this build
- * accepts. Modern ffmpeg (>= 5.1, Aug 2022) requires `-ch_layout
- * mono|stereo|...`; older builds and ffmpeg-via-distro-packages still
- * use `-ac N`. ffplay 8.x literally errors out with "Option not found"
- * when handed `-ac` for raw PCM input, which is the regression that
- * caused TTS to be silent on Homebrew ffmpeg installs.
- *
- * Result is memoized on the module — probing costs ~30 ms but only
- * happens once per process.
- */
-let _channelFlagCache: { flag: 'ch_layout' | 'ac'; binary: string } | null = null;
-async function pickChannelFlag(binary: string, channels: number): Promise<string[]> {
-  const layout = channelLayoutFor(channels);
-  if (_channelFlagCache && _channelFlagCache.binary === binary) {
-    return _channelFlagCache.flag === 'ch_layout'
-      ? ['-ch_layout', layout]
-      : ['-ac', String(channels)];
-  }
-  // Probe with a tiny silent PCM frame so the player has something to do
-  // and exits cleanly. `-t 0.05` caps duration so the probe never sits.
-  const probe = await new Promise<'ch_layout' | 'ac'>((resolve) => {
-    const p = spawn(binary, [
-      '-loglevel', 'error',
-      '-autoexit',
-      '-nodisp',
-      '-f', 'lavfi',
-      '-i', `anullsrc=channel_layout=${layout}:sample_rate=8000`,
-      '-t', '0.05',
-      '-ch_layout', layout,
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    p.stderr?.on('data', (d) => { stderr += d.toString(); });
-    p.on('exit', (code) => {
-      // Modern ffplay accepts -ch_layout and exits 0; older ones emit
-      // "Option not found" (exit 1) — fall back to -ac.
-      if (code === 0 && !/option not found/i.test(stderr)) resolve('ch_layout');
-      else resolve('ac');
-    });
-    p.on('error', () => resolve('ac'));
-    setTimeout(() => { try { p.kill('SIGKILL'); } catch {} resolve('ac'); }, 1500);
-  });
-  _channelFlagCache = { flag: probe, binary };
-  logger.debug({ binary, flag: probe }, 'voice.playback channel-flag probe');
-  return probe === 'ch_layout' ? ['-ch_layout', layout] : ['-ac', String(channels)];
-}
 
 function channelLayoutFor(channels: number): string {
   switch (channels) {
