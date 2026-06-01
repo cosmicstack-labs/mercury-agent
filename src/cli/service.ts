@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -19,7 +19,7 @@ export function isServiceInstalled(): boolean {
     return existsSync(join(homedir(), '.config', 'systemd', 'user', 'mercury.service'));
   } else if (platform === 'win32') {
     try {
-      execSync(`schtasks /query /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe', shell: 'cmd.exe' });
+      runSchtasks(['/query', '/tn', WIN_TASK_NAME], { stdio: 'pipe' });
       return true;
     } catch {
       return false;
@@ -28,15 +28,39 @@ export function isServiceInstalled(): boolean {
   return false;
 }
 
-function getNodeBinPath(): string {
+export function getNodeBinPath(): string {
   return process.execPath;
 }
 
-function getDistPath(): string {
-  if (!process.argv[1]) {
-    return join(homedir(), '.nvm', 'versions', 'node', `v${process.version.slice(1)}`, 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js');
+export function getDistPath(argvEntry = process.argv[1]): string {
+  if (argvEntry) {
+    return resolve(argvEntry);
   }
-  return join(process.argv[1], '..', '..', 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js');
+  return join(homedir(), '.nvm', 'versions', 'node', `v${process.version.slice(1)}`, 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js');
+}
+
+function quoteWindowsTaskPath(path: string): string {
+  return `"${path.replace(/"/g, '""')}"`;
+}
+
+export function buildWindowsTaskCommand(nodeBin: string, scriptPath: string): string {
+  return `${quoteWindowsTaskPath(nodeBin)} ${quoteWindowsTaskPath(scriptPath)} start --daemon`;
+}
+
+export function buildWindowsCreateTaskArgs(taskName: string, taskCommand: string): string[] {
+  return ['/create', '/tn', taskName, '/tr', taskCommand, '/sc', 'onlogon', '/rl', 'limited', '/f'];
+}
+
+function runSchtasks(args: string[], options: Parameters<typeof execFileSync>[2] = {}): Buffer | string {
+  return execFileSync('schtasks', args, options);
+}
+
+function formatManualSchtasksCommand(args: string[]): string {
+  const quotedArgs = args.map((arg) => {
+    if (!/[\s"]/.test(arg)) return arg;
+    return `"${arg.replace(/"/g, '\\"')}"`;
+  });
+  return `schtasks ${quotedArgs.join(' ')}`;
 }
 
 export function installService(): void {
@@ -315,21 +339,20 @@ function installWindows(): void {
   const scriptPath = getDistPath();
   const home = getMercuryHome();
   const logPath = join(home, 'daemon.log');
-
-  const cmd = `"${nodeBin}" "${scriptPath}" start --daemon`;
+  const taskCommand = buildWindowsTaskCommand(nodeBin, scriptPath);
+  const createArgs = buildWindowsCreateTaskArgs(WIN_TASK_NAME, taskCommand);
 
   try {
-    execSync(
-      `schtasks /create /tn "${WIN_TASK_NAME}" /tr "${cmd}" /sc onlogon /rl limited /f`,
-      { stdio: 'inherit', shell: 'cmd.exe' }
-    );
+    runSchtasks(createArgs, { stdio: 'inherit' });
   } catch {
     console.log(chalk.yellow('  schtasks create failed. Try running from an Administrator cmd:'));
-    console.log(chalk.dim(`    schtasks /create /tn "${WIN_TASK_NAME}" /tr "${cmd}" /sc onlogon /rl limited /f`));
+    console.log(chalk.dim(`    ${formatManualSchtasksCommand(createArgs)}`));
+    console.log('');
+    return;
   }
 
   try {
-    execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'inherit', shell: 'cmd.exe' });
+    runSchtasks(['/run', '/tn', WIN_TASK_NAME], { stdio: 'inherit' });
   } catch {
     console.log(chalk.yellow('  Task created but failed to start immediately. It will start on next login.'));
   }
@@ -347,7 +370,7 @@ function installWindows(): void {
 
 function uninstallWindows(): void {
   try {
-    execSync(`schtasks /delete /tn "${WIN_TASK_NAME}" /f`, { stdio: 'inherit', shell: 'cmd.exe' });
+    runSchtasks(['/delete', '/tn', WIN_TASK_NAME, '/f'], { stdio: 'inherit' });
     console.log('');
     console.log(chalk.green('  Mercury service uninstalled'));
     console.log('');
@@ -360,10 +383,9 @@ function uninstallWindows(): void {
 
 function showWindowsStatus(): void {
   try {
-    const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list`, {
+    const output = String(runSchtasks(['/query', '/tn', WIN_TASK_NAME, '/fo', 'list'], {
       encoding: 'utf-8',
-      shell: 'cmd.exe',
-    }).trim();
+    })).trim();
     console.log(output);
     console.log('');
   } catch {
