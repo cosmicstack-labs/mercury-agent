@@ -164,7 +164,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/ws stage all',
     '/ws commit ',
     '/ws help',
-    // Voice subsystem (Phase 0: stubs only; real audio in later phases).
+    // Voice subsystem.
     '/voice',
     '/voice on',
     '/voice off',
@@ -173,6 +173,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/voice stop',
     '/voice status',
     '/voice grant',
+    '/voice providers',
+    '/voice tts',
+    '/voice tts cartesia',
+    '/voice tts openai',
+    '/voice stt',
+    '/voice stt cartesia',
+    '/voice stt openai',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {
@@ -369,11 +376,36 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
-    // Ctrl+Space — toggle listen. Terminals can't deliver key-up events,
-    // so PTT is implemented as press-once-to-start, press-again-to-stop.
-    // Detect via raw ch === '\u0000' (Ctrl+Space) which is what xterm
-    // emits on most platforms.
-    if (ch === '\u0000' || (key.ctrl && (key as any).name === 'space')) {
+    // Push-to-talk. Ctrl+Space is notoriously unreliable across terminals:
+    //   • macOS Terminal.app traditionally swallowed it for input-source
+    //     switching, even after Apple changed the default.
+    //   • Tmux/screen pass it through inconsistently.
+    //   • iTerm2 needs "Send raw NUL" mapped in Preferences → Keys for it
+    //     to reach the app at all.
+    // So we accept multiple shapes here:
+    //   1. raw NUL  (`\u0000`)  — the canonical Ctrl+Space byte
+    //   2. ctrl+space matched by Ink's parsed `key.name`
+    //   3. ctrl + literal space character (some Linux terminals)
+    //   4. Ctrl+G (BEL, `\u0007`) — a universally-deliverable fallback
+    //      that no terminal intercepts. Mention it in the hint line so
+    //      users on stubborn terminals have an escape hatch.
+    // Set MERCURY_VOICE_DEBUG_KEYS=1 to log every key seen here to
+    // ~/.mercury/logs to diagnose missing bindings.
+    if (process.env.MERCURY_VOICE_DEBUG_KEYS === '1') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { logger } = require('../utils/logger.js');
+        logger.info({ ch: ch && JSON.stringify(ch), key }, 'voice.keys debug');
+      } catch { /* logger unavailable; ignore */ }
+    }
+    const isCtrlSpace =
+      ch === '\u0000' ||
+      (key.ctrl && (key as any).name === 'space') ||
+      (key.ctrl && ch === ' ');
+    const isCtrlG =
+      ch === '\u0007' ||
+      (key.ctrl && ((key as any).name === 'g' || ch?.toLowerCase?.() === 'g'));
+    if (isCtrlSpace || isCtrlG) {
       onInput('/voice listen');
       return;
     }
@@ -2000,7 +2032,7 @@ function InputBox({
         </Box>
       )}
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline · Ctrl+Space mic · Ctrl+V voice'}</Text>
+        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline · Ctrl+Space / Ctrl+G mic · Ctrl+V voice'}</Text>
       </Box>
     </Box>
   );

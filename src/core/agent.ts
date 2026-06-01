@@ -3766,7 +3766,95 @@ Is this productive iteration or a stuck loop?`,
         await voice.stopListening();
         return true;
       }
-      await channel.send('Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant]', channelId);
+
+      // Provider switching:
+      //   /voice tts            → list TTS providers
+      //   /voice tts <name>     → set TTS provider (e.g. cartesia, openai)
+      //   /voice stt            → list STT providers
+      //   /voice stt <name>     → set STT provider
+      //   /voice providers      → show both lists with the active one starred
+      // Persists to config so the choice survives restarts.
+      if (sub === 'providers') {
+        const { knownTTSProviders, getTTSChain } = await import('../voice/tts/registry.js');
+        const { knownSTTProviders, getSTTChain } = await import('../voice/stt/registry.js');
+        const cfg = ctx.config();
+        const ttsActive = cfg.voice?.tts?.provider ?? 'cartesia';
+        const sttActive = cfg.voice?.stt?.provider ?? 'cartesia';
+        const ttsChain = await getTTSChain();
+        const sttChain = await getSTTChain();
+        const ttsReady = new Map(await Promise.all(ttsChain.map(async p => [p.name, await safeReady(p)] as const)));
+        const sttReady = new Map(await Promise.all(sttChain.map(async p => [p.name, await safeReady(p)] as const)));
+        const lines: string[] = ['**Voice providers**', '', '_TTS (speaker)_:'];
+        for (const name of knownTTSProviders()) {
+          const star = name === ttsActive ? '★' : ' ';
+          const ready = ttsReady.get(name) ? '✓ ready' : 'unavailable';
+          lines.push(`  ${star} ${name} — ${ready}`);
+        }
+        lines.push('', '_STT (listener)_:');
+        for (const name of knownSTTProviders()) {
+          const star = name === sttActive ? '★' : ' ';
+          const ready = sttReady.get(name) ? '✓ ready' : 'unavailable';
+          lines.push(`  ${star} ${name} — ${ready}`);
+        }
+        lines.push('', 'Switch with `/voice tts <name>` or `/voice stt <name>`.');
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+      if (sub.startsWith('tts') || sub.startsWith('stt')) {
+        const kind = sub.startsWith('tts') ? 'tts' : 'stt';
+        const arg = sub.slice(3).trim();
+        const { knownTTSProviders } = await import('../voice/tts/registry.js');
+        const { knownSTTProviders } = await import('../voice/stt/registry.js');
+        const known = kind === 'tts' ? knownTTSProviders() : knownSTTProviders();
+        const cfg = ctx.config();
+        cfg.voice = cfg.voice ?? ({} as any);
+        cfg.voice!.tts = cfg.voice!.tts ?? ({} as any);
+        cfg.voice!.stt = cfg.voice!.stt ?? ({} as any);
+        if (!arg) {
+          const current = kind === 'tts' ? cfg.voice!.tts.provider : cfg.voice!.stt.provider;
+          await channel.send(
+            `Current ${kind.toUpperCase()} provider: **${current ?? '(unset)'}**. Available: ${known.join(', ')}.\nUse \`/voice ${kind} <name>\` to switch.`,
+            channelId,
+          );
+          return true;
+        }
+        if (!known.includes(arg as any)) {
+          await channel.send(`Unknown ${kind.toUpperCase()} provider \`${arg}\`. Available: ${known.join(', ')}.`, channelId);
+          return true;
+        }
+        // Update primary; auto-pick a complementary fallback from the
+        // other known providers (first that isn't the new primary) so
+        // the chain still has redundancy after the switch.
+        if (kind === 'tts') {
+          (cfg.voice!.tts as any).provider = arg;
+          const fb = known.find(n => n !== arg);
+          (cfg.voice!.tts as any).fallback = fb ?? null;
+        } else {
+          (cfg.voice!.stt as any).provider = arg;
+          const fb = known.find(n => n !== arg);
+          (cfg.voice!.stt as any).fallback = fb ?? null;
+        }
+        saveConfig(cfg);
+
+        // Tear down + re-init so the new chain takes effect immediately.
+        // disable/enable is idempotent; we only do it when voice was
+        // already on, otherwise the next `/voice on` will pick up the
+        // new config naturally.
+        if (voice.getStatus().state !== 'disabled') {
+          await voice.disable().catch(() => {});
+          await voice.enable().catch(() => {});
+        }
+        await channel.send(
+          `✓ ${kind.toUpperCase()} provider set to **${arg}**. ${voice.formatStatusLine()}`,
+          channelId,
+        );
+        return true;
+      }
+
+      await channel.send(
+        'Unknown /voice subcommand. Try: /voice [status|on|off|toggle|listen|stop|grant|providers|tts|stt]',
+        channelId,
+      );
       return true;
     }
 
@@ -4191,6 +4279,10 @@ Is this productive iteration or a stuck loop?`,
  * a focused fix-it message. Stays silent when credentials are present so
  * we don't nag returning users on every /voice on.
  */
+async function safeReady(p: { isAvailable: () => Promise<boolean> }): Promise<boolean> {
+  try { return await p.isAvailable(); } catch { return false; }
+}
+
 async function maybeSendVoiceSetupHint(
   channel: { send: (msg: string, channelId: string) => Promise<void> },
   channelId: string,

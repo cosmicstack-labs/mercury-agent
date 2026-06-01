@@ -1623,6 +1623,22 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   setWebWebChannel(webChannel);
   setWebChannelForVoice(webChannel);
+
+  // Auto-enable the voice subsystem at boot when the user has opted in
+  // via config. Without this, voice.enabled=true would still leave the
+  // VoiceManager in 'disabled' state until the user manually ran
+  // /voice on — so TTS output during streaming was silently dropped by
+  // openVoiceQueue()'s state check. Failures are non-fatal: the agent
+  // continues to run with text-only output and the error is reported
+  // via `mercury doctor --voice`.
+  if (config.voice?.enabled) {
+    try {
+      const { getVoiceManager } = await import('./voice/index.js');
+      await getVoiceManager().enable();
+    } catch (err: any) {
+      logger.warn({ err: err?.message ?? err }, 'voice auto-enable failed at boot');
+    }
+  }
   setWebProgrammingMode(agent.programmingMode);
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider) => agent.switchProvider(provider));
