@@ -43,6 +43,14 @@ export class SignalChannel extends BaseChannel {
   readonly type = 'signal' as const;
   private pollController: AbortController | null = null;
   private polling = false;
+  // Receive transport: json-rpc mode exposes /v1/receive as a WebSocket and
+  // delivers in real time; normal/native mode uses an HTTP long-poll. We detect
+  // which at start() via /v1/about and pick the matching loop.
+  private receiveMode: 'websocket' | 'longpoll' = 'longpoll';
+  private ws: WebSocket | null = null;
+  // Serialise envelope handling so WS messages are processed in arrival order,
+  // matching the sequential behaviour of the HTTP long-poll path.
+  private handleChain: Promise<void> = Promise.resolve();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectTimerReject: (() => void) | null = null;
   private reconnectAttempts = 0;
@@ -99,7 +107,32 @@ export class SignalChannel extends BaseChannel {
     }
 
     this.shouldReconnect = true;
-    this.startPolling();
+    this.receiveMode = await this.detectReceiveMode(apiUrl);
+    if (this.receiveMode === 'websocket') {
+      this.startWebSocket();
+    } else {
+      this.startPolling();
+    }
+  }
+
+  /**
+   * signal-cli-rest-api runs in one of two modes. In "json-rpc" mode a single
+   * persistent signal-cli daemon streams messages over a WebSocket at
+   * /v1/receive — real time, no per-call config-file lock. In "normal"/"native"
+   * mode each request spawns a fresh signal-cli that holds a lock, so we fall
+   * back to HTTP long-poll. /v1/about reports the active mode.
+   */
+  private async detectReceiveMode(apiUrl: string): Promise<'websocket' | 'longpoll'> {
+    try {
+      const res = await fetch(`${apiUrl}/v1/about`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const about = (await res.json()) as { mode?: string };
+        if (about?.mode === 'json-rpc') return 'websocket';
+      }
+    } catch (err: any) {
+      logger.debug({ err: err?.message }, 'Signal: could not read /v1/about, defaulting to long-poll');
+    }
+    return 'longpoll';
   }
 
   async stop(): Promise<void> {
@@ -108,6 +141,10 @@ export class SignalChannel extends BaseChannel {
     if (this.pollController) {
       this.pollController.abort();
       this.pollController = null;
+    }
+    if (this.ws) {
+      try { this.ws.close(); } catch { /* already closing */ }
+      this.ws = null;
     }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -120,6 +157,85 @@ export class SignalChannel extends BaseChannel {
     }
     this.ready = false;
   }
+
+  // ─── WebSocket receive (json-rpc mode) ───────────────────────
+
+  private startWebSocket(): void {
+    if (this.polling) return;
+    this.polling = true;
+    this.ready = true;
+    this.reconnectAttempts = 0;
+    logger.info('Signal: starting WebSocket receive loop (json-rpc mode)');
+    this.webSocketLoop();
+  }
+
+  private async webSocketLoop(): Promise<void> {
+    const { apiUrl, number } = this.config.channels.signal;
+    // http(s)://host -> ws(s)://host, same /v1/receive path.
+    const wsUrl = `${apiUrl.replace(/^http/, 'ws')}/v1/receive/${encodeURIComponent(number)}`;
+
+    while (this.polling && this.shouldReconnect) {
+      try {
+        await this.runWebSocketOnce(wsUrl);
+      } catch (err: any) {
+        logger.debug({ err: err?.message }, 'Signal: websocket session ended with error');
+      }
+      if (!this.shouldReconnect) break;
+      // Connection dropped (server restart, network blip). Back off and retry
+      // indefinitely, exactly like the long-poll path.
+      await this.pollBackoff();
+    }
+
+    this.polling = false;
+    this.ready = false;
+  }
+
+  private runWebSocketOnce(wsUrl: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err: any) {
+        logger.warn({ err: err?.message }, 'Signal: failed to open WebSocket');
+        resolve();
+        return;
+      }
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.reconnectAttempts = 0;
+        logger.info('Signal: WebSocket receive connected');
+      };
+
+      ws.onmessage = (ev: MessageEvent) => {
+        let data: any;
+        try {
+          const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+          data = JSON.parse(raw);
+        } catch {
+          return; // ignore non-JSON frames (e.g. keep-alives)
+        }
+        // Serialise handling to preserve arrival order.
+        this.handleChain = this.handleChain
+          .then(() => this.handleEnvelope(data))
+          .catch((err: any) => logger.warn({ err: err?.message }, 'Signal: error handling envelope'));
+      };
+
+      ws.onerror = () => {
+        // The close event always follows; let it drive reconnect.
+      };
+
+      ws.onclose = () => {
+        if (this.ws === ws) this.ws = null;
+        if (this.shouldReconnect) {
+          logger.warn('Signal: WebSocket receive closed, will reconnect');
+        }
+        resolve();
+      };
+    });
+  }
+
+  // ─── HTTP long-poll receive (normal/native mode) ─────────────
 
   private startPolling(): void {
     if (this.polling) return;
