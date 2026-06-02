@@ -28,13 +28,21 @@ export interface BinaryInfo {
 
 /* ── Install hint table per OS ────────────────────────────────────────── */
 
-function installHint(name: 'ffmpeg' | 'sox'): string {
+function installHint(name: 'ffmpeg' | 'sox' | 'espeak-ng' | 'whisper-cli'): string {
   switch (runtime.os) {
     case 'macos':
+      if (name === 'whisper-cli') return 'brew install whisper-cpp';
+      if (name === 'espeak-ng')   return 'brew install espeak-ng';
       return `brew install ${name}`;
     case 'linux':
+      if (name === 'whisper-cli')
+        return 'see https://github.com/ggml-org/whisper.cpp (build & install whisper-cli)';
       return `sudo apt install ${name}    # or: dnf install ${name} / pacman -S ${name}`;
     case 'windows':
+      if (name === 'whisper-cli')
+        return 'download whisper.cpp release from https://github.com/ggml-org/whisper.cpp/releases';
+      if (name === 'espeak-ng')
+        return 'winget install eSpeak-NG.eSpeak-NG  # or: choco install espeak';
       return name === 'ffmpeg'
         ? 'winget install Gyan.FFmpeg     # or: choco install ffmpeg'
         : 'choco install sox              # or: scoop install sox';
@@ -43,6 +51,11 @@ function installHint(name: 'ffmpeg' | 'sox'): string {
     default:
       return `install ${name} via your platform's package manager`;
   }
+}
+
+/** Default location Mercury looks for a whisper.cpp ggml model file. */
+export function defaultWhisperModelPath(): string {
+  return `${process.env.HOME ?? process.env.USERPROFILE ?? '.'}/.mercury/whisper/ggml-base.en.bin`;
 }
 
 /* ── Locate a binary on PATH ──────────────────────────────────────────── */
@@ -84,7 +97,7 @@ function probeVersion(path: string, args: string[]): string | undefined {
 
 const cache = new Map<string, BinaryInfo>();
 
-export function findBinary(name: 'ffmpeg' | 'ffplay' | 'sox' | 'rec' | 'afplay' | 'aplay' | 'paplay' | 'pw-play' | 'termux-microphone-record' | 'termux-tts-speak' | 'play-audio'): BinaryInfo {
+export function findBinary(name: 'ffmpeg' | 'ffplay' | 'sox' | 'rec' | 'afplay' | 'aplay' | 'paplay' | 'pw-play' | 'termux-microphone-record' | 'termux-tts-speak' | 'play-audio' | 'say' | 'espeak' | 'espeak-ng' | 'powershell' | 'pwsh' | 'whisper-cli' | 'whisper' | 'main'): BinaryInfo {
   const cached = cache.get(name);
   if (cached) return cached;
 
@@ -95,7 +108,9 @@ export function findBinary(name: 'ffmpeg' | 'ffplay' | 'sox' | 'rec' | 'afplay' 
     installHint:
       name === 'ffmpeg' || name === 'ffplay' ? installHint('ffmpeg')
       : name === 'sox' || name === 'rec' ? installHint('sox')
-      : '', // platform tools (afplay/aplay/paplay) come with the OS
+      : name === 'espeak' || name === 'espeak-ng' ? installHint('espeak-ng')
+      : name === 'whisper-cli' || name === 'whisper' || name === 'main' ? installHint('whisper-cli')
+      : '', // platform tools (afplay/aplay/say/powershell) ship with the OS
   };
 
   if (path && (name === 'ffmpeg' || name === 'ffplay' || name === 'sox')) {
@@ -117,8 +132,11 @@ export function _resetBinaryCacheForTests(): void {
  */
 export function probeAllAudioBinaries(): BinaryInfo[] {
   const targets: Array<Parameters<typeof findBinary>[0]> = ['ffmpeg', 'ffplay', 'sox'];
-  if (runtime.os === 'macos') targets.push('afplay');
-  if (runtime.os === 'linux') targets.push('aplay', 'paplay', 'pw-play');
+  if (runtime.os === 'macos')   targets.push('afplay', 'say');
+  if (runtime.os === 'linux')   targets.push('aplay', 'paplay', 'pw-play', 'espeak-ng', 'espeak');
+  if (runtime.os === 'windows') targets.push('powershell');
   if (runtime.os === 'android') targets.push('termux-microphone-record', 'termux-tts-speak', 'play-audio');
+  // Local STT (any OS — bring-your-own whisper.cpp).
+  targets.push('whisper-cli');
   return targets.map((t) => findBinary(t));
 }

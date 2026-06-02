@@ -171,9 +171,9 @@ export interface VoiceConfig {
   /** Persist provider choices independently for TTS and STT. */
   tts: {
     /** Which provider to attempt first. */
-    provider: 'cartesia' | 'openai';
+    provider: 'cartesia' | 'openai' | 'local';
     /** Fallback provider used on primary failure; null disables fallback. */
-    fallback: 'cartesia' | 'openai' | null;
+    fallback: 'cartesia' | 'openai' | 'local' | null;
     /** Auto-speak agent replies (when channel is CLI). */
     autoSpeakReplies: boolean;
     /** Normalize numbers/URLs/symbols before synthesis. */
@@ -187,10 +187,12 @@ export interface VoiceConfig {
       voice: string;       // e.g. "sage"
       model: string;       // e.g. "gpt-4o-mini-tts"
     };
+    /** On-device synthesizer (say / espeak-ng / SAPI). No fields needed. */
+    local?: Record<string, never>;
   };
   stt: {
-    provider: 'cartesia' | 'openai';
-    fallback: 'cartesia' | 'openai' | null;
+    provider: 'cartesia' | 'openai' | 'local';
+    fallback: 'cartesia' | 'openai' | 'local' | null;
     /** Show partial transcripts in input box while holding PTT. */
     liveCaptions: boolean;
     /** Auto-send transcript on PTT release (vs. inject for editing). */
@@ -202,6 +204,13 @@ export interface VoiceConfig {
     openai: {
       model: string;       // e.g. "whisper-1"
       language: string;    // "auto" | ISO code
+    };
+    /** Local STT via whisper.cpp. modelPath defaults to ~/.mercury/whisper/ggml-base.en.bin. */
+    local?: {
+      modelPath?: string;
+      language?: string;
+      /** Optional override for the whisper-cli binary path. */
+      binaryPath?: string;
     };
   };
   /** Push-to-talk hotkey identifier (resolved by channel layer). */
@@ -387,7 +396,7 @@ export function getDefaultConfig(): MercuryConfig {
       enabled: getEnvBool('MERCURY_VOICE_ENABLED', false),
       cartesiaApiKey: getEnv('CARTESIA_API_KEY', ''),
       tts: {
-        provider: (getEnv('MERCURY_VOICE_TTS_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
+        provider: (getEnv('MERCURY_VOICE_TTS_PROVIDER', 'cartesia') as 'cartesia' | 'openai' | 'local'),
         fallback: 'openai',
         autoSpeakReplies: getEnvBool('MERCURY_VOICE_AUTO_SPEAK', true),
         normalize: getEnvBool('MERCURY_VOICE_NORMALIZE', true),
@@ -407,7 +416,7 @@ export function getDefaultConfig(): MercuryConfig {
         },
       },
       stt: {
-        provider: (getEnv('MERCURY_VOICE_STT_PROVIDER', 'cartesia') as 'cartesia' | 'openai'),
+        provider: (getEnv('MERCURY_VOICE_STT_PROVIDER', 'cartesia') as 'cartesia' | 'openai' | 'local'),
         fallback: 'openai',
         liveCaptions: getEnvBool('MERCURY_VOICE_LIVE_CAPTIONS', true),
         autoSubmit: getEnvBool('MERCURY_VOICE_AUTO_SUBMIT', true),
@@ -418,6 +427,11 @@ export function getDefaultConfig(): MercuryConfig {
         openai: {
           model: getEnv('OPENAI_STT_MODEL', 'whisper-1'),
           language: getEnv('OPENAI_STT_LANGUAGE', 'auto'),
+        },
+        local: {
+          modelPath: getEnv('MERCURY_VOICE_WHISPER_MODEL', ''),
+          language: getEnv('MERCURY_VOICE_WHISPER_LANGUAGE', 'en'),
+          binaryPath: getEnv('MERCURY_VOICE_WHISPER_BIN', ''),
         },
       },
       pushToTalkKey: getEnv('MERCURY_VOICE_PTT_KEY', 'ctrl+space'),

@@ -42,8 +42,10 @@ import type { RecordingSource } from './audio/backends/base.js';
 // provider lands first.
 import './tts/cartesia.js';
 import './tts/openai.js';
+import './tts/local.js';
 import './stt/cartesia.js';
 import './stt/openai.js';
+import './stt/local.js';
 
 export interface VoiceStatusSnapshot {
   state: VoiceState;

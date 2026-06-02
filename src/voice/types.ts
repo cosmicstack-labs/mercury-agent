@@ -9,8 +9,8 @@
  * (TUI, Web, Telegram, Termux) can plug into the same VoiceManager.
  */
 
-export type TTSProviderName = 'cartesia' | 'openai';
-export type STTProviderName = 'cartesia' | 'openai';
+export type TTSProviderName = 'cartesia' | 'openai' | 'local';
+export type STTProviderName = 'cartesia' | 'openai' | 'local';
 
 /** Voice subsystem state, surfaced to the UI status bar. */
 export type VoiceState =
