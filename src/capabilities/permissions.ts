@@ -361,9 +361,11 @@ export class PermissionManager {
     if (shell.cwdOnly) {
       const hasPathTraversal = this.hasPathBeyondCwd(trimmed);
       if (hasPathTraversal) {
-        const scopeCheck = await this.checkFsAccess(hasPathTraversal, 'write');
+        const isSafeRead = PermissionManager.SAFE_READ_COMMANDS.has(baseCmd);
+        const accessMode = isSafeRead ? 'read' : 'write';
+        const scopeCheck = await this.checkFsAccess(hasPathTraversal, accessMode);
         if (!scopeCheck.allowed) {
-          return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="write" to request access.`, needsApproval: false };
+          return { allowed: false, reason: `No permission to access ${hasPathTraversal}. Use approve_scope tool with path="${hasPathTraversal}" and mode="${accessMode}" to request access.`, needsApproval: false };
         }
       }
     }

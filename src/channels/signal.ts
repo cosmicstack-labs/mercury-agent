@@ -25,6 +25,20 @@ const SEND_TIMEOUT_MS = 20_000;
 const SEND_MAX_ATTEMPTS = 3;
 const INTER_MESSAGE_DELAY_MS = 350;
 
+const AFFIRMATIVE = new Set(['yes', 'y', 'ok', 'okay', 'sure', 'allow', 'approve', 'yeah', 'yep', 'yup']);
+const NEGATIVE = new Set(['no', 'n', 'nope', 'deny', 'stop', 'cancel', 'never']);
+const ALWAYS_WORDS = new Set(['always', 'all', 'allow-all', 'allow all', 'forever']);
+
+function normalizeReply(raw: string): string {
+  const cleaned = raw.trim().toLowerCase().replace(/[.!]/g, '');
+  if (ALWAYS_WORDS.has(cleaned)) return 'always';
+  if (AFFIRMATIVE.has(cleaned)) return 'yes';
+  if (NEGATIVE.has(cleaned)) return 'no';
+  if (/^\d+$/.test(cleaned)) return cleaned;
+  if (AFFIRMATIVE.has(cleaned.split(/\s+/)[0])) return 'yes';
+  return cleaned || 'no';
+}
+
 type PendingReply = {
   resolve: (value: string) => void;
   timeout: NodeJS.Timeout;
@@ -312,9 +326,14 @@ export class SignalChannel extends BaseChannel {
     }
 
     // Check if this is a reply to a pending prompt (text replies only)
-    const pendingReply = text ? this.pendingReplies.get(source) : undefined;
+    // Try both phone and UUID — signal-cli may use either form across envelopes.
+    const pendingReply = text
+      ? (this.pendingReplies.get(source) || (sourceUuid ? this.pendingReplies.get(sourceUuid) : undefined) || (sourcePhone ? this.pendingReplies.get(sourcePhone) : undefined))
+      : undefined;
     if (pendingReply && text) {
       this.pendingReplies.delete(source);
+      if (sourceUuid) this.pendingReplies.delete(sourceUuid);
+      if (sourcePhone) this.pendingReplies.delete(sourcePhone);
       clearTimeout(pendingReply.timeout);
       pendingReply.resolve(text.toLowerCase());
       return;
@@ -594,28 +613,30 @@ export class SignalChannel extends BaseChannel {
 
   async askPermission(prompt: string, targetId?: string): Promise<string> {
     const target = this.resolvePromptTarget(targetId);
-    if (!target) return 'no'; // No one to ask → safe default.
+    if (!target) return 'no';
 
     const message = `${prompt}\n\n@${target.name}, reply: yes / no / always`;
     await this.sendToGroup(message);
 
-    return this.waitForReply(target.source, 120_000, 'no');
+    const raw = await this.waitForReply(target.source, 120_000, 'no');
+    return normalizeReply(raw);
   }
 
   async askToContinue(question: string, targetId?: string): Promise<boolean> {
     const target = this.resolvePromptTarget(targetId);
-    if (!target) return false; // No one to ask → safe default.
+    if (!target) return false;
 
     const message = `${question}\n\n@${target.name}, reply: yes / no`;
     await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(target.source, 120_000, 'no');
-    return reply === 'yes' || reply === 'y' || reply === 'continue';
+    const raw = await this.waitForReply(target.source, 120_000, 'no');
+    const normalized = normalizeReply(raw);
+    return normalized === 'yes' || normalized === 'always';
   }
 
   async askPermissionMode(targetId?: string): Promise<PermissionMode> {
     const target = this.resolvePromptTarget(targetId);
-    if (!target) return 'ask-me'; // No one to ask → safest mode.
+    if (!target) return 'ask-me';
 
     const message = [
       'Permission Mode',
@@ -628,8 +649,9 @@ export class SignalChannel extends BaseChannel {
     ].join('\n');
     await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(target.source, 120_000, '1');
-    return reply === '2' || reply === 'allow-all' || reply === 'allow all' ? 'allow-all' : 'ask-me';
+    const raw = await this.waitForReply(target.source, 120_000, '1');
+    const normalized = normalizeReply(raw);
+    return normalized === '2' || normalized === 'always' ? 'allow-all' : 'ask-me';
   }
 
   /**
@@ -676,13 +698,14 @@ export class SignalChannel extends BaseChannel {
     ].join('\n');
     await this.sendToGroup(message);
 
-    const reply = await this.waitForReply(target.source, 120_000, '1');
-    const index = parseInt(reply.trim(), 10);
+    const raw = await this.waitForReply(target.source, 120_000, '1');
+    const normalized = normalizeReply(raw);
+    const index = parseInt(normalized, 10);
     if (!isNaN(index) && index >= 1 && index <= choices.length) {
       return choices[index - 1];
     }
     // Allow replying with the option text itself.
-    const byLabel = choices.find((c) => c.toLowerCase() === reply.trim().toLowerCase());
+    const byLabel = choices.find((c) => c.toLowerCase() === normalized);
     return byLabel ?? choices[0];
   }
 
@@ -694,14 +717,42 @@ export class SignalChannel extends BaseChannel {
       existing.resolve(defaultValue);
     }
 
+    // Also find and store under alternate identities (uuid if we have phone, or vice versa)
+    // so replies arriving under a different form still match.
+    const altId = this.findAlternateIdentity(phoneNumber);
+    if (altId) {
+      const altExisting = this.pendingReplies.get(altId);
+      if (altExisting) {
+        clearTimeout(altExisting.timeout);
+        altExisting.resolve(defaultValue);
+      }
+    }
+
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         this.pendingReplies.delete(phoneNumber);
+        if (altId) this.pendingReplies.delete(altId);
         resolve(defaultValue);
       }, timeoutMs);
 
-      this.pendingReplies.set(phoneNumber, { resolve, timeout });
+      const entry: PendingReply = { resolve, timeout };
+      this.pendingReplies.set(phoneNumber, entry);
+      if (altId) this.pendingReplies.set(altId, entry);
     });
+  }
+
+  private findAlternateIdentity(id: string): string | null {
+    if (id.startsWith('+')) {
+      const user = this.config.channels.signal.admins.find(a => a.phoneNumber === id)
+        || this.config.channels.signal.members.find(m => m.phoneNumber === id);
+      return user?.uuid || null;
+    }
+    if (id.includes('-')) {
+      const user = this.config.channels.signal.admins.find(a => a.uuid === id)
+        || this.config.channels.signal.members.find(m => m.uuid === id);
+      return user?.phoneNumber || null;
+    }
+    return null;
   }
 
   // ─── Task Progress (Telegram Parity) ───────────────────────
