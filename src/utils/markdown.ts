@@ -340,3 +340,95 @@ export function mdToDiscord(text: string): string {
 
   return out;
 }
+
+/**
+ * Normalize Markdown for Slack's mrkdwn format.
+ *
+ * Slack mrkdwn differs from standard markdown:
+ *  - Bold uses *single asterisks* not **double** (Slack: *bold*, not **bold**)
+ *  - Italic uses _underscores_ not *asterisks* (Slack: _italic_, not *italic*)
+ *  - Strikethrough uses ~single tilde~ not ~~double~~ (Slack: ~strike~, not ~~strike~~)
+ *  - No heading syntax (# heading) → convert to bold
+ *  - Links [label](url) → convert to <url|label> (Slack's link format)
+ *  - Fenced code blocks with language hints → keep the block, Slack supports syntax highlighting
+ *  - Code is left as-is (Slack renders `code` natively)
+ *  - Slack has a 40,000 character limit per message block
+ */
+export function mdToSlack(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    const placeholder = `\u0000CODEBLOCK_${codeBlocks.length}\u0000`;
+    if (lang) {
+      codeBlocks.push(`\`\`\`${lang}\n${code}\`\`\``);
+    } else {
+      codeBlocks.push(`\`\`\`\n${code}\`\`\``);
+    }
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `\u0000INLINECODE_${inlineCodes.length}\u0000`;
+    inlineCodes.push('`' + code + '`');
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `\u0000LINK_${links.length}\u0000`;
+    if (label === href) {
+      links.push(`<${href}>`);
+    } else {
+      links.push(`<${href}|${label}>`);
+    }
+    return placeholder;
+  });
+
+  const bolds: string[] = [];
+  out = out.replace(/\*\*([^*]+)\*\*/g, (_match, text) => {
+    const placeholder = `\u0000BOLD_${bolds.length}\u0000`;
+    bolds.push(`*${text}*`);
+    return placeholder;
+  });
+
+  const italics: string[] = [];
+  out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_match, text) => {
+    const placeholder = `\u0000ITALIC_${italics.length}\u0000`;
+    italics.push(`_${text}_`);
+    return placeholder;
+  });
+
+  const strikes: string[] = [];
+  out = out.replace(/~~([^~]+)~~/g, (_match, text) => {
+    const placeholder = `\u0000STRIKE_${strikes.length}\u0000`;
+    strikes.push(`~${text}~`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '*$1*');
+  out = out.replace(/^## (.+)$/gm, '*$1*');
+  out = out.replace(/^# (.+)$/gm, '*$1*');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`\u0000INLINECODE_${i}\u0000`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`\u0000CODEBLOCK_${i}\u0000`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`\u0000LINK_${i}\u0000`, links[i]);
+  }
+  for (let i = 0; i < bolds.length; i++) {
+    out = out.replace(`\u0000BOLD_${i}\u0000`, bolds[i]);
+  }
+  for (let i = 0; i < italics.length; i++) {
+    out = out.replace(`\u0000ITALIC_${i}\u0000`, italics[i]);
+  }
+  for (let i = 0; i < strikes.length; i++) {
+    out = out.replace(`\u0000STRIKE_${i}\u0000`, strikes[i]);
+  }
+
+  return out;
+}

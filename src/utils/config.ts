@@ -63,6 +63,23 @@ export interface DiscordPendingRequest {
   pairingCode?: string;
 }
 
+export interface SlackAccessUser {
+  id: string;
+  username?: string;
+  teamId?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface SlackPendingRequest {
+  id: string;
+  username?: string;
+  channelId?: string;
+  teamId?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
 export interface SignalAccessUser {
   phoneNumber: string;
   /** Signal ACI/UUID, when known. Used to match senders who appear without a phone number. */
@@ -165,6 +182,22 @@ export interface MercuryConfig {
       admins: DiscordAccessUser[];
       members: DiscordAccessUser[];
       pending: DiscordPendingRequest[];
+    };
+    slack: {
+      enabled: boolean;
+      botToken: string;
+      appToken: string;
+      signingSecret: string;
+      mode: 'socket' | 'http';
+      streaming?: boolean;
+      requireMention: boolean;
+      freeResponseChannels: string[];
+      ignoredChannels: string[];
+      threadFollow: boolean;
+      reactions: boolean;
+      admins: SlackAccessUser[];
+      members: SlackAccessUser[];
+      pending: SlackPendingRequest[];
     };
   };
   github: {
@@ -363,6 +396,26 @@ export function getDefaultConfig(): MercuryConfig {
           .split(',')
           .filter(Boolean),
         reactions: getEnvBool('DISCORD_REACTIONS', true),
+        admins: [],
+        members: [],
+        pending: [],
+      },
+      slack: {
+        enabled: getEnvBool('SLACK_ENABLED', false),
+        botToken: getEnv('SLACK_BOT_TOKEN', ''),
+        appToken: getEnv('SLACK_APP_TOKEN', ''),
+        signingSecret: getEnv('SLACK_SIGNING_SECRET', ''),
+        mode: (process.env.SLACK_MODE as 'socket' | 'http') || 'socket',
+        streaming: getEnvBool('SLACK_STREAMING', true),
+        requireMention: getEnvBool('SLACK_REQUIRE_MENTION', true),
+        freeResponseChannels: getEnv('SLACK_FREE_RESPONSE_CHANNELS', '')
+          .split(',')
+          .filter(Boolean),
+        ignoredChannels: getEnv('SLACK_IGNORED_CHANNELS', '')
+          .split(',')
+          .filter(Boolean),
+        threadFollow: getEnvBool('SLACK_THREAD_FOLLOW', true),
+        reactions: getEnvBool('SLACK_REACTIONS', true),
         admins: [],
         members: [],
         pending: [],
@@ -1041,5 +1094,174 @@ export function demoteDiscordAdmin(config: MercuryConfig, id: string): DiscordAc
   config.channels.discord.admins = config.channels.discord.admins
     .filter((entry) => entry.id !== id);
   config.channels.discord.members.push(admin);
+  return admin;
+}
+
+// ═══════════════════════════════════════════
+// Slack Access Helpers
+// ═══════════════════════════════════════════
+
+export function getSlackApprovedUsers(config: MercuryConfig): SlackAccessUser[] {
+  return [
+    ...config.channels.slack.admins,
+    ...config.channels.slack.members,
+  ];
+}
+
+export function getSlackApprovedUserIds(config: MercuryConfig): string[] {
+  return [...new Set(getSlackApprovedUsers(config).map((user) => user.id))];
+}
+
+export function getSlackAdmins(config: MercuryConfig): SlackAccessUser[] {
+  return config.channels.slack.admins;
+}
+
+export function getSlackPendingRequests(config: MercuryConfig): SlackPendingRequest[] {
+  return config.channels.slack.pending;
+}
+
+export function findSlackApprovedUser(config: MercuryConfig, id: string): SlackAccessUser | undefined {
+  return getSlackApprovedUsers(config).find((user) => user.id === id);
+}
+
+export function findSlackAdmin(config: MercuryConfig, id: string): SlackAccessUser | undefined {
+  return config.channels.slack.admins.find((user) => user.id === id);
+}
+
+export function findSlackPendingRequest(config: MercuryConfig, id: string): SlackPendingRequest | undefined {
+  return config.channels.slack.pending.find((request) => request.id === id);
+}
+
+export function findSlackPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): SlackPendingRequest | undefined {
+  return config.channels.slack.pending.find((request) => request.pairingCode === pairingCode);
+}
+
+export function hasSlackAdmins(config: MercuryConfig): boolean {
+  return config.channels.slack.admins.length > 0;
+}
+
+export function getSlackAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.slack.admins.length} admin${config.channels.slack.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.slack.members.length} member${config.channels.slack.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.slack.pending.length} pending`;
+}
+
+export function addSlackPendingRequest(
+  config: MercuryConfig,
+  request: Omit<SlackPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): SlackPendingRequest {
+  const existing = findSlackPendingRequest(config, request.id);
+  if (existing) {
+    existing.username = request.username || existing.username;
+    existing.channelId = request.channelId || existing.channelId;
+    existing.teamId = request.teamId || existing.teamId;
+    existing.pairingCode = request.pairingCode || existing.pairingCode;
+    return existing;
+  }
+
+  const created: SlackPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.slack.pending.push(created);
+  return created;
+}
+
+export function approveSlackPendingRequest(
+  config: MercuryConfig,
+  id: string,
+  role: 'admin' | 'member' = 'member',
+): SlackAccessUser | null {
+  const request = findSlackPendingRequest(config, id);
+  if (!request) return null;
+
+  const approvedUser: SlackAccessUser = {
+    id: request.id,
+    username: request.username,
+    teamId: request.teamId,
+    requestedAt: request.requestedAt,
+    approvedAt: new Date().toISOString(),
+  };
+
+  config.channels.slack.pending = config.channels.slack.pending
+    .filter((entry) => entry.id !== id);
+  config.channels.slack.admins = config.channels.slack.admins
+    .filter((entry) => entry.id !== id);
+  config.channels.slack.members = config.channels.slack.members
+    .filter((entry) => entry.id !== id);
+
+  if (role === 'admin') {
+    config.channels.slack.admins.push(approvedUser);
+  } else {
+    config.channels.slack.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+export function approveSlackPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): SlackAccessUser | null {
+  const request = findSlackPendingRequestByPairingCode(config, pairingCode);
+  if (!request) return null;
+  const role = hasSlackAdmins(config) ? 'member' : 'admin';
+  return approveSlackPendingRequest(config, request.id, role);
+}
+
+export function rejectSlackPendingRequest(config: MercuryConfig, id: string): SlackPendingRequest | null {
+  const request = findSlackPendingRequest(config, id);
+  if (!request) return null;
+  config.channels.slack.pending = config.channels.slack.pending
+    .filter((entry) => entry.id !== id);
+  return request;
+}
+
+export function removeSlackUser(config: MercuryConfig, id: string): SlackAccessUser | null {
+  const admin = config.channels.slack.admins.find((entry) => entry.id === id);
+  if (admin) {
+    config.channels.slack.admins = config.channels.slack.admins
+      .filter((entry) => entry.id !== id);
+    return admin;
+  }
+
+  const member = config.channels.slack.members.find((entry) => entry.id === id);
+  if (member) {
+    config.channels.slack.members = config.channels.slack.members
+      .filter((entry) => entry.id !== id);
+    return member;
+  }
+
+  return null;
+}
+
+export function clearSlackAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.slack.admins = [];
+  config.channels.slack.members = [];
+  config.channels.slack.pending = [];
+  return config;
+}
+
+export function promoteSlackUserToAdmin(config: MercuryConfig, id: string): SlackAccessUser | null {
+  const member = config.channels.slack.members.find((entry) => entry.id === id);
+  if (!member) return null;
+  config.channels.slack.members = config.channels.slack.members
+    .filter((entry) => entry.id !== id);
+  config.channels.slack.admins.push(member);
+  return member;
+}
+
+export function demoteSlackAdmin(config: MercuryConfig, id: string): SlackAccessUser | null {
+  if (config.channels.slack.admins.length <= 1) {
+    return null;
+  }
+  const admin = config.channels.slack.admins.find((entry) => entry.id === id);
+  if (!admin) return null;
+  config.channels.slack.admins = config.channels.slack.admins
+    .filter((entry) => entry.id !== id);
+  config.channels.slack.members.push(admin);
   return admin;
 }

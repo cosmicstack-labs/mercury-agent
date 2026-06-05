@@ -74,6 +74,23 @@ export interface DiscordPendingRequest {
   pairingCode?: string;
 }
 
+export interface SlackAccessUser {
+  id: string;
+  username?: string;
+  teamId?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface SlackPendingRequest {
+  id: string;
+  username?: string;
+  channelId?: string;
+  teamId?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
 export interface CLIChannelConfig extends ChannelConfig {
   type: 'cli';
 }

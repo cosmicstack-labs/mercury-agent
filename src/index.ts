@@ -45,6 +45,18 @@ import {
   promoteDiscordUserToAdmin,
   demoteDiscordAdmin,
   hasDiscordAdmins,
+  clearSlackAccess,
+  getSlackAccessSummary,
+  getSlackApprovedUsers,
+  getSlackApprovedUserIds,
+  getSlackPendingRequests,
+  approveSlackPendingRequest,
+  approveSlackPendingRequestByPairingCode,
+  rejectSlackPendingRequest,
+  removeSlackUser,
+  promoteSlackUserToAdmin,
+  demoteSlackAdmin,
+  hasSlackAdmins,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -64,6 +76,7 @@ import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { SignalChannel } from './channels/signal.js';
 import { DiscordChannel } from './channels/discord.js';
+import { SlackChannel } from './channels/slack.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -1230,12 +1243,19 @@ async function completeInitialDiscordPairing(config: MercuryConfig): Promise<voi
         continue;
       }
 
-      const approved = approveDiscordPendingRequestByPairingCode(config, pairingCode);
+      // Reload config from disk — the bot handler may have saved pending requests
+      // to a different config object reference after reloadConfig() was called
+      const freshConfig = loadConfig();
+      const approved = approveDiscordPendingRequestByPairingCode(freshConfig, pairingCode);
       if (!approved) {
         console.log(chalk.red('  That pairing code is not valid yet. Send /start in Discord, then paste the exact code here.'));
         continue;
       }
 
+      // Copy the approved state back to our config object and save
+      config.channels.discord.admins = freshConfig.channels.discord.admins;
+      config.channels.discord.members = freshConfig.channels.discord.members;
+      config.channels.discord.pending = freshConfig.channels.discord.pending;
       saveConfig(config);
       const label = approved.username ? `${approved.id} (${approved.username})` : approved.id;
       console.log(chalk.green(`  ✓ Discord paired. First admin: ${label}.`));
@@ -1244,6 +1264,64 @@ async function completeInitialDiscordPairing(config: MercuryConfig): Promise<voi
     }
   } finally {
     await discord.stop();
+  }
+}
+
+async function completeInitialSlackPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.slack.enabled || !config.channels.slack.botToken || !config.channels.slack.appToken || hasSlackAdmins(config)) {
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Slack Pairing'));
+  console.log(chalk.dim('  The bot is now online. To become its first admin:'));
+  console.log(chalk.dim('    1. Open Slack'));
+  console.log(chalk.dim('    2. Go to the workspace where you installed the app'));
+  console.log(chalk.dim('    3. Send a DM to the bot with the message: /start'));
+  console.log(chalk.dim('       — Or @mention the bot in a channel with /start'));
+  console.log(chalk.dim('       — Example: @Mercury /start'));
+  console.log(chalk.dim('    4. The bot will reply with a pairing code — paste it below'));
+  console.log('');
+
+  const slack = new SlackChannel(config);
+  try {
+    await slack.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await slack.stop();
+    return;
+  }
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Slack Pairing Code: '));
+      if (!pairingCode) {
+        console.log(chalk.red('  Slack pairing code is required to continue.'));
+        continue;
+      }
+
+      // Reload config from disk — the bot handler may have saved pending requests
+      // to a different config object reference after reloadConfig() was called
+      const freshConfig = loadConfig();
+      const approved = approveSlackPendingRequestByPairingCode(freshConfig, pairingCode);
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid yet. Send /start in Slack, then paste the exact code here.'));
+        continue;
+      }
+
+      // Copy the approved state back to our config object and save
+      config.channels.slack.admins = freshConfig.channels.slack.admins;
+      config.channels.slack.members = freshConfig.channels.slack.members;
+      config.channels.slack.pending = freshConfig.channels.slack.pending;
+      saveConfig(config);
+      const label = approved.username ? `${approved.id} (${approved.username})` : approved.id;
+      console.log(chalk.green(`  ✓ Slack paired. First admin: ${label}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await slack.stop();
   }
 }
 
@@ -1755,6 +1833,173 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialDiscordPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Slack (optional)'));
+  if (isReconfig && config.channels.slack.enabled) {
+    console.log(chalk.dim(`  Slack is enabled. Bot: ${config.channels.slack.botToken ? 'configured' : 'missing token'}`));
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to skip. Enter a bot token to enable.'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  To create a Slack app:'));
+    console.log(chalk.dim('    1. Go to https://api.slack.com/apps and click "Create New App"'));
+    console.log(chalk.dim('    2. Choose "From scratch" — give it a name (e.g. "Mercury")'));
+    console.log(chalk.dim('    3. Pick a workspace to install it into'));
+    console.log(chalk.dim('    4. In the left sidebar, go to "OAuth & Permissions"'));
+    console.log(chalk.dim('       — Under "Scopes > Bot Token Scopes", add these:'));
+    console.log(chalk.dim('         • chat:write          (send messages)'));
+    console.log(chalk.dim('         • chat:write.public   (post in channels without being a member)'));
+    console.log(chalk.dim('         • chat:write.customize (use custom emoji, formatting)'));
+    console.log(chalk.dim('         • files:write         (upload files)'));
+    console.log(chalk.dim('         • files:read           (read shared files)'));
+    console.log(chalk.dim('         • reactions:write       (add emoji reactions)'));
+    console.log(chalk.dim('         • reactions:read        (read reactions)'));
+    console.log(chalk.dim('         • channels:history     (read channel messages)'));
+    console.log(chalk.dim('         • channels:read         (see channel info)'));
+    console.log(chalk.dim('         • groups:history        (read private channel messages)'));
+    console.log(chalk.dim('         • groups:read            (see private channel info)'));
+    console.log(chalk.dim('         • im:history            (read DM messages)'));
+    console.log(chalk.dim('         • im:read                (see DM info)'));
+    console.log(chalk.dim('         • im:write               (send DMs)'));
+    console.log(chalk.dim('         • mpim:history          (read group DM messages)'));
+    console.log(chalk.dim('         • mpim:read              (see group DM info)'));
+    console.log(chalk.dim('         • mpim:write             (send group DMs)'));
+    console.log(chalk.dim('         • commands              (use slash commands)'));
+    console.log(chalk.dim('       — Scroll up and click "Install to Workspace"'));
+    console.log(chalk.dim('       — Copy the "Bot User OAuth Token" (starts with xoxb-)'));
+    console.log(chalk.dim('    5. In the left sidebar, go to "Socket Mode"'));
+    console.log(chalk.dim('       — Enable Socket Mode (toggle the switch)'));
+    console.log(chalk.dim('       — Click "Generate Token"'));
+    console.log(chalk.dim('       — Copy the app-level token (starts with xapp-)'));
+    console.log(chalk.dim('       — This token needs the "connections:write" scope'));
+    console.log(chalk.dim('    6. In the left sidebar, go to "Event Subscriptions"'));
+    console.log(chalk.dim('       — Enable Events (toggle the switch)'));
+    console.log(chalk.dim('       — Under "Subscribe to bot events", add:'));
+    console.log(chalk.dim('         • app_mention'));
+    console.log(chalk.dim('         • message.im'));
+    console.log(chalk.dim('         • message.mpim'));
+    console.log(chalk.dim('         • message.channels'));
+    console.log(chalk.dim('         • message.groups'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    7. In the left sidebar, go to "Interactivity & Shortcuts"'));
+    console.log(chalk.dim('       — Enable Interactivity (toggle the switch)'));
+    console.log(chalk.dim('       — Leave the Request URL as-is (Socket Mode handles this)'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    7. In the left sidebar, go to "App Home"'));
+    console.log(chalk.yellow('       — ⚠  Scroll down and CHECK the box:'));
+    console.log(chalk.dim('         "Allow users to send Slash commands and messages'));
+    console.log(chalk.dim('          from the messages tab"'));
+    console.log(chalk.yellow('       — Without this, users will see'));
+    console.log(chalk.yellow('         "Sending messages to this app has been turned off."'));
+    console.log(chalk.dim('    8. In the left sidebar, go to "Interactivity & Shortcuts"'));
+    console.log(chalk.dim('       — Enable Interactivity (toggle the switch)'));
+    console.log(chalk.dim('       — Leave the Request URL as-is (Socket Mode handles this)'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    9. Paste the bot token and app token below'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  After setup, send /start to the bot (DM or @mention) to get a pairing code.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with: mercury setup'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  To create a Slack app:'));
+    console.log(chalk.dim('    1. Go to https://api.slack.com/apps and click "Create New App"'));
+    console.log(chalk.dim('    2. Choose "From scratch" — give it a name (e.g. "Mercury")'));
+    console.log(chalk.dim('    3. Pick a workspace to install it into'));
+    console.log(chalk.dim('    4. In the left sidebar, go to "OAuth & Permissions"'));
+    console.log(chalk.dim('       — Under "Scopes > Bot Token Scopes", add these:'));
+    console.log(chalk.dim('         • chat:write          (send messages)'));
+    console.log(chalk.dim('         • chat:write.public   (post in channels without being a member)'));
+    console.log(chalk.dim('         • chat:write.customize (use custom emoji, formatting)'));
+    console.log(chalk.dim('         • files:write         (upload files)'));
+    console.log(chalk.dim('         • files:read           (read shared files)'));
+    console.log(chalk.dim('         • reactions:write       (add emoji reactions)'));
+    console.log(chalk.dim('         • reactions:read        (read reactions)'));
+    console.log(chalk.dim('         • channels:history     (read channel messages)'));
+    console.log(chalk.dim('         • channels:read         (see channel info)'));
+    console.log(chalk.dim('         • groups:history        (read private channel messages)'));
+    console.log(chalk.dim('         • groups:read            (see private channel info)'));
+    console.log(chalk.dim('         • im:history            (read DM messages)'));
+    console.log(chalk.dim('         • im:read                (see DM info)'));
+    console.log(chalk.dim('         • im:write               (send DMs)'));
+    console.log(chalk.dim('         • mpim:history          (read group DM messages)'));
+    console.log(chalk.dim('         • mpim:read              (see group DM info)'));
+    console.log(chalk.dim('         • mpim:write             (send group DMs)'));
+    console.log(chalk.dim('         • commands              (use slash commands)'));
+    console.log(chalk.dim('       — Scroll up and click "Install to Workspace"'));
+    console.log(chalk.dim('       — Copy the "Bot User OAuth Token" (starts with xoxb-)'));
+    console.log(chalk.dim('    5. In the left sidebar, go to "Socket Mode"'));
+    console.log(chalk.dim('       — Enable Socket Mode (toggle the switch)'));
+    console.log(chalk.dim('       — Click "Generate Token"'));
+    console.log(chalk.dim('       — Copy the app-level token (starts with xapp-)'));
+    console.log(chalk.dim('       — This token needs the "connections:write" scope'));
+    console.log(chalk.dim('    6. In the left sidebar, go to "Event Subscriptions"'));
+    console.log(chalk.dim('       — Enable Events (toggle the switch)'));
+    console.log(chalk.dim('       — Under "Subscribe to bot events", add:'));
+    console.log(chalk.dim('         • app_mention'));
+    console.log(chalk.dim('         • message.im'));
+    console.log(chalk.dim('         • message.mpim'));
+    console.log(chalk.dim('         • message.channels'));
+    console.log(chalk.dim('         • message.groups'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    7. In the left sidebar, go to "App Home"'));
+    console.log(chalk.yellow('       — ⚠  Scroll down and CHECK the box:'));
+    console.log(chalk.dim('         "Allow users to send Slash commands and messages'));
+    console.log(chalk.dim('          from the messages tab"'));
+    console.log(chalk.yellow('       — Without this, users will see'));
+    console.log(chalk.yellow('         "Sending messages to this app has been turned off."'));
+    console.log(chalk.dim('    8. In the left sidebar, go to "Interactivity & Shortcuts"'));
+    console.log(chalk.dim('       — Enable Interactivity (toggle the switch)'));
+    console.log(chalk.dim('       — Leave the Request URL as-is (Socket Mode handles this)'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    9. Paste the bot token and app token below'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  After setup, send /start to the bot (DM or @mention) to get a pairing code.'));
+  }
+  console.log('');
+
+  const currentSlackToken = config.channels.slack.botToken;
+  const slackTokenPrompt = isReconfig && currentSlackToken
+    ? chalk.white(`  Slack Bot Token [${currentSlackToken.slice(0, 8)}...]: `)
+    : chalk.white('  Slack Bot Token (xoxb-...): ');
+  const rawSlackToken = await ask(slackTokenPrompt);
+
+  if (rawSlackToken.toLowerCase() === 'none') {
+    config.channels.slack.enabled = false;
+    config.channels.slack.botToken = '';
+    config.channels.slack.appToken = '';
+    clearSlackAccess(config);
+    saveConfig(config);
+    console.log(chalk.dim('  Slack disabled and access cleared.'));
+  } else if (rawSlackToken) {
+    if (currentSlackToken && rawSlackToken !== currentSlackToken) {
+      clearSlackAccess(config);
+      console.log(chalk.dim('  Token changed — cleared Slack access lists.'));
+    }
+    config.channels.slack.botToken = rawSlackToken;
+    config.channels.slack.enabled = true;
+
+    const currentAppToken = config.channels.slack.appToken;
+    const appTokenPrompt = isReconfig && currentAppToken
+      ? chalk.white(`  Slack App Token [${currentAppToken.slice(0, 8)}...]: `)
+      : chalk.white('  Slack App Token (xapp-... for Socket Mode): ');
+    const rawAppToken = await ask(appTokenPrompt);
+    if (rawAppToken) {
+      config.channels.slack.appToken = rawAppToken;
+    }
+
+    if (!isReconfig) {
+      const requireMention = await ask(chalk.white('  Require @mention in channels? (Y/n): '));
+      config.channels.slack.requireMention = requireMention.toLowerCase() !== 'n';
+    }
+
+    saveConfig(config);
+  } else if (isReconfig) {
+    // keep current
+  }
+
+  await completeInitialSlackPairing(config);
 
   hr();
   console.log('');
@@ -2387,63 +2632,111 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memoryClear: () => userMemory ? userMemory.clear() : 0,
   });
 
-  capabilities.setSendFileHandler(async (filePath: string) => {
+  capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
     const { channelId, channelType } = capabilities.getChannelContext();
     const telegram = channels.get('telegram');
     const discord = channels.get('discord');
+    const slack = channels.get('slack');
 
-    if (channelType === 'telegram' && telegram) {
-      await telegram.sendFile(filePath, channelId);
-      return;
+    const ch = channel?.toLowerCase();
+
+    if (ch === 'slack' || channelType === 'slack') {
+      if (slack) { await slack.sendFile(filePath, channelId); return; }
+    }
+    if (ch === 'telegram' || channelType === 'telegram') {
+      if (telegram) { await telegram.sendFile(filePath, channelId); return; }
+    }
+    if (ch === 'discord' || channelType === 'discord') {
+      if (discord) { await discord.sendFile(filePath, channelId); return; }
     }
 
-    if (channelType === 'discord' && discord) {
-      await discord.sendFile(filePath, channelId);
-      return;
+    if (ch && ch !== channelType) {
+      // Cross-channel forward: send to the specified channel only
+      if (ch === 'slack' && slack && getSlackApprovedUsers(config).length > 0) {
+        await slack.sendFile(filePath);
+        return;
+      }
+      if (ch === 'telegram' && telegram && getTelegramApprovedUsers(config).length > 0) {
+        await telegram.sendFile(filePath);
+        return;
+      }
+      if (ch === 'discord' && discord && getDiscordApprovedUsers(config).length > 0) {
+        await discord.sendFile(filePath);
+        return;
+      }
     }
 
+    // No specific channel — broadcast to all
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.sendFile(filePath);
-      return;
     }
-
     if (config.channels.discord.enabled && discord && getDiscordApprovedUsers(config).length > 0) {
       await discord.sendFile(filePath);
-      return;
+    }
+    if (config.channels.slack.enabled && slack && getSlackApprovedUsers(config).length > 0) {
+      await slack.sendFile(filePath);
     }
 
     const cli = channels.get('cli');
-    if (cli) {
+    if (cli && !ch) {
       await cli.sendFile(filePath);
     }
   });
 
-  capabilities.setSendMessageHandler(async (content: string) => {
+  capabilities.setSendMessageHandler(async (content: string, channel?: string) => {
     const telegram = channels.get('telegram');
     const signal = channels.get('signal');
     const discord = channels.get('discord');
+    const slack = channels.get('slack');
     const sentVia: string[] = [];
 
-    // Send via Telegram if available
+    const ch = channel?.toLowerCase();
+
+    // If a specific channel is requested, send only to that channel
+    if (ch) {
+      if (ch === 'telegram' && config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
+        await telegram.send(content);
+        sentVia.push('Telegram');
+      } else if (ch === 'discord' && config.channels.discord.enabled && discord && getDiscordApprovedUsers(config).length > 0) {
+        await discord.send(content);
+        sentVia.push('Discord');
+      } else if (ch === 'slack' && config.channels.slack.enabled && slack && getSlackApprovedUsers(config).length > 0) {
+        await slack.send(content);
+        sentVia.push('Slack');
+      } else if (ch === 'signal' && config.channels.signal.enabled && signal && getSignalApprovedUsers(config).length > 0) {
+        await signal.send(content);
+        sentVia.push('Signal');
+      }
+
+      if (sentVia.length === 0) {
+        throw new Error(`Channel "${channel}" is not available. Connected channels: Telegram, Discord, Slack, Signal.`);
+      }
+      return;
+    }
+
+    // No specific channel — send to all
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.send(content);
       sentVia.push('Telegram');
     }
 
-    // Send via Discord if available
     if (config.channels.discord.enabled && discord && getDiscordApprovedUsers(config).length > 0) {
       await discord.send(content);
       sentVia.push('Discord');
     }
 
-    // Send via Signal if available
+    if (config.channels.slack.enabled && slack && getSlackApprovedUsers(config).length > 0) {
+      await slack.send(content);
+      sentVia.push('Slack');
+    }
+
     if (config.channels.signal.enabled && signal && getSignalApprovedUsers(config).length > 0) {
       await signal.send(content);
       sentVia.push('Signal');
     }
 
     if (sentVia.length === 0) {
-      throw new Error('No messaging channels configured with approved users. Set up Telegram, Discord, or Signal via `mercury doctor`.');
+      throw new Error('No messaging channels configured with approved users. Set up Telegram, Discord, Slack, or Signal via `mercury doctor`.');
     }
   });
 
@@ -2451,6 +2744,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const activeMessagingChannels: string[] = [];
   if (config.channels.telegram.enabled && channels.get('telegram')) activeMessagingChannels.push('Telegram');
   if (config.channels.discord.enabled && channels.get('discord')) activeMessagingChannels.push('Discord');
+  if (config.channels.slack.enabled && channels.get('slack')) activeMessagingChannels.push('Slack');
   if (config.channels.signal.enabled && channels.get('signal')) activeMessagingChannels.push('Signal');
   capabilities.setActiveChannels(activeMessagingChannels);
 
@@ -2523,6 +2817,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
   const dcChannel = channels.get('discord') as DiscordChannel | undefined;
   const signalChannel = channels.get('signal') as SignalChannel | undefined;
+  const slackChannel = channels.get('slack') as SlackChannel | undefined;
 
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
@@ -2530,6 +2825,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (dcChannel) {
     dcChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
+
+  if (slackChannel) {
+    slackChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
   // --- Relay Event Handlers ---
@@ -3234,6 +3533,8 @@ program
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
     console.log(`  Discord:  ${config.channels.discord.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Discord Access: ${chalk.white(getDiscordAccessSummary(config))}`);
+    console.log(`  Slack:    ${config.channels.slack.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    console.log(`  Slack Access: ${chalk.white(getSlackAccessSummary(config))}`);
     console.log(`  Signal:   ${config.channels.signal.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     if (config.channels.signal.enabled) {
       console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
@@ -3661,6 +3962,294 @@ discordCmd
       console.log(chalk.dim('  New Discord users can send /start to request access.'));
       console.log(chalk.dim('  The first request must be approved from the CLI with `mercury discord approve <pairing-code>`.'));
     }
+    console.log('');
+  });
+
+// ─── Slack CLI Commands ─────────────────────────────────────
+
+function formatSlackUser(user: { id: string; username?: string }): string {
+  return user.username ? `${user.id} (@${user.username})` : user.id;
+}
+
+function printSlackAccessState(config: MercuryConfig): void {
+  const admins = config.channels.slack.admins;
+  const members = config.channels.slack.members;
+  const pending = config.channels.slack.pending;
+  console.log(chalk.bold.white('  Slack Access'));
+  console.log('');
+  if (admins.length > 0) {
+    console.log(chalk.dim('  Admins:'));
+    for (const u of admins) {
+      console.log(`    ${chalk.cyan(u.id)} ${u.username ? chalk.dim(`(@${u.username})`) : ''} ${u.approvedAt ? chalk.dim(u.approvedAt) : ''}`);
+    }
+  }
+  if (members.length > 0) {
+    console.log(chalk.dim('  Members:'));
+    for (const u of members) {
+      console.log(`    ${chalk.cyan(u.id)} ${u.username ? chalk.dim(`(@${u.username})`) : ''} ${u.approvedAt ? chalk.dim(u.approvedAt) : ''}`);
+    }
+  }
+  if (pending.length > 0) {
+    console.log(chalk.dim('  Pending:'));
+    for (const r of pending) {
+      console.log(`    ${chalk.yellow(r.id)} ${r.username ? chalk.dim(`(@${r.username})`) : ''} ${r.pairingCode ? chalk.dim(`code: ${r.pairingCode}`) : ''}`);
+    }
+  }
+  if (admins.length === 0 && members.length === 0 && pending.length === 0) {
+    console.log(chalk.dim('  No Slack access configured.'));
+  }
+  console.log(chalk.dim(`  Summary: ${getSlackAccessSummary(config)}`));
+}
+
+const slackCmd = program
+  .command('slack')
+  .description('Manage Slack access approvals and admins');
+
+slackCmd
+  .command('list')
+  .description('Show approved Slack users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    console.log('');
+    printSlackAccessState(config);
+    console.log('');
+  });
+
+slackCmd
+  .command('approve <codeOrUserId>')
+  .description('Approve a pending Slack access request by pairing code or user ID')
+  .action((codeOrUserId: string) => {
+    const config = loadConfig();
+    const hasAdmins = hasSlackAdmins(config);
+
+    if (!hasAdmins) {
+      const approved = approveSlackPendingRequestByPairingCode(config, codeOrUserId.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending first-time Slack pairing found for code ${codeOrUserId}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Slack admin ${formatSlackUser(approved)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const approved = approveSlackPendingRequest(config, codeOrUserId.trim(), 'member');
+    if (!approved) {
+      console.log('');
+      console.log(chalk.red(`  No pending Slack request found for user ${codeOrUserId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Approved Slack member ${formatSlackUser(approved)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+slackCmd
+  .command('reject <userId>')
+  .description('Reject a pending Slack access request')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const rejected = rejectSlackPendingRequest(config, userId.trim());
+    if (!rejected) {
+      console.log('');
+      console.log(chalk.red(`  No pending Slack request found for user ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Rejected Slack request for ${formatSlackUser(rejected)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+slackCmd
+  .command('remove <userId>')
+  .description('Remove an approved Slack admin or member')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const removed = removeSlackUser(config, userId.trim());
+    if (!removed) {
+      console.log('');
+      console.log(chalk.red(`  No approved Slack user found for ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Removed Slack access for ${formatSlackUser(removed)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+slackCmd
+  .command('promote <userId>')
+  .description('Promote an approved Slack member to admin')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const promoted = promoteSlackUserToAdmin(config, userId.trim());
+    if (!promoted) {
+      console.log('');
+      console.log(chalk.red(`  No Slack member found for ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Promoted ${formatSlackUser(promoted)} to Slack admin.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+slackCmd
+  .command('demote <userId>')
+  .description('Demote a Slack admin to member')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const demoted = demoteSlackAdmin(config, userId.trim());
+    if (!demoted) {
+      console.log('');
+      console.log(chalk.red('  Could not demote that Slack admin. Mercury must keep at least one admin.'));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Demoted ${formatSlackUser(demoted)} to Slack member.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+slackCmd
+  .command('unpair')
+  .description('Reset all Slack access for this Mercury instance')
+  .action(() => {
+    const config = loadConfig();
+    const hasAnyAccess = getSlackApprovedUsers(config).length > 0 || getSlackPendingRequests(config).length > 0;
+    if (!hasAnyAccess) {
+      console.log('');
+      console.log(chalk.dim('  Slack access is already empty.'));
+      console.log('');
+      return;
+    }
+
+    clearSlackAccess(config);
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.green('  ✓ Slack access reset.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    if (!getDaemonStatus().running) {
+      console.log(chalk.dim('  New Slack users can send /start to request access.'));
+      console.log(chalk.dim('  The first request must be approved from the CLI with `mercury slack approve <pairing-code>`.'));
+    }
+    console.log('');
+  });
+
+slackCmd
+  .command('connect')
+  .description('Show detailed instructions for connecting Mercury to Slack')
+  .action(() => {
+    console.log('');
+    console.log(chalk.bold.white('  How to Connect Mercury to Slack'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 1: Create a Slack App'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  1. Go to https://api.slack.com/apps'));
+    console.log(chalk.dim('  2. Click "Create New App"'));
+    console.log(chalk.dim('  3. Choose "From scratch"'));
+    console.log(chalk.dim('  4. Name it (e.g. "Mercury") and pick your workspace'));
+    console.log(chalk.dim('  5. Click "Create App"'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 2: Configure Bot Token Scopes'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  1. In the left sidebar, click "OAuth & Permissions"'));
+    console.log(chalk.dim('  2. Scroll to "Scopes > Bot Token Scopes"'));
+    console.log(chalk.dim('  3. Add these scopes one by one:'));
+    console.log(chalk.dim('     • chat:write           — Send messages'));
+    console.log(chalk.dim('     • chat:write.public    — Post in any channel'));
+    console.log(chalk.dim('     • chat:write.customize  — Custom formatting'));
+    console.log(chalk.dim('     • files:write           — Upload files'));
+    console.log(chalk.dim('     • files:read            — Read shared files'));
+    console.log(chalk.dim('     • reactions:write        — Add emoji reactions'));
+    console.log(chalk.dim('     • reactions:read         — Read reactions'));
+    console.log(chalk.dim('     • channels:history      — Read channel messages'));
+    console.log(chalk.dim('     • channels:read          — See channel info'));
+    console.log(chalk.dim('     • groups:history         — Read private channels'));
+    console.log(chalk.dim('     • groups:read             — See private channel info'));
+    console.log(chalk.dim('     • im:history             — Read DMs'));
+    console.log(chalk.dim('     • im:read                 — See DM info'));
+    console.log(chalk.dim('     • im:write                — Send DMs'));
+    console.log(chalk.dim('     • mpim:history           — Read group DMs'));
+    console.log(chalk.dim('     • mpim:read              — See group DM info'));
+    console.log(chalk.dim('     • mpim:write             — Send group DMs'));
+    console.log(chalk.dim('     • commands               — Use slash commands'));
+    console.log(chalk.dim('  4. Scroll up and click "Install to Workspace"'));
+    console.log(chalk.dim('  5. Copy the "Bot User OAuth Token" (starts with xoxb-)'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 3: Enable Socket Mode'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  1. In the left sidebar, click "Socket Mode"'));
+    console.log(chalk.dim('  2. Enable it (toggle the switch ON)'));
+    console.log(chalk.dim('  3. Click "Generate Token"'));
+    console.log(chalk.dim('     — Add a name like "Mercury Socket"'));
+    console.log(chalk.dim('     — The token needs the "connections:write" scope'));
+    console.log(chalk.dim('  4. Copy the token (starts with xapp-)'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 4: Enable Event Subscriptions'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  1. In the left sidebar, click "Event Subscriptions"'));
+    console.log(chalk.dim('  2. Enable it (toggle the switch ON)'));
+    console.log(chalk.dim('  3. Under "Subscribe to bot events", add:'));
+    console.log(chalk.dim('     • app_mention'));
+    console.log(chalk.dim('     • message.im'));
+    console.log(chalk.dim('     • message.mpim'));
+    console.log(chalk.dim('     • message.channels'));
+    console.log(chalk.dim('     • message.groups'));
+    console.log(chalk.dim('  4. Click "Save Changes"'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 5: Allow Users to Message the App'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.yellow('  ⚠  This step is REQUIRED. Without it, users will see'));
+    console.log(chalk.yellow('     "Sending messages to this app has been turned off."'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  1. In the left sidebar, click "App Home"'));
+    console.log(chalk.dim('  2. Scroll down to the "Show Tabs" section'));
+    console.log(chalk.dim('  3. Check the box for "Allow users to send Slash commands'));
+    console.log(chalk.dim('     and messages from the messages tab"'));
+    console.log(chalk.dim('  4. This enables the DM conversation tab so users can chat'));
+    console.log(chalk.dim('     with Mercury directly — without it, DMs are blocked'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 6: Enable Interactivity'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  1. In the left sidebar, click "Interactivity & Shortcuts"'));
+    console.log(chalk.dim('  2. Enable it (toggle the switch ON)'));
+    console.log(chalk.dim('  3. Leave the Request URL as-is (Socket Mode handles this)'));
+    console.log(chalk.dim('  4. Click "Save Changes"'));
+    console.log('');
+    console.log(chalk.bold.cyan('  Step 7: Configure Mercury'));
+    console.log(chalk.dim('  ─────────────────────────────────'));
+    console.log(chalk.dim('  Run: mercury doctor'));
+    console.log(chalk.dim('  When prompted for Slack, paste your xoxb- and xapp- tokens.'));
+    console.log(chalk.dim('  Then message the bot in Slack with /start to get your pairing code.'));
+    console.log(chalk.dim('  Enter the pairing code in this terminal to complete setup.'));
+    console.log('');
+    console.log(chalk.dim('  ────────────────────────────────────────────────────────'));
+    console.log(chalk.dim('  Need help? See https://api.slack.com/apis/connections/socket'));
     console.log('');
   });
 

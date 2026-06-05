@@ -5,6 +5,7 @@ import { TelegramChannel } from './telegram.js';
 import { WebChannel } from './web.js';
 import { SignalChannel } from './signal.js';
 import { DiscordChannel } from './discord.js';
+import { SlackChannel } from './slack.js';
 import type { ChannelType, ChannelMessage } from '../types/channel.js';
 
 /**
@@ -39,6 +40,7 @@ const CHANNELS = [
   { name: 'WebChannel', ctor: WebChannel },
   { name: 'SignalChannel', ctor: SignalChannel },
   { name: 'DiscordChannel', ctor: DiscordChannel },
+  { name: 'SlackChannel', ctor: SlackChannel },
 ] as const;
 
 /** Minimal concrete channel to exercise the BaseChannel defaults. */
@@ -63,19 +65,21 @@ describe('channel parity contract', () => {
     }
   }
 
-  it('usesTaskBuffering is true only for buffering channels (Telegram, Signal, Discord)', () => {
+  it('usesTaskBuffering is true only for buffering channels (Telegram, Signal, Discord, Slack)', () => {
     expect(TelegramChannel.prototype.usesTaskBuffering.call({})).toBe(true);
     expect(SignalChannel.prototype.usesTaskBuffering.call({})).toBe(true);
     expect(DiscordChannel.prototype.usesTaskBuffering.call({})).toBe(true);
+    expect(SlackChannel.prototype.usesTaskBuffering.call({})).toBe(true);
     expect(CLIChannel.prototype.usesTaskBuffering.call({})).toBe(false);
     expect(WebChannel.prototype.usesTaskBuffering.call({})).toBe(false);
   });
 
-  it('supportsStreaming is true for CLI/Web/Telegram/Discord and false for Signal', () => {
+  it('supportsStreaming is true for CLI/Web/Telegram/Discord/Slack and false for Signal', () => {
     expect(CLIChannel.prototype.supportsStreaming.call({})).toBe(true);
     expect(WebChannel.prototype.supportsStreaming.call({})).toBe(true);
     expect(TelegramChannel.prototype.supportsStreaming.call({})).toBe(true);
     expect(DiscordChannel.prototype.supportsStreaming.call({})).toBe(true);
+    expect(SlackChannel.prototype.supportsStreaming.call({})).toBe(true);
     expect(SignalChannel.prototype.supportsStreaming.call({})).toBe(false);
   });
 });

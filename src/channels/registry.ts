@@ -4,6 +4,7 @@ import { CLIChannel } from './cli.js';
 import { TelegramChannel } from './telegram.js';
 import { SignalChannel } from './signal.js';
 import { DiscordChannel } from './discord.js';
+import { SlackChannel } from './slack.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -23,6 +24,10 @@ export class ChannelRegistry {
 
     if (config.channels.discord.enabled && config.channels.discord.botToken) {
       this.register('discord', new DiscordChannel(config));
+    }
+
+    if (config.channels.slack.enabled && config.channels.slack.botToken) {
+      this.register('slack', new SlackChannel(config));
     }
   }
 
@@ -73,6 +78,8 @@ export class ChannelRegistry {
     if (telegram?.isReady()) return telegram;
     const discord = this.channels.get('discord');
     if (discord?.isReady()) return discord;
+    const slack = this.channels.get('slack');
+    if (slack?.isReady()) return slack;
     const signal = this.channels.get('signal');
     if (signal?.isReady()) return signal;
     const cli = this.channels.get('cli');

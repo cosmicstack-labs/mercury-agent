@@ -83,8 +83,8 @@ export class CapabilityRegistry {
   private supervisor?: SubAgentSupervisor;
   private spotifyClient?: SpotifyClient;
   private userMemory?: UserMemoryStore;
-  private sendFileHandler?: (filePath: string) => Promise<void>;
-  private sendMessageHandler?: (content: string) => Promise<void>;
+  private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
+  private sendMessageHandler?: (content: string, channel?: string) => Promise<void>;
   private userMemoryGetter: () => import('../memory/user-memory.js').UserMemoryStore | null = () => null;
   private ckGetter: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null = () => null;
   private currentChannelId = 'cli';
@@ -126,11 +126,11 @@ export class CapabilityRegistry {
     this.currentCwd = dir;
   }
 
-  setSendFileHandler(handler: (filePath: string) => Promise<void>): void {
+  setSendFileHandler(handler: (filePath: string, channel?: string) => Promise<void>): void {
     this.sendFileHandler = handler;
   }
 
-  setSendMessageHandler(handler: (content: string) => Promise<void>): void {
+  setSendMessageHandler(handler: (content: string, channel?: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
   }
 
@@ -187,7 +187,7 @@ export class CapabilityRegistry {
       this.tools.edit_file = createEditFileTool(this.permissions, () => this.getCwd());
 
       if (this.sendFileHandler) {
-        this.tools.send_file = createSendFileTool(this.permissions, () => this.getCwd(), this.sendFileHandler);
+        this.tools.send_file = createSendFileTool(this.permissions, () => this.getCwd(), this.sendFileHandler, this.activeChannelNames);
       }
 
       this.tools.approve_scope = createApproveScopeTool(this.permissions, () => this.getCwd());
