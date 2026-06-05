@@ -65,6 +65,7 @@
     "bcryptjs": "^3.0.3",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
+    "discord.js": "^14.26.4",
     "dotenv": "^16.4.7",
     "geist": "^1.7.0",
     "grammy": "^1.42.0",
@@ -78,8 +79,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sql.js": "^1.14.1",
-    "yaml": "^2.7.0",
     "ws": "^8.18.0",
+    "yaml": "^2.7.0",
     "zod": "^3.25.76"
   },
   "optionalDependencies": {

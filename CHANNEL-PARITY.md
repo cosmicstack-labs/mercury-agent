@@ -23,10 +23,10 @@ opts into richer behavior by overriding.
 
 ### Capability flags
 
-| Method | Meaning | cli | web | telegram | signal |
-|---|---|:--:|:--:|:--:|:--:|
-| `usesTaskBuffering()` | Buffers tool feedback into one live status card | ✗ | ✗ | ✓ | ✓ |
-| `supportsStreaming()` | Can stream model text token-by-token | ✓ | ✓ | ✓ | ✗ |
+| Method | Meaning | cli | web | telegram | signal | discord |
+|---|---|:--:|:--:|:--:|:--:|:--:|
+| `usesTaskBuffering()` | Buffers tool feedback into one live status card | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `supportsStreaming()` | Can stream model text token-by-token | ✓ | ✓ | ✓ | ✗ | ✓ |
 
 The agent derives `canStream` from `channel.supportsStreaming()` (gated by the
 Telegram streaming toggle) and routes task-lifecycle/completion through
@@ -43,7 +43,7 @@ Telegram streaming toggle) and routes task-lifecycle/completion through
 `sendStepDone(toolName, result, targetId?)` ·
 `sendCompletion(elapsedMs, stepCount, targetId?, meta?)`
 
-On buffering channels (Telegram, Signal) these update a single live status
+On buffering channels (Telegram, Signal, Discord) these update a single live status
 message and the completion summary flushes the deferred response. On streaming
 channels (CLI, Web) progress is rendered inline; `sendCompletion` is a banner
 (CLI) or a no-op (Web).
@@ -54,6 +54,7 @@ channels (CLI, Web) progress is rendered inline; `sendCompletion` is a banner
 
 - **CLI**: arrow-key menu.
 - **Telegram**: inline keyboard with a callback handler.
+- **Discord**: button components with interaction handler.
 - **Signal**: numbered list + awaits a real numbered reply via `waitForReply`
   (the text equivalent of inline buttons). Accepts a number or the option label.
 - **Default (Web / future channels)**: sends a numbered list and returns the
@@ -74,6 +75,29 @@ channels (CLI, Web) progress is rendered inline; `sendCompletion` is a banner
   channel-agnostic `handleChatCommand` as Telegram. `/help` renders
   `getSignalHelp()`.
 - Send resilience: `signalPost` retries with backoff; messages are throttled.
+
+## Discord specifics
+
+- Connects to Discord via `discord.js` Gateway (WebSocket); supports DMs, server
+  text channels, and threads.
+- DMs: always respond (parity with Telegram private chats).
+- Server channels: configurable `requireMention` (default: true — only respond on
+  @mention), `freeResponseChannels` (always respond), `ignoredChannels` (never respond).
+- Auto-threading (`autoThread: true`): creates a thread on each @mention in a server
+  text channel, then responds inside the thread — keeps channels clean.
+- Rich UI via `EmbedBuilder`: status cards, completion banners, and memory overview
+  use embeds with fields, colors, and timestamps.
+- Interactive components: `askPermission` / `askToContinue` use buttons;
+  `askPermissionMode` uses a **select menu** (dropdown); `requestChoice` uses buttons
+  for ≤5 choices and a select menu for more.
+- Slash commands: 15 registered via `ApplicationCommandManager` on startup; also
+  parses `/command` in message text (hybrid approach).
+- Reaction indicators (opt-in via `reactions: true`): 👀 on message receipt.
+- `mdToDiscord()` converts markdown to Discord-compatible format (headings → bold,
+  links → angle-bracket URLs, code blocks preserved).
+- Message splitting at **2000 chars** (Discord limit) vs Telegram's 4096.
+- Access control: same admin/member/pending model as Telegram, with Discord user
+  IDs (Snowflakes). Pairing flow identical (pairing code → CLI approval).
 
 ## Guardrails
 

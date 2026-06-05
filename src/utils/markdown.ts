@@ -280,3 +280,63 @@ export function mdToSignal(text: string): string {
 
   return out;
 }
+
+/**
+ * Normalize Markdown for Discord.
+ *
+ * Discord natively renders most markdown (bold, italic, code, etc.) but
+ * does NOT support:
+ *  - Heading syntax (# heading) → convert to bold
+ *  - Fenced code block language hints → keep the block, strip the lang tag
+ *    (Discord does support syntax highlighting with lang tags since 2024,
+ *    but we keep it simple and compatible)
+ *  - Links [label](url) → convert to "label (url)" since Discord doesn't
+ *    render inline markdown links (it auto-links bare URLs)
+ *
+ * Everything else (bold, italic, strikethrough, code, code blocks, blockquotes)
+ * is left as-is because Discord renders it natively.
+ */
+export function mdToDiscord(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    const placeholder = `\u0000CODEBLOCK_${codeBlocks.length}\u0000`;
+    if (lang) {
+      codeBlocks.push(`\`\`\`${lang}\n${code}\`\`\``);
+    } else {
+      codeBlocks.push(`\`\`\`\n${code}\`\`\``);
+    }
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `\u0000INLINECODE_${inlineCodes.length}\u0000`;
+    inlineCodes.push('`' + code + '`');
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `\u0000LINK_${links.length}\u0000`;
+    links.push(label === href ? href : `${label} (<${href}>)`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '**$1**');
+  out = out.replace(/^## (.+)$/gm, '**$1**');
+  out = out.replace(/^# (.+)$/gm, '**$1**');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`\u0000INLINECODE_${i}\u0000`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`\u0000CODEBLOCK_${i}\u0000`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`\u0000LINK_${i}\u0000`, links[i]);
+  }
+
+  return out;
+}

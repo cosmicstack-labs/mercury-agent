@@ -57,6 +57,23 @@ export interface TelegramChannelConfig extends ChannelConfig {
   pairedUsername?: string;
 }
 
+export interface DiscordAccessUser {
+  id: string;
+  username?: string;
+  discriminator?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface DiscordPendingRequest {
+  id: string;
+  username?: string;
+  discriminator?: string;
+  channelId?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
 export interface CLIChannelConfig extends ChannelConfig {
   type: 'cli';
 }

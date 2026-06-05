@@ -85,6 +85,11 @@ export function getManual(): string {
     ['mercury telegram promote <id>', 'Promote a Telegram member to admin'],
     ['mercury telegram demote <id>', 'Demote a Telegram admin to member'],
     ['mercury telegram unpair', 'Reset all Telegram access'],
+    ['mercury discord list', 'Show Discord admins, members, and pending requests'],
+    ['mercury discord approve <code|id>', 'Approve the first Discord pairing code or a later Discord request'],
+    ['mercury discord reject <id>', 'Reject a pending Discord request'],
+    ['mercury discord remove <id>', 'Remove an approved Discord user'],
+    ['mercury discord unpair', 'Reset all Discord access'],
     ['mercury help', 'Show this manual'],
     ['mercury service install', 'Install as system service (auto-start)'],
     ['mercury service uninstall', 'Uninstall system service'],
@@ -390,6 +395,80 @@ export function getSignalHelp(): string {
   lines.push('approve <number|uuid> — Approve a pending request (admin only)');
   lines.push('reject <number|uuid> — Reject a pending request (admin only)');
   lines.push('/unpair — Reset all Signal access (admin only)');
+
+  return lines.join('\n');
+}
+
+export function getDiscordHelp(): string {
+  const lines: string[] = [];
+
+  lines.push('☿ **Mercury — Discord Commands**');
+  lines.push('Supports DMs, server channels, and threads. Slash commands also work.');
+  lines.push('');
+
+  lines.push('**General**');
+  lines.push('/help — Show this command list');
+  lines.push('/status — Config, budget, and uptime');
+  lines.push('/progress — Live status for the current task');
+  lines.push('/permissions — Switch Ask Me / Allow All mode');
+  lines.push('/models — List providers or switch AI model');
+  lines.push('/stream — Toggle text streaming on/off');
+  lines.push('');
+
+  lines.push('**Budget**');
+  lines.push('/budget — Show token budget status');
+  lines.push('/budget override — Allow one request past budget');
+  lines.push('/budget reset — Reset usage to zero');
+  lines.push('/budget set <n> — Set daily token budget');
+  lines.push('');
+
+  lines.push('**Programming Mode**');
+  lines.push('/code — Show current mode');
+  lines.push('/code plan — Analyze and present options (no coding)');
+  lines.push('/code execute — Implement step by step');
+  lines.push('/code off — Exit programming mode');
+  lines.push('/code toggle — Cycle: off → plan → execute → off');
+  lines.push('/code agent <task> — Delegate coding to a sub-agent');
+  lines.push('');
+
+  lines.push('**Sub-Agents**');
+  lines.push('/agents — List all sub-agents');
+  lines.push('/agents stop <id|all> — Stop a sub-agent');
+  lines.push('/agents pause <id> — Pause a sub-agent');
+  lines.push('/agents resume <id> — Resume a sub-agent');
+  lines.push('/halt — Emergency: stop all agents + clear queue');
+  lines.push('/stop — Stop all + release locks + clear task board');
+  lines.push('/reset — Full reset (stop all + clear context)');
+  lines.push('');
+
+  lines.push('**Background Tasks**');
+  lines.push('/bg <command> — Run a shell command in background');
+  lines.push('/bg: <task> — Delegate an LLM task to background');
+  lines.push('/bg current — Move active task to background');
+  lines.push('/bg list — Show all background tasks');
+  lines.push('/bg <id> — Show task details');
+  lines.push('/bg stop <id> — Stop a background task');
+  lines.push('/bg killall — Stop all background tasks');
+  lines.push('/bg clear — Remove completed tasks');
+  lines.push('');
+
+  lines.push('**Memory**');
+  lines.push('/memory — View and manage second brain');
+  lines.push('');
+
+  lines.push('**Spotify**');
+  lines.push('/spotify — Connection status');
+  lines.push('/spotify auth — Connect Spotify');
+  lines.push('/spotify code <code> — Complete auth with pasted code');
+  lines.push('/spotify devices — List playback devices');
+  lines.push('/spotify device <id> — Set active device');
+  lines.push('/spotify now — Show currently playing');
+  lines.push('/spotify logout — Disconnect Spotify');
+  lines.push('');
+
+  lines.push('**Access**');
+  lines.push('/start — Request access to this Mercury instance');
+  lines.push('/unpair — Reset all Discord access (admin only)');
 
   return lines.join('\n');
 }

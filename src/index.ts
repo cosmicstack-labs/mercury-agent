@@ -33,6 +33,18 @@ import {
   rejectSignalPendingRequest,
   removeSignalUser,
   hasSignalAdmins,
+  clearDiscordAccess,
+  getDiscordAccessSummary,
+  getDiscordApprovedUsers,
+  getDiscordApprovedUserIds,
+  getDiscordPendingRequests,
+  approveDiscordPendingRequest,
+  approveDiscordPendingRequestByPairingCode,
+  rejectDiscordPendingRequest,
+  removeDiscordUser,
+  promoteDiscordUserToAdmin,
+  demoteDiscordAdmin,
+  hasDiscordAdmins,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -51,6 +63,7 @@ import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { SignalChannel } from './channels/signal.js';
+import { DiscordChannel } from './channels/discord.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -1181,6 +1194,59 @@ async function completeInitialTelegramPairing(config: MercuryConfig): Promise<vo
   }
 }
 
+async function completeInitialDiscordPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.discord.enabled || !config.channels.discord.botToken || hasDiscordAdmins(config)) {
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Discord Pairing'));
+  console.log(chalk.dim('  The bot is now online. To become its first admin:'));
+  console.log(chalk.dim('    1. Open Discord'));
+  console.log(chalk.dim('    2. If you added the bot to a server:'));
+  console.log(chalk.dim('       — Go to the server and @mention the bot with /start'));
+  console.log(chalk.dim('       — Example: @Mercury /start'));
+  console.log(chalk.dim('    3. To use DMs instead (no server needed):'));
+  console.log(chalk.dim('       — Open the server member list, find the bot, right-click → "Message"'));
+  console.log(chalk.dim('       — Or search for the bot by name in your DMs'));
+  console.log(chalk.dim('    4. The bot will reply with a pairing code — paste it below'));
+  console.log('');
+
+  const discord = new DiscordChannel(config);
+  try {
+    await discord.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await discord.stop();
+    return;
+  }
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Discord Pairing Code: '));
+      if (!pairingCode) {
+        console.log(chalk.red('  Discord pairing code is required to continue.'));
+        continue;
+      }
+
+      const approved = approveDiscordPendingRequestByPairingCode(config, pairingCode);
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid yet. Send /start in Discord, then paste the exact code here.'));
+        continue;
+      }
+
+      saveConfig(config);
+      const label = approved.username ? `${approved.id} (${approved.username})` : approved.id;
+      console.log(chalk.green(`  ✓ Discord paired. First admin: ${label}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await discord.stop();
+  }
+}
+
 async function configure(existingConfig?: MercuryConfig): Promise<void> {
   const isReconfig = !!existingConfig;
   const config = existingConfig ?? loadConfig();
@@ -1587,6 +1653,108 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialTelegramPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Discord (optional)'));
+  if (isReconfig && config.channels.discord.enabled) {
+    console.log(chalk.dim(`  Discord is enabled. Bot: ${config.channels.discord.botToken ? 'configured' : 'missing token'}`));
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to skip. Enter a bot token to enable.'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  To create a Discord bot:'));
+    console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+    console.log(chalk.dim('    2. Click "New Application" → give it a name (e.g. "Mercury")'));
+    console.log(chalk.dim('    3. In the left sidebar, click "Bot"'));
+    console.log(chalk.dim('       — Click "Reset Token" → copy and save the bot token'));
+    console.log(chalk.dim('       — Scroll down to "Privileged Gateway Intents"'));
+    console.log(chalk.dim('       — Enable all three: PRESENCE INTENT, SERVER MEMBERS INTENT,'));
+    console.log(chalk.dim('         MESSAGE CONTENT INTENT'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    4. Copy the Application ID from General Information'));
+    console.log(chalk.dim('    5. To use the bot in a server (recommended):'));
+    console.log(chalk.dim('       — If you don\'t have a server, open Discord and create one'));
+    console.log(chalk.dim('         (click the + icon in the left sidebar → "Create My Own")'));
+    console.log(chalk.dim('       — Back in the Developer Portal, go to OAuth2 → URL Generator'));
+    console.log(chalk.dim('       — Scopes: bot, applications.commands'));
+    console.log(chalk.dim('       — Bot Permissions: Send Messages, Read Message History,'));
+    console.log(chalk.dim('         Use Slash Commands, Attach Files, Add Reactions, Pin Messages'));
+    console.log(chalk.dim('       — Copy the generated URL, open it in your browser, select your server'));
+    console.log(chalk.dim('    6. Paste the bot token below'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  After setup, send /start to the bot (DM or @mention) to get a pairing code.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with: mercury setup'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  To create a Discord bot:'));
+    console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+    console.log(chalk.dim('    2. Click "New Application" → give it a name (e.g. "Mercury")'));
+    console.log(chalk.dim('    3. In the left sidebar, click "Bot"'));
+    console.log(chalk.dim('       — Click "Reset Token" → copy and save the bot token'));
+    console.log(chalk.dim('       — Scroll down to "Privileged Gateway Intents"'));
+    console.log(chalk.dim('       — Enable all three: PRESENCE INTENT, SERVER MEMBERS INTENT,'));
+    console.log(chalk.dim('         MESSAGE CONTENT INTENT'));
+    console.log(chalk.dim('       — Click "Save Changes"'));
+    console.log(chalk.dim('    4. Copy the Application ID from General Information'));
+    console.log(chalk.dim('    5. To use the bot in a server (recommended):'));
+    console.log(chalk.dim('       — If you don\'t have a server, open Discord and create one'));
+    console.log(chalk.dim('         (click the + icon in the left sidebar → "Create My Own")'));
+    console.log(chalk.dim('       — Back in the Developer Portal, go to OAuth2 → URL Generator'));
+    console.log(chalk.dim('       — Scopes: bot, applications.commands'));
+    console.log(chalk.dim('       — Bot Permissions: Send Messages, Read Message History,'));
+    console.log(chalk.dim('         Use Slash Commands, Attach Files, Add Reactions, Pin Messages'));
+    console.log(chalk.dim('       — Copy the generated URL, open it in your browser, select your server'));
+    console.log(chalk.dim('    6. Paste the bot token and application ID below'));
+    console.log(chalk.dim(''));
+    console.log(chalk.dim('  After setup, send /start to the bot (DM or @mention) to get a pairing code.'));
+  }
+  console.log('');
+
+  const currentDiscordToken = config.channels.discord.botToken;
+  const discordTokenPrompt = isReconfig && currentDiscordToken
+    ? chalk.white(`  Discord Bot Token [${currentDiscordToken.slice(0, 8)}...]: `)
+    : chalk.white('  Discord Bot Token: ');
+  const rawDiscordToken = await ask(discordTokenPrompt);
+
+  if (rawDiscordToken.toLowerCase() === 'none') {
+    config.channels.discord.enabled = false;
+    config.channels.discord.botToken = '';
+    config.channels.discord.applicationId = '';
+    clearDiscordAccess(config);
+    saveConfig(config);
+    console.log(chalk.dim('  Discord disabled and access cleared.'));
+  } else if (rawDiscordToken) {
+    if (currentDiscordToken && rawDiscordToken !== currentDiscordToken) {
+      clearDiscordAccess(config);
+      console.log(chalk.dim('  Token changed — cleared Discord access lists.'));
+    }
+    config.channels.discord.botToken = rawDiscordToken;
+    config.channels.discord.enabled = true;
+
+    const currentAppId = config.channels.discord.applicationId;
+    const appIdPrompt = isReconfig && currentAppId
+      ? chalk.white(`  Discord Application ID [${currentAppId}]: `)
+      : chalk.white('  Discord Application ID (from General Information page): ');
+    const rawAppId = await ask(appIdPrompt);
+    if (rawAppId) {
+      config.channels.discord.applicationId = rawAppId;
+    }
+
+    if (!isReconfig) {
+      const requireMention = await ask(chalk.white('  Require @mention in server channels? (Y/n): '));
+      config.channels.discord.requireMention = requireMention.toLowerCase() !== 'n';
+
+      const autoThread = await ask(chalk.white('  Auto-create threads on @mention? (y/N): '));
+      config.channels.discord.autoThread = autoThread.toLowerCase() === 'y';
+    }
+
+    saveConfig(config);
+  } else if (isReconfig) {
+    // keep current
+  }
+
+  await completeInitialDiscordPairing(config);
 
   hr();
   console.log('');
@@ -2222,14 +2390,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.setSendFileHandler(async (filePath: string) => {
     const { channelId, channelType } = capabilities.getChannelContext();
     const telegram = channels.get('telegram');
+    const discord = channels.get('discord');
 
     if (channelType === 'telegram' && telegram) {
       await telegram.sendFile(filePath, channelId);
       return;
     }
 
+    if (channelType === 'discord' && discord) {
+      await discord.sendFile(filePath, channelId);
+      return;
+    }
+
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.sendFile(filePath);
+      return;
+    }
+
+    if (config.channels.discord.enabled && discord && getDiscordApprovedUsers(config).length > 0) {
+      await discord.sendFile(filePath);
       return;
     }
 
@@ -2242,12 +2421,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.setSendMessageHandler(async (content: string) => {
     const telegram = channels.get('telegram');
     const signal = channels.get('signal');
+    const discord = channels.get('discord');
     const sentVia: string[] = [];
 
     // Send via Telegram if available
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.send(content);
       sentVia.push('Telegram');
+    }
+
+    // Send via Discord if available
+    if (config.channels.discord.enabled && discord && getDiscordApprovedUsers(config).length > 0) {
+      await discord.send(content);
+      sentVia.push('Discord');
     }
 
     // Send via Signal if available
@@ -2257,13 +2443,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
 
     if (sentVia.length === 0) {
-      throw new Error('No messaging channels configured with approved users. Set up Telegram or Signal via `mercury doctor`.');
+      throw new Error('No messaging channels configured with approved users. Set up Telegram, Discord, or Signal via `mercury doctor`.');
     }
   });
 
   // Tell the capability registry which channels are active for tool descriptions
   const activeMessagingChannels: string[] = [];
   if (config.channels.telegram.enabled && channels.get('telegram')) activeMessagingChannels.push('Telegram');
+  if (config.channels.discord.enabled && channels.get('discord')) activeMessagingChannels.push('Discord');
   if (config.channels.signal.enabled && channels.get('signal')) activeMessagingChannels.push('Signal');
   capabilities.setActiveChannels(activeMessagingChannels);
 
@@ -2334,10 +2521,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
+  const dcChannel = channels.get('discord') as DiscordChannel | undefined;
   const signalChannel = channels.get('signal') as SignalChannel | undefined;
 
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
+
+  if (dcChannel) {
+    dcChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
   // --- Relay Event Handlers ---
@@ -2369,6 +2561,18 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             tgChannel.send(message, chatId.toString()).then(() => {
               if (!pushSucceeded) {
                 pushSucceeded = true;
+                notifications!.markRead(record.id);
+              }
+            }).catch(() => {});
+          }
+        }
+        if (dcChannel) {
+          const adminIds = getDiscordApprovedUserIds(config);
+          let dcPushSucceeded = false;
+          for (const userId of adminIds) {
+            dcChannel.send(message, `discord:${userId}`).then(() => {
+              if (!dcPushSucceeded) {
+                dcPushSucceeded = true;
                 notifications!.markRead(record.id);
               }
             }).catch(() => {});
@@ -2744,12 +2948,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
     }
+    if (channelType === 'discord' && dcChannel) {
+      return dcChannel.askPermission(prompt);
+    }
     if (channelType === 'web' && webChannel) {
       return webChannel.askPermission(prompt);
     }
     if (channelType === 'signal' && signalChannel) {
-      // Bind the prompt to the exact sender that triggered the action so it
-      // reaches the right person in the Mercury group (not the CLI).
       return signalChannel.askPermission(prompt, capabilities.permissions.getCurrentChannelId());
     }
     if (cliChannel) {
@@ -2764,6 +2969,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      }
+    });
+  }
+
+  if (dcChannel) {
+    dcChannel.setOnPermissionMode((mode, channelId) => {
+      if (mode === 'allow-all') {
+        capabilities.permissions.setAutoApproveAll(true);
+        capabilities.permissions.addTempScope('/', true, true);
+        logger.info({ channelId }, 'Discord: Allow All mode set for session');
       }
     });
   }
@@ -3017,6 +3232,8 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+    console.log(`  Discord:  ${config.channels.discord.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    console.log(`  Discord Access: ${chalk.white(getDiscordAccessSummary(config))}`);
     console.log(`  Signal:   ${config.channels.signal.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     if (config.channels.signal.enabled) {
       console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
@@ -3248,6 +3465,201 @@ telegramCmd
     if (!getDaemonStatus().running) {
       console.log(chalk.dim('  New private Telegram users can send /start to request access.'));
       console.log(chalk.dim('  The first request must be approved from the CLI with `mercury telegram approve <pairing-code>`.'));
+    }
+    console.log('');
+  });
+
+// ─── Discord CLI Commands ─────────────────────────────────────
+
+function formatDiscordUser(user: { id: string; username?: string }): string {
+  return user.username ? `${user.id} (@${user.username})` : user.id;
+}
+
+function printDiscordAccessState(config: MercuryConfig): void {
+  const admins = config.channels.discord.admins;
+  const members = config.channels.discord.members;
+  const pending = config.channels.discord.pending;
+  console.log(chalk.bold.white('  Discord Access'));
+  console.log('');
+  if (admins.length > 0) {
+    console.log(chalk.dim('  Admins:'));
+    for (const u of admins) {
+      console.log(`    ${chalk.cyan(u.id)} ${u.username ? chalk.dim(`(@${u.username})`) : ''} ${u.approvedAt ? chalk.dim(u.approvedAt) : ''}`);
+    }
+  }
+  if (members.length > 0) {
+    console.log(chalk.dim('  Members:'));
+    for (const u of members) {
+      console.log(`    ${chalk.cyan(u.id)} ${u.username ? chalk.dim(`(@${u.username})`) : ''} ${u.approvedAt ? chalk.dim(u.approvedAt) : ''}`);
+    }
+  }
+  if (pending.length > 0) {
+    console.log(chalk.dim('  Pending:'));
+    for (const r of pending) {
+      console.log(`    ${chalk.yellow(r.id)} ${r.username ? chalk.dim(`(@${r.username})`) : ''} ${r.pairingCode ? chalk.dim(`code: ${r.pairingCode}`) : ''}`);
+    }
+  }
+  if (admins.length === 0 && members.length === 0 && pending.length === 0) {
+    console.log(chalk.dim('  No Discord access configured.'));
+  }
+  console.log(chalk.dim(`  Summary: ${getDiscordAccessSummary(config)}`));
+}
+
+const discordCmd = program
+  .command('discord')
+  .description('Manage Discord access approvals and admins');
+
+discordCmd
+  .command('list')
+  .description('Show approved Discord users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    console.log('');
+    printDiscordAccessState(config);
+    console.log('');
+  });
+
+discordCmd
+  .command('approve <codeOrUserId>')
+  .description('Approve a pending Discord access request by pairing code or user ID')
+  .action((codeOrUserId: string) => {
+    const config = loadConfig();
+    const hasAdmins = hasDiscordAdmins(config);
+
+    if (!hasAdmins) {
+      const approved = approveDiscordPendingRequestByPairingCode(config, codeOrUserId.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending first-time Discord pairing found for code ${codeOrUserId}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Discord admin ${formatDiscordUser(approved)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const approved = approveDiscordPendingRequest(config, codeOrUserId.trim(), 'member');
+    if (!approved) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for user ${codeOrUserId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Approved Discord member ${formatDiscordUser(approved)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('reject <userId>')
+  .description('Reject a pending Discord access request')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const rejected = rejectDiscordPendingRequest(config, userId.trim());
+    if (!rejected) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for user ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Rejected Discord request for ${formatDiscordUser(rejected)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('remove <userId>')
+  .description('Remove an approved Discord admin or member')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const removed = removeDiscordUser(config, userId.trim());
+    if (!removed) {
+      console.log('');
+      console.log(chalk.red(`  No approved Discord user found for ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Removed Discord access for ${formatDiscordUser(removed)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('promote <userId>')
+  .description('Promote an approved Discord member to admin')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const promoted = promoteDiscordUserToAdmin(config, userId.trim());
+    if (!promoted) {
+      console.log('');
+      console.log(chalk.red(`  No Discord member found for ${userId}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Promoted ${formatDiscordUser(promoted)} to Discord admin.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('demote <userId>')
+  .description('Demote a Discord admin to member')
+  .action((userId: string) => {
+    const config = loadConfig();
+    const demoted = demoteDiscordAdmin(config, userId.trim());
+    if (!demoted) {
+      console.log('');
+      console.log(chalk.red('  Could not demote that Discord admin. Mercury must keep at least one admin.'));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Demoted ${formatDiscordUser(demoted)} to Discord member.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('unpair')
+  .description('Reset all Discord access for this Mercury instance')
+  .action(() => {
+    const config = loadConfig();
+    const hasAnyAccess = getDiscordApprovedUsers(config).length > 0 || getDiscordPendingRequests(config).length > 0;
+    if (!hasAnyAccess) {
+      console.log('');
+      console.log(chalk.dim('  Discord access is already empty.'));
+      console.log('');
+      return;
+    }
+
+    clearDiscordAccess(config);
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.green('  ✓ Discord access reset.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    if (!getDaemonStatus().running) {
+      console.log(chalk.dim('  New Discord users can send /start to request access.'));
+      console.log(chalk.dim('  The first request must be approved from the CLI with `mercury discord approve <pairing-code>`.'));
     }
     console.log('');
   });

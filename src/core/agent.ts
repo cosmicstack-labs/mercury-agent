@@ -26,8 +26,9 @@ import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
+import { DiscordChannel } from '../channels/discord.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
-import { getTelegramHelp, getSignalHelp } from '../utils/manual.js';
+import { getTelegramHelp, getSignalHelp, getDiscordHelp } from '../utils/manual.js';
 import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
@@ -46,6 +47,7 @@ import {
   removeTelegramUser,
   saveConfig,
   getActiveProviders,
+  getDiscordAccessSummary,
 } from '../utils/config.js';
 
 class ToolCallLoopDetector {
@@ -292,6 +294,7 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private discordStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
   private lastProgressAt = 0;
@@ -340,6 +343,7 @@ export class Agent {
     this._notifications = notifications ?? null;
     this._messagesStore = messagesStore ?? null;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.discordStreaming = config.channels.discord.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
     this.backgroundTasks = new BackgroundTaskManager();
 
@@ -806,6 +810,10 @@ export class Agent {
     if (tgCh) {
       tgCh.send(message).catch(() => {});
     }
+    const dcCh = this.channels.get('discord');
+    if (dcCh) {
+      dcCh.send(message).catch(() => {});
+    }
 
     this.syncBgTasksToTui();
   }
@@ -946,20 +954,28 @@ export class Agent {
       }
       if (trimmed.startsWith('/stream')) {
         const sub = trimmed.slice('/stream'.length).trim().toLowerCase();
+        const isDiscord = msg.channelType === 'discord';
         if (sub === 'off') {
-          this.telegramStreaming = false;
+          if (isDiscord) this.discordStreaming = false;
+          else this.telegramStreaming = false;
         } else if (sub === 'on') {
-          this.telegramStreaming = true;
+          if (isDiscord) this.discordStreaming = true;
+          else this.telegramStreaming = true;
         } else {
-          this.telegramStreaming = !this.telegramStreaming;
+          if (isDiscord) this.discordStreaming = !this.discordStreaming;
+          else this.telegramStreaming = !this.telegramStreaming;
         }
         const ch = this.channels.get(msg.channelType as any);
-        if (ch) await ch.send(
-          this.telegramStreaming
-            ? 'Telegram streaming enabled. Responses will appear progressively.'
-            : 'Telegram streaming disabled. Responses will arrive as a single message.',
-          msg.channelId,
-        );
+        if (ch) {
+          const channelLabel = isDiscord ? 'Discord' : 'Telegram';
+          const isOn = isDiscord ? this.discordStreaming : this.telegramStreaming;
+          await ch.send(
+            isOn
+              ? `${channelLabel} streaming enabled. Responses will appear progressively.`
+              : `${channelLabel} streaming disabled. Responses will arrive as a single message.`,
+            msg.channelId,
+          );
+        }
         this.lifecycle.transition('idle');
         return;
       }
@@ -1147,7 +1163,7 @@ export class Agent {
         }
       }, MAX_FOREGROUND_WALL_MS);
 
-      const canStream = !!channel && channel.supportsStreaming() && (msg.channelType !== 'telegram' || this.telegramStreaming);
+      const canStream = !!channel && channel.supportsStreaming() && (msg.channelType !== 'telegram' || this.telegramStreaming) && (msg.channelType !== 'discord' || this.discordStreaming);
 
       if (channel && channel.usesTaskBuffering() && msg.channelType !== 'internal') {
         channel.resetStepCounter(msg.channelId);
@@ -1358,6 +1374,16 @@ export class Agent {
                 } else {
                   fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
                 }
+              } else {
+                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
+              }
+            } else if (msg.channelType === 'discord') {
+              const dcChannel = this.channels.get('discord');
+              if (dcChannel && 'sendStreamToChat' in dcChannel) {
+                const channelId = msg.channelId.startsWith('discord:')
+                  ? msg.channelId.split(':')[1]
+                  : msg.channelId;
+                fullText = await (dcChannel as any).sendStreamToChat(channelId, this.withProgressStream(streamResult.textStream));
               } else {
                 fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
               }
@@ -1600,6 +1626,11 @@ export class Agent {
           if (channel instanceof TelegramChannel) {
             (channel as TelegramChannel).endTask(msg.channelId);
             (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          }
+          if (channel instanceof DiscordChannel) {
+            (channel as DiscordChannel).endTask(msg.channelId);
+            (channel as DiscordChannel).resetStepCounter(msg.channelId);
+            (channel as DiscordChannel).reactError(msg.channelId).catch(() => {});
           }
           await channel.send(errMsg, msg.channelId);
         }
@@ -2434,7 +2465,9 @@ Is this productive iteration or a stuck loop?`,
         ? getTelegramHelp()
         : channelType === 'signal'
           ? getSignalHelp()
-          : ctx.manual();
+          : channelType === 'discord'
+            ? getDiscordHelp()
+            : ctx.manual();
       await channel.send(helpText, channelId);
       return true;
     }
@@ -2467,6 +2500,21 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/permissions') {
+      if (channelType === 'discord') {
+        const dcChannel = this.channels.get('discord');
+        if (dcChannel && 'askPermissionMode' in dcChannel) {
+          const mode = await (dcChannel as any).askPermissionMode(channelId);
+          if (mode === 'allow-all') {
+            this.capabilities.permissions.setAutoApproveAll(true);
+            this.capabilities.permissions.addTempScope('/', true, true);
+            await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
+          } else {
+            this.capabilities.permissions.setAutoApproveAll(false);
+            await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
+          }
+        }
+        return true;
+      }
       if (channelType === 'cli' && channel instanceof CLIChannel) {
         const mode = await channel.askPermissionMode?.();
         if (mode === 'allow-all') {
@@ -2479,7 +2527,7 @@ Is this productive iteration or a stuck loop?`,
         }
         return true;
       }
-      await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
+      await channel.send('Type /permissions to switch permission mode.', channelId);
       return true;
     }
 
@@ -2492,6 +2540,8 @@ Is this productive iteration or a stuck loop?`,
         `Provider: ${config.providers.default}`,
         `Telegram: ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}`,
         `Telegram access: ${getTelegramAccessSummary(config)}`,
+        `Discord: ${config.channels.discord.enabled ? 'enabled' : 'disabled'}`,
+        `Discord access: ${getDiscordAccessSummary(config)}`,
         `Budget: ${budget.getStatusText()}`,
         `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
       ];
@@ -3890,34 +3940,22 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/stream on') {
-      this.telegramStreaming = true;
-      await channel.send('Telegram streaming enabled. Responses will appear progressively.', channelId);
+      const isDiscord = channelType === 'discord';
+      if (isDiscord) this.discordStreaming = true;
+      else this.telegramStreaming = true;
+      await channel.send(`${isDiscord ? 'Discord' : 'Telegram'} streaming enabled. Responses will appear progressively.`, channelId);
       return true;
     }
 
     if (cmd === '/stream off') {
-      this.telegramStreaming = false;
-      await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
+      const isDiscord = channelType === 'discord';
+      if (isDiscord) this.discordStreaming = false;
+      else this.telegramStreaming = false;
+      await channel.send(`${isDiscord ? 'Discord' : 'Telegram'} streaming disabled. Responses will arrive as a single message.`, channelId);
       return true;
     }
 
-    if (cmd === '/stream') {
-      this.telegramStreaming = !this.telegramStreaming;
-      await channel.send(
-        this.telegramStreaming
-          ? 'Telegram streaming enabled. Responses will appear progressively.'
-          : 'Telegram streaming disabled. Responses will arrive as a single message.',
-        channelId,
-      );
-      return true;
-    }
-    if (cmd === '/stream off') {
-      this.telegramStreaming = false;
-      await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
-      return true;
-    }
-
-    if (cmd.startsWith('/agents')) {
+    if (cmd === '/agents') {
       if (!this.supervisor) {
         await channel.send('Sub-agents are not available.', channelId);
         return true;
@@ -4100,7 +4138,7 @@ Is this productive iteration or a stuck loop?`,
 
     await channel.withMenu(async (select) => {
       while (true) {
-        const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
+        const streamLabel = (this.telegramStreaming || this.discordStreaming) ? 'Disable Streaming' : 'Enable Streaming';
         const permLabel = this.capabilities.permissions.isAutoApproveAll() ? 'Switch to Ask Me' : 'Switch to Allow All';
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },

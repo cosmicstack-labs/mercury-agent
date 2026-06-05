@@ -46,6 +46,23 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
+export interface DiscordAccessUser {
+  id: string;
+  username?: string;
+  discriminator?: string;
+  requestedAt?: string;
+  approvedAt: string;
+}
+
+export interface DiscordPendingRequest {
+  id: string;
+  username?: string;
+  discriminator?: string;
+  channelId?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
 export interface SignalAccessUser {
   phoneNumber: string;
   /** Signal ACI/UUID, when known. Used to match senders who appear without a phone number. */
@@ -134,6 +151,20 @@ export interface MercuryConfig {
       admins: SignalAccessUser[];
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
+    };
+    discord: {
+      enabled: boolean;
+      botToken: string;
+      applicationId: string;
+      streaming?: boolean;
+      requireMention: boolean;
+      autoThread: boolean;
+      freeResponseChannels: string[];
+      ignoredChannels: string[];
+      reactions: boolean;
+      admins: DiscordAccessUser[];
+      members: DiscordAccessUser[];
+      pending: DiscordPendingRequest[];
     };
   };
   github: {
@@ -314,6 +345,24 @@ export function getDefaultConfig(): MercuryConfig {
         groupId: '',
         groupInternalId: '',
         groupName: '',
+        admins: [],
+        members: [],
+        pending: [],
+      },
+      discord: {
+        enabled: getEnvBool('DISCORD_ENABLED', false),
+        botToken: getEnv('DISCORD_BOT_TOKEN', ''),
+        applicationId: getEnv('DISCORD_APPLICATION_ID', ''),
+        streaming: getEnvBool('DISCORD_STREAMING', true),
+        requireMention: getEnvBool('DISCORD_REQUIRE_MENTION', true),
+        autoThread: getEnvBool('DISCORD_AUTO_THREAD', false),
+        freeResponseChannels: getEnv('DISCORD_FREE_RESPONSE_CHANNELS', '')
+          .split(',')
+          .filter(Boolean),
+        ignoredChannels: getEnv('DISCORD_IGNORED_CHANNELS', '')
+          .split(',')
+          .filter(Boolean),
+        reactions: getEnvBool('DISCORD_REACTIONS', true),
         admins: [],
         members: [],
         pending: [],
@@ -825,4 +874,172 @@ export function clearSignalAccess(config: MercuryConfig): MercuryConfig {
   config.channels.signal.members = [];
   config.channels.signal.pending = [];
   return config;
+}
+
+// ═══════════════════════════════════════════
+// Discord Access Helpers
+// ═══════════════════════════════════════════
+
+export function getDiscordApprovedUsers(config: MercuryConfig): DiscordAccessUser[] {
+  return [
+    ...config.channels.discord.admins,
+    ...config.channels.discord.members,
+  ];
+}
+
+export function getDiscordApprovedUserIds(config: MercuryConfig): string[] {
+  return [...new Set(getDiscordApprovedUsers(config).map((user) => user.id))];
+}
+
+export function getDiscordAdmins(config: MercuryConfig): DiscordAccessUser[] {
+  return config.channels.discord.admins;
+}
+
+export function getDiscordPendingRequests(config: MercuryConfig): DiscordPendingRequest[] {
+  return config.channels.discord.pending;
+}
+
+export function findDiscordApprovedUser(config: MercuryConfig, id: string): DiscordAccessUser | undefined {
+  return getDiscordApprovedUsers(config).find((user) => user.id === id);
+}
+
+export function findDiscordAdmin(config: MercuryConfig, id: string): DiscordAccessUser | undefined {
+  return config.channels.discord.admins.find((user) => user.id === id);
+}
+
+export function findDiscordPendingRequest(config: MercuryConfig, id: string): DiscordPendingRequest | undefined {
+  return config.channels.discord.pending.find((request) => request.id === id);
+}
+
+export function findDiscordPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): DiscordPendingRequest | undefined {
+  return config.channels.discord.pending.find((request) => request.pairingCode === pairingCode);
+}
+
+export function hasDiscordAdmins(config: MercuryConfig): boolean {
+  return config.channels.discord.admins.length > 0;
+}
+
+export function getDiscordAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.discord.admins.length} admin${config.channels.discord.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.discord.members.length} member${config.channels.discord.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.discord.pending.length} pending`;
+}
+
+export function addDiscordPendingRequest(
+  config: MercuryConfig,
+  request: Omit<DiscordPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): DiscordPendingRequest {
+  const existing = findDiscordPendingRequest(config, request.id);
+  if (existing) {
+    existing.username = request.username || existing.username;
+    existing.channelId = request.channelId || existing.channelId;
+    existing.pairingCode = request.pairingCode || existing.pairingCode;
+    return existing;
+  }
+
+  const created: DiscordPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.discord.pending.push(created);
+  return created;
+}
+
+export function approveDiscordPendingRequest(
+  config: MercuryConfig,
+  id: string,
+  role: 'admin' | 'member' = 'member',
+): DiscordAccessUser | null {
+  const request = findDiscordPendingRequest(config, id);
+  if (!request) return null;
+
+  const approvedUser: DiscordAccessUser = {
+    id: request.id,
+    username: request.username,
+    discriminator: request.discriminator,
+    requestedAt: request.requestedAt,
+    approvedAt: new Date().toISOString(),
+  };
+
+  config.channels.discord.pending = config.channels.discord.pending
+    .filter((entry) => entry.id !== id);
+  config.channels.discord.admins = config.channels.discord.admins
+    .filter((entry) => entry.id !== id);
+  config.channels.discord.members = config.channels.discord.members
+    .filter((entry) => entry.id !== id);
+
+  if (role === 'admin') {
+    config.channels.discord.admins.push(approvedUser);
+  } else {
+    config.channels.discord.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+export function approveDiscordPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): DiscordAccessUser | null {
+  const request = findDiscordPendingRequestByPairingCode(config, pairingCode);
+  if (!request) return null;
+  const role = hasDiscordAdmins(config) ? 'member' : 'admin';
+  return approveDiscordPendingRequest(config, request.id, role);
+}
+
+export function rejectDiscordPendingRequest(config: MercuryConfig, id: string): DiscordPendingRequest | null {
+  const request = findDiscordPendingRequest(config, id);
+  if (!request) return null;
+  config.channels.discord.pending = config.channels.discord.pending
+    .filter((entry) => entry.id !== id);
+  return request;
+}
+
+export function removeDiscordUser(config: MercuryConfig, id: string): DiscordAccessUser | null {
+  const admin = config.channels.discord.admins.find((entry) => entry.id === id);
+  if (admin) {
+    config.channels.discord.admins = config.channels.discord.admins
+      .filter((entry) => entry.id !== id);
+    return admin;
+  }
+
+  const member = config.channels.discord.members.find((entry) => entry.id === id);
+  if (member) {
+    config.channels.discord.members = config.channels.discord.members
+      .filter((entry) => entry.id !== id);
+    return member;
+  }
+
+  return null;
+}
+
+export function clearDiscordAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.discord.admins = [];
+  config.channels.discord.members = [];
+  config.channels.discord.pending = [];
+  return config;
+}
+
+export function promoteDiscordUserToAdmin(config: MercuryConfig, id: string): DiscordAccessUser | null {
+  const member = config.channels.discord.members.find((entry) => entry.id === id);
+  if (!member) return null;
+  config.channels.discord.members = config.channels.discord.members
+    .filter((entry) => entry.id !== id);
+  config.channels.discord.admins.push(member);
+  return member;
+}
+
+export function demoteDiscordAdmin(config: MercuryConfig, id: string): DiscordAccessUser | null {
+  if (config.channels.discord.admins.length <= 1) {
+    return null;
+  }
+  const admin = config.channels.discord.admins.find((entry) => entry.id === id);
+  if (!admin) return null;
+  config.channels.discord.admins = config.channels.discord.admins
+    .filter((entry) => entry.id !== id);
+  config.channels.discord.members.push(admin);
+  return admin;
 }

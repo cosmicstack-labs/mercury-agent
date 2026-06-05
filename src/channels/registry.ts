@@ -3,6 +3,7 @@ import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import { CLIChannel } from './cli.js';
 import { TelegramChannel } from './telegram.js';
 import { SignalChannel } from './signal.js';
+import { DiscordChannel } from './discord.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -18,6 +19,10 @@ export class ChannelRegistry {
 
     if (config.channels.signal.enabled && config.channels.signal.apiUrl && config.channels.signal.number) {
       this.register('signal', new SignalChannel(config));
+    }
+
+    if (config.channels.discord.enabled && config.channels.discord.botToken) {
+      this.register('discord', new DiscordChannel(config));
     }
   }
 
@@ -66,6 +71,8 @@ export class ChannelRegistry {
   getNotificationChannel(): Channel | undefined {
     const telegram = this.channels.get('telegram');
     if (telegram?.isReady()) return telegram;
+    const discord = this.channels.get('discord');
+    if (discord?.isReady()) return discord;
     const signal = this.channels.get('signal');
     if (signal?.isReady()) return signal;
     const cli = this.channels.get('cli');

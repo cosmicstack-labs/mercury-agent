@@ -81,3 +81,13 @@
   - SQLite-only (SecondBrainDB as-is) — good storage but no merge/conflict/reflection logic
   - Vector embeddings — overkill for current scale, adds heavy dependency
 - **Consequence**: SQLite with WAL mode gives fast reads for prompt injection (microseconds). FTS5 enables fast search. The business logic (merge, conflict, reflection, tiering, staleness) is inherited from UserMemoryStore. One native dependency (better-sqlite3). The user's only controls are: observe (overview, recent, search), pause/resume learning, and clear all.
+
+## ADR-011: discord.js for Discord integration
+
+- **Context**: Need Discord integration at parity with Telegram. Mercury is TypeScript + ESM + Node.js. Must support DMs, server channels, threads, slash commands, buttons, select menus, embeds, streaming (edit-in-place), file sending, and the full task-buffering status card.
+- **Decision**: Use `discord.js` v14 (^14.26.4) as the Discord library.
+- **Alternatives considered**:
+  - `discordeno` — Deno-first, poor ESM/Node.js alignment
+  - `eris` — JavaScript (not TypeScript), less active, partial component support
+  - Raw REST + Gateway — no rate limit handling, massive implementation burden
+- **Consequence**: discord.js is the standard TypeScript Discord library with full ESM support, built-in rate limiting via `@discordjs/rest`, complete component/interaction/thread/embed API, and the largest ecosystem. Requires `node >= 18` (already met by Mercury's `>= 20` requirement). Single package install. Gateway WebSocket provides real-time events; REST provides on-demand API calls. Privileged intents (MESSAGE_CONTENT) must be manually enabled in the Discord Developer Portal.
