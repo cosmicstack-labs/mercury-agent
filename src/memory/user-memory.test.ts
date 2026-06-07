@@ -14,7 +14,7 @@ function createStore(): UserMemoryStore {
   const dir = mkdtempSync(join(tmpdir(), 'mercury-sb-'));
   tempDirs.push(dir);
   const config = getDefaultConfig();
-  config.memory.secondBrain = { enabled: true };
+  config.memory.secondBrain = { enabled: true, maxRecords: 1000 };
   const dbPath = join(dir, 'second-brain', 'second-brain.db');
   const store = new UserMemoryStore(config, 'user:owner', dbPath);
   return store;

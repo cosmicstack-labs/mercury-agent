@@ -526,3 +526,28 @@ export class PermissionManager {
     };
   }
 }
+export function splitShellSegments(cmd: string): string[] {
+  const segments: string[] = [];
+  const re = /(?:\$\(([^)]*)\))|([^;&|]+[;&|]?)/g;
+  let m;
+  let buf = '';
+  while ((m = re.exec(cmd)) !== null) {
+    if (m[1] !== undefined) {
+      if (buf.trim()) segments.push(buf.trim());
+      segments.push(m[1].trim());
+      buf = '';
+    } else {
+      let seg = m[2];
+      const trailing = seg.slice(-1);
+      if (';&|'.includes(trailing)) {
+        seg = seg.slice(0, -1);
+        if (seg.trim()) segments.push(seg.trim());
+        buf = '';
+      } else {
+        buf += seg;
+      }
+    }
+  }
+  if (buf.trim()) segments.push(buf.trim());
+  return segments.filter(Boolean);
+}

@@ -739,6 +739,8 @@ export class CLIChannel extends BaseChannel {
       stagedCount,
       unstagedCount,
       branch,
+      ahead: 0,
+      behind: 0,
       lastAction,
       codeScrollOffset: this.state.workspace?.codeScrollOffset ?? 0,
       focusArea: this.state.workspace?.focusArea ?? 'explorer',
