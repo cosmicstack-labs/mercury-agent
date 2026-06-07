@@ -151,6 +151,7 @@ export interface MercuryConfig {
       webhookUrl?: string;
       allowedChatIds?: number[];
       streaming?: boolean;
+      reactions: boolean;
       admins: TelegramAccessUser[];
       members: TelegramAccessUser[];
       pending: TelegramPendingRequest[];
@@ -367,6 +368,7 @@ export function getDefaultConfig(): MercuryConfig {
           .filter(Boolean)
           .map(Number),
         streaming: getEnvBool('TELEGRAM_STREAMING', true),
+        reactions: getEnvBool('TELEGRAM_REACTIONS', true),
         admins: [],
         members: [],
         pending: [],

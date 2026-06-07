@@ -56,6 +56,8 @@ export class TelegramChannel extends BaseChannel {
   private statusNotices = new Map<string, string[]>();
   /** Maximum number of notice lines to show in the status card */
   private static readonly MAX_STATUS_NOTICES = 3;
+  /** Track original message IDs per chat for reactions */
+  private originalMessageIds = new Map<string, { chatId: number; messageId: number }>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -173,6 +175,13 @@ export class TelegramChannel extends BaseChannel {
         }).catch(() => {});
         this.permissionModes.set(chatId, 'ask-me');
       }
+
+      if (this.config.channels.telegram.reactions) {
+        if (!this.bot) return;
+        this.bot.api.setMessageReaction(chatId, ctx.message.message_id, [{ type: 'emoji', emoji: '👀' }]).catch(() => {});
+      }
+
+      this.originalMessageIds.set(`telegram:${chatId}`, { chatId, messageId: ctx.message.message_id });
 
       if (command === '/unpair') {
         if (!this.isAdminUser(userId)) {
@@ -713,6 +722,70 @@ export class TelegramChannel extends BaseChannel {
         this.pendingApprovals.delete(`${id}:allow-all`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve('ask-me');
+      }, 120_000);
+    });
+  }
+
+  async requestChoice(question: string, choices: string[], targetId?: string): Promise<string> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const chatId = chatIds[0];
+    if (!chatId || !this.bot || choices.length === 0) return choices[0] ?? '';
+
+    if (choices.length <= 5) {
+      return this.requestChoiceButtons(question, choices, chatId, targetId);
+    }
+
+    const list = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+    await this.send(`${question}\n${list}`, targetId).catch(() => {});
+    return choices[0] ?? '';
+  }
+
+  private async requestChoiceButtons(question: string, choices: string[], chatId: number, targetId?: string): Promise<string> {
+    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const keyboard = new InlineKeyboard();
+    for (let i = 0; i < choices.length; i++) {
+      const label = choices[i].length > 40 ? choices[i].slice(0, 37) + '…' : choices[i];
+      keyboard.text(label, `${id}:${i}`);
+      if (i < choices.length - 1) keyboard.row();
+    }
+
+    const html = mdToTelegram(question);
+    let sentMsgId: number | undefined;
+    try {
+      const msg = await this.bot!.api.sendMessage(chatId, html, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+      sentMsgId = msg.message_id;
+    } catch {
+      const msg = await this.bot!.api.sendMessage(chatId, this.stripHtml(html), {
+        reply_markup: keyboard,
+      });
+      sentMsgId = msg.message_id;
+    }
+
+    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+
+    return new Promise((resolve) => {
+      const cleanup = (result: string) => {
+        for (let i = 0; i < choices.length; i++) {
+          this.pendingApprovals.delete(`${id}:${i}`);
+        }
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(result);
+      };
+      for (let i = 0; i < choices.length; i++) {
+        const choice = choices[i];
+        this.pendingApprovals.set(`${id}:${i}`, () => cleanup(choice));
+      }
+
+      setTimeout(() => {
+        for (let i = 0; i < choices.length; i++) {
+          this.pendingApprovals.delete(`${id}:${i}`);
+        }
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(choices[0]);
       }, 120_000);
     });
   }
@@ -1267,6 +1340,7 @@ export class TelegramChannel extends BaseChannel {
     this.statusNotices.delete(key);
     this.endTask(targetId);
     this.deleteStatusMessage(targetId);
+    this.originalMessageIds.delete(key);
   }
 
   async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
@@ -1336,11 +1410,19 @@ export class TelegramChannel extends BaseChannel {
       }
     }
 
+    if (this.config.channels.telegram.reactions) {
+      const orig = this.originalMessageIds.get(key);
+      if (orig && this.bot) {
+        await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
+      }
+    }
+
     this.stepCounters.delete(key);
     this.stepHistory.delete(key);
     this.statusText.delete(key);
     this.statusMessageIds.delete(key);
     this.statusNotices.delete(key);
+    this.originalMessageIds.delete(key);
   }
 
   private isImageFile(ext: string): boolean {
@@ -1407,5 +1489,21 @@ export class TelegramChannel extends BaseChannel {
     const approvedChatIds = getTelegramApprovedChatIds(this.config);
     if (approvedChatIds.length > 0) return { chatId: approvedChatIds[0] };
     return null;
+  }
+
+  async reactError(targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const orig = this.originalMessageIds.get(key);
+    if (orig && this.bot) {
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👎' }]).catch(() => {});
+    }
+  }
+
+  async reactSuccess(targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const orig = this.originalMessageIds.get(key);
+    if (orig && this.bot) {
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
+    }
   }
 }

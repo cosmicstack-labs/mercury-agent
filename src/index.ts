@@ -2831,6 +2831,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     slackChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
+  if (signalChannel) {
+    signalChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
+
   // --- Relay Event Handlers ---
   if (relayClient) {
     // Helper to refresh friends list and push to CLI for @ autocomplete

@@ -27,6 +27,7 @@ import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { DiscordChannel } from '../channels/discord.js';
+import { SlackChannel } from '../channels/slack.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
 import { getTelegramHelp, getSignalHelp, getDiscordHelp } from '../utils/manual.js';
 import { WebChannel } from '../channels/web.js';
@@ -1626,11 +1627,17 @@ export class Agent {
           if (channel instanceof TelegramChannel) {
             (channel as TelegramChannel).endTask(msg.channelId);
             (channel as TelegramChannel).resetStepCounter(msg.channelId);
+            (channel as TelegramChannel).reactError(msg.channelId).catch(() => {});
           }
           if (channel instanceof DiscordChannel) {
             (channel as DiscordChannel).endTask(msg.channelId);
             (channel as DiscordChannel).resetStepCounter(msg.channelId);
             (channel as DiscordChannel).reactError(msg.channelId).catch(() => {});
+          }
+          if (channel instanceof SlackChannel) {
+            (channel as SlackChannel).endTask(msg.channelId);
+            (channel as SlackChannel).resetStepCounter(msg.channelId);
+            (channel as SlackChannel).reactError(msg.channelId).catch(() => {});
           }
           await channel.send(errMsg, msg.channelId);
         }

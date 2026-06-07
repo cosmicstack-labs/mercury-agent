@@ -47,6 +47,7 @@ type PendingReply = {
 export class SignalChannel extends BaseChannel {
   readonly type = 'signal' as const;
   private running = false;
+  private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   // Receive transport: we require the signal-cli-rest-api container to run in
   // "json-rpc" mode, which exposes /v1/receive as a WebSocket and delivers
   // messages in real time over a single persistent connection. We verify the
@@ -80,6 +81,10 @@ export class SignalChannel extends BaseChannel {
 
   constructor(private config: MercuryConfig) {
     super();
+  }
+
+  setChatCommandContext(ctx: import('../capabilities/registry.js').ChatCommandContext): void {
+    this.chatCommandContext = ctx;
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────
@@ -389,6 +394,85 @@ export class SignalChannel extends BaseChannel {
     if (command === '/access') {
       const summary = getSignalAccessSummary(this.config);
       this.sendToGroup(`Signal access: ${summary}`);
+      return;
+    }
+
+    if (command === '/memory') {
+      if (!this.chatCommandContext) {
+        this.sendToGroup('Memory not available.');
+        return;
+      }
+      const summary = this.chatCommandContext.memorySummary();
+      const lines = [
+        'Memory Overview',
+        `Total memories: ${summary.total}`,
+        `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+      ];
+      if (summary.profileSummary) {
+        lines.push(`Profile: ${summary.profileSummary}`);
+      }
+      const typeEntries = Object.entries(summary.byType);
+      if (typeEntries.length > 0) {
+        lines.push('By type:');
+        for (const [type, count] of typeEntries) {
+          lines.push(`  ${type}: ${count}`);
+        }
+      }
+      lines.push('');
+      lines.push('Reply: /memory recent, /memory pause, /memory resume, /memory clear');
+      this.sendToGroup(lines.join('\n'));
+      return;
+    }
+
+    if (text && text.startsWith('/memory ')) {
+      if (!this.chatCommandContext) {
+        this.sendToGroup('Memory not available.');
+        return;
+      }
+      const sub = text.slice('/memory '.length).trim().toLowerCase();
+      if (sub === 'recent') {
+        const recent = this.chatCommandContext.memoryRecent(10);
+        if (recent.length === 0) {
+          this.sendToGroup('No memories yet.');
+          return;
+        }
+        const lines = ['Recent Memories:', ''];
+        for (const r of recent) {
+          const scope = r.scope === 'active' ? '⏳' : '📌';
+          lines.push(`${scope} [${r.type}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        this.sendToGroup(lines.join('\n'));
+        return;
+      }
+      if (sub === 'pause' || sub === 'pause_learning') {
+        this.chatCommandContext.memorySetLearningPaused(true);
+        this.sendToGroup('Learning paused. Mercury will not store new memories until resumed.');
+        return;
+      }
+      if (sub === 'resume' || sub === 'resume_learning') {
+        this.chatCommandContext.memorySetLearningPaused(false);
+        this.sendToGroup('Learning resumed. Mercury will remember new things from conversations.');
+        return;
+      }
+      if (sub === 'clear') {
+        const cleared = this.chatCommandContext.memoryClear();
+        this.sendToGroup(`Cleared ${cleared} memories.`);
+        return;
+      }
+      if (sub === 'overview') {
+        const summary = this.chatCommandContext.memorySummary();
+        const lines = [
+          'Memory Overview',
+          `Total memories: ${summary.total}`,
+          `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+        ];
+        if (summary.profileSummary) {
+          lines.push(`Profile: ${summary.profileSummary}`);
+        }
+        this.sendToGroup(lines.join('\n'));
+        return;
+      }
       return;
     }
 
@@ -1010,6 +1094,46 @@ export class SignalChannel extends BaseChannel {
 
   private generatePairingCode(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  async sendFeedbackRequest(feedbackId: string, boardName: string, cardTask: string, question: string, options?: string[]): Promise<string | null> {
+    const target = this.resolvePromptTarget();
+    if (!target) return null;
+
+    const lines = [
+      `🔔 Feedback Required`,
+      ``,
+      `Board: ${boardName}`,
+      `Card: ${cardTask}`,
+      ``,
+      question,
+    ];
+
+    if (options && options.length > 0) {
+      lines.push('');
+      lines.push(...options.map((o, i) => `${i + 1}. ${o}`));
+      lines.push('');
+      lines.push(`@${target.name}, reply with the number or type your answer.`);
+    } else {
+      lines.push('');
+      lines.push(`@${target.name}, reply with your answer.`);
+    }
+
+    await this.sendToGroup(lines.join('\n'));
+
+    if (options && options.length > 0) {
+      const raw = await this.waitForReply(target.source, 300_000, '1');
+      const normalized = normalizeReply(raw);
+      const index = parseInt(normalized, 10);
+      if (!isNaN(index) && index >= 1 && index <= options.length) {
+        return options[index - 1];
+      }
+      const byLabel = options.find((c) => c.toLowerCase() === normalized);
+      return byLabel ?? normalized;
+    }
+
+    const raw = await this.waitForReply(target.source, 300_000, '');
+    return raw || null;
   }
 
   private splitMessage(text: string, maxLen: number): string[] {

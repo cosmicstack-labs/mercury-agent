@@ -29,6 +29,7 @@ import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 const MAX_MESSAGE_LENGTH = 40000;
 const ACCESS_ACTION_PREFIX = 'sl_access';
 const MEMORY_ACTION_PREFIX = 'sl_memory';
+const PIN_STEP_THRESHOLD = 3;
 
 type ApprovalResolver = () => void;
 
@@ -51,6 +52,7 @@ export class SlackChannel extends BaseChannel {
   private mentionedThreads = new Set<string>();
   private originalMessageTs = new Map<string, { ts: string; channelId: string }>();
   private ephemeralMessageTs = new Map<string, string[]>();
+  private pinnedMessageTs = new Map<string, string>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -206,6 +208,20 @@ export class SlackChannel extends BaseChannel {
       }
     });
 
+    app.action(/^feedback:/, async ({ action, ack, body }) => {
+      await ack();
+      try {
+        const actionId: string = (action as any).action_id || '';
+        const resolver = this.pendingApprovals.get(actionId);
+        if (resolver) {
+          this.pendingApprovals.delete(actionId);
+          resolver();
+        }
+      } catch (err: any) {
+        logger.error({ err: err.message }, 'Slack feedback action handler error');
+      }
+    });
+
     app.error(async (error) => {
       logger.error({ err: (error as any).message }, 'Slack Bolt global error');
     });
@@ -276,6 +292,36 @@ export class SlackChannel extends BaseChannel {
       } else {
         await this.sendToChannel(channelId, threadTs, client, 'This bot is not available to you. Send /start to request access.');
       }
+      return;
+    }
+
+    if (command === '/memory') {
+      if (!this.chatCommandContext) {
+        await this.sendToChannel(channelId, threadTs, client, 'Memory not available.');
+        return;
+      }
+      await this.sendMemoryKeyboard(channelId, threadTs, client);
+      return;
+    }
+
+    if (command === '/unpair') {
+      if (!this.isAdminUser(userId)) {
+        await this.sendToChannel(channelId, threadTs, client, 'Only Slack admins can reset Slack access.');
+        return;
+      }
+      clearSlackAccess(this.config);
+      saveConfig(this.config);
+      await this.sendToChannel(channelId, threadTs, client, 'Slack access reset. New users can send /start to request access. The first request must be approved from the Mercury CLI.');
+      return;
+    }
+
+    if (command === '/permissions') {
+      this.askPermissionMode(`slack:${channelId}`).then((mode) => {
+        this.permissionModes.set(channelId, mode);
+        if (this.onPermissionMode) {
+          this.onPermissionMode(mode, channelId);
+        }
+      }).catch(() => {});
       return;
     }
 
@@ -835,6 +881,10 @@ export class SlackChannel extends BaseChannel {
     const recentHistory = history.slice(-5);
     const blocks = this.buildStatusBlocks(step, recentHistory, label);
     await this.updateStatusMessage(blocks, targetId);
+
+    if (step === PIN_STEP_THRESHOLD) {
+      await this.pinStatusMessage(targetId);
+    }
   }
 
   async sendStepDone(toolName: string, result: unknown, targetId?: string): Promise<void> {
@@ -1037,9 +1087,46 @@ export class SlackChannel extends BaseChannel {
     const ts = this.statusMessageTs.get(key);
     if (!ts) return;
 
+    await this.unpinStatusMessage(targetId);
     const { channelId } = this.resolveTarget(targetId);
     this.deleteMessage(channelId, ts);
     this.statusMessageTs.delete(key);
+  }
+
+  private async pinStatusMessage(targetId?: string): Promise<void> {
+    if (!this.app) return;
+    const key = targetId || 'notification';
+    const ts = this.statusMessageTs.get(key);
+    if (!ts) return;
+
+    const { channelId } = this.resolveTarget(targetId);
+
+    const existingPin = this.pinnedMessageTs.get(key);
+    if (existingPin && existingPin !== ts) {
+      await this.app.client.pins.remove({ channel: channelId, timestamp: existingPin }).catch(() => {});
+      this.pinnedMessageTs.delete(key);
+    }
+
+    if (existingPin === ts) return;
+
+    try {
+      await this.app.client.pins.add({ channel: channelId, timestamp: ts });
+      this.pinnedMessageTs.set(key, ts);
+      logger.info({ channelId, ts }, 'Pinned Slack status message');
+    } catch (err: any) {
+      logger.warn({ err: err.message, channelId }, 'Failed to pin Slack status message');
+    }
+  }
+
+  private async unpinStatusMessage(targetId?: string): Promise<void> {
+    if (!this.app) return;
+    const key = targetId || 'notification';
+    const ts = this.pinnedMessageTs.get(key);
+    if (!ts) return;
+
+    const { channelId } = this.resolveTarget(targetId);
+    await this.app.client.pins.remove({ channel: channelId, timestamp: ts }).catch(() => {});
+    this.pinnedMessageTs.delete(key);
   }
 
   private async refreshStatusCard(targetId?: string): Promise<void> {
@@ -1218,7 +1305,200 @@ export class SlackChannel extends BaseChannel {
   }
 
   private async handleMemoryBlockAction(action: any, body: any, client: any): Promise<void> {
-    // Memory Block Kit actions - stub for now, follows same pattern as Discord
+    if (!this.app || !this.chatCommandContext) return;
+
+    const actionId: string = action.action_id || '';
+    const subAction = actionId.slice(`${MEMORY_ACTION_PREFIX}:`.length);
+    const channelId = body.channel?.id;
+    const messageTs = body.message?.ts;
+    const threadTs = body.message?.thread_ts || messageTs;
+
+    if (!channelId) return;
+
+    if (subAction === 'overview') {
+      const summary = this.chatCommandContext.memorySummary();
+      const lines = [
+        '*Memory Overview*',
+        `Total memories: ${summary.total}`,
+        `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+      ];
+      if (summary.profileSummary) {
+        lines.push(`\n_Profile: ${summary.profileSummary}_`);
+      }
+      if (summary.activeSummary) {
+        lines.push(`_Active: ${summary.activeSummary}_`);
+      }
+      const typeEntries = Object.entries(summary.byType);
+      if (typeEntries.length > 0) {
+        lines.push('\n*By type:*');
+        for (const [type, count] of typeEntries) {
+          lines.push(`  ${type}: ${count}`);
+        }
+      }
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: lines.join('\n'),
+          thread_ts: threadTs || undefined,
+        });
+      } catch {
+        // send failed
+      }
+      return;
+    }
+
+    if (subAction === 'recent') {
+      const recent = this.chatCommandContext.memoryRecent(10);
+      if (recent.length === 0) {
+        try {
+          await this.app.client.chat.postMessage({
+            channel: channelId,
+            text: 'No memories yet.',
+            thread_ts: threadTs || undefined,
+          });
+        } catch { /* */ }
+        return;
+      }
+      const lines = ['*Recent Memories:*\n'];
+      for (const r of recent) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        lines.push(`${scope} [${r.type}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: lines.join('\n'),
+          thread_ts: threadTs || undefined,
+        });
+      } catch {
+        // send failed
+      }
+      return;
+    }
+
+    if (subAction === 'toggle_learning') {
+      const currentSummary = this.chatCommandContext.memorySummary();
+      const currentlyPaused = currentSummary.learningPaused;
+      this.chatCommandContext.memorySetLearningPaused(!currentlyPaused);
+      const msg = currentlyPaused
+        ? 'Learning resumed. Mercury will remember new things from conversations.'
+        : 'Learning paused. Mercury will not store new memories until resumed.';
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: msg,
+          thread_ts: threadTs || undefined,
+        });
+      } catch {
+        // send failed
+      }
+      await this.sendMemoryKeyboard(channelId, threadTs, client);
+      return;
+    }
+
+    if (subAction === 'clear_confirm') {
+      const blocks: any[] = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: '⚠️ Are you sure you want to clear *all* memories? This cannot be undone.' },
+        },
+        {
+          type: 'actions',
+          elements: [
+            { type: 'button', text: { type: 'plain_text', text: '🗑 Yes, clear everything' }, action_id: `${MEMORY_ACTION_PREFIX}:clear_yes`, style: 'danger' },
+            { type: 'button', text: { type: 'plain_text', text: '✖ Cancel' }, action_id: `${MEMORY_ACTION_PREFIX}:clear_no` },
+          ],
+        },
+      ];
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: '⚠️ Are you sure you want to clear all memories?',
+          thread_ts: threadTs || undefined,
+          blocks,
+        });
+      } catch {
+        // send failed
+      }
+      return;
+    }
+
+    if (subAction === 'clear_yes') {
+      const cleared = this.chatCommandContext.memoryClear();
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: `Cleared ${cleared} memories.`,
+          thread_ts: threadTs || undefined,
+        });
+      } catch {
+        // send failed
+      }
+      return;
+    }
+
+    if (subAction === 'clear_no') {
+      try {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: 'Clear cancelled.',
+          thread_ts: threadTs || undefined,
+        });
+      } catch {
+        // send failed
+      }
+      return;
+    }
+  }
+
+  private async sendMemoryKeyboard(channelId: string, threadTs: string | undefined, client: any): Promise<void> {
+    if (!this.app || !this.chatCommandContext) return;
+
+    const summary = this.chatCommandContext.memorySummary();
+    const lines = [
+      '*Memory Overview*',
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
+    ];
+    if (summary.profileSummary) {
+      lines.push(`\n_Profile: ${summary.profileSummary}_`);
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('\n*By type:*');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+
+    const learningLabel = summary.learningPaused ? '▶ Resume' : '⏸ Pause';
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: lines.join('\n') },
+      },
+      {
+        type: 'actions',
+        elements: [
+          { type: 'button', text: { type: 'plain_text', text: '📋 Overview' }, action_id: `${MEMORY_ACTION_PREFIX}:overview` },
+          { type: 'button', text: { type: 'plain_text', text: '🔍 Recent' }, action_id: `${MEMORY_ACTION_PREFIX}:recent` },
+          { type: 'button', text: { type: 'plain_text', text: learningLabel }, action_id: `${MEMORY_ACTION_PREFIX}:toggle_learning` },
+          { type: 'button', text: { type: 'plain_text', text: '🗑 Clear All' }, action_id: `${MEMORY_ACTION_PREFIX}:clear_confirm`, style: 'danger' },
+        ],
+      },
+    ];
+
+    try {
+      await this.app.client.chat.postMessage({
+        channel: channelId,
+        text: 'Memory Overview',
+        thread_ts: threadTs || undefined,
+        blocks,
+      });
+    } catch {
+      // send failed
+    }
   }
 
   private getPendingStatusMessage(request?: SlackPendingRequest): string {
