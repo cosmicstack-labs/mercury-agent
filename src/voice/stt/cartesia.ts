@@ -172,7 +172,7 @@ class CartesiaSTT extends BaseSTTProvider {
       }
     } finally {
       opts.signal?.removeEventListener('abort', onAbort);
-      await pump.catch(() => {});
+      await pump.catch(err => logger.debug({ err }, 'Voice STT cartesia pump error'));
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         try { ws.close(); } catch { /* ignore */ }
       }

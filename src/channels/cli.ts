@@ -321,6 +321,22 @@ export class CLIChannel extends BaseChannel {
     });
   }
 
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  sendHeartbeat(): void {
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => {
+      this.update({ isThinking: true });
+    }, 15000);
+  }
+
+  clearHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   async sendFile(filePath: string, _targetId?: string): Promise<void> {
     const fs = await import('node:fs');
     const path = await import('node:path');

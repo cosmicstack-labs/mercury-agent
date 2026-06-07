@@ -22,6 +22,9 @@ import {
 import { logger } from '../utils/logger.js';
 import { mdToTelegram } from '../utils/markdown.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
+import { RegistryClient, isValidSkillId, searchFeed, type RegistrySkillSummary } from '../skills/registry.js';
+import { SkillStore } from '../skills/store.js';
+import { SkillLoader } from '../skills/loader.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
@@ -163,6 +166,11 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (command === '/skills') {
+        await this.handleSkillsCommand(chatId, userId, text);
+        return;
+      }
+
       this.lastActiveChatId = chatId;
       logger.info({ chatId, text: ctx.message.text?.slice(0, 50) }, 'Telegram message received');
 
@@ -172,13 +180,13 @@ export class TelegramChannel extends BaseChannel {
           if (this.onPermissionMode) {
             this.onPermissionMode(mode, chatId);
           }
-        }).catch(() => {});
+        }).catch(err => logger.warn({ err }, 'Telegram permission mode failed'));
         this.permissionModes.set(chatId, 'ask-me');
       }
 
       if (this.config.channels.telegram.reactions) {
         if (!this.bot) return;
-        this.bot.api.setMessageReaction(chatId, ctx.message.message_id, [{ type: 'emoji', emoji: '👀' }]).catch(() => {});
+        this.bot.api.setMessageReaction(chatId, ctx.message.message_id, [{ type: 'emoji', emoji: '👀' }]).catch(err => logger.warn({ err }, 'Telegram reaction failed'));
       }
 
       this.originalMessageIds.set(`telegram:${chatId}`, { chatId, messageId: ctx.message.message_id });
@@ -203,7 +211,7 @@ export class TelegramChannel extends BaseChannel {
           if (this.onPermissionMode) {
             this.onPermissionMode(mode, chatId);
           }
-        }).catch(() => {});
+        }).catch(err => logger.warn({ err }, 'Telegram permission mode failed'));
         return;
       }
 
@@ -286,6 +294,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'agents', description: 'List and manage sub-agents' },
       { command: 'bg', description: 'Background tasks (list / cancel / run)' },
       { command: 'spotify', description: 'Spotify playback controls' },
+      { command: 'skills', description: 'Browse and install skills from the registry' },
       { command: 'unpair', description: 'Reset all Telegram access (admin only)' },
     ];
 
@@ -371,7 +380,7 @@ export class TelegramChannel extends BaseChannel {
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) {
       for (const chatId of chatIds) {
-        await this.bot.api.sendMessage(chatId, `File not found: ${filePath}`).catch(() => {});
+        await this.bot.api.sendMessage(chatId, `File not found: ${filePath}`).catch(err => logger.warn({ err }, 'Telegram send failed'));
       }
       return;
     }
@@ -395,7 +404,7 @@ export class TelegramChannel extends BaseChannel {
         logger.info({ file: resolved, chatId }, 'File sent via Telegram');
       } catch (err: any) {
         logger.error({ err: err.message, file: resolved, chatId }, 'Telegram sendFile failed');
-        await this.bot.api.sendMessage(chatId, `Failed to send file: ${err.message}`).catch(() => {});
+        await this.bot.api.sendMessage(chatId, `Failed to send file: ${err.message}`).catch(err => logger.warn({ err }, 'Telegram send failed'));
       }
     }
   }
@@ -423,7 +432,7 @@ export class TelegramChannel extends BaseChannel {
       try {
         await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
       } catch (err: any) {
-        await this.bot.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
+        await this.bot.api.sendMessage(chatId, this.stripHtml(html)).catch(err => logger.warn({ err }, 'Telegram send failed'));
       }
     }
     return full;
@@ -483,9 +492,9 @@ export class TelegramChannel extends BaseChannel {
 
   startTypingLoop(chatId: number): void {
     this.stopTypingLoop();
-    this.bot?.api.sendChatAction(chatId, 'typing').catch(() => {});
+    this.bot?.api.sendChatAction(chatId, 'typing').catch(err => logger.warn({ err }, 'Telegram chat action failed'));
     this.typingInterval = setInterval(() => {
-      this.bot?.api.sendChatAction(chatId, 'typing').catch(() => {});
+      this.bot?.api.sendChatAction(chatId, 'typing').catch(err => logger.warn({ err }, 'Telegram chat action failed'));
     }, 4000);
   }
 
@@ -535,7 +544,8 @@ export class TelegramChannel extends BaseChannel {
             messageId = msg.message_id;
             lastEditTime = now;
             lastEditLength = full.length;
-          } catch {
+          } catch (err: any) {
+            logger.debug({ err }, 'Telegram stream initial send failed');
             messageId = null;
           }
         } else if (messageId !== null && timeSinceLastEdit >= STREAM_EDIT_INTERVAL && charsSinceLastEdit >= 20) {
@@ -543,8 +553,8 @@ export class TelegramChannel extends BaseChannel {
             await this.bot.api.editMessageText(chatId, messageId, this.escapeHtml(full) + ' ▌', { parse_mode: 'HTML' });
             lastEditTime = now;
             lastEditLength = full.length;
-          } catch {
-            // edit failed — rate limited or message unchanged, skip
+          } catch (err: any) {
+            logger.debug({ err }, 'Telegram stream edit skipped');
           }
         }
       }
@@ -553,11 +563,12 @@ export class TelegramChannel extends BaseChannel {
         const html = mdToTelegram(full);
         try {
           await this.bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' });
-        } catch {
+        } catch (err: any) {
+          logger.debug({ err }, 'Telegram stream final HTML edit failed');
           try {
             await this.bot.api.editMessageText(chatId, messageId, this.stripHtml(html));
-          } catch {
-            // final edit failed
+          } catch (err2: any) {
+            logger.debug({ err: err2 }, 'Telegram stream final plain edit failed');
           }
         }
       } else if (full.trim()) {
@@ -565,12 +576,13 @@ export class TelegramChannel extends BaseChannel {
         const stripped = this.stripHtml(html);
         try {
           await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
-        } catch {
+        } catch (err: any) {
+          logger.debug({ err }, 'Telegram stream HTML send failed');
           if (stripped.trim()) {
             try {
               await this.bot.api.sendMessage(chatId, stripped);
-            } catch {
-              // plain text send also failed
+            } catch (err2: any) {
+              logger.warn({ err: err2 }, 'Telegram stream plain send failed');
             }
           }
         }
@@ -601,21 +613,22 @@ export class TelegramChannel extends BaseChannel {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+       sentMsgId = msg.message_id;
+     } catch (err: any) {
+       logger.debug({ err }, 'Telegram permission HTML send failed');
+       const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
+         reply_markup: keyboard,
+       });
+       sentMsgId = msg.message_id;
+     }
 
-    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
-    return new Promise((resolve) => {
-      const cleanup = (result: string) => {
-        this.pendingApprovals.delete(`${id}:yes`);
-        this.pendingApprovals.delete(`${id}:always`);
-        this.pendingApprovals.delete(`${id}:no`);
+     return new Promise((resolve) => {
+       const cleanup = (result: string) => {
+         this.pendingApprovals.delete(`${id}:yes`);
+         this.pendingApprovals.delete(`${id}:always`);
+         this.pendingApprovals.delete(`${id}:no`);
         // Delete the permission card immediately
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve(result);
@@ -650,13 +663,14 @@ export class TelegramChannel extends BaseChannel {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, question, {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+       sentMsgId = msg.message_id;
+     } catch (err: any) {
+       logger.debug({ err }, 'Telegram continue HTML send failed');
+       const msg = await this.bot.api.sendMessage(chatId, question, {
+         reply_markup: keyboard,
+       });
+       sentMsgId = msg.message_id;
+     }
 
     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
@@ -697,18 +711,19 @@ export class TelegramChannel extends BaseChannel {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+       sentMsgId = msg.message_id;
+     } catch (err: any) {
+       logger.debug({ err }, 'Telegram permission mode HTML send failed');
+       const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
+         reply_markup: keyboard,
+       });
+       sentMsgId = msg.message_id;
+     }
 
-    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
-    return new Promise((resolve) => {
-      const cleanup = (result: PermissionMode) => {
+     return new Promise((resolve) => {
+       const cleanup = (result: PermissionMode) => {
         this.pendingApprovals.delete(`${id}:ask-me`);
         this.pendingApprovals.delete(`${id}:allow-all`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
@@ -736,7 +751,7 @@ export class TelegramChannel extends BaseChannel {
     }
 
     const list = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
-    await this.send(`${question}\n${list}`, targetId).catch(() => {});
+    await this.send(`${question}\n${list}`, targetId).catch(err => logger.warn({ err }, 'Telegram send failed'));
     return choices[0] ?? '';
   }
 
@@ -757,13 +772,14 @@ export class TelegramChannel extends BaseChannel {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot!.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+       sentMsgId = msg.message_id;
+     } catch (err: any) {
+       logger.debug({ err }, 'Telegram choice HTML send failed');
+       const msg = await this.bot!.api.sendMessage(chatId, this.stripHtml(html), {
+         reply_markup: keyboard,
+       });
+       sentMsgId = msg.message_id;
+     }
 
     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
@@ -859,10 +875,11 @@ export class TelegramChannel extends BaseChannel {
           parse_mode: 'HTML',
           reply_markup: keyboard,
         });
-      } catch {
+      } catch (err: any) {
+        logger.debug({ err }, 'Telegram admin HTML send failed');
         await this.bot.api.sendMessage(admin.chatId, message, {
           reply_markup: keyboard,
-        }).catch(() => {});
+        }).catch(err => logger.warn({ err }, 'Telegram send failed'));
       }
     }
   }
@@ -890,7 +907,7 @@ export class TelegramChannel extends BaseChannel {
     const request = findTelegramPendingRequest(this.config, requestUserId);
     if (!request) {
       await ctx.answerCallbackQuery({ text: 'Already handled' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((err: any) => logger.debug({ err }, 'Telegram markup edit failed'));
       return;
     }
 
@@ -903,7 +920,7 @@ export class TelegramChannel extends BaseChannel {
 
       saveConfig(this.config);
       await ctx.answerCallbackQuery({ text: 'Approved' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((err: any) => logger.debug({ err }, 'Telegram markup edit failed'));
       await this.sendDirectMessage(
         request.chatId,
         `Telegram access approved. You can now chat with Mercury.\n\nTelegram access: ${getTelegramAccessSummary(this.config)}`,
@@ -921,7 +938,7 @@ export class TelegramChannel extends BaseChannel {
 
       saveConfig(this.config);
       await ctx.answerCallbackQuery({ text: 'Rejected' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((err: any) => logger.debug({ err }, 'Telegram markup edit failed'));
       await this.sendDirectMessage(
         request.chatId,
         'Your Telegram access request was rejected. This bot is not available to you.',
@@ -1013,7 +1030,7 @@ export class TelegramChannel extends BaseChannel {
       await ctx.answerCallbackQuery({ text: 'Recent memories' });
       const recent = this.chatCommandContext.memoryRecent(10);
       if (recent.length === 0) {
-        await this.bot.api.sendMessage(chatId, 'No memories yet.').catch(() => {});
+        await this.bot.api.sendMessage(chatId, 'No memories yet.').catch(err => logger.warn({ err }, 'Telegram send failed'));
         return;
       }
       const lines = ['<b>Recent Memories:</b>\n'];
@@ -1037,7 +1054,7 @@ export class TelegramChannel extends BaseChannel {
       await this.bot.api.sendMessage(chatId, currentlyPaused
         ? 'Learning resumed. Mercury will remember new things from conversations.'
         : 'Learning paused. Mercury will not store new memories until resumed.',
-      ).catch(() => {});
+      ).catch(err => logger.warn({ err }, 'Telegram send failed'));
       await this.sendMemoryKeyboard(chatId);
       return;
     }
@@ -1059,7 +1076,7 @@ export class TelegramChannel extends BaseChannel {
     if (action === 'clear_yes') {
       const cleared = this.chatCommandContext.memoryClear();
       await ctx.answerCallbackQuery({ text: `Cleared ${cleared} memories` });
-      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} memories.`).catch(() => {});
+      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} memories.`).catch(err => logger.warn({ err }, 'Telegram send failed'));
       return;
     }
 
@@ -1216,7 +1233,8 @@ export class TelegramChannel extends BaseChannel {
         try {
           await this.bot.api.editMessageText(chatId, existingMsgId, html, { parse_mode: 'HTML' });
           return;
-        } catch {
+        } catch (err: any) {
+          logger.debug({ err }, 'Telegram status edit failed');
           this.statusMessageIds.delete(key);
         }
       }
@@ -1224,12 +1242,13 @@ export class TelegramChannel extends BaseChannel {
       try {
         const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
         this.statusMessageIds.set(key, msg.message_id);
-      } catch {
+      } catch (err: any) {
+        logger.debug({ err }, 'Telegram status HTML send failed');
         try {
           const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html));
           this.statusMessageIds.set(key, msg.message_id);
-        } catch {
-          logger.warn({ chatId }, 'Failed to send status message');
+        } catch (err2: any) {
+          logger.warn({ err: err2, chatId }, 'Telegram status send failed');
         }
       }
     }
@@ -1243,9 +1262,8 @@ export class TelegramChannel extends BaseChannel {
       await this.unpinStatusMessage(targetId);
       const chatIds = this.resolveTargetChatIds(targetId);
       for (const chatId of chatIds) {
-        await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
+        await this.bot.api.deleteMessage(chatId, msgId).catch(err => logger.warn({ err }, 'Telegram delete failed'));
       }
-      this.statusMessageIds.delete(key);
       this.statusText.delete(key);
       this.stepCounters.delete(key);
     }
@@ -1263,7 +1281,7 @@ export class TelegramChannel extends BaseChannel {
       // Failsafe: unpin any existing pinned message first
       const existingPin = this.pinnedMessageIds.get(key);
       if (existingPin && existingPin !== msgId) {
-        await this.bot.api.unpinChatMessage(chatId, existingPin).catch(() => {});
+        await this.bot.api.unpinChatMessage(chatId, existingPin).catch(err => logger.debug({ err }, 'Telegram markup edit failed'));
         this.pinnedMessageIds.delete(key);
       }
 
@@ -1289,7 +1307,7 @@ export class TelegramChannel extends BaseChannel {
 
     const chatIds = this.resolveTargetChatIds(targetId);
     for (const chatId of chatIds) {
-      await this.bot.api.unpinChatMessage(chatId, msgId).catch(() => {});
+      await this.bot.api.unpinChatMessage(chatId, msgId).catch(err => logger.debug({ err }, 'Telegram markup edit failed'));
     }
     this.pinnedMessageIds.delete(key);
   }
@@ -1307,7 +1325,7 @@ export class TelegramChannel extends BaseChannel {
     if (!this.bot) return;
     const chatIds = this.resolveTargetChatIds(targetId);
     for (const chatId of chatIds) {
-      await this.bot.api.deleteMessage(chatId, messageId).catch(() => {});
+      await this.bot.api.deleteMessage(chatId, messageId).catch(err => logger.warn({ err }, 'Telegram delete failed'));
     }
     // Remove from tracking
     const key = targetId || 'notification';
@@ -1326,7 +1344,7 @@ export class TelegramChannel extends BaseChannel {
     const chatIds = this.resolveTargetChatIds(targetId);
     for (const chatId of chatIds) {
       for (const msgId of ids) {
-        await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
+        await this.bot.api.deleteMessage(chatId, msgId).catch(err => logger.warn({ err }, 'Telegram delete failed'));
       }
     }
     this.ephemeralMessageIds.delete(key);
@@ -1393,8 +1411,9 @@ export class TelegramChannel extends BaseChannel {
         for (const chunk of chunks) {
           try {
             await this.bot?.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
-          } catch {
-            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch(() => {});
+          } catch (err: any) {
+            logger.debug({ err }, 'Telegram completion deferred HTML send failed');
+            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch(err2 => logger.warn({ err: err2 }, 'Telegram send failed'));
           }
         }
       }
@@ -1405,15 +1424,16 @@ export class TelegramChannel extends BaseChannel {
     for (const chatId of chatIds) {
       try {
         await this.bot?.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
-      } catch {
-        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
+      } catch (err: any) {
+        logger.debug({ err }, 'Telegram completion banner HTML send failed');
+        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch(err2 => logger.warn({ err: err2 }, 'Telegram send failed'));
       }
     }
 
     if (this.config.channels.telegram.reactions) {
       const orig = this.originalMessageIds.get(key);
       if (orig && this.bot) {
-        await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
+        await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(err => logger.warn({ err }, 'Telegram reaction failed'));
       }
     }
 
@@ -1441,8 +1461,9 @@ export class TelegramChannel extends BaseChannel {
     if (!this.bot) return;
     try {
       await this.bot.api.sendMessage(chatId, mdToTelegram(content), { parse_mode: 'HTML' });
-    } catch {
-      await this.bot.api.sendMessage(chatId, content).catch(() => {});
+    } catch (err: any) {
+      logger.debug({ err }, 'Telegram direct HTML send failed');
+      await this.bot.api.sendMessage(chatId, content).catch(err2 => logger.warn({ err: err2 }, 'Telegram send failed'));
     }
   }
 
@@ -1472,12 +1493,16 @@ export class TelegramChannel extends BaseChannel {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-    } catch {
+    } catch (err: any) {
+      logger.debug({ err }, 'Telegram feedback HTML send failed');
       try {
         await this.bot.api.sendMessage(admin.chatId, `Feedback Required\n\nBoard: ${boardName}\nCard: ${cardTask}\n\n${question}`, {
           reply_markup: keyboard,
         });
-      } catch { return null; }
+      } catch (err2: any) {
+        logger.warn({ err: err2 }, 'Telegram feedback send failed');
+        return null;
+      }
     }
     return null; // Response comes via callback_query handler
   }
@@ -1495,7 +1520,7 @@ export class TelegramChannel extends BaseChannel {
     const key = targetId || 'notification';
     const orig = this.originalMessageIds.get(key);
     if (orig && this.bot) {
-      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👎' }]).catch(() => {});
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👎' }]).catch(err => logger.warn({ err }, 'Telegram reaction failed'));
     }
   }
 
@@ -1503,7 +1528,190 @@ export class TelegramChannel extends BaseChannel {
     const key = targetId || 'notification';
     const orig = this.originalMessageIds.get(key);
     if (orig && this.bot) {
-      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(err => logger.warn({ err }, 'Telegram reaction failed'));
+}
+  }
+
+  private async handleSkillsCommand(chatId: number, userId: number, text: string): Promise<void> {
+    const parts = text.trim().split(/\s+/).slice(1);
+    const sub = (parts[0] || 'list').toLowerCase();
+    const args = parts.slice(1);
+    const arg = args.join(' ').trim();
+
+    const registry = new RegistryClient();
+    const store = new SkillStore({ registry });
+    const loader = new SkillLoader();
+
+    try {
+      switch (sub) {
+        case 'help':
+        case '-h':
+        case '--help': {
+          await this.sendDirectMessage(
+            chatId,
+            [
+              '*Mercury Skills — Telegram*',
+              '',
+              '`/skills` — list installed skills',
+              '`/skills search <query>` — search the registry',
+              '`/skills view <id>` — show details + registry URL',
+              '`/skills install <id>` — admin only',
+              '`/skills remove <id>` — admin only',
+              '',
+              'Registry: https://skills.mercuryagent.sh',
+            ].join('\n'),
+          );
+          return;
+        }
+
+        case 'list': {
+          const installed = loader.getAllSkills();
+          if (installed.length === 0) {
+            await this.sendDirectMessage(
+              chatId,
+              'No skills installed.\n\nTry `/skills search <query>` to browse https://skills.mercuryagent.sh.',
+            );
+            return;
+          }
+          const lines = installed
+            .slice(0, 25)
+            .map((s) => `• \`${s.name}\` — ${s.active ? 'active' : 'inactive'}${s.description ? ` — ${s.description}` : ''}`);
+          const more = installed.length > 25 ? `\n\n_…and ${installed.length - 25} more. Run \`mercury skills list\` for the full set._` : '';
+          await this.sendDirectMessage(
+            chatId,
+            `*Installed skills (${installed.length})*\n\n${lines.join('\n')}${more}`,
+          );
+          return;
+        }
+
+        case 'search':
+        case 'find': {
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills search <query>`');
+            return;
+          }
+          const feed = await registry.getFeed();
+          const scored = searchFeed(feed, arg, 5);
+          if (scored.length === 0) {
+            await this.sendDirectMessage(chatId, `No results for "${arg}".`);
+            return;
+          }
+          const results = scored.map((s) => s.skill);
+          const lines = results.map(
+            (r: RegistrySkillSummary) =>
+              `• \`${r.id}\` (v${r.version})\n  ${r.description}\n  ${registry.webUrl(r.id)}`,
+          );
+          await this.sendDirectMessage(
+            chatId,
+            `*Top ${results.length} matches for "${arg}"*\n\n${lines.join('\n\n')}\n\nReview a skill before installing: \`/skills view <id>\``,
+          );
+          return;
+        }
+
+        case 'view':
+        case 'show':
+        case 'info': {
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills view <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          const detail = await registry.getSkill(arg);
+          const tags = detail.tags?.length ? `\n*Tags:* ${detail.tags.join(', ')}` : '';
+          const author = detail.author ? `\n*Author:* ${detail.author}` : '';
+          await this.sendDirectMessage(
+            chatId,
+            [
+              `*${detail.title}* (\`${detail.id}\`)`,
+              `*Version:* ${detail.version}`,
+              `*Category:* ${detail.category}`,
+              author,
+              tags,
+              '',
+              detail.description,
+              '',
+              `🔗 ${registry.webUrl(detail.id)}`,
+              '',
+              this.isAdminUser(userId)
+                ? 'Install with: `/skills install ' + detail.id + '`'
+                : 'Ask an admin to install: `/skills install ' + detail.id + '`',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          );
+          return;
+        }
+
+        case 'install':
+        case 'add': {
+          if (!this.isAdminUser(userId)) {
+            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can install skills.');
+            return;
+          }
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills install <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          await this.sendDirectMessage(chatId, `Installing \`${arg}\`…`);
+          const result = await store.install(arg);
+          const verb =
+            result.status === 'already-installed'
+              ? 'Already installed'
+              : result.status === 'updated'
+                ? 'Updated'
+                : result.status === 'reinstalled'
+                  ? 'Reinstalled'
+                  : 'Installed';
+          await this.sendDirectMessage(
+            chatId,
+            `✅ ${verb} \`${result.id}\` (v${result.version})\n\n🔗 ${registry.webUrl(result.id)}`,
+          );
+          return;
+        }
+
+        case 'remove':
+        case 'rm':
+        case 'delete':
+        case 'uninstall': {
+          if (!this.isAdminUser(userId)) {
+            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can remove skills.');
+            return;
+          }
+          if (!arg) {
+            await this.sendDirectMessage(chatId, 'Usage: `/skills remove <category/slug>`');
+            return;
+          }
+          if (!isValidSkillId(arg)) {
+            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
+            return;
+          }
+          const removed = store.remove(arg);
+          if (!removed) {
+            await this.sendDirectMessage(chatId, `Skill \`${arg}\` is not installed.`);
+            return;
+          }
+          await this.sendDirectMessage(chatId, `🗑 Removed \`${arg}\`.`);
+          return;
+        }
+
+        default: {
+          await this.sendDirectMessage(
+            chatId,
+            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Skill registry request failed';
+      logger.warn({ err: msg, sub, arg }, 'Telegram /skills command failed');
+      await this.sendDirectMessage(chatId, `⚠️ ${msg}`);
     }
   }
 }

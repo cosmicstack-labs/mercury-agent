@@ -1,5 +1,6 @@
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { logger } from '../utils/logger.js';
 import {
   loadChatGPTSession,
   saveChatGPTSession,
@@ -30,7 +31,7 @@ function openBrowser(url: string): void {
       : process.platform === 'win32'
         ? 'start'
         : 'xdg-open';
-  execAsync(`${cmd} "${url}"`).catch(() => {});
+  execAsync(`${cmd} "${url}"`).catch(err => logger.debug({ err }, 'Auth browser open failed'));
 }
 
 // ---------------------------------------------------------------------------

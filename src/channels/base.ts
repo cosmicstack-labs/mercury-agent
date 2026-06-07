@@ -1,5 +1,6 @@
 import type { ChannelType, ChannelMessage } from '../types/channel.js';
 import type { CompletionMeta } from '../ui/types.js';
+import { logger } from '../utils/logger.js';
 
 export type PermissionMode = 'allow-all' | 'ask-me';
 
@@ -100,7 +101,7 @@ export abstract class BaseChannel implements Channel {
 
   async requestChoice(question: string, choices: string[], targetId?: string): Promise<string> {
     const list = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
-    await this.send(`${question}\n${list}`, targetId).catch(() => {});
+    await this.send(`${question}\n${list}`, targetId).catch(err => logger.warn({ err }, 'Channel send failed'));
     return choices[0] ?? '';
   }
 }

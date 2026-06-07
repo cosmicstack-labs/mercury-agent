@@ -205,4 +205,126 @@ Store each tweet as a memory with:
 - Importance: 0.8
 `,
   },
+  {
+    dirName: 'screenshot',
+    fileName: 'SKILL.md',
+    content: `---
+name: screenshot
+description: Take full-page screenshots of any website with configurable viewport and color scheme (dark/light mode).
+version: 1.0.0
+category: media
+categories:
+  - media
+  - web
+  - productivity
+intents:
+  - take a screenshot
+  - screenshot
+  - capture website
+  - screenshot website
+  - web screenshot
+  - capture page
+  - screenshot of
+  - take screenshot of
+  - mobile screenshot
+  - desktop screenshot
+  - dark mode screenshot
+  - light mode screenshot
+tags:
+  - screenshot
+  - website
+  - capture
+  - playwright
+  - browser
+  - viewport
+  - dark mode
+  - light mode
+allowed-tools:
+  - run_command
+  - create_file
+  - write_file
+  - send_file
+  - cd
+  - send_message
+---
+
+# Screenshot
+
+Take full-page screenshots of any website with Playwright. Supports configurable viewport dimensions and dark/light display modes.
+
+## Prerequisites
+
+Playwright and Chromium are already installed globally on this system. The skill will create and run a temporary Node.js script to handle each screenshot request.
+
+## Workflow
+
+When the user asks for a screenshot:
+
+1. **Ask for the URL** if not provided — ensure it includes the protocol (https://).
+2. **Ask for viewport / dimensions** if not specified:
+   - \`mobile\` — iPhone-like viewport (375 × 812)
+   - \`desktop\` — Standard desktop viewport (1280 × 800)
+   - \`custom\` — Ask for specific width × height in pixels
+   - Default: desktop (1280 × 800)
+3. **Ask for display mode** if not specified:
+   - \`light\` — Light color scheme
+   - \`dark\` — Dark color scheme (emulates prefers-color-scheme: dark)
+   - Default: light
+4. **Generate a unique filename** — use the domain and a timestamp (e.g., \`example.com-2025-05-30-14-30-00.png\`). Store in \`~/Desktop/\` for easy access.
+5. **Create a temporary Playwright script** using \`create_file\` or \`write_file\`, then execute it with \`run_command\`.
+
+## Playwright Script Template
+
+Use this exact template, substituting the user's parameters:
+
+\`\`\`javascript
+import { chromium } from 'playwright';
+
+const url = '{{URL}}';
+const outputPath = '{{OUTPUT_PATH}}';
+const width = {{WIDTH}};
+const height = {{HEIGHT}};
+const colorScheme = '{{COLOR_SCHEME}}'; // 'light' or 'dark'
+
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({
+  viewport: { width, height },
+  colorScheme,
+});
+const page = await context.newPage();
+await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.screenshot({ path: outputPath, fullPage: true });
+await browser.close();
+console.log('Screenshot saved to:', outputPath);
+\`\`\`
+
+### Dark Mode Details
+
+To emulate dark mode, set \`colorScheme: 'dark'\` in the browser context options. This triggers \`prefers-color-scheme: dark\` media queries on the target website.
+
+## Preset Viewport Dimensions
+
+| Preset | Width | Height | Notes |
+|---|---|---|---|
+| Mobile | 375 | 812 | iPhone X/11/12/13/14 proportions |
+| Mobile Small | 320 | 568 | iPhone SE |
+| Mobile Large | 414 | 896 | iPhone Plus/Pro Max |
+| Tablet | 768 | 1024 | iPad portrait |
+| Desktop (default) | 1280 | 800 | Standard laptop |
+| Desktop Wide | 1440 | 900 | Standard desktop |
+| Desktop HD | 1920 | 1080 | Full HD |
+
+## Output
+
+- Screenshots are saved as PNG files to \`~/Desktop/\` with the naming pattern: \`<domain>-<YYYY-MM-DD-HH-MM-SS>.png\`
+- After the screenshot is taken, use \`send_file\` to deliver the image to the user.
+- If the user is on Telegram, the image will be sent as a photo attachment.
+
+## Error Handling
+
+- If the page fails to load (timeout, DNS error, etc.), retry once with \`waitUntil: 'domcontentloaded'\` instead of \`networkidle\`.
+- If Playwright encounters an installation issue, run \`npx playwright install chromium\` and retry.
+- Inform the user if a site blocks automated screenshots (e.g., CAPTCHA, bot detection).
+`,
+  },
 ];

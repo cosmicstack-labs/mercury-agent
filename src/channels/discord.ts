@@ -304,7 +304,7 @@ export class DiscordChannel extends BaseChannel {
         if (this.onPermissionMode) {
           this.onPermissionMode(mode, channelId);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Discord permission mode failed'));
       return;
     }
 
@@ -337,12 +337,12 @@ export class DiscordChannel extends BaseChannel {
         if (this.onPermissionMode) {
           this.onPermissionMode(mode, channelId);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Discord permission mode failed'));
       this.permissionModes.set(channelId, 'ask-me');
     }
 
     if (this.config.channels.discord.reactions) {
-      await message.react('👀').catch(() => {});
+      await message.react('👀').catch(err => logger.warn({ err }, 'Discord reaction failed'));
     }
 
     this.originalMessageIds.set(`discord:${channelId}`, { messageId: message.id, channelId });
@@ -409,14 +409,14 @@ export class DiscordChannel extends BaseChannel {
 
     const resolver = this.pendingApprovals.get(customId);
     if (!resolver) {
-      await interaction.reply({ content: 'Expired', flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.reply({ content: 'Expired', flags: MessageFlags.Ephemeral }).catch(err => logger.warn({ err }, 'Discord send failed'));
       return;
     }
 
     this.pendingApprovals.delete(customId);
     resolver();
     const action = customId.split(':')[1];
-    await interaction.update({ content: action === 'no' ? 'Denied' : 'Approved', components: [] }).catch(() => {});
+      await interaction.update({ content: action === 'no' ? 'Denied' : 'Approved', components: [] }).catch(err => logger.warn({ err }, 'Discord component update failed'));
   }
 
   private async handleSelectMenuInteraction(interaction: StringSelectMenuInteraction): Promise<void> {
@@ -430,7 +430,7 @@ export class DiscordChannel extends BaseChannel {
       await interaction.update({
         content: `Permission mode set to: ${value === 'ask-me' ? '🔒 Ask Me' : '✅ Allow All'}`,
         components: [],
-      }).catch(() => {});
+      }).catch(err => logger.debug({ err }, 'Discord component update failed'));
       return;
     }
   }
@@ -454,7 +454,7 @@ export class DiscordChannel extends BaseChannel {
         await interaction.editReply(result || 'Access request processed.');
       } catch (err: any) {
         logger.error({ err: err.message }, 'Discord /start slash command failed');
-        await interaction.editReply('Something went wrong. Try sending "start" as a plain text message instead.').catch(() => {});
+        await interaction.editReply('Something went wrong. Try sending "start" as a plain text message instead.').catch(err => logger.warn({ err }, 'Discord edit failed'));
       }
       return;
     }
@@ -467,7 +467,7 @@ export class DiscordChannel extends BaseChannel {
         if (this.onPermissionMode) {
           this.onPermissionMode(mode, channelId);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Discord permission mode failed'));
       await interaction.reply({ content: 'Permission mode selector sent. Use the menu below to choose.', flags: MessageFlags.Ephemeral });
       return;
     }
@@ -484,7 +484,7 @@ export class DiscordChannel extends BaseChannel {
       metadata: { channelId: interaction.channelId, interactionId: interaction.id },
     };
 
-    await interaction.reply({ content: 'Processing...', flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply({ content: 'Processing...', flags: MessageFlags.Ephemeral }).catch(err => logger.warn({ err }, 'Discord send failed'));
     this.emit(msg);
   }
 
@@ -585,7 +585,7 @@ export class DiscordChannel extends BaseChannel {
       for (const chId of channelIds) {
         const channel = this.client.channels.cache.get(chId);
         if (isSendable(channel)) {
-          await channel.send(`File not found: ${filePath}`).catch(() => {});
+          await channel.send(`File not found: ${filePath}`).catch(err => logger.warn({ err }, 'Discord send failed'));
         }
       }
       return;
@@ -609,7 +609,7 @@ export class DiscordChannel extends BaseChannel {
         logger.info({ file: resolved, channelId: chId }, 'File sent via Discord');
       } catch (err: any) {
         logger.error({ err: err.message, file: resolved, channelId: chId }, 'Discord sendFile failed');
-        await channel.send(`Failed to send file: ${err.message}`).catch(() => {});
+        await channel.send(`Failed to send file: ${err.message}`).catch(err => logger.warn({ err }, 'Discord send failed'));
       }
     }
   }
@@ -637,90 +637,11 @@ export class DiscordChannel extends BaseChannel {
       if (isSendable(channel)) {
         const chunks = this.splitMessage(md, MAX_MESSAGE_LENGTH);
         for (const chunk of chunks) {
-          await channel.send(chunk).catch(() => {});
+          await channel.send(chunk).catch(err => logger.warn({ err }, 'Discord send failed'));
         }
       }
     }
     return full;
-  }
-
-  async sendStreamToChat(channelId: string, textStream: AsyncIterable<string>): Promise<string> {
-    if (!this.client) return '';
-
-    const activeKey = this.findActiveTaskKey(channelId);
-    if (activeKey) {
-      let full = '';
-      for await (const chunk of textStream) {
-        full += chunk;
-      }
-      this.deferredResponses.set(activeKey, full);
-      return full;
-    }
-
-    const STREAM_EDIT_INTERVAL = 1500;
-    const STREAM_MIN_LENGTH = 20;
-
-    const channel = this.client.channels.cache.get(channelId) ??
-      await this.client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !isSendable(channel)) {
-      let full = '';
-      for await (const chunk of textStream) { full += chunk; }
-      return full;
-    }
-
-    this.startTypingLoop(channelId);
-
-    try {
-      let full = '';
-      let message: Message | null = null;
-      let lastEditTime = 0;
-      let lastEditLength = 0;
-
-      for await (const chunk of textStream) {
-        full += chunk;
-
-        const now = Date.now();
-        const timeSinceLastEdit = now - lastEditTime;
-        const charsSinceLastEdit = full.length - lastEditLength;
-
-        if (!message && full.length >= STREAM_MIN_LENGTH) {
-          try {
-            message = await channel.send(full + ' |');
-            lastEditTime = now;
-            lastEditLength = full.length;
-          } catch {
-            message = null;
-          }
-        } else if (message && timeSinceLastEdit >= STREAM_EDIT_INTERVAL && charsSinceLastEdit >= 20) {
-          try {
-            await message.edit(full + ' |');
-            lastEditTime = now;
-            lastEditLength = full.length;
-          } catch {
-            // edit failed — rate limited or message unchanged
-          }
-        }
-      }
-
-      if (message) {
-        const md = mdToDiscord(full);
-        try {
-          await message.edit(md);
-        } catch {
-          // final edit failed
-        }
-      } else if (full.trim()) {
-        const md = mdToDiscord(full);
-        const chunks = this.splitMessage(md, MAX_MESSAGE_LENGTH);
-        for (const chunk of chunks) {
-          await channel.send(chunk).catch(() => {});
-        }
-      }
-
-      return full;
-    } finally {
-      this.stopTypingLoop(channelId);
-    }
   }
 
   async sendToolFeedback(toolName: string, args: Record<string, any>, targetId?: string): Promise<void> {
@@ -760,7 +681,7 @@ export class DiscordChannel extends BaseChannel {
     if (channelIds.length === 0 || !this.client) return;
     const channel = this.client.channels.cache.get(channelIds[0]);
     if (isSendable(channel)) {
-      await channel.sendTyping().catch(() => {});
+      await channel.sendTyping().catch(err => logger.warn({ err }, 'Discord typing failed'));
     }
   }
 
@@ -770,11 +691,11 @@ export class DiscordChannel extends BaseChannel {
     this.stopTypingLoop(channelId);
     const channel = this.client?.channels.cache.get(channelId);
     if (isSendable(channel)) {
-      channel.sendTyping().catch(() => {});
+      channel.sendTyping().catch(err => logger.warn({ err }, 'Discord typing failed'));
     }
     const interval = setInterval(() => {
       const ch = this.client?.channels.cache.get(channelId);
-      if (isSendable(ch)) ch.sendTyping().catch(() => {});
+      if (isSendable(ch)) ch.sendTyping().catch(err => logger.warn({ err }, 'Discord typing failed'));
     }, 9000);
     this.typingIntervals.set(channelId, interval);
   }
@@ -918,7 +839,7 @@ export class DiscordChannel extends BaseChannel {
       const listener = async (interaction: Interaction) => {
         if (!interaction.isStringSelectMenu() || interaction.customId !== selectId) return;
         const value = interaction.values[0] as PermissionMode;
-        await interaction.update({ content: `Permission mode: ${value === 'ask-me' ? 'Ask Me' : 'Allow All'}`, components: [] }).catch(() => {});
+        await interaction.update({ content: `Permission mode: ${value === 'ask-me' ? 'Ask Me' : 'Allow All'}`, components: [] }).catch(err => logger.debug({ err }, 'Discord component update failed'));
         handler(value);
       };
       this.client?.on('interactionCreate', listener);
@@ -961,7 +882,7 @@ export class DiscordChannel extends BaseChannel {
       const listener = async (interaction: Interaction) => {
         if (!interaction.isStringSelectMenu() || interaction.customId !== id) return;
         const idx = parseInt(interaction.values[0], 10);
-        await interaction.update({ content: `Selected: ${choices[idx]}`, components: [] }).catch(() => {});
+        await interaction.update({ content: `Selected: ${choices[idx]}`, components: [] }).catch(err => logger.debug({ err }, 'Discord component update failed'));
         this.client?.removeListener('interactionCreate', listener);
         resolve(choices[idx] ?? choices[0]);
       };
@@ -1067,7 +988,7 @@ export class DiscordChannel extends BaseChannel {
         const channel = this.client?.channels.cache.get(chId);
         if (isSendable(channel)) {
           for (const chunk of chunks) {
-            await channel.send(chunk).catch(() => {});
+            await channel.send(chunk).catch(err => logger.warn({ err }, 'Discord send failed'));
           }
         }
       }
@@ -1076,7 +997,7 @@ export class DiscordChannel extends BaseChannel {
     for (const chId of channelIds) {
       const channel = this.client?.channels.cache.get(chId);
       if (isSendable(channel)) {
-        await channel.send({ embeds: [embed] }).catch(() => {});
+        await channel.send({ embeds: [embed] }).catch(err => logger.warn({ err }, 'Discord send failed'));
         if (this.config.channels.discord.reactions) {
           await this.reactToOriginalMessage(key, '✅');
         }
@@ -1107,7 +1028,7 @@ export class DiscordChannel extends BaseChannel {
       const channel = this.client.channels.cache.get(chId);
       if (!isSendable(channel)) continue;
       for (const msgId of ids) {
-        await channel.messages.delete(msgId).catch(() => {});
+        await channel.messages.delete(msgId).catch(err => logger.warn({ err }, 'Discord delete failed'));
       }
     }
     this.ephemeralMessageIds.delete(key);
@@ -1181,7 +1102,7 @@ export class DiscordChannel extends BaseChannel {
       if (isSendable(channel)) {
         try {
           const msg = await channel.messages.fetch(msgId).catch(() => null);
-          if (msg) await msg.delete().catch(() => {});
+          if (msg) await msg.delete().catch(err => logger.warn({ err }, 'Discord delete failed'));
         } catch {
           // message already deleted
         }
@@ -1344,7 +1265,7 @@ export class DiscordChannel extends BaseChannel {
         const channel = this.client.channels.cache.get(request.channelId) ??
           await this.client.channels.fetch(request.channelId).catch(() => null);
         if (isSendable(channel)) {
-          await channel.send(`Discord access approved. You can now chat with Mercury.\n\nDiscord access: ${getDiscordAccessSummary(this.config)}`).catch(() => {});
+          await channel.send(`Discord access approved. You can now chat with Mercury.\n\nDiscord access: ${getDiscordAccessSummary(this.config)}`).catch(err => logger.warn({ err }, 'Discord send failed'));
         }
       }
       return;
@@ -1363,7 +1284,7 @@ export class DiscordChannel extends BaseChannel {
         const channel = this.client.channels.cache.get(request.channelId) ??
           await this.client.channels.fetch(request.channelId).catch(() => null);
         if (isSendable(channel)) {
-          await channel.send('Your Discord access request was rejected.').catch(() => {});
+          await channel.send('Your Discord access request was rejected.').catch(err => logger.warn({ err }, 'Discord send failed'));
         }
       }
       return;
@@ -1405,7 +1326,7 @@ export class DiscordChannel extends BaseChannel {
       new ButtonBuilder().setCustomId(`${MEMORY_ACTION_PREFIX}:clear_confirm`).setLabel('Clear All').setStyle(ButtonStyle.Danger),
     );
 
-    await channel.send({ embeds: [embed], components: [row] }).catch(() => {});
+    await channel.send({ embeds: [embed], components: [row] }).catch((err: any) => logger.warn({ err }, 'Discord send failed'));
   }
 
   private async handleMemoryCallback(interaction: ButtonInteraction, data: string): Promise<void> {
@@ -1434,7 +1355,7 @@ export class DiscordChannel extends BaseChannel {
       if (summary.activeSummary) {
         embed.addFields({ name: 'Active', value: summary.activeSummary, inline: false });
       }
-      await channel.send({ embeds: [embed] }).catch(() => {});
+      await channel.send({ embeds: [embed] }).catch(err => logger.warn({ err }, 'Discord send failed'));
       return;
     }
 
@@ -1442,7 +1363,7 @@ export class DiscordChannel extends BaseChannel {
       await interaction.deferUpdate();
       const recent = this.chatCommandContext.memoryRecent(10);
       if (recent.length === 0) {
-        await channel.send('No memories yet.').catch(() => {});
+        await channel.send('No memories yet.').catch(err => logger.warn({ err }, 'Discord send failed'));
         return;
       }
       const embed = new EmbedBuilder().setColor(0x5865F2).setTitle('Recent Memories');
@@ -1453,7 +1374,7 @@ export class DiscordChannel extends BaseChannel {
           inline: false,
         });
       }
-      await channel.send({ embeds: [embed] }).catch(() => {});
+      await channel.send({ embeds: [embed] }).catch(err => logger.warn({ err }, 'Discord send failed'));
       return;
     }
 
@@ -1563,7 +1484,7 @@ export class DiscordChannel extends BaseChannel {
     const md = mdToDiscord(content);
     const chunks = this.splitMessage(md, MAX_MESSAGE_LENGTH);
     for (const chunk of chunks) {
-      await channel.send(chunk).catch(() => {});
+      await channel.send(chunk).catch(err => logger.warn({ err }, 'Discord send failed'));
     }
   }
 
@@ -1578,7 +1499,7 @@ export class DiscordChannel extends BaseChannel {
     if (!this.client || !messageId) return;
     const channel = this.client.channels.cache.get(channelId);
     if (isSendable(channel)) {
-      await channel.messages.delete(messageId).catch(() => {});
+      await channel.messages.delete(messageId).catch(err => logger.warn({ err }, 'Discord delete failed'));
     }
   }
 
@@ -1588,7 +1509,7 @@ export class DiscordChannel extends BaseChannel {
     for (const chId of channelIds) {
       const channel = this.client.channels.cache.get(chId);
       if (isSendable(channel)) {
-        await channel.messages.delete(messageId).catch(() => {});
+        await channel.messages.delete(messageId).catch(err => logger.warn({ err }, 'Discord delete failed'));
       }
     }
     const key = targetId || 'notification';
@@ -1614,7 +1535,7 @@ export class DiscordChannel extends BaseChannel {
       if (existingPin && existingPin !== msgId) {
         try {
           const existingMsg = await channel.messages.fetch(existingPin).catch(() => null);
-          if (existingMsg) await existingMsg.unpin().catch(() => {});
+          if (existingMsg) await existingMsg.unpin().catch(err => logger.warn({ err }, 'Discord delete failed'));
         } catch {
           // already unpinned
         }
@@ -1645,7 +1566,7 @@ export class DiscordChannel extends BaseChannel {
       if (!isSendable(channel)) continue;
       try {
         const msg = await channel.messages.fetch(msgId).catch(() => null);
-        if (msg) await msg.unpin().catch(() => {});
+        if (msg) await msg.unpin().catch(err => logger.warn({ err }, 'Discord delete failed'));
       } catch {
         // already unpinned
       }
@@ -1685,7 +1606,7 @@ export class DiscordChannel extends BaseChannel {
 
     try {
       const msg = await channel.messages.fetch(orig.messageId).catch(() => null);
-      if (msg) await msg.react(emoji).catch(() => {});
+      if (msg) await msg.react(emoji).catch(err => logger.warn({ err }, 'Discord reaction failed'));
     } catch {
       // message may have been deleted
     }

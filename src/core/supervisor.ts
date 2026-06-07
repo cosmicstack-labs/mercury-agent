@@ -83,7 +83,7 @@ export class SubAgentSupervisor {
 
   private fireLifecycleEvent(event: Parameters<AgentLifecycleCallback>[0]): void {
     for (const cb of this.lifecycleCallbacks) {
-      try { cb(event); } catch {}
+      try { cb(event); } catch (err) { logger.warn({ err, eventType: event.type, agentId: event.agentId }, 'Lifecycle callback threw'); }
     }
   }
 
@@ -182,7 +182,7 @@ export class SubAgentSupervisor {
       if (entry) {
         const channelType = entry.sourceChannelType || 'cli';
         const channelId = entry.sourceChannelId || 'cli';
-        this.notify(channelType, channelId, `🔄 Agent ${agentId}: ${progress}`).catch(() => {});
+        this.notify(channelType, channelId, `🔄 Agent ${agentId}: ${progress}`).catch(err => logger.warn({ err, agentId }, 'Task notification failed'));
       }
     });
 
@@ -209,6 +209,14 @@ export class SubAgentSupervisor {
       this.activeAgents.delete(config.id);
       this.fileLockManager.releaseAll(config.id);
       this.pausedAgents.delete(config.id);
+
+      const crashedEntry = this.taskBoard.get(config.id);
+      if (crashedEntry) {
+        const chType = crashedEntry.sourceChannelType || 'cli';
+        const chId = crashedEntry.sourceChannelId || 'cli';
+        await this.notify(chType, chId, `💥 **Agent ${config.id}** crashed unexpectedly: "${crashedEntry.task.slice(0, 40)}"\nError: ${String(err)}`).catch(notifyErr => logger.warn({ err: notifyErr, agentId: config.id }, 'Crash notification failed'));
+      }
+
       await this.processWaitQueue();
     });
   }

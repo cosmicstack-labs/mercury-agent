@@ -526,28 +526,126 @@ export class PermissionManager {
     };
   }
 }
-export function splitShellSegments(cmd: string): string[] {
-  const segments: string[] = [];
-  const re = /(?:\$\(([^)]*)\))|([^;&|]+[;&|]?)/g;
-  let m;
+export function splitShellSegments(command: string): string[] {
+  const out: string[] = [];
   let buf = '';
-  while ((m = re.exec(cmd)) !== null) {
-    if (m[1] !== undefined) {
-      if (buf.trim()) segments.push(buf.trim());
-      segments.push(m[1].trim());
-      buf = '';
-    } else {
-      let seg = m[2];
-      const trailing = seg.slice(-1);
-      if (';&|'.includes(trailing)) {
-        seg = seg.slice(0, -1);
-        if (seg.trim()) segments.push(seg.trim());
-        buf = '';
-      } else {
-        buf += seg;
-      }
+  let i = 0;
+  let single = false;
+  let double = false;
+  let backtick = false;
+
+  const flush = () => {
+    const seg = buf.trim();
+    if (seg.length > 0) out.push(seg);
+    buf = '';
+  };
+
+  while (i < command.length) {
+    const ch = command[i];
+    const next = command[i + 1];
+
+    if (single) {
+      buf += ch;
+      if (ch === "'") single = false;
+      i++;
+      continue;
     }
+    if (double) {
+      if (ch === '\\' && next !== undefined) {
+        buf += ch + next;
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        buf += ch;
+        double = false;
+        i++;
+        continue;
+      }
+      if (ch === '$' && next === '(') {
+        i += 2;
+        let depth = 1;
+        let inner = '';
+        while (i < command.length && depth > 0) {
+          const c = command[i];
+          if (c === '(') depth++;
+          else if (c === ')') { depth--; if (depth === 0) break; }
+          inner += c;
+          i++;
+        }
+        i++;
+        for (const seg of splitShellSegments(inner)) out.push(seg);
+        continue;
+      }
+      if (ch === '`') {
+        i++;
+        let inner = '';
+        while (i < command.length && command[i] !== '`') {
+          inner += command[i];
+          i++;
+        }
+        i++;
+        for (const seg of splitShellSegments(inner)) out.push(seg);
+        continue;
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+    if (backtick) {
+      if (ch === '`') {
+        backtick = false;
+        if (buf.trim().length > 0) {
+          for (const inner of splitShellSegments(buf)) out.push(inner);
+          buf = '';
+        }
+        i++;
+        continue;
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") { single = true; buf += ch; i++; continue; }
+    if (ch === '"') { double = true; buf += ch; i++; continue; }
+    if (ch === '`') {
+      flush();
+      backtick = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '$' && next === '(') {
+      flush();
+      i += 2;
+      let depth = 1;
+      let inner = '';
+      while (i < command.length && depth > 0) {
+        const c = command[i];
+        if (c === '(') depth++;
+        else if (c === ')') { depth--; if (depth === 0) break; }
+        inner += c;
+        i++;
+      }
+      i++;
+      for (const seg of splitShellSegments(inner)) out.push(seg);
+      continue;
+    }
+
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') { flush(); i++; continue; }
+
+    if (ch === ';' || ch === '\n') { flush(); i++; continue; }
+    if (ch === '|' && next === '|') { flush(); i += 2; continue; }
+    if (ch === '&' && next === '&') { flush(); i += 2; continue; }
+    if (ch === '|') { flush(); i++; continue; }
+    if (ch === '&') { flush(); i++; continue; }
+
+    buf += ch;
+    i++;
   }
-  if (buf.trim()) segments.push(buf.trim());
-  return segments.filter(Boolean);
+
+  flush();
+  if (out.length === 0) out.push(command.trim());
+  return out;
 }

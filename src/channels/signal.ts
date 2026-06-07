@@ -159,7 +159,6 @@ export class SignalChannel extends BaseChannel {
   private startWebSocket(): void {
     if (this.running) return;
     this.running = true;
-    this.ready = true;
     this.reconnectAttempts = 0;
     logger.info('Signal: starting WebSocket receive loop (json-rpc mode)');
     this.webSocketLoop();
@@ -200,6 +199,7 @@ export class SignalChannel extends BaseChannel {
       this.ws = ws;
 
       ws.onopen = () => {
+        this.ready = true;
         this.reconnectAttempts = 0;
         logger.info('Signal: WebSocket receive connected');
       };
@@ -223,6 +223,7 @@ export class SignalChannel extends BaseChannel {
       };
 
       ws.onclose = () => {
+        this.ready = false;
         if (this.ws === ws) this.ws = null;
         if (this.shouldReconnect) {
           logger.warn('Signal: WebSocket receive closed, will reconnect');
@@ -387,7 +388,7 @@ export class SignalChannel extends BaseChannel {
         // Propagate to the permission engine so "Allow All" actually takes
         // effect at tool-execution time (mirrors the Telegram wiring).
         this.onPermissionMode?.(mode, source);
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Signal askPermissionMode failed'));
       return;
     }
 

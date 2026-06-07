@@ -2779,9 +2779,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     if (spotifyClient.isAuthenticated()) {
       if (!spotifyClient.getAccountName()) {
-        spotifyClient.saveAccountInfo().catch(() => {});
+        spotifyClient.saveAccountInfo().catch(err => logger.warn({ err }, 'Spotify saveAccountInfo failed'));
       }
-      spotifyClient.checkPremium().catch(() => {});
+      spotifyClient.checkPremium().catch(err => logger.warn({ err }, 'Spotify checkPremium failed'));
 
       const accountName = spotifyClient.getAccountName();
       const label = accountName ? ` as ${accountName}` : '';
@@ -2849,7 +2849,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         if (bootCli) {
           bootCli.setFriends(friends);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Relay friends refresh failed'));
     };
 
     const storeNotification = (type: string, message: string, fromUser: string, meta?: Record<string, unknown>) => {
@@ -2866,7 +2866,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 pushSucceeded = true;
                 notifications!.markRead(record.id);
               }
-            }).catch(() => {});
+            }).catch(err => logger.warn({ err, chatId }, 'Telegram push notification failed'));
           }
         }
         if (dcChannel) {
@@ -2878,7 +2878,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 dcPushSucceeded = true;
                 notifications!.markRead(record.id);
               }
-            }).catch(() => {});
+            }).catch(err => logger.warn({ err, userId }, 'Discord push notification failed'));
           }
         }
         // Push to CLI if available
@@ -2951,7 +2951,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (tgChannel) {
         const chatIds = getTelegramApprovedChatIds(config);
         for (const chatId of chatIds) {
-          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+          tgChannel.send(formattedMessage, chatId.toString()).catch(err => logger.warn({ err, chatId }, 'Telegram relay message send failed'));
         }
       }
       if (cliChannel) {
@@ -2967,7 +2967,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       const query = d.query;
 
       if (!ck) {
-        relayClient!.sendCKResponse(fromUser, requestId, query, []).catch(() => {});
+        relayClient!.sendCKResponse(fromUser, requestId, query, []).catch(err => logger.warn({ err, fromUser }, 'Relay CK response failed'));
         return;
       }
 
@@ -3037,7 +3037,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       if (tgChannel) {
         const chatIds = getTelegramApprovedChatIds(config);
         for (const chatId of chatIds) {
-          tgChannel.send(formattedMessage, chatId.toString()).catch(() => {});
+          tgChannel.send(formattedMessage, chatId.toString()).catch(err => logger.warn({ err, chatId }, 'Telegram CK response send failed'));
         }
       }
       if (cliChannel) {
@@ -3363,6 +3363,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     } else {
       logger.info('Mercury is shutting down (daemon mode)');
     }
+    agent.notifyAllChannels('Mercury is shutting down. Goodbye!');
     if (userMemory) {
       try {
         userMemory.consolidate();
@@ -3382,6 +3383,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (!isDaemon && process.platform !== 'win32') {
     process.on('SIGHUP', () => {
       logger.info('SIGHUP received — terminal closed. Daemonizing.');
+      agent.notifyAllChannels('Terminal closed. Attempting to daemonize — I may go offline briefly.');
       try {
         const result = tryAutoDaemonize();
         if (result) {

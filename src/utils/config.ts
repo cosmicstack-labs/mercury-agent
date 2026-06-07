@@ -252,6 +252,58 @@ export interface MercuryConfig {
     enabled: boolean;
     port: number;
   };
+  voice?: VoiceConfig;
+}
+
+export interface VoiceConfig {
+  enabled: boolean;
+  cartesiaApiKey?: string;
+  tts: {
+    provider: 'cartesia' | 'openai' | 'local';
+    fallback: 'cartesia' | 'openai' | 'local' | null;
+    autoSpeakReplies: boolean;
+    normalize: boolean;
+    cartesia: {
+      voiceId: string;
+      model: string;
+      language?: string;
+    };
+    openai: {
+      voice: string;
+      model: string;
+    };
+    local?: Record<string, never>;
+  };
+  stt: {
+    provider: 'cartesia' | 'openai' | 'local';
+    fallback: 'cartesia' | 'openai' | 'local' | null;
+    liveCaptions: boolean;
+    autoSubmit: boolean;
+    cartesia: {
+      model: string;
+      language: string;
+    };
+    openai: {
+      model: string;
+      language: string;
+    };
+    local?: {
+      modelPath?: string;
+      language?: string;
+      binaryPath?: string;
+    };
+  };
+  pushToTalkKey: string;
+  microphone: {
+    deviceId: string | null;
+    sampleRate: number;
+    channels: number;
+    grantPromptOnFirstUse: boolean;
+    releaseOnIdleSeconds: number;
+  };
+  termux?: {
+    useNativeTTS: boolean;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
@@ -318,7 +370,7 @@ export function getDefaultConfig(): MercuryConfig {
       ollamaLocal: {
         name: 'ollamaLocal',
         apiKey: '',
-        baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/api'),
+        baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/v1'),
         model: getEnv('OLLAMA_LOCAL_MODEL', ''),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
       },
@@ -471,6 +523,55 @@ export function getDefaultConfig(): MercuryConfig {
       enabled: getEnvBool('MERCURY_WEB_ENABLED', false),
       port: getEnvNum('MERCURY_PORT', 6174),
     },
+    voice: {
+      enabled: getEnvBool('MERCURY_VOICE_ENABLED', false),
+      cartesiaApiKey: getEnv('CARTESIA_API_KEY', ''),
+      tts: {
+        provider: (getEnv('MERCURY_VOICE_TTS_PROVIDER', 'cartesia') as 'cartesia' | 'openai' | 'local'),
+        fallback: 'openai',
+        autoSpeakReplies: getEnvBool('MERCURY_VOICE_AUTO_SPEAK', true),
+        normalize: getEnvBool('MERCURY_VOICE_NORMALIZE', true),
+        cartesia: {
+          voiceId: getEnv('CARTESIA_VOICE_ID', 'a0e99841-438c-4a64-b679-ae501e7d6091'),
+          model: getEnv('CARTESIA_TTS_MODEL', 'sonic-2'),
+          language: getEnv('CARTESIA_TTS_LANGUAGE', 'en'),
+        },
+        openai: {
+          voice: getEnv('OPENAI_TTS_VOICE', 'sage'),
+          model: getEnv('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts'),
+        },
+      },
+      stt: {
+        provider: (getEnv('MERCURY_VOICE_STT_PROVIDER', 'cartesia') as 'cartesia' | 'openai' | 'local'),
+        fallback: 'openai',
+        liveCaptions: getEnvBool('MERCURY_VOICE_LIVE_CAPTIONS', true),
+        autoSubmit: getEnvBool('MERCURY_VOICE_AUTO_SUBMIT', true),
+        cartesia: {
+          model: getEnv('CARTESIA_STT_MODEL', 'ink-whisper'),
+          language: getEnv('CARTESIA_STT_LANGUAGE', 'auto'),
+        },
+        openai: {
+          model: getEnv('OPENAI_STT_MODEL', 'whisper-1'),
+          language: getEnv('OPENAI_STT_LANGUAGE', 'auto'),
+        },
+        local: {
+          modelPath: getEnv('MERCURY_VOICE_WHISPER_MODEL', ''),
+          language: getEnv('MERCURY_VOICE_WHISPER_LANGUAGE', 'en'),
+          binaryPath: getEnv('MERCURY_VOICE_WHISPER_BIN', ''),
+        },
+      },
+      pushToTalkKey: getEnv('MERCURY_VOICE_PTT_KEY', 'ctrl+space'),
+      microphone: {
+        deviceId: getEnv('MERCURY_VOICE_MIC_DEVICE', '') || null,
+        sampleRate: getEnvNum('MERCURY_VOICE_MIC_SAMPLE_RATE', 16000),
+        channels: getEnvNum('MERCURY_VOICE_MIC_CHANNELS', 1),
+        grantPromptOnFirstUse: getEnvBool('MERCURY_VOICE_GRANT_PROMPT', true),
+        releaseOnIdleSeconds: getEnvNum('MERCURY_VOICE_MIC_IDLE_RELEASE', 0),
+      },
+      termux: {
+        useNativeTTS: getEnvBool('MERCURY_VOICE_TERMUX_NATIVE_TTS', false),
+      },
+    },
   };
 }
 
@@ -481,11 +582,17 @@ export function loadConfig(): MercuryConfig {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const fileConfig = parseYaml(raw) as Partial<MercuryConfig>;
     const defaults = getDefaultConfig();
-    return migrateLegacyOllamaCloudBaseUrl(
-      migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+    return migrateLegacyOllamaLocalBaseUrl(
+      migrateLegacyOllamaCloudBaseUrl(
+        migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+      ),
     );
   }
-  return migrateLegacyTelegramAccess(getDefaultConfig());
+  return migrateLegacyOllamaLocalBaseUrl(
+    migrateLegacyOllamaCloudBaseUrl(
+      migrateLegacyTelegramAccess(getDefaultConfig()),
+    ),
+  );
 }
 
 export function saveConfig(config: MercuryConfig): void {
@@ -766,6 +873,15 @@ export function migrateLegacyTelegramAccess(config: MercuryConfig): MercuryConfi
 export function migrateLegacyOllamaCloudBaseUrl(config: MercuryConfig): MercuryConfig {
   if (config.providers.ollamaCloud.baseUrl === 'https://ollama.com/api') {
     config.providers.ollamaCloud.baseUrl = 'https://ollama.com/v1';
+    saveConfig(config);
+  }
+  return config;
+}
+
+export function migrateLegacyOllamaLocalBaseUrl(config: MercuryConfig): MercuryConfig {
+  const local = config.providers.ollamaLocal.baseUrl;
+  if (local === 'http://127.0.0.1:11434/api' || local === 'http://localhost:11434/api') {
+    config.providers.ollamaLocal.baseUrl = local.replace('/api', '/v1');
     saveConfig(config);
   }
   return config;

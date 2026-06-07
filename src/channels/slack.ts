@@ -61,8 +61,8 @@ export class SlackChannel extends BaseChannel {
   private reloadConfig(): void {
     try {
       this.config = loadConfig();
-    } catch {
-      // keep using in-memory config if disk read fails
+    } catch (err) {
+      logger.warn({ err }, 'Slack reloadConfig failed');
     }
   }
 
@@ -242,8 +242,8 @@ export class SlackChannel extends BaseChannel {
     if (this.app) {
       try {
         await this.app.stop();
-      } catch {
-        // ignore stop errors
+      } catch (err) {
+        logger.debug({ err }, 'Slack app stop failed');
       }
       this.app = null;
     }
@@ -321,7 +321,7 @@ export class SlackChannel extends BaseChannel {
         if (this.onPermissionMode) {
           this.onPermissionMode(mode, channelId);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Slack askPermissionMode failed'));
       return;
     }
 
@@ -347,12 +347,12 @@ export class SlackChannel extends BaseChannel {
         if (this.onPermissionMode) {
           this.onPermissionMode(mode, channelId);
         }
-      }).catch(() => {});
+      }).catch(err => logger.warn({ err }, 'Slack askPermissionMode failed'));
       this.permissionModes.set(channelId, 'ask-me');
     }
 
     if (this.config.channels.slack.reactions) {
-      await this.addReaction(channelId, event.ts, 'eyes', client).catch(() => {});
+      await this.addReaction(channelId, event.ts, 'eyes', client).catch(err => logger.warn({ err, channelId }, 'Slack addReaction failed'));
     }
 
     this.originalMessageTs.set(`slack:${channelId}`, { ts: event.ts, channelId });
@@ -558,7 +558,8 @@ export class SlackChannel extends BaseChannel {
             messageTs = result.ts as string;
             lastEditTime = now;
             lastEditLength = full.length;
-          } catch {
+          } catch (err) {
+            logger.debug({ err, channelId }, 'Slack stream initial post failed');
             messageTs = null;
           }
         } else if (messageTs && timeSinceLastEdit >= STREAM_EDIT_INTERVAL && charsSinceLastEdit >= 20) {
@@ -570,8 +571,8 @@ export class SlackChannel extends BaseChannel {
             });
             lastEditTime = now;
             lastEditLength = full.length;
-          } catch {
-            // edit failed — rate limited
+          } catch (err) {
+            logger.debug({ err, channelId }, 'Slack stream edit rate-limited');
           }
         }
       }
@@ -584,9 +585,9 @@ export class SlackChannel extends BaseChannel {
             ts: messageTs,
             text: md,
           });
-        } catch {
-          // final edit failed
-        }
+         } catch (err) {
+           logger.debug({ err, channelId }, 'Slack stream final edit failed');
+         }
       } else if (full.trim()) {
         const md = mdToSlack(full);
         const chunks = this.splitMessage(md, MAX_MESSAGE_LENGTH);
@@ -598,9 +599,9 @@ export class SlackChannel extends BaseChannel {
               unfurl_links: false,
               unfurl_media: false,
             });
-          } catch {
-            // send failed
-          }
+           } catch (err) {
+             logger.debug({ err, channelId }, 'Slack stream fallback send failed');
+           }
         }
       }
 
@@ -643,7 +644,8 @@ export class SlackChannel extends BaseChannel {
         blocks,
       });
       sentTs = result.ts as string;
-    } catch {
+    } catch (err) {
+      logger.debug({ err, channelId }, 'Slack askToContinue post failed');
       return false;
     }
 
@@ -693,7 +695,8 @@ export class SlackChannel extends BaseChannel {
         blocks,
       });
       sentTs = result.ts as string;
-    } catch {
+    } catch (err) {
+      logger.debug({ err, channelId }, 'Slack askPermissionMode post failed');
       return 'ask-me';
     }
 
@@ -803,7 +806,8 @@ export class SlackChannel extends BaseChannel {
         thread_ts: threadTs || undefined,
         blocks,
       });
-    } catch {
+    } catch (err) {
+      logger.warn({ err, channelId }, 'Slack requestChoice post failed');
       return choices[0] ?? '';
     }
 
@@ -848,7 +852,8 @@ export class SlackChannel extends BaseChannel {
         thread_ts: threadTs || undefined,
         blocks,
       });
-    } catch {
+    } catch (err) {
+      logger.warn({ err, channelId }, 'Slack requestChoiceButtons post failed');
       return choices[0];
     }
 
@@ -932,9 +937,9 @@ export class SlackChannel extends BaseChannel {
             unfurl_links: false,
             unfurl_media: false,
           });
-        } catch {
-          // send failed
-        }
+         } catch (err) {
+           logger.debug({ err, channelId }, 'Slack sendCompletion deferred post failed');
+         }
       }
     }
 
@@ -990,9 +995,9 @@ export class SlackChannel extends BaseChannel {
             timestamp: orig.ts,
             name: 'white_check_mark',
           });
-        } catch {
-          // reaction failed
-        }
+         } catch (err) {
+           logger.debug({ err }, 'Slack sendCompletion reaction failed');
+         }
       }
     }
 
@@ -1063,9 +1068,10 @@ export class SlackChannel extends BaseChannel {
           blocks,
         });
         return;
-      } catch {
-        this.statusMessageTs.delete(key);
-      }
+       } catch (err) {
+         logger.debug({ err, channelId }, 'Slack status message update failed');
+         this.statusMessageTs.delete(key);
+       }
     }
 
     try {
@@ -1103,7 +1109,7 @@ export class SlackChannel extends BaseChannel {
 
     const existingPin = this.pinnedMessageTs.get(key);
     if (existingPin && existingPin !== ts) {
-      await this.app.client.pins.remove({ channel: channelId, timestamp: existingPin }).catch(() => {});
+      await this.app.client.pins.remove({ channel: channelId, timestamp: existingPin }).catch(err => logger.warn({ err, channelId }, 'Slack pin remove failed'));
       this.pinnedMessageTs.delete(key);
     }
 
@@ -1125,7 +1131,7 @@ export class SlackChannel extends BaseChannel {
     if (!ts) return;
 
     const { channelId } = this.resolveTarget(targetId);
-    await this.app.client.pins.remove({ channel: channelId, timestamp: ts }).catch(() => {});
+    await this.app.client.pins.remove({ channel: channelId, timestamp: ts }).catch(err => logger.warn({ err, channelId }, 'Slack unpin failed'));
     this.pinnedMessageTs.delete(key);
   }
 
@@ -1274,14 +1280,14 @@ export class SlackChannel extends BaseChannel {
             channel: request.channelId,
             text: `Slack access approved. You can now chat with Mercury.\n\nSlack access: ${getSlackAccessSummary(this.config)}`,
           });
-        } catch {
-          // notify failed
-        }
-      }
-      return;
-    }
+         } catch (err) {
+           logger.warn({ err, requestChannelId: request.channelId }, 'Slack approve notification failed');
+         }
+       }
+       return;
+     }
 
-    if (act === 'reject') {
+     if (act === 'reject') {
       const rejected = rejectSlackPendingRequest(this.config, rawUserId);
       if (!rejected) {
         await respond({ text: 'Already handled', replace_original: true });
@@ -1296,12 +1302,12 @@ export class SlackChannel extends BaseChannel {
             channel: request.channelId,
             text: 'Your Slack access request was rejected.',
           });
-        } catch {
-          // notify failed
-        }
-      }
-      return;
-    }
+         } catch (err) {
+           logger.warn({ err, requestChannelId: request.channelId }, 'Slack reject notification failed');
+         }
+       }
+       return;
+     }
   }
 
   private async handleMemoryBlockAction(action: any, body: any, client: any): Promise<void> {
@@ -1356,7 +1362,7 @@ export class SlackChannel extends BaseChannel {
             text: 'No memories yet.',
             thread_ts: threadTs || undefined,
           });
-        } catch { /* */ }
+         } catch (err) { logger.warn({ err, channelId }, 'Slack memory recent (empty) send failed'); }
         return;
       }
       const lines = ['*Recent Memories:*\n'];
@@ -1371,13 +1377,9 @@ export class SlackChannel extends BaseChannel {
           text: lines.join('\n'),
           thread_ts: threadTs || undefined,
         });
-      } catch {
-        // send failed
+       } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory recent send failed');
       }
-      return;
-    }
-
-    if (subAction === 'toggle_learning') {
       const currentSummary = this.chatCommandContext.memorySummary();
       const currentlyPaused = currentSummary.learningPaused;
       this.chatCommandContext.memorySetLearningPaused(!currentlyPaused);
@@ -1390,10 +1392,9 @@ export class SlackChannel extends BaseChannel {
           text: msg,
           thread_ts: threadTs || undefined,
         });
-      } catch {
-        // send failed
+       } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory toggle_learning send failed');
       }
-      await this.sendMemoryKeyboard(channelId, threadTs, client);
       return;
     }
 
@@ -1418,13 +1419,9 @@ export class SlackChannel extends BaseChannel {
           thread_ts: threadTs || undefined,
           blocks,
         });
-      } catch {
-        // send failed
+       } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory clear_confirm send failed');
       }
-      return;
-    }
-
-    if (subAction === 'clear_yes') {
       const cleared = this.chatCommandContext.memoryClear();
       try {
         await this.app.client.chat.postMessage({
@@ -1432,21 +1429,17 @@ export class SlackChannel extends BaseChannel {
           text: `Cleared ${cleared} memories.`,
           thread_ts: threadTs || undefined,
         });
-      } catch {
-        // send failed
+       } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory clear_yes send failed');
       }
-      return;
-    }
-
-    if (subAction === 'clear_no') {
       try {
         await this.app.client.chat.postMessage({
           channel: channelId,
           text: 'Clear cancelled.',
           thread_ts: threadTs || undefined,
         });
-      } catch {
-        // send failed
+       } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory clear_no send failed');
       }
       return;
     }
@@ -1496,9 +1489,9 @@ export class SlackChannel extends BaseChannel {
         thread_ts: threadTs || undefined,
         blocks,
       });
-    } catch {
-      // send failed
-    }
+      } catch (err) {
+        logger.warn({ err, channelId }, 'Slack memory overview send failed');
+      }
   }
 
   private getPendingStatusMessage(request?: SlackPendingRequest): string {
@@ -1594,8 +1587,8 @@ export class SlackChannel extends BaseChannel {
     if (!this.app) return;
     try {
       await this.app.client.reactions.add({ channel, timestamp: ts, name });
-    } catch {
-      // reaction may already exist or emoji may not be available
+    } catch (err) {
+      logger.debug({ err }, 'Slack addReaction failed');
     }
   }
 
@@ -1603,8 +1596,8 @@ export class SlackChannel extends BaseChannel {
     if (!this.app || !ts) return;
     try {
       await this.app.client.chat.delete({ channel: channelId, ts });
-    } catch {
-      // message may already be deleted
+    } catch (err) {
+      logger.debug({ err, channelId }, 'Slack deleteMessage failed');
     }
   }
 
@@ -1625,9 +1618,9 @@ export class SlackChannel extends BaseChannel {
           timestamp: orig.ts,
           name: 'x',
         });
-      } catch {
-        // reaction failed
-      }
+       } catch (err) {
+         logger.debug({ err }, 'Slack reactError failed');
+       }
     }
   }
 
@@ -1641,9 +1634,9 @@ export class SlackChannel extends BaseChannel {
           timestamp: orig.ts,
           name: 'white_check_mark',
         });
-      } catch {
-        // reaction failed
-      }
+       } catch (err) {
+         logger.debug({ err }, 'Slack reactSuccess failed');
+       }
     }
   }
 
@@ -1683,7 +1676,8 @@ export class SlackChannel extends BaseChannel {
         text: 'Feedback Required',
         blocks,
       });
-    } catch {
+    } catch (err) {
+      logger.warn({ err, adminId: admin.id }, 'Slack sendFeedbackRequest failed');
       return null;
     }
     return null;

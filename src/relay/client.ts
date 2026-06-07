@@ -1,5 +1,6 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { saveConfig } from '../utils/config.js';
+import { logger } from '../utils/logger.js';
 import https from 'node:https';
 
 /**
@@ -578,7 +579,7 @@ export class RelayClient {
     this.reconnectAttempts++;
 
     this.reconnectTimer = setTimeout(() => {
-      this.connect().catch(() => {});
+      this.connect().catch(err => logger.warn({ err }, 'Relay reconnect failed'));
     }, delay);
   }
 

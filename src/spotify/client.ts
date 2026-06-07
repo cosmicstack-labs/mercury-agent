@@ -107,12 +107,12 @@ export class SpotifyClient {
             server.close();
             logger.info('Spotify authentication successful');
 
-            this.saveAccountInfo().catch(() => {});
+            this.saveAccountInfo().catch(err => logger.warn({ err }, 'Spotify saveAccountInfo failed'));
             this.checkPremium().then((premium) => {
               if (!premium) {
                 logger.warn('Spotify account is not Premium — playback control will be unavailable');
               }
-            }).catch(() => {});
+            }).catch(err => logger.warn({ err }, 'Spotify checkPremium failed'));
 
             resolve(this.accessToken);
           } catch (err) {
@@ -174,12 +174,12 @@ export class SpotifyClient {
 
     logger.info('Spotify authentication successful (manual code)');
 
-    this.saveAccountInfo().catch(() => {});
+    this.saveAccountInfo().catch(err => logger.warn({ err }, 'Spotify saveAccountInfo failed'));
     this.checkPremium().then((premium) => {
       if (!premium) {
         logger.warn('Spotify account is not Premium — playback control will be unavailable');
       }
-    }).catch(() => {});
+    }).catch(err => logger.warn({ err }, 'Spotify checkPremium failed'));
 
     return this.accessToken;
   }

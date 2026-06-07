@@ -104,6 +104,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   const [workspacePane, setWorkspacePane] = React.useState<'files' | 'details' | 'git'>('files');
   const [detailCursor, setDetailCursor] = React.useState(0);
   const [gitCursor, setGitCursor] = React.useState(0);
+  const [showFullLog, setShowFullLog] = React.useState(false);
 
   const slashCommands = React.useMemo(() => [
     '/help',
@@ -141,6 +142,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/tools',
     '/skills',
     '/stream',
+    '/log',
     '/view',
     '/view balanced',
     '/view detailed',
@@ -506,6 +508,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
 
       if (trimmed) {
+        if (trimmed === '/log') {
+          setShowFullLog(true);
+          setInputAndCursor('');
+          return;
+        }
         onInput(trimmed);
         setInputHistory((prev) => {
           if (prev[prev.length - 1] === trimmed) return prev;
@@ -635,6 +642,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
       setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
       setCursorPos((p) => p + 1);
+      return;
+    }
+
+    if (key.ctrl && (ch === 'd' || ch === 'D') && state.mode !== 'workspace') {
+      setShowFullLog((v) => !v);
       return;
     }
 
@@ -805,9 +817,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
-      {state.mode === 'coding' ? <CodingBody state={state} /> : null}
+      {state.mode === 'coding' ? <CodingBody state={state} showFullLog={showFullLog} /> : null}
       {(state.mode === 'workspace' || state.mode === 'chat') ? (
-        <ChatBody state={state} />
+        <ChatBody state={state} showFullLog={showFullLog} />
       ) : null}
       {state.permissionPrompt && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
@@ -934,13 +946,13 @@ function StatusBarView({ state }: { state: TuiState }) {
   );
 }
 
-function ChatBody({ state }: { state: TuiState }) {
+function ChatBody({ state, showFullLog }: { state: TuiState; showFullLog: boolean }) {
   return (
     <Box flexDirection="row" flexGrow={1}>
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} isThinking={false} showFullLog={showFullLog} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
@@ -948,7 +960,7 @@ function ChatBody({ state }: { state: TuiState }) {
   );
 }
 
-function CodingBody({ state }: { state: TuiState }) {
+function CodingBody({ state, showFullLog }: { state: TuiState; showFullLog: boolean }) {
   const modeLabels: Record<ProgrammingModeState, { label: string; color: string }> = {
     off: { label: 'OFF', color: 'gray' },
     plan: { label: 'PLAN', color: 'yellow' },
@@ -979,7 +991,7 @@ function CodingBody({ state }: { state: TuiState }) {
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} isThinking={false} showFullLog={showFullLog} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
@@ -1325,6 +1337,10 @@ function AgentOutputPanel({
             const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
             return running ? running.label : 'Thinking...';
           })()}</Text>
+          {(() => {
+            const elapsedSec = state.toolSteps.find((s) => s.status === 'running')?.elapsed;
+            return elapsedSec != null && elapsedSec >= 30 ? <Text dimColor> · /bg current to background</Text> : null;
+          })()}
         </Box>
       )}
       <Box paddingX={1}>
@@ -1560,8 +1576,34 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   );
 }
 
-function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed' }) {
-  const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
+function ToolStepsView({ steps, viewMode, isThinking, showFullLog }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed'; isThinking?: boolean; showFullLog?: boolean }) {
+  const [lastStepLog, setLastStepLog] = React.useState<string>('');
+  const [lastStepLogElapsed, setLastStepLogElapsed] = React.useState<number>(0);
+
+  React.useEffect(() => {
+    const lastStep = steps[steps.length - 1];
+    if (lastStep && lastStep.label !== lastStepLog) {
+      setLastStepLog(lastStep.label);
+      setLastStepLogElapsed(lastStep.elapsed ?? 0);
+    }
+  }, [steps, lastStepLog]);
+
+  if (!isThinking && !showFullLog) {
+    const totalDone = steps.filter((s) => s.status === 'done').length;
+    const totalRunning = steps.filter((s) => s.status === 'running').length;
+    return (
+      <Box flexDirection="column" marginLeft={2} marginTop={1}>
+        <Box>
+          <Text color="gray">Activity</Text>
+          <Text dimColor> · {totalDone} done{totalRunning > 0 ? `, ${totalRunning} running` : ''}</Text>
+          {lastStepLog && <Text dimColor> · last: {lastStepLog}{lastStepLogElapsed > 0 ? ` (${lastStepLogElapsed.toFixed(1)}s)` : ''}</Text>}
+        </Box>
+        <Text dimColor>Ctrl+D for details</Text>
+      </Box>
+    );
+  }
+
+  const visible = showFullLog ? steps : steps.slice(-3);
   const totalDone = steps.filter((s) => s.status === 'done').length;
   const totalRunning = steps.filter((s) => s.status === 'running').length;
   const hiddenCount = Math.max(0, steps.length - visible.length);
@@ -1584,7 +1626,7 @@ function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'bala
           {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
         </Box>
       ))}
-      <Text dimColor>Ctrl+T toggles view · /progress for full history</Text>
+      <Text dimColor>Ctrl+D toggles view · /log for full history</Text>
     </Box>
   );
 }
@@ -1624,12 +1666,17 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
       <Box>
         <Text color="cyan">{spinner}</Text>
         <Text> </Text>
-        <Text color="cyan" bold>{totalSteps > 0 ? agentName : 'Processing'}</Text>
+        <Text color="cyan" bold>{runningStep ? 'Processing' : agentName}</Text>
         <Text dimColor>{totalSteps > 0 ? ` · step ${totalSteps} · ${timeStr}` : ` · ${timeStr}`}</Text>
       </Box>
       <Box marginLeft={4}>
         <Text color="white" bold>{currentAction}</Text>
       </Box>
+      {elapsed >= 30 && (
+        <Box marginLeft={4}>
+          <Text dimColor>Taking a while? /bg current to background</Text>
+        </Box>
+      )}
       {doneSteps.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>
           {doneSteps.slice(-3).map((step) => (

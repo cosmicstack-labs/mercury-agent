@@ -158,15 +158,15 @@ export class VoiceManager extends EventEmitter {
    */
   async disable(): Promise<void> {
     if (this.state === 'disabled') return;
-    await this.cancelSpeaking().catch(() => {});
-    await this.stopListening().catch(() => {});
+    await this.cancelSpeaking().catch(err => logger.warn({ err }, 'Voice cancelSpeaking failed'));
+    await this.stopListening().catch(err => logger.warn({ err }, 'Voice stopListening failed'));
     if (this.playback) {
-      await this.playback.close().catch(() => {});
+      await this.playback.close().catch(err => logger.warn({ err }, 'Voice playback close failed'));
       this.playback = null;
       this.playbackSampleRate = 0;
     }
-    await disposeTTSProviders().catch(() => {});
-    await disposeSTTProviders().catch(() => {});
+    await disposeTTSProviders().catch(err => logger.warn({ err }, 'Voice dispose TTS failed'));
+    await disposeSTTProviders().catch(err => logger.warn({ err }, 'Voice dispose STT failed'));
     this.backend = null;
     this.backendInfo = null;
     this.ttsProviderName = null;
@@ -315,8 +315,8 @@ export class VoiceManager extends EventEmitter {
     if (!this.backend) return { text: '', aborted: true };
 
     // Cancel any prior listen + any TTS in progress.
-    await this.stopListening().catch(() => {});
-    await this.cancelSpeaking().catch(() => {});
+    await this.stopListening().catch(err => logger.warn({ err }, 'Voice stopListening failed'));
+    await this.cancelSpeaking().catch(err => logger.warn({ err }, 'Voice cancelSpeaking failed'));
 
     // Ensure we actually have mic access; attempt prompt if not-determined.
     if (this.micPermission !== 'authorized') {
@@ -441,7 +441,7 @@ export class VoiceManager extends EventEmitter {
       return this.playback;
     }
     if (this.playback) {
-      await this.playback.close().catch(() => {});
+      await this.playback.close().catch(err => logger.warn({ err }, 'Voice playback close failed'));
       this.playback = null;
     }
     this.playback = await this.backend.initPlayback({
@@ -522,7 +522,7 @@ async function* pumpSentenceChunks(
     }
   } finally {
     clearInterval(tick);
-    await producer.catch(() => {});
+    await producer.catch(err => logger.debug({ err }, 'Voice sentence pump error'));
   }
 }
 
