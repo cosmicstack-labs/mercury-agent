@@ -20,7 +20,13 @@ const PermissionsPage = lazy(() => import("./pages/Permissions").then((m) => ({ 
 const SchedulesPage = lazy(() => import("./pages/Schedules").then((m) => ({ default: m.SchedulesPage })));
 const UsagePage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.UsagePage })));
 const SettingsPage = lazy(() => import("./pages/Settings").then((m) => ({ default: m.SettingsPage })));
+const ProfitSharingPage = lazy(() => import("./pages/ProfitSharing").then((m) => ({ default: m.ProfitSharingPage })));
 const WorkspacePage = lazy(() => import("./pages/Workspace").then((m) => ({ default: m.WorkspacePage })));
+const CollaborativeKnowledgePage = lazy(() => import("./pages/collaborative-knowledge/CollaborativeKnowledge"));
+const CollaborativeKnowledgeCategoriesPage = lazy(() => import("./pages/collaborative-knowledge/CollaborativeKnowledgeCategories"));
+const CollaborativeKnowledgeAccessPage = lazy(() => import("./pages/collaborative-knowledge/CollaborativeKnowledgeAccess"));
+const FriendsPage = lazy(() => import("./pages/collaborative-knowledge/Friends"));
+const RelayPage = lazy(() => import("./pages/Relay"));
 
 function PageLoader() {
   return (
@@ -65,7 +71,6 @@ function AnimatedRoutes() {
           <Route element={<AppLayout />}>
             <Route index element={<AnimatedPage><DashboardPage /></AnimatedPage>} />
             <Route path="chat" element={<ChatPage />} />
-            <Route path="chat/:threadId" element={<ChatPage />} />
             <Route path="tasks" element={<AnimatedPage><TasksPage /></AnimatedPage>} />
             <Route path="board" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
             <Route path="board/:boardId" element={<AnimatedPage><KanbanPage /></AnimatedPage>} />
@@ -75,13 +80,18 @@ function AnimatedRoutes() {
             <Route path="second-brain/persons/:id" element={<AnimatedPage><PersonDetailPage /></AnimatedPage>} />
             <Route path="second-brain/goals" element={<AnimatedPage><GoalsPage /></AnimatedPage>} />
             <Route path="second-brain/graph" element={<AnimatedPage><GraphPage /></AnimatedPage>} />
+            <Route path="collaborative-knowledge" element={<AnimatedPage><CollaborativeKnowledgePage /></AnimatedPage>} />
+            <Route path="collaborative-knowledge/categories" element={<AnimatedPage><CollaborativeKnowledgeCategoriesPage /></AnimatedPage>} />
+            <Route path="collaborative-knowledge/access" element={<AnimatedPage><CollaborativeKnowledgeAccessPage /></AnimatedPage>} />
+            <Route path="collaborative-knowledge/friends" element={<AnimatedPage><FriendsPage /></AnimatedPage>} />
+            <Route path="relay" element={<AnimatedPage><RelayPage /></AnimatedPage>} />
             <Route path="providers" element={<AnimatedPage><ProvidersPage /></AnimatedPage>} />
             <Route path="skills" element={<AnimatedPage><SkillsPage /></AnimatedPage>} />
             <Route path="permissions" element={<AnimatedPage><PermissionsPage /></AnimatedPage>} />
             <Route path="schedules" element={<AnimatedPage><SchedulesPage /></AnimatedPage>} />
             <Route path="usage" element={<AnimatedPage><UsagePage /></AnimatedPage>} />
             <Route path="settings" element={<AnimatedPage><SettingsPage /></AnimatedPage>} />
-
+            <Route path="profit-sharing" element={<AnimatedPage><ProfitSharingPage /></AnimatedPage>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

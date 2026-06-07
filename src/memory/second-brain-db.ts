@@ -12,29 +12,23 @@ let syncDatabaseClass: typeof import('better-sqlite3') | null = null;
 let availabilityChecked = false;
 let available = false;
 
-function ensureProbed(): void {
-  if (availabilityChecked) return;
-  availabilityChecked = true;
+try {
+  const mod = require('better-sqlite3');
+  const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
   try {
-    const mod = require('better-sqlite3');
-    const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
-    try {
-      mkdirSync(probeDir, { recursive: true });
-      const probeDb = new mod(join(probeDir, 'probe.db'));
-      probeDb.close();
-      rmSync(probeDir, { recursive: true, force: true });
-      syncDatabaseClass = mod;
-      available = true;
-    } catch {
-      syncDatabaseClass = null;
-    }
+    mkdirSync(probeDir, { recursive: true });
+    const probeDb = new mod(join(probeDir, 'probe.db'));
+    probeDb.close();
+    rmSync(probeDir, { recursive: true, force: true });
+    syncDatabaseClass = mod;
   } catch {
     syncDatabaseClass = null;
   }
+} catch {
+  syncDatabaseClass = null;
 }
 
 export function isBetterSqlite3Available(): boolean {
-  ensureProbed();
   return syncDatabaseClass !== null;
 }
 
@@ -90,7 +84,6 @@ export class SecondBrainDB {
   private db: BetterSqlite3Database;
 
   constructor(dbPath: string) {
-    ensureProbed();
     if (!syncDatabaseClass) {
       throw new Error(
         'better-sqlite3 is not available — second brain memory requires it. ' +
@@ -219,6 +212,24 @@ export class SecondBrainDB {
         INSERT INTO memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
     `);
+
+    // Migration: add scope column if upgrading from pre-conscious/subconscious schema
+    try {
+      const cols = this.db.pragma('table_info(memories)') as Array<{ name: string }>;
+      const hasScope = cols.some(c => c.name === 'scope');
+      if (!hasScope) {
+        this.db.exec(`ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'durable'`);
+        logger.info('Migrated second-brain DB: added scope column');
+      }
+      const hasLastUsedAt = cols.some(c => c.name === 'last_used_at');
+      if (!hasLastUsedAt) {
+        this.db.exec(`ALTER TABLE memories ADD COLUMN last_used_at INTEGER`);
+        this.db.exec(`ALTER TABLE memories ADD COLUMN last_used_query TEXT`);
+        logger.info('Migrated second-brain DB: added last_used_at/last_used_query columns');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Second brain migration check failed');
+    }
 
     this.db.pragma('foreign_keys = ON');
     logger.info('Second brain database initialized');
@@ -714,7 +725,7 @@ export class SecondBrainDB {
   getRelationshipMemoryRows(userKey: string): MemoryRow[] {
     const stmt = this.db.prepare(`
       SELECT * FROM memories
-      WHERE user_key = ? AND dismissed = 0 AND type IN ('relationship', 'episode', 'identity', 'project')
+      WHERE user_key = ? AND dismissed = 0 AND type IN ('relationship', 'episode')
       ORDER BY updated_at DESC
     `);
     return stmt.all(userKey) as MemoryRow[];

@@ -189,18 +189,17 @@ export const terminal = {
 export const brain = {
   status: () => get<BrainStatus>("/api/brain/status"),
   memory: {
-    list: (params?: { limit?: number; offset?: number; type?: string; q?: string; scope?: string }) => {
+    list: (params?: { limit?: number; offset?: number; type?: string; q?: string }) => {
       const qs = new URLSearchParams();
       if (params?.limit) qs.set("limit", String(params.limit));
       if (params?.offset) qs.set("offset", String(params.offset));
       if (params?.type) qs.set("type", params.type);
       if (params?.q) qs.set("q", params.q);
-      if (params?.scope) qs.set("scope", params.scope);
       return get<{ memories: Memory[]; total: number }>(`/api/brain/memory?${qs}`);
     },
-    search: (q: string, limit?: number, scope?: string) =>
+    search: (q: string, limit?: number) =>
       get<{ memories: Memory[]; total: number }>(
-        `/api/brain/memory/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}${scope ? `&scope=${scope}` : ""}`
+        `/api/brain/memory/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
       ),
     get: (id: string) => get<Memory>(`/api/brain/memory/${id}`),
     create: (data: MemoryCreate) => post<Memory>("/api/brain/memory", data),
@@ -224,6 +223,123 @@ export const brain = {
   graph: () => get<GraphData>("/api/brain/graph"),
 };
 
+// ── Collaborative Knowledge ──
+export const collaborativeKnowledge = {
+  status: () => get<CollaborativeKnowledgeStatus>("/api/ck/status"),
+  memories: {
+    list: (params?: { limit?: number; offset?: number; q?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set("limit", String(params.limit));
+      if (params?.offset) qs.set("offset", String(params.offset));
+      if (params?.q) qs.set("q", params.q);
+      return get<{ memories: CollaborativeKnowledgeRecord[]; total: number }>(
+        `/api/ck/memories?${qs}`
+      );
+    },
+    search: (q: string, limit?: number) =>
+      get<{ memories: CollaborativeKnowledgeRecord[]; total: number }>(
+        `/api/ck/memories/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
+      ),
+    create: (data: CollaborativeKnowledgeCreate) =>
+      post<CollaborativeKnowledgeRecord>("/api/ck/memories", data),
+    clear: () => del<{ success: boolean; deleted: number }>("/api/ck/memories"),
+  },
+  learning: {
+    get: () => get<{ paused: boolean }>("/api/ck/learning"),
+    set: (paused: boolean) =>
+      put<{ paused: boolean }>("/api/ck/learning", { paused }),
+  },
+  categories: () =>
+    get<{ categories: string[]; byCategory: Record<string, number> }>(
+      "/api/ck/categories"
+    ),
+  access: {
+    map: () => get<CollaborativeKnowledgeAccessMap>("/api/ck/access"),
+    get: (friend: string) =>
+      get<{ friend: string; categories: string[] }>(
+        `/api/ck/access/${encodeURIComponent(friend)}`
+      ),
+    update: (friend: string, body: { action: string; category?: string; categories?: string[] }) =>
+      put<{ friend: string; categories: string[] }>(
+        `/api/ck/access/${encodeURIComponent(friend)}`,
+        body
+      ),
+  },
+};
+
+// ── Relay ──
+export interface RelayStatus {
+  enabled: boolean;
+  url: string;
+  username: string;
+  registered: boolean;
+  connected: boolean;
+  reconnecting: boolean;
+  available: boolean;
+  telegram: { userId: number; username: string | null; firstName: string | null } | null;
+  ownerName: string | null;
+}
+
+export interface RelayRegisterResult {
+  success: boolean;
+  username: string;
+  displayName: string | null;
+  recovered: boolean;
+  connected: boolean;
+}
+
+export interface RelayRecoverResult {
+  success: boolean;
+  username: string;
+  displayName: string | null;
+  connected: boolean;
+}
+
+export interface RelayConfigResult {
+  success: boolean;
+  relay: { enabled: boolean; url: string; username: string };
+  restartRequired: boolean;
+}
+
+export const relay = {
+  status: () => get<RelayStatus>("/api/relay/status"),
+  connect: () => post<{ connected: boolean; message: string }>("/api/relay/connect"),
+  disconnect: () => post<{ connected: boolean; message: string }>("/api/relay/disconnect"),
+  checkUsername: (username: string) =>
+    post<{ available: boolean; error?: string }>("/api/relay/check-username", { username }),
+  register: (username: string, displayName?: string) =>
+    post<RelayRegisterResult>("/api/relay/register", { username, displayName }),
+  recover: (username: string, displayName?: string) =>
+    post<RelayRecoverResult>("/api/relay/recover", { username, displayName }),
+  validate: () => get<{ status: string }>("/api/relay/validate"),
+  deregister: () => post<{ success: boolean; message: string }>("/api/relay/deregister"),
+  updateConfig: (body: { url?: string; enabled?: boolean }) =>
+    put<RelayConfigResult>("/api/relay/config", body),
+  lookupChannel: (type: string, id: string) =>
+    post<{ registered: boolean }>("/api/relay/lookup-channel", { type, id }),
+  searchUsers: (query: string, limit?: number) =>
+    post<{ users: Array<{ username: string; display_name: string | null }> }>("/api/relay/search-users", { query, limit }),
+};
+
+// ── Friends ──
+export const friends = {
+  list: () => get<FriendsResponse>("/api/friends"),
+  sendRequest: (username: string) =>
+    post<FriendRequestResult>("/api/friends/request", { username }),
+  acceptRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/accept", { username }),
+  rejectRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/reject", { username }),
+  cancelRequest: (username: string) =>
+    post<{ status: string; success: boolean }>("/api/friends/cancel", { username }),
+  remove: (username: string) =>
+    del<{ status: string; success: boolean }>(`/api/friends/${encodeURIComponent(username)}`),
+  status: (username: string) =>
+    get<{ username: string; online: boolean }>(`/api/friends/${encodeURIComponent(username)}/status`),
+  queryMemory: (username: string, query: string) =>
+    post<{ forwarded: boolean; request_id?: string }>(`/api/friends/${encodeURIComponent(username)}/query`, { query }),
+};
+
 // ── Agents / Tasks ──
 export const agents = {
   list: () => get<{ agents: Agent[]; available: boolean }>("/api/agents"),
@@ -243,15 +359,6 @@ export const skills = {
   list: () => get<{ skills: Skill[]; total: number }>("/api/skills"),
   install: (url: string) =>
     post<{ success: boolean; name: string }>("/api/skills/install", { url }),
-  installFromRegistry: (id: string, force = false) =>
-    post<{
-      success: boolean;
-      id: string;
-      version: string;
-      status: "installed" | "updated" | "reinstalled" | "already-installed";
-      path: string;
-      webUrl: string;
-    }>("/api/skills/install-from-registry", { id, force }),
   activate: (name: string) =>
     post<{ success: boolean }>(`/api/skills/${name}/activate`),
   deactivate: (name: string) =>
@@ -554,7 +661,6 @@ export interface TerminalResult {
 
 export interface BrainStatus {
   total: number;
-  subconsciousTotal: number;
   byType: Record<string, number>;
   available: boolean;
 }
@@ -566,13 +672,10 @@ export interface Memory {
   detail?: string;
   importance?: number;
   confidence?: number;
-  scope?: 'active' | 'durable' | 'subconscious';
-  durability?: number;
-  evidenceKind?: string;
-  evidenceCount?: number;
+  scope?: string;
+  durability?: string;
   createdAt: string;
   updatedAt?: string;
-  lastSeenAt?: string;
 }
 
 export interface MemoryCreate {
@@ -587,17 +690,10 @@ export interface MemoryCreate {
 export interface Person {
   id: string;
   name: string;
-  canonicalName?: string;
   relationship?: string;
   summary?: string;
   traits?: string[];
-  confidence?: number;
   memoryCount?: number;
-  firstSeenAt?: string;
-  lastSeenAt?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  connections?: Array<{ name: string; relationship: string }>;
 }
 
 export interface GraphData {
@@ -608,12 +704,8 @@ export interface GraphData {
 export interface GraphNode {
   id: string;
   label: string;
-  fullLabel?: string;
   type: string;
   size?: number;
-  importance?: number;
-  confidence?: number;
-  color?: string;
 }
 
 export interface GraphEdge {
@@ -621,6 +713,83 @@ export interface GraphEdge {
   target: string;
   type?: string;
   weight?: number;
+}
+
+// ── Collaborative Knowledge Types ──
+export interface CollaborativeKnowledgeStatus {
+  total: number;
+  byType: Record<string, number>;
+  byCategory: Record<string, number>;
+  categories: string[];
+  learningPaused: boolean;
+  available: boolean;
+}
+
+export interface CollaborativeKnowledgeRecord {
+  id: string;
+  type: string;
+  category: string;
+  summary: string;
+  detail?: string | null;
+  evidenceKind: string;
+  confidence: number;
+  importance: number;
+  durability: number;
+  evidenceCount: number;
+  dismissed: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  lastUsedAt?: number | null;
+  lastUsedQuery?: string | null;
+}
+
+export interface CollaborativeKnowledgeCreate {
+  type: string;
+  category?: string;
+  summary: string;
+  detail?: string;
+  confidence?: number;
+  importance?: number;
+  durability?: number;
+}
+
+export interface CollaborativeKnowledgeAccessMap {
+  accessMap: Record<string, string[]>;
+  available: boolean;
+}
+
+// ── Friend Types ──
+export interface FriendInfo {
+  username: string;
+  display_name: string | null;
+  friends_since: number;
+}
+
+export interface RelayUser {
+  username: string;
+  display_name: string | null;
+}
+
+export interface PendingRequestInfo {
+  request_id: string;
+  created_at: number;
+  target_user: RelayUser;
+}
+
+export interface FriendsResponse {
+  friends: FriendInfo[];
+  pending_sent: PendingRequestInfo[];
+  pending_received: PendingRequestInfo[];
+  available: boolean;
+}
+
+export interface FriendRequestResult {
+  request_id: string;
+  status: string;
+  target_online: boolean;
+  target_user: RelayUser;
+  success: boolean;
 }
 
 export interface Agent {
@@ -655,16 +824,7 @@ export interface UsageData {
   dailyUsed: number;
   dailyBudget: number;
   remaining: number;
-  lastResetDate?: string;
-  requestLog: {
-    timestamp: number;
-    provider: string;
-    model?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens: number;
-    channelType?: string;
-  }[];
+  requestLog: { timestamp: string; tokens: number; provider: string }[];
   byProvider: Record<string, number>;
   byChannel: Record<string, number>;
 }
@@ -773,6 +933,78 @@ export interface BoardResources {
   failedCount: number;
 }
 
+// ── Notifications ──
+export interface NotificationRecord {
+  id: string;
+  type: string;
+  sourceUser: string | null;
+  message: string;
+  data: Record<string, unknown> | null;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface NotificationsSummary {
+  total: number;
+  unread: number;
+}
+
+export const notifications = {
+  list: (opts?: { type?: string; source?: string; unread?: boolean; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.source) params.set('source', opts.source);
+    if (opts?.unread) params.set('unread', 'true');
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return get<{ notifications: NotificationRecord[] }>(`/api/notifications${qs ? `?${qs}` : ''}`);
+  },
+  summary: () => get<NotificationsSummary>("/api/notifications/summary"),
+  markRead: (id: string) => post<{ success: boolean }>(`/api/notifications/${id}/read`),
+  markAllRead: () => post<{ marked: number }>("/api/notifications/read-all"),
+  clearRead: () => del<{ cleared: number }>("/api/notifications/read"),
+};
+
+// ── Messages ──
+export interface MessageRecord {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  peerUser: string;
+  peerDisplayName: string | null;
+  content: string;
+  read: boolean;
+  sentAt: number;
+  storedAt: number;
+}
+
+export interface ConversationSummary {
+  peerUser: string;
+  peerDisplayName: string | null;
+  lastMessage: string;
+  lastSentAt: number;
+  unreadCount: number;
+}
+
+export interface MessagesSummary {
+  total: number;
+  unread: number;
+  conversations: number;
+}
+
+export const messages = {
+  conversations: () => get<{ conversations: ConversationSummary[] }>("/api/messages/conversations"),
+  conversation: (peerUser: string, limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return get<{ messages: MessageRecord[] }>(`/api/messages/conversation/${encodeURIComponent(peerUser)}${qs}`);
+  },
+  summary: () => get<MessagesSummary>("/api/messages/summary"),
+  send: (to: string, content: string) => post<{ message: MessageRecord }>("/api/messages/send", { to, content }),
+  markRead: (id: string) => post<{ success: boolean }>(`/api/messages/${id}/read`),
+  markConversationRead: (peerUser: string) => post<{ marked: number }>(`/api/messages/conversation/${encodeURIComponent(peerUser)}/read`),
+  markAllRead: () => post<{ marked: number }>("/api/messages/read-all"),
+  clearRead: () => del<{ cleared: number }>("/api/messages/read"),
+};
+
 // Default export for convenience
 const api = {
   status,
@@ -793,6 +1025,9 @@ const api = {
   schedules,
   spotify,
   boards,
+  relay,
+  notifications,
+  messages,
 };
 
 export default api;

@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useThemeStore } from "@/stores/theme";
 import api from "@/lib/api";
 
 export function LoginPage() {
@@ -10,7 +9,6 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const resolved = useThemeStore((s) => s.resolved);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -57,12 +55,17 @@ export function LoginPage() {
         >
           {/* Logo */}
           <div className="mb-6 flex flex-col items-center gap-3">
-            <img
-              src={resolved === "dark" ? "/logo-dark.png" : "/logo-light.png"}
-              alt="Mercury"
-              className="w-16 h-16"
-            />
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            <span
+              className="text-5xl select-none"
+              style={{
+                background: "linear-gradient(135deg, #00d4ff, #a78bfa)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              ☿
+            </span>
+            <h1 className="mercury-gradient-text text-2xl font-bold tracking-tight">
               Welcome back
             </h1>
             <p className="text-sm text-muted-foreground">

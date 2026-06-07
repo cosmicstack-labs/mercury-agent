@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Network, Search, Loader2 } from "lucide-react";
-import api, { type GraphNode, type GraphEdge, type Memory } from "@/lib/api";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import api, { type GraphNode, type GraphEdge } from "@/lib/api";
 
 // ── Node type color map ──
 const TYPE_COLORS: Record<string, string> = {
@@ -62,13 +56,6 @@ export function GraphPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
 
-  // Detail dialog state — opens on single-click of a node.
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailNode, setDetailNode] = useState<GraphNode | null>(null);
-  const [detailMemory, setDetailMemory] = useState<Memory | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-
   // Mutable refs for canvas state (avoid re-renders during animation)
   const stateRef = useRef({
     nodes: [] as GraphNode[],
@@ -83,12 +70,6 @@ export function GraphPage() {
     hoveredNode: null as GraphNode | null,
     selectedNode: null as GraphNode | null,
     lastMouse: { x: 0, y: 0 },
-    // Press tracking — used to distinguish a click from a drag.
-    pressNode: null as GraphNode | null,
-    pressX: 0,
-    pressY: 0,
-    pressT: 0,
-    moved: false,
     searchQuery: "",
     animFrame: 0,
     dpr: 1,
@@ -345,6 +326,7 @@ export function GraphPage() {
 
     // ── Nodes ──
     const searchQ = s.searchQuery.toLowerCase();
+    const showLabels = s.zoom > 0.7 || s.nodes.length < 500;
 
     s.nodes.forEach((n) => {
       const p = s.positions.get(n.id);
@@ -363,8 +345,7 @@ export function GraphPage() {
       // Alpha based on search / focus
       let alpha = 1;
       if (searchQ) {
-        const hay = (n.fullLabel || n.label).toLowerCase();
-        alpha = hay.includes(searchQ) ? 1 : 0.12;
+        alpha = n.label.toLowerCase().includes(searchQ) ? 1 : 0.12;
       } else if (focus) {
         alpha = isHovered || isSelected || isNeighbor ? 1 : 0.18;
       }
@@ -399,33 +380,16 @@ export function GraphPage() {
         ctx.stroke();
       }
 
-      // Label — only for hovered / selected node. Keep it short (truncated `label`)
-      // since the full text is shown in the tooltip / detail dialog instead.
-      // This keeps the canvas clean and readable.
-      if (isHovered || isSelected) {
+      // Labels
+      if (showLabels || isHovered || isSelected) {
         const fontSize = Math.max(10 * dpr, (11 * dpr) / s.zoom);
         ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-
-        // Background pill for legibility
-        const text = n.label;
-        const metrics = ctx.measureText(text);
-        const padX = 6 * dpr;
-        const padY = 3 * dpr;
-        const bx = p.x - metrics.width / 2 - padX;
-        const by = p.y + r + 4 * dpr;
-        const bw = metrics.width + padX * 2;
-        const bh = fontSize + padY * 2;
-        ctx.fillStyle = dark ? "rgba(10,14,20,0.92)" : "rgba(255,255,255,0.95)";
-        ctx.beginPath();
-        ctx.roundRect?.(bx, by, bw, bh, 4 * dpr);
-        ctx.fill();
-
         ctx.fillStyle = dark
           ? `rgba(240,240,240,${alpha})`
           : `rgba(20,20,20,${alpha})`;
-        ctx.fillText(text, p.x, by + padY);
+        ctx.fillText(n.label, p.x, p.y + r + 4 * dpr);
       }
 
       ctx.globalAlpha = 1;
@@ -448,28 +412,6 @@ export function GraphPage() {
     });
   }, []);
 
-  // ── Open detail dialog for a node (fetches full memory record) ──
-  const openNodeDetail = useCallback(async (node: GraphNode) => {
-    setDetailNode(node);
-    setDetailMemory(null);
-    setDetailError(null);
-    setDetailOpen(true);
-    setDetailLoading(true);
-    stateRef.current.selectedNode = node;
-    try {
-      const mem = await api.brain.memory.get(node.id);
-      setDetailMemory(mem);
-    } catch (err) {
-      // Not every node has a backing memory record (graph may include
-      // person / goal aggregates) — fall back gracefully to node-only info.
-      setDetailError(
-        err instanceof Error ? err.message : "Failed to load details"
-      );
-    } finally {
-      setDetailLoading(false);
-    }
-  }, []);
-
   // ── Mouse handlers ──
   const onMouseDown = useCallback(
     (e: MouseEvent) => {
@@ -481,12 +423,6 @@ export function GraphPage() {
       const gp = screenToGraph(sx, sy);
       const node = findNodeAt(gp.x, gp.y);
       const s = stateRef.current;
-
-      s.pressNode = node;
-      s.pressX = e.clientX;
-      s.pressY = e.clientY;
-      s.pressT = performance.now();
-      s.moved = false;
 
       if (node) {
         s.dragNode = node;
@@ -506,14 +442,6 @@ export function GraphPage() {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       const s = stateRef.current;
-
-      // Track whether the mouse has moved meaningfully since press.
-      // 4px threshold lets micro-jitter still count as a click.
-      if (s.pressT && !s.moved) {
-        const ddx = e.clientX - s.pressX;
-        const ddy = e.clientY - s.pressY;
-        if (ddx * ddx + ddy * ddy > 16) s.moved = true;
-      }
 
       if (s.dragNode) {
         const gp = screenToGraph(sx, sy);
@@ -565,22 +493,9 @@ export function GraphPage() {
 
   const onMouseUp = useCallback(() => {
     const s = stateRef.current;
-    const wasClick =
-      !s.moved &&
-      s.pressNode !== null &&
-      performance.now() - s.pressT < 500;
-    const clickedNode = s.pressNode;
-
     s.dragNode = null;
     s.dragging = false;
-    s.pressNode = null;
-    s.pressT = 0;
-    s.moved = false;
-
-    if (wasClick && clickedNode) {
-      openNodeDetail(clickedNode);
-    }
-  }, [openNodeDetail]);
+  }, []);
 
   const onWheel = useCallback(
     (e: WheelEvent) => {
@@ -601,6 +516,21 @@ export function GraphPage() {
       s.zoom = newZoom;
     },
     []
+  );
+
+  const onDblClick = useCallback(
+    (e: MouseEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const gp = screenToGraph(
+        e.clientX - rect.left,
+        e.clientY - rect.top
+      );
+      const node = findNodeAt(gp.x, gp.y);
+      stateRef.current.selectedNode = node;
+    },
+    [screenToGraph, findNodeAt]
   );
 
   // ── Main effect: fetch, layout, animate ──
@@ -663,6 +593,7 @@ export function GraphPage() {
     canvas.addEventListener("mouseup", onMouseUp);
     canvas.addEventListener("mouseleave", onMouseUp);
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("dblclick", onDblClick);
 
     const handleResize = () => {
       resizeCanvas();
@@ -677,6 +608,7 @@ export function GraphPage() {
       canvas.removeEventListener("mouseup", onMouseUp);
       canvas.removeEventListener("mouseleave", onMouseUp);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("resize", handleResize);
     };
   }, [
@@ -688,6 +620,7 @@ export function GraphPage() {
     onMouseMove,
     onMouseUp,
     onWheel,
+    onDblClick,
   ]);
 
   // ── Legend entries ──
@@ -744,7 +677,7 @@ export function GraphPage() {
 
         <canvas
           ref={canvasRef}
-          className={`absolute inset-0 h-full w-full ${tooltip ? "cursor-pointer" : "cursor-grab"}`}
+          className="absolute inset-0 h-full w-full cursor-crosshair"
         />
 
         {/* Search overlay */}
@@ -786,24 +719,13 @@ export function GraphPage() {
         {/* Tooltip */}
         {tooltip && (
           <div
-            className="pointer-events-none absolute z-30 rounded-lg border border-border/60 bg-popover/95 px-3 py-2 shadow-xl backdrop-blur-sm"
-            style={{
-              left: tooltip.x,
-              top: tooltip.y,
-              maxWidth: 320,
-              // Flip horizontally near the right edge of the container so the
-              // tooltip never gets clipped or pushes off-screen.
-              transform:
-                containerRef.current &&
-                tooltip.x + 340 > containerRef.current.clientWidth
-                  ? "translateX(calc(-100% - 28px))"
-                  : undefined,
-            }}
+            className="pointer-events-none absolute z-30 rounded-lg border border-border/60 bg-popover px-3 py-2 shadow-xl"
+            style={{ left: tooltip.x, top: tooltip.y }}
           >
-            <p className="break-words text-sm font-medium leading-snug text-foreground">
-              {tooltip.node.fullLabel || tooltip.node.label}
+            <p className="text-sm font-medium text-foreground">
+              {tooltip.node.label}
             </p>
-            <div className="mt-1 flex items-center gap-2">
+            <div className="mt-0.5 flex items-center gap-2">
               <span
                 className="inline-block h-2 w-2 rounded-full"
                 style={{ backgroundColor: getTypeColor(tooltip.node.type) }}
@@ -811,200 +733,14 @@ export function GraphPage() {
               <span className="text-xs capitalize text-muted-foreground">
                 {tooltip.node.type}
               </span>
-              <span className="text-xs text-muted-foreground/60">·</span>
-              <span className="text-xs text-muted-foreground">
-                {tooltip.connections} connection
-                {tooltip.connections !== 1 ? "s" : ""}
-              </span>
             </div>
-            <p className="mt-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">
-              Click for details
+            <p className="mt-1 text-xs text-muted-foreground">
+              {tooltip.connections} connection
+              {tooltip.connections !== 1 ? "s" : ""}
             </p>
           </div>
         )}
       </div>
-
-      {/* Node detail dialog */}
-      <NodeDetailDialog
-        open={detailOpen}
-        onOpenChange={(v) => {
-          setDetailOpen(v);
-          if (!v) {
-            stateRef.current.selectedNode = null;
-          }
-        }}
-        node={detailNode}
-        memory={detailMemory}
-        loading={detailLoading}
-        error={detailError}
-        connections={
-          detailNode ? connectionCount(detailNode.id, edges) : 0
-        }
-      />
-    </div>
-  );
-}
-
-// ── Detail dialog ──
-interface NodeDetailDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  node: GraphNode | null;
-  memory: Memory | null;
-  loading: boolean;
-  error: string | null;
-  connections: number;
-}
-
-function formatTs(ts: string | number | undefined): string {
-  if (!ts) return "—";
-  const d = typeof ts === "number" ? new Date(ts) : new Date(ts);
-  if (Number.isNaN(d.getTime())) return String(ts);
-  return d.toLocaleString();
-}
-
-function NodeDetailDialog({
-  open,
-  onOpenChange,
-  node,
-  memory,
-  loading,
-  error,
-  connections,
-}: NodeDetailDialogProps) {
-  if (!node) return null;
-  const color = getTypeColor(node.type);
-  const fullLabel = node.fullLabel || node.label;
-  const summary = memory?.summary || fullLabel;
-  const detail = memory?.detail;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block h-3 w-3 rounded-full"
-              style={{ backgroundColor: color }}
-            />
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {node.type}
-            </span>
-          </div>
-          <DialogTitle className="mt-1 break-words text-lg leading-snug">
-            {summary}
-          </DialogTitle>
-        </DialogHeader>
-
-        {loading && (
-          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading details…
-          </div>
-        )}
-
-        {!loading && memory && (
-          <div className="space-y-4">
-            {detail && (
-              <div>
-                <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Detail
-                </p>
-                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
-                  {detail}
-                </p>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
-              {memory.scope && (
-                <DetailField label="Scope" value={memory.scope} />
-              )}
-              {typeof memory.importance === "number" && (
-                <DetailField
-                  label="Importance"
-                  value={memory.importance.toFixed(2)}
-                />
-              )}
-              {typeof memory.confidence === "number" && (
-                <DetailField
-                  label="Confidence"
-                  value={memory.confidence.toFixed(2)}
-                />
-              )}
-              {typeof memory.evidenceCount === "number" && (
-                <DetailField
-                  label="Evidence"
-                  value={String(memory.evidenceCount)}
-                />
-              )}
-              <DetailField label="Connections" value={String(connections)} />
-              {memory.evidenceKind && (
-                <DetailField label="Source" value={memory.evidenceKind} />
-              )}
-              <DetailField label="Created" value={formatTs(memory.createdAt)} />
-              {memory.updatedAt && (
-                <DetailField label="Updated" value={formatTs(memory.updatedAt)} />
-              )}
-              {memory.lastSeenAt && (
-                <DetailField
-                  label="Last seen"
-                  value={formatTs(memory.lastSeenAt)}
-                />
-              )}
-            </div>
-
-            <div className="border-t border-border/40 pt-2">
-              <p className="font-mono text-[10px] text-muted-foreground/70">
-                {memory.id}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {!loading && !memory && (
-          <div className="space-y-3">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
-              {fullLabel}
-            </p>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <DetailField label="Type" value={node.type} />
-              <DetailField label="Connections" value={String(connections)} />
-              {typeof node.importance === "number" && (
-                <DetailField
-                  label="Importance"
-                  value={node.importance.toFixed(2)}
-                />
-              )}
-              {typeof node.confidence === "number" && (
-                <DetailField
-                  label="Confidence"
-                  value={node.confidence.toFixed(2)}
-                />
-              )}
-            </div>
-            {error && (
-              <p className="text-xs text-muted-foreground/70">
-                Could not load full record: {error}
-              </p>
-            )}
-            <p className="font-mono text-[10px] text-muted-foreground/70">
-              {node.id}
-            </p>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-0.5 break-words text-foreground/90">{value}</p>
     </div>
   );
 }

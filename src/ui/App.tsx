@@ -86,6 +86,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   };  const [permIdx, setPermIdx] = React.useState(0);
   const permIdxRef = React.useRef(0);
   const [menuIdx, setMenuIdx] = React.useState(0);
+  const [dynamicMenuIdx, setDynamicMenuIdx] = React.useState(0);
+  const dynamicMenuIdxRef = React.useRef(0);
   const [spotifyIdx, setSpotifyIdx] = React.useState(6);
   const [splashPhase, setSplashPhase] = React.useState<'logo' | 'skills' | 'provider' | 'ready'>('logo');
   const [skillsLoaded, setSkillsLoaded] = React.useState(0);
@@ -138,21 +140,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/reset',
     '/tools',
     '/skills',
-    '/skills search ',
-    '/skills view ',
-    '/skills install ',
-    '/skills remove ',
-    '/skills help',
     '/stream',
-    '/saver',
-    '/saver on',
-    '/saver off',
-    '/saver toggle',
-    '/saver threshold ',
-    '/saver auto on',
-    '/saver auto off',
-    '/saver routing on',
-    '/saver routing off',
     '/view',
     '/view balanced',
     '/view detailed',
@@ -163,6 +151,25 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/ws stage all',
     '/ws commit ',
     '/ws help',
+    '/relay',
+    '/relay status',
+    '/relay reset',
+    '/friend ',
+    '/friend access',
+    '/friend access ',
+    '/listfriends',
+    '/message ',
+    '/messages',
+    '/messages read all',
+    '/notifications',
+    '/notifications read all',
+    '/notifications clear',
+    '/memory shared',
+    '/memory shared pause',
+    '/memory shared resume',
+    '/memory shared search ',
+    '/memory shared categories',
+    '/memory shared clear',
   ], []);
 
   const slashSuggestions = React.useMemo(() => {
@@ -173,51 +180,32 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
   const [slashSelIdx, setSlashSelIdx] = React.useState(0);
 
+  // @ mention autocomplete — works anywhere in input
+  const mentionMatch = React.useMemo(() => {
+    // Find the last @ that starts a mention (preceded by space or start of string)
+    const match = input.match(/(?:^|[\s])@([a-z0-9_]*)$/i);
+    if (!match) return null;
+    return { partial: match[1].toLowerCase(), startIdx: input.length - match[1].length - 1 };
+  }, [input]);
+
+  const mentionSuggestions = React.useMemo(() => {
+    if (!mentionMatch || state.friends.length === 0) return [];
+    const q = mentionMatch.partial;
+    return state.friends
+      .filter((f) => f.username.startsWith(q))
+      .slice(0, 5);
+  }, [mentionMatch, state.friends]);
+
+  const [mentionSelIdx, setMentionSelIdx] = React.useState(0);
+
+  React.useEffect(() => {
+    setMentionSelIdx(0);
+  }, [mentionSuggestions.length, input]);
+
   // Reset selection index when suggestions change
   React.useEffect(() => {
     setSlashSelIdx(0);
   }, [slashSuggestions.length, input]);
-
-  // ── Skill picker (`#name` prefix) ──
-  // Mirrors the slash picker. Triggered when input starts with `#`. Matches
-  // skills by name prefix first, then by name-substring, then by
-  // description-substring (case-insensitive). The selected entry inserts as
-  // `#skill-name ` so the user can continue typing their request.
-  const skillSuggestions = React.useMemo(() => {
-    if (!input.startsWith('#')) return [] as Array<{ name: string; description: string }>;
-    const q = input.slice(1).split(/\s/)[0].toLowerCase();
-    const skills = state.skills || [];
-    if (!q) {
-      return skills.slice(0, 8).map((s) => ({ name: s.name, description: s.description }));
-    }
-    const prefix: typeof skills = [];
-    const nameSub: typeof skills = [];
-    const descSub: typeof skills = [];
-    for (const s of skills) {
-      const n = s.name.toLowerCase();
-      if (n.startsWith(q)) prefix.push(s);
-      else if (n.includes(q)) nameSub.push(s);
-      else if ((s.description || '').toLowerCase().includes(q)) descSub.push(s);
-    }
-    return [...prefix, ...nameSub, ...descSub]
-      .slice(0, 8)
-      .map((s) => ({ name: s.name, description: s.description }));
-  }, [input, state.skills]);
-
-  const [skillSelIdx, setSkillSelIdx] = React.useState(0);
-  React.useEffect(() => {
-    setSkillSelIdx(0);
-  }, [skillSuggestions.length, input]);
-
-  const completeSkillSelection = React.useCallback(() => {
-    const picked = skillSuggestions[skillSelIdx];
-    if (!picked) return false;
-    // If the user already typed something after the hash-token, keep it.
-    const rest = input.slice(1).split(/\s(.*)/s)[1] || '';
-    const next = rest ? `#${picked.name} ${rest}` : `#${picked.name} `;
-    setInputAndCursor(next);
-    return true;
-  }, [skillSuggestions, skillSelIdx, input]);
 
   React.useEffect(() => {
     if (state.mode !== 'splash') return;
@@ -336,6 +324,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     }
   }, [state.permissionPrompt]);
 
+  React.useEffect(() => {
+    if (state.menuPrompt) {
+      setDynamicMenuIdx(0);
+      dynamicMenuIdxRef.current = 0;
+    }
+  }, [state.menuPrompt]);
+
   useInput((ch, key) => {
     const keyChar = (ch || (key as any)?.name || '').toLowerCase();
     const isEnter = key.return || (key as any)?.name === 'enter';
@@ -420,6 +415,27 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    if (state.menuPrompt) {
+      const opts = state.menuPrompt.options;
+      if (key.upArrow) {
+        const next = Math.max(0, dynamicMenuIdxRef.current - 1);
+        dynamicMenuIdxRef.current = next;
+        setDynamicMenuIdx(next);
+      } else if (key.downArrow) {
+        const next = Math.min(opts.length - 1, dynamicMenuIdxRef.current + 1);
+        dynamicMenuIdxRef.current = next;
+        setDynamicMenuIdx(next);
+      } else if (isEnter) {
+        const selected = opts[dynamicMenuIdxRef.current] || opts[0];
+        if (selected) state.menuPrompt.resolve(selected.value);
+      } else if (key.escape) {
+        // Select 'back' if available, otherwise last option
+        const back = opts.find((o) => o.value === 'back');
+        state.menuPrompt.resolve(back ? back.value : opts[opts.length - 1]?.value || '');
+      }
+      return;
+    }
+
     if (state.mode === 'menu') {
       if (key.upArrow) setMenuIdx((i) => Math.max(0, i - 1));
       else if (key.downArrow) setMenuIdx((i) => Math.min(5, i + 1));
@@ -478,15 +494,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         return;
       }
 
-      // Skill picker: first Enter fills the selection (so the user can keep
-      // typing their request after the skill name); second Enter submits.
-      if (skillSuggestions.length > 0) {
-        const picked = skillSuggestions[skillSelIdx];
-        const expected = picked ? `#${picked.name}` : '';
-        if (picked && !trimmed.startsWith(expected + ' ') && trimmed !== expected) {
-          completeSkillSelection();
-          return;
-        }
+      // If @ mention popup is showing, complete the mention instead of submitting
+      if (mentionMatch && mentionSuggestions.length > 0) {
+        const friend = mentionSuggestions[mentionSelIdx];
+        const before = input.slice(0, mentionMatch.startIdx);
+        const after = `@${friend.username} `;
+        const newVal = before + after;
+        setInput(newVal);
+        setCursorPos(newVal.length);
+        return;
       }
 
       if (trimmed) {
@@ -615,13 +631,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
-    // Ctrl+D → show last task's step log (when not in workspace nav mode,
-    // which uses Ctrl+D for scrolling).  Splash mode also uses 'd' key.
-    if (key.ctrl && (ch === 'd' || ch === 'D') && !state.permissionPrompt && state.mode !== 'workspace') {
-      onInput('/log');
-      return;
-    }
-
     // Ctrl+N → insert newline (multi-line input)
     if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
       setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
@@ -641,8 +650,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.tab) {
       if (input.startsWith('/') && slashSuggestions.length > 0) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
-      } else if (input.startsWith('#') && skillSuggestions.length > 0) {
-        completeSkillSelection();
+      } else if (mentionMatch && mentionSuggestions.length > 0) {
+        const friend = mentionSuggestions[mentionSelIdx];
+        const before = input.slice(0, mentionMatch.startIdx);
+        const after = `@${friend.username} `;
+        const newVal = before + after;
+        setInput(newVal);
+        setCursorPos(newVal.length);
       }
       return;
     }
@@ -669,14 +683,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
     }
 
-    // Up/down arrow: navigate skill (#) suggestions when popup is visible
-    if (skillSuggestions.length > 0) {
+    // Up/down arrow: navigate @ mention suggestions
+    if (mentionSuggestions.length > 0) {
       if (key.upArrow) {
-        setSkillSelIdx((i) => (i > 0 ? i - 1 : skillSuggestions.length - 1));
+        setMentionSelIdx((i) => (i > 0 ? i - 1 : mentionSuggestions.length - 1));
         return;
       }
       if (key.downArrow) {
-        setSkillSelIdx((i) => (i < skillSuggestions.length - 1 ? i + 1 : 0));
+        setMentionSelIdx((i) => (i < mentionSuggestions.length - 1 ? i + 1 : 0));
         return;
       }
     }
@@ -757,7 +771,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
             {state.tokenInfo && (
               <Text>Budget: <Text color="green">{state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()} ({state.tokenInfo.percentage}%)</Text></Text>
             )}
-            <Text>Web: {state.web?.enabled ? <Text color="green">Serving · http://127.0.0.1:{state.web.port}</Text> : <Text color="gray">Disabled</Text>}</Text>
             <Text color="gray">{'─'.repeat(56)}</Text>
             <Text bold color="white">Capabilities</Text>
             <Text>Skills loaded: <Text color="cyan">{skillsLoaded}</Text> / {state.skills.length}</Text>
@@ -784,7 +797,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     );
   }
 
-  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
+  const showInput = !state.permissionPrompt && !state.menuPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
 
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -798,6 +811,9 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       ) : null}
       {state.permissionPrompt && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
+      )}
+      {state.menuPrompt && (
+        <DynamicMenuView menu={state.menuPrompt} activeIdx={dynamicMenuIdx} />
       )}
       {showInput && (
         <InputBox
@@ -816,18 +832,16 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
-      {showInput && skillSuggestions.length > 0 && (
+      {showInput && slashSuggestions.length === 0 && mentionSuggestions.length > 0 && (
         <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>Skills (↑↓ navigate · Tab/Enter to select):</Text>
-          {skillSuggestions.map((s, idx) => (
-            <Text key={s.name} color={idx === skillSelIdx ? 'magenta' : 'gray'}>
-              {idx === skillSelIdx ? '›' : ' '} #{s.name}
-              {s.description ? <Text dimColor> — {s.description.slice(0, 70)}{s.description.length > 70 ? '…' : ''}</Text> : null}
+          <Text dimColor>Friends (↑↓ navigate · Tab/Enter to select):</Text>
+          {mentionSuggestions.map((f, idx) => (
+            <Text key={f.username} color={idx === mentionSelIdx ? 'cyan' : 'gray'}>
+              {idx === mentionSelIdx ? '›' : ' '} @{f.username}{f.displayName ? ` (${f.displayName})` : ''}
             </Text>
           ))}
         </Box>
       )}
-      <TokenBarView state={state} />
     </Box>
   );
 }
@@ -868,6 +882,11 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
 function StatusBarView({ state }: { state: TuiState }) {
   const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
+  let tokenBar = '';
+  if (state.tokenInfo) {
+    const filled = Math.min(20, Math.round(state.tokenInfo.percentage / 5));
+    tokenBar = `[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${state.tokenInfo.percentage}%`;
+  }
   const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
   const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
 
@@ -895,9 +914,6 @@ function StatusBarView({ state }: { state: TuiState }) {
         <Box flexGrow={1}>
           <Text bold color="cyan">{state.agentName}</Text>
           {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
-          {state.saverInfo && state.saverInfo.state !== 'off' && (
-            <Text> <Text color="gray">|</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
-          )}
           {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
           <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
           <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
@@ -907,101 +923,15 @@ function StatusBarView({ state }: { state: TuiState }) {
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
+      {state.tokenInfo && (
+        <Box paddingX={1}>
+          <Text color="cyan">Tokens </Text>
+          <Text>{tokenBar}</Text>
+          <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
+        </Box>
+      )}
     </Box>
   );
-}
-
-function TokenBarView({ state }: { state: TuiState }) {
-  if (!state.tokenInfo && !state.provider) return null;
-
-  const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
-  const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
-
-  // Color the percentage based on usage thresholds (or saver state if active)
-  const pct = state.tokenInfo?.percentage ?? 0;
-  const pctColor = saverActive
-    ? saverColor
-    : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
-
-  // Sub-agent count (running only)
-  const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
-  // Background task count (running only)
-  const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
-
-  const isWorkspace = state.mode === 'workspace' && state.workspace;
-
-  return (
-    <Box flexDirection="column">
-      <Box paddingX={1}>
-        <Text color="gray">{'─'.repeat(50)}</Text>
-      </Box>
-      <Box paddingX={1} paddingBottom={0}>
-        {state.tokenInfo && (
-          <>
-            {saverActive && (
-              <Text color={saverColor} bold>⚡ </Text>
-            )}
-            <Text color={pctColor}>{pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'} </Text>
-            <Text color={pctColor}>
-              [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
-            </Text>
-            <Text color={pctColor} bold> {pct}%</Text>
-            {saverActive && state.saverInfo!.savedToday > 0 && (
-              <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
-            )}
-            {saverActive && state.saverInfo!.savedToday === 0 && (
-              <Text color={saverColor}> · SAVER</Text>
-            )}
-          </>
-        )}
-
-        {state.provider && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">{state.provider.model}</Text>
-          </>
-        )}
-
-        {isWorkspace && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="blue">⎇ {state.workspace!.branch}</Text>
-            {(state.workspace!.ahead > 0 || state.workspace!.behind > 0) && (
-              <Text color="yellow">
-                {state.workspace!.ahead > 0 ? ` ↑${state.workspace!.ahead}` : ''}
-                {state.workspace!.behind > 0 ? ` ↓${state.workspace!.behind}` : ''}
-              </Text>
-            )}
-            {(state.workspace!.stagedCount > 0 || state.workspace!.unstagedCount > 0) && (
-              <Text color="gray">
-                {state.workspace!.stagedCount > 0 ? <Text color="green"> S{state.workspace!.stagedCount}</Text> : null}
-                {state.workspace!.unstagedCount > 0 ? <Text color="yellow"> M{state.workspace!.unstagedCount}</Text> : null}
-              </Text>
-            )}
-          </>
-        )}
-
-        {!isWorkspace && runningBg > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="cyan">⏳ {runningBg} bg</Text>
-          </>
-        )}
-        {!isWorkspace && runningAgents > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
-          </>
-        )}
-      </Box>
-    </Box>
-  );
-}
-
-function formatCompact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
 }
 
 function ChatBody({ state }: { state: TuiState }) {
@@ -1010,7 +940,7 @@ function ChatBody({ state }: { state: TuiState }) {
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
@@ -1049,7 +979,7 @@ function CodingBody({ state }: { state: TuiState }) {
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
@@ -1630,99 +1560,31 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   );
 }
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-/**
- * Animated row for a currently-running tool step.
- *
- * Shows a braille spinner + live elapsed counter so the user gets
- * continuous feedback during long operations (1-2 min tool calls
- * like screenshots, large file ops, sub-agent dispatches).
- *
- * Color escalates to signal long runs:
- *   < 30s : cyan       — normal
- *   30-90s: yellow     — "still working" hint
- *   > 90s : red        — long-op warning (mentions Ctrl+C)
- */
-function RunningStepRow({ step }: { step: ToolStep }) {
-  const [frame, setFrame] = React.useState(0);
-  const [elapsed, setElapsed] = React.useState(() =>
-    step.startedAt ? Math.floor((Date.now() - step.startedAt) / 1000) : 0,
-  );
-
-  React.useEffect(() => {
-    const startedAt = step.startedAt ?? Date.now();
-    const timer = setInterval(() => {
-      setFrame((v) => (v + 1) % SPINNER_FRAMES.length);
-      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-    }, 80);
-    return () => clearInterval(timer);
-  }, [step.startedAt]);
-
-  const tone = elapsed >= 90 ? 'red' : elapsed >= 30 ? 'yellow' : 'cyan';
-  const mins = Math.floor(elapsed / 60);
-  const secs = elapsed % 60;
-  const timeStr = mins > 0 ? `${mins}m${secs.toString().padStart(2, '0')}s` : `${secs}s`;
-
-  return (
-    <Box>
-      <Text color={tone}>{SPINNER_FRAMES[frame]}</Text>
-      <Text> </Text>
-      <Text color={tone} bold>{step.label}</Text>
-      <Text dimColor> · {timeStr}</Text>
-      {elapsed >= 30 && elapsed < 90 && <Text color="yellow" dimColor> · still working</Text>}
-      {elapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels, /bg current to background)</Text>}
-    </Box>
-  );
-}
-
-function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed'; idle?: boolean }) {
-  // When idle (task complete), show a single compact summary line.
-  // Full history is accessible via Ctrl+D (/log).
-  if (idle) {
-    const last = [...steps].reverse().find((s) => s.status === 'done' || s.status === 'error') ?? steps[steps.length - 1];
-    if (!last) return null;
-    const totalDone = steps.filter((s) => s.status === 'done').length;
-    const icon = last.status === 'done' ? '✓' : last.status === 'error' ? '✗' : '·';
-    const more = totalDone > 1 ? ` (+${totalDone - 1})` : '';
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>{icon} {last.label}{more} · Ctrl+D for details</Text>
-      </Box>
-    );
-  }
-
-  // Active: show at most 3 visible steps (running + last 2 done).
-  // All other steps are collapsed into "N earlier" — no scrolling list.
-  const MAX_VISIBLE = 3;
+function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed' }) {
+  const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
   const totalDone = steps.filter((s) => s.status === 'done').length;
-  const doneSteps = steps.filter((s) => s.status === 'done');
-  const runningSteps = steps.filter((s) => s.status === 'running');
-  const hiddenCount = Math.max(0, steps.length - MAX_VISIBLE);
-  const visible = [
-    ...doneSteps.slice(-(MAX_VISIBLE - runningSteps.length)),
-    ...runningSteps,
-  ].slice(-MAX_VISIBLE);
-
+  const totalRunning = steps.filter((s) => s.status === 'running').length;
+  const hiddenCount = Math.max(0, steps.length - visible.length);
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color="gray" bold>⏳</Text>
-        <Text color="gray"> {totalDone} done{runningSteps.length > 0 ? `, ${runningSteps.length} running` : ''}</Text>
-        {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier</Text>}
+        <Text color="gray">Activity</Text>
+        <Text dimColor> · {totalDone} done{totalRunning > 0 ? `, ${totalRunning} running` : ''}</Text>
+        {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier steps hidden</Text>}
       </Box>
-      {visible.map((step) => {
-        if (step.status === 'running') {
-          return <RunningStepRow key={step.id} step={step} />;
-        }
-        return (
-          <Box key={step.id}>
-            <Text color="green">✓</Text>
-            <Text dimColor> {step.label}</Text>
-            {step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
-          </Box>
-        );
-      })}
+      {visible.map((step) => (
+        <Box key={step.id}>
+          <Text>
+            {step.status === 'running' ? '⏳' : step.status === 'done' ? '✅' : '❌'}
+          </Text>
+          <Text> </Text>
+          <Text dimColor={step.status === 'done'} color={step.status === 'running' ? 'cyan' : undefined} bold={step.status === 'running'}>{step.label}</Text>
+          {step.status === 'running' && <Text color="yellow"> …</Text>}
+          {step.status === 'done' && step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
+          {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
+        </Box>
+      ))}
+      <Text dimColor>Ctrl+T toggles view · /progress for full history</Text>
     </Box>
   );
 }
@@ -1747,37 +1609,30 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
   const doneSteps = steps.filter((s) => s.status === 'done');
   const totalSteps = steps.length;
 
+  // Determine current action label
   const currentAction = runningStep
     ? runningStep.label
     : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
-  const displayElapsed = runningStep?.startedAt
-    ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0)
-    : elapsed;
-  const actionTone = displayElapsed >= 90 ? 'red' : displayElapsed >= 30 ? 'yellow' : 'white';
-
-  const mins = Math.floor(displayElapsed / 60);
-  const secs = displayElapsed % 60;
+  // Format elapsed time
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
   const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-
-  // Show at most 2 most recent completed steps (keeps total lines ≤ 3)
-  const recentDone = doneSteps.slice(-2);
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
       <Box>
-        <Text color={actionTone === 'white' ? 'cyan' : actionTone}>{spinner}</Text>
+        <Text color="cyan">{spinner}</Text>
         <Text> </Text>
-        <Text color="cyan" bold>{totalSteps > 0 ? 'Processing' : 'Processing'}</Text>
+        <Text color="cyan" bold>{totalSteps > 0 ? agentName : 'Processing'}</Text>
         <Text dimColor>{totalSteps > 0 ? ` · step ${totalSteps} · ${timeStr}` : ` · ${timeStr}`}</Text>
       </Box>
       <Box marginLeft={4}>
-        <Text color={actionTone} bold>{currentAction}</Text>
-        {displayElapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels, /bg current to background)</Text>}
+        <Text color="white" bold>{currentAction}</Text>
       </Box>
-      {recentDone.length > 0 && (
+      {doneSteps.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>
-          {recentDone.map((step) => (
+          {doneSteps.slice(-3).map((step) => (
             <Box key={step.id}>
               <Text color="green">✓</Text>
               <Text dimColor> {step.label}</Text>
@@ -1875,6 +1730,21 @@ function PermPromptView({ prompt, activeIdx }: { prompt: PermissionPromptState; 
         </Box>
       ))}
       <Text dimColor>  ↑↓ to navigate, Enter to select</Text>
+    </Box>
+  );
+}
+
+function DynamicMenuView({ menu, activeIdx }: { menu: import('../ui/types.js').MenuPromptState; activeIdx: number }) {
+  return (
+    <Box flexDirection="column" marginTop={1} paddingX={1}>
+      <Box><Text bold color="cyan">{menu.title}</Text></Box>
+      {menu.options.map((opt, i) => (
+        <Box key={opt.value}>
+          <Text>{i === activeIdx ? '●' : '·'} </Text>
+          <Text color={i === activeIdx ? 'cyan' : 'gray'}>{opt.label}</Text>
+        </Box>
+      ))}
+      <Text dimColor>  ↑↓ navigate · Enter select · Esc back</Text>
     </Box>
   );
 }

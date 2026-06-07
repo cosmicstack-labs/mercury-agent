@@ -33,8 +33,6 @@ import {
   Play,
   Sparkles,
   FolderInput,
-  Maximize2,
-  Minimize2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -345,7 +343,7 @@ function EditorPanel({
 
       {/* Editor area */}
       {current && (
-        <div className="relative flex flex-col flex-1 min-h-0">
+        <div className="relative flex-1 min-h-0">
           {/* Info bar */}
           <div className="flex items-center justify-between border-b border-border/30 bg-muted/10 px-3 py-1">
             <span className="text-xs text-muted-foreground font-mono">{current.path}</span>
@@ -363,7 +361,7 @@ function EditorPanel({
           </div>
 
           {/* Code content — syntax highlighted with editable overlay */}
-          <div className="flex-1 min-h-0 overflow-auto bg-[#282c34]" ref={scrollRef} onClick={() => textareaRef.current?.focus()}>
+          <div className="flex-1 min-h-0 overflow-auto bg-[#282c34]" ref={scrollRef}>
             <div className="relative" style={{ minWidth: "fit-content" }}>
               {/* Syntax highlighted layer (visual) */}
               <SyntaxHighlighter
@@ -407,33 +405,12 @@ function EditorPanel({
                   "absolute top-0 left-0 w-full h-full resize-none bg-transparent text-transparent caret-white",
                   "font-mono text-[13px] leading-[20px]",
                   "focus:outline-none",
-                  "whitespace-pre",
-                  "pointer-events-none focus:pointer-events-auto"
+                  "whitespace-pre overflow-hidden"
                 )}
                 style={{
                   tabSize: 2,
                   padding: "0.5rem 0 0.5rem 4.5em",
                   fontFamily: "var(--font-mono, 'Geist Mono', ui-monospace, monospace)",
-                  overflow: "hidden",
-                }}
-                onFocus={() => {
-                  // Enable pointer events while editing
-                  if (textareaRef.current) {
-                    textareaRef.current.style.pointerEvents = "auto";
-                  }
-                }}
-                onBlur={() => {
-                  // Disable pointer events when not editing so scroll passes through
-                  if (textareaRef.current) {
-                    textareaRef.current.style.pointerEvents = "none";
-                  }
-                }}
-                onWheel={(e) => {
-                  // Forward wheel events to parent scroll container while focused
-                  if (scrollRef.current) {
-                    scrollRef.current.scrollTop += e.deltaY;
-                    scrollRef.current.scrollLeft += e.deltaX;
-                  }
                 }}
               />
             </div>
@@ -456,12 +433,10 @@ function GitPanel() {
   const [showBranches, setShowBranches] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
-  const refresh = useCallback(async (showToast: boolean = false) => {
-    setRefreshing(true);
+  const refresh = useCallback(async () => {
     try {
       const [statusData, branchData, logData] = await Promise.all([
         api.git.status(),
@@ -471,15 +446,10 @@ function GitPanel() {
       setGitStatus(statusData);
       setBranches(branchData.branches);
       setCommits(logData.commits);
-      if (showToast) {
-        setFeedback({ type: "success", msg: "Refreshed" });
-        setTimeout(() => setFeedback(null), 1500);
-      }
     } catch (err: any) {
       setFeedback({ type: "error", msg: err.message });
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }, []);
 
@@ -621,16 +591,8 @@ function GitPanel() {
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handlePush} disabled={!!actionLoading}>
             <Upload className="h-3 w-3" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => refresh(true)}
-            disabled={!!actionLoading || refreshing}
-            title="Refresh"
-            aria-label="Refresh"
-          >
-            <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={refresh} disabled={!!actionLoading}>
+            <RefreshCw className="h-3 w-3" />
           </Button>
         </div>
       </div>
@@ -879,13 +841,9 @@ function GitPanel() {
 function BottomPanel({
   projectInfo,
   codeMode,
-  isMaximized,
-  onToggleMaximize,
 }: {
   projectInfo: WorkspaceInfo | null;
   codeMode: { state: string; active: boolean } | null;
-  isMaximized: boolean;
-  onToggleMaximize: () => void;
 }) {
   const [activeBottomTab, setActiveBottomTab] = useState<"terminal" | "chat">("terminal");
   const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
@@ -1076,45 +1034,31 @@ function BottomPanel({
       </div>
 
       {/* Tab headers */}
-      <div className="flex items-center justify-between border-b border-border bg-muted/10">
-        <div className="flex items-center">
-          <button
-            onClick={() => setActiveBottomTab("terminal")}
-            className={cn(
-              "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
-              activeBottomTab === "terminal"
-                ? "border-b-primary text-foreground"
-                : "border-b-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <TerminalIcon className="h-3.5 w-3.5" />
-            Terminal
-          </button>
-          <button
-            onClick={() => setActiveBottomTab("chat")}
-            className={cn(
-              "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
-              activeBottomTab === "chat"
-                ? "border-b-primary text-foreground"
-                : "border-b-transparent text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-            Chat
-            {isBusy && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
-          </button>
-        </div>
+      <div className="flex items-center border-b border-border bg-muted/10">
         <button
-          onClick={onToggleMaximize}
-          className="mr-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title={isMaximized ? "Restore panel" : "Maximize panel"}
-          aria-label={isMaximized ? "Restore panel" : "Maximize panel"}
-        >
-          {isMaximized ? (
-            <Minimize2 className="h-3.5 w-3.5" />
-          ) : (
-            <Maximize2 className="h-3.5 w-3.5" />
+          onClick={() => setActiveBottomTab("terminal")}
+          className={cn(
+            "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
+            activeBottomTab === "terminal"
+              ? "border-b-primary text-foreground"
+              : "border-b-transparent text-muted-foreground hover:text-foreground"
           )}
+        >
+          <TerminalIcon className="h-3.5 w-3.5" />
+          Terminal
+        </button>
+        <button
+          onClick={() => setActiveBottomTab("chat")}
+          className={cn(
+            "flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium transition-colors border-b-2",
+            activeBottomTab === "chat"
+              ? "border-b-primary text-foreground"
+              : "border-b-transparent text-muted-foreground hover:text-foreground"
+          )}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          Chat
+          {isBusy && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
         </button>
       </div>
 
@@ -1246,7 +1190,6 @@ export function WorkspacePage() {
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(280);
   const [bottomHeight, setBottomHeight] = useState(260);
-  const [bottomMaximized, setBottomMaximized] = useState(false);
   const [showLeft, setShowLeft] = useState(true);
   const [showRight, setShowRight] = useState(true);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
@@ -1351,8 +1294,7 @@ export function WorkspacePage() {
     direction: "horizontal" | "vertical",
     setValue: React.Dispatch<React.SetStateAction<number>>,
     min: number,
-    max: number,
-    invert: boolean = false
+    max: number
   ) {
     const dragging = useRef(false);
 
@@ -1365,10 +1307,9 @@ export function WorkspacePage() {
 
       function onMouseMove(e2: MouseEvent) {
         if (!dragging.current) return;
-        const rawDelta = direction === "horizontal"
+        const delta = direction === "horizontal"
           ? e2.clientX - startPos
           : startPos - e2.clientY; // inverted for bottom panel
-        const delta = invert ? -rawDelta : rawDelta;
         setValue(Math.min(max, Math.max(min, currentValue! + delta)));
       }
 
@@ -1380,14 +1321,13 @@ export function WorkspacePage() {
 
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
-    }, [direction, setValue, min, max, invert]);
+    }, [direction, setValue, min, max]);
 
     return { onMouseDown };
   }
 
   const leftResizer = useResizer("horizontal", setLeftWidth, 160, 400);
-  // Right panel's resizer sits on its LEFT edge, so mouse delta is inverted
-  const rightResizer = useResizer("horizontal", setRightWidth, 200, 450, true);
+  const rightResizer = useResizer("horizontal", setRightWidth, 200, 450);
   const bottomResizer = useResizer("vertical", setBottomHeight, 120, 500);
 
   return (
@@ -1474,73 +1414,58 @@ export function WorkspacePage() {
       </AnimatePresence>
 
       {/* Main content area (horizontal split) */}
-      {!bottomMaximized && (
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-          {/* Left Panel — File Explorer */}
-          {showLeft && (
-            <>
-              <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-border">
-                <FileExplorer key={workspaceKey} onOpenFile={openFile} openFiles={tabs.map((t) => t.path)} />
-              </div>
-              {/* Left resizer */}
-              <div
-                {...leftResizer}
-                className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
-              />
-            </>
-          )}
-
-          {/* Center Panel — Editor Tabs */}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <EditorPanel
-              tabs={tabs}
-              activeTab={activeTab}
-              onSelectTab={setActiveTab}
-              onCloseTab={closeTab}
-              onSave={saveTab}
-              onContentChange={updateTabContent}
-            />
-          </div>
-
-          {/* Right resizer */}
-          {showRight && (
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left Panel — File Explorer */}
+        {showLeft && (
+          <>
+            <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-border">
+              <FileExplorer key={workspaceKey} onOpenFile={openFile} openFiles={tabs.map((t) => t.path)} />
+            </div>
+            {/* Left resizer */}
             <div
-              {...rightResizer}
+              {...leftResizer}
               className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
             />
-          )}
+          </>
+        )}
 
-          {/* Right Panel — Git */}
-          {showRight && (
-            <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden border-l border-border">
-              <GitPanel key={workspaceKey} />
-            </div>
-          )}
+        {/* Center Panel — Editor Tabs */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <EditorPanel
+            tabs={tabs}
+            activeTab={activeTab}
+            onSelectTab={setActiveTab}
+            onCloseTab={closeTab}
+            onSave={saveTab}
+            onContentChange={updateTabContent}
+          />
         </div>
-      )}
 
-      {/* Bottom resizer (hidden when maximized) */}
-      {!bottomMaximized && (
-        <div
-          {...bottomResizer}
-          className="h-1 shrink-0 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors border-t border-border"
-        />
-      )}
+        {/* Right resizer */}
+        {showRight && (
+          <div
+            {...rightResizer}
+            className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+          />
+        )}
+
+        {/* Right Panel — Git */}
+        {showRight && (
+          <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden border-l border-border">
+            <GitPanel key={workspaceKey} />
+          </div>
+        )}
+      </div>
+
+      {/* Bottom resizer */}
+      <div
+        {...bottomResizer}
+        className="h-1 shrink-0 cursor-row-resize hover:bg-primary/30 active:bg-primary/50 transition-colors border-t border-border"
+      />
 
       {/* Bottom Panel — Terminal + Chat */}
-      <div
-        style={bottomMaximized ? undefined : { height: bottomHeight }}
-        className={cn(
-          "overflow-hidden",
-          bottomMaximized ? "flex-1 min-h-0" : "shrink-0"
-        )}
-      >
-        <BottomPanel
-          projectInfo={projectInfo}
-          codeMode={codeMode}
-          isMaximized={bottomMaximized}
-          onToggleMaximize={() => setBottomMaximized((v) => !v)}
-        />
+      <div style={{ height: bottomHeight }} className="shrink-0 overflow-hidden">
+        <BottomPanel projectInfo={projectInfo} codeMode={codeMode} />
       </div>
     </div>
   );

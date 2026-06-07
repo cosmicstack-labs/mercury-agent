@@ -4,3 +4,7 @@ export { UserMemoryStore } from './user-memory.js';
 export type { UserMemoryType, UserMemoryRecord, UserMemoryCandidate, UserMemorySummary, RetrievedUserMemory } from './user-memory.js';
 export { SecondBrainDB, isBetterSqlite3Available } from './second-brain-db.js';
 export type { MemoryRow } from './second-brain-db.js';
+export { CollaborativeKnowledgeDB, isCollaborativeKnowledgeDbAvailable } from './collaborative-knowledge-db.js';
+export type { CollaborativeKnowledgeRow } from './collaborative-knowledge-db.js';
+export { CollaborativeKnowledgeStore } from './collaborative-knowledge-store.js';
+export type { CollaborativeKnowledgeType, CollaborativeKnowledgeRecord, CollaborativeKnowledgeCandidate, CollaborativeKnowledgeSummary } from './collaborative-knowledge-store.js';

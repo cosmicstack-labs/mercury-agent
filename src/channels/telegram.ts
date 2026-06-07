@@ -22,9 +22,6 @@ import {
 import { logger } from '../utils/logger.js';
 import { mdToTelegram } from '../utils/markdown.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import { RegistryClient, isValidSkillId, searchFeed, type RegistrySkillSummary } from '../skills/registry.js';
-import { SkillStore } from '../skills/store.js';
-import { SkillLoader } from '../skills/loader.js';
 
 const MAX_MESSAGE_LENGTH = 4096;
 const ACCESS_ACTION_PREFIX = 'tg_access';
@@ -59,6 +56,8 @@ export class TelegramChannel extends BaseChannel {
   private statusNotices = new Map<string, string[]>();
   /** Maximum number of notice lines to show in the status card */
   private static readonly MAX_STATUS_NOTICES = 3;
+  /** Track original message IDs per chat for reactions */
+  private originalMessageIds = new Map<string, { chatId: number; messageId: number }>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -66,6 +65,14 @@ export class TelegramChannel extends BaseChannel {
 
   setChatCommandContext(ctx: import('../capabilities/registry.js').ChatCommandContext): void {
     this.chatCommandContext = ctx;
+  }
+
+  usesTaskBuffering(): boolean {
+    return true;
+  }
+
+  supportsStreaming(): boolean {
+    return true;
   }
 
   /** Mark a task as active — routes send() through the status card */
@@ -165,9 +172,16 @@ export class TelegramChannel extends BaseChannel {
           if (this.onPermissionMode) {
             this.onPermissionMode(mode, chatId);
           }
-        }).catch((e: any) => logger.warn({ e }, 'telegram permission ask failed'));
+        }).catch(() => {});
         this.permissionModes.set(chatId, 'ask-me');
       }
+
+      if (this.config.channels.telegram.reactions) {
+        if (!this.bot) return;
+        this.bot.api.setMessageReaction(chatId, ctx.message.message_id, [{ type: 'emoji', emoji: '👀' }]).catch(() => {});
+      }
+
+      this.originalMessageIds.set(`telegram:${chatId}`, { chatId, messageId: ctx.message.message_id });
 
       if (command === '/unpair') {
         if (!this.isAdminUser(userId)) {
@@ -183,18 +197,13 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
-      if (command === '/skills') {
-        await this.handleSkillsCommand(chatId, userId, text);
-        return;
-      }
-
       if (command === '/permissions') {
         this.askPermissionMode(`telegram:${chatId}`).then((mode) => {
           this.permissionModes.set(chatId, mode);
           if (this.onPermissionMode) {
             this.onPermissionMode(mode, chatId);
           }
-        }).catch((e: any) => logger.warn({ e }, 'telegram permission ask failed'));
+        }).catch(() => {});
         return;
       }
 
@@ -269,7 +278,6 @@ export class TelegramChannel extends BaseChannel {
       { command: 'progress', description: 'Live status for the current task' },
       { command: 'stop', description: 'Stop all agents and clear queue' },
       { command: 'budget', description: 'Token budget status and management' },
-      { command: 'saver', description: 'Toggle Token Saver Mode (save tokens, terser responses)' },
       { command: 'stream', description: 'Toggle text streaming on/off' },
       { command: 'memory', description: 'View and manage second brain memory' },
       { command: 'permissions', description: 'Change permission mode (Ask Me / Allow All)' },
@@ -278,7 +286,6 @@ export class TelegramChannel extends BaseChannel {
       { command: 'agents', description: 'List and manage sub-agents' },
       { command: 'bg', description: 'Background tasks (list / cancel / run)' },
       { command: 'spotify', description: 'Spotify playback controls' },
-      { command: 'skills', description: 'Browse and install skills from the registry' },
       { command: 'unpair', description: 'Reset all Telegram access (admin only)' },
     ];
 
@@ -364,7 +371,7 @@ export class TelegramChannel extends BaseChannel {
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) {
       for (const chatId of chatIds) {
-        await this.bot.api.sendMessage(chatId, `File not found: ${filePath}`).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+        await this.bot.api.sendMessage(chatId, `File not found: ${filePath}`).catch(() => {});
       }
       return;
     }
@@ -388,7 +395,7 @@ export class TelegramChannel extends BaseChannel {
         logger.info({ file: resolved, chatId }, 'File sent via Telegram');
       } catch (err: any) {
         logger.error({ err: err.message, file: resolved, chatId }, 'Telegram sendFile failed');
-        await this.bot.api.sendMessage(chatId, `Failed to send file: ${err.message}`).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+        await this.bot.api.sendMessage(chatId, `Failed to send file: ${err.message}`).catch(() => {});
       }
     }
   }
@@ -416,7 +423,7 @@ export class TelegramChannel extends BaseChannel {
       try {
         await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
       } catch (err: any) {
-        await this.bot.api.sendMessage(chatId, this.stripHtml(html)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
+        await this.bot.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
       }
     }
     return full;
@@ -476,9 +483,9 @@ export class TelegramChannel extends BaseChannel {
 
   startTypingLoop(chatId: number): void {
     this.stopTypingLoop();
-    this.bot?.api.sendChatAction(chatId, 'typing').catch((e: any) => logger.warn({ e }, "telegram sendChatAction failed"));
+    this.bot?.api.sendChatAction(chatId, 'typing').catch(() => {});
     this.typingInterval = setInterval(() => {
-      this.bot?.api.sendChatAction(chatId, 'typing').catch((e: any) => logger.warn({ e }, "telegram sendChatAction failed"));
+      this.bot?.api.sendChatAction(chatId, 'typing').catch(() => {});
     }, 4000);
   }
 
@@ -719,6 +726,70 @@ export class TelegramChannel extends BaseChannel {
     });
   }
 
+  async requestChoice(question: string, choices: string[], targetId?: string): Promise<string> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const chatId = chatIds[0];
+    if (!chatId || !this.bot || choices.length === 0) return choices[0] ?? '';
+
+    if (choices.length <= 5) {
+      return this.requestChoiceButtons(question, choices, chatId, targetId);
+    }
+
+    const list = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+    await this.send(`${question}\n${list}`, targetId).catch(() => {});
+    return choices[0] ?? '';
+  }
+
+  private async requestChoiceButtons(question: string, choices: string[], chatId: number, targetId?: string): Promise<string> {
+    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const keyboard = new InlineKeyboard();
+    for (let i = 0; i < choices.length; i++) {
+      const label = choices[i].length > 40 ? choices[i].slice(0, 37) + '…' : choices[i];
+      keyboard.text(label, `${id}:${i}`);
+      if (i < choices.length - 1) keyboard.row();
+    }
+
+    const html = mdToTelegram(question);
+    let sentMsgId: number | undefined;
+    try {
+      const msg = await this.bot!.api.sendMessage(chatId, html, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+      sentMsgId = msg.message_id;
+    } catch {
+      const msg = await this.bot!.api.sendMessage(chatId, this.stripHtml(html), {
+        reply_markup: keyboard,
+      });
+      sentMsgId = msg.message_id;
+    }
+
+    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+
+    return new Promise((resolve) => {
+      const cleanup = (result: string) => {
+        for (let i = 0; i < choices.length; i++) {
+          this.pendingApprovals.delete(`${id}:${i}`);
+        }
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(result);
+      };
+      for (let i = 0; i < choices.length; i++) {
+        const choice = choices[i];
+        this.pendingApprovals.set(`${id}:${i}`, () => cleanup(choice));
+      }
+
+      setTimeout(() => {
+        for (let i = 0; i < choices.length; i++) {
+          this.pendingApprovals.delete(`${id}:${i}`);
+        }
+        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        resolve(choices[0]);
+      }, 120_000);
+    });
+  }
+
   private async handleAccessRequest(
     userId: number,
     chatId: number,
@@ -791,7 +862,7 @@ export class TelegramChannel extends BaseChannel {
       } catch {
         await this.bot.api.sendMessage(admin.chatId, message, {
           reply_markup: keyboard,
-        }).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+        }).catch(() => {});
       }
     }
   }
@@ -819,7 +890,7 @@ export class TelegramChannel extends BaseChannel {
     const request = findTelegramPendingRequest(this.config, requestUserId);
     if (!request) {
       await ctx.answerCallbackQuery({ text: 'Already handled' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, "telegram editMessageReplyMarkup failed"));
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
       return;
     }
 
@@ -832,7 +903,7 @@ export class TelegramChannel extends BaseChannel {
 
       saveConfig(this.config);
       await ctx.answerCallbackQuery({ text: 'Approved' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, "telegram editMessageReplyMarkup failed"));
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
       await this.sendDirectMessage(
         request.chatId,
         `Telegram access approved. You can now chat with Mercury.\n\nTelegram access: ${getTelegramAccessSummary(this.config)}`,
@@ -850,7 +921,7 @@ export class TelegramChannel extends BaseChannel {
 
       saveConfig(this.config);
       await ctx.answerCallbackQuery({ text: 'Rejected' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, "telegram editMessageReplyMarkup failed"));
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
       await this.sendDirectMessage(
         request.chatId,
         'Your Telegram access request was rejected. This bot is not available to you.',
@@ -868,8 +939,7 @@ export class TelegramChannel extends BaseChannel {
     const summary = this.chatCommandContext.memorySummary();
     const lines = [
       `<b>Memory Overview</b>`,
-      `Conscious memories: ${summary.total}`,
-      `Subconscious memories: ${summary.subconsciousTotal}`,
+      `Total memories: ${summary.total}`,
       `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
     ];
     if (summary.profileSummary) {
@@ -888,12 +958,8 @@ export class TelegramChannel extends BaseChannel {
       .text('📋 Overview', `${MEMORY_ACTION_PREFIX}:overview`)
       .text('🔍 Recent', `${MEMORY_ACTION_PREFIX}:recent`)
       .row()
-      .text('💤 Subconscious', `${MEMORY_ACTION_PREFIX}:subconscious`)
       .text(learningLabel, `${MEMORY_ACTION_PREFIX}:toggle_learning`)
-      .row()
-      .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`)
-      .row()
-      .text('🧠 Shared', `${MEMORY_ACTION_PREFIX}:shared`);
+      .text('🗑 Clear All', `${MEMORY_ACTION_PREFIX}:clear_confirm`);
 
     await this.bot.api.sendMessage(chatId, lines.join('\n'), {
       parse_mode: 'HTML',
@@ -921,8 +987,7 @@ export class TelegramChannel extends BaseChannel {
       const summary = this.chatCommandContext.memorySummary();
       const lines = [
         `<b>Memory Overview</b>`,
-        `Conscious memories: ${summary.total}`,
-        `Subconscious memories: ${summary.subconsciousTotal}`,
+        `Total memories: ${summary.total}`,
         `Learning: ${summary.learningPaused ? '⏸ PAUSED' : '✅ ACTIVE'}`,
       ];
       if (summary.profileSummary) {
@@ -948,12 +1013,12 @@ export class TelegramChannel extends BaseChannel {
       await ctx.answerCallbackQuery({ text: 'Recent memories' });
       const recent = this.chatCommandContext.memoryRecent(10);
       if (recent.length === 0) {
-        await this.bot.api.sendMessage(chatId, 'No memories yet.').catch((e: any) => logger.warn({ e }, "telegram send failed"));
+        await this.bot.api.sendMessage(chatId, 'No memories yet.').catch(() => {});
         return;
       }
       const lines = ['<b>Recent Memories:</b>\n'];
       for (const r of recent) {
-        const scope = r.scope === 'active' ? '⏳' : r.scope === 'subconscious' ? '💤' : '📌';
+        const scope = r.scope === 'active' ? '⏳' : '📌';
         lines.push(`${scope} [${r.type}] ${this.escapeHtml(r.summary)}`);
         lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
       }
@@ -972,7 +1037,7 @@ export class TelegramChannel extends BaseChannel {
       await this.bot.api.sendMessage(chatId, currentlyPaused
         ? 'Learning resumed. Mercury will remember new things from conversations.'
         : 'Learning paused. Mercury will not store new memories until resumed.',
-      ).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+      ).catch(() => {});
       await this.sendMemoryKeyboard(chatId);
       return;
     }
@@ -994,44 +1059,12 @@ export class TelegramChannel extends BaseChannel {
     if (action === 'clear_yes') {
       const cleared = this.chatCommandContext.memoryClear();
       await ctx.answerCallbackQuery({ text: `Cleared ${cleared} memories` });
-      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} memories.`).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+      await this.bot.api.sendMessage(chatId, `Cleared ${cleared} memories.`).catch(() => {});
       return;
     }
 
     if (action === 'clear_no') {
       await ctx.answerCallbackQuery({ text: 'Cancelled' });
-      return;
-    }
-
-    if (action === 'subconscious') {
-      if (!this.chatCommandContext) {
-        await ctx.answerCallbackQuery({ text: 'Not available' });
-        return;
-      }
-      const subconsciousMemories = this.chatCommandContext.memoryGetSubconscious(5);
-      const subconsciousTotal = this.chatCommandContext.memorySummary().subconsciousTotal;
-      if (subconsciousMemories.length === 0) {
-        await this.bot.api.sendMessage(chatId, '💤 <b>Subconscious Memory</b>\n\nNo subconscious memories yet. Memories move here after 30 days of not being referenced, and are recalled automatically when relevant to a conversation.').catch((e: any) => logger.warn({ e }, "telegram send failed"));
-        return;
-      }
-      const lines = ['💤 <b>Subconscious Memory (first 5 by recency):</b>\n'];
-      for (const r of subconsciousMemories) {
-        const ageDays = Math.round((Date.now() - r.lastSeenAt) / (1000 * 60 * 60 * 24));
-        lines.push(`💤 [${r.type}] ${this.escapeHtml(r.summary)}`);
-        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Last seen: ${ageDays}d ago`);
-      }
-      if (subconsciousTotal > 5) {
-        lines.push(`\n... and ${subconsciousTotal - 5} more subconscious memories stored.`);
-      }
-      lines.push(`\n<i>These memories can be recalled to conscious when relevant to a conversation.</i>`);
-      await this.bot.api.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' }).catch(async () => {
-        await this.bot!.api.sendMessage(chatId, lines.join('\n'));
-      });
-      return;
-    }
-
-    if (action === 'shared_back') {
-      await this.sendMemoryKeyboard(chatId);
       return;
     }
 
@@ -1058,189 +1091,6 @@ export class TelegramChannel extends BaseChannel {
 
   private getCommandName(text: string): string {
     return text.trim().split(/\s+/)[0]?.toLowerCase() || '';
-  }
-
-  private async handleSkillsCommand(chatId: number, userId: number, text: string): Promise<void> {
-    const parts = text.trim().split(/\s+/).slice(1);
-    const sub = (parts[0] || 'list').toLowerCase();
-    const args = parts.slice(1);
-    const arg = args.join(' ').trim();
-
-    const registry = new RegistryClient();
-    const store = new SkillStore({ registry });
-    const loader = new SkillLoader();
-
-    try {
-      switch (sub) {
-        case 'help':
-        case '-h':
-        case '--help': {
-          await this.sendDirectMessage(
-            chatId,
-            [
-              '*Mercury Skills — Telegram*',
-              '',
-              '`/skills` — list installed skills',
-              '`/skills search <query>` — search the registry',
-              '`/skills view <id>` — show details + registry URL',
-              '`/skills install <id>` — admin only',
-              '`/skills remove <id>` — admin only',
-              '',
-              'Registry: https://skills.mercuryagent.sh',
-            ].join('\n'),
-          );
-          return;
-        }
-
-        case 'list': {
-          const installed = loader.getAllSkills();
-          if (installed.length === 0) {
-            await this.sendDirectMessage(
-              chatId,
-              'No skills installed.\n\nTry `/skills search <query>` to browse https://skills.mercuryagent.sh.',
-            );
-            return;
-          }
-          const lines = installed
-            .slice(0, 25)
-            .map((s) => `• \`${s.name}\` — ${s.active ? 'active' : 'inactive'}${s.description ? ` — ${s.description}` : ''}`);
-          const more = installed.length > 25 ? `\n\n_…and ${installed.length - 25} more. Run \`mercury skills list\` for the full set._` : '';
-          await this.sendDirectMessage(
-            chatId,
-            `*Installed skills (${installed.length})*\n\n${lines.join('\n')}${more}`,
-          );
-          return;
-        }
-
-        case 'search':
-        case 'find': {
-          if (!arg) {
-            await this.sendDirectMessage(chatId, 'Usage: `/skills search <query>`');
-            return;
-          }
-          const feed = await registry.getFeed();
-          const scored = searchFeed(feed, arg, 5);
-          if (scored.length === 0) {
-            await this.sendDirectMessage(chatId, `No results for "${arg}".`);
-            return;
-          }
-          const results = scored.map((s) => s.skill);
-          const lines = results.map(
-            (r: RegistrySkillSummary) =>
-              `• \`${r.id}\` (v${r.version})\n  ${r.description}\n  ${registry.webUrl(r.id)}`,
-          );
-          await this.sendDirectMessage(
-            chatId,
-            `*Top ${results.length} matches for "${arg}"*\n\n${lines.join('\n\n')}\n\nReview a skill before installing: \`/skills view <id>\``,
-          );
-          return;
-        }
-
-        case 'view':
-        case 'show':
-        case 'info': {
-          if (!arg) {
-            await this.sendDirectMessage(chatId, 'Usage: `/skills view <category/slug>`');
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
-            return;
-          }
-          const detail = await registry.getSkill(arg);
-          const tags = detail.tags?.length ? `\n*Tags:* ${detail.tags.join(', ')}` : '';
-          const author = detail.author ? `\n*Author:* ${detail.author}` : '';
-          await this.sendDirectMessage(
-            chatId,
-            [
-              `*${detail.title}* (\`${detail.id}\`)`,
-              `*Version:* ${detail.version}`,
-              `*Category:* ${detail.category}`,
-              author,
-              tags,
-              '',
-              detail.description,
-              '',
-              `🔗 ${registry.webUrl(detail.id)}`,
-              '',
-              this.isAdminUser(userId)
-                ? 'Install with: `/skills install ' + detail.id + '`'
-                : 'Ask an admin to install: `/skills install ' + detail.id + '`',
-            ]
-              .filter(Boolean)
-              .join('\n'),
-          );
-          return;
-        }
-
-        case 'install':
-        case 'add': {
-          if (!this.isAdminUser(userId)) {
-            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can install skills.');
-            return;
-          }
-          if (!arg) {
-            await this.sendDirectMessage(chatId, 'Usage: `/skills install <category/slug>`');
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
-            return;
-          }
-          await this.sendDirectMessage(chatId, `Installing \`${arg}\`…`);
-          const result = await store.install(arg);
-          const verb =
-            result.status === 'already-installed'
-              ? 'Already installed'
-              : result.status === 'updated'
-                ? 'Updated'
-                : result.status === 'reinstalled'
-                  ? 'Reinstalled'
-                  : 'Installed';
-          await this.sendDirectMessage(
-            chatId,
-            `✅ ${verb} \`${result.id}\` (v${result.version})\n\n🔗 ${registry.webUrl(result.id)}`,
-          );
-          return;
-        }
-
-        case 'remove':
-        case 'rm':
-        case 'delete':
-        case 'uninstall': {
-          if (!this.isAdminUser(userId)) {
-            await this.sendDirectMessage(chatId, '🔒 Only Telegram admins can remove skills.');
-            return;
-          }
-          if (!arg) {
-            await this.sendDirectMessage(chatId, 'Usage: `/skills remove <category/slug>`');
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await this.sendDirectMessage(chatId, 'Invalid skill id. Expected `<category>/<slug>`.');
-            return;
-          }
-          const removed = store.remove(arg);
-          if (!removed) {
-            await this.sendDirectMessage(chatId, `Skill \`${arg}\` is not installed.`);
-            return;
-          }
-          await this.sendDirectMessage(chatId, `🗑 Removed \`${arg}\`.`);
-          return;
-        }
-
-        default: {
-          await this.sendDirectMessage(
-            chatId,
-            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
-          );
-        }
-      }
-    } catch (err: any) {
-      const msg = err?.message || 'Skill registry request failed';
-      logger.warn({ err: msg, sub, arg }, 'Telegram /skills command failed');
-      await this.sendDirectMessage(chatId, `⚠️ ${msg}`);
-    }
   }
 
   private getPendingStatusMessage(request?: TelegramPendingRequest): string {
@@ -1490,6 +1340,7 @@ export class TelegramChannel extends BaseChannel {
     this.statusNotices.delete(key);
     this.endTask(targetId);
     this.deleteStatusMessage(targetId);
+    this.originalMessageIds.delete(key);
   }
 
   async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
@@ -1543,7 +1394,7 @@ export class TelegramChannel extends BaseChannel {
           try {
             await this.bot?.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
           } catch {
-            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
+            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch(() => {});
           }
         }
       }
@@ -1555,7 +1406,14 @@ export class TelegramChannel extends BaseChannel {
       try {
         await this.bot?.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
       } catch {
-        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
+        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch(() => {});
+      }
+    }
+
+    if (this.config.channels.telegram.reactions) {
+      const orig = this.originalMessageIds.get(key);
+      if (orig && this.bot) {
+        await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
       }
     }
 
@@ -1564,6 +1422,7 @@ export class TelegramChannel extends BaseChannel {
     this.statusText.delete(key);
     this.statusMessageIds.delete(key);
     this.statusNotices.delete(key);
+    this.originalMessageIds.delete(key);
   }
 
   private isImageFile(ext: string): boolean {
@@ -1583,7 +1442,7 @@ export class TelegramChannel extends BaseChannel {
     try {
       await this.bot.api.sendMessage(chatId, mdToTelegram(content), { parse_mode: 'HTML' });
     } catch {
-      await this.bot.api.sendMessage(chatId, content).catch((e: any) => logger.warn({ e }, "telegram send failed"));
+      await this.bot.api.sendMessage(chatId, content).catch(() => {});
     }
   }
 
@@ -1624,16 +1483,27 @@ export class TelegramChannel extends BaseChannel {
   }
 
   private getAdminUser(): { chatId: number } | null {
-    // Access the first admin user from approved list
-    const users = (this as any).approvedUsers as Map<number, any> | undefined;
-    if (!users) return null;
-    for (const [chatId, user] of users) {
-      if (user.role === 'admin') return { chatId };
-    }
-    // Fallback: first user
-    for (const [chatId] of users) {
-      return { chatId };
-    }
+    // Prefer the first configured admin; fall back to any approved user.
+    const admins = getTelegramAdmins(this.config);
+    if (admins.length > 0) return { chatId: admins[0].chatId };
+    const approvedChatIds = getTelegramApprovedChatIds(this.config);
+    if (approvedChatIds.length > 0) return { chatId: approvedChatIds[0] };
     return null;
+  }
+
+  async reactError(targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const orig = this.originalMessageIds.get(key);
+    if (orig && this.bot) {
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👎' }]).catch(() => {});
+    }
+  }
+
+  async reactSuccess(targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const orig = this.originalMessageIds.get(key);
+    if (orig && this.bot) {
+      await this.bot.api.setMessageReaction(orig.chatId, orig.messageId, [{ type: 'emoji', emoji: '👍' }]).catch(() => {});
+    }
   }
 }

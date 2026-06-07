@@ -78,7 +78,7 @@ export interface UserPersonRecord {
 
 const MIN_CONFIDENCE = 0.55;
 const SUBCONSCIOUS_RECALL_THRESHOLD = 0.5;
-const PERSON_INDEX_VERSION = '7';
+const PERSON_INDEX_VERSION = '5';
 
 export class UserMemoryStore {
   private db: SecondBrainDB;
@@ -122,12 +122,6 @@ export class UserMemoryStore {
   search(query: string, limit: number = 10): UserMemoryRecord[] {
     const rows = this.db.searchFTS(this.userKey, query, limit);
     return rows.map(row => this.toRecord(row));
-  }
-
-  searchAll(query: string, limit: number = 20): UserMemoryRecord[] {
-    const conscious = this.db.searchFTS(this.userKey, query, limit);
-    const subconscious = this.db.searchSubconscious(this.userKey, query, limit);
-    return [...conscious, ...subconscious].map(row => this.toRecord(row));
   }
 
   getByType(type: UserMemoryType): UserMemoryRecord[] {
@@ -292,6 +286,18 @@ export class UserMemoryStore {
 
   clear(): number {
     return this.db.clearByType(this.userKey);
+  }
+
+  /** Clear all memories, metadata (profile, active summary), and person graph — full reset. */
+  clearAll(): number {
+    const cleared = this.db.clearByType(this.userKey);
+    this.db.clearUserPersonGraph(this.userKey);
+    this.db.deleteMeta(`${this.userKey}:profile_summary`);
+    this.db.deleteMeta(`${this.userKey}:active_summary`);
+    this.db.deleteMeta(`${this.userKey}:learning_paused`);
+    this.db.deleteMeta(`${this.userKey}:persons_backfilled`);
+    this.db.deleteMeta(`${this.userKey}:persons_backfilled_version`);
+    return cleared;
   }
 
   consolidate(): { profileUpdated: boolean; reflectionCount: number } {
@@ -576,7 +582,7 @@ export class UserMemoryStore {
 
   private indexPersonsForMemoryRow(memory: MemoryRow): void {
     if (memory.dismissed === 1) return;
-    if (!['relationship', 'episode', 'identity', 'project'].includes(memory.type)) return;
+    if (!['relationship', 'episode'].includes(memory.type)) return;
 
     const text = `${memory.summary} ${memory.detail ?? ''}`.trim();
     if (!text) return;
@@ -586,49 +592,21 @@ export class UserMemoryStore {
 
     if (memory.type === 'relationship') {
       const relationMentions = extractUserRelationshipMentions(text);
-      if (relationMentions.length > 0) {
-        for (const mention of relationMentions) {
-          const person = this.db.upsertPerson({
-            userKey: this.userKey,
-            name: mention.name,
-            relationshipToUser: mention.relation,
-            confidence: memory.confidence,
-          });
-          this.db.addPersonAlias(person.id, mention.name, 'memory');
-          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
-        }
-      } else {
-        // Fallback: extract any capitalized names from relationship memories
-        const names = extractHumanNames(text);
-        for (const name of names) {
-          const person = this.db.upsertPerson({
-            userKey: this.userKey,
-            name,
-            relationshipToUser: 'known',
-            confidence: memory.confidence,
-          });
-          this.db.addPersonAlias(person.id, name, 'memory');
-          this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
-        }
+      for (const mention of relationMentions) {
+        const person = this.db.upsertPerson({
+          userKey: this.userKey,
+          name: mention.name,
+          relationshipToUser: mention.relation,
+          confidence: memory.confidence,
+        });
+        this.db.addPersonAlias(person.id, mention.name, 'memory');
+        this.db.linkMemoryPerson(memory.id, person.id, 'relationship', memory.confidence);
       }
       return;
     }
 
-    // For identity/project/episode: extract names and create/link persons
-    const names = extractHumanNames(text);
-    for (const name of names) {
-      const person = this.db.upsertPerson({
-        userKey: this.userKey,
-        name,
-        relationshipToUser: 'known',
-        confidence: memory.confidence,
-      });
-      this.db.addPersonAlias(person.id, name, 'memory');
-      this.db.linkMemoryPerson(memory.id, person.id, 'mention', memory.confidence);
-    }
-
-    // Also link to already-known persons by alias/name match
     const knownPersons = this.db.listPersons(this.userKey, '', 300);
+    if (knownPersons.length === 0) return;
     for (const person of knownPersons) {
       if (mentionsPerson(text, person.display_name) || mentionsPerson(text, person.canonical_name)) {
         this.db.linkMemoryPerson(memory.id, person.id, 'interaction', memory.confidence);
@@ -694,25 +672,6 @@ const USER_RELATION_ROLE_MAP: Record<string, string> = {
   coworkers: 'colleague',
   teammate: 'colleague',
   teammates: 'colleague',
-  partner: 'partner',
-  partners: 'partner',
-  developer: 'colleague',
-  developers: 'colleague',
-  'co-founder': 'partner',
-  cofounder: 'partner',
-  cofounders: 'partner',
-  boss: 'colleague',
-  manager: 'colleague',
-  mentor: 'colleague',
-  mentee: 'colleague',
-  cto: 'colleague',
-  ceo: 'colleague',
-  lover: 'partner',
-  girlfriend: 'partner',
-  boyfriend: 'partner',
-  fiancee: 'partner',
-  fiance: 'partner',
-  spouse: 'partner',
 };
 
 const NON_PERSON_TERMS = new Set([

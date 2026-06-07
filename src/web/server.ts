@@ -17,6 +17,10 @@ import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
+import ckRoutes, { setWebCollaborativeKnowledge, setRelayClient } from './api/collaborative-knowledge.js';
+import relayRoutes, { setRelayClientForRelay } from './api/relay.js';
+import notificationRoutes, { setNotificationsStore } from './api/notifications.js';
+import messageRoutes, { setMessagesStore } from './api/messages.js';
 import { BoardManager } from '../core/board-manager.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -59,6 +63,10 @@ app.route('/', agentRoutes);
 app.route('/', spotifyRoutes);
 app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);
+app.route('/', ckRoutes);
+app.route('/', relayRoutes);
+app.route('/', notificationRoutes);
+app.route('/', messageRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -97,7 +105,7 @@ if (spaAvailable) {
   });
 
   // Serve top-level SPA files (favicon, manifest, service worker, etc.)
-  const SPA_TOP_LEVEL_FILES = ['favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'registerSW.js', 'sw.js', 'sw.js.map', 'robots.txt', 'logo-dark.png', 'logo-light.png', 'logo-full-dark.png', 'logo-full-light.png'];
+  const SPA_TOP_LEVEL_FILES = ['favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'registerSW.js', 'sw.js', 'sw.js.map', 'robots.txt'];
 
   // Also pick up workbox files dynamically
   try {
@@ -141,27 +149,8 @@ if (spaAvailable) {
   app.get('*', (c) => {
     // Don't catch API routes
     if (c.req.path.startsWith('/api/')) return c.notFound();
-
-    // Serve top-level static files from ui dir if they exist
-    const reqPath = c.req.path.slice(1); // strip leading /
-    if (reqPath && !reqPath.includes('/') && !reqPath.includes('..')) {
-      const filePath = join(uiDir, reqPath);
-      if (existsSync(filePath)) {
-        const ext = reqPath.split('.').pop() || '';
-        return new Response(readFileSync(filePath), {
-          headers: {
-            'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-            'Cache-Control': 'public, max-age=3600',
-          },
-        });
-      }
-    }
-
     return new Response(readFileSync(spaIndexPath), {
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      },
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
   });
 
@@ -173,34 +162,7 @@ if (spaAvailable) {
   });
 }
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
-
-let webServer: ReturnType<typeof createAdaptorServer> | null = null;
-
-// Ensure web server is always terminated with the Mercury process
-process.on('exit', () => {
-  if (webServer) {
-    try { webServer.close(); } catch {}
-    webServer = null;
-  }
-});
-
-process.on('uncaughtException', (err) => {
-  logger.error({ err: err.message }, 'Uncaught exception in web server');
-  // Write crash flag so next startup can report to the user.
-  try {
-    const { writeCrashFlag } = require('../core/crash-flag.js');
-    writeCrashFlag({ reason: `Uncaught exception: ${err.message}`.slice(0, 300), timestamp: Date.now() });
-  } catch { /* best effort */ }
-});
-
-process.on('unhandledRejection', (reason: any) => {
-  logger.warn({ err: reason?.message || reason }, 'Unhandled rejection in web server (non-fatal)');
-  try {
-    const { writeCrashFlag } = require('../core/crash-flag.js');
-    writeCrashFlag({ reason: `Unhandled rejection: ${reason?.message || reason}`.slice(0, 300), timestamp: Date.now() });
-  } catch { /* best effort */ }
-});
+export { updateStatus, setUserMemory, setWebCollaborativeKnowledge, setRelayClient, setRelayClientForRelay, setNotificationsStore, setMessagesStore, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders };
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
@@ -213,7 +175,6 @@ export function startWebServer(): { port: number; url: string } {
   }
 
   const server = createAdaptorServer({ fetch: app.fetch });
-  webServer = server;
 
   server.on('error', (err: any) => {
     if (err?.code === 'EADDRINUSE') {
@@ -228,13 +189,4 @@ export function startWebServer(): { port: number; url: string } {
   });
 
   return { port, url: `http://127.0.0.1:${port}` };
-}
-
-export function stopWebServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!webServer) return resolve();
-    webServer.close(() => resolve());
-    // Force-close connections after 2s
-    setTimeout(() => resolve(), 2000);
-  });
 }

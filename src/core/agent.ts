@@ -1,10 +1,15 @@
 import { generateText, streamText, stepCountIs } from 'ai';
+import type { Tool } from 'ai';
 import path from 'node:path';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
+import type { CollaborativeKnowledgeStore } from '../memory/collaborative-knowledge-store.js';
+import { validateUsernameLocal, type RelayClient, type FriendInfo, type FriendsResponse } from '../relay/client.js';
+import type { NotificationsStore } from '../memory/notifications-store.js';
+import type { MessagesStore } from '../memory/messages-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
@@ -15,15 +20,16 @@ import { ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
-import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
+import { DiscordChannel } from '../channels/discord.js';
+import { SlackChannel } from '../channels/slack.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
-import { getTelegramHelp } from '../utils/manual.js';
+import { getTelegramHelp, getSignalHelp, getDiscordHelp } from '../utils/manual.js';
 import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
@@ -42,6 +48,7 @@ import {
   removeTelegramUser,
   saveConfig,
   getActiveProviders,
+  getDiscordAccessSummary,
 } from '../utils/config.js';
 
 class ToolCallLoopDetector {
@@ -288,6 +295,7 @@ export class Agent {
   private messageQueue: ChannelMessage[] = [];
   private processing = false;
   private telegramStreaming: boolean;
+  private discordStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
   private lastProgressAt = 0;
@@ -296,11 +304,20 @@ export class Agent {
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
-  readonly saverMode: SaverMode;
   private spotifyClient?: SpotifyClient;
   private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
+
+  // Relay & collaborative knowledge state
+  private _relayClient: RelayClient | null = null;
+  private ck: CollaborativeKnowledgeStore | null = null;
+  private _notifications: NotificationsStore | null = null;
+  private _messagesStore: MessagesStore | null = null;
+  private _awaitingUsernameInput: boolean = false;
+  private _awaitingRecoveryInput: boolean = false;
+  private _memoryQueryTarget: string | null = null;
+  private _friendsCache: FriendInfo[] = [];
 
   constructor(
     private config: MercuryConfig,
@@ -314,13 +331,21 @@ export class Agent {
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
+    relayClient?: RelayClient | null,
+    ck?: CollaborativeKnowledgeStore | null,
+    notifications?: NotificationsStore | null,
+    messagesStore?: MessagesStore | null,
   ) {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
+    this._relayClient = relayClient ?? null;
+    this.ck = ck ?? null;
+    this._notifications = notifications ?? null;
+    this._messagesStore = messagesStore ?? null;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
+    this.discordStreaming = config.channels.discord.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
-    this.saverMode = new SaverMode(config);
     this.backgroundTasks = new BackgroundTaskManager();
 
     this.backgroundTasks.onGlobalComplete((task) => {
@@ -340,6 +365,14 @@ export class Agent {
     });
   }
 
+  set relayClient(client: RelayClient | null) {
+    this._relayClient = client;
+  }
+
+  get relayClient(): RelayClient | null {
+    return this._relayClient;
+  }
+
   setSkillLoader(skillLoader: SkillLoader): void {
     this.skillLoader = skillLoader;
     if (this.supervisor) {
@@ -352,11 +385,10 @@ export class Agent {
     if (this.skillLoader) {
       this.skillBatcher = new SkillBatcher(supervisor, this.backgroundTasks);
     }
-    supervisor.setSaverMode(this.saverMode);
     supervisor.setNotifyCallback(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
       if (channel) {
-        await channel.send(message, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+        await channel.send(message, channelId).catch(() => {});
       }
     });
     supervisor.setLifecycleCallback((event) => {
@@ -712,7 +744,7 @@ export class Agent {
         void channel.send(
           `⚠ Task stalled (no progress for ${stallSec}s). Stopped to avoid hanging. You can retry or use /bg current sooner for long tasks.`,
           msg.channelId,
-        ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        ).catch(() => {});
         return;
       }
 
@@ -725,15 +757,10 @@ export class Agent {
         : '';
       const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 3);
       const narrativeBlock = narrative ? `\n${narrative}` : '';
-      const heartbeatText = `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`;
-
-      // CLI: update one message in place instead of stacking new ones.
-      // Other channels (Telegram): still send as separate messages.
-      if (channel instanceof CLIChannel) {
-        (channel as CLIChannel).sendHeartbeat(heartbeatText);
-      } else {
-        void channel.send(heartbeatText, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-      }
+      void channel.send(
+        `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`,
+        msg.channelId,
+      ).catch(() => {});
 
       // Escalate: 20s → 30s → 45s → 60s (cap)
       if (heartbeatCount <= 2) {
@@ -778,11 +805,15 @@ export class Agent {
 
     const cliCh = this.channels.get('cli');
     if (cliCh) {
-      (cliCh as CLIChannel).send(message).catch((e) => logger.warn({ e }, 'channel send failed'));
+      (cliCh as CLIChannel).send(message).catch(() => {});
     }
     const tgCh = this.channels.get('telegram');
     if (tgCh) {
-      tgCh.send(message).catch((e) => logger.warn({ e }, 'channel send failed'));
+      tgCh.send(message).catch(() => {});
+    }
+    const dcCh = this.channels.get('discord');
+    if (dcCh) {
+      dcCh.send(message).catch(() => {});
     }
 
     this.syncBgTasksToTui();
@@ -885,7 +916,7 @@ export class Agent {
         const channel = this.channels.getChannelForMessage(msg);
         if (channel) {
           const agentLines = runningAgents.map(a => `  🔄 ${a.id}: ${a.task.slice(0, 45)}${a.task.length > 45 ? '...' : ''}`);
-          await channel.send(`**Multi-agent mode** — ${runningAgents.length} agent${runningAgents.length > 1 ? 's' : ''} active:\n${agentLines.join('\n')}`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          await channel.send(`**Multi-agent mode** — ${runningAgents.length} agent${runningAgents.length > 1 ? 's' : ''} active:\n${agentLines.join('\n')}`, msg.channelId).catch(() => {});
         }
       }
     }
@@ -924,20 +955,28 @@ export class Agent {
       }
       if (trimmed.startsWith('/stream')) {
         const sub = trimmed.slice('/stream'.length).trim().toLowerCase();
+        const isDiscord = msg.channelType === 'discord';
         if (sub === 'off') {
-          this.telegramStreaming = false;
+          if (isDiscord) this.discordStreaming = false;
+          else this.telegramStreaming = false;
         } else if (sub === 'on') {
-          this.telegramStreaming = true;
+          if (isDiscord) this.discordStreaming = true;
+          else this.telegramStreaming = true;
         } else {
-          this.telegramStreaming = !this.telegramStreaming;
+          if (isDiscord) this.discordStreaming = !this.discordStreaming;
+          else this.telegramStreaming = !this.telegramStreaming;
         }
         const ch = this.channels.get(msg.channelType as any);
-        if (ch) await ch.send(
-          this.telegramStreaming
-            ? 'Telegram streaming enabled. Responses will appear progressively.'
-            : 'Telegram streaming disabled. Responses will arrive as a single message.',
-          msg.channelId,
-        );
+        if (ch) {
+          const channelLabel = isDiscord ? 'Discord' : 'Telegram';
+          const isOn = isDiscord ? this.discordStreaming : this.telegramStreaming;
+          await ch.send(
+            isOn
+              ? `${channelLabel} streaming enabled. Responses will appear progressively.`
+              : `${channelLabel} streaming disabled. Responses will arrive as a single message.`,
+            msg.channelId,
+          );
+        }
         this.lifecycle.transition('idle');
         return;
       }
@@ -973,27 +1012,8 @@ export class Agent {
         return;
       }
 
-      // Token Saver Mode auto-engagement check. When usage crosses the
-      // configured threshold (default 75%), saver activates and the user
-      // is notified once so they understand response style may change.
-      {
-        const transition = this.saverMode.evaluateAuto(this.tokenBudget.getUsagePercentage());
-        if (transition.activated) {
-          const notice = this.saverMode.consumeAutoActivationNotice();
-          if (notice && msg.channelType !== 'internal') {
-            const ch = this.channels.get(msg.channelType as any);
-            if (ch) await ch.send(notice, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-          }
-          this.syncSaverToCli();
-        } else if (transition.deactivated && msg.channelType !== 'internal') {
-          const ch = this.channels.get(msg.channelType as any);
-          if (ch) await ch.send('⚡ Token Saver Mode auto-disengaged (usage dropped). Normal response settings restored.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-          this.syncSaverToCli();
-        }
-      }
-
-      const systemPrompt = this.buildSystemPrompt();
-      const recentMemory = this.shortTerm.getRecent(msg.channelId, this.saverMode.adjustHistoryWindow(10));
+      const systemPrompt = this.buildSystemPrompt(msg);
+      const recentMemory = this.shortTerm.getRecent(msg.channelId, 10);
 
       const messages: any[] = [];
 
@@ -1070,120 +1090,42 @@ export class Agent {
       messages.push({ role: 'user', content: msg.content });
 
       // ── Skill Intent Routing & Batch Execution ──
-      //
-      // Routing strategy:
-      //   1. Explicit pick via `#skill-name` prefix → run that skill directly,
-      //      no ambiguity resolution needed.
-      //   2. Otherwise consult the intent router:
-      //      - Clear winner (high confidence + clear gap) → let the LLM invoke
-      //        it normally via use_skill (single skill) OR batch-execute when
-      //        the top batch is multi-skill in the same category.
-      //      - Ambiguous (multiple contenders bunched near the top) → ask the
-      //        user to disambiguate before doing anything.
-      //      - No usable match → fall through to the normal LLM loop.
       if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
         try {
           const intentRouter = this.skillLoader.intentRouter;
+          if (intentRouter && intentRouter.isInitialized()) {
+            const batches = intentRouter.matchToBatches(trimmed, 0.4);
+            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
 
-          // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
-          const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
-          if (intentRouter && intentRouter.isInitialized() && hashMatch) {
-            const skillName = hashMatch[1];
-            const rest = hashMatch[2].trim();
-            const knownSkills = this.skillLoader.getDiscovered?.() || [];
-            const known = knownSkills.some((s: any) => s.name === skillName);
-            if (known) {
-              messages[messages.length - 1] = {
-                role: 'user',
-                content: rest || trimmed,
-              };
-              messages.push({
-                role: 'user',
-                content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
-              });
-              // Skip the rest of routing — explicit pick wins.
-            } else {
-              // Unknown #tag: just strip it and let routing proceed on the rest.
-              const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
-              if (stripped) {
-                messages[messages.length - 1] = { role: 'user', content: stripped };
-              }
-            }
-          }
+            if (batches.length > 0 && totalMatchedSkills >= 1) {
+              const matchedSkillNames = batches.flatMap(b => b.skills.map(s => s.name));
+              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
 
-          if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
-            const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
+              // For 2+ skills, batch execute via sub-agents
+              // For single skill, let the LLM handle it normally via use_skill
+              if (totalMatchedSkills >= 2) {
+                const plan = this.skillBatcher.planExecution(batches);
+                if (plan.batches.length > 0) {
+                  const channel = this.channels.getChannelForMessage(msg);
+                  if (channel) {
+                    await channel.send(`🧠 Intent routing matched **${totalMatchedSkills}** skills: ${matchedSkillNames.join(', ')}. Executing batch in background...`, msg.channelId).catch(() => {});
+                  }
 
-            // (2a) Ambiguous → ask the user to pick before executing anything.
-            if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
-              const contenders = analysis.closeContenders.slice(0, 5);
-              const choices = [
-                ...contenders.map(c => {
-                  const desc = intentRouter.getSkillDescription?.(c.name) || '';
-                  return desc ? `${c.name} — ${desc}` : c.name;
-                }),
-                'None of these — answer normally',
-              ];
-              const channel = this.channels.getChannelForMessage(msg);
-              let picked: string | null = null;
-              try {
-                picked = await this.presentChoice(
-                  `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
-                  choices,
-                  msg.channelId,
-                  msg.channelType,
-                );
-              } catch {
-                picked = null;
-              }
-              if (picked && !picked.startsWith('None of these')) {
-                const chosenName = picked.split(' — ')[0].trim();
-                messages.push({
-                  role: 'user',
-                  content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
-                });
-                if (channel) {
-                  await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                }
-              }
-              // If the user picked "None of these" we just fall through silently.
-            } else {
-              // (2b) Clear-enough match → use the existing batch path, but
-              //      only when the *top batch alone* has 2+ skills (genuine
-              //      multi-step request like "download and notify"). Cross-
-              //      category fan-out is what caused the 10-skill explosion.
-              const batches = intentRouter.matchToBatches(trimmed, 0.6);
-              const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
+                  // Execute and wait for results
+                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
+                  const summary = this.skillBatcher.summarizeResults(batchResults);
 
-              if (batches.length > 0 && totalMatchedSkills >= 1) {
-                const topBatch = batches[0];
-                const matchedSkillNames = topBatch.skills.map(s => s.name);
-                this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
-
-                if (topBatch.skills.length >= 2 && analysis.clearWinner) {
-                  const plan = this.skillBatcher.planExecution([topBatch]);
-                  if (plan.batches.length > 0) {
-                    const channel = this.channels.getChannelForMessage(msg);
-                    if (channel) {
-                      await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-
-                    const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
-                    const summary = this.skillBatcher.summarizeResults(batchResults);
-
-                    if (summary) {
-                      messages.push({
-                        role: 'user',
-                        content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
-                      });
-                      messages.push({
-                        role: 'assistant',
-                        content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
-                      });
-                    }
+                  if (summary) {
+                    messages.push({
+                      role: 'user',
+                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
+                    });
+                    messages.push({
+                      role: 'assistant',
+                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
+                    });
                   }
                 }
-                // Single clear-winner skill: let the LLM call use_skill itself.
               }
             }
           }
@@ -1196,12 +1138,13 @@ export class Agent {
 
       const channel = this.channels.getChannelForMessage(msg);
       if (channel) {
-        await channel.typing(msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+        await channel.typing(msg.channelId).catch(() => {});
         this.markProgress();
       }
 
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
+      this.capabilities.permissions.setCurrentChannelId(msg.channelId);
 
       const fallbackIterator = this.providers.getFallbackIterator();
       let result: any = null;
@@ -1221,19 +1164,12 @@ export class Agent {
         }
       }, MAX_FOREGROUND_WALL_MS);
 
-      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming);
+      const canStream = !!channel && channel.supportsStreaming() && (msg.channelType !== 'telegram' || this.telegramStreaming) && (msg.channelType !== 'discord' || this.discordStreaming);
 
-      const tgChannel = this.channels.get('telegram');
-      if (msg.channelType === 'telegram' && tgChannel) {
-        (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
-        (tgChannel as TelegramChannel).beginTask(msg.channelId);
+      if (channel && channel.usesTaskBuffering() && msg.channelType !== 'internal') {
+        channel.resetStepCounter(msg.channelId);
+        channel.beginTask(msg.channelId);
       }
-
-      // Saver-mode-aware request limits. When saver is off these resolve to
-      // the original constants (byte-identical to pre-saver behavior).
-      const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
-      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS);
-      const saverWasActive = this.saverMode.isActive();
 
       for (const provider of fallbackIterator) {
         try {
@@ -1249,9 +1185,9 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: effectiveMaxOutputTokens,
-              stopWhen: stepCountIs(effectiveMaxSteps),
+              tools: this.getToolsForMessage(msg),
+              maxOutputTokens: MAX_RESPONSE_TOKENS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -1284,7 +1220,7 @@ export class Agent {
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
                     if (channel && msg.channelType !== 'internal') {
-                      await channel.send('⚠ Tool call limit reached (25 calls). Stopping to prevent runaway loop.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ Tool call limit reached (25 calls). Stopping to prevent runaway loop.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1297,7 +1233,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1307,7 +1243,7 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1339,7 +1275,7 @@ export class Agent {
                           });
                           if (!shouldContinue) {
                             logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
-                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                             loopAbortController.abort();
                             return;
                           }
@@ -1347,7 +1283,7 @@ export class Agent {
                         // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
-                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
                       } else {
                         loopWarningSent = true;
                         const shouldContinue = await channel.askToContinue(
@@ -1365,7 +1301,7 @@ export class Agent {
                       // verdict === 'stuck'
                       if (this.capabilities.permissions.isAutoApproveAll()) {
                         logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
-                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
                         return;
                       } else {
@@ -1384,49 +1320,17 @@ export class Agent {
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
-                    if (channel instanceof CLIChannel) {
-                      for (const tc of toolCalls) {
-                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
-                          }
+                    for (const tc of toolCalls) {
+                      void Promise.resolve(channel.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId)).catch(() => {});
+                    }
+                    if (toolResults) {
+                      for (let i = 0; i < toolResults.length; i++) {
+                        const tr = toolResults[i] as any;
+                        const tcName = toolCalls[i]?.toolName as string | undefined;
+                        if (tcName) {
+                          await Promise.resolve(channel.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch(() => {});
                         }
                       }
-                    } else if (channel instanceof TelegramChannel) {
-                      const tgCh = channel as TelegramChannel;
-                      for (const tc of toolCalls) {
-                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
-                          }
-                        }
-                      }
-                    } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     this.markProgress();
                   }
@@ -1440,7 +1344,7 @@ export class Agent {
                     logger.warn('Reasoning loop detected — model keeps thinking without acting, aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1450,7 +1354,7 @@ export class Agent {
                     logger.warn({ pattern: textRepeat.pattern, count: textRepeat.count }, 'Text repetition loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I keep generating the same response. Stopping to prevent repetition.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ I keep generating the same response. Stopping to prevent repetition.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                   }
@@ -1474,6 +1378,16 @@ export class Agent {
               } else {
                 fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
               }
+            } else if (msg.channelType === 'discord') {
+              const dcChannel = this.channels.get('discord');
+              if (dcChannel && 'sendStreamToChat' in dcChannel) {
+                const channelId = msg.channelId.startsWith('discord:')
+                  ? msg.channelId.split(':')[1]
+                  : msg.channelId;
+                fullText = await (dcChannel as any).sendStreamToChat(channelId, this.withProgressStream(streamResult.textStream));
+              } else {
+                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
+              }
             } else {
               fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
             }
@@ -1492,9 +1406,9 @@ export class Agent {
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: effectiveMaxOutputTokens,
-              stopWhen: stepCountIs(effectiveMaxSteps),
+              tools: this.getToolsForMessage(msg),
+              maxOutputTokens: MAX_RESPONSE_TOKENS,
+              stopWhen: stepCountIs(MAX_STEPS),
               abortSignal: loopAbortController.signal,
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -1527,7 +1441,7 @@ export class Agent {
                   if (loopDetector.detectAbsoluteLimit()) {
                     logger.warn('Absolute tool call limit reached — aborting');
                     if (channel && msg.channelType !== 'internal') {
-                      await channel.send('⚠ Tool call limit reached (25 calls). Stopping to prevent runaway loop.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ Tool call limit reached (25 calls). Stopping to prevent runaway loop.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1540,7 +1454,7 @@ export class Agent {
                     logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1550,7 +1464,7 @@ export class Agent {
                     logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1582,7 +1496,7 @@ export class Agent {
                           });
                           if (!shouldContinue) {
                             logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
-                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                             loopAbortController.abort();
                             return;
                           }
@@ -1590,7 +1504,7 @@ export class Agent {
                         // Not yet at check limit — let it continue with a note
                         loopDetector.reset();
                         loopWarningSent = false;
-                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch(() => {});
                       } else {
                         loopWarningSent = true;
                         const shouldContinue = await channel.askToContinue(
@@ -1608,7 +1522,7 @@ export class Agent {
                       // verdict === 'stuck'
                       if (this.capabilities.permissions.isAutoApproveAll()) {
                         logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
-                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch(() => {});
                         loopAbortController.abort();
                         return;
                       } else {
@@ -1627,49 +1541,17 @@ export class Agent {
                     }
                   }
                   if (channel && msg.channelType !== 'internal') {
-                    if (channel instanceof CLIChannel) {
-                      for (const tc of toolCalls) {
-                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
-                          }
+                    for (const tc of toolCalls) {
+                      void Promise.resolve(channel.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId)).catch(() => {});
+                    }
+                    if (toolResults) {
+                      for (let i = 0; i < toolResults.length; i++) {
+                        const tr = toolResults[i] as any;
+                        const tcName = toolCalls[i]?.toolName as string | undefined;
+                        if (tcName) {
+                          await Promise.resolve(channel.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch(() => {});
                         }
                       }
-                    } else if (channel instanceof TelegramChannel) {
-                      const tgCh = channel as TelegramChannel;
-                      for (const tc of toolCalls) {
-                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
-                          }
-                        }
-                      }
-                    } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     this.markProgress();
                   }
@@ -1683,7 +1565,7 @@ export class Agent {
                     logger.warn('Reasoning loop detected — model keeps thinking without acting, aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                     return;
@@ -1693,7 +1575,7 @@ export class Agent {
                     logger.warn({ pattern: textRepeat.pattern, count: textRepeat.count }, 'Text repetition loop detected — aborting');
                     if (!loopWarningSent && channel && msg.channelType !== 'internal') {
                       loopWarningSent = true;
-                      await channel.send('⚠ I keep generating the same response. Stopping to prevent repetition.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      await channel.send('⚠ I keep generating the same response. Stopping to prevent repetition.', msg.channelId).catch(() => {});
                     }
                     loopAbortController.abort();
                   }
@@ -1732,7 +1614,7 @@ export class Agent {
           lastError = err;
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
           if (channel && msg.channelType !== 'internal') {
-            await channel.send(`  [Provider ${provider.name} failed, trying fallback...]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+            await channel.send(`  [Provider ${provider.name} failed, trying fallback...]`, msg.channelId).catch(() => {});
           }
         }
       }
@@ -1745,6 +1627,17 @@ export class Agent {
           if (channel instanceof TelegramChannel) {
             (channel as TelegramChannel).endTask(msg.channelId);
             (channel as TelegramChannel).resetStepCounter(msg.channelId);
+            (channel as TelegramChannel).reactError(msg.channelId).catch(() => {});
+          }
+          if (channel instanceof DiscordChannel) {
+            (channel as DiscordChannel).endTask(msg.channelId);
+            (channel as DiscordChannel).resetStepCounter(msg.channelId);
+            (channel as DiscordChannel).reactError(msg.channelId).catch(() => {});
+          }
+          if (channel instanceof SlackChannel) {
+            (channel as SlackChannel).endTask(msg.channelId);
+            (channel as SlackChannel).resetStepCounter(msg.channelId);
+            (channel as SlackChannel).reactError(msg.channelId).catch(() => {});
           }
           await channel.send(errMsg, msg.channelId);
         }
@@ -1769,23 +1662,6 @@ export class Agent {
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
       });
-      this.syncTokenInfoToCli();
-
-      // Estimate tokens saved by Saver Mode (cap headroom + history trim).
-      // Rough: (default_cap - actual_output) when capped, plus history-window delta.
-      if (saverWasActive) {
-        const actualOutput = result.usage?.outputTokens ?? 0;
-        const outputHeadroom = Math.max(0, MAX_RESPONSE_TOKENS - effectiveMaxOutputTokens);
-        const outputSaved = Math.max(0, Math.min(outputHeadroom, MAX_RESPONSE_TOKENS - actualOutput));
-        // Rough proxy: each trimmed history message ~120 tokens average.
-        const historyTrimMessages = Math.max(0, NORMAL_HISTORY_WINDOW - this.saverMode.adjustHistoryWindow(NORMAL_HISTORY_WINDOW));
-        const historySaved = historyTrimMessages * 120;
-        const estimated = outputSaved + historySaved;
-        if (estimated > 0) {
-          this.tokenBudget.recordSavings(estimated);
-          this.syncSaverToCli();
-        }
-      }
 
       this.shortTerm.add(msg.channelId, {
         id: msg.id,
@@ -1810,7 +1686,7 @@ export class Agent {
       });
 
       if (msg.channelType !== 'internal') {
-        this.extractMemory(msg.content, finalText).catch(err => {
+        this.extractMemory(msg.content, finalText, msg).catch(err => {
           logger.warn({ err }, 'Memory extraction failed');
         });
       }
@@ -1822,39 +1698,38 @@ export class Agent {
         // Send completion banner only for substantial tasks (3+ steps AND >30s)
         // Simple responses (greetings, quick answers) don't need a banner
         const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
-        if (isSubstantialTask && channel instanceof TelegramChannel) {
-          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
-          const completionMeta = {
-            provider: usedProvider?.name ?? 'unknown',
-            model: usedProvider?.model ?? 'unknown',
-            inputTokens: result.usage?.inputTokens ?? 0,
-            outputTokens: result.usage?.outputTokens ?? 0,
-            totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-            budgetUsed: this.tokenBudget.getDailyUsed(),
-            budgetTotal: this.tokenBudget.getBudget(),
-            budgetPercentage: this.tokenBudget.getUsagePercentage(),
-          };
-          // If there's a non-streamed response that wasn't deferred, defer it now
-          if (!streamedText && finalText && finalText.trim()) {
-            // send() during active task already deferred it — nothing to do
+        const completionMeta = {
+          provider: usedProvider?.name ?? 'unknown',
+          model: usedProvider?.model ?? 'unknown',
+          inputTokens: result.usage?.inputTokens ?? 0,
+          outputTokens: result.usage?.outputTokens ?? 0,
+          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          budgetUsed: this.tokenBudget.getDailyUsed(),
+          budgetTotal: this.tokenBudget.getBudget(),
+          budgetPercentage: this.tokenBudget.getUsagePercentage(),
+        };
+
+        if (channel.usesTaskBuffering()) {
+          // Buffering channels (Telegram, Signal): the live status card flow.
+          if (isSubstantialTask) {
+            // sendCompletion handles endTask + deferred flush + cleanup
+            await Promise.resolve(channel.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta));
+          } else {
+            // Non-substantial task: end task, flush deferred, clean up
+            channel.endTask(msg.channelId);
+            const deferred = channel.popDeferredResponse(msg.channelId);
+            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            if (responseText && responseText.trim()) {
+              await channel.send(responseText, msg.channelId, elapsed);
+            }
+            if (stepCount > 0) {
+              await channel.cleanupEphemeralMessages(msg.channelId);
+              channel.resetStepCounter(msg.channelId);
+            }
+            this.markProgress();
           }
-          await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-        } else if (channel instanceof TelegramChannel) {
-          // For non-substantial Telegram tasks: end task, flush deferred, clean up
-          (channel as TelegramChannel).endTask(msg.channelId);
-          // Flush deferred response
-          const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || (!streamedText && finalText ? finalText : null);
-          if (responseText && responseText.trim()) {
-            await channel.send(responseText, msg.channelId, elapsed);
-          }
-          if (stepCount > 0) {
-            await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
-            (channel as TelegramChannel).resetStepCounter(msg.channelId);
-          }
-          this.markProgress();
         } else {
-          // CLI or other channels — original flow
+          // CLI / Web / other streaming channels — original flow
           if (streamedText && streamedText.trim()) {
             logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
             // Web channel needs text_done after streaming to reset frontend state
@@ -1866,18 +1741,9 @@ export class Agent {
             await channel.send(finalText, msg.channelId, elapsed);
             this.markProgress();
           }
-          if (isSubstantialTask && channel instanceof CLIChannel) {
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+          if (isSubstantialTask) {
+            // No-op on channels without a completion banner (e.g. Web).
+            await Promise.resolve(channel.sendCompletion(elapsed, stepCount, undefined, completionMeta));
           }
         }
       } else {
@@ -1887,27 +1753,6 @@ export class Agent {
       this.lifecycle.transition('idle');
     } catch (err) {
       logger.error({ err }, 'Error handling message');
-      // Always notify the user — they should never have to re-prompt
-      // to find out their task died.
-      const catchChannel = this.channels.getChannelForMessage(msg);
-      if (catchChannel && msg.channelType !== 'internal') {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        void catchChannel.send(
-          `⚠ I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`,
-          msg.channelId,
-        ).catch((sendErr: any) => logger.warn({ sendErr }, 'Failed to notify user of handler error'));
-      }
-      // Write crash flag so next startup also reports the failure.
-      try {
-        const { writeCrashFlag } = await import('./crash-flag.js');
-        writeCrashFlag({
-          reason: `Unhandled agent error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300),
-          timestamp: Date.now(),
-          activeTask: this.currentActivity || undefined,
-          channelId: msg.channelId || undefined,
-          channelType: msg.channelType || undefined,
-        });
-      } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
       if (wallTimeout) clearTimeout(wallTimeout);
@@ -1924,8 +1769,68 @@ export class Agent {
     }
   }
 
-  private buildSystemPrompt(): string {
+  /**
+   * Build a per-turn note telling the agent WHO is currently speaking, so it
+   * doesn't treat every authorized group member as the owner.
+   *
+   * - No senderRole (CLI, internal, scheduled): single-user context, no note.
+   * - 'admin': the owner/operator — behave normally.
+   * - 'member': a guest. They are NOT the owner; the agent must address them
+   *   by their own name and speak about the owner and others in the third
+   *   person, never assuming the owner's facts belong to the guest.
+   */
+  private buildSpeakerContext(msg: ChannelMessage): string {
+    if (!msg.senderRole) return '';
+
+    const owner = this.config.identity?.owner || 'your owner';
+    const speakerName = msg.senderName || msg.senderId;
+
+    if (msg.senderRole === 'admin') {
+      return `\n\n# Current Speaker\nThe current message is from ${speakerName}, who is ${owner} — your owner/operator. Address them directly as you normally would.`;
+    }
+
+    // Guest (member): authorized to talk to you, but NOT the owner.
+    return [
+      '',
+      '',
+      '# Current Speaker',
+      `The current message is from ${speakerName}. They are a guest who has been authorized to talk to you in this shared conversation, but they are NOT your owner.`,
+      `Your owner is ${owner}. ${speakerName} is a different person.`,
+      '',
+      'Rules for this turn:',
+      `- Address ${speakerName} by their own identity. Do NOT call them "${owner}" and do NOT speak to them as if they were your owner.`,
+      `- When ${speakerName} asks about ${owner} or anyone else, answer in the third person (e.g. "${owner} likes…", NOT "you like…").`,
+      `- Personal facts and memories you hold about ${owner} belong to ${owner}, not to ${speakerName}. Do not attribute them to the guest.`,
+      `- You may still help ${speakerName} with general requests, but treat private information about ${owner} with discretion.`,
+      '',
+      '# Restricted Capabilities (guest)',
+      `${speakerName} is a guest and is NOT permitted to operate ${owner}'s computer. You have NO access this turn to the shell, filesystem, code, git, scheduling, or any system tools — only conversation and public web lookups.`,
+      `If ${speakerName} asks you to run a command, change or list directories, read/edit/create/delete files, run code, use git, schedule tasks, or otherwise act on ${owner}'s machine or accounts, you MUST clearly and politely decline. Say something like: "Sorry, that action is restricted to ${owner}. I can't run commands or access the filesystem for guests." Then offer to help with something you can do (answer questions, look things up, general conversation).`,
+      `Do NOT pretend to perform the action, fabricate output, or imply you did it. Just decline clearly.`,
+    ].join('\n');
+  }
+
+  /**
+   * Choose the toolset for a turn based on WHO is speaking.
+   *
+   * A non-admin group member ("guest") is restricted to a deny-by-default
+   * allowlist (conversation + read-only public lookup). This is a hard security
+   * boundary: the dangerous tools (shell, filesystem, git, etc.) are not even
+   * present in the model's tool list, so a guest cannot run them regardless of
+   * what they ask for. Admins/owner get the full toolset (or plan-mode subset).
+   */
+  private getToolsForMessage(msg?: ChannelMessage): Record<string, Tool> {
+    if (msg?.senderRole === 'member') {
+      return this.capabilities.getGuestTools();
+    }
+    return this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools();
+  }
+
+  private buildSystemPrompt(msg?: ChannelMessage): string {
     let prompt = this.identity.getSystemPrompt(this.config.identity);
+    if (msg) {
+      prompt += this.buildSpeakerContext(msg);
+    }
     const skillContext = this.capabilities.getSkillContext();
     if (skillContext) {
       prompt += '\n\n' + skillContext;
@@ -1938,10 +1843,6 @@ export class Agent {
     prompt += '\n\n' + budgetStatus;
     if (this.tokenBudget.getUsagePercentage() > 70) {
       prompt += '\nBe concise to conserve tokens.';
-    }
-    const saverSuffix = this.saverMode.getSystemPromptSuffix();
-    if (saverSuffix) {
-      prompt += saverSuffix;
     }
 
     const now = new Date();
@@ -1961,19 +1862,27 @@ export class Agent {
       const summary = this.userMemory.getSummary();
       prompt += `\n\nSecond Brain (SQLite-backed long-term memory) is ENABLED. You have ${summary.total} persistent memories about this user.`;
       prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
+      prompt += `\nRelevant memories are automatically injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
+      prompt += `\nWhen the user explicitly asks you to remember something (e.g. "remember this", "remember that I...", "keep in mind that..."), you MUST use the store_memory tool. Do NOT pretend to memorize — only the tool actually persists memories. The tool stores in both Second Brain and Collaborative Knowledge independently (respecting each store's pause state).`;
+      prompt += `\nUsers can manage memory with: /memory (overview, search, pause learning, clear).`;
       prompt += `\n\nCRITICAL — Memory storage rules:`;
       prompt += `\n- ALL persistent user knowledge lives in the Second Brain SQLite database — this is the single source of truth.`;
       prompt += `\n- NEVER use create_file, write_file, edit_file, or any file tool to store memories, notes, facts, preferences, or brain data. Files are for code and documents, not for knowledge storage.`;
       prompt += `\n- New memories are extracted AUTOMATICALLY after each conversation turn. You do not need to ask the user if they want to save something.`;
       prompt += `\n- When the user explicitly asks you to "save/remember/note/keep this," use the save_memory tool to store it directly — no follow-up questions needed.`;
       prompt += `\n- When you need to actively recall something beyond auto-injected context (e.g. "do you remember...", "what do I know about..."), use the search_memory tool.`;
-      prompt += `\n- Relevant memories are auto-injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
-      prompt += `\n- Users can manage memory with: /memory (overview, search, pause learning, clear).`;
       if (summary.learningPaused) {
-        prompt += `\n\nLearning is currently PAUSED — no new memories will be extracted or saved until resumed.`;
+        prompt += `\nSecond Brain learning is currently PAUSED — no new memories will be extracted from conversations until resumed.`;
       }
     } else {
       prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
+    }
+
+    if (this.ck) {
+      prompt += `\nCollaborative Knowledge is ENABLED. When using store_memory, shareable facts are also stored in collaborative knowledge (accessible by friends via relay).`;
+      if (this.ck.isLearningPaused()) {
+        prompt += ` Collaborative Knowledge learning is currently PAUSED.`;
+      }
     }
 
     // Notification routing guidance for tweet-notifier skill
@@ -2043,7 +1952,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         await channel.send(
           ` Scheduled task started${skillInfo}: ${manifest.description}\nAll actions auto-approved for this run.`,
           manifest.sourceChannelId,
-        ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        ).catch(() => {});
       }
 
       let prompt = manifest.prompt || '';
@@ -2116,42 +2025,40 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
     }
   }
 
-  private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
-    if (!this.userMemory) return;
-    if (this.userMemory.isLearningPaused()) return;
+  private async extractMemory(userMessage: string, agentResponse: string, msg?: ChannelMessage): Promise<void> {
+    // Only the owner's conversations feed the owner's Second Brain.
+    // A guest (group member who is not the owner) must not have their
+    // statements saved as the owner's personal facts.
+    if (msg?.senderRole === 'member') {
+      logger.debug({ sender: msg.senderId }, 'Skipping memory extraction for non-owner speaker');
+      return;
+    }
+
+    const canSecondBrain = this.userMemory && !this.userMemory.isLearningPaused();
+    const canCK = this.ck && !this.ck.isLearningPaused();
+    if (!canSecondBrain && !canCK) return;
 
     const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
     if (trivial.test(userMessage.trim())) return;
 
     if (!this.tokenBudget.canAfford(800)) return;
 
+    const existingCategories = this.ck ? this.ck.getCategories() : [];
+
     try {
       const provider = this.providers.getDefault();
+
+      let systemPrompt = `You extract structured memory from conversations. Read the conversation and output a JSON array of memory candidates. Each candidate has: type (one of: identity, preference, goal, project, habit, decision, constraint, relationship, episode), summary (concise fact, 12-220 chars), detail (optional longer explanation), evidenceKind (direct for explicitly stated facts, inferred for patterns you notice), confidence (0.0-1.0), importance (0.0-1.0), durability (0.0-1.0), category (the domain this memory belongs to — such as personal, professional, health, technical, financial, or another existing category. Only create a new category if the memory doesn't fit ANY existing category), shareable (true if appropriate to share with friends, false if private or sensitive).`;
+
+      if (existingCategories.length > 0) {
+        systemPrompt += `\n\nExisting categories to prefer: ${existingCategories.join(', ')}`;
+      }
+
+      systemPrompt += `\n\nExtract 0-3 candidates. Only extract specific, durable, user-specific information. Do NOT extract trivial observations, greetings, or assistant behavior. Output pure JSON array.`;
+
       const result = await generateText({
         model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
-
-Each candidate: { type, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
-
-TYPE DEFINITIONS (pick the single most specific one):
-- identity: who the user IS — their name, role, job title, self-description
-- relationship: other people the user knows — MUST include the person's name in summary
-- preference: likes, dislikes, style choices, opinions
-- goal: aspirations, targets, things they want to achieve
-- project: specific ongoing work, initiatives, things being built
-- habit: routines, recurring behaviors, schedules
-- decision: choices made, commitments, selected approaches
-- constraint: limitations, rules they follow, things they avoid
-- episode: notable one-time events worth remembering
-
-RULES:
-- Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
-- If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
-- "identity" is ONLY for the user themselves.
-- For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
-- Only extract specific, durable, user-specific information.
-- Do NOT extract trivial observations, greetings, or assistant behavior.
-- Output pure JSON array, no markdown fences.`,
+        system: systemPrompt,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
         ],
@@ -2166,7 +2073,6 @@ RULES:
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
       });
-      this.syncTokenInfoToCli();
 
       const text = result.text.trim();
       if (!text) return;
@@ -2179,19 +2085,31 @@ RULES:
         confidence: number;
         importance: number;
         durability: number;
+        category?: string;
+        shareable?: boolean;
       }>;
 
       try {
         const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
         const parsed = JSON.parse(jsonStr);
-        // Handle both single object and array of objects
-        candidates = Array.isArray(parsed) ? parsed : [parsed];
+        // Wrap single object in array
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.summary) {
+          candidates = [parsed];
+        } else if (Array.isArray(parsed)) {
+          candidates = parsed;
+        } else {
+          // Unexpected shape — bail out
+          return;
+        }
       } catch {
+        // Fallback: treat as plain-text bullet list, but reject lines that look like raw JSON fields
+        const jsonFieldPattern = /^\s*"?\w+"?\s*:\s*["'\[{0-9]/;
         const facts = text
           .split('\n')
           .map(l => l.replace(/^-\s*/, '').trim())
-          // Skip JSON-like lines (key-value pairs, braces, brackets)
-          .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
+          .filter(f => f.length > 10 && f.length < 200)
+          .filter(f => !jsonFieldPattern.test(f));
+        if (facts.length === 0) return;
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
           summary: f,
@@ -2199,27 +2117,58 @@ RULES:
           importance: 0.7,
           durability: 0.7,
           evidenceKind: 'inferred',
+          category: 'general',
+          shareable: true,
         }));
       }
 
       const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
-      const typed = candidates
-        .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
-        .filter(c => validTypes.includes(c.type))
-        .map(c => ({
-          type: c.type as any,
-          summary: c.summary,
-          detail: c.detail,
-          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-        }));
 
-      if (typed.length > 0) {
-        const remembered = this.userMemory.remember(typed, 'conversation');
-        if (remembered.length > 0) {
-          logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+      // Second Brain candidates
+      if (canSecondBrain) {
+        const secondBrainCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+          }));
+
+        if (secondBrainCandidates.length > 0) {
+          const remembered = this.userMemory!.remember(secondBrainCandidates, 'conversation');
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+          }
+        }
+      }
+
+      // Collaborative Knowledge candidates (need category, shareable filter)
+      if (canCK) {
+        const sharedCandidates = candidates
+          .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
+          .filter(c => validTypes.includes(c.type))
+          .filter(c => c.shareable !== false)
+          .map(c => ({
+            type: c.type as any,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+            category: (c.category || 'general'),
+          }));
+
+        if (sharedCandidates.length > 0) {
+          const remembered = this.ck!.remember(sharedCandidates);
+          if (remembered.length > 0) {
+            logger.info({ count: remembered.length, types: remembered.map(r => r.type), categories: remembered.map(r => r.category) }, 'Collaborative knowledge stored');
+          }
         }
       }
     } catch (err) {
@@ -2234,23 +2183,6 @@ RULES:
     this.backgroundTasks.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
-  }
-
-  /**
-   * Notify all active channels with a message. Used before forced exits
-   * (SIGTERM, crash, watchdog kill) so the user is never left wondering
-   * what happened to their task.
-   */
-  async notifyAllChannels(message: string): Promise<void> {
-    const active = this.channels.getActiveChannels();
-    const sends = active.map((type) => {
-      const ch = this.channels.get(type);
-      if (!ch) return Promise.resolve();
-      return ch.send(message).catch((e) => {
-        logger.warn({ e, channel: type }, 'Failed to notify channel before exit');
-      });
-    });
-    await Promise.allSettled(sends);
   }
 
   /**
@@ -2350,7 +2282,7 @@ Is this productive iteration or a stuck loop?`,
           resolve(choices[0]);
         }, 120000);
 
-        channel.send(question, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+        channel.send(question, channelId).catch(() => {});
 
         const tgBot = (channel as any).bot;
         if (tgBot) {
@@ -2358,7 +2290,7 @@ Is this productive iteration or a stuck loop?`,
             ? Number(channelId.split(':')[1])
             : Number(channelId);
 
-          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch((e: any) => logger.warn({ e }, 'channel send failed'));
+          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch(() => {});
 
           const handler = async (ctx: any) => {
             const data = ctx.callbackQuery?.data;
@@ -2379,8 +2311,10 @@ Is this productive iteration or a stuck loop?`,
       });
     }
 
-    await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-    return choices[0];
+    if (!channel) return choices[0];
+    // Signal (and any other buffering/text channel) implements requestChoice
+    // to actually await a numbered reply instead of silently defaulting.
+    return channel.requestChoice(question, choices, channelId).catch(() => choices[0]);
   }
 
   private async handleBudgetOverrideCLI(channel: import('../channels/base.js').Channel, msg: ChannelMessage): Promise<void> {
@@ -2403,7 +2337,6 @@ Is this productive iteration or a stuck loop?`,
       await channel.send('Budget override applied — your next request will proceed.', channelId);
     } else if (action === 'reset' || action === '2') {
       this.tokenBudget.resetUsage();
-      this.syncTokenInfoToCli();
       await channel.send(`Usage reset to zero. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (action === 'set' || action === '3') {
       const newBudget = parseInt(parts[1], 10);
@@ -2412,7 +2345,6 @@ Is this productive iteration or a stuck loop?`,
         return;
       }
       this.tokenBudget.setBudget(newBudget);
-      this.syncTokenInfoToCli();
       await channel.send(`Daily budget updated to ${newBudget.toLocaleString()} tokens. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (action === 'cancel' || action === '4') {
       await channel.send(`Cancelled. ${this.tokenBudget.getStatusText()}`, channelId);
@@ -2420,338 +2352,6 @@ Is this productive iteration or a stuck loop?`,
       await channel.send(this.tokenBudget.getStatusText(), channelId);
     } else {
       await channel.send(`Unknown budget command "${action}". Available: /budget, /budget override, /budget reset, /budget set <number>, /budget status`, channelId);
-    }
-  }
-
-  /**
-   * Handle the /saver slash command — Token Saver Mode controls.
-   * Subcommands: (empty)|status|on|off|toggle|threshold <n>|auto on|off|routing on|off|stats
-   */
-  async handleSaverCommand(subcommand: string, channelType: string, channelId: string): Promise<void> {
-    const channel = this.channels.get(channelType as any);
-    if (!channel) return;
-
-    const parts = subcommand.trim().split(/\s+/).filter(Boolean);
-    const action = (parts[0] || '').toLowerCase();
-    const arg = (parts[1] || '').toLowerCase();
-
-    const showStatus = async () => {
-      const text = this.saverMode.getStatusText(
-        this.tokenBudget.getSavedLifetime(),
-        this.tokenBudget.getSavedToday(),
-      );
-      const usagePct = Math.round(this.tokenBudget.getUsagePercentage());
-      await channel.send(`${text}\nCurrent daily usage: ${usagePct}%`, channelId);
-      this.syncSaverToCli();
-    };
-
-    if (!action || action === 'status' || action === 'stats') {
-      await showStatus();
-      return;
-    }
-
-    if (action === 'on' || action === 'enable') {
-      this.saverMode.enable();
-      await channel.send(
-        '⚡ Token Saver Mode enabled. Responses will be terser, step limits lower, and history window shorter to conserve tokens.',
-        channelId,
-      );
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'off' || action === 'disable') {
-      this.saverMode.disable();
-      await channel.send('Token Saver Mode disabled. Normal response settings restored.', channelId);
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'toggle') {
-      const next = this.saverMode.toggle();
-      await channel.send(
-        next === 'on'
-          ? '⚡ Token Saver Mode enabled.'
-          : 'Token Saver Mode disabled.',
-        channelId,
-      );
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'threshold') {
-      const n = parseInt(parts[1], 10);
-      if (isNaN(n) || n < 0 || n > 100) {
-        await channel.send('Usage: /saver threshold <0-100> — percentage of daily budget at which saver auto-engages. Set 0 to disable.', channelId);
-        return;
-      }
-      this.saverMode.setAutoThreshold(n);
-      await channel.send(
-        n === 0
-          ? 'Saver auto-engage disabled (threshold set to 0).'
-          : `Saver auto-engage threshold set to ${n}% of daily budget.`,
-        channelId,
-      );
-      return;
-    }
-
-    if (action === 'auto') {
-      if (arg === 'on' || arg === 'enable') {
-        this.saverMode.setAutoEnabled(true);
-        await channel.send(`Saver auto-engage enabled (at ${this.saverMode.getAutoThreshold()}% usage).`, channelId);
-      } else if (arg === 'off' || arg === 'disable') {
-        this.saverMode.setAutoEnabled(false);
-        await channel.send('Saver auto-engage disabled. Saver will only activate when you run /saver on.', channelId);
-        this.syncSaverToCli();
-      } else {
-        await channel.send(
-          `Saver auto-engage is currently ${this.saverMode.isAutoEnabled() ? 'ON' : 'OFF'} (threshold: ${this.saverMode.getAutoThreshold()}%).\nUse /saver auto on|off to change.`,
-          channelId,
-        );
-      }
-      return;
-    }
-
-    if (action === 'routing') {
-      if (arg === 'on' || arg === 'enable') {
-        this.saverMode.setRoutingEnabled(true);
-        await channel.send('Saver cheap-provider routing enabled (when saver is active, cheaper providers will be preferred).', channelId);
-      } else if (arg === 'off' || arg === 'disable') {
-        this.saverMode.setRoutingEnabled(false);
-        await channel.send('Saver cheap-provider routing disabled.', channelId);
-      } else {
-        await channel.send(`Saver cheap-provider routing is currently ${this.saverMode.isRoutingEnabled() ? 'ON' : 'OFF'}.\nUse /saver routing on|off to change.`, channelId);
-      }
-      return;
-    }
-
-    await channel.send(
-      'Unknown saver command. Available:\n' +
-      '  /saver — show status and savings\n' +
-      '  /saver on — manually enable\n' +
-      '  /saver off — disable\n' +
-      '  /saver toggle — flip on/off\n' +
-      '  /saver threshold <0-100> — auto-engage threshold (default 75)\n' +
-      '  /saver auto on|off — enable/disable auto-engagement\n' +
-      '  /saver routing on|off — prefer cheap providers while active (opt-in)',
-      channelId,
-    );
-  }
-
-  /** Push the current saver state to the CLI status bar if present. */
-  private syncSaverToCli(): void {
-    const ch = this.channels.get('cli');
-    if (ch && (ch as any).setSaverMode) {
-      (ch as any).setSaverMode(
-        this.saverMode.getState(),
-        this.tokenBudget.getSavedToday(),
-        this.tokenBudget.getSavedLifetime(),
-      );
-    }
-  }
-
-  private syncTokenInfoToCli(): void {
-    const ch = this.channels.get('cli');
-    if (ch && (ch as any).setTokenInfo) {
-      (ch as any).setTokenInfo(
-        this.tokenBudget.getDailyUsed(),
-        this.tokenBudget.getBudget(),
-        Math.round(this.tokenBudget.getUsagePercentage()),
-      );
-    }
-  }
-
-  private async handleSkillsSlashCommand(
-    trimmed: string,
-    channel: any,
-    channelId: string,
-    ctx: { skillNames: () => string[] },
-  ): Promise<void> {
-    const parts = trimmed.split(/\s+/).slice(1);
-    const sub = (parts[0] || 'list').toLowerCase();
-    const args = parts.slice(1);
-    const arg = args.join(' ').trim();
-
-    const { RegistryClient, isValidSkillId, searchFeed } = await import('../skills/registry.js');
-    const { SkillStore } = await import('../skills/store.js');
-    const registry = new RegistryClient();
-    const store = new SkillStore({ registry });
-
-    try {
-      switch (sub) {
-        case 'help':
-        case '-h':
-        case '--help': {
-          await channel.send(
-            [
-              '**Mercury Skills — in-chat commands**',
-              '',
-              '`/skills` — list installed skills',
-              '`/skills search <query>` — search the registry',
-              '`/skills view <id>` — show details + registry URL',
-              '`/skills install <id>` — install from the registry',
-              '`/skills install <url>` — install raw SKILL.md from a URL',
-              '`/skills remove <id>` — uninstall',
-              '',
-              'Browse the full catalog at https://skills.mercuryagent.sh',
-            ].join('\n'),
-            channelId,
-          );
-          return;
-        }
-
-        case 'list': {
-          const names = ctx.skillNames();
-          if (names.length === 0) {
-            await channel.send(
-              'No skills installed. Try `/skills search <query>` to browse https://skills.mercuryagent.sh.',
-              channelId,
-            );
-            return;
-          }
-          const lines = [
-            `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
-            '',
-            ...names.map((n) => `• ${n}`),
-            '',
-            '_Run `/skills search <query>` to find more on the registry._',
-          ];
-          await channel.send(lines.join('\n'), channelId);
-          return;
-        }
-
-        case 'search':
-        case 'find': {
-          if (!arg) {
-            await channel.send('Usage: `/skills search <query>`', channelId);
-            return;
-          }
-          await channel.send(`🔍 Searching the registry for "${arg}"…`, channelId);
-          const feed = await registry.getFeed();
-          const scored = searchFeed(feed, arg, 5);
-          if (scored.length === 0) {
-            await channel.send(`No matches for "${arg}".`, channelId);
-            return;
-          }
-          const lines = scored.map(({ skill }) =>
-            [
-              `• \`${skill.id}\` (v${skill.version})`,
-              `  ${skill.description}`,
-              `  ${registry.webUrl(skill.id)}`,
-            ].join('\n'),
-          );
-          await channel.send(
-            [
-              `**Top ${scored.length} matches for "${arg}":**`,
-              '',
-              lines.join('\n\n'),
-              '',
-              'Inspect one with `/skills view <id>`, install with `/skills install <id>`.',
-            ].join('\n'),
-            channelId,
-          );
-          return;
-        }
-
-        case 'view':
-        case 'show':
-        case 'info': {
-          if (!arg) {
-            await channel.send('Usage: `/skills view <category/slug>`', channelId);
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
-            return;
-          }
-          const detail = await registry.getSkill(arg);
-          const author = detail.author ? `\n**Author:** ${detail.author}` : '';
-          const tags = detail.tags?.length ? `\n**Tags:** ${detail.tags.join(', ')}` : '';
-          await channel.send(
-            [
-              `**${detail.title}** (\`${detail.id}\`)`,
-              `**Version:** ${detail.version}`,
-              `**Category:** ${detail.category}${author}${tags}`,
-              '',
-              detail.description,
-              '',
-              `🔗 ${registry.webUrl(detail.id)}`,
-              '',
-              `Install with \`/skills install ${detail.id}\``,
-            ].join('\n'),
-            channelId,
-          );
-          return;
-        }
-
-        case 'install':
-        case 'add': {
-          if (!arg) {
-            await channel.send('Usage: `/skills install <category/slug>` or `/skills install <url>`', channelId);
-            return;
-          }
-          // URL install → delegate to the existing capability path
-          if (/^https?:\/\//i.test(arg)) {
-            const { SkillLoader } = await import('../skills/loader.js');
-            const loader = new SkillLoader();
-            await channel.send(`📦 Installing from \`${arg}\`…`, channelId);
-            const installed = await loader.installFromUrl(arg);
-            await channel.send(
-              `✅ Installed \`${installed.name}\` from URL.\n${installed.skillDir}`,
-              channelId,
-            );
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await channel.send('Invalid skill id. Expected `<category>/<slug>` or a `https://` URL.', channelId);
-            return;
-          }
-          await channel.send(`📦 Installing \`${arg}\` from the registry…`, channelId);
-          const result = await store.install(arg);
-          const verb =
-            result.status === 'already-installed'
-              ? 'Already installed'
-              : result.status === 'updated'
-                ? 'Updated'
-                : result.status === 'reinstalled'
-                  ? 'Reinstalled'
-                  : 'Installed';
-          await channel.send(
-            `✅ ${verb} \`${result.id}\` (v${result.version})\n🔗 ${registry.webUrl(result.id)}`,
-            channelId,
-          );
-          return;
-        }
-
-        case 'remove':
-        case 'rm':
-        case 'delete':
-        case 'uninstall': {
-          if (!arg) {
-            await channel.send('Usage: `/skills remove <category/slug>`', channelId);
-            return;
-          }
-          if (!isValidSkillId(arg)) {
-            await channel.send('Invalid skill id. Expected `<category>/<slug>`.', channelId);
-            return;
-          }
-          const removed = store.remove(arg);
-          await channel.send(
-            removed ? `🗑 Removed \`${arg}\`.` : `Skill \`${arg}\` is not installed.`,
-            channelId,
-          );
-          return;
-        }
-
-        default:
-          await channel.send(
-            `Unknown subcommand \`${sub}\`. Try \`/skills help\`.`,
-            channelId,
-          );
-      }
-    } catch (err: any) {
-      const msg = err?.message || 'Skill registry request failed';
-      await channel.send(`⚠️ ${msg}`, channelId);
     }
   }
 
@@ -2764,14 +2364,118 @@ Is this productive iteration or a stuck loop?`,
     const ctx = this.capabilities.getChatCommandContext();
     if (!ctx) return false;
 
-    if (cmd === '/help') {
-      const helpText = channelType === 'telegram' ? getTelegramHelp() : ctx.manual();
-      await channel.send(helpText, channelId);
-      return true;
+    // Handle pending memory query (user selected a friend, now entering query)
+    if (this._memoryQueryTarget) {
+      const query = trimmed.trim();
+      if (query.startsWith('/')) {
+        this._memoryQueryTarget = null;
+        // Fall through to let the command be handled normally
+      } else {
+        const targetUser = this._memoryQueryTarget;
+        this._memoryQueryTarget = null;
+        if (!query) {
+          await channel.send('Query cannot be empty. Try again with /memory @', channelId);
+          return true;
+        }
+        await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
+        try {
+          const result = await this._relayClient!.sendCKQuery(targetUser, query);
+          if (!result.forwarded) {
+            await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`⚠ ${err.message || 'Failed to query collaborative knowledge'}`, channelId);
+        }
+        return true;
+      }
     }
 
-    if (cmd === '/saver' || cmd.startsWith('/saver ')) {
-      await this.handleSaverCommand(trimmed.slice('/saver'.length).trim(), channelType, channelId);
+    if (this._awaitingUsernameInput && !this._relayClient?.isRegistered()) {
+      const username = trimmed.toLowerCase().trim();
+      if (username.startsWith('/')) {
+        this._awaitingUsernameInput = false;
+        // Fall through to let the command be handled normally
+      } else {
+        const validation = validateUsernameLocal(username);
+        if (!validation.valid) {
+          await channel.send(`❌ ${validation.error}. Try another:`, channelId);
+          return true;
+        }
+        try {
+          const available = await this._relayClient!.checkUsername(username);
+          if (!available.available) {
+            await channel.send(`❌ Username '${username}' is taken. Try another:`, channelId);
+            return true;
+          }
+        } catch (err) {
+          logger.error({ err }, 'Relay checkUsername failed');
+          await channel.send(`❌ Could not check username availability. Try again: (${err instanceof Error ? err.message : String(err)})`, channelId);
+          return true;
+        }
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        if (channelType === 'cli') {
+          channels.push({ type: 'cli', id: 'cli' });
+        }
+        try {
+          const result = await this._relayClient!.register(
+            username,
+            this.config.identity.owner || undefined,
+            channels,
+          );
+          this._awaitingUsernameInput = false;
+          await this._relayClient!.connect();
+          await channel.send(`✅ Registered successfully!\n\n${this.getRelayStatusText()}`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Registration failed: ${err.message}`, channelId);
+          this._awaitingUsernameInput = false;
+        }
+        return true;
+      }
+    }
+
+    if (this._awaitingRecoveryInput && !this._relayClient?.isRegistered()) {
+      const username = trimmed.toLowerCase().trim();
+      if (username.startsWith('/')) {
+        this._awaitingRecoveryInput = false;
+        // Fall through to let the command be handled normally
+      } else {
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        if (channelType === 'cli') {
+          channels.push({ type: 'cli', id: 'cli' });
+        }
+        try {
+          const result = await this._relayClient!.recover(
+            username,
+            this.config.identity.owner || undefined,
+            channels,
+          );
+          this._awaitingRecoveryInput = false;
+          await this._relayClient!.connect();
+          await channel.send(`✅ Recovered successfully!\n\n${this.getRelayStatusText()}`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Username does not match. Try again:`, channelId);
+        }
+        return true;
+      }
+    }
+
+    if (cmd === '/help') {
+      const helpText = channelType === 'telegram'
+        ? getTelegramHelp()
+        : channelType === 'signal'
+          ? getSignalHelp()
+          : channelType === 'discord'
+            ? getDiscordHelp()
+            : ctx.manual();
+      await channel.send(helpText, channelId);
       return true;
     }
 
@@ -2803,6 +2507,21 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/permissions') {
+      if (channelType === 'discord') {
+        const dcChannel = this.channels.get('discord');
+        if (dcChannel && 'askPermissionMode' in dcChannel) {
+          const mode = await (dcChannel as any).askPermissionMode(channelId);
+          if (mode === 'allow-all') {
+            this.capabilities.permissions.setAutoApproveAll(true);
+            this.capabilities.permissions.addTempScope('/', true, true);
+            await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
+          } else {
+            this.capabilities.permissions.setAutoApproveAll(false);
+            await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
+          }
+        }
+        return true;
+      }
       if (channelType === 'cli' && channel instanceof CLIChannel) {
         const mode = await channel.askPermissionMode?.();
         if (mode === 'allow-all') {
@@ -2815,25 +2534,22 @@ Is this productive iteration or a stuck loop?`,
         }
         return true;
       }
-      await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
+      await channel.send('Type /permissions to switch permission mode.', channelId);
       return true;
     }
 
     if (cmd === '/status') {
       const config = ctx.config();
       const budget = ctx.tokenBudget();
-      const saver = this.saverMode.getState();
-      const saverLine = saver === 'off'
-        ? `Saver: off (auto at ${this.saverMode.getAutoThreshold()}%)`
-        : `Saver: ${saver.toUpperCase()} · saved today ~${this.tokenBudget.getSavedToday().toLocaleString()} tokens`;
       const lines = [
         `**${config.identity.name}** — Status`,
         `Owner: ${config.identity.owner || '(not set)'}`,
         `Provider: ${config.providers.default}`,
         `Telegram: ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}`,
         `Telegram access: ${getTelegramAccessSummary(config)}`,
+        `Discord: ${config.channels.discord.enabled ? 'enabled' : 'disabled'}`,
+        `Discord access: ${getDiscordAccessSummary(config)}`,
         `Budget: ${budget.getStatusText()}`,
-        saverLine,
         `Skills: ${ctx.skillNames().length > 0 ? ctx.skillNames().join(', ') : 'none'}`,
       ];
       await channel.send(lines.join('\n'), channelId);
@@ -2897,6 +2613,12 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    // /memory access → alias for /friend access
+    if (cmd.startsWith('/memory access') || trimmed.startsWith('/memory access')) {
+      const aliased = '/friend ' + trimmed.slice('/memory '.length);
+      return this.handleChatCommand(aliased, channelType, channelId);
+    }
+
     if (cmd === '/memory') {
       if (!this.userMemory) {
         const cfg = ctx.config();
@@ -2914,6 +2636,689 @@ Is this productive iteration or a stuck loop?`,
       }
 
       await this.sendMemoryOverview(channel, channelId);
+      return true;
+    }
+
+    // /memory @username query — query a friend's collaborative knowledge
+    if (cmd.startsWith('/memory @') || cmd.startsWith('/memory @')) {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (!this._relayClient.isRegistered()) {
+        await channel.send('Not registered on relay. Use /relay to register.', channelId);
+        return true;
+      }
+
+      const args = trimmed.slice('/memory'.length).trim();
+      const atMatch = args.match(/^@(\S+)\s+(.+)$/s);
+
+      // /memory @ or /memory @<partial> with no query — interactive friend selection on CLI
+      if (!atMatch && channelType === 'cli' && channel instanceof CLIChannel) {
+        try {
+          const data = await this._relayClient.getFriends();
+          if (data.friends.length === 0) {
+            await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+            return true;
+          }
+          await (channel as CLIChannel).withMenu(async (select) => {
+            const friendOptions: ArrowSelectOption[] = data.friends.map(f => ({
+              value: f.username,
+              label: `${f.display_name || f.username} (@${f.username})`,
+            }));
+            friendOptions.push({ value: 'back', label: 'Back' });
+
+            const chosen = await select('Query friend\'s memory', friendOptions);
+            if (chosen === 'back') return;
+
+            await channel.send(`Selected @${chosen}. Now type your query:`, channelId);
+            this._memoryQueryTarget = chosen;
+          });
+        } catch (err: any) {
+          await channel.send(`❌ ${err.message}`, channelId);
+        }
+        return true;
+      }
+
+      if (!atMatch) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      const targetUser = atMatch[1].toLowerCase().replace(/^@/, '');
+      const query = atMatch[2].trim();
+
+      if (!query) {
+        await channel.send('Usage: /memory @username <query>', channelId);
+        return true;
+      }
+
+      await channel.send(`Querying @${targetUser}'s memory for "${query}"...`, channelId);
+
+      try {
+        const result = await this._relayClient.sendCKQuery(targetUser, query);
+        if (!result.forwarded) {
+          await channel.send(`⚠ ${result.error || 'Failed to forward query'}`, channelId);
+        }
+      } catch (err: any) {
+        await channel.send(`⚠ ${err.message || 'Failed to query collaborative knowledge'}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/memory shared' || cmd === '/memory shared overview') {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      await this.sendCKOverview(channel, channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared pause') {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      if (this.ck.isLearningPaused()) {
+        await channel.send('Collaborative learning is already paused.', channelId);
+        return true;
+      }
+      this.ck.setLearningPaused(true);
+      await channel.send('Collaborative learning paused. No new collaborative knowledge will be stored until resumed.', channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared resume') {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      if (!this.ck.isLearningPaused()) {
+        await channel.send('Collaborative learning is already active.', channelId);
+        return true;
+      }
+      this.ck.setLearningPaused(false);
+      await channel.send('Collaborative learning resumed. New memories will be stored in collaborative knowledge.', channelId);
+      return true;
+    }
+
+    if (trimmed.toLowerCase().startsWith('/memory shared search')) {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      const query = trimmed.slice('/memory shared search'.length).trim();
+      if (!query) {
+        await channel.send('Usage: /memory shared search <query>', channelId);
+        return true;
+      }
+      const results = this.ck.search(query, 10);
+      if (results.length === 0) {
+        await channel.send(`No collaborative knowledge found matching "${query}".`, channelId);
+        return true;
+      }
+      const lines = [`**Search results for "${query}":**`, ''];
+      for (const r of results) {
+        lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared categories') {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      const categories = this.ck.getCategories();
+      if (categories.length === 0) {
+        await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+        return true;
+      }
+      const summary = this.ck.getSummary();
+      const lines = ['**Collaborative Knowledge Categories:**', ''];
+      for (const cat of categories) {
+        const count = summary.byCategory[cat] ?? 0;
+        lines.push(`  ${cat}: ${count} memories`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/memory shared clear') {
+      if (!this.ck) {
+        await channel.send('Collaborative knowledge is not enabled.', channelId);
+        return true;
+      }
+      const cleared = this.ck.clear();
+      await channel.send(`Cleared ${cleared} collaborative knowledge.`, channelId);
+      return true;
+    }
+
+    if (cmd === '/relay status') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      await channel.send(this.getRelayStatusText(), channelId);
+      return true;
+    }
+
+    if (cmd === '/relay reset') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      try {
+        await this._relayClient.deregister();
+        this._awaitingUsernameInput = false;
+        this._awaitingRecoveryInput = false;
+        await channel.send('🗑 Relay reset complete. All data removed. Use /relay to register again.', channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Relay reset failed: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/pair ') || cmd === '/pair') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (this._relayClient.isRegistered()) {
+        await channel.send('Already registered on relay. Use /relay reset first if you want to re-pair.', channelId);
+        return true;
+      }
+      const code = trimmed.slice('/pair '.length).trim();
+      if (!code) {
+        await channel.send('Usage: /pair <CODE>\nGet a pairing code from the dashboard at relay.cosmicstack.org', channelId);
+        return true;
+      }
+      try {
+        // Gather channel info for linking
+        const channels: Array<{ type: string; id: string }> = [];
+        const tgAdmins = this.config.channels.telegram.admins;
+        if (tgAdmins && tgAdmins.length > 0) {
+          channels.push({ type: 'telegram', id: String(tgAdmins[0].userId) });
+        }
+        const result = await this._relayClient.pair(code, channels.length > 0 ? channels : undefined);
+        await channel.send(`✅ Paired successfully!\nUsername: ${result.username}\nYou can now use /relay to connect.`, channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Pairing failed: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/relay') {
+      if (!this._relayClient) {
+        await channel.send('Relay is not configured.', channelId);
+        return true;
+      }
+      if (this._relayClient.isConnected()) {
+        this._relayClient.disconnect();
+        await channel.send('🔴 Disconnected from relay', channelId);
+        return true;
+      }
+      if (this._relayClient.isRegistered()) {
+        const status = await this._relayClient.validateApiKey();
+        if (status === 'invalid') {
+          this._relayClient.clearRegistration();
+        } else if (status === 'unreachable') {
+          await channel.send('⚠️ Cannot reach relay server to validate credentials. Try again later, or use `/relay reset` to re-register.', channelId);
+          return true;
+        }
+      }
+      if (!this._relayClient.isRegistered()) {
+        if (this._awaitingUsernameInput || this._awaitingRecoveryInput) {
+          return true;
+        }
+
+        // Check if this device is already linked to a relay account
+        const tgAdmins = this.config.channels.telegram.admins;
+        const telegramId = tgAdmins && tgAdmins.length > 0 ? String(tgAdmins[0].userId) : null;
+
+        if (telegramId) {
+          try {
+            const lookup = await this._relayClient.lookupChannel('telegram', telegramId);
+            if (lookup.registered) {
+              await channel.send('Your device is already linked to a relay account.\nPlease enter your relay username to verify:', channelId);
+              this._awaitingRecoveryInput = true;
+              return true;
+            }
+          } catch {
+            // Lookup failed — fall through to new registration
+          }
+        }
+
+        await channel.send('Choose a relay username (3-20 chars, lowercase letters, numbers, underscores):', channelId);
+        this._awaitingUsernameInput = true;
+        return true;
+      }
+      const connected = await this._relayClient.connect();
+      if (connected) {
+        await channel.send('🟢 Connected to relay', channelId);
+      } else {
+        await channel.send('❌ Failed to connect to relay', channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/friend ')) {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/friend '.length).trim();
+
+      // /friend access commands
+      if (input.startsWith('access')) {
+        if (!this.ck) {
+          await channel.send('❌ Collaborative knowledge not available.', channelId);
+          return true;
+        }
+        const accessInput = input.slice('access'.length).trim();
+
+        const verifyFriendship = async (target: string): Promise<'friend' | 'pending_sent' | 'pending_received' | 'none' | 'error'> => {
+          try {
+            const data = await this._relayClient!.getFriends();
+            if (data.friends.some(f => f.username === target)) return 'friend';
+            if (data.pending_sent.some(f => f.target_user.username === target)) return 'pending_sent';
+            if (data.pending_received.some(f => f.target_user.username === target)) return 'pending_received';
+            return 'none';
+          } catch {
+            await channel.send('❌ Failed to verify friendship. Try again later.', channelId);
+            return 'error';
+          }
+        };
+
+        if (!accessInput || accessInput === '@') {
+          if (channelType === 'cli' && channel instanceof CLIChannel) {
+            try {
+              const data = await this._relayClient!.getFriends();
+              if (data.friends.length === 0) {
+                await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+                return true;
+              }
+              await (channel as CLIChannel).withMenu(async (select) => {
+                const friendOptions: ArrowSelectOption[] = data.friends.map(f => ({
+                  value: f.username,
+                  label: `${f.display_name || f.username} (@${f.username})`,
+                }));
+                friendOptions.push({ value: 'back', label: 'Back' });
+
+                const chosen = await select('Select friend to manage access', friendOptions);
+                if (chosen === 'back') return;
+
+                const currentAccess = this.ck!.getAllowedCategories(chosen);
+                const myCategories = this.ck!.getCategories();
+                const info = currentAccess.length > 0
+                  ? `Current access: ${currentAccess.join(', ')}`
+                  : 'No access granted';
+                await channel.send(`@${chosen} — ${info}\nYour categories: ${myCategories.join(', ') || '(none)'}`, channelId);
+
+                const action = await select(`Manage @${chosen}`, [
+                  { value: 'add', label: 'Grant categories' },
+                  { value: 'remove', label: 'Revoke categories' },
+                  { value: 'all', label: 'Grant all categories' },
+                  { value: 'none', label: 'Revoke all access' },
+                  { value: 'back', label: 'Back' },
+                ]);
+
+                if (action === 'back') return;
+
+                if (action === 'all') {
+                  this.ck!.grantAllCategories(chosen);
+                  const cats = this.ck!.getAllowedCategories(chosen);
+                  await channel.send(`✅ Granted @${chosen} access to all categories: ${cats.join(', ')}`, channelId);
+                } else if (action === 'none') {
+                  this.ck!.revokeAllCategories(chosen);
+                  await channel.send(`✅ Revoked all memory access for @${chosen}`, channelId);
+                } else if (action === 'add') {
+                  const available = myCategories.filter(c => !currentAccess.includes(c));
+                  if (available.length === 0) {
+                    await channel.send(`@${chosen} already has access to all your categories.`, channelId);
+                    return;
+                  }
+                  const catOptions: ArrowSelectOption[] = available.map(c => ({ value: c, label: c }));
+                  catOptions.push({ value: 'back', label: 'Back' });
+                  const selectedCat = await select('Select category to grant', catOptions);
+                  if (selectedCat === 'back') return;
+                  this.ck!.grantCategory(chosen, selectedCat);
+                  await channel.send(`✅ Granted @${chosen} access to: ${selectedCat}`, channelId);
+                } else if (action === 'remove') {
+                  if (currentAccess.length === 0) {
+                    await channel.send(`@${chosen} has no access to revoke.`, channelId);
+                    return;
+                  }
+                  const catOptions: ArrowSelectOption[] = currentAccess.map(c => ({ value: c, label: c }));
+                  catOptions.push({ value: 'back', label: 'Back' });
+                  const selectedCat = await select('Select category to revoke', catOptions);
+                  if (selectedCat === 'back') return;
+                  this.ck!.revokeCategory(chosen, selectedCat);
+                  await channel.send(`✅ Revoked @${chosen} access to: ${selectedCat}`, channelId);
+                }
+              });
+            } catch (err: any) {
+              await channel.send(`❌ ${err.message}`, channelId);
+            }
+            return true;
+          }
+
+          // Non-CLI: show text map
+          const map = this.ck.getFriendAccessMap();
+          const entries = Object.entries(map);
+          if (entries.length === 0) {
+            await channel.send('No friends have memory access granted.\nUse: /friend access @username add <category>', channelId);
+            return true;
+          }
+          const lines = ['**Friend Access:**', ''];
+          for (const [friend, cats] of entries) {
+            lines.push(`@${friend}: ${cats.join(', ')}`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          return true;
+        }
+
+        // Parse: @username [add|remove|all|none] [categories...]
+        const accessMatch = accessInput.match(/^@?([a-z0-9_]{3,20})(?:\s+(.*))?$/i);
+        if (!accessMatch) {
+          await channel.send('Usage: /friend access @username [add|remove|all|none] [categories]', channelId);
+          return true;
+        }
+        const targetFriend = accessMatch[1].toLowerCase();
+        const action = (accessMatch[2] || '').trim();
+
+        const friendStatus = await verifyFriendship(targetFriend);
+        if (friendStatus === 'error') return true;
+        if (friendStatus === 'pending_sent') {
+          await channel.send(`⏳ Friend request sent to @${targetFriend}, waiting for acceptance. You can manage access after they accept.`, channelId);
+          return true;
+        }
+        if (friendStatus === 'pending_received') {
+          await channel.send(`📥 You have a pending request from @${targetFriend}. Accept it first with /friend accept @${targetFriend}`, channelId);
+          return true;
+        }
+        if (friendStatus === 'none') {
+          await channel.send(`❌ @${targetFriend} is not your friend. Send a friend request first with /friend @${targetFriend}`, channelId);
+          return true;
+        }
+
+        if (!action) {
+          const cats = this.ck.getAllowedCategories(targetFriend);
+          if (cats.length === 0) {
+            await channel.send(`@${targetFriend} has no memory access.\nAvailable categories: ${this.ck.getCategories().join(', ') || '(none)'}\nUse: /friend access @${targetFriend} add <category>`, channelId);
+          } else {
+            await channel.send(`@${targetFriend} can access: ${cats.join(', ')}`, channelId);
+          }
+          return true;
+        }
+
+        if (action === 'all') {
+          this.ck.grantAllCategories(targetFriend);
+          const cats = this.ck.getAllowedCategories(targetFriend);
+          await channel.send(`✅ Granted @${targetFriend} access to all categories: ${cats.join(', ')}`, channelId);
+          return true;
+        }
+
+        if (action === 'none') {
+          this.ck.revokeAllCategories(targetFriend);
+          await channel.send(`✅ Revoked all memory access for @${targetFriend}`, channelId);
+          return true;
+        }
+
+        if (action.startsWith('add ')) {
+          const categories = action.slice(4).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+          if (categories.length === 0) {
+            await channel.send('Usage: /friend access @username add category1,category2', channelId);
+            return true;
+          }
+          for (const cat of categories) {
+            this.ck.grantCategory(targetFriend, cat);
+          }
+          await channel.send(`✅ Granted @${targetFriend} access to: ${categories.join(', ')}`, channelId);
+          return true;
+        }
+
+        if (action.startsWith('remove ')) {
+          const categories = action.slice(7).split(/[,\s]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+          if (categories.length === 0) {
+            await channel.send('Usage: /friend access @username remove category1,category2', channelId);
+            return true;
+          }
+          for (const cat of categories) {
+            this.ck.revokeCategory(targetFriend, cat);
+          }
+          await channel.send(`✅ Revoked @${targetFriend} access to: ${categories.join(', ')}`, channelId);
+          return true;
+        }
+
+        await channel.send('Usage: /friend access @username [add|remove|all|none] [categories]', channelId);
+        return true;
+      }
+
+      if (!input) {
+        await channel.send('Usage: /friend @username', channelId);
+        return true;
+      }
+
+      // /friend @username — check existing relationship first, then send request
+      const targetUser = input.replace(/^@/, '').toLowerCase().trim();
+      try {
+        const data = await this._relayClient.getFriends();
+
+        if (data.friends.some(f => f.username === targetUser)) {
+          await channel.send(`✅ @${targetUser} is already your friend.\nUse /friend access @${targetUser} to manage memory access.`, channelId);
+          return true;
+        }
+
+        if (data.pending_sent.some(p => p.target_user.username === targetUser)) {
+          await channel.send(`⏳ Friend request to @${targetUser} is already pending.`, channelId);
+          return true;
+        }
+
+        if (data.pending_received.some(p => p.target_user.username === targetUser)) {
+          await channel.send(`📥 @${targetUser} has already sent you a friend request. Use /notifications to accept it.`, channelId);
+          return true;
+        }
+
+        const result = await this._relayClient.sendFriendRequest(targetUser);
+        const name = result.target_user.display_name || result.target_user.username;
+        await channel.send(`✅ Friend request sent to @${name}`, channelId);
+      } catch (err: any) {
+        await channel.send(`❌ ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (trimmed.startsWith('/message ')) {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      const input = trimmed.slice('/message '.length).trim();
+      const match = input.match(/^@?([a-z0-9_]{3,20})\s+(.+)$/i);
+      if (!match) {
+        await channel.send('Usage: /message @username your message here', channelId);
+        return true;
+      }
+      const targetUser = match[1].toLowerCase();
+      const msgContent = match[2];
+      try {
+        const result = await this._relayClient.sendMessage(targetUser, msgContent);
+        if (result.delivered) {
+          const name = result.to_user?.display_name || targetUser;
+          await channel.send(`✅ Message delivered to @${name}`, channelId);
+        } else {
+          await channel.send(`⚠ @${targetUser} is currently offline. Message not delivered.`, channelId);
+        }
+        if (this._messagesStore) {
+          this._messagesStore.addOutbound(targetUser, result.to_user?.display_name ?? null, msgContent, result.sent_at ?? Math.floor(Date.now() / 1000));
+        }
+      } catch (err: any) {
+        await channel.send(`❌ ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/messages' || cmd.startsWith('/messages ')) {
+      if (!this._messagesStore) {
+        await channel.send('❌ Messages not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      const sub = trimmed.slice('/messages'.length).trim().toLowerCase();
+
+      if (sub.endsWith('read all') || sub === 'read') {
+        const marked = this._messagesStore.markAllRead();
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('read ')) {
+        const peer = sub.slice('read '.length).trim().replace(/^@/, '').toLowerCase();
+        if (!peer) {
+          await channel.send('Usage: /messages read @username', channelId);
+          return true;
+        }
+        const marked = this._messagesStore.markAllReadForPeer(peer);
+        await channel.send(`✅ Marked ${marked} message${marked === 1 ? '' : 's'} from @${peer} as read.`, channelId);
+        return true;
+      }
+
+      if (sub === 'clear') {
+        const cleared = this._messagesStore.clearAll();
+        await channel.send(`🗑 Cleared ${cleared} message${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      if (sub.startsWith('@') || (sub.length >= 3 && !sub.startsWith('read') && sub !== 'clear' && sub !== '')) {
+        const peer = sub.replace(/^@/, '').toLowerCase();
+        const conversation = this._messagesStore.getConversation(peer, 20);
+        if (conversation.length === 0) {
+          await channel.send(`No messages with @${peer}.`, channelId);
+          return true;
+        }
+        conversation.sort((a, b) => a.sentAt - b.sentAt);
+        const lines = [`**Messages with @${peer}:**`, ''];
+        for (const msg of conversation) {
+          const icon = msg.direction === 'inbound' ? '←' : '→';
+          const time = formatTimeAgo(msg.sentAt);
+          lines.push(`${icon} ${msg.content} (${time})`);
+        }
+        lines.push('');
+        lines.push('Use /messages read @' + peer + ' to mark as read.');
+        await channel.send(lines.join('\n'), channelId);
+        return true;
+      }
+
+      const conversations = this._messagesStore.getConversations();
+      if (conversations.length === 0) {
+        await channel.send('📭 No messages yet. Use /message @username to send a message.', channelId);
+        return true;
+      }
+      const msgSummary = this._messagesStore.getSummary();
+      const lines = [`📬 Conversations (${msgSummary.unread} unread)`, ''];
+      for (const conv of conversations) {
+        const name = conv.peerDisplayName || conv.peerUser;
+        const icon = conv.unreadCount > 0 ? '🔵' : '⚪';
+        const time = formatTimeAgo(conv.lastSentAt);
+        lines.push(`${icon} @${conv.peerUser} (${name}) — ${conv.lastMessage.slice(0, 40)}${conv.lastMessage.length > 40 ? '...' : ''} (${time})`);
+      }
+      lines.push('');
+      lines.push('Use /messages @username to see a conversation.');
+      lines.push('Use /messages read all to mark all as read.');
+      lines.push('Use /messages clear to delete all messages.');
+      await channel.send(lines.join('\n'), channelId);
+      return true;
+    }
+
+    if (cmd === '/listfriends') {
+      if (!this._relayClient || !this._relayClient.isRegistered()) {
+        await channel.send('❌ Not registered on relay. Use /relay to connect.', channelId);
+        return true;
+      }
+      try {
+        const data = await this._relayClient.getFriends();
+
+        if (channelType === 'cli' && channel instanceof CLIChannel) {
+          await (channel as CLIChannel).withMenu(async (select) => {
+            await this.openCliFriendsMenu(channel as CLIChannel, channelId, select, data);
+          });
+          return true;
+        }
+
+        const lines = ['**👥 Your Friends**', ''];
+        if (data.friends.length > 0) {
+          lines.push('✅ Friends:');
+          for (const f of data.friends) {
+            const name = f.display_name || f.username;
+            lines.push(`  ${name} (@${f.username})`);
+          }
+        }
+        if (data.pending_sent.length > 0) {
+          lines.push('');
+          lines.push('📤 Pending sent:');
+          for (const f of data.pending_sent) {
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
+          }
+        }
+        if (data.pending_received.length > 0) {
+          lines.push('');
+          lines.push('📥 Pending received:');
+          for (const f of data.pending_received) {
+            const name = f.target_user.display_name || f.target_user.username;
+            lines.push(`  ${name} (@${f.target_user.username})`);
+          }
+        }
+        if (data.friends.length === 0 && data.pending_sent.length === 0 && data.pending_received.length === 0) {
+          lines.push('No friends yet. Use /friend @username to send a request.');
+        }
+        await channel.send(lines.join('\n'), channelId);
+      } catch (err: any) {
+        await channel.send(`❌ Failed to get friends: ${err.message}`, channelId);
+      }
+      return true;
+    }
+
+    if (cmd === '/notifications' || cmd === '/notification' || cmd.startsWith('/notifications ') || cmd.startsWith('/notification ')) {
+      if (!this._notifications) {
+        await channel.send('❌ Notifications not available (better-sqlite3 required).', channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('read all') || cmd.endsWith('read')) {
+        const marked = this._notifications.markAllRead();
+        await channel.send(`✅ Marked ${marked} notification${marked === 1 ? '' : 's'} as read.`, channelId);
+        return true;
+      }
+
+      if (cmd.endsWith('clear')) {
+        const cleared = this._notifications.clearRead();
+        await channel.send(`🗑 Cleared ${cleared} read notification${cleared === 1 ? '' : 's'}.`, channelId);
+        return true;
+      }
+
+      const notifSummary = this._notifications.getSummary();
+      const all = this._notifications.getAll(50);
+
+      if (all.length === 0) {
+        await channel.send('📭 No notifications.', channelId);
+        return true;
+      }
+
+      const lines = [`📬 Notifications (${notifSummary.unread} unread)`, ''];
+      for (const n of all) {
+        const icon = n.read ? '⚪' : '🔵';
+        const timeAgo = formatTimeAgo(n.createdAt);
+        lines.push(`${icon} ${n.message} (${timeAgo})`);
+      }
+      lines.push('');
+      lines.push('Use /notifications read all to mark as read, /notifications clear to remove read ones.');
+
+      await channel.send(lines.join('\n'), channelId);
       return true;
     }
 
@@ -3130,8 +3535,18 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
-    if (cmd === '/skills' || cmd.startsWith('/skills ')) {
-      await this.handleSkillsSlashCommand(trimmed, channel, channelId, ctx);
+    if (cmd === '/skills') {
+      const names = ctx.skillNames();
+      if (names.length === 0) {
+        await channel.send('No skills installed. Ask me to "install skill from <url>" to add one.', channelId);
+      } else {
+        const lines = [
+          `**${names.length} skill${names.length > 1 ? 's' : ''} installed:**`,
+          '',
+          ...names.map(n => `• ${n}`),
+        ];
+        await channel.send(lines.join('\n'), channelId);
+      }
       return true;
     }
 
@@ -3532,34 +3947,22 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (cmd === '/stream on') {
-      this.telegramStreaming = true;
-      await channel.send('Telegram streaming enabled. Responses will appear progressively.', channelId);
+      const isDiscord = channelType === 'discord';
+      if (isDiscord) this.discordStreaming = true;
+      else this.telegramStreaming = true;
+      await channel.send(`${isDiscord ? 'Discord' : 'Telegram'} streaming enabled. Responses will appear progressively.`, channelId);
       return true;
     }
 
     if (cmd === '/stream off') {
-      this.telegramStreaming = false;
-      await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
+      const isDiscord = channelType === 'discord';
+      if (isDiscord) this.discordStreaming = false;
+      else this.telegramStreaming = false;
+      await channel.send(`${isDiscord ? 'Discord' : 'Telegram'} streaming disabled. Responses will arrive as a single message.`, channelId);
       return true;
     }
 
-    if (cmd === '/stream') {
-      this.telegramStreaming = !this.telegramStreaming;
-      await channel.send(
-        this.telegramStreaming
-          ? 'Telegram streaming enabled. Responses will appear progressively.'
-          : 'Telegram streaming disabled. Responses will arrive as a single message.',
-        channelId,
-      );
-      return true;
-    }
-    if (cmd === '/stream off') {
-      this.telegramStreaming = false;
-      await channel.send('Telegram streaming disabled. Responses will arrive as a single message.', channelId);
-      return true;
-    }
-
-    if (cmd.startsWith('/agents')) {
+    if (cmd === '/agents') {
       if (!this.supervisor) {
         await channel.send('Sub-agents are not available.', channelId);
         return true;
@@ -3742,7 +4145,7 @@ Is this productive iteration or a stuck loop?`,
 
     await channel.withMenu(async (select) => {
       while (true) {
-        const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
+        const streamLabel = (this.telegramStreaming || this.discordStreaming) ? 'Disable Streaming' : 'Enable Streaming';
         const permLabel = this.capabilities.permissions.isAutoApproveAll() ? 'Switch to Ask Me' : 'Switch to Allow All';
         const action = await select('Mercury Commands', [
           { value: 'status', label: 'Status' },
@@ -3816,7 +4219,7 @@ Is this productive iteration or a stuck loop?`,
     const summary = this.userMemory.getSummary();
     const lines = [
       `**Memory Overview**`,
-      `Total memories: ${summary.total}`,
+      `Conscious: ${summary.total} | Subconscious: ${summary.subconsciousTotal}`,
       `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
     ];
     if (summary.profileSummary) {
@@ -3841,15 +4244,25 @@ Is this productive iteration or a stuck loop?`,
 
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
-        const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-        const action = await sel('Memory', [
-          { value: 'overview', label: 'Overview' },
-          { value: 'recent', label: 'Recent Memories' },
-          { value: 'search', label: 'Search' },
-          { value: 'toggle', label: learningLabel },
+      const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+      const hasCK = !!this.ck;
+      const sharedLabel = hasCK ? 'Collaborative Knowledge' : '';
+      const options: { value: string; label: string }[] = [
+        { value: 'overview', label: 'Overview' },
+        { value: 'recent', label: 'Recent Memories' },
+        { value: 'subconscious', label: 'Subconscious Memory' },
+        { value: 'search', label: 'Search' },
+        { value: 'toggle', label: learningLabel },
+      ];
+        if (hasCK) {
+          options.push({ value: 'shared', label: sharedLabel });
+        }
+        options.push(
           { value: 'clear', label: 'Clear All Memories' },
+          { value: 'clear-all', label: 'Clear All (everything related to memory and yourself)' },
           { value: 'back', label: 'Back' },
-        ]);
+        );
+        const action = await sel('Memory', options);
 
         if (action === 'back') return;
 
@@ -3866,11 +4279,34 @@ Is this productive iteration or a stuck loop?`,
           }
           const lines = ['**Recent Memories:**', ''];
           for (const r of recent) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const scope = r.scope === 'subconscious' ? '💤' : r.scope === 'active' ? '⏳' : '📌';
             const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
             lines.push(`${scope} [${r.type}] ${r.summary}`);
             lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
           }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'subconscious') {
+          const summary = this.userMemory!.getSummary();
+          const subconscious = this.userMemory!.getSubconscious(5);
+          if (subconscious.length === 0) {
+            await channel.send('💤 **Subconscious Memory**\n\nNo subconscious memories yet. Memories move here after 30 days of not being referenced, and are recalled automatically when relevant to a conversation.', channelId);
+            continue;
+          }
+          const lines = [`**Subconscious Memory (showing first 5 by recency):**`, ''];
+          for (const r of subconscious) {
+            const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
+            lines.push(`💤 [${r.type}] ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+          }
+          if (summary.subconsciousTotal > 5) {
+            lines.push('');
+            lines.push(`... and ${summary.subconsciousTotal - 5} more subconscious memories stored.`);
+          }
+          lines.push('');
+          lines.push('These memories can be recalled to conscious when relevant to a conversation.');
           await channel.send(lines.join('\n'), channelId);
           continue;
         }
@@ -3885,7 +4321,7 @@ Is this productive iteration or a stuck loop?`,
           }
           const lines = [`**Search results for "${query}":**`, ''];
           for (const r of results) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const scope = r.scope === 'subconscious' ? '💤' : r.scope === 'active' ? '⏳' : '📌';
             lines.push(`${scope} [${r.type}] ${r.summary}`);
             lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
           }
@@ -3911,6 +4347,23 @@ Is this productive iteration or a stuck loop?`,
           }
           continue;
         }
+
+        if (action === 'clear-all') {
+          const confirm = await sel('Clear ALL memories, profile, metadata, and person graph? This cannot be undone.', [
+            { value: 'cancel', label: 'Cancel' },
+            { value: 'confirm', label: 'Yes, wipe everything' },
+          ]);
+          if (confirm === 'confirm') {
+            const cleared = this.userMemory!.clearAll();
+            await channel.send(`Full reset complete. Cleared ${cleared} memories plus all profile data, metadata, and person graph.`, channelId);
+          }
+          continue;
+        }
+
+        if (action === 'shared') {
+          await this.openCliCKMenu(channel, channelId, sel);
+          continue;
+        }
       }
     };
 
@@ -3918,6 +4371,127 @@ Is this productive iteration or a stuck loop?`,
       await runMenu(select);
     } else {
       await channel.withMenu(runMenu);
+    }
+  }
+
+  private async openCliCKMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+  ): Promise<void> {
+    if (!this.ck) return;
+
+    while (true) {
+      const summary = this.ck.getSummary();
+      const sharedLearningLabel = summary.learningPaused ? 'Resume Collaborative Learning' : 'Pause Collaborative Learning';
+      const action = await select('Collaborative Knowledge', [
+        { value: 'overview', label: `Overview (${summary.total} memories)` },
+        { value: 'recent', label: 'Recent' },
+        { value: 'search', label: 'Search' },
+        { value: 'categories', label: 'Categories' },
+        { value: 'toggle', label: sharedLearningLabel },
+        { value: 'clear', label: 'Clear All Collaborative Knowledge' },
+        { value: 'back', label: 'Back' },
+      ]);
+
+      if (action === 'back') return;
+
+      if (action === 'overview') {
+        const lines = [
+          '**Collaborative Knowledge Overview**',
+          `Total memories: ${summary.total}`,
+          `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+        ];
+        const catEntries = Object.entries(summary.byCategory);
+        if (catEntries.length > 0) {
+          lines.push('');
+          lines.push('By category:');
+          for (const [cat, count] of catEntries) {
+            lines.push(`  ${cat}: ${count}`);
+          }
+        }
+        const typeEntries = Object.entries(summary.byType);
+        if (typeEntries.length > 0) {
+          lines.push('');
+          lines.push('By type:');
+          for (const [type, count] of typeEntries) {
+            lines.push(`  ${type}: ${count}`);
+          }
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'recent') {
+        const recent = this.ck.getRecent(10);
+        if (recent.length === 0) {
+          await channel.send('No collaborative knowledge yet.', channelId);
+          continue;
+        }
+        const lines = ['**Recent Collaborative Knowledge:**', ''];
+        for (const r of recent) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'search') {
+        const query = await channel.prompt('Search collaborative knowledge: ');
+        if (!query) continue;
+        const results = this.ck.search(query, 10);
+        if (results.length === 0) {
+          await channel.send(`No collaborative knowledge found matching "${query}".`, channelId);
+          continue;
+        }
+        const lines = [`**Search results for "${query}":**`, ''];
+        for (const r of results) {
+          lines.push(`[${r.type}|${r.category}] ${r.summary}`);
+          lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'categories') {
+        const categories = this.ck.getCategories();
+        if (categories.length === 0) {
+          await channel.send('No categories yet. Categories are created automatically when memories are stored.', channelId);
+          continue;
+        }
+        const lines = ['**Collaborative Knowledge Categories:**', ''];
+        for (const cat of categories) {
+          const count = summary.byCategory[cat] ?? 0;
+          lines.push(`  ${cat}: ${count} memories`);
+        }
+        await channel.send(lines.join('\n'), channelId);
+        continue;
+      }
+
+      if (action === 'toggle') {
+        const currentlyPaused = this.ck.isLearningPaused();
+        this.ck.setLearningPaused(!currentlyPaused);
+        await channel.send(
+          currentlyPaused
+            ? 'Collaborative learning resumed. New memories will be stored in collaborative knowledge.'
+            : 'Collaborative learning paused. No new collaborative knowledge will be stored until resumed.',
+          channelId,
+        );
+        continue;
+      }
+
+      if (action === 'clear') {
+        const confirm = await select('Clear all collaborative knowledge?', [
+          { value: 'cancel', label: 'Cancel' },
+          { value: 'confirm', label: 'Clear everything' },
+        ]);
+        if (confirm === 'confirm') {
+          const cleared = this.ck.clear();
+          await channel.send(`Cleared ${cleared} collaborative knowledge.`, channelId);
+        }
+        continue;
+      }
     }
   }
 
@@ -4120,4 +4694,195 @@ Is this productive iteration or a stuck loop?`,
       }
     }
   }
+
+  private async sendCKOverview(channel: any, channelId: string): Promise<void> {
+    if (!this.ck) return;
+    const summary = this.ck.getSummary();
+    const lines = [
+      `**Collaborative Knowledge Overview**`,
+      `Total memories: ${summary.total}`,
+      `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+    ];
+    const catEntries = Object.entries(summary.byCategory);
+    if (catEntries.length > 0) {
+      lines.push('');
+      lines.push('By category:');
+      for (const [cat, count] of catEntries) {
+        lines.push(`  ${cat}: ${count}`);
+      }
+    }
+    const typeEntries = Object.entries(summary.byType);
+    if (typeEntries.length > 0) {
+      lines.push('');
+      lines.push('By type:');
+      for (const [type, count] of typeEntries) {
+        lines.push(`  ${type}: ${count}`);
+      }
+    }
+    lines.push('');
+    lines.push('Commands: /memory @<friend> <query> | /memory shared pause|resume|search <query>|categories|clear');
+    await channel.send(lines.join('\n'), channelId);
+  }
+
+  private getRelayStatusText(): string {
+    const lines: string[] = ['**Relay Status**', ''];
+    const registered = this._relayClient!.isRegistered();
+    const connected = this._relayClient!.isConnected();
+    const reconnecting = this._relayClient!.isReconnecting();
+    const username = this.config.relay?.username || null;
+
+    lines.push(`Status: ${connected ? '🟢 Connected' : reconnecting ? '🔄 Reconnecting' : '🔴 Disconnected'}`);
+    lines.push(`Registered: ${registered ? 'Yes' : 'No'}`);
+    if (username) {
+      lines.push(`Username: @${username}`);
+    }
+    return lines.join('\n');
+  }
+
+  private async openCliFriendsMenu(
+    channel: CLIChannel,
+    channelId: string,
+    select: (title: string, options: ArrowSelectOption[]) => Promise<string>,
+    data: FriendsResponse,
+  ): Promise<void> {
+    const formatName = (u: { username: string; display_name: string | null }) =>
+      u.display_name || u.username;
+
+    const allOptions: ArrowSelectOption[] = [];
+
+    if (data.friends.length > 0) {
+      allOptions.push({ value: '_header_friends', label: '── Friends ──' });
+      for (const f of data.friends) {
+        const name = f.display_name || f.username;
+        allOptions.push({ value: `friend:${f.username}`, label: `  ✅ ${name} (@${f.username})` });
+      }
+    }
+    if (data.pending_sent.length > 0) {
+      allOptions.push({ value: '_header_sent', label: '── Pending (Sent) ──' });
+      for (const f of data.pending_sent) {
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `sent:${f.target_user.username}`, label: `  📤 ${name} (@${f.target_user.username})` });
+      }
+    }
+    if (data.pending_received.length > 0) {
+      allOptions.push({ value: '_header_received', label: '── Pending (Incoming) ──' });
+      for (const f of data.pending_received) {
+        const name = f.target_user.display_name || f.target_user.username;
+        allOptions.push({ value: `received:${f.target_user.username}`, label: `  📥 ${name} (@${f.target_user.username})` });
+      }
+    }
+
+    if (allOptions.length === 0) {
+      await channel.send('No friends yet. Use /friend @username to send a request.', channelId);
+      return;
+    }
+
+    allOptions.push({ value: 'back', label: 'Back' });
+
+    const chosen = await select('👥 Friends', allOptions);
+    if (chosen === 'back' || chosen.startsWith('_header_')) return;
+
+    const [type, targetUsername] = chosen.split(':');
+
+    if (type === 'friend') {
+      const friend = data.friends.find(f => f.username === targetUsername);
+      if (!friend) return;
+      const name = friend.display_name || friend.username;
+      const action = await select(name, [
+        { value: 'remove', label: 'Remove Friend' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'remove') {
+        const confirm = await select(`Remove ${name}?`, [
+          { value: 'confirm', label: 'Confirm' },
+          { value: 'cancel', label: 'Cancel' },
+        ]);
+        if (confirm === 'confirm' && this._relayClient) {
+          try {
+            await this._relayClient.deleteFriend(targetUsername);
+            if (this.ck) {
+              this.ck.revokeAllCategories(targetUsername);
+            }
+            await channel.send(`🗑 Removed ${name} from friends.`, channelId);
+          } catch (err: any) {
+            await channel.send(`❌ Failed: ${err.message}`, channelId);
+          }
+        }
+      }
+    } else if (type === 'sent') {
+      const req = data.pending_sent.find(f => f.target_user.username === targetUsername);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'cancel', label: 'Cancel Request' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (action === 'cancel' && this._relayClient) {
+        try {
+          await this._relayClient.cancelRequest(targetUsername);
+          await channel.send(`✖ Cancelled friend request to ${name}.`, channelId);
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    } else if (type === 'received') {
+      const req = data.pending_received.find(f => f.target_user.username === targetUsername);
+      if (!req) return;
+      const name = formatName(req.target_user);
+      const action = await select(name, [
+        { value: 'accept', label: 'Accept' },
+        { value: 'reject', label: 'Reject' },
+        { value: 'back', label: 'Back' },
+      ]);
+      if (this._relayClient) {
+        try {
+          if (action === 'accept') {
+            await this._relayClient.approveRequest(targetUsername);
+            await channel.send(`✅ Accepted ${name}'s friend request!\nThey currently have no access to your collaborative knowledge. Use /friend access @${targetUsername} add <category> to grant access.`, channelId);
+          } else if (action === 'reject') {
+            await this._relayClient.rejectRequest(targetUsername);
+            await channel.send(`❌ Rejected ${name}'s friend request.`, channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`❌ Failed: ${err.message}`, channelId);
+        }
+      }
+    }
+  }
+
+  handleRelayPush(data: Record<string, unknown>, channelType: string, channelId: string): void {
+    const type = data.type as string;
+    const fromUser = data.from_user as string | undefined;
+    const fromDisplayName = data.from_display_name as string | null | undefined;
+    const displayName = fromDisplayName || fromUser || 'Unknown';
+
+    const channel = this.channels.get(channelType as any);
+    if (!channel) {
+      console.error(`[Agent] Relay push: channel '${channelType}' not found`);
+      return;
+    }
+
+    const messages: Record<string, string> = {
+      'FRIEND_ACCEPT': `✅ @${displayName} accepted your friend request!`,
+      'FRIEND_REJECT': `❌ @${displayName} rejected your friend request.`,
+      'FRIEND_CANCEL': `⏳ @${displayName} cancelled their friend request.`,
+      'FRIEND_REMOVE': `🗑 @${displayName} removed you from their friends.`,
+    };
+
+    const msg = messages[type];
+    if (msg) {
+      channel.send(msg, channelId).catch((err: unknown) => {
+        console.error('[Agent] Relay push notification failed:', err);
+      });
+    }
+  }
+}
+
+function formatTimeAgo(unixTimestamp: number): string {
+  const seconds = Math.floor(Date.now() / 1000) - unixTimestamp;
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(unixTimestamp * 1000).toLocaleDateString();
 }

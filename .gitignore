@@ -11,3 +11,6 @@ website/static/install.ps1
 config/
 soul/
 memory/
+!src/memory/
+!src/capabilities/memory/
+downloads/

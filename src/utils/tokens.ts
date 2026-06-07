@@ -37,18 +37,10 @@ export class TokenBudget {
   private requestLog: TokenLogEntry[] = [];
   private forceNext = false;
   private perAgentUsage: Map<string, number> = new Map();
-  /** Estimated tokens saved today by saver mode (resets daily). */
-  private dailySaved = 0;
-  /** Cumulative lifetime estimated tokens saved (persisted). */
-  private lifetimeSaved = 0;
 
   constructor(private config: MercuryConfig) {
     this.dailyBudget = config.tokens.dailyBudget;
     this.lastResetDate = new Date().toISOString().split('T')[0];
-    const lifetime = (config.tokens as any).saverTokensSavedLifetime;
-    if (typeof lifetime === 'number' && Number.isFinite(lifetime) && lifetime > 0) {
-      this.lifetimeSaved = lifetime;
-    }
     this.restore();
   }
 
@@ -140,34 +132,6 @@ export class TokenBudget {
     return `Token budget: ${used.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
   }
 
-  /**
-   * Record an estimated savings from Token Saver Mode. Updates both the
-   * per-day counter (resets at day rollover) and the lifetime counter
-   * (persisted to mercury.yaml). Negative or zero values are ignored.
-   */
-  recordSavings(estimatedTokens: number): void {
-    const n = safeNumber(estimatedTokens);
-    if (n <= 0) return;
-    this.resetIfNewDay();
-    this.dailySaved += n;
-    this.lifetimeSaved += n;
-    try {
-      (this.config.tokens as any).saverTokensSavedLifetime = this.lifetimeSaved;
-      saveConfig(this.config);
-    } catch (err) {
-      logger.warn({ err }, 'Failed to persist saver lifetime counter');
-    }
-  }
-
-  getSavedToday(): number {
-    this.resetIfNewDay();
-    return this.dailySaved;
-  }
-
-  getSavedLifetime(): number {
-    return this.lifetimeSaved;
-  }
-
   private resetIfNewDay(): void {
     const today = new Date().toISOString().split('T')[0];
     if (today !== this.lastResetDate) {
@@ -175,7 +139,6 @@ export class TokenBudget {
       this.lastResetDate = today;
       this.requestLog = [];
       this.perAgentUsage.clear();
-      this.dailySaved = 0;
       this.persist();
       logger.info('Token budget reset for new day');
     }
@@ -215,12 +178,8 @@ export class TokenBudget {
       }
       if (data.lastResetDate === today) {
         const restored = safeNumber(data.dailyUsed);
-        if (data.dailyUsed != null && !isNaN(restored) && restored > 0) {
+        if (!isNaN(restored)) {
           this.dailyUsed = restored;
-        } else {
-          // Recompute from valid log entries when dailyUsed is corrupted/null
-          this.dailyUsed = restoredLogs.reduce((sum, entry) => sum + entry.totalTokens, 0);
-          repaired = true;
         }
         this.requestLog = (data.requestLog ?? []).map((entry: any) => ({
           ...entry,

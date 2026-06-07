@@ -50,6 +50,7 @@ import {
   createSpotifyPlaylistsTool,
 } from './spotify/index.js';
 import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
+import { createStoreMemoryTool } from './memory/store-memory.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
@@ -71,7 +72,6 @@ export interface ChatCommandContext {
   memorySearch: (query: string, limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
   memorySetLearningPaused: (paused: boolean) => void;
   memoryClear: () => number;
-  memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
 }
 
 export class CapabilityRegistry {
@@ -83,8 +83,10 @@ export class CapabilityRegistry {
   private supervisor?: SubAgentSupervisor;
   private spotifyClient?: SpotifyClient;
   private userMemory?: UserMemoryStore;
-  private sendFileHandler?: (filePath: string) => Promise<void>;
-  private sendMessageHandler?: (content: string) => Promise<void>;
+  private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
+  private sendMessageHandler?: (content: string, channel?: string) => Promise<void>;
+  private userMemoryGetter: () => import('../memory/user-memory.js').UserMemoryStore | null = () => null;
+  private ckGetter: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null = () => null;
   private currentChannelId = 'cli';
   private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
@@ -124,12 +126,26 @@ export class CapabilityRegistry {
     this.currentCwd = dir;
   }
 
-  setSendFileHandler(handler: (filePath: string) => Promise<void>): void {
+  setSendFileHandler(handler: (filePath: string, channel?: string) => Promise<void>): void {
     this.sendFileHandler = handler;
   }
 
-  setSendMessageHandler(handler: (content: string) => Promise<void>): void {
+  setSendMessageHandler(handler: (content: string, channel?: string) => Promise<void>): void {
     this.sendMessageHandler = handler;
+  }
+
+  private activeChannelNames: string[] = [];
+
+  setActiveChannels(channels: string[]): void {
+    this.activeChannelNames = channels;
+  }
+
+  setMemoryStores(
+    userMemory: () => import('../memory/user-memory.js').UserMemoryStore | null,
+    ck: () => import('../memory/collaborative-knowledge-store.js').CollaborativeKnowledgeStore | null,
+  ): void {
+    this.userMemoryGetter = userMemory;
+    this.ckGetter = ck;
   }
 
   setSupervisor(supervisor: SubAgentSupervisor): void {
@@ -171,7 +187,7 @@ export class CapabilityRegistry {
       this.tools.edit_file = createEditFileTool(this.permissions, () => this.getCwd());
 
       if (this.sendFileHandler) {
-        this.tools.send_file = createSendFileTool(this.permissions, () => this.getCwd(), this.sendFileHandler);
+        this.tools.send_file = createSendFileTool(this.permissions, () => this.getCwd(), this.sendFileHandler, this.activeChannelNames);
       }
 
       this.tools.approve_scope = createApproveScopeTool(this.permissions, () => this.getCwd());
@@ -180,7 +196,7 @@ export class CapabilityRegistry {
     }
 
     if (this.sendMessageHandler) {
-      this.tools.send_message = createSendMessageTool(this.sendMessageHandler);
+      this.tools.send_message = createSendMessageTool(this.sendMessageHandler, this.activeChannelNames);
       logger.info('Messaging tool registered');
     }
 
@@ -209,6 +225,9 @@ export class CapabilityRegistry {
       this.tools.budget_status = createBudgetStatusTool(this.tokenBudget);
       logger.info('Budget tool registered');
     }
+
+    this.tools.store_memory = createStoreMemoryTool(this.userMemoryGetter, this.ckGetter);
+    logger.info('Memory store tool registered');
 
     if (this.userMemory) {
       this.tools.save_memory = createSaveMemoryTool(this.userMemory);
@@ -271,6 +290,32 @@ export class CapabilityRegistry {
 
   getToolNames(): string[] {
     return Object.keys(this.tools);
+  }
+
+  /**
+   * Tools available to a non-admin group member ("guest").
+   *
+   * SECURITY BOUNDARY: this is a deny-by-default ALLOWLIST, not a blocklist.
+   * A guest is someone who was approved to talk to Mercury in a shared group
+   * but is NOT the owner/admin. They must never be able to touch the owner's
+   * machine, accounts, or data: no shell (run_command/cd), no filesystem
+   * (read/write/list/edit/delete), no git/github, no scheduling, skills,
+   * sub-agents, memory writes, Spotify, file sending, or cross-channel
+   * messaging. They get only conversation plus public, read-only information
+   * lookup. Any tool added in the future is inaccessible to guests until it is
+   * explicitly added here.
+   */
+  private static readonly GUEST_ALLOWED_TOOLS = new Set([
+    'fetch_url',  // read-only public web fetch
+    'ask_user',   // ask the guest a clarifying question in-channel
+  ]);
+
+  getGuestTools(): Record<string, Tool> {
+    const filtered: Record<string, Tool> = {};
+    for (const [name, tool] of Object.entries(this.tools)) {
+      if (CapabilityRegistry.GUEST_ALLOWED_TOOLS.has(name)) filtered[name] = tool;
+    }
+    return filtered;
   }
 
   getSkillContext(): string {

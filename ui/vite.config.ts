@@ -10,15 +10,17 @@ export default defineConfig({
       registerType: "autoUpdate",
       injectRegister: "auto",
       workbox: {
-        // Don't precache anything - always fetch fresh from network
-        globPatterns: [],
-        navigateFallback: null,
-        runtimeCaching: [],
-        // Take control immediately and skip waiting so updates apply on next load
-        skipWaiting: true,
-        clientsClaim: true,
-        // Clean up any existing precaches from previous SW versions
-        cleanupOutdatedCaches: true,
+        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        runtimeCaching: [
+          {
+            urlPattern: /\/api\//,
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "api-cache",
+              expiration: { maxEntries: 50, maxAgeSeconds: 300 },
+            },
+          },
+        ],
       },
       manifest: {
         name: "Mercury — AI Agent",
@@ -32,19 +34,19 @@ export default defineConfig({
         start_url: "/",
         icons: [
           {
-            src: "/logo-dark.png",
+            src: "/icons/icon-192.svg",
             sizes: "192x192",
-            type: "image/png",
+            type: "image/svg+xml",
           },
           {
-            src: "/logo-dark.png",
+            src: "/icons/icon-512.svg",
             sizes: "512x512",
-            type: "image/png",
+            type: "image/svg+xml",
           },
           {
-            src: "/logo-dark.png",
+            src: "/icons/icon-512-maskable.svg",
             sizes: "512x512",
-            type: "image/png",
+            type: "image/svg+xml",
             purpose: "maskable",
           },
         ],
