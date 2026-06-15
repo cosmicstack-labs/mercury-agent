@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import process from 'node:process';
 import chalk from 'chalk';
 import { getMercuryHome } from '../utils/config.js';
+import { killStaleSignalCliProcesses } from '../signal/jsonrpc.js';
 
 /**
  * Detect whether Mercury is running from a standalone, single-file binary
@@ -134,20 +135,22 @@ export function startBackground(): void {
   }
 }
 
-export function stopDaemon(): void {
+export async function stopDaemon(): Promise<void> {
   const status = getDaemonStatus();
 
   if (!status.pid) {
     console.log(chalk.yellow('  Mercury is not running as a daemon.'));
+    killStaleSignalCliProcesses();
     console.log('');
-    process.exit(0);
+    return;
   }
 
   if (!status.running) {
     console.log(chalk.yellow(`  Stale PID file found (PID: ${status.pid} is not running). Cleaning up.`));
     try { unlinkSync(pidPath()); } catch {}
+    killStaleSignalCliProcesses();
     console.log('');
-    process.exit(0);
+    return;
   }
 
   try {
@@ -156,34 +159,43 @@ export function stopDaemon(): void {
     } else {
       process.kill(status.pid, 'SIGTERM');
     }
-    console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   } catch {
     console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
+    try { unlinkSync(pidPath()); } catch {}
+    killStaleSignalCliProcesses();
+    console.log('');
+    return;
+  }
+
+  console.log(chalk.dim(`  Stopping Mercury (PID: ${status.pid})...`));
+
+  // Wait up to 5 seconds for the process to exit
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(status.pid)) break;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  if (isProcessRunning(status.pid)) {
+    console.log(chalk.yellow('  Mercury did not exit gracefully, forcing...'));
+    try {
+      process.kill(status.pid, 'SIGKILL');
+    } catch { /* already dead */ }
+    // Wait briefly for SIGKILL to take effect
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
   try { unlinkSync(pidPath()); } catch {}
+
+  killStaleSignalCliProcesses();
+
+  console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   console.log('');
 }
 
 export async function restartDaemon(): Promise<void> {
-  const status = getDaemonStatus();
-
-  if (status.running && status.pid) {
-    console.log(chalk.yellow(`  Stopping Mercury (PID: ${status.pid})...`));
-    try {
-      if (process.platform === 'win32') {
-        process.kill(status.pid);
-      } else {
-        process.kill(status.pid, 'SIGTERM');
-      }
-    } catch {
-      // process may have already exited
-    }
-    try { unlinkSync(pidPath()); } catch {}
-    console.log(chalk.green('  Mercury stopped.'));
-    // Wait for port release before restarting
-    const waitMs = process.platform === 'win32' ? 2000 : 1000;
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  if (getDaemonStatus().running) {
+    await stopDaemon();
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));

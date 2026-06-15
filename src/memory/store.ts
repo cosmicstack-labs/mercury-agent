@@ -53,6 +53,10 @@ export interface EpisodicEvent {
   metadata?: Record<string, unknown>;
 }
 
+function sanitizeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_:-]/g, '_');
+}
+
 export class ShortTermMemory {
   private dir: string;
   private maxMessages: number;
@@ -62,6 +66,10 @@ export class ShortTermMemory {
     this.dir = join(getMemoryDir(), 'short-term');
     this.maxMessages = config.memory.shortTermMaxMessages;
     mkdirSync(this.dir, { recursive: true });
+  }
+
+  private filePath(conversationId: string): string {
+    return join(this.dir, `${sanitizeId(conversationId)}.json`);
   }
 
   add(conversationId: string, entry: MemoryEntry): void {
@@ -86,20 +94,20 @@ export class ShortTermMemory {
 
   clear(conversationId: string): void {
     this.conversations.delete(conversationId);
-    const filepath = join(this.dir, `${conversationId}.json`);
+    const filepath = this.filePath(conversationId);
     if (existsSync(filepath)) unlinkSync(filepath);
   }
 
   clearAll(): void {
     for (const conversationId of this.conversations.keys()) {
-      const filepath = join(this.dir, `${conversationId}.json`);
+      const filepath = this.filePath(conversationId);
       if (existsSync(filepath)) unlinkSync(filepath);
     }
     this.conversations.clear();
   }
 
   private loadFromDisk(conversationId: string): MemoryEntry[] {
-    const filepath = join(this.dir, `${conversationId}.json`);
+    const filepath = this.filePath(conversationId);
     if (!existsSync(filepath)) return [];
     try {
       return JSON.parse(readFileSync(filepath, 'utf-8'));
@@ -109,7 +117,7 @@ export class ShortTermMemory {
   }
 
   private saveToDisk(conversationId: string, messages: MemoryEntry[]): void {
-    const filepath = join(this.dir, `${conversationId}.json`);
+    const filepath = this.filePath(conversationId);
     writeFileSync(filepath, JSON.stringify(messages), 'utf-8');
   }
 }

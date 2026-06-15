@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
+import type { SignalAccessUser, SignalPendingRequest } from '../types/channel.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
 
@@ -92,6 +93,16 @@ export interface MercuryConfig {
       pairedUserId?: number;
       pairedChatId?: number;
       pairedUsername?: string;
+    };
+    signal: {
+      enabled: boolean;
+      phoneNumber: string;
+      mode: string;
+      groupId?: string;
+      groupName?: string;
+      admins: SignalAccessUser[];
+      members: SignalAccessUser[];
+      pending: SignalPendingRequest[];
     };
   };
   github: {
@@ -263,6 +274,16 @@ export function getDefaultConfig(): MercuryConfig {
         members: [],
         pending: [],
       },
+      signal: {
+        enabled: getEnvBool('SIGNAL_ENABLED', false),
+        phoneNumber: getEnv('SIGNAL_PHONE_NUMBER', ''),
+        mode: getEnv('SIGNAL_MODE', 'group'),
+        groupId: getEnv('SIGNAL_GROUP_ID', ''),
+        groupName: getEnv('SIGNAL_GROUP_NAME', 'Mercury'),
+        admins: [],
+        members: [],
+        pending: [],
+      },
     },
     github: {
       username: getEnv('GITHUB_USERNAME', ''),
@@ -317,7 +338,9 @@ export function loadConfig(): MercuryConfig {
     const defaults = getDefaultConfig();
     return migrateLegacyOllamaLocalBaseUrl(
       migrateLegacyOllamaCloudBaseUrl(
-        migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+        migrateLegacySignalAccess(
+          migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+        ),
       ),
     );
   }
@@ -619,5 +642,123 @@ export function migrateLegacyOllamaLocalBaseUrl(config: MercuryConfig): MercuryC
     config.providers.ollamaLocal.baseUrl = local.replace('/api', '/v1');
     saveConfig(config);
   }
+  return config;
+}
+
+// ── Signal access helpers ────────────────────────────────────────
+
+export function getSignalApprovedUsers(config: MercuryConfig): SignalAccessUser[] {
+  return [...config.channels.signal.admins, ...config.channels.signal.members];
+}
+
+export function findSignalAdmin(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
+  return config.channels.signal.admins.find((u) => u.phoneNumber === phoneNumber);
+}
+
+export function findSignalApprovedUser(config: MercuryConfig, phoneNumber: string): SignalAccessUser | undefined {
+  return getSignalApprovedUsers(config).find((u) => u.phoneNumber === phoneNumber);
+}
+
+export function findSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | undefined {
+  return config.channels.signal.pending.find((r) => r.phoneNumber === phoneNumber);
+}
+
+export function findSignalPendingRequestByPairingCode(config: MercuryConfig, pairingCode: string): SignalPendingRequest | undefined {
+  return config.channels.signal.pending.find((r) => r.pairingCode === pairingCode);
+}
+
+export function hasSignalAdmins(config: MercuryConfig): boolean {
+  return config.channels.signal.admins.length > 0;
+}
+
+export function getSignalAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.signal.admins.length} admin${config.channels.signal.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.signal.members.length} member${config.channels.signal.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.signal.pending.length} pending`;
+}
+
+export function addSignalPendingRequest(
+  config: MercuryConfig,
+  request: Omit<SignalPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): SignalPendingRequest {
+  const existing = findSignalPendingRequest(config, request.phoneNumber);
+  if (existing) {
+    existing.pairingCode = request.pairingCode || existing.pairingCode;
+    if (request.uuid) existing.uuid = request.uuid;
+    if (request.name) existing.name = request.name;
+    return existing;
+  }
+
+  const created: SignalPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.signal.pending.push(created);
+  return created;
+}
+
+export function approveSignalPendingRequest(
+  config: MercuryConfig,
+  phoneNumber: string,
+  role: 'admin' | 'member' = 'member',
+): SignalAccessUser | null {
+  const request = findSignalPendingRequest(config, phoneNumber);
+  if (!request) return null;
+
+  const approvedUser: SignalAccessUser = {
+    phoneNumber: request.phoneNumber,
+    role,
+    pairedAt: new Date().toISOString(),
+  };
+
+  config.channels.signal.pending = config.channels.signal.pending
+    .filter((r) => r.phoneNumber !== phoneNumber);
+  config.channels.signal.admins = config.channels.signal.admins
+    .filter((u) => u.phoneNumber !== phoneNumber);
+  config.channels.signal.members = config.channels.signal.members
+    .filter((u) => u.phoneNumber !== phoneNumber);
+
+  if (role === 'admin') {
+    config.channels.signal.admins.push(approvedUser);
+  } else {
+    config.channels.signal.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+export function approveSignalPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): SignalAccessUser | null {
+  const request = findSignalPendingRequestByPairingCode(config, pairingCode);
+  if (!request) return null;
+  const role = hasSignalAdmins(config) ? 'member' : 'admin';
+  return approveSignalPendingRequest(config, request.phoneNumber, role);
+}
+
+export function rejectSignalPendingRequest(config: MercuryConfig, phoneNumber: string): SignalPendingRequest | null {
+  const request = findSignalPendingRequest(config, phoneNumber);
+  if (!request) return null;
+  config.channels.signal.pending = config.channels.signal.pending
+    .filter((r) => r.phoneNumber !== phoneNumber);
+  return request;
+}
+
+export function clearSignalAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.signal.admins = [];
+  config.channels.signal.members = [];
+  config.channels.signal.pending = [];
+  delete config.channels.signal.groupId;
+  delete config.channels.signal.groupName;
+  return config;
+}
+
+export function migrateLegacySignalAccess(config: MercuryConfig): MercuryConfig {
+  const signal = config.channels.signal;
+  if (!signal) return config;
+  signal.admins = signal.admins || [];
+  signal.members = signal.members || [];
+  signal.pending = signal.pending || [];
   return config;
 }

@@ -231,3 +231,51 @@ export function mdToTelegram(text: string): string {
 
   return out;
 }
+
+export function mdToSignal(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
+    const placeholder = `__CB_${codeBlocks.length}__`;
+    codeBlocks.push(code.trim());
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `__IC_${inlineCodes.length}__`;
+    inlineCodes.push(code);
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `__LK_${links.length}__`;
+    links.push(`${label} (${href})`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '*$1*');
+  out = out.replace(/^## (.+)$/gm, '*$1*');
+  out = out.replace(/^# (.+)$/gm, '*$1*');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '_$1_');
+  out = out.replace(/~~([^~]+)~~/g, '~$1~');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`__IC_${i}__`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`__CB_${i}__`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`__LK_${i}__`, links[i]);
+  }
+
+  if (out.length > 4000) {
+    out = out.slice(0, 3990) + '...';
+  }
+
+  return out;
+}

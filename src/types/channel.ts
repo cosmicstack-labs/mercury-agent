@@ -52,3 +52,32 @@ export interface TelegramChannelConfig extends ChannelConfig {
 export interface CLIChannelConfig extends ChannelConfig {
   type: 'cli';
 }
+
+export type SignalMode = 'private' | 'group';
+
+export interface SignalAccessUser {
+  phoneNumber: string;
+  uuid?: string;
+  name?: string;
+  role: 'admin' | 'member';
+  pairedAt: string;
+}
+
+export interface SignalPendingRequest {
+  phoneNumber: string;
+  pairingCode: string;
+  requestedAt: string;
+  uuid?: string;
+  name?: string;
+}
+
+export interface SignalChannelConfig extends ChannelConfig {
+  type: 'signal';
+  phoneNumber: string;
+  mode: SignalMode;
+  groupId?: string;
+  groupName?: string;
+  admins: SignalAccessUser[];
+  members: SignalAccessUser[];
+  pending: SignalPendingRequest[];
+}

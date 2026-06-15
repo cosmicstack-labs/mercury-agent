@@ -23,10 +23,16 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getSignalAccessSummary,
+  hasSignalAdmins as hasSignalAdminsFn,
+  findSignalPendingRequest,
+  approveSignalPendingRequestByPairingCode,
+  clearSignalAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
+import { redactPhone } from './utils/redact.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { UserMemoryStore } from './memory/user-memory.js';
@@ -40,6 +46,7 @@ import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { SignalChannel } from './channels/signal.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -571,6 +578,35 @@ function formatTelegramUser(user: {
   return `${user.userId}${username}${firstName}`;
 }
 
+function formatSignalUser(user: {
+  phoneNumber: string;
+  name?: string;
+  role?: string;
+}): string {
+  const name = user.name ? ` (${user.name})` : '';
+  const role = user.role ? ` [${user.role}]` : '';
+  return `${redactPhone(user.phoneNumber)}${name}${role}`;
+}
+
+function printSignalAccessState(config: MercuryConfig): void {
+  const admins = config.channels.signal.admins;
+  const members = config.channels.signal.members;
+  const pending = config.channels.signal.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => `${entry.phoneNumber} [code: ${entry.pairingCode}]`).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+  console.log(`  Mode:            ${chalk.white(config.channels.signal.mode)}`);
+  if (config.channels.signal.groupId) {
+    console.log(`  Group:           ${chalk.white(config.channels.signal.groupName || config.channels.signal.groupId)}`);
+  }
+  console.log(`  Admins:          ${admins.length > 0 ? chalk.green(admins.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:         ${members.length > 0 ? chalk.green(members.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
 function printTelegramAccessState(config: MercuryConfig): void {
   const admins = config.channels.telegram.admins;
   const members = config.channels.telegram.members;
@@ -643,6 +679,256 @@ async function completeInitialTelegramPairing(config: MercuryConfig): Promise<vo
   } finally {
     await telegram.stop();
   }
+}
+
+async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> {
+  if (!config.channels.signal.enabled || !config.channels.signal.phoneNumber) {
+    return;
+  }
+
+  // Already paired
+  if (hasSignalAdminsFn(config)) {
+    console.log(chalk.green('  ✓ Signal already paired.'));
+    if (config.channels.signal.mode === 'group' && config.channels.signal.groupName) {
+      console.log(chalk.dim(`  Group: ${config.channels.signal.groupName}`));
+    }
+    console.log(chalk.dim('  To unregister, run: mercury signal unregister'));
+    console.log('');
+    const keepConfig = await ask(chalk.white('  Keep the existing configuration? (Y/n): '));
+    if (keepConfig.toLowerCase() !== 'n' && keepConfig.toLowerCase() !== 'no') {
+      return;
+    }
+    // Clear pairing data but keep phone number and mode — fall through to fresh pairing
+    const phoneNumberToDelete = config.channels.signal.phoneNumber;
+    config.channels.signal.admins = [];
+    config.channels.signal.members = [];
+    config.channels.signal.pending = [];
+    config.channels.signal.groupId = undefined;
+    config.channels.signal.groupName = undefined;
+    saveConfig(config);
+    console.log(chalk.dim('  Configuration cleared. Starting fresh pairing...'));
+
+    // Kill any running signal-cli daemon so group list is fresh
+    try {
+      const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+      killStaleSignalCliProcesses();
+    } catch { /* ignore */ }
+
+    // Delete signal-cli local account data so the fresh setup triggers a new device link
+    try {
+      const { deleteSignalCliAccountData } = await import('./signal/setup.js');
+      if (phoneNumberToDelete) {
+        deleteSignalCliAccountData(phoneNumberToDelete);
+      }
+    } catch { /* ignore */ }
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Signal Setup'));
+
+  const { ensureSignalCli, checkJavaAvailable, isNativeAvailable } = await import('./signal/binary.js');
+  const { checkSignalSetup, registerSignalNumber, verifySignalNumber, startLinking, waitForLinkCompletion, cancelLinking, printQrCode } = await import('./signal/setup.js');
+
+  // Step 1: Check Java if needed (macOS/Windows have no native binary)
+  if (!isNativeAvailable() && !checkJavaAvailable()) {
+    console.log(chalk.red('  ✗ Java (JRE 17+) is required for Signal on this platform.'));
+    console.log(chalk.dim('  No native signal-cli binary is available for macOS/Windows.'));
+    console.log(chalk.dim('  Install Java: https://adoptium.net/ or run: brew install openjdk'));
+    console.log(chalk.dim('  Then re-run: mercury doctor'));
+    return;
+  }
+
+  // Step 2: Download signal-cli binary
+  try {
+    const binaryPath = await ensureSignalCli();
+    const { isWrapperScript, isJarBinary: isJar } = await import('./signal/binary.js');
+    const binaryType = isWrapperScript(binaryPath) ? 'JAR (wrapper)'
+      : isJar(binaryPath) ? 'JAR'
+      : 'native binary';
+    console.log(chalk.green(`  ✓ signal-cli installed (${binaryType})`));
+  } catch (err: any) {
+    console.log(chalk.red(`  ✗ Failed to download signal-cli: ${err.message}`));
+    if (!isNativeAvailable()) {
+      console.log(chalk.dim('  Make sure Java (JRE 17+) is installed and accessible.'));
+    }
+    console.log(chalk.dim('  You can try again later with: mercury doctor'));
+    return;
+  }
+
+  // Step 3: Check if already linked
+  const status = await checkSignalSetup(config);
+  if (status.linked) {
+    console.log(chalk.green('  ✓ Signal device is already linked.'));
+  } else {
+    // Step 3b: Register number if needed
+    if (!status.registered) {
+      console.log(chalk.yellow('  This phone number is not registered with Signal.'));
+      console.log(chalk.dim('  You need to register it first:'));
+
+      const registerAnswer = await ask(chalk.white('  Register this number with Signal? (y/N): '));
+      if (registerAnswer.toLowerCase() !== 'y' && registerAnswer.toLowerCase() !== 'yes') {
+        console.log(chalk.dim('  You can register later by running: mercury signal register'));
+        return;
+      }
+
+      const voice = await ask(chalk.white('  Verify via SMS or voice call? (sms/voice) [sms]: '));
+      const useVoice = voice.toLowerCase().startsWith('voice');
+
+      console.log(chalk.dim('  Sending verification code...'));
+      const regResult = await registerSignalNumber(config.channels.signal.phoneNumber, useVoice);
+      if (!regResult.success) {
+        console.log(chalk.red(`  ✗ Registration failed: ${regResult.error}`));
+        return;
+      }
+      console.log(chalk.green('  ✓ Verification code sent.'));
+
+      const code = await ask(chalk.white('  Enter the verification code: '));
+      if (!code) {
+        console.log(chalk.red('  Verification code is required.'));
+        return;
+      }
+
+      const verifyResult = await verifySignalNumber(config.channels.signal.phoneNumber, code.trim());
+      if (!verifyResult.success) {
+        console.log(chalk.red(`  ✗ Verification failed: ${verifyResult.error}`));
+        return;
+      }
+      console.log(chalk.green('  ✓ Number verified.'));
+    }
+
+    // Step 4: Link as secondary device
+    console.log('');
+    console.log(chalk.dim('  Linking Mercury as a secondary device on your Signal account.'));
+    console.log(chalk.dim('  1. Open Signal on your phone'));
+    console.log(chalk.dim('  2. Go to Settings > Linked Devices'));
+    console.log(chalk.dim('  3. Tap "+" to add a new device'));
+    console.log('');
+
+    const linkAnswer = await ask(chalk.white('  Ready to link? Press Enter to generate a QR code...'));
+    const session = await startLinking();
+    if (!session) {
+      console.log(chalk.red('  ✗ Failed to generate linking URI.'));
+      console.log(chalk.dim('  Make sure signal-cli is installed and Java is available.'));
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.cyan('  Scan this QR code with Signal:'));
+    console.log('');
+    printQrCode(session.uri);
+    console.log('');
+    console.log(chalk.dim('  Or open this URI manually:'));
+    console.log(chalk.white(`  ${session.uri}`));
+    console.log('');
+    console.log(chalk.dim('  Mercury is waiting for you to complete the link...'));
+
+    const linked = await waitForLinkCompletion(session, 120_000);
+    if (linked) {
+      console.log(chalk.green('  ✓ Signal device linked successfully.'));
+    } else {
+      console.log(chalk.yellow('  Linking timed out or failed.'));
+      console.log(chalk.dim('  Run mercury doctor to try again.'));
+      return;
+    }
+  }
+
+  // Step 5: Pairing — start daemon and wait for pairing code
+  console.log('');
+  console.log(chalk.bold.white('  Signal Pairing'));
+
+  const signalChannel = new SignalChannel(config);
+  try {
+    await signalChannel.start();
+  } catch (err: any) {
+    console.log(chalk.red(`  ✗ Failed to start Signal daemon: ${err.message}`));
+    console.log(chalk.dim('  Make sure signal-cli is working by running: mercury signal status'));
+    console.log(chalk.dim('  You can pair manually by sending /pair in Signal and running: mercury signal approve <code>'));
+    return;
+  }
+
+  if (!signalChannel.running) {
+    console.log(chalk.red('  ✗ Signal daemon did not start.'));
+    console.log(chalk.dim('  You can pair manually by sending /pair in Signal and running: mercury signal approve <code>'));
+    return;
+  }
+
+  // Detect Mercury group now that the daemon is running
+  let groupFound = false;
+  if (config.channels.signal.mode === 'group') {
+    if (config.channels.signal.groupId) {
+      groupFound = true;
+      console.log(chalk.dim('  Your Mercury group is already configured.'));
+    } else {
+      console.log(chalk.dim('  Searching for "Mercury" group...'));
+      try {
+        const group = await signalChannel.listGroups();
+        if (group) {
+          config.channels.signal.groupId = group.groupId;
+          config.channels.signal.groupName = group.groupName;
+          saveConfig(config);
+          groupFound = true;
+          console.log(chalk.green(`  ✓ Found group: ${group.groupName}`));
+        }
+      } catch {
+        // Group search may fail
+      }
+    }
+
+    if (groupFound) {
+      console.log(chalk.dim('  Send /pair in the Mercury group to get a pairing code.'));
+    } else {
+      console.log(chalk.dim('  1. Create a Signal group named "Mercury" (or use an existing one)'));
+      console.log(chalk.dim('  2. Add your linked number to the group'));
+      console.log(chalk.dim('  3. Send /pair in the group'));
+    }
+  } else {
+    // Private mode: auto-pair the linked number as admin
+    // In private mode, the linked number IS the admin — no need for a pairing code
+    if (!hasSignalAdminsFn(config) && config.channels.signal.phoneNumber) {
+      config.channels.signal.admins.push({
+        phoneNumber: config.channels.signal.phoneNumber,
+        role: 'admin',
+        pairedAt: new Date().toISOString(),
+      });
+      saveConfig(config);
+      console.log(chalk.green('  ✓ Auto-paired as admin (private mode).'));
+      console.log(chalk.dim('  Mercury will respond to messages in your "Note to Self" chat.'));
+      console.log('');
+      await signalChannel.stop();
+      saveConfig(config);
+      return;
+    }
+    console.log(chalk.dim('  Send /pair in your Signal "Note to Self" chat to get a pairing code.'));
+  }
+  console.log('');
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Signal Pairing Code (or press Enter to skip): '));
+      if (!pairingCode) {
+        console.log(chalk.dim('  You can pair later by sending /pair in Signal and running: mercury signal approve <code>'));
+        break;
+      }
+
+      // Reload config from disk — SignalChannel may have saved the pending request
+      const freshConfig = loadConfig();
+      const approved = approveSignalPendingRequestByPairingCode(freshConfig, pairingCode.trim());
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid. Make sure you sent /pair in Signal and enter the exact code.'));
+        continue;
+      }
+
+      Object.assign(config, freshConfig);
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Signal paired. First admin: ${formatSignalUser(approved)}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await signalChannel.stop();
+  }
+
+  saveConfig(config);
 }
 
 async function configure(existingConfig?: MercuryConfig): Promise<void> {
@@ -1051,6 +1337,145 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialTelegramPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Signal (optional)'));
+  if (isReconfig && config.channels.signal.phoneNumber) {
+    console.log(chalk.dim('  Leave empty to keep current number. Enter "none" to disable Signal.'));
+    console.log(chalk.dim('  Enter "reset" to start fresh (clear config, optionally delete binary).'));
+    console.log(chalk.dim('  Enter "unregister" to unlink this device from Signal and clear all data.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+    console.log(chalk.dim('  Include country code, e.g. +1 for US, +44 for UK, +91 for India.'));
+    console.log(chalk.dim('  Signal lets you chat with Mercury through a Signal group or private chat.'));
+  }
+  console.log('');
+
+  const signalPhoneCurrent = isReconfig && config.channels.signal.phoneNumber ? ` [${redactPhone(config.channels.signal.phoneNumber)}]` : '';
+  const signalPhoneInput = await ask(chalk.white(`  Signal phone number${signalPhoneCurrent}: `));
+
+  if (isReconfig && signalPhoneInput.toLowerCase() === 'none') {
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    clearSignalAccess(config);
+    saveConfig(config);
+  } else if (isReconfig && signalPhoneInput.toLowerCase() === 'unregister') {
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will unlink this device from Signal and clear all Mercury Signal data.'));
+    console.log(chalk.yellow('  Mercury will no longer be able to send or receive Signal messages.'));
+    console.log('');
+    const confirmUnregister = await ask(chalk.white('  Continue? (y/N): '));
+    if (confirmUnregister.toLowerCase() !== 'y' && confirmUnregister.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+    } else {
+      const phoneNumberToDelete = config.channels.signal.phoneNumber;
+
+      // Send goodbye message (best effort, skip if signal-cli not installed or target gone)
+      const { findSignalCli, sendSignalMessage } = await import('./signal/setup.js');
+      if (findSignalCli()) {
+        const target: { groupId?: string; recipient?: string } = {};
+        if (config.channels.signal.mode === 'group' && config.channels.signal.groupId) {
+          target.groupId = config.channels.signal.groupId;
+        } else if (config.channels.signal.admins.length > 0) {
+          target.recipient = config.channels.signal.admins[0].phoneNumber;
+        }
+        if (target.groupId || target.recipient) {
+          try {
+            await sendSignalMessage(config.channels.signal.phoneNumber, 'Mercury has been unregistered from this conversation. It will no longer respond here. To reconnect, the admin needs to set up Signal again with: mercury doctor', target);
+          } catch { /* best effort */ }
+        }
+      }
+
+      const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+      killStaleSignalCliProcesses();
+
+      // Unregister from Signal server
+      console.log(chalk.dim('  Unlinking device from Signal...'));
+      const { unregisterSignalNumber } = await import('./signal/setup.js');
+      const unregResult = await unregisterSignalNumber(config.channels.signal.phoneNumber);
+      if (unregResult.success) {
+        console.log(chalk.green('  ✓ Device unlinked from Signal server.'));
+      } else {
+        console.log(chalk.yellow('  ⚠ Could not reach Signal server to unlink device.'));
+        console.log(chalk.dim('  Local data has been cleared. The device will be unlinked automatically.'));
+      }
+
+      clearSignalAccess(config);
+      config.channels.signal.enabled = false;
+      config.channels.signal.phoneNumber = '';
+      config.channels.signal.groupId = undefined;
+      config.channels.signal.groupName = undefined;
+      saveConfig(config);
+
+      const { deleteSignalCliAccountData } = await import('./signal/setup.js');
+      if (phoneNumberToDelete) {
+        deleteSignalCliAccountData(phoneNumberToDelete);
+      }
+
+      console.log(chalk.green('  ✓ Signal data cleared.'));
+
+      const setupNew = await ask(chalk.white('  Set up Signal with a new number now? (y/N): '));
+      if (setupNew.toLowerCase() === 'y' || setupNew.toLowerCase() === 'yes') {
+        const newPhone = await ask(chalk.white('  New Signal phone number (e.g. +1234567890): '));
+        if (newPhone) {
+          config.channels.signal.phoneNumber = newPhone.trim();
+          config.channels.signal.enabled = true;
+          const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+          config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+          saveConfig(config);
+        }
+      }
+    }
+  } else if (isReconfig && signalPhoneInput.toLowerCase() === 'reset') {
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will clear all Signal access and group connection.'));
+    const deleteBinary = await ask(chalk.white('  Also delete the signal-cli binary? (y/N): '));
+    if (deleteBinary.toLowerCase() === 'y' || deleteBinary.toLowerCase() === 'yes') {
+      const { removeSignalCli, getSignalCliDir } = await import('./signal/setup.js');
+      const { existsSync } = await import('node:fs');
+      if (existsSync(getSignalCliDir())) {
+        removeSignalCli();
+        console.log(chalk.green('  ✓ Signal binary removed.'));
+      }
+    }
+
+    console.log(chalk.green('  ✓ Signal config reset.'));
+    console.log(chalk.dim('  Continue below to set up Signal with a new number.'));
+    console.log('');
+
+    const newPhone = await ask(chalk.white('  New Signal phone number (e.g. +1234567890): '));
+    if (newPhone) {
+      config.channels.signal.phoneNumber = newPhone.trim();
+      config.channels.signal.enabled = true;
+
+      const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+      config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+
+      saveConfig(config);
+    }
+  } else if (signalPhoneInput) {
+    if (signalPhoneInput !== config.channels.signal.phoneNumber) {
+      clearSignalAccess(config);
+    }
+    config.channels.signal.phoneNumber = signalPhoneInput.trim();
+    config.channels.signal.enabled = true;
+
+    const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+    config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+
+    saveConfig(config);
+  } else if (!config.channels.signal.phoneNumber) {
+    config.channels.signal.enabled = false;
+    saveConfig(config);
+  }
+
+  await completeInitialSignalSetup(config);
 
   hr();
   console.log('');
@@ -1911,8 +2336,8 @@ program
 program
   .command('stop')
   .description('Stop a background Mercury process')
-  .action(() => {
-    stopDaemon();
+  .action(async () => {
+    await stopDaemon();
   });
 
 program
@@ -2002,6 +2427,10 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+    console.log(`  Signal:   ${config.channels.signal.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.signal.phoneNumber) {
+      console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+    }
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
@@ -2021,6 +2450,9 @@ program
     console.log(`  Daemon:   ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
     console.log(`  Home:     ${chalk.dim(home)}`);
     printTelegramAccessState(config);
+    if (config.channels.signal.phoneNumber) {
+      printSignalAccessState(config);
+    }
     console.log('');
   });
 
@@ -2230,6 +2662,279 @@ telegramCmd
     console.log('');
   });
 
+const signalCmd = program
+  .command('signal')
+  .description('Manage Signal channel access and setup');
+
+signalCmd
+  .command('approve <code>')
+  .description('Approve a pending Signal pairing request by code')
+  .action(async (code: string) => {
+    const config = loadConfig();
+
+    if (!hasSignalAdminsFn(config)) {
+      const approved = approveSignalPendingRequestByPairingCode(config, code.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending Signal pairing found for code ${code.trim()}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Signal admin ${approved.phoneNumber}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const pending = findSignalPendingRequest(config, code.trim());
+    if (!pending) {
+      console.log('');
+      console.log(chalk.red(`  No pending Signal pairing found for ${code.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.yellow(`  A Signal admin already exists. New members must be approved by an admin in Signal.`));
+    console.log('');
+  });
+
+signalCmd
+  .command('unpair')
+  .description('Reset all Signal access and group connection')
+  .action(() => {
+    const config = loadConfig();
+    const hasAny = config.channels.signal.admins.length > 0
+      || config.channels.signal.members.length > 0
+      || config.channels.signal.pending.length > 0;
+
+    if (!hasAny) {
+      console.log('');
+      console.log(chalk.dim('  Signal access is already empty.'));
+      console.log('');
+      return;
+    }
+
+    clearSignalAccess(config);
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.green('  ✓ Signal access reset.'));
+    console.log(chalk.dim('  Send /pair in Signal to reconnect.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('reset')
+  .description('Full reset: clear Signal access, delete binary, and unlink device')
+  .option('--keep-binary', 'Keep the signal-cli binary (only clear config)')
+  .action(async (opts) => {
+    const { removeSignalCli, getSignalCliDir, checkJavaAvailable, ensureSignalCli } = await import('./signal/setup.js');
+    const config = loadConfig();
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will:'));
+    console.log(chalk.yellow('  • Clear all Signal access (admins, members, pending)'));
+    console.log(chalk.yellow('  • Remove group connection'));
+    console.log(chalk.yellow('  • Disable the Signal channel'));
+    if (!opts.keepBinary) {
+      console.log(chalk.yellow('  • Delete the signal-cli binary from disk'));
+    }
+    console.log('');
+
+    const answer = await ask(chalk.white('  Continue? [y/N] '));
+    if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+      console.log('');
+      return;
+    }
+
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    saveConfig(config);
+
+    if (!opts.keepBinary) {
+      const signalDir = getSignalCliDir();
+      const { existsSync } = await import('node:fs');
+      if (existsSync(signalDir)) {
+        removeSignalCli();
+        console.log(chalk.green('  ✓ Signal binary removed.'));
+      }
+    }
+
+    console.log(chalk.green('  ✓ Signal reset complete.'));
+    console.log(chalk.dim('  Run `mercury doctor` to set up Signal again.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('status')
+  .description('Show Signal configuration and connection status')
+  .action(async () => {
+    const config = loadConfig();
+    const { checkSignalSetup } = await import('./signal/setup.js');
+
+    console.log('');
+    console.log(chalk.bold.white('  Signal Status'));
+    console.log('');
+
+    if (!config.channels.signal.phoneNumber) {
+      console.log(chalk.dim('  Not configured. Run `mercury doctor` to set up Signal.'));
+      console.log('');
+      return;
+    }
+
+    console.log(`  Phone:     ${chalk.white(config.channels.signal.phoneNumber)}`);
+    console.log(`  Mode:      ${chalk.white(config.channels.signal.mode)}`);
+    console.log(`  Enabled:   ${config.channels.signal.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Paired:    ${hasSignalAdminsFn(config) ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:    ${chalk.white(getSignalAccessSummary(config))}`);
+
+    if (config.channels.signal.mode === 'group') {
+      console.log(`  Group:     ${chalk.white(config.channels.signal.groupName || config.channels.signal.groupId || 'Not set')}`);
+    }
+
+    const status = await checkSignalSetup(config);
+    console.log(`  Binary:    ${status.binaryOk ? chalk.green('found') : chalk.red('not found')}`);
+    console.log(`  Linked:    ${status.linked ? chalk.green('yes') : chalk.red('no')}`);
+
+    if (status.errors.length > 0) {
+      console.log('');
+      for (const err of status.errors) {
+        console.log(chalk.red(`  • ${err}`));
+      }
+    }
+
+    console.log('');
+  });
+
+signalCmd
+  .command('register')
+  .description('Register a phone number with Signal (sends verification code)')
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.channels.signal.phoneNumber) {
+      console.log('');
+      console.log(chalk.red('  No Signal phone number configured. Run mercury doctor first.'));
+      console.log('');
+      return;
+    }
+
+    const { registerSignalNumber, verifySignalNumber } = await import('./signal/setup.js');
+    console.log('');
+    console.log(chalk.bold.white('  Signal Registration'));
+    console.log(chalk.dim(`  Phone: ${redactPhone(config.channels.signal.phoneNumber)}`));
+    console.log('');
+
+    const voice = await ask(chalk.white('  Verify via SMS or voice call? (sms/voice) [sms]: '));
+    const useVoice = voice.toLowerCase().startsWith('voice');
+
+    console.log(chalk.dim('  Sending verification code...'));
+    const result = await registerSignalNumber(config.channels.signal.phoneNumber, useVoice);
+    if (!result.success) {
+      console.log(chalk.red(`  ✗ Registration failed: ${result.error}`));
+      return;
+    }
+    console.log(chalk.green('  ✓ Verification code sent.'));
+
+    const code = await ask(chalk.white('  Enter the verification code: '));
+    if (!code) {
+      console.log(chalk.red('  Verification code is required.'));
+      return;
+    }
+
+    const verifyResult = await verifySignalNumber(config.channels.signal.phoneNumber, code.trim());
+    if (!verifyResult.success) {
+      console.log(chalk.red(`  ✗ Verification failed: ${verifyResult.error}`));
+      return;
+    }
+    console.log(chalk.green('  ✓ Number verified and registered.'));
+    console.log('');
+  });
+
+signalCmd
+  .command('unregister')
+  .description('Unlink this device from Signal and clear all Mercury Signal data')
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.channels.signal.phoneNumber) {
+      console.log('');
+      console.log(chalk.dim('  No Signal phone number configured.'));
+      console.log('');
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will:'));
+    console.log(chalk.yellow('  • Send a goodbye message to your Signal group/chat'));
+    console.log(chalk.yellow('  • Unlink this device from the Signal server'));
+    console.log(chalk.yellow('  • Clear all Signal access data (admins, members, group connection)'));
+    console.log('');
+
+    const answer = await ask(chalk.white('  Continue? (y/N): '));
+    if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+      console.log('');
+      return;
+    }
+
+    // Send goodbye message (best effort, skip if signal-cli not installed)
+    const { findSignalCli } = await import('./signal/setup.js');
+    const { sendSignalMessage } = await import('./signal/setup.js');
+    if (findSignalCli()) {
+      const target: { groupId?: string; recipient?: string } = {};
+      if (config.channels.signal.mode === 'group' && config.channels.signal.groupId) {
+        target.groupId = config.channels.signal.groupId;
+      } else if (config.channels.signal.admins.length > 0) {
+        target.recipient = config.channels.signal.admins[0].phoneNumber;
+      }
+      if (target.groupId || target.recipient) {
+        try {
+          await sendSignalMessage(config.channels.signal.phoneNumber, 'Mercury has been unregistered from this conversation. It will no longer respond here. To reconnect, the admin needs to set up Signal again with: mercury doctor', target);
+        } catch { /* best effort */ }
+      }
+    }
+
+    const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+    killStaleSignalCliProcesses();
+
+    // Unregister from Signal server
+    console.log(chalk.dim('  Unlinking device from Signal...'));
+    const { unregisterSignalNumber } = await import('./signal/setup.js');
+    const result = await unregisterSignalNumber(config.channels.signal.phoneNumber);
+    if (result.success) {
+      console.log(chalk.green('  ✓ Device unlinked from Signal server.'));
+    } else {
+      console.log(chalk.yellow('  ⚠ Could not reach Signal server to unlink device.'));
+      console.log(chalk.dim('  Local data has been cleared. The device will be unlinked automatically.'));
+    }
+
+    // Delete signal-cli local account data so checkLocalAccountData returns false
+    const phoneNumberToDelete = config.channels.signal.phoneNumber;
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    config.channels.signal.groupId = undefined;
+    config.channels.signal.groupName = undefined;
+    saveConfig(config);
+
+    const { deleteSignalCliAccountData } = await import('./signal/setup.js');
+    if (phoneNumberToDelete) {
+      deleteSignalCliAccountData(phoneNumberToDelete);
+    }
+
+    console.log(chalk.green('  ✓ Signal data cleared.'));
+    console.log(chalk.dim('  Run mercury doctor to set up Signal again.'));
+    console.log('');
+
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  });
+
 const serviceCmd = program
   .command('service')
   .description('Manage Mercury as a system service (auto-start, crash recovery)');
@@ -2266,8 +2971,7 @@ program
     const daemon = getDaemonStatus();
     if (daemon.running) {
       console.log(chalk.dim('  Stopping background daemon...'));
-      stopDaemon();
-      await new Promise((r) => setTimeout(r, 1000));
+      await stopDaemon();
       console.log(chalk.green('  ✓ Daemon stopped'));
     }
 
