@@ -22,6 +22,7 @@ import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
+import { SignalChannel } from '../channels/signal.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../utils/tool-label.js';
 import { getTelegramHelp } from '../utils/manual.js';
 import { WebChannel } from '../channels/web.js';
@@ -1221,12 +1222,18 @@ export class Agent {
         }
       }, MAX_FOREGROUND_WALL_MS);
 
-      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming);
+      const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal';
 
       const tgChannel = this.channels.get('telegram');
       if (msg.channelType === 'telegram' && tgChannel) {
         (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
         (tgChannel as TelegramChannel).beginTask(msg.channelId);
+      }
+
+      const sigChannel = this.channels.get('signal');
+      if (msg.channelType === 'signal' && sigChannel) {
+        (sigChannel as SignalChannel).resetStepCounter(msg.channelId);
+        (sigChannel as SignalChannel).beginTask(msg.channelId);
       }
 
       // Saver-mode-aware request limits. When saver is off these resolve to
@@ -1408,6 +1415,20 @@ export class Agent {
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                          }
+                        }
+                      }
+                    } else if (channel instanceof SignalChannel) {
+                      const sigCh = channel as SignalChannel;
+                      for (const tc of toolCalls) {
+                        void sigCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            await sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -1654,6 +1675,20 @@ export class Agent {
                           }
                         }
                       }
+                    } else if (channel instanceof SignalChannel) {
+                      const sigCh = channel as SignalChannel;
+                      for (const tc of toolCalls) {
+                        void sigCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      }
+                      if (toolResults) {
+                        for (let i = 0; i < toolResults.length; i++) {
+                          const tr = toolResults[i] as any;
+                          const tcName = toolCalls[i]?.toolName as string | undefined;
+                          if (tcName) {
+                            await sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                          }
+                        }
+                      }
                     } else if (channel instanceof WebChannel) {
                       const webCh = channel as WebChannel;
                       for (const tc of toolCalls) {
@@ -1745,6 +1780,9 @@ export class Agent {
           if (channel instanceof TelegramChannel) {
             (channel as TelegramChannel).endTask(msg.channelId);
             (channel as TelegramChannel).resetStepCounter(msg.channelId);
+          } else if (channel instanceof SignalChannel) {
+            (channel as SignalChannel).endTask(msg.channelId);
+            (channel as SignalChannel).resetStepCounter(msg.channelId);
           }
           await channel.send(errMsg, msg.channelId);
         }
@@ -1853,6 +1891,31 @@ export class Agent {
             (channel as TelegramChannel).resetStepCounter(msg.channelId);
           }
           this.markProgress();
+        } else if (channel instanceof SignalChannel) {
+          // For Signal tasks: end task, flush deferred, send completion banner for substantial tasks
+          const sigCh = channel as SignalChannel;
+          if (isSubstantialTask) {
+            const completionMeta = {
+              provider: usedProvider?.name ?? 'unknown',
+              model: usedProvider?.model ?? 'unknown',
+              inputTokens: result.usage?.inputTokens ?? 0,
+              outputTokens: result.usage?.outputTokens ?? 0,
+              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+              budgetUsed: this.tokenBudget.getDailyUsed(),
+              budgetTotal: this.tokenBudget.getBudget(),
+              budgetPercentage: this.tokenBudget.getUsagePercentage(),
+            };
+            await sigCh.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
+          } else {
+            sigCh.endTask(msg.channelId);
+            const deferred = sigCh.popDeferredResponse(msg.channelId);
+            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            if (responseText && responseText.trim()) {
+              await channel.send(responseText, msg.channelId, elapsed);
+            }
+            sigCh.resetStepCounter(msg.channelId);
+            this.markProgress();
+          }
         } else {
           // CLI or other channels — original flow
           if (streamedText && streamedText.trim()) {

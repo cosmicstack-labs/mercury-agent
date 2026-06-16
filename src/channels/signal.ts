@@ -257,51 +257,65 @@ export class SignalChannel extends BaseChannel {
 
     if (data.remoteDelete) return;
 
-    const text = data.message?.trim();
-    const hasAttachments = data.attachments && data.attachments.length > 0;
-
-    if (!text && !hasAttachments) return;
-
     const groupId = data.groupInfo?.groupId;
     const groupName = data.groupInfo?.groupName;
-    const command = text ? this.getCommandName(text) : '';
-    const role = this.getRole(effectiveSource);
 
-    logger.info({ source: redactPhone(effectiveSource), text: text?.substring(0, 50), groupId: groupId ? 'present' : 'none', groupName, command, role }, 'Signal: processing message');
-
-    // /pair from an unpaired user must always be accepted, regardless of
-    // group mode filtering. This is the bootstrap mechanism for first-time setup.
-    if (role === 'unpaired' && command === '/pair') {
-      this.handlePairCommand(effectiveSource, effectiveSourceUuid, effectiveSourceName);
-      return;
-    }
-
-    if (this.config.channels.signal.mode === 'group') {
+    // SOURCE FILTER: Mercury only listens to the configured channel.
+    // Everything else is silently dropped before any processing.
+    if (this.config.channels.signal.mode === 'private') {
+      if (groupId || effectiveSource !== this.config.channels.signal.phoneNumber) {
+        return;
+      }
+    } else {
       if (!groupId) {
-        logger.info({ source: redactPhone(effectiveSource) }, 'Signal: dropping message — no groupInfo (private message in group mode)');
         return;
       }
       const configuredGroupId = this.config.channels.signal.groupId;
       if (configuredGroupId && groupId !== configuredGroupId) {
-        logger.info({ source: redactPhone(effectiveSource), groupId, configuredGroupId }, 'Signal: dropping message — groupId mismatch');
         return;
       }
-      if (!configuredGroupId && groupName) {
-        if (groupName.toLowerCase().trim() === 'mercury') {
+      if (!configuredGroupId) {
+        if (groupName && groupName.toLowerCase().trim() === 'mercury') {
           this.config.channels.signal.groupId = groupId;
           this.config.channels.signal.groupName = groupName;
           saveConfig(this.config);
           logger.info({ groupId, groupName }, 'Signal: auto-detected Mercury group');
         } else {
-          logger.info({ source: redactPhone(effectiveSource), groupName }, 'Signal: dropping message — group name does not match "mercury"');
           return;
         }
       }
     }
 
-    if (role === 'unpaired') {
-      this.sendToTarget(UNPAIRED_RESPONSE, source);
-      return;
+    // Private mode: auto-pair account owner as admin on first message
+    if (this.config.channels.signal.mode === 'private' && !hasSignalAdmins(this.config)) {
+      this.config.channels.signal.admins.push({
+        phoneNumber: this.config.channels.signal.phoneNumber,
+        role: 'admin',
+        pairedAt: new Date().toISOString(),
+      });
+      saveConfig(this.config);
+      logger.info('Signal: auto-paired account owner as admin (private mode)');
+    }
+
+    const text = data.message?.trim();
+    const hasAttachments = data.attachments && data.attachments.length > 0;
+    if (!text && !hasAttachments) return;
+
+    const command = text ? this.getCommandName(text) : '';
+    const role = this.getRole(effectiveSource);
+
+    logger.info({ source: redactPhone(effectiveSource), text: text?.substring(0, 50), groupId: groupId ? 'present' : 'none', groupName, command, role }, 'Signal: processing message');
+
+    // Group mode: unpaired user handling (after source filter)
+    if (this.config.channels.signal.mode === 'group') {
+      if (role === 'unpaired' && command === '/pair') {
+        this.handlePairCommand(effectiveSource, effectiveSourceUuid, effectiveSourceName);
+        return;
+      }
+      if (role === 'unpaired') {
+        this.sendToTarget(UNPAIRED_RESPONSE, source);
+        return;
+      }
     }
 
     if (command === '/pair') {
@@ -393,7 +407,7 @@ export class SignalChannel extends BaseChannel {
     const rawId = this.config.channels.signal.mode === 'group'
       ? this.config.channels.signal.groupId || 'unknown'
       : source;
-    const channelId = `signal:${rawId.replace(/[^a-zA-Z0-9_:-]/g, '_')}`;
+    const channelId = `signal:${rawId}`;
 
     const msg: ChannelMessage = {
       id: `${envelope.timestamp}`,
@@ -475,7 +489,7 @@ export class SignalChannel extends BaseChannel {
       await this.rpc.sendMessage({
         account: phoneNumber,
         message: path.basename(resolved),
-        recipients: mode === 'group' ? undefined : [target],
+        recipients: mode === 'group' && groupId ? undefined : [target],
         groupId: mode === 'group' && groupId ? groupId : undefined,
         attachments: [resolved],
       });

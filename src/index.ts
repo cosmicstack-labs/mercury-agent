@@ -698,13 +698,16 @@ async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> 
     if (keepConfig.toLowerCase() !== 'n' && keepConfig.toLowerCase() !== 'no') {
       return;
     }
-    // Clear pairing data but keep phone number and mode — fall through to fresh pairing
-    const phoneNumberToDelete = config.channels.signal.phoneNumber;
+    // Clear pairing data but keep phone number — fall through to fresh pairing
     config.channels.signal.admins = [];
     config.channels.signal.members = [];
     config.channels.signal.pending = [];
     config.channels.signal.groupId = undefined;
     config.channels.signal.groupName = undefined;
+
+    // Re-ask mode since we're starting fresh
+    const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+    config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
     saveConfig(config);
     console.log(chalk.dim('  Configuration cleared. Starting fresh pairing...'));
 
@@ -712,14 +715,6 @@ async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> 
     try {
       const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
       killStaleSignalCliProcesses();
-    } catch { /* ignore */ }
-
-    // Delete signal-cli local account data so the fresh setup triggers a new device link
-    try {
-      const { deleteSignalCliAccountData } = await import('./signal/setup.js');
-      if (phoneNumberToDelete) {
-        deleteSignalCliAccountData(phoneNumberToDelete);
-      }
     } catch { /* ignore */ }
   }
 
@@ -816,9 +811,6 @@ async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> 
     console.log(chalk.cyan('  Scan this QR code with Signal:'));
     console.log('');
     printQrCode(session.uri);
-    console.log('');
-    console.log(chalk.dim('  Or open this URI manually:'));
-    console.log(chalk.white(`  ${session.uri}`));
     console.log('');
     console.log(chalk.dim('  Mercury is waiting for you to complete the link...'));
 
@@ -1859,17 +1851,38 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
   });
 
-  capabilities.setSendFileHandler(async (filePath: string) => {
+  capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
     const { channelId, channelType } = capabilities.getChannelContext();
     const telegram = channels.get('telegram');
+    const signal = channels.get('signal');
+
+    // Explicit channel override from the user
+    if (channel === 'signal' && signal) {
+      await signal.sendFile(filePath, channelType === 'signal' ? channelId : undefined);
+      return;
+    }
+    if (channel === 'telegram' && telegram) {
+      await telegram.sendFile(filePath, channelType === 'telegram' ? channelId : undefined);
+      return;
+    }
 
     if (channelType === 'telegram' && telegram) {
       await telegram.sendFile(filePath, channelId);
       return;
     }
 
+    if (channelType === 'signal' && signal) {
+      await signal.sendFile(filePath, channelId);
+      return;
+    }
+
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.sendFile(filePath);
+      return;
+    }
+
+    if (config.channels.signal.enabled && signal && hasSignalAdminsFn(config)) {
+      await signal.sendFile(filePath);
       return;
     }
 
@@ -1978,9 +1991,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
+  const sigChannel = channels.get('signal') as SignalChannel | undefined;
 
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
+
+  if (sigChannel) {
+    sigChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
   setWebWebChannel(webChannel);
@@ -2161,6 +2179,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
     }
+    if (channelType === 'signal' && channels.get('signal')) {
+      return (channels.get('signal') as SignalChannel).askPermission(prompt);
+    }
     if (channelType === 'web' && webChannel) {
       return webChannel.askPermission(prompt);
     }
@@ -2176,6 +2197,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      }
+    });
+  }
+
+  if (sigChannel) {
+    sigChannel.setOnPermissionMode((mode) => {
+      if (mode === 'allow-all') {
+        capabilities.permissions.setAutoApproveAll(true);
+        capabilities.permissions.addTempScope('/', true, true);
+        logger.info('Signal: Allow All mode set for session');
       }
     });
   }

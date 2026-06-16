@@ -217,8 +217,7 @@ export async function startLinking(binaryPath?: string): Promise<LinkingSession 
       }
     };
 
-    child.stdout?.on('data', (data: Buffer) => {
-      const output = data.toString().trim();
+    const checkForUri = (output: string) => {
       if (!uri && output.startsWith('sgnl://')) {
         uri = output;
         logger.info('Signal device linking URI generated');
@@ -227,12 +226,18 @@ export async function startLinking(binaryPath?: string): Promise<LinkingSession 
           resolve({ uri, process: child });
         }
       }
+    };
+
+    child.stdout?.on('data', (data: Buffer) => {
+      const output = data.toString().trim();
+      checkForUri(output);
     });
 
     child.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim();
       if (line) {
         logger.debug({ stderr: line }, 'signal-cli link stderr');
+        checkForUri(line);
       }
     });
 
@@ -248,14 +253,15 @@ export async function startLinking(binaryPath?: string): Promise<LinkingSession 
       }
     });
 
-    // Timeout: if no URI within 15s, kill and return null
+    // Timeout: if no URI within 60s, kill and return null
+    // Java + signal-cli startup can be slow, especially in Docker
     setTimeout(() => {
       if (!resolved) {
         logger.error('Timed out waiting for signal-cli link URI');
         try { child.kill(); } catch { /* already dead */ }
         cleanup();
       }
-    }, 15_000);
+    }, 60_000);
   });
 }
 
