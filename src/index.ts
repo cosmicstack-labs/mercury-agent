@@ -28,6 +28,14 @@ import {
   findSignalPendingRequest,
   approveSignalPendingRequestByPairingCode,
   clearSignalAccess,
+  getDiscordAccessSummary,
+  hasDiscordAdmins as hasDiscordAdminsFn,
+  findDiscordPendingRequest,
+  approveDiscordPendingRequest,
+  approveDiscordPendingRequestByPairingCode,
+  rejectDiscordPendingRequest,
+  removeDiscordUser,
+  clearDiscordAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -47,6 +55,7 @@ import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { SignalChannel } from './channels/signal.js';
+import { DiscordChannel } from './channels/discord.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -625,6 +634,45 @@ function printTelegramAccessState(config: MercuryConfig): void {
   console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
 }
 
+function formatDiscordUser(user: {
+  userId: string;
+  username?: string;
+  displayName?: string;
+  role?: string;
+}): string {
+  const username = user.username ? ` (@${user.username})` : '';
+  const displayName = user.displayName ? ` ${user.displayName}` : '';
+  const role = user.role ? ` [${user.role}]` : '';
+  return `${user.userId}${username}${displayName}${role}`;
+}
+
+function printDiscordAccessState(config: MercuryConfig): void {
+  const admins = config.channels.discord.admins;
+  const members = config.channels.discord.members;
+  const pending = config.channels.discord.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => {
+        const code = entry.pairingCode ? ` [code: ${entry.pairingCode}]` : '';
+        return `${formatDiscordUser(entry)}${code}`;
+      }).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Discord Access:  ${chalk.white(getDiscordAccessSummary(config))}`);
+  if (config.channels.discord.guildId) {
+    console.log(`  Guild:            ${chalk.white(config.channels.discord.guildId)}`);
+  }
+  if (config.channels.discord.channelId) {
+    console.log(`  Channel:          ${chalk.white(config.channels.discord.channelId)}`);
+  }
+  if (config.channels.discord.adminRoleName) {
+    console.log(`  Admin Role:        ${chalk.white(config.channels.discord.adminRoleName)}`);
+  }
+  console.log(`  Admins:           ${admins.length > 0 ? chalk.green(admins.map(formatDiscordUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:          ${members.length > 0 ? chalk.green(members.map(formatDiscordUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:          ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
 function restartDaemonIfRunning(message?: string): void {
   const daemon = getDaemonStatus();
   if (!daemon.running) return;
@@ -921,6 +969,52 @@ async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> 
   }
 
   saveConfig(config);
+}
+
+async function completeInitialDiscordPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.discord.enabled || !config.channels.discord.botToken || hasDiscordAdminsFn(config)) {
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Discord Pairing'));
+  console.log(chalk.dim('  1. Open Discord and DM your bot.'));
+  console.log(chalk.dim('  2. Send /start to receive your pairing code.'));
+  console.log(chalk.dim('  3. Paste that pairing code below to finish setup.'));
+  console.log('');
+
+  const discordChannel = new DiscordChannel(config);
+  try {
+    await discordChannel.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await discordChannel.stop();
+    return;
+  }
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Discord Pairing Code: '));
+      if (!pairingCode) {
+        console.log(chalk.red('  Discord pairing code is required to continue.'));
+        continue;
+      }
+
+      const approved = approveDiscordPendingRequestByPairingCode(config, pairingCode.trim());
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid yet. Send /start in Discord, then paste the exact code here.'));
+        continue;
+      }
+
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Discord paired. First admin: ${formatDiscordUser(approved)}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await discordChannel.stop();
+  }
 }
 
 async function configure(existingConfig?: MercuryConfig): Promise<void> {
@@ -1468,6 +1562,80 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialSignalSetup(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Discord (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  console.log(chalk.dim('  To create a Discord bot:'));
+  console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+  console.log(chalk.dim('    2. Click "New Application" → give it a name'));
+  console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
+  console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
+  console.log(chalk.dim('       - Message Content Intent'));
+  console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
+  console.log(chalk.dim('       Scopes: bot, applications.commands'));
+  console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
+  console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
+  console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
+  console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
+  console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  console.log('');
+
+  const dcMask = isReconfig && config.channels.discord.botToken ? ` [${maskKey(config.channels.discord.botToken)}]` : '';
+  const discordToken = await ask(chalk.white(`  Discord Bot Token${dcMask}: `));
+  if (isReconfig && discordToken.toLowerCase() === 'none') {
+    config.channels.discord.enabled = false;
+    config.channels.discord.botToken = '';
+    clearDiscordAccess(config);
+  } else if (discordToken) {
+    if (discordToken !== config.channels.discord.botToken) {
+      clearDiscordAccess(config);
+    }
+    config.channels.discord.botToken = discordToken;
+    appendToEnv('DISCORD_BOT_TOKEN', discordToken);
+    config.channels.discord.enabled = true;
+  }
+
+  if (config.channels.discord.enabled && config.channels.discord.botToken) {
+    if (!config.channels.discord.guildId) {
+      console.log('');
+      console.log(chalk.dim('  To find your Server ID: in Discord, go to Settings → App Settings →'));
+      console.log(chalk.dim('  Advanced → toggle Developer Mode ON. Then right-click your server'));
+      console.log(chalk.dim('  name in the sidebar → Copy Server ID.'));
+      const guildId = await ask(chalk.white('  Discord Guild/Server ID (optional — leave empty for all servers): '));
+      if (guildId.trim()) {
+        config.channels.discord.guildId = guildId.trim();
+      }
+    }
+
+    if (!config.channels.discord.channelId) {
+      console.log(chalk.dim('  To find a Channel ID: right-click the channel name in the sidebar → Copy Channel ID.'));
+      const channelId = await ask(chalk.white('  Discord Channel ID (optional — leave empty for all channels): '));
+      if (channelId.trim()) {
+        config.channels.discord.channelId = channelId.trim();
+      }
+    }
+
+    const adminRoleCurrent = isReconfig && config.channels.discord.adminRoleName ? ` [${config.channels.discord.adminRoleName}]` : '';
+    const adminRoleName = await ask(chalk.white(`  Admin role name${adminRoleCurrent} [Mercury Admin]: `));
+    if (adminRoleName.trim()) {
+      config.channels.discord.adminRoleName = adminRoleName.trim();
+    } else if (!config.channels.discord.adminRoleName) {
+      config.channels.discord.adminRoleName = 'Mercury Admin';
+    }
+
+    saveConfig(config);
+  } else if (!config.channels.discord.botToken) {
+    config.channels.discord.enabled = false;
+    saveConfig(config);
+  }
+
+  await completeInitialDiscordPairing(config);
 
   hr();
   console.log('');
@@ -2462,6 +2630,10 @@ program
     if (config.channels.signal.phoneNumber) {
       console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
     }
+    console.log(`  Discord:  ${config.channels.discord.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.discord.botToken) {
+      console.log(`  Discord Access: ${chalk.white(getDiscordAccessSummary(config))}`);
+    }
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
@@ -2483,6 +2655,9 @@ program
     printTelegramAccessState(config);
     if (config.channels.signal.phoneNumber) {
       printSignalAccessState(config);
+    }
+    if (config.channels.discord.botToken) {
+      printDiscordAccessState(config);
     }
     console.log('');
   });
@@ -2964,6 +3139,152 @@ signalCmd
     console.log('');
 
     restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  });
+
+const discordCmd = program
+  .command('discord')
+  .description('Manage Discord channel access and setup');
+
+discordCmd
+  .command('list')
+  .description('Show approved Discord users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    console.log('');
+    printDiscordAccessState(config);
+    console.log('');
+  });
+
+discordCmd
+  .command('approve <code>')
+  .description('Approve a pending Discord pairing request by code')
+  .action(async (code: string) => {
+    const config = loadConfig();
+
+    if (!hasDiscordAdminsFn(config)) {
+      const approved = approveDiscordPendingRequestByPairingCode(config, code.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending Discord pairing found for code ${code.trim()}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Discord admin ${formatDiscordUser(approved)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const pending = findDiscordPendingRequest(config, code.trim());
+    if (!pending) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for ${code.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    const approved = approveDiscordPendingRequest(config, pending.userId);
+    if (!approved) {
+      console.log(chalk.red('  Failed to approve request.'));
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Approved Discord user ${formatDiscordUser(approved)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('reject <userId>')
+  .description('Reject a pending Discord access request')
+  .action(async (userId: string) => {
+    const config = loadConfig();
+    const rejected = rejectDiscordPendingRequest(config, userId.trim());
+    if (!rejected) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for ${userId.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Rejected Discord request for ${formatDiscordUser(rejected)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('remove <userId>')
+  .description('Remove an approved Discord user')
+  .action(async (userId: string) => {
+    const config = loadConfig();
+    const removed = removeDiscordUser(config, userId.trim());
+    if (!removed) {
+      console.log('');
+      console.log(chalk.red(`  No Discord user found with ID ${userId.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Removed Discord access for ${formatDiscordUser(removed)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('reset')
+  .description('Clear all Discord access data')
+  .action(async () => {
+    const config = loadConfig();
+    clearDiscordAccess(config);
+    config.channels.discord.enabled = false;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Discord access reset complete.'));
+    console.log(chalk.dim('  Run `mercury doctor` to set up Discord again.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('status')
+  .description('Show Discord configuration and connection status')
+  .action(() => {
+    const config = loadConfig();
+
+    console.log('');
+    console.log(chalk.bold.white('  Discord Status'));
+    console.log('');
+
+    if (!config.channels.discord.botToken) {
+      console.log(chalk.dim('  Not configured. Run `mercury doctor` to set up Discord.'));
+      console.log('');
+      return;
+    }
+
+    console.log(`  Enabled:     ${config.channels.discord.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Paired:      ${hasDiscordAdminsFn(config) ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:      ${chalk.white(getDiscordAccessSummary(config))}`);
+    if (config.channels.discord.guildId) {
+      console.log(`  Guild:       ${chalk.white(config.channels.discord.guildId)}`);
+    }
+    if (config.channels.discord.channelId) {
+      console.log(`  Channel:     ${chalk.white(config.channels.discord.channelId)}`);
+    }
+    if (config.channels.discord.adminRoleName) {
+      console.log(`  Admin Role:  ${chalk.white(config.channels.discord.adminRoleName)}`);
+    }
+    console.log(`  Streaming:   ${config.channels.discord.streaming ? chalk.green('yes') : chalk.dim('no')}`);
+
+    console.log('');
   });
 
 const serviceCmd = program

@@ -81,3 +81,31 @@ export interface SignalChannelConfig extends ChannelConfig {
   members: SignalAccessUser[];
   pending: SignalPendingRequest[];
 }
+
+export interface DiscordAccessUser {
+  userId: string;
+  username?: string;
+  displayName?: string;
+  role: 'admin' | 'member';
+  approvedAt: string;
+}
+
+export interface DiscordPendingRequest {
+  userId: string;
+  username?: string;
+  displayName?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
+export interface DiscordChannelConfig extends ChannelConfig {
+  type: 'discord';
+  botToken: string;
+  guildId?: string;
+  channelId?: string;
+  adminRoleName?: string;
+  streaming?: boolean;
+  admins: DiscordAccessUser[];
+  members: DiscordAccessUser[];
+  pending: DiscordPendingRequest[];
+}

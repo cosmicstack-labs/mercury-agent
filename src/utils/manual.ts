@@ -340,3 +340,42 @@ export function getTelegramHelp(): string {
 
   return lines.join('\n');
 }
+
+export function getDiscordHelp(): string {
+  const lines: string[] = [];
+
+  lines.push('\u263f **Mercury \u2014 Discord Commands**');
+  lines.push('');
+  lines.push('**Guild Channels**');
+  lines.push('All guild members can chat in configured channels.');
+  lines.push('Admins (guild owner + "Mercury Admin" role) control permissions.');
+  lines.push('');
+
+  lines.push('**General**');
+  lines.push('/help \u2014 Show this command list');
+  lines.push('/status \u2014 Config, budget, and uptime');
+  lines.push('/progress \u2014 Live status for the current task');
+  lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
+  lines.push('/models \u2014 List providers or switch AI model');
+  lines.push('');
+
+  lines.push('**Budget**');
+  lines.push('/budget \u2014 Show token budget status');
+  lines.push('/budget override \u2014 Allow one request past budget');
+  lines.push('/budget reset \u2014 Reset usage to zero');
+  lines.push('/budget set <n> \u2014 Set daily token budget');
+  lines.push('');
+
+  lines.push('**Token Saver**');
+  lines.push('/saver \u2014 Show saver status and tokens saved');
+  lines.push('/saver on \u2014 Manually enable Token Saver Mode');
+  lines.push('/saver off \u2014 Disable Token Saver Mode');
+  lines.push('/saver toggle \u2014 Toggle on/off');
+  lines.push('');
+
+  lines.push('**DM Access**');
+  lines.push('/start \u2014 Request DM access (send in a DM)');
+  lines.push('/unpair \u2014 Reset all Discord DM access (admin only)');
+
+  return lines.join('\n');
+}

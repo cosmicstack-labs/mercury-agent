@@ -279,3 +279,49 @@ export function mdToSignal(text: string): string {
 
   return out;
 }
+
+export function mdToDiscord(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    const placeholder = `__DCB_${codeBlocks.length}__`;
+    codeBlocks.push(`\`\`\`${lang}\n${code.trim()}\n\`\`\``);
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `__DIC_${inlineCodes.length}__`;
+    inlineCodes.push(`\`${code}\``);
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `__DLK_${links.length}__`;
+    links.push(`[${label}](${href})`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '__$1__');
+  out = out.replace(/^## (.+)$/gm, '**$1**');
+  out = out.replace(/^# (.+)$/gm, '**$1**');
+  out = out.replace(/~~([^~]+)~~/g, '~~$1~~');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`__DIC_${i}__`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`__DCB_${i}__`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`__DLK_${i}__`, links[i]);
+  }
+
+  if (out.length > 2000) {
+    out = out.slice(0, 1990) + '...';
+  }
+
+  return out;
+}

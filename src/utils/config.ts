@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
-import type { SignalAccessUser, SignalPendingRequest } from '../types/channel.js';
+import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest } from '../types/channel.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
 
@@ -103,6 +103,17 @@ export interface MercuryConfig {
       admins: SignalAccessUser[];
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
+    };
+    discord: {
+      enabled: boolean;
+      botToken: string;
+      guildId?: string;
+      channelId?: string;
+      adminRoleName?: string;
+      streaming?: boolean;
+      admins: DiscordAccessUser[];
+      members: DiscordAccessUser[];
+      pending: DiscordPendingRequest[];
     };
   };
   github: {
@@ -284,6 +295,17 @@ export function getDefaultConfig(): MercuryConfig {
         members: [],
         pending: [],
       },
+      discord: {
+        enabled: getEnvBool('DISCORD_ENABLED', false),
+        botToken: getEnv('DISCORD_BOT_TOKEN', ''),
+        guildId: getEnv('DISCORD_GUILD_ID', ''),
+        channelId: getEnv('DISCORD_CHANNEL_ID', ''),
+        adminRoleName: getEnv('DISCORD_ADMIN_ROLE_NAME', 'Mercury Admin'),
+        streaming: getEnvBool('DISCORD_STREAMING', true),
+        admins: [],
+        members: [],
+        pending: [],
+      },
     },
     github: {
       username: getEnv('GITHUB_USERNAME', ''),
@@ -336,15 +358,19 @@ export function loadConfig(): MercuryConfig {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const fileConfig = parseYaml(raw) as Partial<MercuryConfig>;
     const defaults = getDefaultConfig();
-    return migrateLegacyOllamaLocalBaseUrl(
-      migrateLegacyOllamaCloudBaseUrl(
-        migrateLegacySignalAccess(
-          migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+    return migrateLegacyDiscordAccess(
+      migrateLegacyOllamaLocalBaseUrl(
+        migrateLegacyOllamaCloudBaseUrl(
+          migrateLegacySignalAccess(
+            migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+          ),
         ),
       ),
     );
   }
-  return migrateLegacyTelegramAccess(getDefaultConfig());
+  return migrateLegacyDiscordAccess(
+    migrateLegacyTelegramAccess(getDefaultConfig()),
+  );
 }
 
 export function saveConfig(config: MercuryConfig): void {
@@ -760,5 +786,171 @@ export function migrateLegacySignalAccess(config: MercuryConfig): MercuryConfig 
   signal.admins = signal.admins || [];
   signal.members = signal.members || [];
   signal.pending = signal.pending || [];
+  return config;
+}
+
+// ── Discord access helpers ────────────────────────────────────────
+
+export function getDiscordApprovedUsers(config: MercuryConfig): DiscordAccessUser[] {
+  return [...config.channels.discord.admins, ...config.channels.discord.members];
+}
+
+export function getDiscordAdmins(config: MercuryConfig): DiscordAccessUser[] {
+  return config.channels.discord.admins;
+}
+
+export function getDiscordPendingRequests(config: MercuryConfig): DiscordPendingRequest[] {
+  return config.channels.discord.pending;
+}
+
+export function findDiscordApprovedUser(config: MercuryConfig, userId: string): DiscordAccessUser | undefined {
+  return getDiscordApprovedUsers(config).find((u) => u.userId === userId);
+}
+
+export function findDiscordAdmin(config: MercuryConfig, userId: string): DiscordAccessUser | undefined {
+  return config.channels.discord.admins.find((u) => u.userId === userId);
+}
+
+export function findDiscordPendingRequest(config: MercuryConfig, userId: string): DiscordPendingRequest | undefined {
+  return config.channels.discord.pending.find((r) => r.userId === userId);
+}
+
+export function findDiscordPendingRequestByPairingCode(config: MercuryConfig, pairingCode: string): DiscordPendingRequest | undefined {
+  return config.channels.discord.pending.find((r) => r.pairingCode === pairingCode);
+}
+
+export function hasDiscordAdmins(config: MercuryConfig): boolean {
+  return config.channels.discord.admins.length > 0;
+}
+
+export function getDiscordAccessSummary(config: MercuryConfig): string {
+  return `${config.channels.discord.admins.length} admin${config.channels.discord.admins.length === 1 ? '' : 's'}, `
+    + `${config.channels.discord.members.length} member${config.channels.discord.members.length === 1 ? '' : 's'}, `
+    + `${config.channels.discord.pending.length} pending`;
+}
+
+export function addDiscordPendingRequest(
+  config: MercuryConfig,
+  request: Omit<DiscordPendingRequest, 'requestedAt'> & { requestedAt?: string },
+): DiscordPendingRequest {
+  const existing = findDiscordPendingRequest(config, request.userId);
+  if (existing) {
+    existing.username = request.username || existing.username;
+    existing.displayName = request.displayName || existing.displayName;
+    existing.pairingCode = request.pairingCode || existing.pairingCode;
+    return existing;
+  }
+
+  const created: DiscordPendingRequest = {
+    ...request,
+    requestedAt: request.requestedAt || new Date().toISOString(),
+  };
+  config.channels.discord.pending.push(created);
+  return created;
+}
+
+export function approveDiscordPendingRequest(
+  config: MercuryConfig,
+  userId: string,
+  role: 'admin' | 'member' = 'member',
+): DiscordAccessUser | null {
+  const request = findDiscordPendingRequest(config, userId);
+  if (!request) return null;
+
+  const approvedUser: DiscordAccessUser = {
+    userId: request.userId,
+    username: request.username,
+    displayName: request.displayName,
+    role,
+    approvedAt: new Date().toISOString(),
+  };
+
+  config.channels.discord.pending = config.channels.discord.pending
+    .filter((r) => r.userId !== userId);
+  config.channels.discord.admins = config.channels.discord.admins
+    .filter((u) => u.userId !== userId);
+  config.channels.discord.members = config.channels.discord.members
+    .filter((u) => u.userId !== userId);
+
+  if (role === 'admin') {
+    config.channels.discord.admins.push(approvedUser);
+  } else {
+    config.channels.discord.members.push(approvedUser);
+  }
+
+  return approvedUser;
+}
+
+export function approveDiscordPendingRequestByPairingCode(
+  config: MercuryConfig,
+  pairingCode: string,
+): DiscordAccessUser | null {
+  const request = findDiscordPendingRequestByPairingCode(config, pairingCode);
+  if (!request) return null;
+  const role = hasDiscordAdmins(config) ? 'member' : 'admin';
+  return approveDiscordPendingRequest(config, request.userId, role);
+}
+
+export function rejectDiscordPendingRequest(config: MercuryConfig, userId: string): DiscordPendingRequest | null {
+  const request = findDiscordPendingRequest(config, userId);
+  if (!request) return null;
+  config.channels.discord.pending = config.channels.discord.pending
+    .filter((r) => r.userId !== userId);
+  return request;
+}
+
+export function removeDiscordUser(config: MercuryConfig, userId: string): DiscordAccessUser | null {
+  const admin = config.channels.discord.admins.find((u) => u.userId === userId);
+  if (admin) {
+    config.channels.discord.admins = config.channels.discord.admins
+      .filter((u) => u.userId !== userId);
+    return admin;
+  }
+
+  const member = config.channels.discord.members.find((u) => u.userId === userId);
+  if (member) {
+    config.channels.discord.members = config.channels.discord.members
+      .filter((u) => u.userId !== userId);
+    return member;
+  }
+
+  return null;
+}
+
+export function promoteDiscordUserToAdmin(config: MercuryConfig, userId: string): DiscordAccessUser | null {
+  const member = config.channels.discord.members.find((u) => u.userId === userId);
+  if (!member) return null;
+  config.channels.discord.members = config.channels.discord.members
+    .filter((u) => u.userId !== userId);
+  config.channels.discord.admins.push(member);
+  return member;
+}
+
+export function demoteDiscordAdmin(config: MercuryConfig, userId: string): DiscordAccessUser | null {
+  if (config.channels.discord.admins.length <= 1) {
+    return null;
+  }
+
+  const admin = config.channels.discord.admins.find((u) => u.userId === userId);
+  if (!admin) return null;
+  config.channels.discord.admins = config.channels.discord.admins
+    .filter((u) => u.userId !== userId);
+  config.channels.discord.members.push(admin);
+  return admin;
+}
+
+export function clearDiscordAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.discord.admins = [];
+  config.channels.discord.members = [];
+  config.channels.discord.pending = [];
+  return config;
+}
+
+export function migrateLegacyDiscordAccess(config: MercuryConfig): MercuryConfig {
+  const discord = config.channels.discord;
+  if (!discord) return config;
+  discord.admins = discord.admins || [];
+  discord.members = discord.members || [];
+  discord.pending = discord.pending || [];
   return config;
 }
