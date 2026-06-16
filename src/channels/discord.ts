@@ -12,6 +12,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
+  Partials,
   type Message,
   type TextChannel,
   type DMChannel,
@@ -133,6 +134,7 @@ export class DiscordChannel extends BaseChannel {
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
       ],
+      partials: [Partials.Channel],
       makeCache: Options.cacheWithLimits({
         MessageManager: 10,
         UserManager: 50,
@@ -154,7 +156,15 @@ export class DiscordChannel extends BaseChannel {
     });
 
     client.on(Events.MessageCreate, async (message) => {
-      if (message.author.bot) return;
+      if (message.author?.bot) return;
+      if (message.partial) {
+        try {
+          message = await message.fetch();
+        } catch (err: any) {
+          logger.warn({ err: err.message }, 'Failed to fetch partial Discord message');
+          return;
+        }
+      }
       await this.handleMessage(message);
     });
 
