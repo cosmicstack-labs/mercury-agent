@@ -133,16 +133,9 @@ export class SlackChannel extends BaseChannel {
       if (!userId) return;
 
       const channelId = msg.channel;
-      const isDM = channelId.startsWith('D');
+      if (!channelId.startsWith('D')) return;
 
-      if (isDM) {
-        await this.handleDMMessage(msg);
-      } else {
-        if (this.config.channels.slack.channelId && channelId !== this.config.channels.slack.channelId) {
-          return;
-        }
-        await this.handleChannelMessage(msg);
-      }
+      await this.handleDMMessage(msg);
     });
 
     this.app.event('app_mention', async ({ payload }) => {
@@ -158,6 +151,17 @@ export class SlackChannel extends BaseChannel {
       if (!text) return;
 
       const isAdmin = !!findSlackAdmin(this.config, userId);
+
+      if (!isAdmin) {
+        const now = Date.now();
+        const lastTime = this.userLastMessageTime.get(userId) || 0;
+        if (now - lastTime < SlackChannel.USER_RATE_LIMIT_MS) {
+          const remaining = Math.ceil((SlackChannel.USER_RATE_LIMIT_MS - (now - lastTime)) / 1000);
+          await this.sendEphemeral(channelId, userId, `Please wait ${remaining}s before sending another message.`);
+          return;
+        }
+        this.userLastMessageTime.set(userId, now);
+      }
 
       this.lastActiveChannelId = channelId;
       this.lastMessageMetadata = { isDM: false, isAdmin };
@@ -248,51 +252,6 @@ export class SlackChannel extends BaseChannel {
           });
         } catch {}
       }
-    });
-  }
-
-  private async handleChannelMessage(msg: any): Promise<void> {
-    const userId = msg.user;
-    if (!userId) return;
-    const channelId = msg.channel;
-    const text = (msg.text || '').replace(/<@[^>]+>\s*/, '').trim();
-    if (!text) return;
-
-    const isAdmin = !!findSlackAdmin(this.config, userId);
-
-    if (!isAdmin) {
-      const now = Date.now();
-      const lastTime = this.userLastMessageTime.get(userId) || 0;
-      if (now - lastTime < SlackChannel.USER_RATE_LIMIT_MS) {
-        const remaining = Math.ceil((SlackChannel.USER_RATE_LIMIT_MS - (now - lastTime)) / 1000);
-        await this.sendEphemeral(channelId, userId, `Please wait ${remaining}s before sending another message.`);
-        return;
-      }
-      this.userLastMessageTime.set(userId, now);
-    }
-
-    if (text === '/start' || text === '/pair') {
-      await this.sendEphemeral(channelId, userId, 'To request DM access, send `/mercury start` in a direct message with me.');
-      return;
-    }
-
-    this.lastActiveChannelId = channelId;
-    this.lastMessageMetadata = { isDM: false, isAdmin };
-
-    if (!this.permissionModes.has(channelId)) {
-      this.askPermissionMode(channelId).catch(() => {});
-      this.permissionModes.set(channelId, 'ask-me');
-    }
-
-    this.emit({
-      id: msg.ts,
-      channelId: `slack:${channelId}`,
-      channelType: 'slack',
-      senderId: userId,
-      senderName: msg.user,
-      content: text,
-      timestamp: Math.floor(parseFloat(msg.ts) * 1000),
-      metadata: { slackChannelId: channelId, isDM: false, isAdmin },
     });
   }
 
