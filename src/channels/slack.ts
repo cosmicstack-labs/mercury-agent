@@ -8,13 +8,11 @@ import type { SlackAccessUser } from '../types/channel.js';
 import {
   addSlackPendingRequest,
   approveSlackPendingRequest,
-  approveSlackPendingRequestByPairingCode,
   findSlackAdmin,
   findSlackApprovedUser,
   findSlackPendingRequest,
   getSlackAccessSummary,
   getSlackAdmins,
-  getSlackPendingRequests,
   hasSlackAdmins,
   rejectSlackPendingRequest,
   removeSlackUser,
@@ -318,46 +316,44 @@ export class SlackChannel extends BaseChannel {
       return;
     }
 
-    const existingPendingList = getSlackPendingRequests(this.config);
-    if (!hasSlackAdmins(this.config) && existingPendingList.length > 0) {
-      await this.sendDM(userId, 'Initial pairing is already in progress. Please try again later.');
+    if (!hasSlackAdmins(this.config)) {
+      const approved = approveSlackPendingRequest(this.config, userId, 'admin');
+      if (!approved) {
+        addSlackPendingRequest(this.config, { userId });
+        const approvedAgain = approveSlackPendingRequest(this.config, userId, 'admin');
+        if (approvedAgain) {
+          saveConfig(this.config);
+        }
+      } else {
+        saveConfig(this.config);
+      }
+      await this.sendDM(userId, ':white_check_mark: You have been approved as the *first admin*! You can now message Mercury.');
       return;
     }
 
-    if (!hasSlackAdmins(this.config)) {
-      const pairingCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-      addSlackPendingRequest(this.config, {
-        userId,
-        pairingCode,
-      });
-      saveConfig(this.config);
-      await this.sendDM(userId, `Your pairing code is: \`${pairingCode}\`\n\nEnter this code in the Mercury CLI to complete setup.`);
-    } else {
-      addSlackPendingRequest(this.config, {
-        userId,
-      });
-      saveConfig(this.config);
+    addSlackPendingRequest(this.config, { userId });
+    saveConfig(this.config);
 
-      const admins = getSlackAdmins(this.config);
-      for (const admin of admins) {
-        try {
-          await client.chat.postMessage({
-            channel: admin.userId,
-            text: `:bell: New Slack access request from <@${userId}>`,
-            blocks: [
-              { type: 'section', text: { type: 'mrkdwn', text: `:bell: *New Slack access request*\nFrom: <@${userId}>` } },
-              { type: 'actions', elements: [
-                { type: 'button', text: { type: 'plain_text', text: 'Approve' }, action_id: `slack_access:approve:${userId}`, style: 'primary' },
-                { type: 'button', text: { type: 'plain_text', text: 'Reject' }, action_id: `slack_access:reject:${userId}`, style: 'danger' },
-              ] },
-            ],
-          });
-        } catch (e) {
-          logger.warn({ err: e, adminId: admin.userId }, 'Failed to notify Slack admin');
-        }
+    const admins = getSlackAdmins(this.config);
+    for (const admin of admins) {
+      try {
+        await client.chat.postMessage({
+          channel: admin.userId,
+          text: `:bell: New Slack access request from <@${userId}>`,
+          blocks: [
+            { type: 'section', text: { type: 'mrkdwn', text: `:bell: *New Slack access request*\nFrom: <@${userId}>` } },
+            { type: 'actions', elements: [
+              { type: 'button', text: { type: 'plain_text', text: 'Approve as Admin' }, action_id: `slack_access:approve_admin:${userId}`, style: 'primary' },
+              { type: 'button', text: { type: 'plain_text', text: 'Approve as Member' }, action_id: `slack_access:approve_member:${userId}` },
+              { type: 'button', text: { type: 'plain_text', text: 'Reject' }, action_id: `slack_access:reject:${userId}`, style: 'danger' },
+            ] },
+          ],
+        });
+      } catch (e) {
+        logger.warn({ err: e, adminId: admin.userId }, 'Failed to notify Slack admin');
       }
-      await this.sendDM(userId, 'Your access request has been sent to the admins. You will be notified when approved.');
     }
+    await this.sendDM(userId, 'Your access request has been sent to the admins. You will be notified when approved.');
   }
 
   private async handleAccessButton(actionId: string, clickedByUserId: string, channelId: string | undefined, client: any): Promise<void> {
@@ -374,11 +370,17 @@ export class SlackChannel extends BaseChannel {
       return;
     }
 
-    if (action === 'approve') {
-      const approved = approveSlackPendingRequest(this.config, targetUserId);
+    if (action === 'approve_admin') {
+      const approved = approveSlackPendingRequest(this.config, targetUserId, 'admin');
       if (approved) {
         saveConfig(this.config);
-        await this.sendDM(targetUserId, `:white_check_mark: You have been approved as a *${approved.role}*! You can now message Mercury.`);
+        await this.sendDM(targetUserId, `:white_check_mark: You have been approved as an *admin*! You can now message Mercury.`);
+      }
+    } else if (action === 'approve_member') {
+      const approved = approveSlackPendingRequest(this.config, targetUserId, 'member');
+      if (approved) {
+        saveConfig(this.config);
+        await this.sendDM(targetUserId, `:white_check_mark: You have been approved as a *member*! You can now message Mercury.`);
       }
     } else if (action === 'reject') {
       rejectSlackPendingRequest(this.config, targetUserId);

@@ -37,10 +37,8 @@ import {
   removeDiscordUser,
   clearDiscordAccess,
   getSlackAccessSummary,
-  hasSlackAdmins as hasSlackAdminsFn,
   findSlackPendingRequest,
   approveSlackPendingRequest,
-  approveSlackPendingRequestByPairingCode,
   rejectSlackPendingRequest,
   removeSlackUser,
   clearSlackAccess,
@@ -64,7 +62,6 @@ import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { SignalChannel } from './channels/signal.js';
 import { DiscordChannel } from './channels/discord.js';
-import { SlackChannel } from './channels/slack.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -682,11 +679,10 @@ function printDiscordAccessState(config: MercuryConfig): void {
   console.log(`  Pending:          ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
 }
 
-function formatSlackUser(user: { userId: string; userName?: string; displayName?: string; pairingCode?: string }): string {
+function formatSlackUser(user: { userId: string; userName?: string; displayName?: string }): string {
   const userName = user.userName ? ` (@${user.userName})` : '';
   const displayName = user.displayName ? ` ${user.displayName}` : '';
-  const pairingCode = user.pairingCode ? ` [code: ${user.pairingCode}]` : '';
-  return `${user.userId}${userName}${displayName}${pairingCode}`;
+  return `${user.userId}${userName}${displayName}`;
 }
 
 function printSlackAccessState(config: MercuryConfig): void {
@@ -694,10 +690,7 @@ function printSlackAccessState(config: MercuryConfig): void {
   const members = config.channels.slack.members;
   const pending = config.channels.slack.pending;
   const pendingSummary = pending.length > 0
-    ? pending.map((entry) => {
-        const code = entry.pairingCode ? ` [code: ${entry.pairingCode}]` : '';
-        return `${formatSlackUser(entry)}${code}`;
-      }).join(', ')
+    ? pending.map((entry) => formatSlackUser(entry)).join(', ')
     : '';
 
   console.log('');
@@ -1054,52 +1047,6 @@ async function completeInitialDiscordPairing(config: MercuryConfig): Promise<voi
     }
   } finally {
     await discordChannel.stop();
-  }
-}
-
-async function completeInitialSlackPairing(config: MercuryConfig): Promise<void> {
-  if (!config.channels.slack.enabled || !config.channels.slack.botToken || hasSlackAdminsFn(config)) {
-    return;
-  }
-
-  console.log('');
-  console.log(chalk.bold.white('  Slack Pairing'));
-  console.log(chalk.dim('  1. Open Slack and DM your bot.'));
-  console.log(chalk.dim('  2. Send /mercury start to receive your pairing code.'));
-  console.log(chalk.dim('  3. Paste that pairing code below to finish setup.'));
-  console.log('');
-
-  const slackChannel = new SlackChannel(config);
-  try {
-    await slackChannel.start();
-  } catch (err: any) {
-    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
-    console.log('');
-    await slackChannel.stop();
-    return;
-  }
-
-  try {
-    while (true) {
-      const pairingCode = await ask(chalk.white('  Slack Pairing Code: '));
-      if (!pairingCode) {
-        console.log(chalk.red('  Slack pairing code is required to continue.'));
-        continue;
-      }
-
-      const approved = approveSlackPendingRequestByPairingCode(config, pairingCode.trim());
-      if (!approved) {
-        console.log(chalk.red('  That pairing code is not valid yet. Send /mercury start in Slack, then paste the exact code here.'));
-        continue;
-      }
-
-      saveConfig(config);
-      console.log(chalk.green(`  ✓ Slack paired. First admin: ${formatSlackUser(approved)}.`));
-      console.log('');
-      break;
-    }
-  } finally {
-    await slackChannel.stop();
   }
 }
 
@@ -1747,6 +1694,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
   console.log(chalk.dim('       and messages from the messages tab"'));
   console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
+  console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
   console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
 
   const slMask = isReconfig && config.channels.slack.botToken ? ` [${maskKey(config.channels.slack.botToken)}]` : '';
@@ -1797,8 +1745,6 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     config.channels.slack.enabled = false;
     saveConfig(config);
   }
-
-  await completeInitialSlackPairing(config);
 
   hr();
   console.log('');
@@ -3470,18 +3416,15 @@ slackCmd
   });
 
 slackCmd
-  .command('approve <code>')
-  .description('Approve a Slack access request by pairing code or user ID')
-  .action((code: string) => {
+  .command('approve <userId>')
+  .description('Approve a pending Slack access request')
+  .action((userId: string) => {
     const config = loadConfig();
 
-    let approved = approveSlackPendingRequestByPairingCode(config, code);
-    if (!approved) {
-      approved = approveSlackPendingRequest(config, code);
-    }
+    const approved = approveSlackPendingRequest(config, userId);
 
     if (!approved) {
-      console.log(chalk.red(`No pending Slack request found for "${code}".`));
+      console.log(chalk.red(`No pending Slack request found for "${userId}".`));
       process.exit(1);
     }
 

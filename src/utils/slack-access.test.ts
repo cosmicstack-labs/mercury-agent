@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addSlackPendingRequest,
   approveSlackPendingRequest,
-  approveSlackPendingRequestByPairingCode,
   clearSlackAccess,
-  findSlackPendingRequestByPairingCode,
   getDefaultConfig,
   getSlackAccessSummary,
   migrateLegacySlackAccess,
@@ -28,17 +26,18 @@ describe('slack access config helpers', () => {
     expect(config.channels.slack.pending).toEqual([]);
   });
 
-  it('approves pending requests and reports summary counts', () => {
+  it('approves pending requests as admin or member and reports summary counts', () => {
     const config = getDefaultConfig();
-    addSlackPendingRequest(config, { userId: 'U111', userName: 'alpha', displayName: 'Alpha', pairingCode: 'ABC123' });
+    addSlackPendingRequest(config, { userId: 'U111', userName: 'alpha', displayName: 'Alpha' });
     addSlackPendingRequest(config, { userId: 'U222', userName: 'beta' });
 
-    expect(findSlackPendingRequestByPairingCode(config, 'ABC123')?.userId).toBe('U111');
-    const admin = approveSlackPendingRequestByPairingCode(config, 'ABC123');
+    const admin = approveSlackPendingRequest(config, 'U111', 'admin');
     const member = approveSlackPendingRequest(config, 'U222', 'member');
 
     expect(admin?.userId).toBe('U111');
+    expect(admin?.role).toBe('admin');
     expect(member?.userId).toBe('U222');
+    expect(member?.role).toBe('member');
     expect(getSlackAccessSummary(config)).toBe('1 admin, 1 member, 0 pending');
   });
 
