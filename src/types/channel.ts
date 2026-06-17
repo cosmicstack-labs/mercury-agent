@@ -109,3 +109,31 @@ export interface DiscordChannelConfig extends ChannelConfig {
   members: DiscordAccessUser[];
   pending: DiscordPendingRequest[];
 }
+
+export interface SlackAccessUser {
+  userId: string;
+  userName?: string;
+  displayName?: string;
+  role: 'admin' | 'member';
+  approvedAt: string;
+}
+
+export interface SlackPendingRequest {
+  userId: string;
+  userName?: string;
+  displayName?: string;
+  requestedAt: string;
+  pairingCode?: string;
+}
+
+export interface SlackChannelConfig extends ChannelConfig {
+  type: 'slack';
+  botToken: string;
+  appToken: string;
+  channelId?: string;
+  teamId?: string;
+  streaming?: boolean;
+  admins: SlackAccessUser[];
+  members: SlackAccessUser[];
+  pending: SlackPendingRequest[];
+}

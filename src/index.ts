@@ -36,6 +36,14 @@ import {
   rejectDiscordPendingRequest,
   removeDiscordUser,
   clearDiscordAccess,
+  getSlackAccessSummary,
+  hasSlackAdmins as hasSlackAdminsFn,
+  findSlackPendingRequest,
+  approveSlackPendingRequest,
+  approveSlackPendingRequestByPairingCode,
+  rejectSlackPendingRequest,
+  removeSlackUser,
+  clearSlackAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
@@ -56,6 +64,7 @@ import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { SignalChannel } from './channels/signal.js';
 import { DiscordChannel } from './channels/discord.js';
+import { SlackChannel } from './channels/slack.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
@@ -673,6 +682,37 @@ function printDiscordAccessState(config: MercuryConfig): void {
   console.log(`  Pending:          ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
 }
 
+function formatSlackUser(user: { userId: string; userName?: string; displayName?: string; pairingCode?: string }): string {
+  const userName = user.userName ? ` (@${user.userName})` : '';
+  const displayName = user.displayName ? ` ${user.displayName}` : '';
+  const pairingCode = user.pairingCode ? ` [code: ${user.pairingCode}]` : '';
+  return `${user.userId}${userName}${displayName}${pairingCode}`;
+}
+
+function printSlackAccessState(config: MercuryConfig): void {
+  const admins = config.channels.slack.admins;
+  const members = config.channels.slack.members;
+  const pending = config.channels.slack.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => {
+        const code = entry.pairingCode ? ` [code: ${entry.pairingCode}]` : '';
+        return `${formatSlackUser(entry)}${code}`;
+      }).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Slack Access:  ${chalk.white(getSlackAccessSummary(config))}`);
+  if (config.channels.slack.teamId) {
+    console.log(`  Team:           ${chalk.white(config.channels.slack.teamId)}`);
+  }
+  if (config.channels.slack.channelId) {
+    console.log(`  Channel:        ${chalk.white(config.channels.slack.channelId)}`);
+  }
+  console.log(`  Admins:         ${admins.length > 0 ? chalk.green(admins.map(formatSlackUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:        ${members.length > 0 ? chalk.green(members.map(formatSlackUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:        ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
 function restartDaemonIfRunning(message?: string): void {
   const daemon = getDaemonStatus();
   if (!daemon.running) return;
@@ -1014,6 +1054,52 @@ async function completeInitialDiscordPairing(config: MercuryConfig): Promise<voi
     }
   } finally {
     await discordChannel.stop();
+  }
+}
+
+async function completeInitialSlackPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.slack.enabled || !config.channels.slack.botToken || hasSlackAdminsFn(config)) {
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Slack Pairing'));
+  console.log(chalk.dim('  1. Open Slack and DM your bot.'));
+  console.log(chalk.dim('  2. Send /mercury start to receive your pairing code.'));
+  console.log(chalk.dim('  3. Paste that pairing code below to finish setup.'));
+  console.log('');
+
+  const slackChannel = new SlackChannel(config);
+  try {
+    await slackChannel.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await slackChannel.stop();
+    return;
+  }
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Slack Pairing Code: '));
+      if (!pairingCode) {
+        console.log(chalk.red('  Slack pairing code is required to continue.'));
+        continue;
+      }
+
+      const approved = approveSlackPendingRequestByPairingCode(config, pairingCode.trim());
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid yet. Send /mercury start in Slack, then paste the exact code here.'));
+        continue;
+      }
+
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Slack paired. First admin: ${formatSlackUser(approved)}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await slackChannel.stop();
   }
 }
 
@@ -1636,6 +1722,83 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   await completeInitialDiscordPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Slack (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  console.log(chalk.dim('  To create a Slack app:'));
+  console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
+  console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
+  console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
+  console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
+  console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
+  console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
+  console.log(chalk.dim('       files:write, commands, app_mentions:read'));
+  console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
+  console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
+  console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
+  console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
+  console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
+  console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
+  console.log(chalk.dim('       and messages from the messages tab"'));
+  console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
+  console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+
+  const slMask = isReconfig && config.channels.slack.botToken ? ` [${maskKey(config.channels.slack.botToken)}]` : '';
+  const slackBotToken = await ask(chalk.white(`  Slack Bot Token${slMask} (starts with xoxb-): `));
+  if (isReconfig && slackBotToken.toLowerCase() === 'none') {
+    config.channels.slack.enabled = false;
+    config.channels.slack.botToken = '';
+    clearSlackAccess(config);
+  } else if (slackBotToken) {
+    if (slackBotToken !== config.channels.slack.botToken) {
+      clearSlackAccess(config);
+    }
+    config.channels.slack.botToken = slackBotToken;
+    appendToEnv('SLACK_BOT_TOKEN', slackBotToken);
+  }
+
+  if (config.channels.slack.enabled || config.channels.slack.botToken) {
+    const slAppMask = isReconfig && config.channels.slack.appToken ? ` [${maskKey(config.channels.slack.appToken)}]` : '';
+    const slackAppToken = await ask(chalk.white(`  Slack App-Level Token${slAppMask} (starts with xapp-): `));
+    if (slackAppToken && slackAppToken.toLowerCase() !== 'none') {
+      config.channels.slack.appToken = slackAppToken;
+      appendToEnv('SLACK_APP_TOKEN', slackAppToken);
+    } else if (slackAppToken.toLowerCase() === 'none') {
+      config.channels.slack.appToken = '';
+    }
+
+    if (config.channels.slack.botToken) {
+      config.channels.slack.enabled = true;
+
+      if (!config.channels.slack.channelId) {
+        console.log(chalk.dim('  To find a Channel ID: right-click the channel name → Copy Channel ID.'));
+        const slChannelId = await ask(chalk.white('  Slack Channel ID (optional — leave empty for all channels): '));
+        if (slChannelId.trim()) {
+          config.channels.slack.channelId = slChannelId.trim();
+        }
+      }
+
+      if (!config.channels.slack.teamId) {
+        const slTeamId = await ask(chalk.white('  Slack Team/Workspace ID (optional): '));
+        if (slTeamId.trim()) {
+          config.channels.slack.teamId = slTeamId.trim();
+        }
+      }
+
+      saveConfig(config);
+    }
+  } else if (!config.channels.slack.botToken) {
+    config.channels.slack.enabled = false;
+    saveConfig(config);
+  }
+
+  await completeInitialSlackPairing(config);
 
   hr();
   console.log('');
@@ -2634,6 +2797,10 @@ program
     if (config.channels.discord.botToken) {
       console.log(`  Discord Access: ${chalk.white(getDiscordAccessSummary(config))}`);
     }
+    console.log(`  Slack:    ${config.channels.slack.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.slack.botToken) {
+      console.log(`  Slack Access: ${chalk.white(getSlackAccessSummary(config))}`);
+    }
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
@@ -2658,6 +2825,9 @@ program
     }
     if (config.channels.discord.botToken) {
       printDiscordAccessState(config);
+    }
+    if (config.channels.slack.botToken) {
+      printSlackAccessState(config);
     }
     console.log('');
   });
@@ -3284,6 +3454,101 @@ discordCmd
     }
     console.log(`  Streaming:   ${config.channels.discord.streaming ? chalk.green('yes') : chalk.dim('no')}`);
 
+    console.log('');
+  });
+
+const slackCmd = program
+  .command('slack')
+  .description('Manage Slack channel access and setup');
+
+slackCmd
+  .command('list')
+  .description('Show approved Slack users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    printSlackAccessState(config);
+  });
+
+slackCmd
+  .command('approve <code>')
+  .description('Approve a Slack access request by pairing code or user ID')
+  .action((code: string) => {
+    const config = loadConfig();
+
+    let approved = approveSlackPendingRequestByPairingCode(config, code);
+    if (!approved) {
+      approved = approveSlackPendingRequest(config, code);
+    }
+
+    if (!approved) {
+      console.log(chalk.red(`No pending Slack request found for "${code}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.green(`Approved Slack user ${formatSlackUser(approved)}.`));
+  });
+
+slackCmd
+  .command('reject <userId>')
+  .description('Reject a pending Slack access request')
+  .action((userId: string) => {
+    const config = loadConfig();
+
+    const rejected = rejectSlackPendingRequest(config, userId);
+    if (!rejected) {
+      console.log(chalk.red(`No pending Slack request found for "${userId}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.yellow(`Rejected Slack request for ${formatSlackUser(rejected)}.`));
+  });
+
+slackCmd
+  .command('remove <userId>')
+  .description('Remove an approved Slack user')
+  .action((userId: string) => {
+    const config = loadConfig();
+
+    const removed = removeSlackUser(config, userId);
+    if (!removed) {
+      console.log(chalk.red(`No approved Slack user found for "${userId}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.yellow(`Removed Slack access for ${formatSlackUser(removed)}.`));
+  });
+
+slackCmd
+  .command('reset')
+  .description('Clear all Slack access data and disable Slack')
+  .action(() => {
+    const config = loadConfig();
+    clearSlackAccess(config);
+    config.channels.slack.enabled = false;
+    saveConfig(config);
+    console.log(chalk.yellow('Slack access reset. Channel disabled.'));
+  });
+
+slackCmd
+  .command('status')
+  .description('Show Slack configuration and connection status')
+  .action(() => {
+    const config = loadConfig();
+    console.log(`  Enabled:     ${config.channels.slack.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    if (!config.channels.slack.botToken) {
+      console.log(chalk.dim('  Not configured. Run mercury doctor to set up Slack.'));
+    }
+    if (config.channels.slack.channelId) {
+      console.log(`  Channel:     ${chalk.white(config.channels.slack.channelId)}`);
+    }
+    if (config.channels.slack.teamId) {
+      console.log(`  Team:         ${chalk.white(config.channels.slack.teamId)}`);
+    }
+    console.log(`  Streaming:   ${config.channels.slack.streaming ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:       ${chalk.white(getSlackAccessSummary(config))}`);
     console.log('');
   });
 

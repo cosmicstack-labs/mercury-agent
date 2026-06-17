@@ -379,3 +379,40 @@ export function getDiscordHelp(): string {
 
   return lines.join('\n');
 }
+
+export function getSlackHelp(): string {
+  const lines: string[] = [];
+
+  lines.push('\u263f **Mercury \u2014 Slack Commands**');
+  lines.push('');
+  lines.push('**Workspace Channels**');
+  lines.push('All workspace members can chat in configured channels.');
+  lines.push('Admins control DM access permissions.');
+  lines.push('');
+
+  lines.push('**General**');
+  lines.push('/mercury help \u2014 Show this command list');
+  lines.push('/mercury status \u2014 Config, budget, and uptime');
+  lines.push('/mercury stop \u2014 Stop all agents');
+  lines.push('');
+
+  lines.push('**Budget**');
+  lines.push('/mercury budget \u2014 Show token budget status');
+  lines.push('/mercury budget override \u2014 Allow one request past budget');
+  lines.push('/mercury budget reset \u2014 Reset usage to zero');
+  lines.push('/mercury budget set <n> \u2014 Set daily token budget');
+  lines.push('');
+
+  lines.push('**Token Saver**');
+  lines.push('/mercury saver \u2014 Show saver status and tokens saved');
+  lines.push('/mercury saver on \u2014 Manually enable Token Saver Mode');
+  lines.push('/mercury saver off \u2014 Disable Token Saver Mode');
+  lines.push('/mercury saver toggle \u2014 Toggle on/off');
+  lines.push('');
+
+  lines.push('**DM Access**');
+  lines.push('/mercury start \u2014 Request DM access');
+  lines.push('/mercury unpair \u2014 Reset all Slack DM access (admin only)');
+
+  return lines.join('\n');
+}
