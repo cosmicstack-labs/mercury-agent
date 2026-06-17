@@ -158,12 +158,6 @@ export class SlackChannel extends BaseChannel {
       if (!text) return;
 
       const isAdmin = !!findSlackAdmin(this.config, userId);
-      const isApproved = !!findSlackApprovedUser(this.config, userId);
-
-      if (!isApproved && !isAdmin) {
-        await this.sendEphemeral(channelId, userId, 'You are not authorized to use Mercury. Send `/mercury start` in a DM to request access.');
-        return;
-      }
 
       this.lastActiveChannelId = channelId;
       this.lastMessageMetadata = { isDM: false, isAdmin };
@@ -265,12 +259,6 @@ export class SlackChannel extends BaseChannel {
     if (!text) return;
 
     const isAdmin = !!findSlackAdmin(this.config, userId);
-    const isApproved = !!findSlackApprovedUser(this.config, userId);
-
-    if (!isApproved && !isAdmin) {
-      await this.sendEphemeral(channelId, userId, 'You are not authorized to use Mercury here. Send `/mercury start` in a DM to request access.');
-      return;
-    }
 
     if (!isAdmin) {
       const now = Date.now();
@@ -284,7 +272,7 @@ export class SlackChannel extends BaseChannel {
     }
 
     if (text === '/start' || text === '/pair') {
-      await this.sendEphemeral(channelId, userId, 'Please send `/mercury start` in a direct message to request access.');
+      await this.sendEphemeral(channelId, userId, 'To request DM access, send `/mercury start` in a direct message with me.');
       return;
     }
 
