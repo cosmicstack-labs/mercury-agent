@@ -92,10 +92,51 @@ jobs:
       - name: Run CI in Termux container
         shell: bash
         run: |
+          cat > /tmp/termux-ci.sh <<'CI_SCRIPT'
+          #!/bin/sh
+          set -ex
+          export PATH=/data/data/com.termux/files/usr/bin:$PATH
+          export HOME=/home/builder
+          export npm_config_cache=/home/builder/project/.npm-cache
+          echo '--- versions ---'
+          node --version
+          npm --version
+          uname -a
+          pwd
+          echo '--- pkg install ---'
+          pkg update -y
+          pkg install -y git nodejs-lts python build-essential
+          echo '--- npm install ---'
+          cd /home/builder/project
+          npm install --no-audit --no-fund --foreground-scripts 2>&1 | tail -200
+          echo '--- inspect tsup ---'
+          ls -la node_modules/.bin/tsup || true
+          ls -la node_modules/tsup/dist/ || true
+          if [ -f node_modules/tsup/dist/cli-default.js ]; then
+            head -1 node_modules/tsup/dist/cli-default.js
+          else
+            echo 'cli-default.js missing'
+          fi
+          echo '--- npm install rollup-wasm ---'
+          npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
+          echo '--- swap rollup symlink ---'
+          rm -rf node_modules/rollup
+          ln -s @rollup/wasm-node node_modules/rollup
+          ls -la node_modules/rollup
+          echo '--- run tsup via direct node ---'
+          node node_modules/tsup/dist/cli-default.js
+          echo '--- post-build ---'
+          node scripts/post-build.cjs
+          echo '--- test ---'
+          npm test
+          CI_SCRIPT
+          chmod +x /tmp/termux-ci.sh
+
           docker run --rm \
             --privileged \
             --entrypoint /entrypoint_root.sh \
             -v "${{ github.workspace }}:/home/builder/project" \
+            -v /tmp/termux-ci.sh:/tmp/termux-ci.sh:ro \
             -e "HOME=/home/builder" \
             termux/termux-docker:x86_64 \
             bash -c "
@@ -103,41 +144,10 @@ jobs:
               chown -R system:system /home/builder
               mkdir -p /home/builder/.npm
               chown -R system:system /home/builder/.npm
-              su system -c '
-                set -ex
-                export PATH=/data/data/com.termux/files/usr/bin:\$PATH
-                export HOME=/home/builder
-                export npm_config_cache=/home/builder/project/.npm-cache
-                echo '--- versions ---'
-                node --version
-                npm --version
-                uname -a
-                pwd
-                echo '--- pkg install ---'
-                pkg update -y
-                pkg install -y git nodejs-lts python build-essential
-                echo '--- npm install ---'
-                cd /home/builder/project
-                npm install --no-audit --no-fund --foreground-scripts 2>&1 | tail -200
-                echo '--- inspect tsup ---'
-                ls -la node_modules/.bin/tsup 2>&1 || echo 'no .bin/tsup'
-                ls -la node_modules/tsup/dist/ 2>&1 || echo 'no tsup/dist'
-                file node_modules/.bin/tsup 2>&1 || true
-                readlink node_modules/.bin/tsup 2>&1 || true
-                test -f node_modules/tsup/dist/cli-default.js && head -1 node_modules/tsup/dist/cli-default.js || echo 'cli-default.js missing'
-                echo '--- npm install rollup-wasm ---'
-                npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
-                echo '--- swap rollup symlink ---'
-                rm -rf node_modules/rollup
-                ln -s @rollup/wasm-node node_modules/rollup
-                ls -la node_modules/rollup 2>&1
-                echo '--- run tsup via direct node ---'
-                node node_modules/tsup/dist/cli-default.js
-                echo '--- post-build ---'
-                node scripts/post-build.cjs
-                echo '--- test ---'
-                npm test
-              '
+              cp /tmp/termux-ci.sh /home/builder/termux-ci.sh
+              chown system:system /home/builder/termux-ci.sh
+              chmod +x /home/builder/termux-ci.sh
+              su system /home/builder/termux-ci.sh
             "
 
   publish:
