@@ -99,7 +99,12 @@ jobs:
           export HOME=/home/builder
           export npm_config_cache=/home/builder/project/.npm-cache
           export TERMUX_VERSION=u0
-          pkg update -y
+          # pkg update can hit bad mirrors; retry with a known-good mirror if needed
+          pkg update -y || {
+            echo 'pkg update failed, trying specific mirror...'
+            termux-change-repo || true
+            pkg update -y
+          }
           pkg install -y git nodejs-lts python build-essential
           cd /home/builder/project
           npm install --no-audit --no-fund
