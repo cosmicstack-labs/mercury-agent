@@ -104,21 +104,38 @@ jobs:
               mkdir -p /home/builder/.npm
               chown -R system:system /home/builder/.npm
               su system -c '
-                set -e
-                export PATH=/data/data/com.termux/files/usr/bin:$PATH
+                set -ex
+                export PATH=/data/data/com.termux/files/usr/bin:\$PATH
                 export HOME=/home/builder
                 export npm_config_cache=/home/builder/project/.npm-cache
+                echo '--- versions ---'
+                node --version
+                npm --version
+                uname -a
+                pwd
+                echo '--- pkg install ---'
                 pkg update -y
                 pkg install -y git nodejs-lts python build-essential
+                echo '--- npm install ---'
                 cd /home/builder/project
-                npm install --no-audit --no-fund
+                npm install --no-audit --no-fund --foreground-scripts 2>&1 | tail -200
+                echo '--- inspect tsup ---'
+                ls -la node_modules/.bin/tsup 2>&1 || echo 'no .bin/tsup'
+                ls -la node_modules/tsup/dist/ 2>&1 || echo 'no tsup/dist'
+                file node_modules/.bin/tsup 2>&1 || true
+                readlink node_modules/.bin/tsup 2>&1 || true
+                test -f node_modules/tsup/dist/cli-default.js && head -1 node_modules/tsup/dist/cli-default.js || echo 'cli-default.js missing'
+                echo '--- npm install rollup-wasm ---'
                 npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
+                echo '--- swap rollup symlink ---'
                 rm -rf node_modules/rollup
                 ln -s @rollup/wasm-node node_modules/rollup
-                # Run tsup via direct node invocation to bypass any .bin symlink
-                # issues from npm 11's allow-scripts policy.
+                ls -la node_modules/rollup 2>&1
+                echo '--- run tsup via direct node ---'
                 node node_modules/tsup/dist/cli-default.js
+                echo '--- post-build ---'
                 node scripts/post-build.cjs
+                echo '--- test ---'
                 npm test
               '
             "
