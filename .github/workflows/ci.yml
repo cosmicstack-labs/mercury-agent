@@ -111,8 +111,8 @@ jobs:
                 pkg update -y
                 pkg install -y git nodejs-lts python build-essential
                 cd /home/builder/project
-                npm ci || npm install
-                npm install --no-save @rollup/wasm-node@4
+                npm install --no-audit --no-fund
+                npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
                 rm -rf node_modules/rollup
                 ln -s @rollup/wasm-node node_modules/rollup
                 npm run build
