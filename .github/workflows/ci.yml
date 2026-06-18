@@ -111,11 +111,15 @@ jobs:
                 pkg update -y
                 pkg install -y git nodejs-lts python build-essential
                 cd /home/builder/project
+                export npm_config_allow_scripts=true
                 npm install --no-audit --no-fund
                 npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
                 rm -rf node_modules/rollup
                 ln -s @rollup/wasm-node node_modules/rollup
-                npm run build
+                # Run tsup via direct node invocation to bypass any .bin symlink
+                # issues from npm 11's allow-scripts policy.
+                node node_modules/tsup/dist/cli-default.js
+                node scripts/post-build.cjs
                 npm test
               '
             "
