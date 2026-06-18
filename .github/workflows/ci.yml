@@ -111,7 +111,6 @@ jobs:
                 pkg update -y
                 pkg install -y git nodejs-lts python build-essential
                 cd /home/builder/project
-                export npm_config_allow_scripts=true
                 npm install --no-audit --no-fund
                 npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
                 rm -rf node_modules/rollup

@@ -102,5 +102,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }
