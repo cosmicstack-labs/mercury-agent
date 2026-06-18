@@ -100,11 +100,14 @@ jobs:
             termux/termux-docker:x86_64 \
             bash -c "
               set -e
-              chown -R system:system /home/builder/project
-              su - system -c '
+              chown -R system:system /home/builder
+              mkdir -p /home/builder/.npm
+              chown -R system:system /home/builder/.npm
+              su system -c '
                 set -e
                 export PATH=/data/data/com.termux/files/usr/bin:$PATH
                 export HOME=/home/builder
+                export npm_config_cache=/home/builder/project/.npm-cache
                 pkg update -y
                 pkg install -y git nodejs-lts
                 cd /home/builder/project
