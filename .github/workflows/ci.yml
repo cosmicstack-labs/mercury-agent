@@ -98,14 +98,17 @@ jobs:
           export PATH=/data/data/com.termux/files/usr/bin:$PATH
           export HOME=/home/builder
           export npm_config_cache=/home/builder/project/.npm-cache
-          echo '--- versions ---'
-          node --version
-          npm --version
+          echo '--- env ---'
           uname -a
           pwd
           echo '--- pkg install ---'
           pkg update -y
           pkg install -y git nodejs-lts python build-essential
+          echo '--- versions ---'
+          node --version
+          npm --version
+          which node
+          which npm
           echo '--- npm install ---'
           cd /home/builder/project
           npm install --no-audit --no-fund --foreground-scripts 2>&1 | tail -200
