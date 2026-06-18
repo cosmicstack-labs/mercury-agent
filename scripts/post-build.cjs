@@ -83,6 +83,8 @@ self.addEventListener('activate', (event) => {
   })());
 });
 `;
-fs.writeFileSync(path.join(uiDistDest, 'sw.js'), killSwitchSW);
+if (fs.existsSync(uiDistDest)) {
+  fs.writeFileSync(path.join(uiDistDest, 'sw.js'), killSwitchSW);
+}
 
 console.log('  ✓ Build complete');
