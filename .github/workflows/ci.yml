@@ -115,7 +115,7 @@ jobs:
           export PATH="$PWD/node_modules/.bin:$PATH"
           node node_modules/tsup/dist/cli-default.js
           node scripts/post-build.cjs
-          npx vitest run
+          node node_modules/vitest/vitest.mjs run
           CI_SCRIPT
           chmod +x /tmp/termux-ci.sh
 
