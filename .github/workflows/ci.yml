@@ -109,9 +109,12 @@ jobs:
                 export HOME=/home/builder
                 export npm_config_cache=/home/builder/project/.npm-cache
                 pkg update -y
-                pkg install -y git nodejs-lts
+                pkg install -y git nodejs-lts python build-essential
                 cd /home/builder/project
-                npm ci
+                npm ci || {
+                  echo '::warning::npm ci failed on Termux; falling back to npm install'
+                  npm install
+                }
                 npm install --no-save @rollup/wasm-node@4
                 rm -rf node_modules/rollup
                 ln -s @rollup/wasm-node node_modules/rollup

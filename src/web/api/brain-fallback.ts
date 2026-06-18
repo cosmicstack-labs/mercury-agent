@@ -1,7 +1,18 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import process from 'node:process';
 import { getMemoryDir } from '../../utils/config.js';
+
+function resolveAssetPath(...segments: string[]): string {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  // When running as a Bun --compile standalone binary, __dirname points to
+  // Bun's virtual filesystem ($bunfs).  Resolve assets relative to the binary.
+  if (typeof (process.versions as any).bun === 'string' && __dirname.includes('$bunfs')) {
+    return join(dirname(process.execPath), ...segments);
+  }
+  return join(__dirname, ...segments);
+}
 
 let sqlJsModule: any = null;
 let dbInstance: any = null;
@@ -14,7 +25,7 @@ async function getDb(): Promise<any> {
   try {
     if (!sqlJsModule) {
       const initSqlJs = (await import('sql.js')).default;
-      const wasmPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'static', 'vendor', 'sql-wasm.wasm');
+      const wasmPath = resolveAssetPath('web', 'static', 'vendor', 'sql-wasm.wasm');
       sqlJsModule = await initSqlJs(existsSync(wasmPath)
         ? { locateFile: (f: string) => existsSync(wasmPath) ? wasmPath : f }
         : undefined);

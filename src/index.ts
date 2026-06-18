@@ -68,7 +68,7 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
@@ -3520,9 +3520,9 @@ serviceCmd
     showServiceStatus();
   });
 
-program
+  program
   .command('upgrade')
-  .description('Upgrade Mercury to the latest version from npm')
+  .description('Upgrade Mercury to the latest version')
   .action(async () => {
     console.log('');
     console.log(chalk.cyan(`  Mercury ${chalk.white(`v${pkgVersion}`)}`));
@@ -3535,6 +3535,43 @@ program
       console.log(chalk.green('  ✓ Daemon stopped'));
     }
 
+    const standalone = isStandaloneBinary();
+
+    if (standalone) {
+      // Standalone binary: re-run the installer script which downloads the
+      // latest release from GitHub and replaces the binary in-place.
+      console.log(chalk.dim('  Standalone binary detected — re-running installer...'));
+      console.log('');
+
+      const { execSync } = await import('node:child_process');
+      const platform = process.platform;
+      const binPath = process.execPath;
+
+      if (platform === 'win32') {
+        // Windows: use PowerShell installer
+        const psCmd = `irm https://mercuryagent.sh/install.ps1 | iex`;
+        try {
+          execSync(psCmd, { stdio: 'inherit', shell: 'powershell.exe' });
+        } catch {
+          console.log(chalk.red('  ✗ Upgrade failed. Try manually:'));
+          console.log(chalk.dim('    irm https://mercuryagent.sh/install.ps1 | iex'));
+        }
+      } else {
+        // macOS / Linux: use shell installer
+        const shCmd = 'curl -fsSL https://mercuryagent.sh/install.sh | sh';
+        try {
+          execSync(shCmd, { stdio: 'inherit' });
+        } catch {
+          console.log(chalk.red('  ✗ Upgrade failed. Try manually:'));
+          console.log(chalk.dim('    curl -fsSL https://mercuryagent.sh/install.sh | sh'));
+        }
+      }
+
+      console.log('');
+      return;
+    }
+
+    // npm install: use npm to upgrade.
     console.log(chalk.dim('  Checking for latest version...'));
     const { execSync } = await import('node:child_process');
 

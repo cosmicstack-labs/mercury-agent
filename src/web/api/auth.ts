@@ -3,10 +3,18 @@ import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import process from 'node:process';
 import { authenticate, createSession, destroySession, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge } from '../auth.js';
 
-const __authDir = dirname(fileURLToPath(import.meta.url));
-const spaLoginIndex = join(__authDir, 'web', 'ui', 'index.html');
+function resolveWebDir(...segments: string[]): string {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  if (typeof (process.versions as any).bun === 'string' && __dirname.includes('$bunfs')) {
+    return join(dirname(process.execPath), ...segments);
+  }
+  return join(__dirname, ...segments);
+}
+
+const spaLoginIndex = resolveWebDir('web', 'ui', 'index.html');
 
 function renderLoginPage(error?: string): string {
   return `<!DOCTYPE html>

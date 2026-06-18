@@ -23,8 +23,23 @@ import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 const app = new Hono();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const staticDir = process.env.MERCURY_WEB_STATIC || join(__dirname, 'web', 'static');
-const uiDir = process.env.MERCURY_UI_DIR || join(__dirname, 'web', 'ui');
+
+function resolveWebDir(subpath: string): string {
+  const envVar = subpath === 'static' ? process.env.MERCURY_WEB_STATIC : process.env.MERCURY_UI_DIR;
+  if (envVar) return envVar;
+
+  // When running as a Bun --compile standalone binary, __dirname points to
+  // Bun's virtual filesystem ($bunfs).  The web assets are shipped alongside
+  // the binary in a `web/` directory, so resolve relative to the binary itself.
+  if (typeof (process.versions as any).bun === 'string' && __dirname.includes('$bunfs')) {
+    return join(dirname(process.execPath), 'web', subpath);
+  }
+
+  return join(__dirname, 'web', subpath);
+}
+
+const staticDir = resolveWebDir('static');
+const uiDir = resolveWebDir('ui');
 
 const MIME_TYPES: Record<string, string> = {
   css: 'text/css',
@@ -169,7 +184,7 @@ if (spaAvailable) {
   // React SPA not built — return helpful message for all routes
   app.get('*', (c) => {
     if (c.req.path.startsWith('/api/')) return c.notFound();
-    return c.text('Mercury React UI not built. Run: cd ui && npm install && npm run build', 500);
+    return c.text('Mercury web UI not found. If running from source, run: npm run build\nIf running a standalone binary, ensure the web/ directory is next to the binary.', 500);
   });
 }
 

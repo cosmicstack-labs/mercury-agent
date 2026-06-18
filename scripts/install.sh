@@ -206,6 +206,21 @@ main() {
   trap - EXIT INT TERM
   chmod +x "$bin_path"
 
+  # Download web dashboard assets (required for the web UI).
+  web_tar_url="${GITHUB_DL}/v${version}/web.tar.gz"
+  web_tmp=$(mktemp -t mercury-web.XXXXXX.tar.gz)
+  if fetch_to "$web_tar_url" "$web_tmp" 2>/dev/null; then
+    mkdir -p "$bin_dir/web"
+    if tar -xzf "$web_tmp" -C "$bin_dir" 2>/dev/null; then
+      info "Web dashboard assets installed"
+    else
+      warn "Failed to extract web dashboard assets"
+    fi
+  else
+    warn "Web dashboard assets not found for v${version} — web UI will not work"
+  fi
+  rm -f "$web_tmp"
+
   # macOS: strip the quarantine attribute so Gatekeeper doesn't bark on
   # unsigned binaries downloaded via curl.
   if [ "$os" = "macos" ] && have xattr; then
