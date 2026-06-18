@@ -111,7 +111,8 @@ jobs:
           npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
           rm -rf node_modules/rollup
           ln -s @rollup/wasm-node node_modules/rollup
-          # Use direct node invocation since .bin symlinks may not be in PATH in Termux
+          # .bin symlinks aren't in PATH in Termux's ash — add them explicitly
+          export PATH="$PWD/node_modules/.bin:$PATH"
           node node_modules/tsup/dist/cli-default.js
           node scripts/post-build.cjs
           npm test
