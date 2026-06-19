@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
   Save,
+  Plus,
+  Trash2,
   Loader2,
   HardDrive,
   Terminal,
@@ -19,6 +21,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
@@ -165,7 +168,14 @@ function CapabilitySkeleton() {
 
 /* ── Types ──────────────────────────────────────────────────── */
 
-type Capabilities = Record<string, Record<string, boolean>>;
+interface FileScope {
+  path: string;
+  read: boolean;
+  write: boolean;
+}
+
+type CapabilityGroup = Record<string, unknown>;
+type Capabilities = Record<string, CapabilityGroup>;
 
 /* ── Main Page ──────────────────────────────────────────────── */
 
@@ -174,6 +184,7 @@ export function PermissionsPage() {
   const [originalCapabilities, setOriginalCapabilities] = useState<Capabilities>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newScopePath, setNewScopePath] = useState("/home/operacional/workspace");
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const toast = useCallback((type: "success" | "error", message: string) => {
@@ -215,6 +226,55 @@ export function PermissionsPage() {
     }));
   };
 
+  const filesystemScopes = useMemo<FileScope[]>(() => {
+    const scopes = capabilities.filesystem?.scopes;
+    return Array.isArray(scopes) ? (scopes as FileScope[]) : [];
+  }, [capabilities]);
+
+  const updateFilesystemScopes = (scopes: FileScope[]) => {
+    setCapabilities((prev) => ({
+      ...prev,
+      filesystem: {
+        ...prev.filesystem,
+        enabled: prev.filesystem?.enabled ?? true,
+        scopes,
+      },
+    }));
+  };
+
+  const handleAddScope = () => {
+    const path = newScopePath.trim();
+    if (!path) {
+      toast("error", "Path is required");
+      return;
+    }
+
+    const existingIndex = filesystemScopes.findIndex((scope) => scope.path === path);
+    if (existingIndex >= 0) {
+      updateFilesystemScopes(
+        filesystemScopes.map((scope, index) =>
+          index === existingIndex ? { ...scope, read: true } : scope
+        )
+      );
+      toast("success", "Scope already exists; read access enabled");
+      return;
+    }
+
+    updateFilesystemScopes([...filesystemScopes, { path, read: true, write: false }]);
+  };
+
+  const handleScopeToggle = (index: number, key: "read" | "write", checked: boolean) => {
+    updateFilesystemScopes(
+      filesystemScopes.map((scope, scopeIndex) =>
+        scopeIndex === index ? { ...scope, [key]: checked } : scope
+      )
+    );
+  };
+
+  const handleRemoveScope = (index: number) => {
+    updateFilesystemScopes(filesystemScopes.filter((_, scopeIndex) => scopeIndex !== index));
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -248,7 +308,9 @@ export function PermissionsPage() {
         ? groupValue
         : {};
 
-      const permEntries = Object.entries(perms).map(([permKey, permValue]) => {
+      const permEntries = Object.entries(perms).filter(([, permValue]) => {
+        return typeof permValue === "boolean";
+      }).map(([permKey, permValue]) => {
         const permMeta = meta?.permissions[permKey];
         return {
           key: permKey,
@@ -322,12 +384,97 @@ export function PermissionsPage() {
         </motion.div>
       ) : (
         <div className="space-y-4">
+          <motion.div
+            custom={0}
+            variants={fadeUp}
+            initial="hidden"
+            animate="visible"
+          >
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted">
+                    <HardDrive className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-base">Filesystem Scopes</CardTitle>
+                    <CardDescription>
+                      Add folders Mercury can read or write from the web agent
+                    </CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    value={newScopePath}
+                    onChange={(event) => setNewScopePath(event.target.value)}
+                    placeholder="/home/operacional/workspace/project"
+                  />
+                  <Button type="button" onClick={handleAddScope} className="gap-2">
+                    <Plus className="h-4 w-4" />
+                    Add Read Scope
+                  </Button>
+                </div>
+
+                <div className="divide-y divide-border rounded-md border border-border">
+                  {filesystemScopes.length === 0 ? (
+                    <p className="px-3 py-4 text-sm text-muted-foreground">
+                      No filesystem scopes configured.
+                    </p>
+                  ) : (
+                    filesystemScopes.map((scope, index) => (
+                      <div
+                        key={`${scope.path}-${index}`}
+                        className="flex flex-col gap-3 px-3 py-3 lg:flex-row lg:items-center lg:justify-between"
+                      >
+                        <code className="break-all rounded bg-muted px-2 py-1 text-xs text-foreground">
+                          {scope.path}
+                        </code>
+                        <div className="flex flex-wrap items-center gap-4">
+                          <label className="flex items-center gap-2 text-sm text-foreground">
+                            <Switch
+                              checked={scope.read}
+                              onCheckedChange={(checked) =>
+                                handleScopeToggle(index, "read", checked)
+                              }
+                            />
+                            Read
+                          </label>
+                          <label className="flex items-center gap-2 text-sm text-foreground">
+                            <Switch
+                              checked={scope.write}
+                              onCheckedChange={(checked) =>
+                                handleScopeToggle(index, "write", checked)
+                              }
+                            />
+                            Write
+                          </label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1 text-destructive"
+                            onClick={() => handleRemoveScope(index)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+
           {capabilityGroups.map((group, i) => {
             const Icon = group.icon;
             return (
               <motion.div
                 key={group.key}
-                custom={i}
+                custom={i + 1}
                 variants={fadeUp}
                 initial="hidden"
                 animate="visible"

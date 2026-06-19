@@ -110,20 +110,30 @@ function WaitingIndicator() {
 function PermissionPrompt({
   data,
 }: {
-  data: { id: string; tool?: string; description?: string };
+  data: { id: string; tool?: string; description?: string; prompt?: string };
 }) {
   const [resolving, setResolving] = useState(false);
+  const [resolved, setResolved] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function handle(action: string) {
     setResolving(true);
+    setError(null);
     try {
-      await api.chat.permission(data.id, action);
+      const res = await api.chat.permission(data.id, action);
+      if (!res.resolved) {
+        setError("Permission request expired.");
+        return;
+      }
+      setResolved(action);
     } catch {
-      // ignore
+      setError("Could not resolve permission request.");
     } finally {
       setResolving(false);
     }
   }
+
+  const description = data.description ?? data.prompt;
 
   return (
     <div className="flex w-full justify-start">
@@ -137,34 +147,55 @@ function PermissionPrompt({
             Tool: <span className="font-medium text-foreground">{data.tool}</span>
           </p>
         )}
-        {data.description && (
-          <p className="mt-1 text-sm text-foreground">{data.description}</p>
+        {description && (
+          <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{description}</p>
         )}
-        <div className="mt-3 flex items-center gap-2">
-          <Button
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            disabled={resolving}
-            onClick={() => handle("allow")}
-          >
-            {resolving ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
+        {resolved ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {resolved === "always"
+              ? "Always allowed and saved."
+              : resolved === "yes"
+                ? "Allowed for this request."
+                : "Denied."}
+          </p>
+        ) : (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={resolving}
+              onClick={() => handle("yes")}
+            >
+              {resolving ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Check className="h-3 w-3" />
+              )}
+              Allow Once
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 text-xs"
+              disabled={resolving}
+              onClick={() => handle("always")}
+            >
               <Check className="h-3 w-3" />
-            )}
-            Allow
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1 text-xs"
-            disabled={resolving}
-            onClick={() => handle("deny")}
-          >
-            <X className="h-3 w-3" />
-            Deny
-          </Button>
-        </div>
+              Always
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 text-xs"
+              disabled={resolving}
+              onClick={() => handle("no")}
+            >
+              <X className="h-3 w-3" />
+              Deny
+            </Button>
+          </div>
+        )}
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       </div>
     </div>
   );
@@ -706,7 +737,7 @@ export function ChatPage() {
                     if (msg.role === "system") {
                       try {
                         const parsed = JSON.parse(msg.content);
-                        if (parsed.id && (parsed.tool || parsed.description)) {
+                        if (parsed.id && (parsed.tool || parsed.description || parsed.prompt)) {
                           return <PermissionPrompt key={msg.id} data={parsed} />;
                         }
                       } catch {

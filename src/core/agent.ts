@@ -20,6 +20,7 @@ import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
+import { ChatGPTWebProvider } from '../providers/chatgpt-web.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { SignalChannel } from '../channels/signal.js';
@@ -1282,9 +1283,12 @@ export class Agent {
       for (const provider of fallbackIterator) {
         try {
           this.markProgress(`Calling ${provider.name}...`);
-          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
-            ? { deepseek: { thinking: { type: 'enabled' as const } } }
-            : undefined;
+          let providerOptions: Record<string, any> | undefined;
+          if (provider instanceof DeepSeekProvider && provider.isReasoner) {
+            providerOptions = { deepseek: { thinking: { type: 'enabled' as const } } };
+          } else if (provider instanceof ChatGPTWebProvider) {
+            providerOptions = { openai: { store: false } };
+          }
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
@@ -1297,7 +1301,7 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
-              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
+              ...(providerOptions ? { providerOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
                 if (toolCalls && toolCalls.length > 0) {
@@ -1582,7 +1586,7 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
-              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
+              ...(providerOptions ? { providerOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
                 if (toolCalls && toolCalls.length > 0) {
