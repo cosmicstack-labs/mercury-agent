@@ -1236,6 +1236,7 @@ export class Agent {
       let usedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
       let streamedText = '';
+      let lastToolResultText = '';
       const loopDetector = new ToolCallLoopDetector();
       const loopAbortController = new AbortController();
       let loopWarningSent = false;
@@ -1316,6 +1317,9 @@ export class Agent {
                     const tc = toolCalls[i];
                     const tr = toolResults[i] as any;
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
+                    if (resultStr.trim() && resultStr.length < 4000) {
+                      lastToolResultText = resultStr;
+                    }
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
                       resultStr.startsWith('⚠') ||
@@ -1601,6 +1605,9 @@ export class Agent {
                     const tc = toolCalls[i];
                     const tr = toolResults[i] as any;
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
+                    if (resultStr.trim() && resultStr.length < 4000) {
+                      lastToolResultText = resultStr;
+                    }
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
                       resultStr.startsWith('⚠') ||
@@ -1889,7 +1896,8 @@ export class Agent {
         return;
       }
 
-      const finalText = (streamedText || result.text || '').trim() || '(no text response)';
+      const generatedText = (streamedText || result.text || '').trim();
+      const finalText = (generatedText && generatedText !== '""' ? generatedText : lastToolResultText.trim()) || '(no text response)';
       this.markProgress('Finalizing response...');
 
       // Store plan output when in plan mode for later execution
@@ -1981,7 +1989,8 @@ export class Agent {
           (channel as TelegramChannel).endTask(msg.channelId);
           // Flush deferred response
           const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || (!streamedText && finalText ? finalText : null);
+          const cleanDeferred = deferred?.trim();
+          const responseText = cleanDeferred && cleanDeferred !== '""' ? deferred : (finalText ? finalText : null);
           if (responseText && responseText.trim()) {
             await channel.send(responseText, msg.channelId, elapsed);
           }

@@ -83,7 +83,7 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary, writeCurrentPid, unlinkPidIfCurrent } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
@@ -2722,6 +2722,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   config = ensureCreatorField(config);
   const name = config.identity.name;
 
+  if (isDaemon) {
+    writeCurrentPid();
+  }
+
   // Check for crash flag from previous run — if Mercury crashed mid-task,
   // report it to the user immediately so they don't have to investigate.
   const { readCrashFlag, clearCrashFlag } = await import('./core/crash-flag.js');
@@ -3326,6 +3330,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
     await stopWebServer();
     await agent.shutdown();
+    if (isDaemon) {
+      unlinkPidIfCurrent();
+    }
     process.exit(0);
   };
 

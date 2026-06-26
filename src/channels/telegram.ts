@@ -311,8 +311,10 @@ export class TelegramChannel extends BaseChannel {
       const fullContent = content + timeSuffix;
       if (!fullContent.trim()) return;
 
-      // If this looks like a final AI response (long, not a system notice), defer it
-      const isSystemNotice = content.startsWith('☿ ') || content.startsWith('⚠') || content.startsWith('  [') || content.length < 200;
+      // If this looks like a final AI response, defer it even when it is short.
+      // Short tool-backed answers like token-budget status are user-visible
+      // results, not status-card notices.
+      const isSystemNotice = content.startsWith('☿ ') || content.startsWith('⚠') || content.startsWith('  [') || content.startsWith('Permission Mode');
       if (isSystemNotice) {
         // Append as a notice line in the status card
         const notices = this.statusNotices.get(key) || [];

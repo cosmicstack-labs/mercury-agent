@@ -16,16 +16,29 @@ const UNSUPPORTED_FIELDS = [
 /**
  * Sanitise an outgoing request body for the ChatGPT codex/responses endpoint.
  */
-function sanitiseBody(raw: string): string {
+export function sanitiseBody(raw: string): string {
   const body = JSON.parse(raw);
 
-  // Required
+  // Required by the ChatGPT/Codex endpoint. It rejects store=true. Because
+  // store=false means reasoning items are not persisted, any later input that
+  // references an rs_* item must be removed instead of having its id stripped.
   body.store = false;
   body.stream = true;
   if (!body.instructions) body.instructions = 'You are a helpful assistant.';
 
   // Strip unsupported & undefined/null
   for (const key of UNSUPPORTED_FIELDS) delete body[key];
+  if (Array.isArray(body.input)) {
+    body.input = body.input.filter((item: any) => {
+      if (!item || typeof item !== 'object') return true;
+      if (item.type === 'reasoning') return false;
+      // ChatGPT/Codex currently forces store=false, so server-side response
+      // item IDs are not persisted. Replaying historical reasoning or function
+      // call items by id makes the next request fail with "Item not found".
+      if (typeof item.id === 'string' && /^(rs|fc|call)_/.test(item.id)) return false;
+      return true;
+    });
+  }
   for (const key of Object.keys(body)) {
     if (body[key] === undefined || body[key] === null) delete body[key];
   }
@@ -139,8 +152,11 @@ export class ChatGPTWebProvider extends BaseProvider {
       logger.warn('ChatGPT Web: no valid session — requests will fail');
     }
 
-    const accessToken = session?.accessToken ?? '';
-    const accountId = session?.accountId ?? '';
+    // Capture a mutable auth snapshot inside the custom fetch. A long-running
+    // daemon can outlive the 1h ChatGPT access token; refreshing in-place lets
+    // the next request recover instead of sending an expired bearer forever.
+    let accessToken = session?.accessToken ?? '';
+    let accountId = session?.accountId ?? '';
 
     // Rebuild the model instance if token changed or first call
     if (!this.cachedModelInstance || accessToken !== this.cachedAccessToken) {
@@ -157,6 +173,13 @@ export class ChatGPTWebProvider extends BaseProvider {
         apiKey: 'chatgpt-oauth-token', // dummy — real auth is in custom fetch
         baseURL: `${CHATGPT_BACKEND_API}/codex`,
         fetch: async (url, init) => {
+          const freshSession = await getValidChatGPTSession();
+          if (freshSession?.accessToken && freshSession?.accountId) {
+            accessToken = freshSession.accessToken;
+            accountId = freshSession.accountId;
+            this.cachedAccessToken = accessToken;
+          }
+
           // Inject OAuth headers
           const headers = new Headers(init?.headers);
           headers.set('Authorization', `Bearer ${accessToken}`);
