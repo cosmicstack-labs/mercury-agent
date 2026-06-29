@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitShellSegments } from './permissions.js';
+import { hasShellRedirection, splitShellSegments } from './permissions.js';
 
 describe('splitShellSegments', () => {
   it('passes simple commands through as a single segment', () => {
@@ -43,5 +43,19 @@ describe('splitShellSegments', () => {
   it('decomposes subshell () and brace {} blocks', () => {
     expect(splitShellSegments('( reboot now )')).toEqual(['reboot now']);
     expect(splitShellSegments('{ reboot now; }')).toEqual(['reboot now']);
+  });
+});
+
+describe('hasShellRedirection', () => {
+  it('detects write and heredoc redirections outside quotes', () => {
+    expect(hasShellRedirection('cat README.md > variant.txt')).toBe(true);
+    expect(hasShellRedirection('cat README.md >> variant.txt')).toBe(true);
+    expect(hasShellRedirection('cat <<EOF')).toBe(true);
+  });
+
+  it('ignores literal redirection characters inside quotes or when escaped', () => {
+    expect(hasShellRedirection('echo ">"')).toBe(false);
+    expect(hasShellRedirection("echo '>'")).toBe(false);
+    expect(hasShellRedirection('echo \\> file')).toBe(false);
   });
 });

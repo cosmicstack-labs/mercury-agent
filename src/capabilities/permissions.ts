@@ -280,6 +280,44 @@ export function splitShellSegments(command: string): string[] {
   return out;
 }
 
+export function hasShellRedirection(segment: string): boolean {
+  let single = false;
+  let double = false;
+  let escaped = false;
+
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    const next = segment[i + 1];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (!double && ch === "'") {
+      single = !single;
+      continue;
+    }
+
+    if (!single && ch === '"') {
+      double = !double;
+      continue;
+    }
+
+    if (single || double) continue;
+
+    if (ch === '>') return true;
+    if (ch === '<' && next === '<') return true;
+  }
+
+  return false;
+}
+
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
@@ -502,6 +540,7 @@ export class PermissionManager {
     // Matching the full trimmed string would let `cat foo; rm -rf ~` slip
     // through because `cat *` matches the entire concatenation.
     const allSegmentsSafeRead = segments.length > 0 && segments.every((segment) =>
+      !hasShellRedirection(segment) &&
       PermissionManager.SAFE_READ_PATTERNS.some((p) => this.matchPattern(segment, p))
     );
     if (allSegmentsSafeRead) {
