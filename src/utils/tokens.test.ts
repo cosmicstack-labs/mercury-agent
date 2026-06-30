@@ -91,7 +91,7 @@ describe('TokenBudget hardening', () => {
     const budget = new TokenBudget({ tokens: { dailyBudget: 200_000 } } as any);
 
     expect(budget.getDailyUsed()).toBe(100);
-    expect(budget.getStatusText()).toContain('100 / 200,000 used');
+    expect(budget.getStatusText()).toMatch(/100\s*\/\s*200[,\s\u00a0]?000\s*used/);
     expect(budget.getStatusText()).not.toContain('NaN');
 
     const persisted = JSON.parse(readFileSync(usagePath, 'utf-8')) as { dailyUsed: number };

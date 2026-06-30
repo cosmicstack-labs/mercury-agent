@@ -264,6 +264,7 @@ export class TelegramChannel extends BaseChannel {
 
     const commands = [
       { command: 'start', description: 'Request Telegram access to this Mercury instance' },
+      { command: 'new', description: 'Start a new conversation (clear context)' },
       { command: 'help', description: 'Show available commands' },
       { command: 'status', description: 'Show agent config, budget, and uptime' },
       { command: 'progress', description: 'Live status for the current task' },

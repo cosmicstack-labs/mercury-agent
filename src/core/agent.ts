@@ -2966,13 +2966,24 @@ Is this productive iteration or a stuck loop?`,
   }
 
   private async handleChatCommand(content: string, channelType: string, channelId: string): Promise<boolean> {
-    const trimmed = content.trim();
+    let trimmed = content.trim();
+    if (trimmed.toLowerCase().startsWith('/mercury ')) {
+      trimmed = '/' + trimmed.slice('/mercury '.length).trim();
+    } else if (trimmed.toLowerCase() === '/mercury') {
+      trimmed = '/help';
+    }
     const cmd = trimmed.toLowerCase();
     const channel = this.channels.get(channelType as any);
     if (!channel) return false;
 
     const ctx = this.capabilities.getChatCommandContext();
     if (!ctx) return false;
+
+    if (cmd === '/new' || cmd === '/clear') {
+      this.shortTerm.clear(channelId);
+      await channel.send('🔄 Conversation context cleared. Starting a fresh session!', channelId);
+      return true;
+    }
 
     if (cmd === '/help') {
       const helpText = channelType === 'telegram' ? getTelegramHelp() : channelType === 'discord' ? getDiscordHelp() : channelType === 'slack' ? getSlackHelp() : ctx.manual();

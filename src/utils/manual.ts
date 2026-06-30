@@ -111,6 +111,7 @@ export function getManual(): string {
     ['/', 'Open the CLI command picker with arrow-key navigation'],
     ['/menu', 'Open the CLI command picker with arrow-key navigation'],
     ['/help', 'Show this manual'],
+    ['/new', 'Start a new conversation (clear context)'],
     ['/status', 'Show config and budget info'],
     ['/progress', 'Show live status for the current long task'],
     ['/telegram', 'CLI chat only: open the Telegram management menu'],
@@ -266,6 +267,7 @@ export function getTelegramHelp(): string {
 
   lines.push('**General**');
   lines.push('/help — Show this command list');
+  lines.push('/new — Start a new conversation (clear context)');
   lines.push('/status — Config, budget, and uptime');
   lines.push('/progress — Live status for the current task');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
@@ -353,6 +355,7 @@ export function getDiscordHelp(): string {
 
   lines.push('**General**');
   lines.push('/help \u2014 Show this command list');
+  lines.push('/new \u2014 Start a new conversation (clear context)');
   lines.push('/status \u2014 Config, budget, and uptime');
   lines.push('/progress \u2014 Live status for the current task');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
@@ -392,6 +395,7 @@ export function getSlackHelp(): string {
 
   lines.push('**General**');
   lines.push('/mercury help \u2014 Show this command list');
+  lines.push('/mercury new \u2014 Start a new conversation (clear context)');
   lines.push('/mercury status \u2014 Config, budget, and uptime');
   lines.push('/mercury stop \u2014 Stop all agents');
   lines.push('');
