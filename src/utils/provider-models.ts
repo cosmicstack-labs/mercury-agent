@@ -107,12 +107,16 @@ interface AnthropicModelResponse {
   data?: Array<{ id?: string }>;
 }
 
+interface XAIModelEntry {
+  id?: string;
+  aliases?: string[];
+  input_modalities?: string[];
+  output_modalities?: string[];
+}
+
 interface XAIModelResponse {
-  data?: Array<{
-    id?: string;
-    input_modalities?: string[];
-    output_modalities?: string[];
-  }>;
+  models?: XAIModelEntry[];
+  data?: XAIModelEntry[] | { data?: XAIModelEntry[] };
 }
 
 interface OllamaTagsResponse {
@@ -307,7 +311,7 @@ async function fetchAnthropicModels(config: ProviderConfig): Promise<ProviderMod
 }
 
 async function fetchGrokModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
-  const data = await fetchJson<XAIModelResponse>(
+  const response = await fetchJson<XAIModelResponse>(
     `${trimTrailingSlash(config.baseUrl)}/language-models`,
     {
       headers: {
@@ -317,9 +321,27 @@ async function fetchGrokModels(config: ProviderConfig): Promise<ProviderModelCat
     'Mercury could not fetch models for this Grok key. Please re-enter it.',
   );
 
-  const ids = (data.data ?? [])
+  let models: XAIModelEntry[] = [];
+  if (Array.isArray(response.models)) {
+    models = response.models;
+  } else if (Array.isArray(response.data)) {
+    models = response.data;
+  } else if (response.data && Array.isArray(response.data.data)) {
+    models = response.data.data;
+  }
+
+  const ids = models
     .filter((model) => model.output_modalities?.includes('text') || model.output_modalities == null)
-    .map((model) => model.id?.trim() ?? '')
+    .flatMap((model) => {
+      const candidates = [];
+      if (model.id) {
+        candidates.push(model.id.trim());
+      }
+      if (Array.isArray(model.aliases)) {
+        candidates.push(...model.aliases.map((a) => a.trim()));
+      }
+      return candidates;
+    })
     .filter((id) => id.startsWith('grok-'));
 
   return buildModelCatalog('grok', ids, config.model);
