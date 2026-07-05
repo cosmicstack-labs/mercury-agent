@@ -4,6 +4,7 @@ import type { ProgrammingMode, ProgrammingModeState } from '../../core/programmi
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
+import { isPathInsideRoot } from '../../utils/path-safety.js';
 import { listThreads, loadThread, deleteThread as removeThread, appendMessage } from './chat-history.js';
 
 let webChannel: WebChannel | null = null;
@@ -261,7 +262,7 @@ chat.get('/api/workspace/tree', (c) => {
   const targetDir = subPath ? resolve(rootDir, subPath) : rootDir;
 
   // Security: ensure target is within workspace
-  if (!targetDir.startsWith(rootDir)) {
+  if (!isPathInsideRoot(targetDir, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
 
@@ -315,7 +316,7 @@ chat.get('/api/workspace/file', (c) => {
   const fullPath = resolve(rootDir, filePath);
 
   // Security: ensure within workspace
-  if (!fullPath.startsWith(rootDir)) {
+  if (!isPathInsideRoot(fullPath, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
 

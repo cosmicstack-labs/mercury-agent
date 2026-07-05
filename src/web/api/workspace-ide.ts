@@ -3,6 +3,7 @@ import { execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join, resolve, relative, extname, basename } from 'node:path';
 import { getMercuryHome, loadConfig } from '../../utils/config.js';
+import { isPathInsideRoot } from '../../utils/path-safety.js';
 import { generateText } from 'ai';
 import type { ProviderRegistry } from '../../providers/registry.js';
 
@@ -36,7 +37,7 @@ function git(args: string, cwd?: string): string {
 function isInsideWorkspace(filePath: string): boolean {
   const root = getWorkspaceRoot();
   const resolved = resolve(root, filePath);
-  return resolved.startsWith(root);
+  return isPathInsideRoot(resolved, root);
 }
 
 const ide = new Hono();
@@ -192,6 +193,9 @@ ide.post('/api/git/unstage', async (c) => {
     const body = await c.req.json<{ files: string[] }>();
     if (!body.files?.length) return c.json({ error: 'files array required' }, 400);
     const cwd = getWorkspaceRoot();
+    for (const f of body.files) {
+      if (!isInsideWorkspace(f)) return c.json({ error: `File outside workspace: ${f}` }, 403);
+    }
     git(`reset HEAD ${body.files.map(f => `"${f}"`).join(' ')}`, cwd);
     return c.json({ success: true });
   } catch (err: any) {
@@ -250,7 +254,7 @@ ide.put('/api/workspace/file', async (c) => {
     if (!body.path) return c.json({ error: 'path is required' }, 400);
     const root = getWorkspaceRoot();
     const fullPath = resolve(root, body.path);
-    if (!fullPath.startsWith(root)) {
+    if (!isPathInsideRoot(fullPath, root)) {
       return c.json({ error: 'Path outside workspace' }, 403);
     }
     writeFileSync(fullPath, body.content, 'utf8');
@@ -271,7 +275,7 @@ ide.post('/api/terminal/exec', async (c) => {
 
     const root = getWorkspaceRoot();
     const cwd = body.cwd ? resolve(root, body.cwd) : root;
-    if (!cwd.startsWith(root)) {
+    if (!isPathInsideRoot(cwd, root)) {
       return c.json({ error: 'cwd outside workspace' }, 403);
     }
 
