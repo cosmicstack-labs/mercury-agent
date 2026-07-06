@@ -116,4 +116,24 @@ describe('buildModelCatalog', () => {
 
     expect(catalog.recommendedModel).toBe('model-a');
   });
+
+  it('uses the first model as recommended for LM Studio when no preferred list exists', () => {
+    const catalog = buildModelCatalog(
+      'lmStudio',
+      ['llama-3.2-3b-instruct', 'mistral-7b-instruct-v0.3'],
+    );
+
+    expect(catalog.recommendedModel).toBe('llama-3.2-3b-instruct');
+    expect(catalog.models).toContain('mistral-7b-instruct-v0.3');
+  });
+
+  it('falls back to the current model for LM Studio when no preferred list exists', () => {
+    const catalog = buildModelCatalog(
+      'lmStudio',
+      ['qwen2.5-7b-instruct'],
+      'qwen2.5-7b-instruct',
+    );
+
+    expect(catalog.recommendedModel).toBe('qwen2.5-7b-instruct');
+  });
 });
