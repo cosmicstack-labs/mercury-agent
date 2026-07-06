@@ -6,4 +6,6 @@ export { SignalChannel } from './signal.js';
 export { WebChannel } from './web.js';
 export { DiscordChannel } from './discord.js';
 export { SlackChannel } from './slack.js';
+export { WhatsAppChannel } from './whatsapp.js';
+export { ImessagesChannel } from './imessages.js';
 export { ChannelRegistry } from './registry.js';

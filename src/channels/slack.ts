@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { App } from '@slack/bolt';
+import { App, LogLevel } from '@slack/bolt';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import type { MercuryConfig } from '../utils/config.js';
@@ -103,6 +103,7 @@ export class SlackChannel extends BaseChannel {
       token: slackConfig.botToken,
       socketMode: true,
       appToken: slackConfig.appToken,
+      logLevel: LogLevel.ERROR,
     });
 
     this.registerHandlers();

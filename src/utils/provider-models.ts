@@ -92,6 +92,26 @@ const GITHUB_COPILOT_PREFERRED_MODELS = [
   'gemini-3.1-pro-preview',
 ] as const;
 
+const OPENROUTER_PREFERRED_MODELS = [
+  'anthropic/claude-sonnet-4',
+  'anthropic/claude-opus-4',
+  'openai/gpt-5.2',
+  'openai/gpt-4o',
+  'openai/gpt-4.1',
+  'openai/gpt-4.1-mini',
+  'google/gemini-2.5-pro',
+  'google/gemini-2.5-flash',
+  'meta-llama/llama-4-maverick',
+  'deepseek/deepseek-r1',
+  'deepseek/deepseek-chat',
+  'mistralai/mistral-large-latest',
+  'xai/grok-4',
+  'qwen/qwen3-235b-a22b',
+  'microsoft/phi-4',
+] as const;
+
+const OPENROUTER_MAX_MODEL_OPTIONS = 15;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -200,6 +220,7 @@ function chooseRecommendedModel(
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    openrouter: OPENROUTER_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -238,14 +259,17 @@ export function buildModelCatalog(
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    openrouter: OPENROUTER_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
   const prioritized = prioritizeModels(withoutRecommended, preferredByProvider[provider]);
 
+  const maxModels = provider === 'openrouter' ? OPENROUTER_MAX_MODEL_OPTIONS : MAX_MODEL_OPTIONS;
+
   return {
     recommendedModel,
-    models: limitModels(prioritized),
+    models: prioritized.slice(0, maxModels),
   };
 }
 
@@ -399,6 +423,80 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
   return buildModelCatalog('mimoTokenPlan', ids, config.model);
 }
 
+async function fetchOpenRouterModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${trimTrailingSlash(config.baseUrl)}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          'HTTP-Referer': 'https://mercuryagent.ai',
+        },
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+  } catch {
+    throw new ProviderModelFetchError('Mercury could not reach OpenRouter. Please check your network connection and try again.');
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new ProviderModelFetchError('Mercury could not authenticate with OpenRouter. Please check your API key.');
+    }
+    throw new ProviderModelFetchError(`OpenRouter returned an error (HTTP ${response.status}). Please try again later.`);
+  }
+
+  let data: OpenAIModelResponse;
+  try {
+    data = await response.json() as OpenAIModelResponse;
+  } catch {
+    throw new ProviderModelFetchError('Mercury could not read the model list returned by OpenRouter.');
+  }
+
+  const ids = (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => id.includes('/'));
+
+  return buildModelCatalog('openrouter', ids, config.model);
+}
+
+export async function fetchFullOpenRouterCatalog(config: ProviderConfig): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${trimTrailingSlash(config.baseUrl)}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          'HTTP-Referer': 'https://mercuryagent.ai',
+        },
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+  } catch {
+    throw new ProviderModelFetchError('Mercury could not reach OpenRouter. Please check your network connection and try again.');
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new ProviderModelFetchError('Mercury could not authenticate with OpenRouter. Please check your API key.');
+    }
+    throw new ProviderModelFetchError(`OpenRouter returned an error (HTTP ${response.status}). Please try again later.`);
+  }
+
+  let data: OpenAIModelResponse;
+  try {
+    data = await response.json() as OpenAIModelResponse;
+  } catch {
+    throw new ProviderModelFetchError('Mercury could not read the model list returned by OpenRouter.');
+  }
+
+  return (data.data ?? [])
+    .map((model) => model.id?.trim() ?? '')
+    .filter((id) => id.includes('/'));
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
@@ -452,6 +550,10 @@ export async function fetchProviderModelCatalog(
       );
     }
     return fetchGitHubModels(session.accessToken);
+  }
+
+  if (provider === 'openrouter') {
+    return fetchOpenRouterModels(config);
   }
 
   return fetchOpenAICompatModels(provider, config);

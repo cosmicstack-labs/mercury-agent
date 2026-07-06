@@ -67,6 +67,19 @@ export function readPid(): number | null {
   }
 }
 
+export function writeCurrentPid(): void {
+  const home = getMercuryHome();
+  if (!existsSync(home)) {
+    mkdirSync(home, { recursive: true });
+  }
+  writeFileSync(pidPath(), String(process.pid));
+}
+
+export function unlinkPidIfCurrent(): void {
+  if (readPid() !== process.pid) return;
+  try { unlinkSync(pidPath()); } catch {}
+}
+
 function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);

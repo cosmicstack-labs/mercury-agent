@@ -16,7 +16,7 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
-export type ChannelType = 'cli' | 'telegram' | 'web' | 'internal' | 'signal' | 'discord' | 'slack' | 'whatsapp';
+export type ChannelType = 'cli' | 'telegram' | 'web' | 'internal' | 'signal' | 'discord' | 'slack' | 'whatsapp' | 'imessages';
 
 export interface ChannelMessage {
   id: string;
@@ -136,4 +136,43 @@ export interface SlackChannelConfig extends ChannelConfig {
   admins: SlackAccessUser[];
   members: SlackAccessUser[];
   pending: SlackPendingRequest[];
+}
+
+export interface WhatsAppAdmin {
+  jid: string;
+  phoneNumber: string;
+  name?: string;
+  pairedAt: string;
+}
+
+export type WhatsAppMode = 'self' | 'group';
+
+export interface WhatsAppChannelConfig extends ChannelConfig {
+  type: 'whatsapp';
+  phoneNumber: string;
+  registered: boolean;
+  paired: boolean;
+  admin: WhatsAppAdmin | null;
+  adminPaired: boolean;
+  mode: WhatsAppMode;
+  groupId?: string;
+  groupName?: string;
+}
+
+export interface IMessagesAccessUser {
+  address: string;
+  name?: string;
+  role: 'admin' | 'member';
+  pairedAt: string;
+}
+
+export interface IMessagesChannelConfig extends ChannelConfig {
+  type: 'imessages';
+  projectId: string;
+  projectSecret: string;
+  allowedUsers: string[];
+  allowAllUsers: boolean;
+  markdown: boolean;
+  reactions: boolean;
+  maxInlineAttachmentBytes: number;
 }

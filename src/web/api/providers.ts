@@ -26,7 +26,7 @@ providers.post('/api/providers/:name', async (c) => {
   const body = await c.req.json();
   const config = loadConfig();
 
-  const validNames: ProviderName[] = ['openai', 'anthropic', 'deepseek', 'grok', 'ollamaCloud', 'ollamaLocal'];
+  const validNames: ProviderName[] = ['openai', 'anthropic', 'deepseek', 'grok', 'ollamaCloud', 'ollamaLocal', 'mimo', 'mimoTokenPlan', 'openrouter'];
   if (!validNames.includes(providerName)) {
     return c.json({ error: 'Unknown provider' }, 400);
   }
@@ -34,7 +34,31 @@ providers.post('/api/providers/:name', async (c) => {
   const p = config.providers[providerName];
   if (body.apiKey !== undefined) p.apiKey = body.apiKey;
   if (body.baseUrl !== undefined) p.baseUrl = body.baseUrl;
-  if (body.model !== undefined) p.model = body.model;
+  if (body.model !== undefined) {
+    if (providerName === 'openrouter' && body.model) {
+      try {
+        const { fetchFullOpenRouterCatalog } = await import('../../utils/provider-models.js');
+        const fullCatalog = await fetchFullOpenRouterCatalog(p as ProviderConfig);
+        if (!fullCatalog.includes(body.model)) {
+          let suggestion = '';
+          const inputLower = (body.model as string).toLowerCase();
+          for (const model of fullCatalog) {
+            if (model.toLowerCase().includes(inputLower) || inputLower.includes(model.toLowerCase().split('/').pop() ?? '')) {
+              suggestion = model;
+              break;
+            }
+          }
+          const detail = suggestion
+            ? `Did you mean: ${suggestion}?`
+            : 'Please select a model from the OpenRouter catalog.';
+          return c.json({ error: `Model "${body.model}" not found in OpenRouter catalog. ${detail}` }, 400);
+        }
+      } catch {
+        // Catalog fetch failed — allow the model through without validation
+      }
+    }
+    p.model = body.model;
+  }
   if (body.enabled !== undefined) p.enabled = body.enabled;
 
   saveConfig(config);
@@ -53,7 +77,8 @@ providers.post('/api/providers/:name/test', async (c) => {
   try {
     const { fetchProviderModelCatalog } = await import('../../utils/provider-models.js');
     const catalog = await fetchProviderModelCatalog(providerName, p as ProviderConfig);
-    return c.json({ success: true, models: catalog.models.slice(0, 10), recommendedModel: catalog.recommendedModel });
+    const maxModels = providerName === 'openrouter' ? 20 : 10;
+    return c.json({ success: true, models: catalog.models.slice(0, maxModels), recommendedModel: catalog.recommendedModel });
   } catch (err: any) {
     return c.json({ success: false, error: err.message || 'Connection failed' }, 400);
   }

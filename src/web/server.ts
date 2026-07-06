@@ -201,21 +201,25 @@ process.on('exit', () => {
 });
 
 process.on('uncaughtException', (err) => {
-  logger.error({ err: err.message }, 'Uncaught exception in web server');
-  // Write crash flag so next startup can report to the user.
+  if (err && (err as any).code === 'EPIPE') {
+    return;
+  }
+  logger.error({ err: err.message }, 'Uncaught exception');
   try {
     const { writeCrashFlag } = require('../core/crash-flag.js');
     writeCrashFlag({ reason: `Uncaught exception: ${err.message}`.slice(0, 300), timestamp: Date.now() });
   } catch { /* best effort */ }
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason: any) => {
-  logger.warn({ err: reason?.message || reason }, 'Unhandled rejection in web server (non-fatal)');
-  try {
-    const { writeCrashFlag } = require('../core/crash-flag.js');
-    writeCrashFlag({ reason: `Unhandled rejection: ${reason?.message || reason}`.slice(0, 300), timestamp: Date.now() });
-  } catch { /* best effort */ }
+  if (reason && (reason as any).code === 'EPIPE') {
+    return;
+  }
+  logger.warn({ err: reason?.message || reason }, 'Unhandled rejection (non-fatal)');
 });
+
+process.on('SIGPIPE', () => {});
 
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();

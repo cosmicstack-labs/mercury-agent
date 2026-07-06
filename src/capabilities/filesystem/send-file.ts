@@ -11,10 +11,10 @@ export function createSendFileTool(
 ) {
   return tool({
     description:
-      'Send a file to the user. Use the channel parameter to send via a specific channel (signal, telegram). If omitted, sends via the current channel or the best available channel.',
+      'Send a file to the user. Use the channel parameter to send via a specific channel (imessages, signal, telegram, whatsapp). If omitted, sends via the current channel or the best available channel.',
     inputSchema: zodSchema(z.object({
       path: z.string().describe('Absolute or relative path to the file to send'),
-      channel: z.enum(['signal', 'telegram']).optional().describe('The channel to send the file via. Use this when the user explicitly requests a specific channel, e.g. "send via Signal" or "send to Telegram".'),
+      channel: z.enum(['imessages', 'signal', 'telegram', 'whatsapp']).optional().describe('The channel to send the file via. Use this when the user explicitly requests a specific channel, e.g. "send via iMessage" or "send to Signal" or "send to Telegram" or "send to WhatsApp".'),
     })),
     execute: async ({ path, channel }) => {
       const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);

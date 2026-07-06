@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
-import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest } from '../types/channel.js';
+import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest, WhatsAppAdmin, IMessagesAccessUser } from '../types/channel.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
 
@@ -47,6 +47,13 @@ export interface TelegramPendingRequest {
   pairingCode?: string;
 }
 
+export interface WhatsAppAdminConfig {
+  jid: string;
+  phoneNumber: string;
+  name?: string;
+  pairedAt: string;
+}
+
 export type ProviderName =
   | 'openai'
   | 'anthropic'
@@ -58,7 +65,8 @@ export type ProviderName =
   | 'mimo'
   | 'mimoTokenPlan'
   | 'chatgptWeb'
-  | 'githubCopilot';
+  | 'githubCopilot'
+  | 'openrouter';
 
 export interface MercuryConfig {
   identity: {
@@ -79,6 +87,7 @@ export interface MercuryConfig {
     mimoTokenPlan: ProviderConfig;
     chatgptWeb: ProviderConfig;
     githubCopilot: ProviderConfig;
+    openrouter: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -125,6 +134,27 @@ export interface MercuryConfig {
       admins: SlackAccessUser[];
       members: SlackAccessUser[];
       pending: SlackPendingRequest[];
+    };
+    whatsapp: {
+      enabled: boolean;
+      phoneNumber: string;
+      registered: boolean;
+      paired: boolean;
+      admin: WhatsAppAdminConfig | null;
+      adminPaired: boolean;
+      mode: string;
+      groupId?: string;
+      groupName?: string;
+    };
+    imessages: {
+      enabled: boolean;
+      projectId: string;
+      projectSecret: string;
+      allowedUsers: string[];
+      allowAllUsers: boolean;
+      markdown: boolean;
+      reactions: boolean;
+      maxInlineAttachmentBytes: number;
     };
   };
   github: {
@@ -281,6 +311,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('GITHUB_COPILOT_MODEL', 'gpt-4o'),
         enabled: getEnvBool('GITHUB_COPILOT_ENABLED', false),
       },
+      openrouter: {
+        name: 'openrouter',
+        apiKey: getEnv('OPENROUTER_API_KEY', ''),
+        baseUrl: getEnv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+        model: getEnv('OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
+        enabled: getEnvBool('OPENROUTER_ENABLED', true),
+      },
     },
     channels: {
       telegram: {
@@ -327,6 +364,29 @@ export function getDefaultConfig(): MercuryConfig {
         admins: [],
         members: [],
         pending: [],
+      },
+      whatsapp: {
+        enabled: getEnvBool('WHATSAPP_ENABLED', false),
+        phoneNumber: getEnv('WHATSAPP_PHONE_NUMBER', ''),
+        registered: false,
+        paired: false,
+        admin: null,
+        adminPaired: false,
+        mode: getEnv('WHATSAPP_MODE', 'group'),
+        groupId: getEnv('WHATSAPP_GROUP_ID', ''),
+        groupName: getEnv('WHATSAPP_GROUP_NAME', 'Mercury'),
+      },
+      imessages: {
+        enabled: getEnvBool('IMESSAGES_ENABLED', false),
+        projectId: getEnv('IMESSAGES_PROJECT_ID', ''),
+        projectSecret: getEnv('IMESSAGES_PROJECT_SECRET', ''),
+        allowedUsers: getEnv('IMESSAGES_ALLOWED_USERS', '')
+          .split(',')
+          .filter(Boolean),
+        allowAllUsers: getEnvBool('IMESSAGES_ALLOW_ALL_USERS', false),
+        markdown: getEnvBool('IMESSAGES_MARKDOWN', true),
+        reactions: getEnvBool('IMESSAGES_REACTIONS', false),
+        maxInlineAttachmentBytes: getEnvNum('IMESSAGES_MAX_INLINE_ATTACHMENT_BYTES', 20 * 1024 * 1024),
       },
     },
     github: {
@@ -384,14 +444,18 @@ export function loadConfig(): MercuryConfig {
       migrateLegacyOllamaLocalBaseUrl(
         migrateLegacyOllamaCloudBaseUrl(
           migrateLegacySignalAccess(
-            migrateLegacyTelegramAccess(deepMerge(defaults, fileConfig)),
+            migrateLegacyTelegramAccess(
+              migrateLegacyWhatsAppAccess(deepMerge(defaults, fileConfig)),
+            ),
           ),
         ),
       ),
     );
   }
   return migrateLegacyDiscordAccess(
-    migrateLegacyTelegramAccess(getDefaultConfig()),
+    migrateLegacyWhatsAppAccess(
+      migrateLegacyTelegramAccess(getDefaultConfig()),
+    ),
   );
 }
 
@@ -465,6 +529,9 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
     // GitHub Copilot uses GitHub OAuth, not API keys.
     // Considered "configured" if enabled with a model selected.
     return provider.model.length > 0;
+  }
+  if (provider.name === 'openrouter') {
+    return provider.apiKey.length > 0;
   }
   return provider.apiKey.length > 0;
 }
@@ -1141,4 +1208,68 @@ export function migrateLegacySlackAccess(config: MercuryConfig): MercuryConfig {
   slack.members = slack.members || [];
   slack.pending = slack.pending || [];
   return config;
+}
+
+// ── WhatsApp access helpers ─────────────────────────────────────
+
+export function getWhatsAppAdmin(config: MercuryConfig): WhatsAppAdminConfig | null {
+  return config.channels.whatsapp.admin;
+}
+
+export function hasWhatsAppAdmin(config: MercuryConfig): boolean {
+  return config.channels.whatsapp.admin !== null;
+}
+
+export function getWhatsAppAccessSummary(config: MercuryConfig): string {
+  if (!config.channels.whatsapp.admin) return 'not paired';
+  return `admin: ${config.channels.whatsapp.admin.phoneNumber} (paired ${config.channels.whatsapp.admin.pairedAt})`;
+}
+
+export function setWhatsAppAdmin(config: MercuryConfig, admin: WhatsAppAdminConfig): MercuryConfig {
+  config.channels.whatsapp.admin = admin;
+  config.channels.whatsapp.paired = true;
+  config.channels.whatsapp.registered = true;
+  return config;
+}
+
+export function clearWhatsAppAccess(config: MercuryConfig): MercuryConfig {
+  config.channels.whatsapp.admin = null;
+  config.channels.whatsapp.paired = false;
+  config.channels.whatsapp.registered = false;
+  return config;
+}
+
+export function isWhatsAppPaired(config: MercuryConfig): boolean {
+  return config.channels.whatsapp.paired && config.channels.whatsapp.admin !== null;
+}
+
+export function migrateLegacyWhatsAppAccess(config: MercuryConfig): MercuryConfig {
+  const wa = config.channels.whatsapp as any;
+  if (!wa) return config;
+  if (wa.admin === undefined) wa.admin = null;
+  if (wa.registered === undefined) wa.registered = false;
+  if (wa.paired === undefined) wa.paired = false;
+  if (wa.adminPaired === undefined) wa.adminPaired = !!wa.admin;
+  if (wa.phoneNumber === undefined) wa.phoneNumber = '';
+  if (wa.mode === undefined) wa.mode = 'group';
+  if (wa.groupName === undefined) wa.groupName = 'Mercury';
+  // Clean up stale fields from previous implementation
+  delete wa.sessionDir;
+  delete wa.admins;
+  delete wa.members;
+  delete wa.pending;
+  return config;
+}
+
+// ── iMessage access helpers ──────────────────────────────────────
+
+export function isIMessagesAllowed(config: MercuryConfig, address: string): boolean {
+  if (config.channels.imessages.allowAllUsers) return true;
+  return config.channels.imessages.allowedUsers.includes(address);
+}
+
+export function getIMessagesAccessSummary(config: MercuryConfig): string {
+  const { allowedUsers, allowAllUsers } = config.channels.imessages;
+  if (allowAllUsers) return 'open access (all users)';
+  return `${allowedUsers.length} allowed user${allowedUsers.length === 1 ? '' : 's'}`;
 }

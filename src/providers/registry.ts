@@ -30,6 +30,9 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
   } else if (pc.name === 'githubCopilot') {
     const { GitHubCopilotProvider } = await import('./github-copilot.js');
     return new GitHubCopilotProvider(pc);
+  } else if (pc.name === 'openrouter') {
+    const { OpenRouterProvider } = await import('./openrouter.js');
+    return new OpenRouterProvider(pc);
   } else {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc);
@@ -60,6 +63,7 @@ export class ProviderRegistry {
       config.providers.mimoTokenPlan,
       config.providers.chatgptWeb,
       config.providers.githubCopilot,
+      config.providers.openrouter,
     ];
 
     // Load only configured providers in parallel

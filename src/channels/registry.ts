@@ -5,6 +5,8 @@ import { TelegramChannel } from './telegram.js';
 import { SignalChannel } from './signal.js';
 import { DiscordChannel } from './discord.js';
 import { SlackChannel } from './slack.js';
+import { WhatsAppChannel } from './whatsapp.js';
+import { ImessagesChannel } from './imessages.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
@@ -28,6 +30,14 @@ export class ChannelRegistry {
 
     if (config.channels.slack.enabled && config.channels.slack.botToken) {
       this.register('slack', new SlackChannel(config));
+    }
+
+    if (config.channels.whatsapp.enabled && config.channels.whatsapp.phoneNumber) {
+      this.register('whatsapp', new WhatsAppChannel(config));
+    }
+
+    if (config.channels.imessages.enabled && config.channels.imessages.projectId) {
+      this.register('imessages', new ImessagesChannel(config));
     }
   }
 
@@ -90,6 +100,10 @@ export class ChannelRegistry {
     if (discord?.isReady()) return discord;
     const slack = this.channels.get('slack');
     if (slack?.isReady()) return slack;
+    const whatsapp = this.channels.get('whatsapp');
+    if (whatsapp?.isReady()) return whatsapp;
+    const imessages = this.channels.get('imessages');
+    if (imessages?.isReady()) return imessages;
     const cli = this.channels.get('cli');
     if (cli?.isReady()) return cli;
     return this.channels.values().next().value;
