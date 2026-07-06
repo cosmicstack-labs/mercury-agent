@@ -165,25 +165,24 @@ function limitModels(models: string[]): string[] {
 
 function isOpenAIChatModel(id: string): boolean {
   const lower = id.toLowerCase();
-  // Handle provider-prefixed model IDs (e.g. OpenRouter's "openai/gpt-4o-mini")
-  const parts = lower.split('/');
+  const parts = lower.split("/");
   const modelName = parts[parts.length - 1];
   if (
-    modelName.includes('image')
-    || modelName.includes('audio')
-    || modelName.includes('tts')
-    || modelName.includes('transcribe')
-    || modelName.includes('embedding')
-    || modelName.includes('moderation')
-    || modelName.includes('realtime')
-    || modelName.includes('whisper')
-    || modelName.includes('search')
-    || modelName.includes('computer')
+    modelName.includes("image")
+    || modelName.includes("audio")
+    || modelName.includes("tts")
+    || modelName.includes("transcribe")
+    || modelName.includes("embedding")
+    || modelName.includes("moderation")
+    || modelName.includes("realtime")
+    || modelName.includes("whisper")
+    || modelName.includes("search")
+    || modelName.includes("computer")
   ) {
     return false;
   }
 
-  return modelName.startsWith('gpt-') || /^o\d/.test(modelName);
+  return modelName.startsWith("gpt-") || /^o\d/.test(modelName);
 }
 
 function chooseRecommendedModel(
