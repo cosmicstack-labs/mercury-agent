@@ -42,7 +42,7 @@ export class WebChannel extends BaseChannel {
   private pendingPermModes: Map<string, ApprovalResolver> = new Map();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
-  private bypassPermissions = false;
+  private bypassPermissions = true;
   private restrictUser = false;
 
   constructor(agentName: string) {
