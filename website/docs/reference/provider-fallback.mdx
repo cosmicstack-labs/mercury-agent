@@ -27,6 +27,7 @@ This is a session-level switch for the running process. Use `mercury doctor` to 
 | **Grok (xAI)** | `grok-4` | `GROK_API_KEY` | OpenAI-compatible endpoint |
 | **Ollama Cloud** | `gpt-oss:120b` | `OLLAMA_CLOUD_API_KEY` | Remote Ollama models via API |
 | **Ollama Local** | `gpt-oss:20b` | No key needed | Local Ollama instance (127.0.0.1:11434) |
+| **Atomic Chat** | Configurable | No key needed | Local Atomic Chat OpenAI API (127.0.0.1:1337/v1) |
 | **OpenAI Compatible** | Configurable | `OPENAI_COMPAT_API_KEY` | Any OpenAI-compatible server |
 
 ### OAuth Providers (No API Key Needed)
@@ -128,6 +129,6 @@ You can also set environment variables directly or edit `~/.mercury/mercury.yaml
 
 :::tip[Environment variables]
 
-Each provider has env vars for its API key, base URL, and model. For example, DeepSeek uses `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`. Ollama Local requires no API key — just set `OLLAMA_LOCAL_ENABLED=true` and `OLLAMA_LOCAL_MODEL` to your preferred local model.
+Each provider has env vars for its API key, base URL, and model. For example, DeepSeek uses `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`. Ollama Local requires no API key — just set `OLLAMA_LOCAL_ENABLED=true` and `OLLAMA_LOCAL_MODEL` to your preferred local model. Atomic Chat uses `ATOMIC_CHAT_ENABLED=true`, `ATOMIC_CHAT_BASE_URL` (default `http://127.0.0.1:1337/v1`), and `ATOMIC_CHAT_MODEL`.
 
 :::

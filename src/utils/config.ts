@@ -54,6 +54,7 @@ export type ProviderName =
   | 'grok'
   | 'ollamaCloud'
   | 'ollamaLocal'
+  | 'atomicChat'
   | 'openaiCompat'
   | 'mimo'
   | 'mimoTokenPlan'
@@ -74,6 +75,7 @@ export interface MercuryConfig {
     grok: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
+    atomicChat: ProviderConfig;
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
@@ -245,6 +247,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OLLAMA_LOCAL_BASE_URL', 'http://127.0.0.1:11434/v1'),
         model: getEnv('OLLAMA_LOCAL_MODEL', ''),
         enabled: getEnvBool('OLLAMA_LOCAL_ENABLED', false),
+      },
+      atomicChat: {
+        name: 'atomicChat',
+        apiKey: '',
+        baseUrl: getEnv('ATOMIC_CHAT_BASE_URL', 'http://127.0.0.1:1337/v1'),
+        model: getEnv('ATOMIC_CHAT_MODEL', ''),
+        enabled: getEnvBool('ATOMIC_CHAT_ENABLED', false),
       },
       openaiCompat: {
         name: 'openaiCompat',
@@ -446,7 +455,7 @@ export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
 
 export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
-  if (provider.name === 'ollamaLocal') {
+  if (provider.name === 'ollamaLocal' || provider.name === 'atomicChat') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'ollamaCloud') {

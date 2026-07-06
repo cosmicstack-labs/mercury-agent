@@ -72,6 +72,7 @@ const MIMO_PREFERRED_MODELS = [
 const MIMO_TOKEN_PLAN_PREFERRED_MODELS = MIMO_PREFERRED_MODELS;
 
 const OPENAI_COMPAT_PREFERRED_MODELS = [] as const;
+const ATOMIC_CHAT_PREFERRED_MODELS = [] as const;
 
 const CHATGPT_WEB_PREFERRED_MODELS = [
   'gpt-5.5',
@@ -195,6 +196,7 @@ function chooseRecommendedModel(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
@@ -233,6 +235,7 @@ export function buildModelCatalog(
     grok: GROK_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
     mimo: MIMO_PREFERRED_MODELS,
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
@@ -260,7 +263,7 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Grok key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
-  } else if (provider === 'openaiCompat') {
+  } else if (provider === 'openaiCompat' || provider === 'atomicChat') {
     errorMessage = 'Mercury could not fetch models from this server. Please check the base URL and try again.';
   } else {
     errorMessage = 'Mercury could not fetch models for this OpenAI key. Please re-enter it.';
@@ -278,7 +281,7 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
       if (provider === 'deepseek') {
         return id.startsWith('deepseek-');
       }
-      if (provider === 'openaiCompat') {
+      if (provider === 'openaiCompat' || provider === 'atomicChat') {
         return id.length > 0;
       }
       return isOpenAIChatModel(id);
@@ -419,7 +422,7 @@ export async function fetchProviderModelCatalog(
     return fetchOllamaLocalModels(config);
   }
 
-  if (provider === 'openaiCompat') {
+  if (provider === 'openaiCompat' || provider === 'atomicChat') {
     return fetchOpenAICompatModels(provider, config);
   }
 

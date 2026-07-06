@@ -149,6 +149,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
+  { key: 'atomicChat', label: 'Atomic Chat' },
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
@@ -486,6 +487,65 @@ async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig
     console.log(chalk.dim('  You can run `mercury doctor` later to configure Ollama after starting it.'));
 
     const manualModel = await ask(chalk.white(`  Ollama Local model name (Enter to skip Ollama Local for now): `));
+    if (!manualModel) {
+      return { skipped: true };
+    }
+
+    const modelError = validateModelName(manualModel);
+    if (modelError) {
+      console.log(chalk.red(`  ${modelError}`));
+      return { skipped: true };
+    }
+
+    return { baseUrl, model: manualModel, skipped: false };
+  }
+}
+
+async function promptAtomicChatModelSelection(config: MercuryConfig, isReconfig: boolean): Promise<{ baseUrl?: string; model?: string; skipped: boolean }> {
+  const existingConfig = config.providers.atomicChat;
+  const defaultBaseUrl = existingConfig.baseUrl || 'http://127.0.0.1:1337/v1';
+
+  const baseUrlPrompt = isReconfig && existingConfig.baseUrl
+    ? chalk.white(`  Atomic Chat base URL [${existingConfig.baseUrl}]: `)
+    : chalk.white(`  Atomic Chat base URL [${defaultBaseUrl}]: `);
+  const baseUrlInput = await ask(baseUrlPrompt);
+  if (baseUrlInput.toLowerCase() === 'none') {
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
+    }
+    return { skipped: true };
+  }
+  const baseUrl = baseUrlInput || defaultBaseUrl;
+  const baseUrlError = validateBaseUrl(baseUrl);
+  if (baseUrlError) {
+    console.log(chalk.red(`  ${baseUrlError}`));
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
+    }
+    return { skipped: true };
+  }
+
+  console.log(chalk.dim('  Fetching Atomic Chat models...'));
+  try {
+    const catalog = await fetchProviderModelCatalog('atomicChat', {
+      ...existingConfig,
+      baseUrl,
+    });
+    const model = await chooseProviderModel(
+      'Atomic Chat',
+      catalog.recommendedModel,
+      catalog.models,
+    );
+    return { baseUrl, model, skipped: false };
+  } catch (error) {
+    const message = error instanceof ProviderModelFetchError
+      ? error.message
+      : 'Mercury could not fetch Atomic Chat models.';
+    console.log(chalk.yellow(`  ${message}`));
+    console.log(chalk.dim('  Make sure Atomic Chat is running and a model is loaded, or enter the model id manually.'));
+    console.log(chalk.dim('  You can run `mercury doctor` later after starting Atomic Chat.'));
+
+    const manualModel = await ask(chalk.white('  Atomic Chat model id (Enter to skip Atomic Chat for now): '));
     if (!manualModel) {
       return { skipped: true };
     }
@@ -1277,6 +1337,16 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.ollamaLocal.baseUrl = result.baseUrl;
           config.providers.ollamaLocal.model = result.model;
           config.providers.ollamaLocal.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'atomicChat') {
+        const result = await promptAtomicChatModelSelection(config, isReconfig);
+        if (!result.skipped && result.baseUrl && result.model) {
+          config.providers.atomicChat.baseUrl = result.baseUrl;
+          config.providers.atomicChat.model = result.model;
+          config.providers.atomicChat.enabled = true;
         }
         continue;
       }
