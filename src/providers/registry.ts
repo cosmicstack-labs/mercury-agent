@@ -32,7 +32,7 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
     return new GitHubCopilotProvider(pc);
   } else {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
-    return new OpenAICompatProvider(pc);
+    return new OpenAICompatProvider(pc, { useChatApi: true });
   }
 }
 
