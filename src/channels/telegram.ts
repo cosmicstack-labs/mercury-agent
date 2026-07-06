@@ -32,6 +32,14 @@ const MEMORY_ACTION_PREFIX = 'tg_memory';
 
 type ApprovalResolver = () => void;
 
+type ApprovalPromptKind = 'permission' | 'loop' | 'permission-mode';
+
+interface PendingApprovalPrompt {
+  chatId: number;
+  messageId: number;
+  kind: ApprovalPromptKind;
+}
+
 export class TelegramChannel extends BaseChannel {
   readonly type = 'telegram' as const;
   private bot: Bot | null = null;
@@ -39,6 +47,7 @@ export class TelegramChannel extends BaseChannel {
   private typingInterval: NodeJS.Timeout | null = null;
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
+  private pendingApprovalPrompts = new Map<string, PendingApprovalPrompt>();
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
@@ -232,7 +241,7 @@ export class TelegramChannel extends BaseChannel {
       this.pendingApprovals.delete(data);
       resolver();
       const action = data.split(':')[1];
-      await ctx.answerCallbackQuery({ text: action === 'no' ? 'Denied' : 'Approved' });
+      await this.cleanupApprovalPrompt(ctx, data, action);
     });
 
     bot.catch((err) => {
@@ -409,7 +418,7 @@ export class TelegramChannel extends BaseChannel {
       return full;
     }
 
-    this.deleteStatusMessage(targetId);
+    await this.deleteStatusMessage(targetId);
 
     const html = mdToTelegram(full);
     for (const chatId of chatIds) {
@@ -589,18 +598,9 @@ export class TelegramChannel extends BaseChannel {
     const html = mdToTelegram(prompt);
     let sentMsgId: number | undefined;
 
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, html, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+    const messageId = await this.sendApprovalPrompt(chatId, html, this.stripHtml(html), keyboard);
+    this.trackApprovalPrompt(id, chatId, messageId, 'permission');
+    sentMsgId = messageId ?? undefined;
 
     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
@@ -618,6 +618,7 @@ export class TelegramChannel extends BaseChannel {
       this.pendingApprovals.set(`${id}:no`, () => cleanup('no'));
 
       setTimeout(() => {
+        this.clearApprovalPrompt(id);
         this.pendingApprovals.delete(`${id}:yes`);
         this.pendingApprovals.delete(`${id}:always`);
         this.pendingApprovals.delete(`${id}:no`);
@@ -637,19 +638,10 @@ export class TelegramChannel extends BaseChannel {
       .text('Continue', `${id}:yes`)
       .text('Stop', `${id}:no`);
 
-    let sentMsgId: number | undefined;
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, mdToTelegram(question), {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, question, {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+    const html = mdToTelegram(question);
+    const messageId = await this.sendApprovalPrompt(chatId, html, question, keyboard);
+    this.trackApprovalPrompt(id, chatId, messageId, 'loop');
+    const sentMsgId = messageId ?? undefined;
 
     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
@@ -664,6 +656,7 @@ export class TelegramChannel extends BaseChannel {
       this.pendingApprovals.set(`${id}:no`, () => cleanup(false));
 
       setTimeout(() => {
+        this.clearApprovalPrompt(id);
         this.pendingApprovals.delete(`${id}:yes`);
         this.pendingApprovals.delete(`${id}:no`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
@@ -684,19 +677,9 @@ export class TelegramChannel extends BaseChannel {
 
     const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
 
-    let sentMsgId: number | undefined;
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, html, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
+    const messageId = await this.sendApprovalPrompt(chatId, html, this.stripHtml(html), keyboard);
+    this.trackApprovalPrompt(id, chatId, messageId, 'permission-mode');
+    const sentMsgId = messageId ?? undefined;
 
     if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
 
@@ -711,6 +694,7 @@ export class TelegramChannel extends BaseChannel {
       this.pendingApprovals.set(`${id}:allow-all`, () => cleanup('allow-all'));
 
       setTimeout(() => {
+        this.clearApprovalPrompt(id);
         this.pendingApprovals.delete(`${id}:ask-me`);
         this.pendingApprovals.delete(`${id}:allow-all`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
@@ -1388,16 +1372,18 @@ export class TelegramChannel extends BaseChannel {
   private async deleteStatusMessage(targetId?: string): Promise<void> {
     const key = targetId || 'notification';
     const msgId = this.statusMessageIds.get(key);
-    if (msgId && this.bot) {
-      // Unpin before deleting if this was pinned
-      await this.unpinStatusMessage(targetId);
-      const chatIds = this.resolveTargetChatIds(targetId);
-      for (const chatId of chatIds) {
-        await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
-      }
-      this.statusMessageIds.delete(key);
-      this.statusText.delete(key);
-      this.stepCounters.delete(key);
+    this.statusMessageIds.delete(key);
+    this.statusText.delete(key);
+    this.stepCounters.delete(key);
+
+    if (!msgId || !this.bot) {
+      return;
+    }
+
+    await this.unpinStatusMessage(targetId);
+    const chatIds = this.resolveTargetChatIds(targetId);
+    for (const chatId of chatIds) {
+      await this.bot.api.deleteMessage(chatId, msgId).catch(() => {});
     }
   }
 
@@ -1489,7 +1475,7 @@ export class TelegramChannel extends BaseChannel {
     this.statusText.delete(key);
     this.statusNotices.delete(key);
     this.endTask(targetId);
-    this.deleteStatusMessage(targetId);
+    void this.deleteStatusMessage(targetId);
   }
 
   async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
@@ -1576,6 +1562,91 @@ export class TelegramChannel extends BaseChannel {
 
   private isVideoFile(ext: string): boolean {
     return ['.mp4', '.mov', '.avi', '.mkv', '.webm'].includes(ext);
+  }
+
+  private async sendApprovalPrompt(
+    chatId: number,
+    html: string,
+    plainText: string,
+    keyboard: InlineKeyboard,
+  ): Promise<number | null> {
+    if (!this.bot) return null;
+
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, html, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+      return msg.message_id;
+    } catch {
+      try {
+        const msg = await this.bot.api.sendMessage(chatId, plainText, {
+          reply_markup: keyboard,
+        });
+        return msg.message_id;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  private trackApprovalPrompt(id: string, chatId: number, messageId: number | null, kind: ApprovalPromptKind): void {
+    if (messageId == null) {
+      return;
+    }
+
+    const prompt: PendingApprovalPrompt = { chatId, messageId, kind };
+    this.pendingApprovalPrompts.set(`${id}:yes`, prompt);
+    this.pendingApprovalPrompts.set(`${id}:always`, prompt);
+    this.pendingApprovalPrompts.set(`${id}:no`, prompt);
+    this.pendingApprovalPrompts.set(`${id}:ask-me`, prompt);
+    this.pendingApprovalPrompts.set(`${id}:allow-all`, prompt);
+  }
+
+  private clearApprovalPrompt(id: string): void {
+    this.pendingApprovalPrompts.delete(`${id}:yes`);
+    this.pendingApprovalPrompts.delete(`${id}:always`);
+    this.pendingApprovalPrompts.delete(`${id}:no`);
+    this.pendingApprovalPrompts.delete(`${id}:ask-me`);
+    this.pendingApprovalPrompts.delete(`${id}:allow-all`);
+  }
+
+  private getApprovalPromptResultText(kind: ApprovalPromptKind, action: string): string {
+    if (kind === 'loop') {
+      return action === 'no' ? '❌ Stopped' : '✅ Continued';
+    }
+
+    if (kind === 'permission-mode') {
+      return action === 'allow-all' ? '✅ Allow All enabled' : '🔒 Ask Me enabled';
+    }
+
+    if (action === 'always') {
+      return '✅ Allowed always';
+    }
+
+    return action === 'no' ? '❌ Denied' : '✅ Allowed';
+  }
+
+  private async cleanupApprovalPrompt(ctx: any, data: string, action: string): Promise<void> {
+    const prompt = this.pendingApprovalPrompts.get(data);
+    const promptId = data.split(':').slice(0, -1).join(':');
+    this.clearApprovalPrompt(promptId);
+
+    const callbackText = action === 'no' ? 'Denied' : 'Approved';
+    await ctx.answerCallbackQuery({ text: callbackText }).catch(() => {});
+
+    if (!prompt || !this.bot) {
+      return;
+    }
+
+    const text = this.getApprovalPromptResultText(prompt.kind, action);
+    await this.bot.api.editMessageText(prompt.chatId, prompt.messageId, text, {
+      reply_markup: undefined,
+    }).catch(async () => {
+      await this.bot!.api.editMessageReplyMarkup(prompt.chatId, prompt.messageId, {
+        reply_markup: undefined,
+      }).catch(() => {});
+    });
   }
 
   private async sendDirectMessage(chatId: number, content: string): Promise<void> {
