@@ -57,6 +57,7 @@ export type ProviderName =
   | 'openaiCompat'
   | 'mimo'
   | 'mimoTokenPlan'
+  | 'lmStudio'
   | 'chatgptWeb'
   | 'githubCopilot';
 
@@ -77,6 +78,7 @@ export interface MercuryConfig {
     openaiCompat: ProviderConfig;
     mimo: ProviderConfig;
     mimoTokenPlan: ProviderConfig;
+    lmStudio: ProviderConfig;
     chatgptWeb: ProviderConfig;
     githubCopilot: ProviderConfig;
   };
@@ -267,6 +269,13 @@ export function getDefaultConfig(): MercuryConfig {
         model: getEnv('MIMO_TOKEN_PLAN_MODEL', 'mimo-v2.5-pro'),
         enabled: getEnvBool('MIMO_TOKEN_PLAN_ENABLED', false),
       },
+       lmStudio: {
+         name: 'lmStudio',
+         apiKey: getEnv('LM_STUDIO_API_KEY', ''),
+         baseUrl: getEnv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:1234/v1'),
+         model: getEnv('LM_STUDIO_MODEL', ''),
+         enabled: getEnvBool('LM_STUDIO_ENABLED', false),
+       },
       chatgptWeb: {
         name: 'chatgptWeb',
         apiKey: '', // not used — auth is via OAuth
@@ -453,6 +462,9 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
   if (provider.name === 'openaiCompat') {
+    return provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'lmStudio') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'chatgptWeb') {

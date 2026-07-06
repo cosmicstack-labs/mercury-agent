@@ -152,6 +152,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
+  { key: 'lmStudio', label: 'LM Studio' },
 ];
 
 function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
@@ -293,6 +294,10 @@ function validateApiKey(provider: ProviderName, value: string): string | null {
     return looksLikeToken(value)
       ? null
       : 'Ollama Cloud keys must look like a real API token: long, no spaces, and not plain text.';
+  }
+
+  if (provider === 'lmStudio') {
+    return null;
   }
 
   if (provider === 'mimo') {
@@ -486,6 +491,64 @@ async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig
     console.log(chalk.dim('  You can run `mercury doctor` later to configure Ollama after starting it.'));
 
     const manualModel = await ask(chalk.white(`  Ollama Local model name (Enter to skip Ollama Local for now): `));
+    if (!manualModel) {
+      return { skipped: true };
+    }
+
+    const modelError = validateModelName(manualModel);
+    if (modelError) {
+      console.log(chalk.red(`  ${modelError}`));
+      return { skipped: true };
+    }
+
+    return { baseUrl, model: manualModel, skipped: false };
+  }
+}
+
+async function promptLmStudioModelSelection(config: MercuryConfig, isReconfig: boolean): Promise<{ baseUrl?: string; model?: string; skipped: boolean }> {
+  const existingConfig = config.providers.lmStudio;
+
+  const baseUrlPrompt = isReconfig && existingConfig.baseUrl
+    ? chalk.white(`  LM Studio base URL [${existingConfig.baseUrl}]: `)
+    : chalk.white('  LM Studio base URL [Enter for http://127.0.0.1:1234/v1]: ');
+  const baseUrlInput = await ask(baseUrlPrompt);
+  if (!baseUrlInput || baseUrlInput.toLowerCase() === 'none') {
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
+    }
+    return { skipped: true };
+  }
+  const baseUrlError = validateBaseUrl(baseUrlInput);
+  if (baseUrlError) {
+    console.log(chalk.red(`  ${baseUrlError}`));
+    if (isReconfig && existingConfig.baseUrl) {
+      return { baseUrl: existingConfig.baseUrl, model: existingConfig.model, skipped: true };
+    }
+    return { skipped: true };
+  }
+  const baseUrl = baseUrlInput;
+
+  console.log(chalk.dim('  Fetching LM Studio models...'));
+  try {
+    const catalog = await fetchProviderModelCatalog('lmStudio', {
+      ...existingConfig,
+      baseUrl,
+    });
+    const model = await chooseProviderModel(
+      'LM Studio',
+      catalog.recommendedModel,
+      catalog.models,
+    );
+    return { baseUrl, model, skipped: false };
+  } catch (error) {
+    const message = error instanceof ProviderModelFetchError
+      ? error.message
+      : 'Mercury could not fetch LM Studio models.';
+    console.log(chalk.yellow(`  ${message}`));
+    console.log(chalk.dim('  Make sure LM Studio is running and the Developer API is enabled.'));
+    console.log(chalk.dim('  You can run `mercury doctor` later to configure LM Studio after starting it.'));
+
+    const manualModel = await ask(chalk.white(`  LM Studio model name (Enter to skip LM Studio for now): `));
     if (!manualModel) {
       return { skipped: true };
     }
@@ -1281,6 +1344,16 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         continue;
       }
 
+
+      if (provider === 'lmStudio') {
+        const result = await promptLmStudioModelSelection(config, isReconfig);
+        if (!result.skipped && result.baseUrl && result.model) {
+          config.providers.lmStudio.baseUrl = result.baseUrl;
+          config.providers.lmStudio.model = result.model;
+          config.providers.lmStudio.enabled = true;
+        }
+        continue;
+      }
       if (provider === 'openaiCompat') {
         const result = await promptOpenAICompatSetup(config, isReconfig);
         if (!result.skipped && result.baseUrl && result.model) {

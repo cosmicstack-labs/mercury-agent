@@ -18,7 +18,7 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
     // this entirely.
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
-  } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
+  } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat' || pc.name === 'lmStudio') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
