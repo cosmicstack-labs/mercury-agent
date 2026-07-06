@@ -877,6 +877,7 @@ export default function LandingPage(): React.ReactElement {
                 { name: 'Grok (xAI)', desc: "xAI's models via OpenAI-compatible endpoint." },
                 { name: 'Ollama Cloud', desc: 'Remote Ollama models via API. No local setup.' },
                 { name: 'Ollama Local', desc: 'On your machine. Zero cost, fully private.' },
+                { name: 'Atomic Chat', desc: 'Local models via Atomic Chat OpenAI-compatible API.' },
               ].map((p, i) => (
                 <div key={i} className="lp-provider-card">
                   <h4>{p.name} {(p as any).badge && <span className="lp-provider-badge">{(p as any).badge}</span>}</h4>

@@ -116,4 +116,14 @@ describe('buildModelCatalog', () => {
 
     expect(catalog.recommendedModel).toBe('model-a');
   });
+
+  it('uses the first model as recommended for Atomic Chat when no preferred list exists', () => {
+    const catalog = buildModelCatalog('atomicChat', [
+      'ornith-9b',
+      'qwen3-coder',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('ornith-9b');
+    expect(catalog.models).toContain('qwen3-coder');
+  });
 });
