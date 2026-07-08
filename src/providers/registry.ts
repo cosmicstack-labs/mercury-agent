@@ -18,7 +18,7 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
     // this entirely.
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
-  } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
+  } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat' || pc.name === 'litellm') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
@@ -60,6 +60,7 @@ export class ProviderRegistry {
       config.providers.mimoTokenPlan,
       config.providers.chatgptWeb,
       config.providers.githubCopilot,
+      config.providers.litellm,
     ];
 
     // Load only configured providers in parallel

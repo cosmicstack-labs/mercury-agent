@@ -200,6 +200,7 @@ function chooseRecommendedModel(
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    litellm: OPENAI_COMPAT_PREFERRED_MODELS,
   };
 
   for (const candidate of preferredByProvider[provider]) {
@@ -238,6 +239,7 @@ export function buildModelCatalog(
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    litellm: OPENAI_COMPAT_PREFERRED_MODELS,
   };
 
   const withoutRecommended = filtered.filter((model) => model !== recommendedModel);
