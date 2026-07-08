@@ -46,8 +46,17 @@ providers.post('/api/providers/:name/test', async (c) => {
   const config = loadConfig();
   const p = config.providers[providerName];
 
-  if (!p || !p.apiKey) {
+  if (!p) {
+    return c.json({ error: 'Provider not found' }, 400);
+  }
+
+  // LiteLLM proxies can be keyless - only require baseUrl
+  const needsKey = providerName !== 'litellm' && providerName !== 'ollamaLocal';
+  if (needsKey && !p.apiKey) {
     return c.json({ error: 'No API key configured' }, 400);
+  }
+  if (!needsKey && !p.baseUrl) {
+    return c.json({ error: 'No base URL configured' }, 400);
   }
 
   try {
