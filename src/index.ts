@@ -142,6 +142,7 @@ function maskKey(key: string): string {
 }
 
 const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
+  { key: 'mercuryCloud', label: 'Mercury Cloud (hosted — no API keys needed)' },
   { key: 'deepseek', label: 'DeepSeek' },
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
@@ -165,6 +166,7 @@ function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
 
 function getProviderLabel(name: ProviderName): string {
   if (name === 'chatgptWeb') return 'OpenAI (ChatGPT Plus/Pro)';
+  if (name === 'mercuryCloud') return 'Mercury Cloud';
   return PROVIDER_OPTIONS.find((option) => option.key === name)?.label || name;
 }
 
@@ -1086,6 +1088,57 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   }
 
   config.identity.creator = config.identity.creator || 'Cosmic Stack';
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Mercury Cloud or Offline?'));
+  console.log('');
+  if (!isReconfig) {
+    console.log(chalk.dim('  Mercury Cloud routes LLM calls through our servers — no API keys needed.'));
+    console.log(chalk.dim('  Offline (BYOK) uses your own API keys stored locally.'));
+    console.log('');
+  }
+
+  const cloudChoice = await selectWithArrowKeys(
+    isReconfig ? 'Connection Mode' : 'Choose your mode',
+    [
+      { value: 'cloud', label: 'Mercury Cloud (hosted — no API keys needed)' },
+      { value: 'offline', label: 'Offline / BYOK (bring your own keys)' },
+    ],
+  );
+
+  if (cloudChoice === 'cloud') {
+    console.log('');
+    console.log(chalk.dim('  Connecting to Mercury Cloud...'));
+    console.log('');
+    try {
+      const { runCloudPairingFlow } = await import('./cloud/pairing-flow.js');
+      const result = await runCloudPairingFlow(config);
+      if (result) {
+        config.cloud = result.cloudConfig;
+        config.providers.mercuryCloud.apiKey = result.cloudConfig.jwt;
+        config.providers.mercuryCloud.model = result.model;
+        config.providers.mercuryCloud.enabled = true;
+        config.providers.default = 'mercuryCloud';
+        saveConfig(config);
+        console.log(chalk.green('  ✓ Mercury Cloud connected!'));
+        console.log(chalk.dim(`    Agent ID: ${result.cloudConfig.agentId}`));
+        console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
+        console.log(chalk.dim(`    Model: ${result.model}`));
+        hr();
+        console.log('');
+        console.log(chalk.cyan('  Mercury Cloud is ready! Starting your agent...'));
+        console.log('');
+        await runAgent();
+        return;
+      }
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ Cloud connection failed: ${err.message || err}`));
+      console.log(chalk.yellow('  Falling back to offline (BYOK) mode.'));
+    }
+  } else {
+    config.cloud.enabled = false;
+  }
 
   hr();
   console.log('');
@@ -2265,6 +2318,211 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   await agent.birth();
   await agent.wake();
+
+  let cloudClient: import('./cloud/client.js').MercuryCloudClient | undefined;
+  if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
+    try {
+      const { MercuryCloudClient } = await import('./cloud/client.js');
+      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, config.cloud.jwt, config.cloud.agentId, config.cloud.refreshToken, config.cloud.apiUrl);
+
+      cloudClient.on('token.refreshed' as any, (msg: any) => {
+        const payload = msg.payload as { jwt: string; refreshToken: string } | undefined;
+        if (payload) {
+          config.cloud.jwt = payload.jwt;
+          config.cloud.refreshToken = payload.refreshToken;
+          config.providers.mercuryCloud.apiKey = payload.jwt;
+          saveConfig(config);
+          logger.info('Mercury Cloud token refreshed and saved');
+        }
+      });
+
+      cloudClient.on('agent.restart', async () => {
+        logger.info('Cloud command: restart');
+        process.kill(process.pid, 'SIGHUP');
+      });
+
+      cloudClient.on('agent.status', () => {
+        cloudClient!.send({
+          type: 'agent.state',
+          agentId: config.cloud.agentId,
+          payload: {
+            status: 'online',
+            provider: getProviderLabel(config.providers.default),
+            model: config.providers[config.providers.default]?.model ?? 'unknown',
+            uptime: process.uptime(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      cloudClient.on('skill.install', async (msg) => {
+        const skillUrl = msg.payload?.skillUrl as string | undefined;
+        if (skillUrl) {
+          logger.info({ skillUrl }, 'Cloud command: install skill');
+          try {
+            await skillLoader.installFromUrl(skillUrl);
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: true, skillUrl },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err: any) {
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: false, error: err.message },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      });
+
+      cloudClient.on('skill.remove', async (msg) => {
+        const skillName = msg.payload?.skillName as string | undefined;
+        if (skillName) {
+          logger.info({ skillName }, 'Cloud command: remove skill');
+          try {
+            skillLoader.deleteSkill(skillName);
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: true, action: 'remove', skillName },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err: any) {
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: false, error: err.message },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      });
+
+      cloudClient.on('memory.extract', async () => {
+        logger.info('Cloud command: extract memory');
+        const memData: Record<string, unknown> = {};
+        const syncEntries: { type: string; content: string; metadata?: Record<string, unknown>; timestamp?: string }[] = [];
+
+        try {
+          const ltFacts = longTerm.getAll();
+          memData['long-term'] = ltFacts;
+          for (const fact of ltFacts) {
+            syncEntries.push({
+              type: 'long-term',
+              content: `${fact.topic}: ${fact.fact}`,
+              metadata: { topic: fact.topic, confidence: (fact as any).confidence },
+              timestamp: new Date(fact.timestamp).toISOString(),
+            });
+          }
+
+          const epEvents = episodic.getRecent(100);
+          memData['episodic'] = epEvents;
+          for (const event of epEvents) {
+            syncEntries.push({
+              type: 'episodic',
+              content: event.summary || JSON.stringify(event),
+              metadata: { type: event.type, channelType: event.channelType, important: event.metadata?.important },
+              timestamp: new Date(event.timestamp).toISOString(),
+            });
+          }
+
+          if (userMemory) {
+            const summary = userMemory.getSummary();
+            memData['second-brain'] = summary;
+            const recent = userMemory.getRecent(100);
+            for (const mem of recent) {
+              syncEntries.push({
+                type: 'second-brain',
+                content: mem.summary || mem.detail || JSON.stringify(mem),
+                metadata: { type: mem.type, confidence: mem.confidence, importance: mem.importance, scope: mem.scope },
+                timestamp: new Date(mem.createdAt).toISOString(),
+              });
+            }
+          }
+        } catch (err: any) {
+          memData['error'] = err.message;
+        }
+
+        cloudClient!.send({
+          type: 'memory.dump',
+          agentId: config.cloud.agentId,
+          payload: memData,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (syncEntries.length > 0 && config.cloud.apiUrl) {
+          try {
+            await fetch(`${config.cloud.apiUrl}/v1/memory/sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${config.cloud.jwt}`,
+              },
+              body: JSON.stringify({ agentId: config.cloud.agentId, entries: syncEntries }),
+            });
+            logger.info({ count: syncEntries.length }, 'Memory synced to Mercury Cloud');
+          } catch (syncErr: any) {
+            logger.warn({ err: syncErr.message }, 'Failed to sync memory to cloud');
+          }
+        }
+      });
+
+      cloudClient.on('conversation.history', async () => {
+        logger.info('Cloud command: conversation history');
+        try {
+          const history = longTerm.getAll();
+          cloudClient!.send({
+            type: 'conversation.dump',
+            agentId: config.cloud.agentId,
+            payload: { history },
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err: any) {
+          cloudClient!.send({
+            type: 'conversation.dump',
+            agentId: config.cloud.agentId,
+            payload: { error: err.message },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      cloudClient.on('agent.command', async (msg) => {
+        const message = msg.payload?.message as string | undefined;
+        const fromAgentId = msg.payload?.fromAgentId as string | undefined;
+        if (message) {
+          if (fromAgentId) {
+            logger.info({ fromAgentId, messagePreview: message.slice(0, 50) }, 'Cloud relay: message from another agent');
+          } else {
+            logger.info({ messagePreview: message.slice(0, 50) }, 'Cloud command: send message to agent');
+          }
+          webChannel.emitMessage(message);
+        }
+      });
+
+      cloudClient.on('agent.message.relay', async (msg) => {
+        const targetAgentId = msg.payload?.targetAgentId as string | undefined;
+        const relayMessage = msg.payload?.message as string | undefined;
+        if (targetAgentId && relayMessage) {
+          logger.info({ targetAgentId, messagePreview: relayMessage.slice(0, 50) }, 'Cloud: relaying message to another agent');
+          cloudClient!.send({
+            type: 'agent.message.relay',
+            agentId: config.cloud.agentId,
+            payload: { targetAgentId, message: relayMessage, fromAgentId: config.cloud.agentId },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      await cloudClient.connect();
+      logger.info('Mercury Cloud WebSocket connected');
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Failed to start Mercury Cloud WS client');
+    }
+  }
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
@@ -3638,6 +3896,64 @@ program
     setWebPassword(password);
     console.log(chalk.green('  ✓ Web dashboard password updated.'));
     console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
+    console.log('');
+  });
+
+const cloud = program.command('cloud').description('Manage Mercury Cloud connection');
+
+cloud
+  .command('connect')
+  .description('Connect to Mercury Cloud via terminal pairing')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudConnect } = await import('./cloud/pairing-flow.js');
+      await runCloudConnect();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
+    console.log('');
+  });
+
+cloud
+  .command('disconnect')
+  .description('Disconnect from Mercury Cloud and switch to offline (BYOK) mode')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudDisconnect } = await import('./cloud/pairing-flow.js');
+      await runCloudDisconnect();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
+    console.log('');
+  });
+
+cloud
+  .command('status')
+  .description('Show Mercury Cloud connection status')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudStatus } = await import('./cloud/pairing-flow.js');
+      await runCloudStatus();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
+    console.log('');
+  });
+
+cloud
+  .command('login')
+  .description('Refresh Mercury Cloud authentication token')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudLogin } = await import('./cloud/pairing-flow.js');
+      await runCloudLogin();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
     console.log('');
   });
 

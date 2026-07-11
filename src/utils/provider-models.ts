@@ -92,6 +92,15 @@ const GITHUB_COPILOT_PREFERRED_MODELS = [
   'gemini-3.1-pro-preview',
 ] as const;
 
+const MERCURY_CLOUD_PREFERRED_MODELS = [
+  'mercury-mini',
+  'mercury-flash',
+  'mercury-pro',
+  'mercury-reason',
+  'mercury-opus',
+  'mercury-gpt5',
+] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
@@ -189,6 +198,7 @@ function chooseRecommendedModel(
   currentModel?: string,
 ): string {
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -227,6 +237,7 @@ export function buildModelCatalog(
 
   const recommendedModel = chooseRecommendedModel(provider, filtered, currentModel);
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -399,10 +410,45 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
   return buildModelCatalog('mimoTokenPlan', ids, config.model);
 }
 
+async function fetchMercuryCloudModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const baseUrl = trimTrailingSlash(config.baseUrl || 'https://api.mercury.cloud');
+  const jwt = config.apiKey;
+
+  if (!jwt) {
+    return buildModelCatalog(
+      'mercuryCloud',
+      [...MERCURY_CLOUD_PREFERRED_MODELS],
+      config.model || 'mercury-mini',
+    );
+  }
+
+  interface MercuryCloudModel {
+    id: string;
+    label: string;
+  }
+
+  const data = await fetchJson<{ models: MercuryCloudModel[] }>(
+    `${baseUrl}/v1/models`,
+    {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+      },
+    },
+    'Could not fetch Mercury Cloud models. Check your cloud connection.',
+  );
+
+  const ids = (data.models || []).map((m) => m.id);
+  return buildModelCatalog('mercuryCloud', ids, config.model);
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
 ): Promise<ProviderModelCatalog> {
+  if (provider === 'mercuryCloud') {
+    return fetchMercuryCloudModels(config);
+  }
+
   if (provider === 'anthropic') {
     return fetchAnthropicModels(config);
   }

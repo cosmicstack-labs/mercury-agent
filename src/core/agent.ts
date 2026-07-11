@@ -3111,6 +3111,136 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    if (cmd === '/cloud' || cmd.startsWith('/cloud ')) {
+      const cfg = ctx.config();
+      if (!cfg.cloud.enabled || !cfg.cloud.jwt) {
+        await channel.send('Mercury Cloud is not connected. Run `mercury cloud connect` to set it up.', channelId);
+        return true;
+      }
+
+      const sub = trimmed.slice('/cloud'.length).trim();
+
+      const ensureFreshToken = async (): Promise<string> => {
+        try {
+          const parts = cfg.cloud.jwt.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+            const exp = payload.exp * 1000;
+            if (Date.now() > exp - 60_000 && cfg.cloud.refreshToken) {
+              const { refreshToken } = await import('../cloud/pairing.js');
+              const result = await refreshToken(cfg.cloud.apiUrl, cfg.cloud.refreshToken);
+              cfg.cloud.jwt = result.jwt;
+              cfg.cloud.refreshToken = result.refreshToken;
+              cfg.providers.mercuryCloud.apiKey = result.jwt;
+              const { saveConfig } = await import('../utils/config.js');
+              saveConfig(cfg);
+              this.config = cfg;
+              return result.jwt;
+            }
+          }
+        } catch {}
+        return cfg.cloud.jwt;
+      };
+
+      if (!sub || sub === 'models' || sub === 'model') {
+        try {
+          const jwt = await ensureFreshToken();
+          const res = await fetch(`${cfg.cloud.apiUrl}/v1/models`, {
+            headers: { Authorization: `Bearer ${jwt}` },
+          });
+          if (!res.ok) {
+            await channel.send(`Failed to fetch cloud models (HTTP ${res.status}). Your token may have expired — run \`mercury cloud login\`.`, channelId);
+            return true;
+          }
+          const data = await res.json() as { data: Array<{ id: string; label: string; tier_required: string; context_window: number; available: boolean; is_branded?: boolean }> };
+          const models = data.data || [];
+          if (models.length === 0) {
+            await channel.send('No models available.', channelId);
+            return true;
+          }
+
+          const currentModel = cfg.providers.mercuryCloud?.model || '—';
+          const branded = models.filter((m) => m.is_branded);
+          const raw = models.filter((m) => !m.is_branded);
+
+          const formatModel = (m: typeof models[0]) => {
+            const marker = m.id === currentModel ? ' ← current' : '';
+            const lock = m.available ? '' : ' 🔒';
+            return `• ${m.id} · ${m.label} (${m.tier_required})${lock}${marker}`;
+          };
+
+          const lines = [
+            '**Mercury Cloud Models**',
+            '',
+            '**Mercury Branded**',
+            ...branded.map(formatModel),
+            '',
+            '**Direct Models**',
+            ...raw.map(formatModel),
+            '',
+            'Use `/cloud use <model-id>` to switch.',
+          ];
+          await channel.send(lines.join('\n'), channelId);
+
+          if (channelType === 'cli' && channel instanceof CLIChannel) {
+            const availableModels = models.filter((m) => m.available);
+            const choices = [
+              ...availableModels.map((m) => `${m.id} · ${m.label}${m.id === currentModel ? ' (current)' : ''}`),
+              'Keep current model',
+            ];
+            if (availableModels.length <= 1) {
+              await channel.send('Only one model available for your tier. Upgrade to unlock more.', channelId);
+              return true;
+            }
+            const picked = await this.presentChoice('Switch cloud model?', choices, channelId, channelType);
+            if (picked === 'Keep current model') return true;
+            const modelId = picked.split(' · ')[0].trim();
+            if (modelId) {
+              cfg.providers.mercuryCloud.model = modelId;
+              cfg.providers.mercuryCloud.enabled = true;
+              const { saveConfig } = await import('../utils/config.js');
+              saveConfig(cfg);
+              this.config = cfg;
+              const { MercuryCloudProvider } = await import('../providers/mercury-cloud.js');
+              this.providers.set('mercuryCloud', new MercuryCloudProvider(cfg.providers.mercuryCloud));
+              await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
+            }
+          }
+        } catch (err) {
+          await channel.send(`Error fetching cloud models: ${(err as Error).message}`, channelId);
+        }
+        return true;
+      }
+
+      if (sub.startsWith('use ')) {
+        const modelId = sub.slice(4).trim();
+        if (!modelId) {
+          await channel.send('Usage: `/cloud use <model-id>`', channelId);
+          return true;
+        }
+        await ensureFreshToken();
+        try {
+          cfg.providers.mercuryCloud.model = modelId;
+          cfg.providers.mercuryCloud.enabled = true;
+          if (cfg.providers.default !== 'mercuryCloud') {
+            cfg.providers.default = 'mercuryCloud';
+          }
+          const { saveConfig } = await import('../utils/config.js');
+          saveConfig(cfg);
+          this.config = cfg;
+          const { MercuryCloudProvider } = await import('../providers/mercury-cloud.js');
+          this.providers.set('mercuryCloud', new MercuryCloudProvider(cfg.providers.mercuryCloud));
+          await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
+        } catch (err) {
+          await channel.send(`Error switching model: ${(err as Error).message}`, channelId);
+        }
+        return true;
+      }
+
+      await channel.send('Usage: `/cloud models` to list, `/cloud use <model-id>` to switch', channelId);
+      return true;
+    }
+
     if (cmd === '/memory') {
       if (!this.userMemory) {
         const cfg = ctx.config();

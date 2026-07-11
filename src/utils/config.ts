@@ -48,6 +48,7 @@ export interface TelegramPendingRequest {
 }
 
 export type ProviderName =
+  | 'mercuryCloud'
   | 'openai'
   | 'anthropic'
   | 'deepseek'
@@ -60,14 +61,26 @@ export type ProviderName =
   | 'chatgptWeb'
   | 'githubCopilot';
 
+export interface CloudConfig {
+  enabled: boolean;
+  apiUrl: string;
+  wsUrl: string;
+  jwt: string;
+  refreshToken: string;
+  agentId: string;
+  tier: string;
+}
+
 export interface MercuryConfig {
   identity: {
     name: string;
     owner: string;
     creator?: string;
   };
+  cloud: CloudConfig;
   providers: {
     default: ProviderName;
+    mercuryCloud: ProviderConfig;
     openai: ProviderConfig;
     anthropic: ProviderConfig;
     deepseek: ProviderConfig;
@@ -202,8 +215,24 @@ export function getDefaultConfig(): MercuryConfig {
       owner: getEnv('MERCURY_OWNER', ''),
       creator: getEnv('MERCURY_CREATOR', ''),
     },
+    cloud: {
+      enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
+      apiUrl: getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud'),
+      wsUrl: getEnv('MERCURY_CLOUD_WS_URL', 'wss://api.mercury.cloud/ws'),
+      jwt: getEnv('MERCURY_CLOUD_JWT', ''),
+      refreshToken: getEnv('MERCURY_CLOUD_REFRESH_TOKEN', ''),
+      agentId: getEnv('MERCURY_CLOUD_AGENT_ID', ''),
+      tier: getEnv('MERCURY_CLOUD_TIER', 'free'),
+    },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
+      mercuryCloud: {
+        name: 'mercuryCloud',
+        apiKey: '',
+        baseUrl: getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud'),
+        model: getEnv('MERCURY_CLOUD_MODEL', 'mercury-mini'),
+        enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
+      },
       openai: {
         name: 'openai',
         apiKey: getEnv('OPENAI_API_KEY', ''),
@@ -446,6 +475,9 @@ export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
 
 export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
+  if (provider.name === 'mercuryCloud') {
+    return provider.model.length > 0;
+  }
   if (provider.name === 'ollamaLocal') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
   }

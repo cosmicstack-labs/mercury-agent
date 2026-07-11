@@ -4,7 +4,10 @@ import type { BaseProvider } from './base.js';
 import { logger } from '../utils/logger.js';
 
 async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
-  if (pc.name === 'anthropic') {
+  if (pc.name === 'mercuryCloud') {
+    const { MercuryCloudProvider } = await import('./mercury-cloud.js');
+    return new MercuryCloudProvider(pc);
+  } else if (pc.name === 'anthropic') {
     const { AnthropicProvider } = await import('./anthropic.js');
     return new AnthropicProvider(pc);
   } else if (pc.name === 'deepseek') {
@@ -49,6 +52,7 @@ export class ProviderRegistry {
     const registry = new ProviderRegistry(config.providers.default);
 
     const entries: ProviderConfig[] = [
+      config.providers.mercuryCloud,
       config.providers.deepseek,
       config.providers.openai,
       config.providers.anthropic,
@@ -87,6 +91,12 @@ export class ProviderRegistry {
   get(name?: string): BaseProvider | undefined {
     const key = name || this.defaultName;
     return this.providers.get(key);
+  }
+
+  set(name: string, provider: BaseProvider): void {
+    const existing = this.providers.get(name) as (BaseProvider & { destroy?: () => void }) | undefined;
+    existing?.destroy?.();
+    this.providers.set(name, provider);
   }
 
   getDefault(): BaseProvider {

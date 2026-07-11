@@ -270,6 +270,7 @@ export function getTelegramHelp(): string {
   lines.push('/progress — Live status for the current task');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
   lines.push('/models — List providers or switch AI model');
+  lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
   lines.push('');
 
@@ -357,6 +358,7 @@ export function getDiscordHelp(): string {
   lines.push('/progress \u2014 Live status for the current task');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
   lines.push('/models \u2014 List providers or switch AI model');
+  lines.push('/cloud models \u2014 List Mercury Cloud models and switch');
   lines.push('');
 
   lines.push('**Budget**');
