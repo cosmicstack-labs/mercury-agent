@@ -14,11 +14,12 @@ export class MercuryCloudClient {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private tokenCheckInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = 50;
   private handlers = new Map<string, WSMessageHandler[]>();
   private isConnecting = false;
   private shouldReconnect = true;
   private isRefreshing = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(url: string, token: string, agentId: string, refreshTokenVal: string, apiUrl: string) {
     this.url = url;
@@ -84,6 +85,10 @@ export class MercuryCloudClient {
     this.shouldReconnect = false;
     this.stopHeartbeat();
     this.stopTokenCheck();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -177,22 +182,32 @@ export class MercuryCloudClient {
         this.ws = null;
         this.connect();
       }
-    } catch {
+    } catch (err: any) {
+      // Don't silently swallow — surface the error so the user knows
+      console.error(`[Mercury Cloud] Token refresh failed: ${err.message}. Will retry on next LLM call.`);
     } finally {
       this.isRefreshing = false;
     }
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    // After many attempts, slow down to once per 60s instead of giving up
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      // Reset and use a slow steady interval — never give up entirely
+      this.reconnectAttempts = Math.floor(this.maxReconnectAttempts / 2);
+    }
 
-    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 30_000);
+    const baseDelay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000);
     this.reconnectAttempts++;
 
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       if (this.shouldReconnect) {
         this.connect();
       }
-    }, delay);
+    }, baseDelay);
+    if (this.reconnectTimer && typeof this.reconnectTimer.unref === 'function') {
+      this.reconnectTimer.unref();
+    }
   }
 }
