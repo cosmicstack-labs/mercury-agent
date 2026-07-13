@@ -2480,6 +2480,28 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             payload: { history },
             timestamp: new Date().toISOString(),
           });
+
+          // Also sync to cloud storage via HTTP
+          if (history && history.length > 0) {
+            const entries = history.map((h: any) => ({
+              role: h.role || 'user',
+              content: h.content || '',
+              tokenCount: h.tokenCount || 0,
+            }));
+            try {
+              await fetch(`${config.cloud.apiUrl}/v1/agents/${config.cloud.agentId}/conversation/sync`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${config.cloud.jwt}`,
+                },
+                body: JSON.stringify({ entries }),
+              });
+              logger.info({ count: entries.length }, 'Conversation history synced to cloud');
+            } catch (syncErr: any) {
+              logger.warn({ err: syncErr.message }, 'Failed to sync conversation history to cloud');
+            }
+          }
         } catch (err: any) {
           cloudClient!.send({
             type: 'conversation.dump',
