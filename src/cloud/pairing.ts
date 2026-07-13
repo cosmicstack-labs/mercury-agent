@@ -1,5 +1,5 @@
 import type { PairingResult, TokenRefreshResult } from './types.js';
-import { hostname } from 'node:os';
+import os from 'node:os';
 import { createHash } from 'node:crypto';
 
 let cachedMachineId: string | null = null;
@@ -7,7 +7,6 @@ let cachedMachineId: string | null = null;
 export function getMachineId(): string {
   if (cachedMachineId) return cachedMachineId;
 
-  const os = require('node:os') as typeof import('node:os');
   const raw = [
     os.hostname(),
     os.platform(),
@@ -20,7 +19,7 @@ export function getMachineId(): string {
 }
 
 export function getHostname(): string {
-  return hostname();
+  return os.hostname();
 }
 
 export async function startPairingFlow(

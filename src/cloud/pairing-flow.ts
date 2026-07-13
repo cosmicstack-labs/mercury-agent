@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { exec } from 'node:child_process';
 import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
 import { startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
 import type { CloudConfig } from './types.js';
@@ -238,7 +239,6 @@ function tryOpenBrowser(url: string): void {
       : process.platform === 'win32'
         ? 'start ""'
         : 'xdg-open';
-    const { exec } = require('child_process') as typeof import('child_process');
     exec(`${cmd} "${url}"`, (err) => {
       if (err) {
         console.log(chalk.dim('  Could not open browser automatically. Please open the URL manually.'));
