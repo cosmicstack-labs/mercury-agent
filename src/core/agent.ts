@@ -1288,6 +1288,11 @@ export class Agent {
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
+          // Ensure Mercury Cloud token is fresh before getting model instance
+          if ('ensureFreshToken' in provider && typeof (provider as any).ensureFreshToken === 'function') {
+            await (provider as any).ensureFreshToken();
+          }
+
           if (canStream && channel) {
             const streamResult = streamText({
               model: provider.getModelInstance(),

@@ -1,5 +1,6 @@
 import type { WSMessage, WSMessageType } from './types.js';
 import { refreshToken } from './pairing.js';
+import { WebSocket } from 'ws';
 
 export type WSMessageHandler = (message: WSMessage) => void;
 
@@ -146,7 +147,7 @@ export class MercuryCloudClient {
     this.stopTokenCheck();
     this.tokenCheckInterval = setInterval(() => {
       this.tryRefreshAndReconnect();
-    }, 10 * 60 * 1000);
+    }, 3 * 60 * 1000);
   }
 
   private stopTokenCheck(): void {

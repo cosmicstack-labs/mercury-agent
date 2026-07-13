@@ -1,13 +1,39 @@
 import type { PairingResult, TokenRefreshResult } from './types.js';
+import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
+
+let cachedMachineId: string | null = null;
+
+export function getMachineId(): string {
+  if (cachedMachineId) return cachedMachineId;
+
+  const os = require('node:os') as typeof import('node:os');
+  const raw = [
+    os.hostname(),
+    os.platform(),
+    os.arch(),
+    os.userInfo().username,
+  ].join('|');
+
+  cachedMachineId = createHash('sha256').update(raw).digest('hex').slice(0, 32);
+  return cachedMachineId;
+}
+
+export function getHostname(): string {
+  return hostname();
+}
 
 export async function startPairingFlow(
   apiUrl: string,
   email?: string
 ): Promise<{ code: string; pairingUrl: string }> {
+  const machineId = getMachineId();
+  const host = getHostname();
+
   const res = await fetch(`${apiUrl}/v1/auth/terminal/pair`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, machineId, hostname: host }),
   });
 
   if (!res.ok) {

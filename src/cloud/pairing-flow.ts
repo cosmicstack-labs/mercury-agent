@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
-import { startPairingFlow, pollPairingComplete } from './pairing.js';
+import { startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
 import type { CloudConfig } from './types.js';
 
 export async function runCloudPairingFlow(
@@ -21,7 +21,6 @@ export async function runCloudPairingFlow(
   tryOpenBrowser(pairingUrl);
 
   console.log(chalk.dim('  Waiting for approval (timeout in 5 minutes)...'));
-  console.log('');
 
   const result = await pollPairingComplete(apiUrl, code);
 
@@ -73,11 +72,45 @@ export async function runCloudConnect(): Promise<void> {
   const config = loadConfig();
 
   if (config.cloud.enabled && config.cloud.jwt) {
-    console.log(chalk.green('  ✓ Mercury Cloud is already connected.'));
-    console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
-    console.log(chalk.dim(`    Tier: ${config.cloud.tier}`));
-    console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
-    return;
+    // Validate the token is actually usable — don't just trust local config
+    const valid = await validateCloudConnection(config);
+
+    if (valid) {
+      console.log(chalk.green('  ✓ Mercury Cloud is already connected.'));
+      console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
+      console.log(chalk.dim(`    Tier: ${config.cloud.tier || 'free'}`));
+      console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
+      return;
+    }
+
+    // Token is expired/invalid — try to refresh
+    if (config.cloud.refreshToken) {
+      console.log(chalk.yellow('  ⚠ Mercury Cloud token expired. Refreshing...'));
+      try {
+        const result = await refreshToken(config.cloud.apiUrl, config.cloud.refreshToken);
+        config.cloud.jwt = result.jwt;
+        config.cloud.refreshToken = result.refreshToken;
+        config.providers.mercuryCloud.apiKey = result.jwt;
+        saveConfig(config);
+
+        // Re-validate with the fresh token
+        const validNow = await validateCloudConnection(config);
+        if (validNow) {
+          console.log(chalk.green('  ✓ Mercury Cloud token refreshed successfully.'));
+          console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
+          console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
+          return;
+        }
+      } catch (err: any) {
+        console.log(chalk.red(`  ✗ Token refresh failed: ${err.message}`));
+      }
+    }
+
+    // Refresh failed or no refresh token — re-pair
+    console.log(chalk.yellow('  ⚠ Session expired. Starting re-pairing flow...'));
+    config.cloud.enabled = false;
+    config.cloud.jwt = '';
+    config.cloud.refreshToken = '';
   }
 
   const result = await runCloudPairingFlow(config);
@@ -200,50 +233,32 @@ function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig
 
 function tryOpenBrowser(url: string): void {
   try {
-    if (!process.stdin.isTTY) return;
-
-    console.log(chalk.dim('  Press O then Enter to open the browser, or open the URL manually.'));
-
-    const readline = require('readline') as typeof import('readline');
-    const rl = readline.createInterface({ input: process.stdin, terminal: false });
-
-    let answered = false;
-
-    const cleanup = () => {
-      if (!answered) {
-        answered = true;
-        rl.close();
-        rl.removeAllListeners();
-      }
-    };
-
-    const timeout = setTimeout(cleanup, 10_000);
-    timeout.unref();
-
-    rl.question('', (answer: string) => {
-      cleanup();
-      clearTimeout(timeout);
-      const key = answer.trim().toLowerCase();
-      if (key === 'o' || key === 'y' || key === 'yes') {
-        const cmd = process.platform === 'darwin'
-          ? 'open'
-          : process.platform === 'win32'
-            ? 'start ""'
-            : 'xdg-open';
-        const { exec } = require('child_process') as typeof import('child_process');
-        exec(`${cmd} "${url}"`, (err) => {
-          if (err) {
-            console.log(chalk.dim('  Could not open browser automatically. Please open the URL manually.'));
-          } else {
-            console.log(chalk.green('  ✓ Opened in browser.'));
-          }
-        });
+    const cmd = process.platform === 'darwin'
+      ? 'open'
+      : process.platform === 'win32'
+        ? 'start ""'
+        : 'xdg-open';
+    const { exec } = require('child_process') as typeof import('child_process');
+    exec(`${cmd} "${url}"`, (err) => {
+      if (err) {
+        console.log(chalk.dim('  Could not open browser automatically. Please open the URL manually.'));
+      } else {
+        console.log(chalk.green('  ✓ Opened in browser.'));
       }
     });
-
-    process.stdin.on('close', cleanup);
-    process.stdin.on('end', cleanup);
   } catch {
     // Silently skip on any error — safe for headless/mobile/CI
+  }
+}
+
+async function validateCloudConnection(config: MercuryConfig): Promise<boolean> {
+  try {
+    const res = await fetch(`${config.cloud.apiUrl}/v1/agents`, {
+      headers: { Authorization: `Bearer ${config.cloud.jwt}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
