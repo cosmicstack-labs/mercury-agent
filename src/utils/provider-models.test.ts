@@ -87,6 +87,18 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('gpt-oss:20b');
   });
 
+  it('prefers the Atlas Cloud fast Qwen model when available', () => {
+    const catalog = buildModelCatalog('atlascloud', [
+      'deepseek-ai/deepseek-v4-pro',
+      'qwen/qwen3.5-flash',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('qwen/qwen3.5-flash');
+    expect(catalog.models).toContain('deepseek-ai/deepseek-v4-pro');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
