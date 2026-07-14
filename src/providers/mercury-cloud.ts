@@ -70,6 +70,7 @@ export class MercuryCloudProvider extends BaseProvider {
       const result = await refreshToken(config.cloud.apiUrl, config.cloud.refreshToken);
       this.currentJwt = result.jwt;
       const baseUrl = this.config.baseUrl || config.cloud.apiUrl;
+      this.config.apiKey = result.jwt;
       this.client = createOpenAI({
         apiKey: this.currentJwt,
         baseURL: baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`,
@@ -79,7 +80,7 @@ export class MercuryCloudProvider extends BaseProvider {
       config.cloud.refreshToken = result.refreshToken;
       config.providers.mercuryCloud.apiKey = result.jwt;
       saveConfig(config);
-      logger.info('Mercury Cloud token refreshed');
+      logger.info('Mercury Cloud token refreshed and saved');
     } catch (err: any) {
       logger.error({ err: err.message }, 'Mercury Cloud token refresh failed');
       throw err;
