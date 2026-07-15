@@ -45,7 +45,7 @@ export class MercuryCloudClient {
         this.startTokenCheck();
       };
 
-      this.ws.onmessage = (event: MessageEvent) => {
+      this.ws.onmessage = (event: WebSocket.MessageEvent) => {
         try {
           const message = JSON.parse(event.data as string) as WSMessage;
           const handlers = this.handlers.get(message.type) || [];

@@ -72,8 +72,12 @@ export async function pollPairingComplete(
         continue;
       }
 
-      if (res.status === 404) {
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
         throw new Error('Pairing code not found or expired');
+      }
+
+      if (res.status >= 400) {
+        throw new Error(`Pairing check failed: ${res.status} ${res.statusText}`);
       }
     } catch (err) {
       if (err instanceof Error && err.message.includes('not found')) {
