@@ -23,7 +23,17 @@ export async function runCloudPairingFlow(
 
   console.log(chalk.dim('  Waiting for approval (timeout in 5 minutes)...'));
 
-  const result = await pollPairingComplete(apiUrl, code);
+  let result;
+  try {
+    result = await pollPairingComplete(apiUrl, code);
+  } catch (err: any) {
+    console.log('');
+    console.log(chalk.red(`  ✗ ${err.message}`));
+    console.log('');
+    console.log(chalk.dim('  If the browser did not open automatically, copy this URL:'));
+    console.log(chalk.cyan(`  ${pairingUrl}`));
+    return null;
+  }
 
   const cloudConfig: CloudConfig = {
     enabled: true,
@@ -116,7 +126,7 @@ export async function runCloudConnect(): Promise<void> {
 
   const result = await runCloudPairingFlow(config);
   if (!result) {
-    console.log(chalk.red('  ✗ Pairing failed.'));
+    console.log(chalk.red('  ✗ Pairing failed. See error above.'));
     return;
   }
 
