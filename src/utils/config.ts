@@ -213,6 +213,8 @@ function getEnvBool(key: string, fallback: boolean): boolean {
 
 export function getDefaultConfig(): MercuryConfig {
   const home = getMercuryHome();
+  const cloudApiUrl = getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud');
+  const cloudWsUrl = getEnv('MERCURY_CLOUD_WS_URL', 'wss://api.mercury.cloud/ws');
   return {
     identity: {
       name: getEnv('MERCURY_NAME', 'Mercury'),
@@ -221,8 +223,8 @@ export function getDefaultConfig(): MercuryConfig {
     },
     cloud: {
       enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
-      apiUrl: getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud'),
-      wsUrl: getEnv('MERCURY_CLOUD_WS_URL', 'wss://api.mercury.cloud/ws'),
+      apiUrl: cloudApiUrl,
+      wsUrl: cloudWsUrl,
       jwt: getEnv('MERCURY_CLOUD_JWT', ''),
       refreshToken: getEnv('MERCURY_CLOUD_REFRESH_TOKEN', ''),
       agentId: getEnv('MERCURY_CLOUD_AGENT_ID', ''),
@@ -233,7 +235,7 @@ export function getDefaultConfig(): MercuryConfig {
       mercuryCloud: {
         name: 'mercuryCloud',
         apiKey: '',
-        baseUrl: getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud'),
+        baseUrl: cloudApiUrl,
         model: getEnv('MERCURY_CLOUD_MODEL', 'mercury-mini'),
         enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
       },
@@ -416,7 +418,7 @@ export function loadConfig(): MercuryConfig {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const fileConfig = parseYaml(raw) as Partial<MercuryConfig>;
     const defaults = getDefaultConfig();
-    return migrateLegacyDiscordAccess(
+    return normalizeCloudConfig(migrateLegacyDiscordAccess(
       migrateLegacyOllamaLocalBaseUrl(
         migrateLegacyOllamaCloudBaseUrl(
           migrateLegacySignalAccess(
@@ -424,14 +426,40 @@ export function loadConfig(): MercuryConfig {
           ),
         ),
       ),
-    );
+    ));
   }
-  return migrateLegacyDiscordAccess(
+  return normalizeCloudConfig(migrateLegacyDiscordAccess(
     migrateLegacyTelegramAccess(getDefaultConfig()),
-  );
+  ));
+}
+
+function normalizeCloudConfig(config: MercuryConfig): MercuryConfig {
+  // Single source of truth: cloud.apiUrl/wsUrl define the Mercury Cloud backend.
+  // providers.mercuryCloud.baseUrl is derived for the OpenAI-compatible client.
+  if (!config.cloud.apiUrl) config.cloud.apiUrl = 'https://api.mercury.cloud';
+  if (!config.cloud.wsUrl) config.cloud.wsUrl = deriveCloudWsUrl(config.cloud.apiUrl);
+  config.providers.mercuryCloud.baseUrl = config.cloud.apiUrl;
+  if (config.cloud.jwt && !config.providers.mercuryCloud.apiKey) {
+    config.providers.mercuryCloud.apiKey = config.cloud.jwt;
+  }
+  return config;
+}
+
+function deriveCloudWsUrl(apiUrl: string): string {
+  try {
+    const url = new URL(apiUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/ws`;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return 'wss://api.mercury.cloud/ws';
+  }
 }
 
 export function saveConfig(config: MercuryConfig): void {
+  config = normalizeCloudConfig(config);
   const dir = getMercuryHome();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });

@@ -2584,6 +2584,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         const message = msg.payload?.message as string | undefined;
         const fromAgentId = msg.payload?.fromAgentId as string | undefined;
         const conversationId = msg.payload?.conversationId as string | undefined;
+        const providerOverride = msg.payload?.provider as string | undefined;
         const controlType = msg.payload?.controlType as string | undefined;
 
         if (controlType === 'permission.resolve') {
@@ -2600,6 +2601,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           return;
         }
 
+        if (controlType === 'choice.resolve') {
+          const id = msg.payload?.id as string | undefined;
+          const value = msg.payload?.value as string | undefined;
+          if (id && typeof value === 'string') {
+            const resolved = webChannel.resolveChoice(id, value);
+            cloudClient!.sendStream({
+              conversationId,
+              event: resolved ? 'choice_resolved' : 'error',
+              data: resolved ? { id, value } : { message: 'Choice prompt expired or was not found.' },
+            });
+          }
+          return;
+        }
+
         if (controlType === 'permission.mode') {
           const action = msg.payload?.action as string | undefined;
           webChannel.setBypassPermissions(action === 'allow-all');
@@ -2607,6 +2622,36 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             conversationId,
             event: 'permission_mode_set',
             data: { mode: action === 'allow-all' ? 'allow-all' : 'ask-me' },
+          });
+          return;
+        }
+
+        if (controlType === 'model.list') {
+          cloudClient!.sendStream({
+            conversationId,
+            event: 'model_options',
+            data: {
+              providers: await agent.listChatModelOptions(),
+              current: agent.getCurrentProvider(),
+            },
+          });
+          return;
+        }
+
+        if (controlType === 'model.select') {
+          const provider = msg.payload?.provider as string | undefined;
+          const model = msg.payload?.model as string | undefined;
+          const cloudThreadId = `cloud:${conversationId || Date.now()}`;
+          if (!provider) {
+            cloudClient!.sendStream({ conversationId, event: 'error', data: { message: 'No provider selected.' } });
+            return;
+          }
+
+          const result = await agent.setChannelProviderOverride(cloudThreadId, provider, model);
+          cloudClient!.sendStream({
+            conversationId,
+            event: result.ok ? 'model_selected' : 'error',
+            data: result.ok ? result : { message: result.message },
           });
           return;
         }
@@ -2619,6 +2664,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
           const cloudThreadId = `cloud:${conversationId || Date.now()}`;
           try {
+            if (providerOverride) {
+              const modelOverride = msg.payload?.model as string | undefined;
+              const override = await agent.setChannelProviderOverride(cloudThreadId, providerOverride, modelOverride);
+              if (!override.ok) {
+                cloudClient!.sendStream({ conversationId, event: 'error', data: { message: override.message } });
+                return;
+              }
+            }
             webChannel.emitCloudMessage(message, cloudThreadId, (event) => {
               cloudClient!.sendStream({
                 conversationId,

@@ -11,7 +11,8 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
-import { ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
+import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
+import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
@@ -63,6 +64,7 @@ import {
   removeSlackUser,
   clearSlackAccess,
 } from '../utils/config.js';
+import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -835,6 +837,53 @@ export class Agent {
     this.processing = false;
   }
 
+  private channelProviderOverrides = new Map<string, { providerName: string; modelName: string; provider: BaseProvider }>();
+
+  async listChatModelOptions(): Promise<Array<{ provider: string; label: string; model: string; models: string[]; selected: boolean }>> {
+    const active = getActiveProviders(this.config);
+    const current = this.getCurrentProvider();
+    return Promise.all(active.map(async (provider) => {
+      let models = [provider.model].filter(Boolean);
+      try {
+        const catalog = await fetchProviderModelCatalog(provider.name as any, provider.name === 'mercuryCloud'
+          ? {
+            ...provider,
+            apiKey: this.config.cloud.jwt || provider.apiKey,
+            baseUrl: this.config.cloud.apiUrl || provider.baseUrl,
+          }
+          : provider);
+        models = [...new Set([provider.model, catalog.recommendedModel, ...catalog.models].filter(Boolean))];
+      } catch (err) {
+        logger.debug({ provider: provider.name, err }, 'Unable to fetch provider model catalog; using configured model');
+        models = [...new Set([provider.model, ...getPreferredModelsForProvider(provider.name as any)].filter(Boolean))];
+      }
+
+      return {
+        provider: provider.name,
+        label: provider.name,
+        model: provider.model,
+        models,
+        selected: provider.name === current.name,
+      };
+    }));
+  }
+
+  async setChannelProviderOverride(channelId: string, providerName: string, modelName?: string): Promise<{ ok: boolean; message: string; provider?: string; model?: string }> {
+    const active = getActiveProviders(this.config);
+    const config = active.find((provider) => provider.name === providerName);
+    if (!config) {
+      return { ok: false, message: `Provider \`${providerName}\` is not configured for this local agent.` };
+    }
+
+    const provider = await createProvider({ ...config, model: modelName || config.model });
+    if (!provider) {
+      return { ok: false, message: `Provider \`${providerName}\` is not available in the running registry.` };
+    }
+
+    this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
+    return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.`, provider: providerName, model: provider.getModel() };
+  }
+
   private async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
     const active = getActiveProviders(this.config).map((p) => p.name);
     if (!active.includes(providerName)) {
@@ -1232,7 +1281,12 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
 
-      const fallbackIterator = this.providers.getFallbackIterator();
+      const channelOverride = this.channelProviderOverrides.get(msg.channelId);
+      const fallbackIterator = channelOverride
+        ? [channelOverride.provider, ...this.providers.getFallbackIterator(channelOverride.providerName)]
+          .filter((provider, index, list) => list.findIndex((item) => item.name === provider.name && item.getModel() === provider.getModel()) === index)
+          [Symbol.iterator]()
+        : this.providers.getFallbackIterator();
       let result: any = null;
       let usedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
@@ -1840,7 +1894,9 @@ export class Agent {
           if (channel instanceof WebChannel) {
             (channel as WebChannel).sendProviderInfo(usedProvider.name, usedProvider.model, msg.channelId);
           }
-          this.providers.markSuccess(provider.name);
+          if (!channelOverride) {
+            this.providers.markSuccess(provider.name);
+          }
           break;
         } catch (err: any) {
           if (loopDetector.isHardAborted() || loopAbortController.signal.aborted) {
@@ -1911,6 +1967,7 @@ export class Agent {
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
+        agentId: this.config.cloud.agentId || undefined,
       });
       this.syncTokenInfoToCli();
 
@@ -2381,6 +2438,7 @@ RULES:
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
+        agentId: this.config.cloud.agentId || undefined,
       });
       this.syncTokenInfoToCli();
 
@@ -3260,6 +3318,12 @@ Is this productive iteration or a stuck loop?`,
 
       if (channelType === 'cli' && channel instanceof CLIChannel) {
         await this.openCliMemoryMenu(channel, channelId);
+        return true;
+      }
+
+      const choiceChannel = channel as typeof channel & { presentChoicePrompt?: (question: string, options: ArrowSelectOption[], targetId?: string) => Promise<string> };
+      if (typeof choiceChannel.presentChoicePrompt === 'function') {
+        await this.openMemoryChoiceMenu(choiceChannel, channelId);
         return true;
       }
 
@@ -4600,6 +4664,98 @@ Is this productive iteration or a stuck loop?`,
       await runMenu(select);
     } else {
       await channel.withMenu(runMenu);
+    }
+  }
+
+  private async openMemoryChoiceMenu(channel: any, channelId: string): Promise<void> {
+    if (!this.userMemory) return;
+
+    const learningLabel = this.userMemory.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+    const shareLabel = this.userMemory.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
+    const action = await channel.presentChoicePrompt('Memory', [
+      { value: 'overview', label: 'Overview' },
+      { value: 'recent', label: 'Recent Memories' },
+      { value: 'shared', label: 'Shared Memories' },
+      { value: 'toggle', label: learningLabel },
+      { value: 'share', label: shareLabel },
+      { value: 'clear', label: 'Clear All Memories' },
+      { value: 'cancel', label: 'Cancel' },
+    ], channelId);
+
+    if (action === 'cancel') return;
+
+    if (action === 'overview') {
+      await this.sendMemoryOverview(channel, channelId);
+      return;
+    }
+
+    if (action === 'recent') {
+      const recent = this.userMemory.getRecent(10);
+      if (recent.length === 0) {
+        await channel.send('No memories yet.', channelId);
+        return;
+      }
+      const lines = ['**Recent Memories:**', ''];
+      for (const r of recent) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
+        lines.push(`${scope} [${r.type}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'shared') {
+      const shared = this.userMemory.getShareable(20);
+      if (shared.length === 0) {
+        await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
+        return;
+      }
+      const lines = [`**Shared Memories (${shared.length}):**`, ''];
+      for (const r of shared) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
+        lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'toggle') {
+      const currentlyPaused = this.userMemory.isLearningPaused();
+      this.userMemory.setLearningPaused(!currentlyPaused);
+      await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
+      return;
+    }
+
+    if (action === 'share') {
+      const currently = this.userMemory.isShareLearning();
+      this.userMemory.setShareLearning(!currently);
+      const cfg = loadConfig();
+      if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
+      cfg.memory.collaborativeKnowledge.shareLearning = !currently;
+      saveConfig(cfg);
+      const count = this.userMemory.countShareable();
+      await channel.send(
+        currently
+          ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
+          : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
+        channelId,
+      );
+      return;
+    }
+
+    if (action === 'clear') {
+      const confirm = await channel.presentChoicePrompt('Clear all memories?', [
+        { value: 'cancel', label: 'Cancel' },
+        { value: 'confirm', label: 'Clear everything' },
+      ], channelId);
+      if (confirm === 'confirm') {
+        const cleared = this.userMemory.clear();
+        await channel.send(`Cleared ${cleared} memories.`, channelId);
+      }
     }
   }
 

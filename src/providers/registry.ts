@@ -3,7 +3,7 @@ import { isProviderConfigured } from '../utils/config.js';
 import type { BaseProvider } from './base.js';
 import { logger } from '../utils/logger.js';
 
-async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
+export async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
   if (pc.name === 'mercuryCloud') {
     const { MercuryCloudProvider } = await import('./mercury-cloud.js');
     return new MercuryCloudProvider(pc);
@@ -52,7 +52,11 @@ export class ProviderRegistry {
     const registry = new ProviderRegistry(config.providers.default);
 
     const entries: ProviderConfig[] = [
-      config.providers.mercuryCloud,
+      {
+        ...config.providers.mercuryCloud,
+        apiKey: config.providers.mercuryCloud.apiKey || config.cloud.jwt,
+        baseUrl: config.cloud.apiUrl || config.providers.mercuryCloud.baseUrl,
+      },
       config.providers.deepseek,
       config.providers.openai,
       config.providers.anthropic,
@@ -114,9 +118,10 @@ export class ProviderRegistry {
     return provider;
   }
 
-  getFallbackIterator(): IterableIterator<BaseProvider> {
+  getFallbackIterator(preferredName?: string): IterableIterator<BaseProvider> {
     const ordered: BaseProvider[] = [];
-    const defaultProvider = this.getDefault();
+    const preferredProvider = preferredName ? this.providers.get(preferredName) : undefined;
+    const defaultProvider = preferredProvider || this.getDefault();
     ordered.push(defaultProvider);
     for (const [, provider] of this.providers) {
       if (provider !== defaultProvider) {

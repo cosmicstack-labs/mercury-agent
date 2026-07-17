@@ -7,7 +7,7 @@ export interface ProviderModelCatalog {
   recommendedModel: string;
 }
 
-const MAX_MODEL_OPTIONS = 7;
+const MAX_MODEL_OPTIONS = 50;
 
 const OPENAI_PREFERRED_MODELS = [
   'gpt-5.2',
@@ -106,6 +106,25 @@ export class ProviderModelFetchError extends Error {
     super(message);
     this.name = 'ProviderModelFetchError';
   }
+}
+
+export function getPreferredModelsForProvider(provider: ProviderName): string[] {
+  const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
+    deepseek: DEEPSEEK_PREFERRED_MODELS,
+    openai: OPENAI_PREFERRED_MODELS,
+    anthropic: ANTHROPIC_PREFERRED_MODELS,
+    grok: GROK_PREFERRED_MODELS,
+    ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
+    ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
+    mimo: MIMO_PREFERRED_MODELS,
+    mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
+    githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+  };
+
+  return [...preferredByProvider[provider]];
 }
 
 interface OpenAIModelResponse {
@@ -438,7 +457,11 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
   );
 
   const ids = (data.models || []).map((m) => m.id);
-  return buildModelCatalog('mercuryCloud', ids, config.model);
+  const models = uniq(ids);
+  return {
+    recommendedModel: config.model && models.includes(config.model) ? config.model : models[0] || config.model || 'mercury-mini',
+    models: limitModels(models.filter((model) => model !== config.model)),
+  };
 }
 
 export async function fetchProviderModelCatalog(

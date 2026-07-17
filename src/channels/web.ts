@@ -3,6 +3,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 
 type ApprovalResolver = () => void;
+type ChoiceResolver = (value: string) => void;
 type CloudEventHandler = (event: ChatEvent) => void;
 
 function normalizeStreamText(current: string, incoming: string): string {
@@ -22,7 +23,7 @@ function normalizeStreamText(current: string, incoming: string): string {
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'loop_warning' | 'error';
+  type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error';
   data?: Record<string, unknown>;
 }
 
@@ -57,6 +58,7 @@ export class WebChannel extends BaseChannel {
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
   private pendingContinues: Map<string, ApprovalResolver> = new Map();
   private pendingPermModes: Map<string, ApprovalResolver> = new Map();
+  private pendingChoices: Map<string, ChoiceResolver> = new Map();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
   private cloudEventHandlers: Map<string, CloudEventHandler> = new Map();
@@ -132,6 +134,14 @@ export class WebChannel extends BaseChannel {
       return true;
     }
     return false;
+  }
+
+  resolveChoice(id: string, value: string): boolean {
+    const resolver = this.pendingChoices.get(id);
+    if (!resolver) return false;
+    this.pendingChoices.delete(id);
+    resolver(value);
+    return true;
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
@@ -231,6 +241,23 @@ export class WebChannel extends BaseChannel {
         this.pendingPermModes.delete(askKey);
         this.pendingPermModes.delete(allowKey);
         resolve('ask-me');
+      }, 120_000);
+    });
+  }
+
+  async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>, targetId?: string): Promise<string> {
+    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.broadcast({
+      type: 'choice_prompt',
+      data: { id, question, options, targetId },
+    });
+
+    return new Promise((resolve) => {
+      this.pendingChoices.set(id, resolve);
+      setTimeout(() => {
+        if (!this.pendingChoices.has(id)) return;
+        this.pendingChoices.delete(id);
+        resolve(options[0]?.value || '');
       }, 120_000);
     });
   }
