@@ -2179,6 +2179,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
     memoryClear: () => userMemory ? userMemory.clear() : 0,
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
+    memoryIsShareLearning: () => userMemory ? userMemory.isShareLearning() : false,
+    memorySetShareLearning: (enabled: boolean) => { if (userMemory) userMemory.setShareLearning(enabled); },
   });
 
   capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
@@ -2467,6 +2469,72 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           } catch (syncErr: any) {
             logger.warn({ err: syncErr.message }, 'Failed to sync memory to cloud');
           }
+        }
+      });
+
+      // Cloud → agent: fetch shareable memories newer than a cursor (incremental).
+      // Returns only shareable=1, non-dismissed rows with updated_at > since.
+      cloudClient.on('memory.fetch', async (msg) => {
+        const since = (msg.payload?.since as number) ?? 0;
+        const limit = (msg.payload?.limit as number) ?? 500;
+        const requestId = (msg.payload?.requestId as string) ?? '';
+
+        logger.info({ since, limit, requestId }, 'Cloud command: fetch shareable memories');
+
+        try {
+          const memories = userMemory
+            ? userMemory.getShareableSince(since, limit).map((m) => ({
+                id: m.id,
+                type: m.type,
+                categories: m.categories,
+                summary: m.summary,
+                detail: m.detail ?? null,
+                scope: m.scope,
+                evidenceKind: m.evidenceKind,
+                source: m.source,
+                confidence: m.confidence,
+                importance: m.importance,
+                durability: m.durability,
+                evidenceCount: m.evidenceCount,
+                provenance: m.provenance ?? null,
+                createdAt: m.createdAt,
+                updatedAt: m.updatedAt,
+              }))
+            : [];
+
+          cloudClient!.send({
+            type: 'memory.fetch.result',
+            agentId: config.cloud.agentId,
+            payload: { requestId, memories },
+            timestamp: new Date().toISOString(),
+          });
+
+          logger.info({ count: memories.length, requestId }, 'Cloud fetch: sent shareable memories');
+        } catch (err: any) {
+          logger.warn({ err: err.message }, 'Cloud fetch: failed to gather memories');
+          cloudClient!.send({
+            type: 'memory.fetch.result',
+            agentId: config.cloud.agentId,
+            payload: { requestId, memories: [] },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      // Cloud → agent: toggle shared learning on/off. When on, new memories
+      // extracted via remember() are marked shareable so the cloud fetch can
+      // pull them into the collaborative pool. Persisted to config on the agent.
+      cloudClient.on('memory.share-learning.toggle', async (msg) => {
+        const enabled = Boolean(msg.payload?.enabled);
+        logger.info({ enabled }, 'Cloud command: toggle shared learning');
+        if (userMemory) {
+          userMemory.setShareLearning(enabled);
+          try {
+            if (!config.memory.collaborativeKnowledge) config.memory.collaborativeKnowledge = {};
+            config.memory.collaborativeKnowledge.shareLearning = enabled;
+            const { saveConfig } = await import('./utils/config.js');
+            saveConfig(config);
+          } catch { /* best-effort */ }
         }
       });
 

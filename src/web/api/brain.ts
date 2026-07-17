@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { loadConfig, getMemoryDir } from '../../utils/config.js';
+import { loadConfig, getMemoryDir, saveConfig } from '../../utils/config.js';
 import { isBetterSqlite3Available } from '../../memory/second-brain-db.js';
 import { UserMemoryStore } from '../../memory/user-memory.js';
 import { join } from 'node:path';
@@ -73,9 +73,35 @@ const brain = new Hono();
 brain.get('/api/brain/status', async (c) => {
   const mem = ensureMemory();
   if (mem) {
-    return c.json({ ...mem.getSummary(), available: true });
+    return c.json({ ...mem.getSummary(), available: true, shareLearning: mem.isShareLearning(), shareableCount: mem.countShareable() });
   }
   return c.json({ total: 0, byType: {}, learningPaused: false, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+});
+
+// Toggle shared learning — when on, new memories extracted via remember() are
+// marked shareable so the cloud fetch can pull them into the collaborative pool.
+brain.post('/api/brain/shared-learning', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const body = await c.req.json().catch(() => ({}));
+  const enabled = Boolean(body.enabled);
+  mem.setShareLearning(enabled);
+
+  // Persist to config so it survives restarts.
+  try {
+    const config = loadConfig();
+    if (!config.memory.collaborativeKnowledge) config.memory.collaborativeKnowledge = {};
+    config.memory.collaborativeKnowledge.shareLearning = enabled;
+    saveConfig(config);
+  } catch { /* best-effort — in-memory toggle still works */ }
+
+  return c.json({ shareLearning: enabled, shareableCount: mem.countShareable() });
+});
+
+brain.get('/api/brain/shared-learning', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  return c.json({ shareLearning: mem.isShareLearning(), shareableCount: mem.countShareable() });
 });
 
 brain.get('/api/brain/memory', async (c) => {

@@ -295,6 +295,8 @@ describe('UserMemoryStore', () => {
         id: `mem_test_${i}`,
         user_key: 'user:owner',
         type: i % 2 === 0 ? 'preference' : 'identity',
+        categories: '[]',
+        shareable: 0,
         summary: `Distinct memory observation number ${i} with completely different content about topic ${i}.`,
         detail: null,
         scope: i % 3 === 0 ? 'active' : 'durable',

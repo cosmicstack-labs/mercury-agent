@@ -72,6 +72,8 @@ export interface ChatCommandContext {
   memorySetLearningPaused: (paused: boolean) => void;
   memoryClear: () => number;
   memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
+  memoryIsShareLearning: () => boolean;
+  memorySetShareLearning: (enabled: boolean) => void;
 }
 
 export class CapabilityRegistry {

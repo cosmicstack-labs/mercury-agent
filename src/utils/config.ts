@@ -151,6 +151,10 @@ export interface MercuryConfig {
     secondBrain: {
       enabled: boolean;
     };
+    collaborativeKnowledge?: {
+      /** When true, new memories extracted via remember() are marked shareable. */
+      shareLearning?: boolean;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -368,6 +372,9 @@ export function getDefaultConfig(): MercuryConfig {
       shortTermMaxMessages: getEnvNum('SHORT_TERM_MAX_MESSAGES', 20),
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
+      },
+      collaborativeKnowledge: {
+        shareLearning: getEnvBool('SHARE_LEARNING', false),
       },
     },
     heartbeat: {
