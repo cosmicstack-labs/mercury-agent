@@ -2515,13 +2515,56 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cloudClient.on('agent.command', async (msg) => {
         const message = msg.payload?.message as string | undefined;
         const fromAgentId = msg.payload?.fromAgentId as string | undefined;
+        const conversationId = msg.payload?.conversationId as string | undefined;
+        const controlType = msg.payload?.controlType as string | undefined;
+
+        if (controlType === 'permission.resolve') {
+          const id = msg.payload?.id as string | undefined;
+          const action = msg.payload?.action as string | undefined;
+          if (id && action) {
+            const resolved = webChannel.resolveApproval(id, action);
+            cloudClient!.sendStream({
+              conversationId,
+              event: resolved ? 'permission_resolved' : 'error',
+              data: resolved ? { id, action } : { message: 'Permission prompt expired or was not found.' },
+            });
+          }
+          return;
+        }
+
+        if (controlType === 'permission.mode') {
+          const action = msg.payload?.action as string | undefined;
+          webChannel.setBypassPermissions(action === 'allow-all');
+          cloudClient!.sendStream({
+            conversationId,
+            event: 'permission_mode_set',
+            data: { mode: action === 'allow-all' ? 'allow-all' : 'ask-me' },
+          });
+          return;
+        }
+
         if (message) {
           if (fromAgentId) {
             logger.info({ fromAgentId, messagePreview: message.slice(0, 50) }, 'Cloud relay: message from another agent');
           } else {
             logger.info({ messagePreview: message.slice(0, 50) }, 'Cloud command: send message to agent');
           }
-          webChannel.emitMessage(message);
+          const cloudThreadId = `cloud:${conversationId || Date.now()}`;
+          try {
+            webChannel.emitCloudMessage(message, cloudThreadId, (event) => {
+              cloudClient!.sendStream({
+                conversationId,
+                event: event.type,
+                data: event.data,
+              });
+            });
+          } catch (err: any) {
+            cloudClient!.sendStream({
+              conversationId,
+              event: 'error',
+              data: { message: `Unable to process cloud chat message: ${err.message}` },
+            });
+          }
         }
       });
 

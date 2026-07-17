@@ -3,6 +3,23 @@ import type { ChannelMessage } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 
 type ApprovalResolver = () => void;
+type CloudEventHandler = (event: ChatEvent) => void;
+
+function normalizeStreamText(current: string, incoming: string): string {
+  if (!current) return incoming;
+  if (!incoming || incoming === current || current.endsWith(incoming)) return current;
+  if (incoming.startsWith(current)) return incoming;
+
+  let overlap = 0;
+  const max = Math.min(current.length, incoming.length);
+  for (let size = max; size > 0; size--) {
+    if (current.slice(-size) === incoming.slice(0, size)) {
+      overlap = size;
+      break;
+    }
+  }
+  return current + incoming.slice(overlap);
+}
 
 export interface ChatEvent {
   type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'loop_warning' | 'error';
@@ -42,6 +59,7 @@ export class WebChannel extends BaseChannel {
   private pendingPermModes: Map<string, ApprovalResolver> = new Map();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
+  private cloudEventHandlers: Map<string, CloudEventHandler> = new Map();
   private bypassPermissions = false;
   private restrictUser = false;
 
@@ -75,6 +93,17 @@ export class WebChannel extends BaseChannel {
   }
 
   private broadcast(event: ChatEvent): void {
+    const targetId = typeof event.data?.targetId === 'string' ? event.data.targetId : undefined;
+    if (targetId) {
+      const cloudHandler = this.cloudEventHandlers.get(targetId);
+      if (cloudHandler) {
+        cloudHandler(event);
+        if (event.type === 'text_done' || event.type === 'error') {
+          this.cloudEventHandlers.delete(targetId);
+        }
+      }
+    }
+
     for (const [, client] of this.sseClients) {
       client.send(event);
     }
@@ -118,11 +147,16 @@ export class WebChannel extends BaseChannel {
 
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     let fullText = '';
+    let emittedText = '';
     for await (const chunk of content) {
-      fullText += chunk;
+      const nextText = normalizeStreamText(emittedText, chunk);
+      const delta = nextText.slice(emittedText.length);
+      fullText = nextText;
+      emittedText = nextText;
+      if (!delta) continue;
       this.broadcast({
         type: 'text_delta',
-        data: { text: chunk, targetId },
+        data: { text: delta, targetId },
       });
     }
     return fullText;
@@ -270,6 +304,11 @@ export class WebChannel extends BaseChannel {
       timestamp: Date.now(),
     };
     this.emit(msg);
+  }
+
+  emitCloudMessage(content: string, threadId: string, onEvent: CloudEventHandler): void {
+    this.cloudEventHandlers.set(threadId, onEvent);
+    this.emitMessageInThread(content, threadId);
   }
 
   setBypassPermissions(enabled: boolean): void {

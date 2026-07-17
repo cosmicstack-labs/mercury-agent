@@ -118,6 +118,24 @@ export class MercuryCloudClient {
     }
   }
 
+  sendResponse(payload: { message: string; conversationId?: string; inReplyTo?: string }): void {
+    this.send({
+      type: 'agent.response',
+      agentId: this.agentId,
+      payload,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string }): void {
+    this.send({
+      type: 'agent.stream',
+      agentId: this.agentId,
+      payload,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   updateToken(token: string): void {
     this.token = token;
   }

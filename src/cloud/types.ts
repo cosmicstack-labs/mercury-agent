@@ -35,6 +35,8 @@ export type WSMessageType =
   | 'conversation.dump'
   | 'agent.error'
   | 'agent.message.relay'
+  | 'agent.response'
+  | 'agent.stream'
   | 'token.refreshed';
 
 export interface WSMessage {
