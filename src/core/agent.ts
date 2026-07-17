@@ -44,6 +44,7 @@ import {
   rejectTelegramPendingRequest,
   removeTelegramUser,
   saveConfig,
+  loadConfig,
   getActiveProviders,
   getDiscordAccessSummary,
   hasDiscordAdmins,
@@ -4455,10 +4456,13 @@ Is this productive iteration or a stuck loop?`,
   private async sendMemoryOverview(channel: any, channelId: string): Promise<void> {
     if (!this.userMemory) return;
     const summary = this.userMemory.getSummary();
+    const shareableCount = this.userMemory.countShareable();
+    const shareLearning = this.userMemory.isShareLearning();
     const lines = [
       `**Memory Overview**`,
       `Total memories: ${summary.total}`,
       `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+      `Shared learning: ${shareLearning ? 'ON' : 'OFF'} (${shareableCount} shareable)`,
     ];
     if (summary.profileSummary) {
       lines.push(`Profile: ${summary.profileSummary}`);
@@ -4483,11 +4487,14 @@ Is this productive iteration or a stuck loop?`,
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
         const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+        const shareLabel = this.userMemory!.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
         const action = await sel('Memory', [
           { value: 'overview', label: 'Overview' },
           { value: 'recent', label: 'Recent Memories' },
+          { value: 'shared', label: 'Shared Memories' },
           { value: 'search', label: 'Search' },
           { value: 'toggle', label: learningLabel },
+          { value: 'share', label: shareLabel },
           { value: 'clear', label: 'Clear All Memories' },
           { value: 'back', label: 'Back' },
         ]);
@@ -4516,6 +4523,23 @@ Is this productive iteration or a stuck loop?`,
           continue;
         }
 
+        if (action === 'shared') {
+          const shared = this.userMemory!.getShareable(20);
+          if (shared.length === 0) {
+            await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
+            continue;
+          }
+          const lines = [`**Shared Memories (${shared.length}):**`, ''];
+          for (const r of shared) {
+            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
+            lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
         if (action === 'search') {
           const query = await channel.prompt('Search memories: ');
           if (!query) continue;
@@ -4538,6 +4562,23 @@ Is this productive iteration or a stuck loop?`,
           const currentlyPaused = this.userMemory!.isLearningPaused();
           this.userMemory!.setLearningPaused(!currentlyPaused);
           await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
+          continue;
+        }
+
+        if (action === 'share') {
+          const currently = this.userMemory!.isShareLearning();
+          this.userMemory!.setShareLearning(!currently);
+          const cfg = loadConfig();
+          if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
+          cfg.memory.collaborativeKnowledge.shareLearning = !currently;
+          saveConfig(cfg);
+          const count = this.userMemory!.countShareable();
+          await channel.send(
+            currently
+              ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
+              : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
+            channelId,
+          );
           continue;
         }
 
