@@ -136,6 +136,15 @@ export class MercuryCloudClient {
     });
   }
 
+  sendResearchArtifact(payload: { artifactId: string; title?: string; markdown: string; conversationId?: string; topic?: string }): void {
+    this.send({
+      type: 'research.artifact',
+      agentId: this.agentId,
+      payload,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   updateToken(token: string): void {
     this.token = token;
   }

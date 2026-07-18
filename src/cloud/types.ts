@@ -40,6 +40,7 @@ export type WSMessageType =
   | 'agent.message.relay'
   | 'agent.response'
   | 'agent.stream'
+  | 'research.artifact'
   | 'token.refreshed';
 
 export interface WSMessage {

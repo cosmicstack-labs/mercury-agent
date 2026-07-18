@@ -91,6 +91,7 @@ export class CapabilityRegistry {
   private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
+  private researchModeGetter: (() => boolean) | null = null;
 
   constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
@@ -99,6 +100,14 @@ export class CapabilityRegistry {
     this.tokenBudget = tokenBudget;
     this.supervisor = supervisor;
     this.userMemory = userMemory;
+  }
+
+  setResearchModeGetter(getter: () => boolean): void {
+    this.researchModeGetter = getter;
+  }
+
+  isResearchMode(): boolean {
+    return this.researchModeGetter ? this.researchModeGetter() : false;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -237,7 +246,7 @@ export class CapabilityRegistry {
       logger.info('GitHub tools registered');
     }
 
-    this.tools.fetch_url = createFetchUrlTool();
+    this.tools.fetch_url = createFetchUrlTool({ isResearchMode: () => this.isResearchMode() });
     logger.info('Web fetch tool registered');
 
     if (this.supervisor) {

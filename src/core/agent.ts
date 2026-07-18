@@ -16,6 +16,7 @@ import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
+import { ResearchMode } from './research-mode.js';
 import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
@@ -302,6 +303,26 @@ const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
 const MAX_STALL_MS = 4 * 60 * 1000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
+/**
+ * Heuristic: does this message look like a deep-research request that would
+ * benefit from full research mode? Conservative — false negatives just fall
+ * through to a normal answer, so we prefer specificity over recall.
+ */
+function looksResearchy(text: string): boolean {
+  const t = text.toLowerCase();
+  if (t.length < 24) return false; // too short to be a research question
+  if (t.startsWith('/')) return false;
+
+  // Temporal / event research signals
+  const temporal = /\b(happened|occurr?ed|took place|what (did|do) .* (say|report|find)|recent|last (week|month|year|few)|(\d+)\s*(days?|weeks?|months?|years?) (ago|back|earlier)|today'?s news|this week|this month|this year)\b/;
+  // Deep / comparative / explain signals
+  const deep = /\b(research|investigate|deep dive|in[- ]depth|explain in detail|comprehensive (guide|overview|analysis)|compare (and )?contrast|state of|history of|causes? of|impact of|effects? of|timeline of|breakdown of|everything about)\b/;
+  // Factual lookup signals
+  const factual = /\b(latest|current state|what is .* (situation|status)|what are the (options|alternatives|risks|benefits))\b/;
+
+  return temporal.test(t) || deep.test(t) || factual.test(t);
+}
+
 export class Agent {
   readonly lifecycle: Lifecycle;
   readonly scheduler: Scheduler;
@@ -318,6 +339,7 @@ export class Agent {
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
+  readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
   private spotifyClient?: SpotifyClient;
   private skillBatcher: SkillBatcher | null = null;
@@ -342,7 +364,9 @@ export class Agent {
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
+    this.researchMode = new ResearchMode();
     this.saverMode = new SaverMode(config);
+    this.wireResearchModeToCapabilities();
     this.backgroundTasks = new BackgroundTaskManager();
 
     this.backgroundTasks.onGlobalComplete((task) => {
@@ -367,6 +391,10 @@ export class Agent {
     if (this.supervisor) {
       this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
     }
+  }
+
+  private wireResearchModeToCapabilities(): void {
+    this.capabilities.setResearchModeGetter(() => this.researchMode.isActive());
   }
 
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
@@ -412,6 +440,44 @@ export class Agent {
       return;
     }
 
+    // Research-y message prompt: when research mode is off and the message looks
+    // like a deep-research request, ask whether to run a full research pass.
+    const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
+    if (isUserMessage && !this.researchMode.isActive() && looksResearchy(trimmed)) {
+      this.promptResearchMode(msg).catch((err) => {
+        logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
+        this.messageQueue.push(msg);
+        this.processQueue();
+      });
+      return;
+    }
+
+    this.messageQueue.push(msg);
+    this.processQueue();
+  }
+
+  private async promptResearchMode(msg: ChannelMessage): Promise<void> {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel) {
+      this.messageQueue.push(msg);
+      this.processQueue();
+      return;
+    }
+
+    const explanation =
+      'Research mode will search the web, cross-check multiple sources, gather images, and produce a full research article as rich markdown. It runs longer than a quick answer and will not be killed early.';
+
+    const choice = await this.presentChoice(
+      `This looks like a research question. ${explanation}\n\nHow do you want to proceed?`,
+      ['Full research mode (deep, multi-source article)', 'Quick answer (normal conversation)'],
+      msg.channelId,
+      msg.channelType,
+    );
+
+    if (choice.toLowerCase().startsWith('full')) {
+      this.researchMode.setOn(msg.content.trim().slice(0, 120));
+      await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
+    }
     this.messageQueue.push(msg);
     this.processQueue();
   }
@@ -477,7 +543,7 @@ export class Agent {
     }
 
     if (trimmed === '/help') {
-      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /memory, /bg', msg.channelId);
+      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
       return;
     }
 
@@ -728,7 +794,7 @@ export class Agent {
       const elapsedSec = Math.round(elapsedMs / 1000);
       const stallSec = Math.round(stallMs / 1000);
 
-      if (stallMs >= MAX_STALL_MS && this.currentAbort && !this.currentAbort.signal.aborted) {
+      if (stallMs >= MAX_STALL_MS * this.researchMode.getStallMsMultiplier() && this.currentAbort && !this.currentAbort.signal.aborted) {
         logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
         this.currentAbort.abort();
         void channel.send(
@@ -1334,7 +1400,7 @@ export class Agent {
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
       const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
-      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS);
+      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const saverWasActive = this.saverMode.isActive();
 
       for (const provider of fallbackIterator) {
@@ -2209,6 +2275,10 @@ export class Agent {
     const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
     if (programmingSuffix) {
       prompt += programmingSuffix;
+    }
+    const researchSuffix = this.researchMode.getSystemPromptSuffix();
+    if (researchSuffix) {
+      prompt += researchSuffix;
     }
     const budgetStatus = this.tokenBudget.getStatusText();
     prompt += '\n\n' + budgetStatus;
@@ -3968,6 +4038,57 @@ Is this productive iteration or a stuck loop?`,
       }
 
       await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code workspace, /code agent <task>, /code off, /code toggle', channelId);
+      return true;
+    }
+
+    if (cmd.startsWith('/research')) {
+      const rawArgs = trimmed.slice('/research'.length).trim();
+
+      if (!rawArgs || rawArgs.toLowerCase() === 'status') {
+        await channel.send(this.researchMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'on') {
+        this.researchMode.setOn();
+        await channel.send(
+          'Research mode: **On**\nI will perform deep, multi-source web research and produce a full markdown research article. Long tasks are expected. Use `/research off` to exit.',
+          channelId,
+        );
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'off') {
+        this.researchMode.setOff();
+        await channel.send('Research mode: **Off**\nBack to normal conversation mode.', channelId);
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'toggle') {
+        const newState = this.researchMode.toggle();
+        await channel.send(`Research mode: **${newState === 'on' ? 'On' : 'Off'}**`, channelId);
+        return true;
+      }
+
+      // Treat remaining args as a topic + enable research mode
+      this.researchMode.setOn(rawArgs);
+      await channel.send(
+        `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
+        channelId,
+      );
+      // Enqueue the topic as a real user message so the agent immediately
+      // begins researching it, rather than only setting mode + topic and
+      // waiting for the user to repeat themselves.
+      const researchTopicMsg: ChannelMessage = {
+        id: `research-${Date.now().toString(36)}`,
+        channelId,
+        channelType: channelType as ChannelType,
+        senderId: 'user',
+        senderName: 'You',
+        content: rawArgs,
+        timestamp: Date.now(),
+      };
+      this.enqueueMessage(researchTopicMsg);
       return true;
     }
 

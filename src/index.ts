@@ -2678,6 +2678,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 event: event.type,
                 data: event.data,
               });
+
+              // When research mode produced a final article, also emit a
+              // research.artifact message so the Cloud dashboard can render it
+              // as a full research page (View Research).
+              if (
+                event.type === 'text_done' &&
+                agent.researchMode.isActive() &&
+                event.data &&
+                typeof event.data.fullText === 'string' &&
+                event.data.fullText.includes('# ')
+              ) {
+                const fullText = event.data.fullText as string;
+                const titleMatch = fullText.match(/^#\s+(.+)$/m);
+                cloudClient!.sendResearchArtifact({
+                  artifactId: `research-${conversationId || Date.now()}`,
+                  title: titleMatch ? titleMatch[1].trim() : undefined,
+                  markdown: fullText,
+                  conversationId,
+                  topic: agent.researchMode.getTopic() || undefined,
+                });
+                // Research mode produced its artifact; exit research mode so
+                // follow-ups in the same thread become refinements, not fresh
+                // full-research passes, unless the user re-enables it.
+                agent.researchMode.setOff();
+              }
             });
           } catch (err: any) {
             cloudClient!.sendStream({

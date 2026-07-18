@@ -158,6 +158,11 @@ export function getManual(): string {
     ['/code agent <task>', 'Delegate a coding task to a sub-agent in background'],
     ['/code off', 'Exit programming mode'],
     ['/code toggle', 'Cycle through: off → plan → execute → off'],
+    ['/research', 'Show research mode status'],
+    ['/research on', 'Enable deep research mode (web research + rich markdown article)'],
+    ['/research off', 'Exit research mode'],
+    ['/research toggle', 'Toggle research mode on/off'],
+    ['/research <topic>', 'Enable research mode for a specific topic'],
     ['/ws exit', 'Exit workspace IDE mode back to general chat'],
     ['/ws open <path>', 'Open a workspace directory in IDE mode'],
     ['/ws refresh', 'Refresh file tree + git status panel'],
@@ -298,6 +303,14 @@ export function getTelegramHelp(): string {
   lines.push('/code off — Exit programming mode');
   lines.push('/code toggle — Cycle: off → plan → execute → off');
   lines.push('/code agent <task> — Delegate coding to a sub-agent');
+  lines.push('');
+
+  lines.push('**Research Mode**');
+  lines.push('/research — Show current research mode status');
+  lines.push('/research on — Enable deep web research + rich markdown article');
+  lines.push('/research off — Exit research mode');
+  lines.push('/research toggle — Toggle research mode');
+  lines.push('/research <topic> — Enable research mode for a specific topic');
   lines.push('');
 
   lines.push('**Sub-Agents**');
