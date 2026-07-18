@@ -505,12 +505,17 @@ export class TelegramChannel extends BaseChannel {
     // Check all task-active keys since we have chatId not targetId
     const activeKey = this.findActiveTaskKey(chatId);
     if (activeKey) {
-      let full = '';
-      for await (const chunk of textStream) {
-        full += chunk;
+      this.startTypingLoop(chatId);
+      try {
+        let full = '';
+        for await (const chunk of textStream) {
+          full += chunk;
+        }
+        this.deferredResponses.set(activeKey, full);
+        return full;
+      } finally {
+        this.stopTypingLoop();
       }
-      this.deferredResponses.set(activeKey, full);
-      return full;
     }
 
     const STREAM_EDIT_INTERVAL = 1500;
