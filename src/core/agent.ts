@@ -750,9 +750,12 @@ export class Agent {
       const heartbeatText = `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`;
 
       // CLI: update one message in place instead of stacking new ones.
+      // Web/cloud: send a non-terminal heartbeat so the cloud response handler stays alive.
       // Other channels (Telegram): still send as separate messages.
       if (channel instanceof CLIChannel) {
         (channel as CLIChannel).sendHeartbeat(heartbeatText);
+      } else if (channel instanceof WebChannel) {
+        (channel as WebChannel).sendHeartbeat(heartbeatText, msg.channelId);
       } else {
         void channel.send(heartbeatText, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
@@ -2603,6 +2606,17 @@ Is this productive iteration or a stuck loop?`,
       }));
 
       const selected = await channel.presentChoicePrompt(question, options);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
+    }
+
+    if (channelType === 'web' && channel instanceof WebChannel) {
+      const options = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
+
+      const selected = await channel.presentChoicePrompt(question, options, channelId);
       const index = parseInt(selected, 10);
       return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }

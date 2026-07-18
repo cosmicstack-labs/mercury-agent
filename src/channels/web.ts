@@ -23,7 +23,7 @@ function normalizeStreamText(current: string, incoming: string): string {
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error';
+  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error';
   data?: Record<string, unknown>;
 }
 
@@ -291,6 +291,13 @@ export class WebChannel extends BaseChannel {
     this.broadcast({
       type: 'provider',
       data: { name, model, targetId },
+    });
+  }
+
+  sendHeartbeat(message: string, targetId?: string): void {
+    this.broadcast({
+      type: 'heartbeat',
+      data: { message, targetId },
     });
   }
 
