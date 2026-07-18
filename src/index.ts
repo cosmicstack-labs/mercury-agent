@@ -1119,6 +1119,8 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     ],
   );
 
+  let llmConfiguredByCloud = false;
+
   if (cloudChoice === 'cloud') {
     console.log('');
     console.log(chalk.dim('  Connecting to Mercury Cloud...'));
@@ -1137,12 +1139,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         console.log(chalk.dim(`    Agent ID: ${result.cloudConfig.agentId}`));
         console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
         console.log(chalk.dim(`    Model: ${result.model}`));
-        hr();
-        console.log('');
-        console.log(chalk.cyan('  Mercury Cloud is ready! Starting your agent...'));
-        console.log('');
-        await runAgent();
-        return;
+        llmConfiguredByCloud = true;
       }
     } catch (err: any) {
       console.log(chalk.red(`  ✗ Cloud connection failed: ${err.message || err}`));
@@ -1152,18 +1149,19 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     config.cloud.enabled = false;
   }
 
-  hr();
-  console.log('');
-  console.log(chalk.bold.white('  LLM Providers'));
-  if (isReconfig) {
-    console.log(chalk.dim('  Choose which providers to configure now. Existing values are shown where available.'));
-  } else {
-    console.log(chalk.dim('  Choose one or more providers. You can skip any provider by pressing Enter.'));
-    console.log(chalk.dim('  Press Enter to configure DeepSeek by default (free at platform.deepseek.com).'));
-  }
-  console.log('');
+  if (!llmConfiguredByCloud) {
+    hr();
+    console.log('');
+    console.log(chalk.bold.white('  LLM Providers'));
+    if (isReconfig) {
+      console.log(chalk.dim('  Choose which providers to configure now. Existing values are shown where available.'));
+    } else {
+      console.log(chalk.dim('  Choose one or more providers. You can skip any provider by pressing Enter.'));
+      console.log(chalk.dim('  Press Enter to configure DeepSeek by default (free at platform.deepseek.com).'));
+    }
+    console.log('');
 
-   while (true) {
+    while (true) {
     const selectedProviders = await chooseProvidersToConfigure(config, isReconfig);
     console.log('');
 
@@ -1487,6 +1485,10 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
     await chooseDefaultProvider(config);
     break;
+  }
+  } else {
+    console.log('');
+    console.log(chalk.dim('  Continuing with shared Mercury setup: channels, integrations, budget, and web dashboard.'));
   }
 
   hr();
