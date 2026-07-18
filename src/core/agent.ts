@@ -476,7 +476,11 @@ export class Agent {
 
     if (choice.toLowerCase().startsWith('full')) {
       this.researchMode.setOn(msg.content.trim().slice(0, 120));
-      await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
+      if (channel instanceof WebChannel) {
+        channel.sendHeartbeat('Research mode: On. Gathering sources and building the article now — this may take a while.', msg.channelId);
+      } else {
+        await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
+      }
     }
     this.messageQueue.push(msg);
     this.processQueue();
@@ -4072,10 +4076,14 @@ Is this productive iteration or a stuck loop?`,
 
       // Treat remaining args as a topic + enable research mode
       this.researchMode.setOn(rawArgs);
-      await channel.send(
-        `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
-        channelId,
-      );
+      if (channel instanceof WebChannel) {
+        channel.sendHeartbeat(`Research mode: On. Topic: ${rawArgs}. I will gather live sources and produce a full research article.`, channelId);
+      } else {
+        await channel.send(
+          `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
+          channelId,
+        );
+      }
       // Enqueue the topic as a real user message so the agent immediately
       // begins researching it, rather than only setting mode + topic and
       // waiting for the user to repeat themselves.
