@@ -1,6 +1,7 @@
 import type { WSMessage, WSMessageType } from './types.js';
 import { refreshToken } from './pairing.js';
 import { WebSocket } from 'ws';
+import { logger } from '../utils/logger.js';
 
 export type WSMessageHandler = (message: WSMessage) => void;
 
@@ -20,6 +21,7 @@ export class MercuryCloudClient {
   private shouldReconnect = true;
   private isRefreshing = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastRefreshFailureLogAt = 0;
 
   constructor(url: string, token: string, agentId: string, refreshTokenVal: string, apiUrl: string) {
     this.url = url;
@@ -210,8 +212,13 @@ export class MercuryCloudClient {
         this.connect();
       }
     } catch (err: any) {
-      // Don't silently swallow — surface the error so the user knows
-      console.error(`[Mercury Cloud] Token refresh failed: ${err.message}. Will retry on next LLM call.`);
+      // Automatic background refresh should never spam the interactive TUI.
+      // Keep diagnostics in logs, rate-limited, and retry on the next check/call.
+      const now = Date.now();
+      if (now - this.lastRefreshFailureLogAt > 10 * 60 * 1000) {
+        this.lastRefreshFailureLogAt = now;
+        logger.warn({ err: err?.message || String(err) }, 'Mercury Cloud background token refresh failed; will retry later');
+      }
     } finally {
       this.isRefreshing = false;
     }
