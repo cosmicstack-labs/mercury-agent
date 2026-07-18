@@ -2115,7 +2115,12 @@ export class Agent {
         // Simple responses (greetings, quick answers) don't need a banner
         const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
         if (isSubstantialTask && channel instanceof TelegramChannel) {
-          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
+          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup.
+          // Always queue the final answer explicitly; streaming normally already
+          // defers it, but non-streamed/fallback responses must not be dropped.
+          if (finalText && finalText.trim()) {
+            (channel as TelegramChannel).deferResponse(msg.channelId, finalText);
+          }
           const completionMeta = {
             provider: usedProvider?.name ?? 'unknown',
             model: usedProvider?.model ?? 'unknown',
@@ -2126,10 +2131,6 @@ export class Agent {
             budgetTotal: this.tokenBudget.getBudget(),
             budgetPercentage: this.tokenBudget.getUsagePercentage(),
           };
-          // If there's a non-streamed response that wasn't deferred, defer it now
-          if (!streamedText && finalText && finalText.trim()) {
-            // send() during active task already deferred it — nothing to do
-          }
           await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
         } else if (channel instanceof TelegramChannel) {
           // For non-substantial Telegram tasks: end task, flush deferred, clean up

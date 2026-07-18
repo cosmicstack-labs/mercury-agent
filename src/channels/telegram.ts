@@ -96,6 +96,14 @@ export class TelegramChannel extends BaseChannel {
     return text;
   }
 
+  /** Explicitly queue the final AI response to send after progress cleanup. */
+  deferResponse(targetId: string | undefined, content: string): void {
+    const key = targetId || 'notification';
+    if (content.trim()) {
+      this.deferredResponses.set(key, content);
+    }
+  }
+
   setOnPermissionMode(handler: (mode: PermissionMode, chatId: number) => void): void {
     this.onPermissionMode = handler;
   }
