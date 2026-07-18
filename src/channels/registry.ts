@@ -16,18 +16,34 @@ export class ChannelRegistry {
 
     if (config.channels.telegram.enabled && config.channels.telegram.botToken) {
       this.register('telegram', new TelegramChannel(config));
+    } else if (config.channels.telegram.botToken && !config.channels.telegram.enabled) {
+      logger.warn('Telegram channel has a bot token but is disabled. Run `mercury telegram enable` to re-enable it.');
+    } else if (config.channels.telegram.enabled && !config.channels.telegram.botToken) {
+      logger.warn('Telegram channel is enabled but no bot token is configured. Run `mercury doctor`.');
     }
 
     if (config.channels.signal.enabled && config.channels.signal.phoneNumber) {
       this.register('signal', new SignalChannel(config));
+    } else if (config.channels.signal.phoneNumber && !config.channels.signal.enabled) {
+      logger.warn('Signal channel has a phone number but is disabled. Run `mercury doctor` to re-enable it.');
+    } else if (config.channels.signal.enabled && !config.channels.signal.phoneNumber) {
+      logger.warn('Signal channel is enabled but no phone number is configured. Run `mercury doctor`.');
     }
 
     if (config.channels.discord.enabled && config.channels.discord.botToken) {
       this.register('discord', new DiscordChannel(config));
+    } else if (config.channels.discord.botToken && !config.channels.discord.enabled) {
+      logger.warn('Discord channel has a bot token but is disabled. Run `mercury doctor` to re-enable it.');
+    } else if (config.channels.discord.enabled && !config.channels.discord.botToken) {
+      logger.warn('Discord channel is enabled but no bot token is configured. Run `mercury doctor`.');
     }
 
     if (config.channels.slack.enabled && config.channels.slack.botToken) {
       this.register('slack', new SlackChannel(config));
+    } else if ((config.channels.slack.botToken || config.channels.slack.appToken) && !config.channels.slack.enabled) {
+      logger.warn('Slack channel has credentials but is disabled. Run `mercury doctor` to re-enable it.');
+    } else if (config.channels.slack.enabled && (!config.channels.slack.botToken || !config.channels.slack.appToken)) {
+      logger.warn('Slack channel is enabled but bot/app token credentials are incomplete. Run `mercury doctor`.');
     }
   }
 

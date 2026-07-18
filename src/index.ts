@@ -637,9 +637,21 @@ function printTelegramAccessState(config: MercuryConfig): void {
 
   console.log('');
   console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+  console.log(`  Enabled:         ${config.channels.telegram.enabled ? chalk.green('yes') : chalk.red('no')}`);
+  console.log(`  Bot Token:       ${config.channels.telegram.botToken ? chalk.green('configured') : chalk.red('missing')}`);
   console.log(`  Admins:          ${admins.length > 0 ? chalk.green(admins.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Members:         ${members.length > 0 ? chalk.green(members.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+
+  if (!config.channels.telegram.enabled && config.channels.telegram.botToken) {
+    console.log(chalk.yellow('  Warning:         Telegram has a bot token but is disabled. Run `mercury telegram enable`.'));
+  }
+  if (config.channels.telegram.enabled && !config.channels.telegram.botToken) {
+    console.log(chalk.yellow('  Warning:         Telegram is enabled but has no bot token. Run `mercury doctor`.'));
+  }
+  if (config.channels.telegram.enabled && config.channels.telegram.botToken && admins.length === 0 && pending.length === 0) {
+    console.log(chalk.yellow('  Pairing:         Send /start to the bot, then run `mercury telegram approve <pairing-code>`.'));
+  }
 }
 
 function formatDiscordUser(user: {
@@ -3265,6 +3277,42 @@ telegramCmd
     const config = loadConfig();
     console.log('');
     printTelegramAccessState(config);
+    console.log('');
+  });
+
+telegramCmd
+  .command('enable')
+  .description('Enable Telegram channel if a bot token is configured')
+  .action(() => {
+    const config = loadConfig();
+    if (!config.channels.telegram.botToken) {
+      console.log('');
+      console.log(chalk.red('  Telegram bot token is missing. Run `mercury doctor` to configure Telegram first.'));
+      console.log('');
+      return;
+    }
+
+    config.channels.telegram.enabled = true;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Telegram channel enabled.'));
+    if (getTelegramApprovedUsers(config).length === 0) {
+      console.log(chalk.dim('  Send /start to the bot, then approve the pairing code with `mercury telegram approve <code>`.'));
+    }
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+telegramCmd
+  .command('disable')
+  .description('Disable Telegram channel without removing its bot token or access list')
+  .action(() => {
+    const config = loadConfig();
+    config.channels.telegram.enabled = false;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Telegram channel disabled.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
     console.log('');
   });
 
