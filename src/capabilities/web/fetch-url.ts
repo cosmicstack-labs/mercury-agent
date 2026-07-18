@@ -3,7 +3,20 @@ import { z } from 'zod';
 
 const MAX_CONTENT_LENGTH = 15000;
 
-function stripHtml(html: string, preserveImages = false): string {
+function resolveUrl(src: string, baseUrl: string): string {
+  try {
+    return new URL(src, baseUrl).href;
+  } catch {
+    return src;
+  }
+}
+
+function extractSrcsetUrl(srcset: string): string | null {
+  const first = srcset.split(',')[0]?.trim().split(/\s+/)[0];
+  return first || null;
+}
+
+function stripHtml(html: string, preserveImages = false, pageUrl = ''): string {
   let text = html;
 
   text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -29,9 +42,23 @@ function stripHtml(html: string, preserveImages = false): string {
         return m ? m[1] : null;
       };
       let src = getAttr('src') || getAttr('data-src') || getAttr('data-lazy-src') || '';
+      if (!src) {
+        const srcset = getAttr('srcset') || getAttr('data-srcset');
+        if (srcset) {
+          const extracted = extractSrcsetUrl(srcset);
+          if (extracted) src = extracted;
+        }
+      }
       const alt = getAttr('alt') || '';
       if (!src || /1x1|pixel|spacer|blank/i.test(src)) return '';
+      if (pageUrl) src = resolveUrl(src, pageUrl);
       return `\n\n![${alt}](${src})\n\n`;
+    });
+    text = text.replace(/<source[^>]*srcset="([^"]*)"[^>]*>/gi, (match, srcset: string) => {
+      const src = extractSrcsetUrl(srcset);
+      if (!src || /1x1|pixel|spacer|blank/i.test(src)) return '';
+      const resolved = pageUrl ? resolveUrl(src, pageUrl) : src;
+      return `\n\n![](${resolved})\n\n`;
     });
   } else {
     text = text.replace(/<img[^>]*alt="([^"]*)"[^>]*>/gi, '[image: $1]');
@@ -59,7 +86,7 @@ function stripHtml(html: string, preserveImages = false): string {
 
 export function createFetchUrlTool(opts: { isResearchMode: () => boolean } = { isResearchMode: () => false }) {
   return tool({
-    description: 'Fetch a URL and return its content as markdown. In research mode, images from the page are preserved as ![alt](url) so they can be embedded in research articles. Useful for reading documentation, news articles, APIs, or web pages.',
+    description: 'Fetch a URL and return its content as markdown. In research mode, images from the page are preserved as ![alt](url) with absolute URLs so they can be embedded in research articles. Useful for reading documentation, news articles, APIs, or web pages.',
     inputSchema: zodSchema(z.object({
       url: z.string().describe('The URL to fetch'),
       format: z.enum(['text', 'markdown']).optional().describe('Output format (default: markdown)'),
@@ -102,7 +129,7 @@ export function createFetchUrlTool(opts: { isResearchMode: () => boolean } = { i
         }
 
         if (contentType.includes('text/html') && outputFormat === 'markdown') {
-          const text = stripHtml(body, preserveImages);
+          const text = stripHtml(body, preserveImages, url);
           return text.length > MAX_CONTENT_LENGTH
             ? text.slice(0, MAX_CONTENT_LENGTH) + '\n... (truncated)'
             : text;
