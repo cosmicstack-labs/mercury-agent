@@ -41,6 +41,10 @@ export class TelegramChannel extends BaseChannel {
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
   private pendingChoices: Map<string, ChoiceResolver> = new Map();
+  private processedMessages = new Map<string, number>();
+  private static readonly DEDUP_TTL = 5 * 60_000;
+  private static readonly DEDUP_MAX_SIZE = 10_000;
+  private dedupCleanupInterval: NodeJS.Timeout | null = null;
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
@@ -136,6 +140,16 @@ export class TelegramChannel extends BaseChannel {
       const command = this.getCommandName(text);
 
       if (!userId) return;
+
+      const dedupKey = `${chatId}:${ctx.message.message_id}`;
+      if (this.processedMessages.has(dedupKey)) {
+        logger.debug({ chatId, messageId: ctx.message.message_id }, 'Telegram: dedup skipping message');
+        return;
+      }
+      this.processedMessages.set(dedupKey, Date.now());
+      if (this.processedMessages.size > TelegramChannel.DEDUP_MAX_SIZE) {
+        this.cleanupDedup();
+      }
 
       if (ctx.chat.type !== 'private') {
         await this.sendDirectMessage(chatId, 'This bot is only available in private one-to-one chats.');
@@ -267,6 +281,8 @@ export class TelegramChannel extends BaseChannel {
 
     this.bot = bot;
 
+    this.dedupCleanupInterval = setInterval(() => this.cleanupDedup(), 30_000);
+
     // Start long-polling in the background.
     // bot.start() blocks until the first getUpdates succeeds, which can take
     // 30-40s on slow networks. Don't block Mercury startup — let it connect
@@ -320,6 +336,10 @@ export class TelegramChannel extends BaseChannel {
     this.bot?.stop();
     this.ready = false;
     this.stopTypingLoop();
+    if (this.dedupCleanupInterval) {
+      clearInterval(this.dedupCleanupInterval);
+      this.dedupCleanupInterval = null;
+    }
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
@@ -1689,5 +1709,14 @@ export class TelegramChannel extends BaseChannel {
       return { chatId };
     }
     return null;
+  }
+
+  private cleanupDedup(): void {
+    const now = Date.now();
+    for (const [key, ts] of this.processedMessages) {
+      if (now - ts > TelegramChannel.DEDUP_TTL) {
+        this.processedMessages.delete(key);
+      }
+    }
   }
 }
