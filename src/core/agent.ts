@@ -6,7 +6,7 @@ import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import type { ChannelRegistry } from '../channels/registry.js';
-import type { MercuryConfig } from '../utils/config.js';
+import type { MercuryConfig, ProviderName } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
@@ -941,7 +941,12 @@ export class Agent {
     }));
   }
 
-  async setChannelProviderOverride(channelId: string, providerName: string, modelName?: string): Promise<{ ok: boolean; message: string; provider?: string; model?: string }> {
+  async setChannelProviderOverride(
+    channelId: string,
+    providerName: string,
+    modelName?: string,
+    options: { persist?: boolean } = {},
+  ): Promise<{ ok: boolean; message: string; provider?: string; model?: string }> {
     const active = getActiveProviders(this.config);
     const config = active.find((provider) => provider.name === providerName);
     if (!config) {
@@ -954,7 +959,21 @@ export class Agent {
     }
 
     this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
-    return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.`, provider: providerName, model: provider.getModel() };
+
+    if (options.persist && providerName in this.config.providers) {
+      const providerKey = providerName as ProviderName;
+      const providerConfig = this.config.providers[providerKey];
+      providerConfig.model = provider.getModel();
+      providerConfig.enabled = true;
+      if (providerName === 'mercuryCloud') {
+        this.config.providers.default = 'mercuryCloud';
+      }
+      this.providers.set(providerName, provider);
+      saveConfig(this.config);
+    }
+
+    const saved = options.persist ? ' Saved as the default for future sessions.' : '';
+    return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.${saved}`, provider: providerName, model: provider.getModel() };
   }
 
   private async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {

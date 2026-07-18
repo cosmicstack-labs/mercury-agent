@@ -2659,7 +2659,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             return;
           }
 
-          const result = await agent.setChannelProviderOverride(cloudThreadId, provider, model);
+          const result = await agent.setChannelProviderOverride(cloudThreadId, provider, model, { persist: true });
           cloudClient!.sendStream({
             conversationId,
             event: result.ok ? 'model_selected' : 'error',
