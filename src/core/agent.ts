@@ -1217,6 +1217,39 @@ export class Agent {
           });
           messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
         }
+
+        // Local-first, then pool: query the cloud SharedMemoryPool for additional
+        // context the second brain didn't surface. Gated by config, fails open
+        // (any error → proceed with local-only context). 5-min cache per query.
+        const ck = this.config.memory.collaborativeKnowledge;
+        const cloud = this.config.cloud;
+        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl) {
+          try {
+            const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
+            const localSummaries = memoryContext.records.map((r) => r.summary);
+            const poolHits = await searchPool(
+              cloud.apiUrl,
+              cloud.jwt,
+              cloud.refreshToken,
+              msg.content,
+              { limit: 10 },
+              (newJwt, newRefresh) => {
+                cloud.jwt = newJwt;
+                cloud.refreshToken = newRefresh;
+                this.config.providers.mercuryCloud.apiKey = newJwt;
+                saveConfig(this.config);
+              },
+            );
+            const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+            const poolBlock = formatPoolContextBlock(deduped, 1500);
+            if (poolBlock) {
+              messages.push({ role: 'user', content: poolBlock });
+              messages.push({ role: 'assistant', content: 'Noted. I\'ll use this shared context.' });
+            }
+          } catch (err) {
+            logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
+          }
+        }
       } else {
         const relevantFacts = this.longTerm.search(msg.content, 3);
         if (relevantFacts.length > 0) {
