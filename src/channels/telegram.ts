@@ -42,6 +42,7 @@ export class TelegramChannel extends BaseChannel {
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
+  private statusUpdateQueues = new Map<string, Promise<void>>();
   private stepCounters = new Map<string, number>();
   private stepHistory = new Map<string, string[]>();
   private statusText = new Map<string, string>();
@@ -1361,6 +1362,22 @@ export class TelegramChannel extends BaseChannel {
   }
 
   private async updateStatusMessage(text: string, targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const previous = this.statusUpdateQueues.get(key) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => this.updateStatusMessageNow(text, targetId));
+    this.statusUpdateQueues.set(key, next);
+    try {
+      await next;
+    } finally {
+      if (this.statusUpdateQueues.get(key) === next) {
+        this.statusUpdateQueues.delete(key);
+      }
+    }
+  }
+
+  private async updateStatusMessageNow(text: string, targetId?: string): Promise<void> {
     const chatIds = this.resolveTargetChatIds(targetId);
     if (chatIds.length === 0 || !this.bot) return;
 
@@ -1374,7 +1391,13 @@ export class TelegramChannel extends BaseChannel {
         try {
           await this.bot.api.editMessageText(chatId, existingMsgId, html, { parse_mode: 'HTML' });
           return;
-        } catch {
+        } catch (err: any) {
+          const description = err?.description || err?.message || '';
+          if (String(description).includes('message is not modified')) {
+            return;
+          }
+          await this.unpinStatusMessage(targetId);
+          await this.bot.api.deleteMessage(chatId, existingMsgId).catch(() => {});
           this.statusMessageIds.delete(key);
         }
       }
@@ -1395,6 +1418,10 @@ export class TelegramChannel extends BaseChannel {
 
   private async deleteStatusMessage(targetId?: string): Promise<void> {
     const key = targetId || 'notification';
+    const pendingUpdate = this.statusUpdateQueues.get(key);
+    if (pendingUpdate) {
+      await pendingUpdate.catch(() => {});
+    }
     const msgId = this.statusMessageIds.get(key);
     if (msgId && this.bot) {
       // Unpin before deleting if this was pinned
@@ -1501,35 +1528,8 @@ export class TelegramChannel extends BaseChannel {
   }
 
   async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
-    const secs = Math.floor(elapsedMs / 1000);
-    const mins = Math.floor(secs / 60);
-    const remSecs = secs % 60;
-    const timeStr = mins > 0 ? `${mins}m ${remSecs}s` : `${secs}s`;
-    const stepsStr = stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? 's' : ''}` : '';
-    const parts = [stepsStr, timeStr].filter(Boolean).join(' · ');
-
     const key = targetId || 'notification';
-    const history = this.stepHistory.get(key) || [];
-    const recentHistory = history.slice(-5);
-
-    const lines = [
-      `✅ **Task complete** (${parts})`,
-    ];
-
-    if (meta) {
-      const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-      lines.push(`☿ ${meta.model} via ${meta.provider} · ${formatTokens(meta.totalTokens)} tokens`);
-      const pct = Math.round(meta.budgetPercentage);
-      const barLen = 15;
-      const filled = Math.round((pct / 100) * barLen);
-      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-      lines.push(`Budget: ${bar} ${pct}% (${formatTokens(meta.budgetUsed)} / ${formatTokens(meta.budgetTotal)})`);
-    }
-
-    if (recentHistory.length > 0) {
-      lines.push('');
-      lines.push(...recentHistory.map(h => `  ✓ ${h}`));
-    }
+    logger.info({ elapsedMs, stepCount, provider: meta?.provider, model: meta?.model }, 'Telegram task complete');
 
     // Clean up: unpin + delete the status card, clean up ephemeral messages
     await this.deleteStatusMessage(targetId);
@@ -1554,16 +1554,6 @@ export class TelegramChannel extends BaseChannel {
             await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
           }
         }
-      }
-    }
-
-    // Send the completion banner as a separate message
-    const html = mdToTelegram(lines.join('\n'));
-    for (const chatId of chatIds) {
-      try {
-        await this.bot?.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
-      } catch {
-        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
       }
     }
 
