@@ -2716,49 +2716,14 @@ Is this productive iteration or a stuck loop?`,
     }
 
     if (channelType === 'telegram' && channel instanceof TelegramChannel) {
-      const { InlineKeyboard } = await import('grammy');
-      const kb = new InlineKeyboard();
-      for (let i = 0; i < choices.length; i++) {
-        const callbackData = `choice_${Date.now()}_${i}`;
-        kb.text(choices[i].slice(0, 60), callbackData);
-        if (i < choices.length - 1 && (i + 1) % 2 === 0) {
-          kb.row();
-        }
-      }
+      const options = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
 
-      return new Promise<string>((resolve) => {
-        const timeout = setTimeout(() => {
-          (channel as any).pendingApprovals?.delete(`choice_timeout_${question}`);
-          resolve(choices[0]);
-        }, 120000);
-
-        channel.send(question, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-
-        const tgBot = (channel as any).bot;
-        if (tgBot) {
-          const chatId = channelId.startsWith('telegram:')
-            ? Number(channelId.split(':')[1])
-            : Number(channelId);
-
-          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch((e: any) => logger.warn({ e }, 'channel send failed'));
-
-          const handler = async (ctx: any) => {
-            const data = ctx.callbackQuery?.data;
-            if (!data || !data.startsWith('choice_')) return;
-            const parts = data.split('_');
-            if (parts.length < 3) return;
-            const index = parseInt(parts[2], 10);
-            if (isNaN(index)) return;
-            clearTimeout(timeout);
-            try { await ctx.answerCallbackQuery(); } catch {}
-            resolve(choices[index]);
-          };
-
-          if ((channel as any).pendingCallbacks) {
-            (channel as any).pendingCallbacks.push(handler);
-          }
-        }
-      });
+      const selected = await channel.presentChoicePrompt(question, options, channelId);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
 
     await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));

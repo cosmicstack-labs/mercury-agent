@@ -31,6 +31,7 @@ const ACCESS_ACTION_PREFIX = 'tg_access';
 const MEMORY_ACTION_PREFIX = 'tg_memory';
 
 type ApprovalResolver = () => void;
+type ChoiceResolver = (value: string) => void;
 
 export class TelegramChannel extends BaseChannel {
   readonly type = 'telegram' as const;
@@ -39,6 +40,7 @@ export class TelegramChannel extends BaseChannel {
   private typingInterval: NodeJS.Timeout | null = null;
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
+  private pendingChoices: Map<string, ChoiceResolver> = new Map();
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
@@ -229,6 +231,21 @@ export class TelegramChannel extends BaseChannel {
 
       if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
         await this.handleMemoryCallback(ctx, data);
+        return;
+      }
+
+      if (data.startsWith('choice:')) {
+        const [, id, value] = data.split(':');
+        const resolver = id ? this.pendingChoices.get(id) : undefined;
+        if (!resolver) {
+          await ctx.answerCallbackQuery({ text: 'Expired' });
+          return;
+        }
+
+        this.pendingChoices.delete(id);
+        resolver(value ?? '');
+        await ctx.answerCallbackQuery({ text: 'Selected' });
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, 'telegram editMessageReplyMarkup failed'));
         return;
       }
 
@@ -637,6 +654,40 @@ export class TelegramChannel extends BaseChannel {
         this.pendingApprovals.delete(`${id}:no`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve('no');
+      }, 120_000);
+    });
+  }
+
+  async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>, targetId?: string): Promise<string> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const chatId = chatIds[0];
+    if (!chatId || !this.bot) return options[0]?.value || '';
+
+    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const keyboard = new InlineKeyboard();
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      keyboard.text(option.label.slice(0, 60), `choice:${id}:${option.value}`);
+      if (i < options.length - 1 && (i + 1) % 2 === 0) {
+        keyboard.row();
+      }
+    }
+
+    const html = mdToTelegram(question);
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: keyboard });
+      this.trackEphemeral(targetId, msg.message_id);
+    } catch {
+      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), { reply_markup: keyboard });
+      this.trackEphemeral(targetId, msg.message_id);
+    }
+
+    return new Promise((resolve) => {
+      this.pendingChoices.set(id, resolve);
+      setTimeout(() => {
+        if (!this.pendingChoices.has(id)) return;
+        this.pendingChoices.delete(id);
+        resolve(options[0]?.value || '');
       }, 120_000);
     });
   }
