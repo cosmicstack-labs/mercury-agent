@@ -4,6 +4,22 @@ import { createHash } from 'node:crypto';
 
 let cachedMachineId: string | null = null;
 
+export type PairingFailureDetails = {
+  code?: string;
+  tier?: string;
+  used?: number;
+  limit?: number;
+  nextTier?: string | null;
+  upgradeUrl?: string;
+};
+
+export class PairingFailureError extends Error {
+  constructor(message: string, public readonly details: PairingFailureDetails = {}) {
+    super(message);
+    this.name = 'PairingFailureError';
+  }
+}
+
 export function getMachineId(): string {
   if (cachedMachineId) return cachedMachineId;
 
@@ -61,7 +77,7 @@ export async function pollPairingComplete(
 
       if (res.status === 200) {
         consecutiveErrors = 0;
-        const data = await res.json() as PairingResult & { status?: string; error?: string };
+        const data = await res.json() as PairingResult & PairingFailureDetails & { status?: string; error?: string };
 
         // Success — has tokens and agentId
         if (data.jwt && data.refreshToken && data.agentId) {
@@ -70,7 +86,7 @@ export async function pollPairingComplete(
 
         // Check for explicit failure from the server
         if (data.status === 'failed' && data.error) {
-          throw new Error(`Pairing failed: ${data.error}`);
+          throw new PairingFailureError(data.error, data);
         }
 
         // 200 with pending/approved/completing — keep polling
@@ -98,7 +114,7 @@ export async function pollPairingComplete(
       }
     } catch (err) {
       // Re-throw explicit errors (not found, failed, etc.)
-      if (err instanceof Error && (err.message.includes('not found') || err.message.includes('Pairing failed'))) {
+      if (err instanceof PairingFailureError || err instanceof Error && (err.message.includes('not found') || err.message.includes('Pairing failed'))) {
         throw err;
       }
 

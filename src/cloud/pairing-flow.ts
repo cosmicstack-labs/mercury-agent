@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { exec } from 'node:child_process';
 import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
-import { startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
+import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
 import type { CloudConfig } from './types.js';
 
 export async function runCloudPairingFlow(
@@ -28,10 +28,25 @@ export async function runCloudPairingFlow(
     result = await pollPairingComplete(apiUrl, code);
   } catch (err: any) {
     console.log('');
-    console.log(chalk.red(`  ✗ ${err.message}`));
+    console.log(chalk.red(`  ✗ Pairing failed: ${err.message}`));
+    if (err instanceof PairingFailureError && err.details.code === 'AGENT_LIMIT_REACHED') {
+      const nextTier = err.details.nextTier ? err.details.nextTier.charAt(0).toUpperCase() + err.details.nextTier.slice(1) : null;
+      if (typeof err.details.used === 'number' && typeof err.details.limit === 'number') {
+        console.log(chalk.yellow(`    Agent capacity: ${err.details.used} of ${err.details.limit} slots used`));
+      }
+      if (nextTier && err.details.upgradeUrl) {
+        console.log(chalk.white(`    Upgrade to ${nextTier} to connect another agent:`));
+        console.log(chalk.cyan(`    ${err.details.upgradeUrl}`));
+        console.log(chalk.dim('    After upgrading, run `mercury cloud connect` again.'));
+      } else {
+        console.log(chalk.white('    Remove an existing agent from Mercury Cloud, then run `mercury cloud connect` again.'));
+      }
+    }
     console.log('');
-    console.log(chalk.dim('  If the browser did not open automatically, copy this URL:'));
-    console.log(chalk.cyan(`  ${pairingUrl}`));
+    if (!(err instanceof PairingFailureError && err.details.code === 'AGENT_LIMIT_REACHED')) {
+      console.log(chalk.dim('  If the browser did not open automatically, copy this URL:'));
+      console.log(chalk.cyan(`  ${pairingUrl}`));
+    }
     return null;
   }
 
