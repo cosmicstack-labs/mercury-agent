@@ -154,6 +154,10 @@ export interface MercuryConfig {
     collaborativeKnowledge?: {
       /** When true, new memories extracted via remember() are marked shareable. */
       shareLearning?: boolean;
+      /** When true, the agent queries the cloud shared pool for additional
+       *  context after retrieving from its local second brain. Defaults to
+       *  true when the agent is paired with Mercury Cloud. */
+      poolSearch?: boolean;
     };
   };
   heartbeat: {
@@ -377,6 +381,7 @@ export function getDefaultConfig(): MercuryConfig {
       },
       collaborativeKnowledge: {
         shareLearning: getEnvBool('SHARE_LEARNING', false),
+        poolSearch: getEnvBool('POOL_SEARCH', true),
       },
     },
     heartbeat: {

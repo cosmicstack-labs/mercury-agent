@@ -1245,6 +1245,39 @@ export class Agent {
           });
           messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
         }
+
+        // Local-first, then pool: query the cloud SharedMemoryPool for additional
+        // context the second brain didn't surface. Gated by config, fails open
+        // (any error → proceed with local-only context). 5-min cache per query.
+        const ck = this.config.memory.collaborativeKnowledge;
+        const cloud = this.config.cloud;
+        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl) {
+          try {
+            const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
+            const localSummaries = memoryContext.records.map((r) => r.summary);
+            const poolHits = await searchPool(
+              cloud.apiUrl,
+              cloud.jwt,
+              cloud.refreshToken,
+              msg.content,
+              { limit: 10 },
+              (newJwt, newRefresh) => {
+                cloud.jwt = newJwt;
+                cloud.refreshToken = newRefresh;
+                this.config.providers.mercuryCloud.apiKey = newJwt;
+                saveConfig(this.config);
+              },
+            );
+            const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+            const poolBlock = formatPoolContextBlock(deduped, 1500);
+            if (poolBlock) {
+              messages.push({ role: 'user', content: poolBlock });
+              messages.push({ role: 'assistant', content: 'Noted. I\'ll use this shared context.' });
+            }
+          } catch (err) {
+            logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
+          }
+        }
       } else {
         const relevantFacts = this.longTerm.search(msg.content, 3);
         if (relevantFacts.length > 0) {
@@ -2542,7 +2575,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         model: provider.getModelInstance(),
         system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
 
-Each candidate: { type, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
+Each candidate: { type, categories, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
 
 TYPE DEFINITIONS (pick the single most specific one):
 - identity: who the user IS — their name, role, job title, self-description
@@ -2555,6 +2588,18 @@ TYPE DEFINITIONS (pick the single most specific one):
 - constraint: limitations, rules they follow, things they avoid
 - episode: notable one-time events worth remembering
 
+CATEGORIES (pick 1-3 domain buckets that best fit this memory):
+- personal: the user's private life, non-work
+- health: medical, physical, mental wellbeing
+- family: family members, family relationships
+- work: job, professional, career
+- finance: money, spending, investments
+- technical: programming, tools, engineering
+- education: learning, study, courses
+- social: friends, social life, community
+- travel: trips, places, geography
+- general: anything that doesn't fit the above
+
 RULES:
 - Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
 - If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
@@ -2562,6 +2607,7 @@ RULES:
 - For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
 - Only extract specific, durable, user-specific information.
 - Do NOT extract trivial observations, greetings, or assistant behavior.
+- "categories" must be an array of 1-3 lowercase strings from the list above. If none fit, suggest a new single-word lowercase category.
 - Output pure JSON array, no markdown fences.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
@@ -2585,6 +2631,7 @@ RULES:
 
       let candidates: Array<{
         type: string;
+        categories?: string[];
         summary: string;
         detail?: string;
         evidenceKind?: string;
@@ -2606,6 +2653,7 @@ RULES:
           .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
+          categories: ['general'],
           summary: f,
           confidence: 0.75,
           importance: 0.7,
@@ -2618,15 +2666,27 @@ RULES:
       const typed = candidates
         .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
         .filter(c => validTypes.includes(c.type))
-        .map(c => ({
-          type: c.type as any,
-          summary: c.summary,
-          detail: c.detail,
-          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-        }));
+        .map(c => {
+          // Normalise categories: must be array of strings, 1-3, lowercase, trimmed.
+          let cats: string[] = ['general'];
+          if (Array.isArray(c.categories) && c.categories.length > 0) {
+            const cleaned = c.categories
+              .map((cat: unknown) => String(cat).trim().toLowerCase())
+              .filter((cat: string) => cat.length > 0)
+              .slice(0, 3);
+            if (cleaned.length > 0) cats = cleaned;
+          }
+          return {
+            type: c.type as any,
+            categories: cats,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+          };
+        });
 
       if (typed.length > 0) {
         const remembered = this.userMemory.remember(typed, 'conversation');
