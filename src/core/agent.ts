@@ -347,6 +347,7 @@ export class Agent {
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
   private titleGenerationInFlight = new Set<string>();
+  private sessionSyncEnabled = false;
 
   constructor(
     private config: MercuryConfig,
@@ -395,6 +396,14 @@ export class Agent {
     if (this.supervisor) {
       this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
     }
+  }
+
+  setSessionSyncEnabled(enabled: boolean): void {
+    this.sessionSyncEnabled = enabled;
+  }
+
+  isSessionSyncEnabled(): boolean {
+    return this.sessionSyncEnabled;
   }
 
   private wireResearchModeToCapabilities(): void {
@@ -4685,6 +4694,26 @@ Is this productive iteration or a stuck loop?`,
       if (!argument || argument.toLowerCase() === 'current') {
         const current = this.sessions.getByBinding(channelType, bindingId);
         await channel.send(current ? `Current session: ${format(current)}\n\n${transcript(current)}` : 'No current session. Use /session new.', channelId);
+        return;
+      }
+      if (argument.toLowerCase().startsWith('delete ')) {
+        const session = this.sessions.resolve(argument.slice('delete '.length).trim());
+        const wasCurrent = this.sessions.getByBinding(channelType, bindingId)?.id === session.id;
+        const confirmed = await channel.askToContinue(
+          `Permanently delete ${format(session)} and all ${session.messages.length} messages everywhere? This cannot be undone.`,
+          channelId,
+        );
+        if (!confirmed) {
+          await channel.send('Session deletion cancelled.', channelId);
+          return;
+        }
+        if (this.sessionSyncEnabled) this.sessions.markDeleted(session.id);
+        else this.sessions.deletePermanently(session.id);
+        const replacement = wasCurrent ? this.sessions.create({ binding: { channelType, externalConversationId: bindingId } }) : null;
+        await channel.send(
+          `Deleted session ${session.alias} [${session.shortId}].${this.sessionSyncEnabled ? ' Cloud deletion is queued.' : ''}${replacement ? ` New session: ${format(replacement)}` : ''}`,
+          channelId,
+        );
         return;
       }
       if (argument.toLowerCase().startsWith('archive ')) {

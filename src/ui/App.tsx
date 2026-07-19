@@ -110,6 +110,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/session current',
     '/session ',
     '/session archive ',
+    '/session delete ',
     '/status',
     '/progress',
     '/menu',

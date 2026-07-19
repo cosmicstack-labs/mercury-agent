@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getMercuryHome, getMemoryDir } from '../utils/config.js';
@@ -95,9 +95,9 @@ export class SessionRepository {
     return this.get(id);
   }
 
-  list(options: { includeArchived?: boolean } = {}): Session[] {
+  list(options: { includeArchived?: boolean; includeDeleted?: boolean } = {}): Session[] {
     return this.index.sessions
-      .filter((entry) => options.includeArchived || entry.status === 'active')
+      .filter((entry) => entry.status === 'active' || (options.includeArchived && entry.status === 'archived') || (options.includeDeleted && entry.status === 'deleted'))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((entry) => this.readSession(entry.id));
   }
@@ -218,8 +218,53 @@ export class SessionRepository {
     return this.get(session.id);
   }
 
+  markDeleted(ref: string): Session {
+    const session = this.get(ref);
+    if (session.status !== 'deleted') {
+      session.status = 'deleted';
+      session.messages = [];
+      session.bindings = [];
+      for (const [key, id] of Object.entries(this.index.bindings)) {
+        if (id === session.id) delete this.index.bindings[key];
+      }
+      this.touchAndWrite(session);
+      this.writeIndex();
+      this.notifyMutation();
+    }
+    return this.get(session.id);
+  }
+
+  deletePermanently(ref: string): Session {
+    const session = this.get(ref);
+    const previousSessions = this.index.sessions;
+    const previousBindings = this.index.bindings;
+    this.index.sessions = this.index.sessions.filter((entry) => entry.id !== session.id);
+    this.index.bindings = Object.fromEntries(
+      Object.entries(this.index.bindings).filter(([, id]) => id !== session.id),
+    );
+    try {
+      // Publish the index first so readers can never resolve a removed session file.
+      this.writeIndex();
+    } catch (error) {
+      this.index.sessions = previousSessions;
+      this.index.bindings = previousBindings;
+      throw error;
+    }
+    const path = join(this.rootDir, `${session.id}.json`);
+    if (existsSync(path)) unlinkSync(path);
+    this.notifyMutation();
+    return session;
+  }
+
+  purgeDeleted(sessionIds: string[]): void {
+    for (const id of new Set(sessionIds)) {
+      const entry = this.index.sessions.find((session) => session.id === id);
+      if (entry?.status === 'deleted') this.deletePermanently(id);
+    }
+  }
+
   dump(): Session[] {
-    return this.list({ includeArchived: true });
+    return this.list({ includeArchived: true, includeDeleted: true });
   }
 
   subscribe(listener: () => void): () => void {

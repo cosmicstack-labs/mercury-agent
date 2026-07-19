@@ -1,7 +1,7 @@
 import type { ChannelType } from '../types/channel.js';
 
 export type SessionTitleSource = 'fallback' | 'generated' | 'user';
-export type SessionStatus = 'active' | 'archived';
+export type SessionStatus = 'active' | 'archived' | 'deleted';
 export type SessionMessageRole = 'user' | 'assistant' | 'system' | 'tool';
 export type SessionMessageKind = 'message' | 'command' | 'error' | 'permission' | 'progress' | 'tool-call' | 'tool-result';
 

@@ -49,7 +49,7 @@ import { logger } from './utils/logger.js';
 import { redactPhone } from './utils/redact.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
-import { CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
+import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -75,7 +75,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2356,8 +2356,17 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         agentId: config.cloud.agentId,
         token: config.cloud.jwt,
       }));
-      sessionSynchronizer.start();
-      cloudClient.onConnected(() => sessionSynchronizer.requestSync(0));
+
+      cloudClient.on('conversation.sync.toggle', (msg) => {
+        const enabled = msg.payload?.enabled === true;
+        logger.info({ enabled }, 'Cloud command: toggle conversation persistence');
+        agent.setSessionSyncEnabled(enabled);
+        if (enabled) sessionSynchronizer.start();
+        else {
+          sessionSynchronizer.stop();
+          sessions.purgeDeleted(sessions.dump().filter((session) => session.status === 'deleted').map((session) => session.id));
+        }
+      });
 
       cloudClient.on('token.refreshed' as any, (msg: any) => {
         const payload = msg.payload as { jwt: string; refreshToken: string } | undefined;
@@ -2572,21 +2581,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       cloudClient.on('conversation.history', async (msg) => {
         logger.info('Cloud command: conversation history');
+        const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : '';
         try {
-          const requestedSessionId = msg.payload?.sessionId as string | undefined;
-          const history = requestedSessionId ? [sessions.get(requestedSessionId)] : sessions.dump();
+          const payload = buildConversationHistoryPayload(sessions, {
+            requestId,
+            sessionId: typeof msg.payload?.sessionId === 'string' ? msg.payload.sessionId : undefined,
+            cursor: typeof msg.payload?.cursor === 'string' ? msg.payload.cursor : undefined,
+            limit: typeof msg.payload?.limit === 'number' ? msg.payload.limit : undefined,
+          }, config.cloud.agentId);
           cloudClient!.send({
             type: 'conversation.dump',
             agentId: config.cloud.agentId,
-            payload: { history },
+            payload,
             timestamp: new Date().toISOString(),
           });
-
         } catch (err: any) {
           cloudClient!.send({
             type: 'conversation.dump',
             agentId: config.cloud.agentId,
-            payload: { error: err.message },
+            payload: { requestId, error: err.message },
             timestamp: new Date().toISOString(),
           });
         }
@@ -2599,6 +2612,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         const suppliedSessionId = msg.payload?.sessionId as string | undefined;
         const requestId = (msg.payload?.requestId as string | undefined) || crypto.randomUUID();
         const messageId = msg.payload?.messageId as string | undefined;
+        const providerOverride = msg.payload?.provider as string | undefined;
+        const controlType = msg.payload?.controlType as string | undefined;
+
+        if (controlType === 'session.delete') {
+          if (!suppliedSessionId || msg.payload?.confirmation !== suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Session deletion requires the exact session ID as confirmation.' } });
+            return;
+          }
+          try {
+            const target = sessions.get(suppliedSessionId);
+            if (target.id !== suppliedSessionId) throw new Error('Session deletion requires the exact canonical session ID.');
+            const deleted = sessions.deletePermanently(target.id);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId: deleted.id,
+              requestId,
+              event: 'session_deleted',
+              data: { sessionId: deleted.id },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          }
+          return;
+        }
+
         const externalConversationId = `cloud:${conversationId || suppliedSessionId || 'default'}`;
         let cloudSession;
         try {
@@ -2608,8 +2646,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           return;
         }
         const sessionId = cloudSession.id;
-        const providerOverride = msg.payload?.provider as string | undefined;
-        const controlType = msg.payload?.controlType as string | undefined;
 
         if (controlType === 'session.archive') {
           try {
@@ -2808,6 +2844,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   setWebWebChannel(webChannel);
+  setWebSessionSyncEnabled(() => agent.isSessionSyncEnabled());
   setWebProgrammingMode(agent.programmingMode);
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider) => agent.switchProvider(provider));

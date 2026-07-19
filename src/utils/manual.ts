@@ -117,6 +117,7 @@ export function getManual(): string {
     ['/session <ref>', 'Switch by UUID/prefix/alias'],
     ['/session current', 'Show the current session'],
     ['/session archive <ref>', 'Archive a session'],
+    ['/session delete <ref>', 'Permanently delete a session after confirmation'],
     ['/progress', 'Show live status for the current long task'],
     ['/telegram', 'CLI chat only: open the Telegram management menu'],
     ['/telegram pending', 'CLI chat only: list pending Telegram requests'],

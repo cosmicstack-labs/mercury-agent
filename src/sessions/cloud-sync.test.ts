@@ -67,7 +67,11 @@ describe('buildSessionSyncBatches', () => {
       token: 'token',
     }), 50);
 
+    expect(synchronizer.isEnabled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).not.toHaveBeenCalled();
     synchronizer.start();
+    expect(synchronizer.isEnabled()).toBe(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -83,5 +87,9 @@ describe('buildSessionSyncBatches', () => {
     expect(body.messages).toHaveLength(2);
     expect(body.messages[0]).not.toHaveProperty('externalMessageId');
     synchronizer.stop();
+    expect(synchronizer.isEnabled()).toBe(false);
+    repository.appendMessage(session.id, { role: 'assistant', content: 'stays local' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

@@ -31,6 +31,7 @@ export type WSMessageType =
   | 'memory.fetch.result'
   | 'memory.share-learning.toggle'
   | 'conversation.history'
+  | 'conversation.sync.toggle'
   | 'agent.heartbeat'
   | 'agent.state'
   | 'skill.ack'

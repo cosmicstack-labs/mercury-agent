@@ -91,6 +91,10 @@ export class CloudSessionSynchronizer {
   ) {}
 
   start(): void {
+    if (this.active) {
+      this.requestSync(0);
+      return;
+    }
     this.active = true;
     if (!this.unsubscribe) this.unsubscribe = this.repository.subscribe(() => this.requestSync());
     this.requestSync(0);
@@ -102,6 +106,10 @@ export class CloudSessionSynchronizer {
     this.unsubscribe = undefined;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  isEnabled(): boolean {
+    return this.active;
   }
 
   requestSync(delayMs = this.debounceMs): void {
@@ -122,7 +130,9 @@ export class CloudSessionSynchronizer {
     try {
       const config = this.getConfig();
       if (!config.apiUrl || !config.agentId || !config.token) throw new Error('Cloud session sync is not configured');
-      const batches = buildSessionSyncBatches(config.agentId, this.repository.dump());
+      const snapshot = this.repository.dump();
+      const deletedSessionIds = snapshot.filter((session) => session.status === 'deleted').map((session) => session.id);
+      const batches = buildSessionSyncBatches(config.agentId, snapshot);
       let sessionCount = 0;
       let messageCount = 0;
       for (let index = 0; index < batches.length; index++) {
@@ -140,6 +150,7 @@ export class CloudSessionSynchronizer {
         sessionCount += batch.sessions.length;
         messageCount += batch.messages.length;
       }
+      this.repository.purgeDeleted(deletedSessionIds);
       this.retryMs = 1_000;
       if (batches.length) logger.info({ batches: batches.length, sessions: sessionCount, messages: messageCount }, 'Canonical sessions synced to Mercury Cloud');
     } catch (error) {

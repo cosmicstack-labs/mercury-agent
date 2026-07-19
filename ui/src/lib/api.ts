@@ -124,7 +124,7 @@ export const chat = {
     list: () => get<{ threads: ChatThread[] }>("/api/chat/threads"),
     create: (title?: string) => post<ChatThread>("/api/chat/threads", { title }),
     get: (id: string) => get<ChatThread>(`/api/chat/threads/${id}`),
-    delete: (id: string) => del<{ deleted: boolean }>(`/api/chat/threads/${id}`),
+    delete: (id: string) => post<{ deleted: boolean; syncPending: boolean }>(`/api/chat/threads/${id}/delete`, { confirmSessionId: id }),
     addMessage: (id: string, role: string, content: string) =>
       post<{ saved: boolean }>(`/api/chat/threads/${id}/messages`, {
         role,

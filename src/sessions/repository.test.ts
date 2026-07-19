@@ -55,6 +55,40 @@ describe('SessionRepository', () => {
     expect(repository.list({ includeArchived: true })[0].status).toBe('archived');
   });
 
+  it('keeps a message-free deletion tombstone until it is purged after sync', () => {
+    const { root, repository } = fixture();
+    const session = repository.create({ binding: { channelType: 'cli', externalConversationId: 'current' } });
+    repository.appendMessage(session.id, { role: 'user', content: 'private transcript' });
+    const deleted = repository.markDeleted(session.id);
+    expect(deleted).toMatchObject({ status: 'deleted', messages: [], bindings: [] });
+    expect(repository.list()).toHaveLength(0);
+    expect(repository.dump()).toHaveLength(1);
+    expect(repository.getByBinding('cli', 'current')).toBeNull();
+    repository.purgeDeleted([session.id]);
+    expect(repository.dump()).toHaveLength(0);
+    expect(() => repository.get(session.id)).toThrow(/not found/);
+    expect(readdirSync(join(root, 'sessions'))).not.toContain(`${session.id}.json`);
+  });
+
+  it('permanently deletes the session file, index entry, and every binding', () => {
+    const { root, repository } = fixture();
+    const session = repository.create({ binding: { channelType: 'cli', externalConversationId: 'current' } });
+    repository.bind(session.id, 'web', 'thread-1');
+    repository.appendMessage(session.id, { role: 'user', content: 'erase me' });
+
+    const deleted = repository.deletePermanently(session.alias);
+
+    expect(deleted.id).toBe(session.id);
+    expect(repository.list({ includeArchived: true, includeDeleted: true })).toEqual([]);
+    expect(repository.getByBinding('cli', 'current')).toBeNull();
+    expect(repository.getByBinding('web', 'thread-1')).toBeNull();
+    expect(readdirSync(join(root, 'sessions'))).not.toContain(`${session.id}.json`);
+    const index = JSON.parse(readFileSync(join(root, 'sessions', 'index.json'), 'utf8'));
+    expect(index.sessions).toEqual([]);
+    expect(index.bindings).toEqual({});
+    expect(() => repository.deletePermanently(session.id)).toThrow(/not found/);
+  });
+
   it('updates titles, revisions, and mutation subscribers idempotently', () => {
     const { repository } = fixture();
     const session = repository.create();

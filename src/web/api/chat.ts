@@ -11,9 +11,14 @@ let programmingMode: ProgrammingMode | null = null;
 let modelSwitchFn: ((provider: string) => Promise<{ ok: boolean; message: string }>) | null = null;
 let currentProviderFn: (() => { name: string; model: string }) | null = null;
 let sessions: SessionRepository | null = null;
+let sessionSyncEnabledFn: (() => boolean) | null = null;
 
 export function setSessionRepository(repository: SessionRepository): void {
   sessions = repository;
+}
+
+export function setSessionSyncEnabledCallback(fn: () => boolean): void {
+  sessionSyncEnabledFn = fn;
 }
 
 function toThread(session: ReturnType<SessionRepository['get']>, includeMessages = true) {
@@ -439,6 +444,22 @@ chat.delete('/api/chat/threads/:id', (c) => {
     return c.json({ deleted: true });
   } catch {
     return c.json({ deleted: false }, 404);
+  }
+});
+
+chat.post('/api/chat/threads/:id/delete', async (c) => {
+  const id = c.req.param('id');
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: { confirmSessionId?: string } = await c.req.json<{ confirmSessionId?: string }>().catch(() => ({}));
+  if (body.confirmSessionId !== id) return c.json({ error: 'Explicit session deletion confirmation is required' }, 400);
+  try {
+    const target = sessions.get(id);
+    if (target.id !== id) return c.json({ error: 'Confirmation must use the exact session ID' }, 400);
+    const syncPending = sessionSyncEnabledFn?.() === true;
+    const deleted = syncPending ? sessions.markDeleted(target.id) : sessions.deletePermanently(target.id);
+    return c.json({ deleted: true, sessionId: deleted.id, syncPending });
+  } catch {
+    return c.json({ deleted: false, error: 'Thread not found' }, 404);
   }
 });
 
