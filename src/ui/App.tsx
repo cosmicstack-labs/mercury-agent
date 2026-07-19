@@ -105,6 +105,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
   const slashCommands = React.useMemo(() => [
     '/help',
+    '/sessions',
+    '/session new',
+    '/session current',
+    '/session ',
+    '/session archive ',
     '/status',
     '/progress',
     '/menu',

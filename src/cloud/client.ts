@@ -22,6 +22,7 @@ export class MercuryCloudClient {
   private isRefreshing = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRefreshFailureLogAt = 0;
+  private connectedHandlers = new Set<() => void>();
 
   constructor(url: string, token: string, agentId: string, refreshTokenVal: string, apiUrl: string) {
     this.url = url;
@@ -45,6 +46,9 @@ export class MercuryCloudClient {
         this.reconnectAttempts = 0;
         this.startHeartbeat();
         this.startTokenCheck();
+        for (const handler of this.connectedHandlers) {
+          try { handler(); } catch {}
+        }
       };
 
       this.ws.onmessage = (event: WebSocket.MessageEvent) => {
@@ -114,13 +118,18 @@ export class MercuryCloudClient {
     }
   }
 
+  onConnected(handler: () => void): () => void {
+    this.connectedHandlers.add(handler);
+    return () => this.connectedHandlers.delete(handler);
+  }
+
   send(message: WSMessage): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     }
   }
 
-  sendResponse(payload: { message: string; conversationId?: string; inReplyTo?: string }): void {
+  sendResponse(payload: { message: string; conversationId?: string; sessionId?: string; requestId?: string; inReplyTo?: string }): void {
     this.send({
       type: 'agent.response',
       agentId: this.agentId,
@@ -129,7 +138,7 @@ export class MercuryCloudClient {
     });
   }
 
-  sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string }): void {
+  sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string; sessionId?: string; requestId?: string }): void {
     this.send({
       type: 'agent.stream',
       agentId: this.agentId,
@@ -138,7 +147,7 @@ export class MercuryCloudClient {
     });
   }
 
-  sendResearchArtifact(payload: { artifactId: string; title?: string; markdown: string; conversationId?: string; topic?: string }): void {
+  sendResearchArtifact(payload: { artifactId: string; title?: string; markdown: string; conversationId?: string; sessionId?: string; requestId?: string; topic?: string }): void {
     this.send({
       type: 'research.artifact',
       agentId: this.agentId,

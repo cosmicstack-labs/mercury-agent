@@ -26,6 +26,8 @@ export interface ChannelMessage {
   senderName?: string;
   content: string;
   timestamp: number;
+  /** Canonical local session identity; channelId remains transport-specific. */
+  sessionId?: string;
   metadata?: Record<string, unknown>;
 }
 

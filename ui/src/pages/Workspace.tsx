@@ -989,7 +989,8 @@ function BottomPanel({
 
     let threadId = activeThreadId;
     if (!threadId) {
-      threadId = `web:${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const thread = await api.chat.threads.create();
+      threadId = thread.id;
       setActiveThread(threadId);
     }
 
@@ -1001,12 +1002,9 @@ function BottomPanel({
     });
     setWaiting(true);
 
-    api.chat.threads.addMessage(threadId, "user", content)
-      .then(() => bumpThreadVersion())
-      .catch(() => {});
-
     try {
       await api.chat.send(content, threadId);
+      bumpThreadVersion();
     } catch {
       setWaiting(false);
       clearStreaming();

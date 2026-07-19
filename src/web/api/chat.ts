@@ -4,12 +4,37 @@ import type { ProgrammingMode, ProgrammingModeState } from '../../core/programmi
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
-import { listThreads, loadThread, deleteThread as removeThread, appendMessage } from './chat-history.js';
+import type { SessionRepository } from '../../sessions/index.js';
 
 let webChannel: WebChannel | null = null;
 let programmingMode: ProgrammingMode | null = null;
 let modelSwitchFn: ((provider: string) => Promise<{ ok: boolean; message: string }>) | null = null;
 let currentProviderFn: (() => { name: string; model: string }) | null = null;
+let sessions: SessionRepository | null = null;
+
+export function setSessionRepository(repository: SessionRepository): void {
+  sessions = repository;
+}
+
+function toThread(session: ReturnType<SessionRepository['get']>, includeMessages = true) {
+  return {
+    id: session.id,
+    shortId: session.shortId,
+    alias: session.alias,
+    title: session.title,
+    createdAt: new Date(session.createdAt).toISOString(),
+    updatedAt: new Date(session.updatedAt).toISOString(),
+    messages: includeMessages ? session.messages.map((message) => ({
+      id: message.id,
+      threadId: session.id,
+      role: message.role,
+      content: message.content,
+      timestamp: new Date(message.timestamp).toISOString(),
+      kind: message.kind,
+      sequence: message.sequence,
+    })) : [],
+  };
+}
 
 export function setProgrammingMode(pm: ProgrammingMode): void {
   programmingMode = pm;
@@ -70,7 +95,7 @@ chat.get('/api/chat/events', (c) => {
 
   const stream = new ReadableStream({
     start(controller) {
-      const clientId = ch.addSSEClient(controller);
+      const clientId = ch.addSSEClient(controller, c.req.query('sessionId'));
 
       const encoder = new TextEncoder();
       const send = (data: string) => {
@@ -112,15 +137,27 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Web channel not initialized' }, 503);
   }
 
-  const body = await c.req.json<{ content: string; threadId?: string }>();
+  const body = await c.req.json<{ content: string; sessionId?: string; threadId?: string }>();
   if (!body.content?.trim()) {
     return c.json({ error: 'Message content required' }, 400);
   }
 
   try {
-    const threadId = (body.threadId && body.threadId.trim()) ? body.threadId.trim() : 'web:default';
-    webChannel.emitMessageInThread(body.content.trim(), threadId);
-    return c.json({ sent: true });
+    if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+    const requestedId = body.sessionId?.trim() || body.threadId?.trim();
+    let session = requestedId ? sessions.getByBinding('web', requestedId) : null;
+    if (requestedId && !session) {
+      try {
+        session = sessions.get(requestedId);
+      } catch {
+        session = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(requestedId)
+          ? sessions.getOrCreateBound('web', requestedId, requestedId)
+          : sessions.getOrCreateBound('web', requestedId);
+      }
+    }
+    session ??= sessions.getOrCreateBound('web', 'web:default');
+    webChannel.emitMessageInThread(body.content.trim(), session.id, session.id);
+    return c.json({ sent: true, sessionId: session.id });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -374,37 +411,39 @@ chat.put('/api/workspace/root', async (c) => {
 // ─── Chat History ─────────────────────────────────────────────
 
 chat.get('/api/chat/threads', (c) => {
-  return c.json({ threads: listThreads() });
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  return c.json({ threads: sessions.list().map((session) => toThread(session, false)) });
+});
+
+chat.post('/api/chat/threads', async (c) => {
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  const body: { title?: string } = await c.req.json<{ title?: string }>().catch(() => ({}));
+  return c.json(toThread(sessions.create({ title: body.title }), true), 201);
 });
 
 chat.get('/api/chat/threads/:id', (c) => {
   const id = c.req.param('id');
-  const thread = loadThread(id);
-  if (!thread) return c.json({ error: 'Thread not found' }, 404);
-  return c.json(thread);
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  try {
+    return c.json(toThread(sessions.get(id), true));
+  } catch {
+    return c.json({ error: 'Thread not found' }, 404);
+  }
 });
 
 chat.delete('/api/chat/threads/:id', (c) => {
   const id = c.req.param('id');
-  const deleted = removeThread(id);
-  return c.json({ deleted });
+  if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);
+  try {
+    sessions.archive(id);
+    return c.json({ deleted: true });
+  } catch {
+    return c.json({ deleted: false }, 404);
+  }
 });
 
 chat.post('/api/chat/threads/:id/messages', async (c) => {
-  const id = c.req.param('id');
-  const body = await c.req.json<{ role: 'user' | 'assistant'; content: string }>();
-  if (!body.content || !body.role) {
-    return c.json({ error: 'role and content required' }, 400);
-  }
-  const msg = {
-    id: crypto.randomUUID(),
-    threadId: id,
-    role: body.role,
-    content: body.content,
-    timestamp: Date.now(),
-  };
-  appendMessage(id, msg);
-  return c.json({ saved: true, message: msg });
+  return c.json({ error: 'Messages are written by /api/chat/send and the agent runtime' }, 410);
 });
 
 export default chat;

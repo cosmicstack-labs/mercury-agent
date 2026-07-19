@@ -1,0 +1,97 @@
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { describe, expect, it } from 'vitest';
+import { SessionRepository, SessionResolutionError } from './repository.js';
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'mercury-sessions-'));
+  return { root, repository: new SessionRepository({ rootDir: join(root, 'sessions'), autoMigrate: false }) };
+}
+
+describe('SessionRepository', () => {
+  it('creates, lists, gets, and reloads atomically persisted sessions', () => {
+    const { root, repository } = fixture();
+    const created = repository.create({ title: 'Test session', alias: 'amber-comet' });
+    repository.appendMessage(created.id, { role: 'user', content: 'hello' });
+    const reloaded = new SessionRepository({ rootDir: join(root, 'sessions'), autoMigrate: false });
+    expect(reloaded.list()).toHaveLength(1);
+    expect(reloaded.get(created.id).messages[0]).toMatchObject({ content: 'hello', sequence: 1, sessionId: created.id });
+    expect(readdirSync(join(root, 'sessions')).some((file) => file.endsWith('.tmp'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(root, 'sessions', 'index.json'), 'utf8')).sessions[0].alias).toBe('amber-comet');
+  });
+
+  it('resolves UUID prefixes and aliases without guessing ambiguity', () => {
+    const { repository } = fixture();
+    const first = repository.create({ id: 'aaaaaaaa-1111-4111-8111-111111111111', alias: 'silver-star' });
+    repository.create({ id: 'aaaabbbb-2222-4222-8222-222222222222', alias: 'silver-signal' });
+    expect(repository.resolve(first.shortId).id).toBe(first.id);
+    expect(repository.resolve('silver-star').id).toBe(first.id);
+    expect(repository.resolve('SILVER-ST').id).toBe(first.id);
+    expect(() => repository.resolve('aaaa')).toThrow(SessionResolutionError);
+    expect(() => repository.resolve('silver-s')).toThrow(/silver-star.*silver-signal/);
+  });
+
+  it('maintains one mutable binding and adopts canonical UUIDs', () => {
+    const { repository } = fixture();
+    const first = repository.getOrCreateBound('cli', 'current');
+    const adopted = repository.getOrCreateBound('web', 'browser-thread', 'bbbbbbbb-1111-4111-8111-111111111111');
+    expect(repository.getByBinding('cli', 'current')?.id).toBe(first.id);
+    repository.bind(adopted.id, 'cli', 'current');
+    expect(repository.getByBinding('cli', 'current')?.id).toBe(adopted.id);
+    expect(repository.get(first.id).bindings).toHaveLength(0);
+    expect(repository.getByBinding('web', 'browser-thread')?.id).toBe(adopted.id);
+  });
+
+  it('deduplicates messages by external ID and archives sessions', () => {
+    const { repository } = fixture();
+    const session = repository.create();
+    const first = repository.appendMessage(session.id, { role: 'user', content: 'once', externalMessageId: 'transport-1' });
+    const duplicate = repository.appendMessage(session.id, { role: 'user', content: 'changed', externalMessageId: 'transport-1' });
+    expect(duplicate.id).toBe(first.id);
+    expect(repository.get(session.id).messages).toHaveLength(1);
+    repository.archive(session.id);
+    expect(repository.list()).toHaveLength(0);
+    expect(repository.list({ includeArchived: true })[0].status).toBe('archived');
+  });
+
+  it('updates titles, revisions, and mutation subscribers idempotently', () => {
+    const { repository } = fixture();
+    const session = repository.create();
+    let mutations = 0;
+    const unsubscribe = repository.subscribe(() => mutations++);
+    const updated = repository.updateTitle(session.id, '  Canonical   Session Title  ', 'generated');
+    expect(updated).toMatchObject({ title: 'Canonical Session Title', titleSource: 'generated' });
+    expect(updated.revision).toBeGreaterThan(session.revision);
+    repository.updateTitle(session.id, 'Canonical Session Title', 'generated');
+    expect(mutations).toBe(1);
+    unsubscribe();
+    repository.archive(session.id);
+    expect(mutations).toBe(1);
+    expect(() => repository.updateTitle(session.id, ' '.repeat(2))).toThrow(/required/);
+  });
+
+  it('imports legacy web and short-term JSON idempotently without deleting sources', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mercury-migration-'));
+    const web = join(root, 'web-chat-history');
+    const short = join(root, 'short-term');
+    mkdirSync(web);
+    mkdirSync(short);
+    writeFileSync(join(web, 'thread.json'), JSON.stringify({
+      id: 'thread-1', title: 'Legacy thread', createdAt: 1, updatedAt: 3, messages: [
+        { id: 'u1', role: 'user', content: 'same', timestamp: 1 },
+        { id: 'u2', role: 'user', content: 'same', timestamp: 2 },
+        { id: 'a1', role: 'assistant', content: 'answer', timestamp: 3 },
+      ],
+    }));
+    writeFileSync(join(short, 'cli.json'), JSON.stringify([{ id: 'c1', role: 'user', content: 'cli legacy', timestamp: 4 }]));
+    const options = { rootDir: join(root, 'sessions'), legacyWebChatDir: web, legacyShortTermDir: short };
+    const repository = new SessionRepository(options);
+    expect(repository.getByBinding('web', 'thread-1')).toMatchObject({ createdAt: 1, updatedAt: 3 });
+    expect(repository.getByBinding('web', 'thread-1')?.messages).toHaveLength(2);
+    expect(repository.getByBinding('cli', 'cli')?.messages[0].content).toBe('cli legacy');
+    expect(new SessionRepository(options).dump()).toHaveLength(2);
+    expect(readdirSync(web)).toContain('thread.json');
+    expect(readdirSync(short)).toContain('cli.json');
+  });
+});

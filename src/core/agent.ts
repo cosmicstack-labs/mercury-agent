@@ -33,6 +33,7 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
+import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
 import {
   approveTelegramPendingRequest,
@@ -345,6 +346,7 @@ export class Agent {
   private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
+  private titleGenerationInFlight = new Set<string>();
 
   constructor(
     private config: MercuryConfig,
@@ -358,6 +360,8 @@ export class Agent {
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
+    private sessions: SessionRepository,
+    private generateTitle?: (input: { userMessage: string; assistantMessage: string; providerName: string }) => Promise<string>,
   ) {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
@@ -495,6 +499,11 @@ export class Agent {
     const hasActiveAgents = activeAgents.length > 0;
     const busyPrefix = hasActiveAgents ? '' : '';
 
+    if (trimmed === '/sessions' || trimmed.startsWith('/session')) {
+      await this.handleSessionCommand(trimmed, msg.channelType, msg.channelId);
+      return;
+    }
+
     if (trimmed === '/agents' || trimmed === '/status') {
       if (this.supervisor) {
         const agents = this.supervisor.getActiveAgents();
@@ -547,7 +556,7 @@ export class Agent {
     }
 
     if (trimmed === '/help') {
-      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
+      await channel.send('Agent is busy. Available: /sessions, /session, /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
       return;
     }
 
@@ -1046,6 +1055,7 @@ export class Agent {
     const stopHeartbeat = this.startForegroundHeartbeat(msg);
     this.markProgress('Starting...');
     let wallTimeout: ReturnType<typeof setTimeout> | null = null;
+    let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
       const activeAgents = this.supervisor.getActiveAgents();
@@ -1163,11 +1173,29 @@ export class Agent {
       }
 
       const systemPrompt = this.buildSystemPrompt();
-      const recentMemory = this.shortTerm.getRecent(msg.channelId, this.saverMode.adjustHistoryWindow(10));
+      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+      const externalConversationId = msg.channelType === 'cli'
+        ? 'current'
+        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
+      canonicalSessionId = canonicalSession.id;
+      const canonicalMessageId = typeof msg.metadata?.canonicalMessageId === 'string' ? msg.metadata.canonicalMessageId : undefined;
+      const requestId = typeof msg.metadata?.requestId === 'string' ? msg.metadata.requestId : undefined;
+      this.sessions.appendMessage(canonicalSession.id, {
+        id: canonicalMessageId,
+        role: 'user',
+        content: msg.content,
+        timestamp: msg.timestamp,
+        externalMessageId: msg.id,
+        metadata: { channelType: msg.channelType, channelId: msg.channelId, ...(requestId ? { requestId } : {}) },
+      });
+      const recentMemory = this.sessions.get(canonicalSession.id).messages
+        .filter((entry) => entry.kind === 'message' && entry.role !== 'tool')
+        .slice(-this.saverMode.adjustHistoryWindow(10));
 
       const messages: any[] = [];
 
-      const recentSteps = this.shortTerm.getRecent(msg.channelId, 6);
+      const recentSteps = recentMemory.slice(-6);
       let loopWarning: string | null = null;
       if (recentSteps.length >= 3) {
         const toolCallPattern = /\[Using: (.+?)\]/g;
@@ -1231,13 +1259,13 @@ export class Agent {
       if (recentMemory.length > 0) {
         for (const m of recentMemory) {
           messages.push({
-            role: m.role === 'user' ? 'user' : 'assistant',
+            role: m.role,
             content: m.content,
           });
         }
       }
 
-      messages.push({ role: 'user', content: msg.content });
+      if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
       // ── Skill Intent Routing & Batch Execution ──
       //
@@ -1373,7 +1401,8 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
 
-      const channelOverride = this.channelProviderOverrides.get(msg.channelId);
+      const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
+      const channelOverride = this.channelProviderOverrides.get(providerContextId);
       const fallbackIterator = channelOverride
         ? [channelOverride.provider, ...this.providers.getFallbackIterator(channelOverride.providerName)]
           .filter((provider, index, list) => list.findIndex((item) => item.name === provider.name && item.getModel() === provider.getModel()) === index)
@@ -2079,21 +2108,33 @@ export class Agent {
         }
       }
 
-      this.shortTerm.add(msg.channelId, {
-        id: msg.id,
-        timestamp: msg.timestamp,
-        role: 'user',
-        content: msg.content,
-      });
-
-      this.shortTerm.add(msg.channelId, {
-        id: Date.now().toString(36),
-        timestamp: Date.now(),
-        role: 'assistant',
-        content: finalText,
-        tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-        reasoning: result.reasoning || undefined,
-      });
+      if (canonicalSessionId) {
+        this.sessions.appendMessage(canonicalSessionId, {
+          role: 'assistant',
+          content: finalText,
+          externalMessageId: `${msg.id}:assistant`,
+          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          reasoning: typeof result.reasoning === 'string'
+            ? result.reasoning
+            : result.reasoning
+              ? JSON.stringify(result.reasoning)
+              : undefined,
+          metadata: {
+            channelType: msg.channelType,
+            channelId: msg.channelId,
+            ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
+          },
+        });
+        if (msg.channelType !== 'internal' && msg.senderId !== 'system' && usedProvider) {
+          this.scheduleSessionTitleGeneration(canonicalSessionId, usedProvider.name);
+        }
+      } else {
+        this.shortTerm.add(msg.channelId, { id: msg.id, timestamp: msg.timestamp, role: 'user', content: msg.content });
+        this.shortTerm.add(msg.channelId, {
+          id: Date.now().toString(36), timestamp: Date.now(), role: 'assistant', content: finalText,
+          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0), reasoning: result.reasoning || undefined,
+        });
+      }
 
       this.episodic.record({
         type: 'message',
@@ -3110,6 +3151,11 @@ Is this productive iteration or a stuck loop?`,
 
     const ctx = this.capabilities.getChatCommandContext();
     if (!ctx) return false;
+
+    if (cmd === '/sessions' || cmd.startsWith('/session')) {
+      await this.handleSessionCommand(trimmed, channelType as ChannelType, channelId);
+      return true;
+    }
 
     if (cmd === '/help') {
       const helpText = channelType === 'telegram' ? getTelegramHelp() : channelType === 'discord' ? getDiscordHelp() : channelType === 'slack' ? getSlackHelp() : ctx.manual();
@@ -4542,6 +4588,93 @@ Is this productive iteration or a stuck loop?`,
     }
 
     return false;
+  }
+
+  private async handleSessionCommand(content: string, channelType: ChannelType, channelId: string): Promise<void> {
+    const channel = this.channels.get(channelType);
+    if (!channel) return;
+    const bindingId = channelType === 'cli' ? 'current' : channelId;
+    const format = (session: { alias: string; shortId: string; title: string }) => `${session.alias}  [${session.shortId}]  ${session.title}`;
+    const transcript = (session: ReturnType<SessionRepository['get']>) => {
+      const recent = session.messages
+        .filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'))
+        .slice(-8);
+      if (recent.length === 0) return 'No messages yet.';
+      return recent.map((message) => {
+        const label = message.role === 'user' ? 'You' : 'Mercury';
+        const text = message.content.replace(/\s+/g, ' ').trim();
+        return `${label}: ${text.length > 280 ? `${text.slice(0, 277)}...` : text}`;
+      }).join('\n');
+    };
+    try {
+      if (content.trim().toLowerCase() === '/sessions') {
+        const current = this.sessions.getByBinding(channelType, bindingId);
+        const sessions = this.sessions.list();
+        await channel.send(sessions.length
+          ? sessions.map((session) => `${session.id === current?.id ? '*' : ' '} ${format(session)}`).join('\n')
+          : 'No active sessions. Use /session new.', channelId);
+        return;
+      }
+      const argument = content.trim().slice('/session'.length).trim();
+      if (argument.toLowerCase() === 'new') {
+        const session = this.sessions.create();
+        this.sessions.bind(session.id, channelType, bindingId);
+        await channel.send(`New session: ${format(session)}`, channelId);
+        return;
+      }
+      if (!argument || argument.toLowerCase() === 'current') {
+        const current = this.sessions.getByBinding(channelType, bindingId);
+        await channel.send(current ? `Current session: ${format(current)}\n\n${transcript(current)}` : 'No current session. Use /session new.', channelId);
+        return;
+      }
+      if (argument.toLowerCase().startsWith('archive ')) {
+        const session = this.sessions.archive(argument.slice('archive '.length).trim());
+        await channel.send(`Archived: ${format(session)}`, channelId);
+        return;
+      }
+      let session;
+      try {
+        session = this.sessions.resolve(argument);
+      } catch (error) {
+        if (channelType !== 'web' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(argument)) throw error;
+        session = this.sessions.create({ id: argument });
+      }
+      this.sessions.bind(session.id, channelType, bindingId);
+      await channel.send(`Switched session: ${format(session)}\n\n${transcript(session)}`, channelId);
+    } catch (error) {
+      const message = error instanceof SessionResolutionError ? error.message : error instanceof Error ? error.message : String(error);
+      await channel.send(message, channelId);
+    }
+  }
+
+  private scheduleSessionTitleGeneration(sessionId: string, providerName: string): void {
+    if (!this.generateTitle || this.titleGenerationInFlight.has(sessionId)) return;
+    const session = this.sessions.get(sessionId);
+    const exchange = session.messages.filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'));
+    if (session.titleSource !== 'fallback' || exchange.length !== 2 || exchange[0].role !== 'user' || exchange[1].role !== 'assistant') return;
+    this.titleGenerationInFlight.add(sessionId);
+    const timer = setTimeout(() => {
+      void this.generateSessionTitle(sessionId, exchange[0].content, exchange[1].content, providerName).finally(() => {
+        this.titleGenerationInFlight.delete(sessionId);
+      });
+    }, 0);
+    timer.unref?.();
+  }
+
+  private async generateSessionTitle(sessionId: string, userMessage: string, assistantMessage: string, providerName: string): Promise<void> {
+    try {
+      const rawTitle = await this.generateTitle!({ userMessage, assistantMessage, providerName });
+      const title = normalizeGeneratedSessionTitle(rawTitle);
+      if (!title) {
+        logger.debug({ sessionId }, 'Session title generator returned an unusable title');
+        return;
+      }
+      if (this.sessions.get(sessionId).titleSource !== 'fallback') return;
+      this.sessions.updateTitle(sessionId, title, 'generated');
+      logger.info({ sessionId, title }, 'Generated canonical session title');
+    } catch (error) {
+      logger.debug({ sessionId, err: error instanceof Error ? error.message : String(error) }, 'Background session title generation failed');
+    }
   }
 
   private async handleWorkspaceNaturalLanguage(content: string, channelType: string, channelId: string): Promise<boolean> {

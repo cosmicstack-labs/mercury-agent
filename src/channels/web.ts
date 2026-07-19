@@ -30,10 +30,12 @@ export interface ChatEvent {
 class SSEClient {
   controller: ReadableStreamDefaultController;
   id: string;
+  sessionId?: string;
 
-  constructor(controller: ReadableStreamDefaultController, id: string) {
+  constructor(controller: ReadableStreamDefaultController, id: string, sessionId?: string) {
     this.controller = controller;
     this.id = id;
+    this.sessionId = sessionId;
   }
 
   send(event: ChatEvent): void {
@@ -83,9 +85,9 @@ export class WebChannel extends BaseChannel {
     this.sseClients.clear();
   }
 
-  addSSEClient(controller: ReadableStreamDefaultController): string {
+  addSSEClient(controller: ReadableStreamDefaultController, sessionId?: string): string {
     const id = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const client = new SSEClient(controller, id);
+    const client = new SSEClient(controller, id, sessionId);
     this.sseClients.set(id, client);
     return id;
   }
@@ -107,6 +109,7 @@ export class WebChannel extends BaseChannel {
     }
 
     for (const [, client] of this.sseClients) {
+      if (targetId && client.sessionId !== targetId) continue;
       client.send(event);
     }
   }
@@ -324,7 +327,7 @@ export class WebChannel extends BaseChannel {
     this.emitMessageInThread(content, 'web:default');
   }
 
-  emitMessageInThread(content: string, threadId: string): void {
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -336,13 +339,20 @@ export class WebChannel extends BaseChannel {
       senderName: 'You',
       content,
       timestamp: Date.now(),
+      sessionId,
+      metadata: {
+        ...(sessionId ? { sessionId } : {}),
+        ...(requestId ? { requestId } : {}),
+        ...(externalConversationId ? { externalConversationId } : {}),
+        ...(messageId ? { canonicalMessageId: messageId } : {}),
+      },
     };
     this.emit(msg);
   }
 
-  emitCloudMessage(content: string, threadId: string, onEvent: CloudEventHandler): void {
-    this.cloudEventHandlers.set(threadId, onEvent);
-    this.emitMessageInThread(content, threadId);
+  emitCloudMessage(content: string, requestId: string, sessionId: string, externalConversationId: string, messageId: string | undefined, onEvent: CloudEventHandler): void {
+    this.cloudEventHandlers.set(requestId, onEvent);
+    this.emitMessageInThread(content, requestId, sessionId, requestId, externalConversationId, messageId);
   }
 
   setBypassPermissions(enabled: boolean): void {

@@ -105,7 +105,7 @@ export const providers = {
 // ── Chat ──
 export const chat = {
   send: (content: string, threadId?: string) =>
-    post<{ sent: boolean }>("/api/chat/send", { content, threadId }),
+    post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId: threadId }),
   settings: {
     get: () => get<ChatSettings>("/api/chat/settings"),
     update: (data: Partial<ChatSettings>) =>
@@ -122,6 +122,7 @@ export const chat = {
   },
   threads: {
     list: () => get<{ threads: ChatThread[] }>("/api/chat/threads"),
+    create: (title?: string) => post<ChatThread>("/api/chat/threads", { title }),
     get: (id: string) => get<ChatThread>(`/api/chat/threads/${id}`),
     delete: (id: string) => del<{ deleted: boolean }>(`/api/chat/threads/${id}`),
     addMessage: (id: string, role: string, content: string) =>

@@ -49,6 +49,7 @@ import { logger } from './utils/logger.js';
 import { redactPhone } from './utils/redact.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
+import { CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -74,7 +75,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2128,6 +2129,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const identity = new Identity();
   migrateLegacyMemory();
   const shortTerm = new ShortTermMemory(config);
+  const sessions = new SessionRepository();
+  setWebSessions(sessions);
   const longTerm = new LongTermMemory(config);
   const episodic = new EpisodicMemory(config);
 
@@ -2258,7 +2261,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.registerAll();
 
   const agent = new Agent(
-    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
+    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
+    async ({ userMessage, assistantMessage, providerName }) => {
+      const provider = providers.get(providerName) ?? providers.getDefault();
+      const result = await provider.generateText(
+        `User: ${userMessage.slice(0, 1500)}\nAssistant: ${assistantMessage.slice(0, 1500)}`,
+        'Create a concise 3-7 word title for this conversation. Return only the title with no quotes, markdown, prefix, or punctuation.',
+      );
+      return result.text;
+    },
   );
 
   agent.setSkillLoader(skillLoader);
@@ -2340,6 +2351,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     try {
       const { MercuryCloudClient } = await import('./cloud/client.js');
       cloudClient = new MercuryCloudClient(config.cloud.wsUrl, config.cloud.jwt, config.cloud.agentId, config.cloud.refreshToken, config.cloud.apiUrl);
+      const sessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
+        apiUrl: config.cloud.apiUrl,
+        agentId: config.cloud.agentId,
+        token: config.cloud.jwt,
+      }));
+      sessionSynchronizer.start();
+      cloudClient.onConnected(() => sessionSynchronizer.requestSync(0));
 
       cloudClient.on('token.refreshed' as any, (msg: any) => {
         const payload = msg.payload as { jwt: string; refreshToken: string } | undefined;
@@ -2552,10 +2570,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         }
       });
 
-      cloudClient.on('conversation.history', async () => {
+      cloudClient.on('conversation.history', async (msg) => {
         logger.info('Cloud command: conversation history');
         try {
-          const history = longTerm.getAll();
+          const requestedSessionId = msg.payload?.sessionId as string | undefined;
+          const history = requestedSessionId ? [sessions.get(requestedSessionId)] : sessions.dump();
           cloudClient!.send({
             type: 'conversation.dump',
             agentId: config.cloud.agentId,
@@ -2563,27 +2582,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             timestamp: new Date().toISOString(),
           });
 
-          // Also sync to cloud storage via HTTP
-          if (history && history.length > 0) {
-            const entries = history.map((h: any) => ({
-              role: h.role || 'user',
-              content: h.content || '',
-              tokenCount: h.tokenCount || 0,
-            }));
-            try {
-              await fetch(`${config.cloud.apiUrl}/v1/agents/${config.cloud.agentId}/conversation/sync`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${config.cloud.jwt}`,
-                },
-                body: JSON.stringify({ entries }),
-              });
-              logger.info({ count: entries.length }, 'Conversation history synced to cloud');
-            } catch (syncErr: any) {
-              logger.warn({ err: syncErr.message }, 'Failed to sync conversation history to cloud');
-            }
-          }
         } catch (err: any) {
           cloudClient!.send({
             type: 'conversation.dump',
@@ -2598,8 +2596,42 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         const message = msg.payload?.message as string | undefined;
         const fromAgentId = msg.payload?.fromAgentId as string | undefined;
         const conversationId = msg.payload?.conversationId as string | undefined;
+        const suppliedSessionId = msg.payload?.sessionId as string | undefined;
+        const requestId = (msg.payload?.requestId as string | undefined) || crypto.randomUUID();
+        const messageId = msg.payload?.messageId as string | undefined;
+        const externalConversationId = `cloud:${conversationId || suppliedSessionId || 'default'}`;
+        let cloudSession;
+        try {
+          cloudSession = sessions.getOrCreateBound('web', externalConversationId, suppliedSessionId);
+        } catch (error) {
+          cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          return;
+        }
+        const sessionId = cloudSession.id;
         const providerOverride = msg.payload?.provider as string | undefined;
         const controlType = msg.payload?.controlType as string | undefined;
+
+        if (controlType === 'session.archive') {
+          try {
+            const archived = sessions.archive(sessionId);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId,
+              requestId,
+              event: 'session_archived',
+              data: { sessionId: archived.id, revision: archived.revision },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId,
+              requestId,
+              event: 'error',
+              data: { message: error instanceof Error ? error.message : String(error) },
+            });
+          }
+          return;
+        }
 
         if (controlType === 'permission.resolve') {
           const id = msg.payload?.id as string | undefined;
@@ -2608,6 +2640,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             const resolved = webChannel.resolveApproval(id, action);
             cloudClient!.sendStream({
               conversationId,
+              sessionId,
+              requestId,
               event: resolved ? 'permission_resolved' : 'error',
               data: resolved ? { id, action } : { message: 'Permission prompt expired or was not found.' },
             });
@@ -2622,6 +2656,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             const resolved = webChannel.resolveChoice(id, value);
             cloudClient!.sendStream({
               conversationId,
+              sessionId,
+              requestId,
               event: resolved ? 'choice_resolved' : 'error',
               data: resolved ? { id, value } : { message: 'Choice prompt expired or was not found.' },
             });
@@ -2634,6 +2670,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           webChannel.setBypassPermissions(action === 'allow-all');
           cloudClient!.sendStream({
             conversationId,
+            sessionId,
+            requestId,
             event: 'permission_mode_set',
             data: { mode: action === 'allow-all' ? 'allow-all' : 'ask-me' },
           });
@@ -2643,6 +2681,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         if (controlType === 'model.list') {
           cloudClient!.sendStream({
             conversationId,
+            sessionId,
+            requestId,
             event: 'model_options',
             data: {
               providers: await agent.listChatModelOptions(),
@@ -2655,15 +2695,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         if (controlType === 'model.select') {
           const provider = msg.payload?.provider as string | undefined;
           const model = msg.payload?.model as string | undefined;
-          const cloudThreadId = `cloud:${conversationId || Date.now()}`;
           if (!provider) {
-            cloudClient!.sendStream({ conversationId, event: 'error', data: { message: 'No provider selected.' } });
+            cloudClient!.sendStream({ conversationId, sessionId, requestId, event: 'error', data: { message: 'No provider selected.' } });
             return;
           }
 
-          const result = await agent.setChannelProviderOverride(cloudThreadId, provider, model, { persist: true });
+          const result = await agent.setChannelProviderOverride(sessionId, provider, model, { persist: true });
           cloudClient!.sendStream({
             conversationId,
+            sessionId,
+            requestId,
             event: result.ok ? 'model_selected' : 'error',
             data: result.ok ? result : { message: result.message },
           });
@@ -2676,19 +2717,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           } else {
             logger.info({ messagePreview: message.slice(0, 50) }, 'Cloud command: send message to agent');
           }
-          const cloudThreadId = `cloud:${conversationId || Date.now()}`;
           try {
             if (providerOverride) {
               const modelOverride = msg.payload?.model as string | undefined;
-              const override = await agent.setChannelProviderOverride(cloudThreadId, providerOverride, modelOverride);
+              const override = await agent.setChannelProviderOverride(sessionId, providerOverride, modelOverride);
               if (!override.ok) {
-                cloudClient!.sendStream({ conversationId, event: 'error', data: { message: override.message } });
+                cloudClient!.sendStream({ conversationId, sessionId, requestId, event: 'error', data: { message: override.message } });
                 return;
               }
             }
-            webChannel.emitCloudMessage(message, cloudThreadId, (event) => {
+            webChannel.emitCloudMessage(message, requestId, sessionId, externalConversationId, messageId, (event) => {
               cloudClient!.sendStream({
                 conversationId,
+                sessionId,
+                requestId,
                 event: event.type,
                 data: event.data,
               });
@@ -2710,6 +2752,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                   title: titleMatch ? titleMatch[1].trim() : undefined,
                   markdown: fullText,
                   conversationId,
+                  sessionId,
+                  requestId,
                   topic: agent.researchMode.getTopic() || undefined,
                 });
                 // Research mode produced its artifact; exit research mode so
@@ -2721,6 +2765,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           } catch (err: any) {
             cloudClient!.sendStream({
               conversationId,
+              sessionId,
+              requestId,
               event: 'error',
               data: { message: `Unable to process cloud chat message: ${err.message}` },
             });
