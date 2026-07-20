@@ -229,9 +229,18 @@ export class SignalChannel extends BaseChannel {
     let effectiveSource = source;
     let effectiveSourceUuid = envelope.sourceUuid;
     let effectiveSourceName = envelope.sourceName;
+    // Sync envelopes carry every message the owner sends from a linked device,
+    // including DMs to third parties — keep the destination so the source
+    // filter below can tell Note to Self apart from conversations with others.
+    let isSyncSentMessage = false;
+    let syncDestination: string | undefined;
+    let syncDestinationNumber: string | undefined;
 
     if (!effectiveDataMessage && envelope.syncMessage?.sentMessage) {
       const sent = envelope.syncMessage.sentMessage;
+      isSyncSentMessage = true;
+      syncDestination = sent.destination;
+      syncDestinationNumber = sent.destinationNumber;
       effectiveDataMessage = {
         timestamp: sent.timestamp,
         message: sent.message,
@@ -246,7 +255,7 @@ export class SignalChannel extends BaseChannel {
       effectiveSource = this.config.channels.signal.phoneNumber || source;
       effectiveSourceUuid = envelope.sourceUuid;
       effectiveSourceName = envelope.sourceName || 'You';
-      logger.info({ source: redactPhone(effectiveSource), message: sent.message }, 'Signal: processing syncMessage.sentMessage as dataMessage');
+      logger.info({ source: redactPhone(effectiveSource), destination: syncDestination ? redactPhone(syncDestination) : (syncDestinationNumber ? redactPhone(syncDestinationNumber) : 'unknown'), message: sent.message }, 'Signal: processing syncMessage.sentMessage as dataMessage');
     }
 
     if (!effectiveDataMessage) {
@@ -265,6 +274,19 @@ export class SignalChannel extends BaseChannel {
     if (this.config.channels.signal.mode === 'private') {
       if (groupId || effectiveSource !== this.config.channels.signal.phoneNumber) {
         return;
+      }
+      // Synced sends (messages the owner sent from a linked device) only
+      // qualify when addressed back to this account — i.e. Note to Self.
+      // Without this check every DM the owner sends passes the filter above,
+      // because the sync conversion forces effectiveSource to the account
+      // itself. Fail closed when the destination is missing or unclear.
+      if (isSyncSentMessage) {
+        const self = this.config.channels.signal.phoneNumber;
+        const isNoteToSelf = syncDestination === self || syncDestinationNumber === self;
+        if (!isNoteToSelf) {
+          logger.debug({ destination: syncDestination ? redactPhone(syncDestination) : 'unknown' }, 'Signal: dropping synced send not addressed to self (not Note to Self)');
+          return;
+        }
       }
     } else {
       if (!groupId) {
