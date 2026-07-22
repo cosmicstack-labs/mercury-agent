@@ -234,13 +234,12 @@ export class MercuryCloudClient {
   }
 
   private scheduleReconnect(): void {
-    // After many attempts, slow down to once per 60s instead of giving up
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      // Reset and use a slow steady interval — never give up entirely
       this.reconnectAttempts = Math.floor(this.maxReconnectAttempts / 2);
     }
 
     const baseDelay = Math.min(1000 * 2 ** this.reconnectAttempts, 60_000);
+    const jitteredDelay = Math.round(baseDelay * (0.5 + Math.random() * 0.5));
     this.reconnectAttempts++;
 
     this.reconnectTimer = setTimeout(() => {
@@ -248,7 +247,7 @@ export class MercuryCloudClient {
       if (this.shouldReconnect) {
         this.connect();
       }
-    }, baseDelay);
+    }, jitteredDelay);
     if (this.reconnectTimer && typeof this.reconnectTimer.unref === 'function') {
       this.reconnectTimer.unref();
     }
