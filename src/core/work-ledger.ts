@@ -48,6 +48,13 @@ export interface WorkLedgerOptions {
   now?: () => number;
 }
 
+export interface WorkContinuationContext {
+  workCwd?: string;
+  activity?: string;
+  summary?: string;
+  continuation?: boolean;
+}
+
 const DEFAULT_MAX_TERMINAL_ENTRIES = 500;
 const DEFAULT_TERMINAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -130,12 +137,28 @@ export class WorkLedger {
     });
   }
 
-  markRetry(key: string, error: unknown, nextAttemptAt: number): WorkEntry {
+  markRetry(key: string, error: unknown, nextAttemptAt: number, context: WorkContinuationContext = {}): WorkEntry {
     return this.update(key, (entry) => {
       entry.status = 'queued';
       entry.error = error instanceof Error ? error.message : String(error);
       entry.nextAttemptAt = nextAttemptAt;
       entry.delivered = false;
+      entry.completedAt = undefined;
+      entry.finalResponse = undefined;
+      entry.deliveryError = undefined;
+      const previousContinuationAttempt = typeof entry.message.metadata?.continuationAttempt === 'number'
+        ? entry.message.metadata.continuationAttempt
+        : 0;
+      entry.message.metadata = {
+        ...entry.message.metadata,
+        workRecovered: true,
+        workWasInterrupted: true,
+        ...(context.continuation ? { workContinuation: true, continuationAttempt: previousContinuationAttempt + 1 } : {}),
+        ...(context.workCwd ? { workCwd: context.workCwd } : {}),
+        ...(context.activity ? { continuationActivity: context.activity.slice(0, 300) } : {}),
+        ...(context.summary ? { continuationSummary: context.summary.slice(0, 1000) } : {}),
+        continuationReason: entry.error.slice(0, 1000),
+      };
     });
   }
 
@@ -156,14 +179,23 @@ export class WorkLedger {
   recoverInterrupted(): WorkEntry[] {
     const recovered: WorkEntry[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.status !== 'queued' && entry.status !== 'running') continue;
+      const recoverableFailure = entry.status === 'failed' && /interrupted\/ambiguous|side effects may be partial|after one or more tools completed|partial output/i.test(entry.error || '');
+      if (entry.status !== 'queued' && entry.status !== 'running' && !recoverableFailure) continue;
       const interrupted = entry.status === 'running';
       entry.status = 'queued';
       entry.updatedAt = this.now();
+      entry.completedAt = undefined;
+      entry.finalResponse = undefined;
+      entry.delivered = false;
       entry.message.metadata = {
         ...entry.message.metadata,
         workRecovered: true,
-        workWasInterrupted: interrupted,
+        workWasInterrupted: interrupted || recoverableFailure,
+        ...(recoverableFailure ? {
+          workContinuation: true,
+          continuationAttempt: (typeof entry.message.metadata?.continuationAttempt === 'number' ? entry.message.metadata.continuationAttempt : 0) + 1,
+          continuationReason: entry.error?.slice(0, 1000),
+        } : {}),
       };
       recovered.push(structuredClone(entry));
     }

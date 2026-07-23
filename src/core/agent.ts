@@ -1,5 +1,6 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -467,6 +468,10 @@ export class Agent {
 
     let workKey: string | undefined;
     if (!trimmed.startsWith('/')) {
+      msg.metadata = {
+        ...msg.metadata,
+        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd(),
+      };
       const accepted = this.workLedger.accept(msg);
       workKey = accepted.entry.key;
       if (!accepted.accepted) {
@@ -998,10 +1003,17 @@ export class Agent {
     }
   }
 
-  private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown): number {
+  private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
-    const delayMs = Math.min(5_000 * 2 ** Math.min(attempts - 1, 6), 5 * 60_000);
-    this.workLedger.markRetry(workKey, error, Date.now() + delayMs);
+    const delayMs = continuation
+      ? Math.min(2_000 * 2 ** Math.min(attempts - 1, 5), 60_000)
+      : Math.min(5_000 * 2 ** Math.min(attempts - 1, 6), 5 * 60_000);
+    this.workLedger.markRetry(workKey, error, Date.now() + delayMs, {
+      continuation,
+      workCwd: this.capabilities.getCwd(),
+      activity: this.currentActivity,
+      summary: formatNarrative(this.stepNarrative, this.currentActivity, 8),
+    });
     const timer = setTimeout(() => {
       const entry = this.workLedger.get(workKey);
       if (!entry || entry.status !== 'queued') return;
@@ -1015,6 +1027,20 @@ export class Agent {
   private isRetryableProviderError(error: unknown): boolean {
     const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
     return /timeout|timed out|network|socket|connection|temporar|unavailable|overloaded|rate.?limit|\b429\b|\b5\d\d\b|econn|fetch failed|stalled/.test(message);
+  }
+
+  private async sendProgressNotice(msg: ChannelMessage, message: string): Promise<void> {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel || msg.channelType === 'internal') return;
+    if (channel instanceof WebChannel) {
+      channel.sendHeartbeat(message, msg.channelId);
+      return;
+    }
+    if (channel instanceof CLIChannel) {
+      channel.sendHeartbeat(message);
+      return;
+    }
+    await channel.send(message, msg.channelId);
   }
 
   private channelProviderOverrides = new Map<string, { providerName: string; modelName: string; provider: BaseProvider }>();
@@ -1212,6 +1238,11 @@ export class Agent {
     this.currentMessage = msg;
     this.currentAbort = loopAbortController;
     this.currentAbortReason = null;
+    const durableCwd = typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : undefined;
+    if (durableCwd && existsSync(durableCwd)) {
+      this.capabilities.setCwd(durableCwd);
+      this.capabilities.permissions.addTempScope(durableCwd, true, true);
+    }
     this.currentActivity = '';
     this.completedStepCount = 0;
     this.stepNarrative = [];
@@ -1335,7 +1366,14 @@ export class Agent {
       }
 
       let systemPrompt = this.buildSystemPrompt();
-      if (msg.metadata?.workRecovered === true) {
+      if (msg.metadata?.workContinuation === true) {
+        const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
+        const reason = typeof msg.metadata.continuationReason === 'string' ? msg.metadata.continuationReason : 'The prior execution was interrupted.';
+        const activity = typeof msg.metadata.continuationActivity === 'string' ? msg.metadata.continuationActivity : 'unknown';
+        const summary = typeof msg.metadata.continuationSummary === 'string' ? msg.metadata.continuationSummary : 'No structured progress summary is available.';
+        const cwd = typeof msg.metadata.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd();
+        systemPrompt += `\n\n[SYSTEM: DURABLE CONTINUATION ${attempt}] Do not restart this task. Continue from the artifacts and side effects already present. First inspect the current filesystem and relevant external state, especially ${cwd}. Prior interruption: ${reason}. Last activity: ${activity}. Recorded progress: ${summary}. Do not repeat the failed strategy. If a file or tool payload was too large, use a different bounded approach: inspect what exists, generate smaller components, append or patch in small verified chunks, or generate repetitive content programmatically. Verify each existing artifact before changing it. Keep working until there is a usable final deliverable, then clearly report its location and validation result.`;
+      } else if (msg.metadata?.workRecovered === true) {
         systemPrompt += '\n\n[SYSTEM: RECOVERED WORK] This request was recovered after the agent restarted or its prior run was interrupted. Inspect the current filesystem, external state, and conversation before acting. Do not repeat side effects that may already have completed. Continue from observed state, and explicitly report any ambiguity you cannot safely resolve.';
       }
       const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
@@ -2267,14 +2305,21 @@ export class Agent {
           ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
           : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
+        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput)) {
+          const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
+          await this.sendProgressNotice(
+            msg,
+            `Progress was checkpointed. Mercury will inspect the existing artifacts and continue with a different approach in ${Math.round(delayMs / 1000)} seconds.`,
+          ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
+          this.lifecycle.transition('idle');
+          return;
+        }
         if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
           const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError);
-          if (channel && msg.channelType !== 'internal') {
-            await channel.send(
-              `All providers are temporarily unavailable. This request is safely queued and will retry automatically in ${Math.round(delayMs / 1000)} seconds.`,
-              msg.channelId,
-            ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
-          }
+          await this.sendProgressNotice(
+            msg,
+            `All providers are temporarily unavailable. This request is safely queued and will retry automatically in ${Math.round(delayMs / 1000)} seconds.`,
+          ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
           this.lifecycle.transition('idle');
           return;
         }

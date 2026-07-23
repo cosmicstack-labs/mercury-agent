@@ -95,6 +95,48 @@ describe('WorkLedger', () => {
     expect(restored).toMatchObject({ status: 'queued', attempts: 1, error: 'network unavailable', nextAttemptAt: 50_000 });
   });
 
+  it('checkpoints continuation context instead of discarding completed tool progress', () => {
+    const { filePath, ledger } = setup();
+    const entry = ledger.accept(message('continuation')).entry;
+    ledger.markRunning(entry.key);
+    ledger.markRetry(entry.key, 'Generation was interrupted after one or more tools completed', 10_000, {
+      continuation: true,
+      workCwd: '/tmp/project',
+      activity: 'Writing composition',
+      summary: 'Screenshot and voiceover completed',
+    });
+
+    const restored = new WorkLedger({ filePath }).get(entry.key);
+    expect(restored).toMatchObject({
+      status: 'queued',
+      message: { metadata: {
+        workContinuation: true,
+        continuationAttempt: 1,
+        workCwd: '/tmp/project',
+        continuationActivity: 'Writing composition',
+        continuationSummary: 'Screenshot and voiceover completed',
+      } },
+    });
+    expect(restored).not.toHaveProperty('finalResponse');
+  });
+
+  it('automatically revives legacy ambiguous failures after an upgrade', () => {
+    const { filePath, ledger } = setup();
+    const entry = ledger.accept(message('legacy-interruption')).entry;
+    ledger.markRunning(entry.key);
+    ledger.markFailed(entry.key, 'Work stopped in an interrupted/ambiguous state; side effects may be partial');
+    ledger.markDelivered(entry.key);
+
+    const recovered = new WorkLedger({ filePath }).recoverInterrupted();
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      status: 'queued',
+      delivered: false,
+      finalResponse: undefined,
+      message: { metadata: { workContinuation: true, continuationAttempt: 1 } },
+    });
+  });
+
   it('quarantines invalid state and starts a valid empty ledger', () => {
     const { dir, filePath } = setup();
     writeFileSync(filePath, '{not-json', { mode: 0o600 });
