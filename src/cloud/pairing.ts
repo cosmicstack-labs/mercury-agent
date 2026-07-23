@@ -131,20 +131,44 @@ export async function pollPairingComplete(
   throw new Error('Pairing timed out — the browser approval was not completed in time. Run `mercury cloud connect` again.');
 }
 
-export async function refreshToken(
+const REFRESH_RESULT_REUSE_MS = 5 * 60 * 1000;
+const refreshRequests = new Map<string, { promise: Promise<TokenRefreshResult>; reusableUntil: number }>();
+
+export function refreshToken(
   apiUrl: string,
   currentRefreshToken: string
 ): Promise<TokenRefreshResult> {
+  const now = Date.now();
+  for (const [key, entry] of refreshRequests) {
+    if (entry.reusableUntil <= now) refreshRequests.delete(key);
+  }
+
+  // Refresh tokens are single-use. Every cloud consumer in this process must
+  // share the same rotation result rather than racing the auth endpoint.
+  const key = `${apiUrl}\0${currentRefreshToken}`;
+  const existing = refreshRequests.get(key);
+  if (existing) return existing.promise;
+
+  const entry = {
+    promise: performTokenRefresh(apiUrl, currentRefreshToken),
+    reusableUntil: Number.POSITIVE_INFINITY,
+  };
+  refreshRequests.set(key, entry);
+  void entry.promise.then(
+    () => { entry.reusableUntil = Date.now() + REFRESH_RESULT_REUSE_MS; },
+    () => { refreshRequests.delete(key); },
+  );
+  return entry.promise;
+}
+
+async function performTokenRefresh(apiUrl: string, currentRefreshToken: string): Promise<TokenRefreshResult> {
   const res = await fetch(`${apiUrl}/v1/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken: currentRefreshToken }),
   });
 
-  if (!res.ok) {
-    throw new Error(`Token refresh failed: ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`Token refresh failed: ${res.status}`);
   return (await res.json()) as TokenRefreshResult;
 }
 

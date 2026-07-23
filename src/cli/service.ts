@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { isStandaloneBinary } from './daemon.js';
+import { isTermux } from '../utils/platform.js';
 
 const SERVICE_NAME = 'mercury';
 const SERVICE_DESC = 'Mercury — Soul-Driven AI Agent';
@@ -13,6 +14,8 @@ const WIN_TASK_NAME = 'MercuryAgent';
 
 export function isServiceInstalled(): boolean {
   const platform = process.platform;
+
+  if (isTermux()) return false;
 
   if (platform === 'darwin') {
     return existsSync(join(homedir(), 'Library', 'LaunchAgents', 'com.cosmicstack.mercury.plist'));
@@ -56,6 +59,11 @@ function getServiceLaunchArgs(): string[] {
 export function installService(): void {
   const platform = process.platform;
 
+  if (isTermux()) {
+    showTermuxServiceHelp('install');
+    return;
+  }
+
   if (platform === 'darwin') {
     installMac();
   } else if (platform === 'linux') {
@@ -70,6 +78,11 @@ export function installService(): void {
 
 export function uninstallService(): void {
   const platform = process.platform;
+
+  if (isTermux()) {
+    showTermuxServiceHelp('uninstall');
+    return;
+  }
 
   if (platform === 'darwin') {
     uninstallMac();
@@ -86,6 +99,11 @@ export function uninstallService(): void {
 export function showServiceStatus(): void {
   const platform = process.platform;
 
+  if (isTermux()) {
+    showTermuxServiceHelp('status');
+    return;
+  }
+
   if (platform === 'darwin') {
     showMacStatus();
   } else if (platform === 'linux') {
@@ -93,6 +111,16 @@ export function showServiceStatus(): void {
   } else if (platform === 'win32') {
     showWindowsStatus();
   }
+}
+
+function showTermuxServiceHelp(action: 'install' | 'uninstall' | 'status'): void {
+  console.log('');
+  console.log(chalk.yellow(`  System service ${action} is not available in Termux (systemd is not present).`));
+  console.log(chalk.dim('  Start Mercury with: mercury start'));
+  console.log(chalk.dim('  Check it with:       mercury status'));
+  console.log(chalk.dim('  Stop it with:        mercury stop'));
+  console.log(chalk.dim('  For boot startup, use the Termux:Boot add-on and a ~/.termux/boot script.'));
+  console.log('');
 }
 
 function installMac(): void {

@@ -12,7 +12,7 @@ Mercury runs on **Android via [Termux](https://termux.dev/)**, giving you a real
 
 - Android 7.0+
 - Termux installed from **[F-Droid](https://f-droid.org/en/packages/com.termux/)** or **[GitHub Releases](https://github.com/termux/termux-app/releases)** (the Play Store build is unmaintained — do not use it)
-- ~150 MB free storage
+- ~500 MB free storage for Node.js, Mercury, and native module compilation
 - Network access
 
 ### Install Node.js + Mercury
@@ -21,12 +21,12 @@ Termux is the recommended path on Android because the prebuilt Linux binaries ta
 
 ```bash
 pkg update && pkg upgrade -y
-pkg install nodejs-lts git -y
+pkg install nodejs-lts git python make clang pkg-config -y
 npm i -g @cosmicstack/mercury-agent
 mercury
 ```
 
-That's it. `nodejs-lts` ships Node 20+, which is what Mercury requires.
+`nodejs-lts` provides Node 20+ and npm. Python, Make, Clang, and pkg-config are required when npm needs to build native dependencies such as `better-sqlite3` for Android's bionic libc. Do not use Mercury's standalone Linux binary on Termux.
 
 ### Storage access (optional but recommended)
 
@@ -41,24 +41,37 @@ Now you can point Mercury at projects in `~/storage/shared/Projects/...`.
 
 ### Keep Mercury running in the background
 
-Termux kills processes when the app is swiped away unless you:
+Android may stop Termux processes when the app is swiped away or the device sleeps. For the best available background behavior:
 
-1. Enable **Termux:Boot** (from F-Droid) for auto-start on boot.
-2. Acquire a wakelock so Android doesn't suspend the process:
+1. Install **Termux:API** and **Termux:Boot** from the same source as Termux (F-Droid or GitHub), then install the API commands:
 
    ```bash
+   pkg install termux-api
    termux-wake-lock
    ```
 
-3. Disable battery optimization for Termux in **Settings → Apps → Termux → Battery**.
+2. Disable battery optimization for Termux in **Settings → Apps → Termux → Battery**.
+3. Start Mercury with its supported daemon command:
 
-For full 24/7 operation, run Mercury in daemon mode:
+   ```bash
+   mercury start
+   ```
+
+Termux does not run systemd, so `mercury service install` is intentionally unsupported. To request startup after reboot, create `~/.termux/boot/start-mercury`:
 
 ```bash
-mercury daemon start
+mkdir -p ~/.termux/boot
+cat > ~/.termux/boot/start-mercury <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+termux-wake-lock
+mercury start
+EOF
+chmod +x ~/.termux/boot/start-mercury
 ```
 
-See [Daemon Mode](../../daemon-mode/daemon-mode) for details.
+Termux:Boot only runs after the user has opened its app once, and Android/OEM background restrictions can still stop Mercury. A wakelock reduces suspension but increases battery use; release it with `termux-wake-unlock` when Mercury is stopped. This setup cannot guarantee server-like 24/7 availability.
+
+See [Daemon Mode](../../daemon-mode/daemon-mode) for `mercury start`, `mercury status`, and `mercury stop` details.
 
 ### Telegram bot on the go
 
@@ -66,12 +79,14 @@ A common Termux setup: run Mercury's [Telegram integration](../../integrations/t
 
 ```bash
 mercury doctor   # enable Telegram, paste bot token
-mercury daemon start
+mercury start
 ```
 
 ### Known limitations
 
 - **No prebuilt binary** — must use npm. The standalone installer (`install.sh`) won't work on Termux because of glibc/bionic differences.
+- **No system service manager** — systemd service install/status/uninstall is unavailable. Use Mercury's daemon commands and optionally Termux:Boot.
+- **No guaranteed background uptime** — wakelocks and Termux:Boot cannot override every Android or OEM process-killing policy.
 - **TUI rendering** — Mercury's interface assumes a wide terminal. Rotate landscape or pair Termux with an external keyboard for the best experience.
 - **Background limits** — Aggressive OEMs (Xiaomi, Oppo, Huawei) need extra battery-optimization tweaks beyond the standard Android settings.
 - **Storage permission** — Required for accessing project files outside `$HOME`.

@@ -3,7 +3,10 @@ import { refreshToken } from './pairing.js';
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger.js';
 
-export type WSMessageHandler = (message: WSMessage) => void;
+export type WSMessageHandler = (message: WSMessage) => void | Promise<void>;
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const MAX_BUFFERED_AMOUNT = 1024 * 1024;
 
 export class MercuryCloudClient {
   private ws: WebSocket | null = null;
@@ -22,7 +25,11 @@ export class MercuryCloudClient {
   private isRefreshing = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRefreshFailureLogAt = 0;
-  private connectedHandlers = new Set<() => void>();
+  private connectedHandlers = new Set<() => void | Promise<void>>();
+  private awaitingPong = false;
+  private lifecycleGeneration = 0;
+  private authRefreshNeeded = false;
+  private connectPromise: Promise<void> | null = null;
 
   constructor(url: string, token: string, agentId: string, refreshTokenVal: string, apiUrl: string) {
     this.url = url;
@@ -33,62 +40,85 @@ export class MercuryCloudClient {
   }
 
   async connect(): Promise<void> {
-    if (this.isConnecting || this.ws) return;
+    if (this.isConnected()) return;
+    if (this.connectPromise) return this.connectPromise;
+    this.shouldReconnect = true;
     this.isConnecting = true;
 
     const wsUrl = `${this.url}?agentId=${this.agentId}&token=${this.token}`;
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      const socket = new WebSocket(wsUrl, { handshakeTimeout: 15_000 });
+      this.ws = socket;
+      this.connectPromise = new Promise<void>((resolve, reject) => {
+        let opened = false;
 
-      this.ws.onopen = () => {
-        this.isConnecting = false;
-        this.reconnectAttempts = 0;
-        this.startHeartbeat();
-        this.startTokenCheck();
-        for (const handler of this.connectedHandlers) {
-          try { handler(); } catch {}
-        }
-      };
-
-      this.ws.onmessage = (event: WebSocket.MessageEvent) => {
-        try {
-          const message = JSON.parse(event.data as string) as WSMessage;
-          const handlers = this.handlers.get(message.type) || [];
-          for (const handler of handlers) {
-            handler(message);
+        socket.on('open', () => {
+          if (this.ws !== socket) return;
+          opened = true;
+          this.isConnecting = false;
+          this.reconnectAttempts = 0;
+          this.authRefreshNeeded = false;
+          this.awaitingPong = false;
+          this.startHeartbeat();
+          this.startTokenCheck();
+          resolve();
+          for (const handler of this.connectedHandlers) {
+            this.runHandler('connected', handler);
           }
-        } catch {
-        }
-      };
+        });
 
-      this.ws.onclose = (event: any) => {
-        this.isConnecting = false;
-        this.stopHeartbeat();
-        this.stopTokenCheck();
-        this.ws = null;
+        socket.on('message', (data) => {
+          this.awaitingPong = false;
+          try {
+            const message = JSON.parse(data.toString()) as WSMessage;
+            for (const handler of this.handlers.get(message.type) || []) {
+              this.runHandler(message.type, () => handler(message));
+            }
+          } catch (error) {
+            logger.warn({ err: error instanceof Error ? error.message : String(error) }, 'Invalid Mercury Cloud WebSocket message');
+          }
+        });
 
-        if (event.code === 1008) {
-          this.tryRefreshAndReconnect();
-          return;
-        }
+        socket.on('pong', () => {
+          this.awaitingPong = false;
+        });
 
-        if (this.shouldReconnect) {
+        socket.on('close', (code) => {
+          if (!opened) reject(new Error(`Mercury Cloud WebSocket closed before opening (${code})`));
+          if (this.ws !== socket) return;
+          this.isConnecting = false;
+          this.stopHeartbeat();
+          this.stopTokenCheck();
+          this.ws = null;
+          this.connectPromise = null;
+
+          if (!this.shouldReconnect) return;
+          this.authRefreshNeeded = code === 1008;
           this.scheduleReconnect();
-        }
-      };
+        });
 
-      this.ws.onerror = () => {
-        this.isConnecting = false;
-      };
-    } catch {
+        socket.on('error', (error) => {
+          logger.warn({ err: error.message }, 'Mercury Cloud WebSocket error');
+        });
+      }).finally(() => {
+        if (this.ws !== socket || socket.readyState === WebSocket.OPEN) this.connectPromise = null;
+      });
+      return await this.connectPromise;
+    } catch (error) {
       this.isConnecting = false;
-      this.scheduleReconnect();
+      this.connectPromise = null;
+      if (this.shouldReconnect) this.scheduleReconnect();
+      throw error;
     }
   }
 
   disconnect(): void {
     this.shouldReconnect = false;
+    this.lifecycleGeneration++;
+    this.authRefreshNeeded = false;
+    this.isConnecting = false;
+    this.connectPromise = null;
     this.stopHeartbeat();
     this.stopTokenCheck();
     if (this.reconnectTimer) {
@@ -118,14 +148,26 @@ export class MercuryCloudClient {
     }
   }
 
-  onConnected(handler: () => void): () => void {
+  onConnected(handler: () => void | Promise<void>): () => void {
     this.connectedHandlers.add(handler);
     return () => this.connectedHandlers.delete(handler);
   }
 
-  send(message: WSMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+  send(message: WSMessage): boolean {
+    const socket = this.ws;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    if (socket.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+      logger.warn({ bufferedAmount: socket.bufferedAmount, type: message.type }, 'Mercury Cloud WebSocket send skipped due to backpressure');
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(message), (error) => {
+        if (error) logger.warn({ err: error.message, type: message.type }, 'Mercury Cloud WebSocket send failed');
+      });
+      return true;
+    } catch (error) {
+      logger.warn({ err: error instanceof Error ? error.message : String(error), type: message.type }, 'Mercury Cloud WebSocket send failed');
+      return false;
     }
   }
 
@@ -171,12 +213,28 @@ export class MercuryCloudClient {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
+      const socket = this.ws;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (this.awaitingPong) {
+        logger.warn('Mercury Cloud WebSocket heartbeat timed out; reconnecting');
+        socket.terminate();
+        return;
+      }
+      this.awaitingPong = true;
+      try {
+        socket.ping();
+      } catch (error) {
+        logger.warn({ err: error instanceof Error ? error.message : String(error) }, 'Mercury Cloud WebSocket ping failed');
+        socket.terminate();
+        return;
+      }
       this.send({
         type: 'agent.heartbeat',
         agentId: this.agentId,
         timestamp: new Date().toISOString(),
       });
-    }, 60_000);
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeatInterval.unref?.();
   }
 
   private stopHeartbeat(): void {
@@ -189,8 +247,9 @@ export class MercuryCloudClient {
   private startTokenCheck(): void {
     this.stopTokenCheck();
     this.tokenCheckInterval = setInterval(() => {
-      this.tryRefreshAndReconnect();
+      if (this.authRefreshNeeded || this.isTokenNearExpiry()) void this.tryRefreshAndReconnect();
     }, 3 * 60 * 1000);
+    this.tokenCheckInterval.unref?.();
   }
 
   private stopTokenCheck(): void {
@@ -201,24 +260,28 @@ export class MercuryCloudClient {
   }
 
   private async tryRefreshAndReconnect(): Promise<void> {
-    if (this.isRefreshing || !this.refreshTokenValue) return;
+    if (this.isRefreshing || !this.refreshTokenValue || !this.shouldReconnect) return;
     this.isRefreshing = true;
+    const generation = this.lifecycleGeneration;
 
     try {
       const result = await refreshToken(this.apiUrl, this.refreshTokenValue);
+      if (!this.shouldReconnect || generation !== this.lifecycleGeneration) return;
       this.token = result.jwt;
       this.refreshTokenValue = result.refreshToken;
+      this.authRefreshNeeded = false;
 
       const refreshHandler = this.handlers.get('token.refreshed');
       if (refreshHandler) {
         for (const handler of refreshHandler) {
-          handler({ type: 'token.refreshed' as WSMessageType, payload: { jwt: result.jwt, refreshToken: result.refreshToken } });
+          const message = { type: 'token.refreshed' as WSMessageType, payload: { jwt: result.jwt, refreshToken: result.refreshToken } };
+          this.runHandler('token.refreshed', () => handler(message));
         }
       }
 
       if (!this.isConnected()) {
         this.ws = null;
-        this.connect();
+        await this.connect();
       }
     } catch (err: any) {
       // Automatic background refresh should never spam the interactive TUI.
@@ -228,12 +291,25 @@ export class MercuryCloudClient {
         this.lastRefreshFailureLogAt = now;
         logger.warn({ err: err?.message || String(err) }, 'Mercury Cloud background token refresh failed; will retry later');
       }
+      if (this.shouldReconnect && !this.isConnected()) this.scheduleReconnect();
     } finally {
       this.isRefreshing = false;
     }
   }
 
+  private isTokenNearExpiry(): boolean {
+    const parts = this.token.split('.');
+    if (parts.length !== 3) return true;
+    try {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as { exp?: number };
+      return typeof payload.exp !== 'number' || Date.now() >= payload.exp * 1000 - 60_000;
+    } catch {
+      return true;
+    }
+  }
+
   private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.reconnectAttempts = Math.floor(this.maxReconnectAttempts / 2);
     }
@@ -245,11 +321,25 @@ export class MercuryCloudClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.shouldReconnect) {
-        this.connect();
+        if (this.authRefreshNeeded) {
+          void this.tryRefreshAndReconnect();
+        } else {
+          void this.connect().catch(() => {});
+        }
       }
     }, jitteredDelay);
     if (this.reconnectTimer && typeof this.reconnectTimer.unref === 'function') {
       this.reconnectTimer.unref();
+    }
+  }
+
+  private runHandler(type: string, handler: () => void | Promise<void>): void {
+    try {
+      void Promise.resolve(handler()).catch((error) => {
+        logger.error({ err: error instanceof Error ? error.message : String(error), type }, 'Mercury Cloud WebSocket handler failed');
+      });
+    } catch (error) {
+      logger.error({ err: error instanceof Error ? error.message : String(error), type }, 'Mercury Cloud WebSocket handler failed');
     }
   }
 }

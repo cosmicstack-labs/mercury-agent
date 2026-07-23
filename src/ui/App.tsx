@@ -417,7 +417,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           const selected = options[permIdxRef.current] || options[0];
           if (selected) resolvePermissionAndMaybeContinue(selected.value);
         } else if (key.escape) {
-          resolvePermissionAndMaybeContinue(state.permissionPrompt.type === 'mode' ? 'ask-me' : 'no');
+          if (state.permissionPrompt.type === 'mode') resolvePermissionAndMaybeContinue('ask-me');
+          else if (state.permissionPrompt.type !== 'choice') resolvePermissionAndMaybeContinue('no');
         }
         return;
       }
@@ -926,7 +927,7 @@ function StatusBarView({ state }: { state: TuiState }) {
 }
 
 function TokenBarView({ state }: { state: TuiState }) {
-  if (!state.tokenInfo && !state.provider) return null;
+  if (!state.tokenInfo && !state.provider && !state.currentSession) return null;
 
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
@@ -973,6 +974,14 @@ function TokenBarView({ state }: { state: TuiState }) {
           <>
             <Text color="gray"> │ </Text>
             <Text color="magenta">{state.provider.model}</Text>
+          </>
+        )}
+
+        {state.currentSession && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="cyan">{state.currentSession.alias}</Text>
+            <Text color="gray"> [{state.currentSession.shortId}]</Text>
           </>
         )}
 

@@ -29,17 +29,10 @@ describe('buildModelCatalog', () => {
   it('limits the list of displayed models', () => {
     const catalog = buildModelCatalog('anthropic', [
       'claude-sonnet-4-20250514',
-      'claude-opus-4-20250514',
-      'claude-3-7-sonnet-latest',
-      'claude-3-5-sonnet-latest',
-      'claude-3-5-haiku-latest',
-      'claude-test-a',
-      'claude-test-b',
-      'claude-test-c',
-      'claude-test-d',
+      ...Array.from({ length: 55 }, (_, index) => `claude-test-${String(index).padStart(2, '0')}`),
     ]);
 
-    expect(catalog.models).toHaveLength(7);
+    expect(catalog.models).toHaveLength(50);
     expect(catalog.models).not.toContain('claude-sonnet-4-20250514');
   });
 

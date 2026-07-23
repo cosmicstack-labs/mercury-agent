@@ -8,6 +8,11 @@ import type { AppendSessionMessageInput, CreateSessionInput, Session, SessionBin
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ID_PREFIX_RE = /^[0-9a-f]{4,32}$/i;
 const ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
+const CHANNEL_TYPES: ChannelType[] = ['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp'];
+const TITLE_SOURCES: Session['titleSource'][] = ['fallback', 'generated', 'user'];
+const SESSION_STATUSES: Session['status'][] = ['active', 'archived', 'deleted'];
+const MESSAGE_ROLES: SessionMessage['role'][] = ['user', 'assistant', 'system', 'tool'];
+const MESSAGE_KINDS: SessionMessage['kind'][] = ['message', 'command', 'error', 'permission', 'progress', 'tool-call', 'tool-result'];
 
 const ADJECTIVES = ['amber', 'brisk', 'calm', 'clear', 'cosmic', 'eager', 'gentle', 'lucky', 'quiet', 'rapid', 'silver', 'warm'];
 const NOUNS = ['comet', 'falcon', 'forest', 'harbor', 'meteor', 'orbit', 'otter', 'planet', 'river', 'rocket', 'signal', 'star'];
@@ -383,9 +388,52 @@ export class SessionRepository {
   }
 
   private loadIndex(): SessionIndex {
-    if (!existsSync(this.indexPath)) return { version: 1, sessions: [], bindings: {}, importedSources: [] };
-    const parsed = JSON.parse(readFileSync(this.indexPath, 'utf8')) as Partial<SessionIndex>;
-    return { version: 1, sessions: parsed.sessions ?? [], bindings: parsed.bindings ?? {}, importedSources: parsed.importedSources ?? [] };
+    let parsed: unknown;
+    if (existsSync(this.indexPath)) {
+      try {
+        parsed = JSON.parse(readFileSync(this.indexPath, 'utf8'));
+      } catch {
+        parsed = undefined;
+      }
+    }
+
+    const sessionFiles = this.sessionFileNames();
+    if (this.isValidIndex(parsed, sessionFiles)) return parsed;
+    if (!existsSync(this.indexPath) && sessionFiles.length === 0) return this.emptyIndex();
+
+    if (existsSync(this.indexPath)) this.quarantine(this.indexPath);
+    const sessions: Session[] = [];
+    for (const file of sessionFiles) {
+      const path = join(this.rootDir, file);
+      try {
+        const session = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+        if (!this.isValidSession(session, basename(file, '.json'))) throw new Error('Invalid session');
+        sessions.push(session);
+      } catch {
+        this.quarantine(path);
+      }
+    }
+    sessions.sort((a, b) => a.id.localeCompare(b.id));
+    const validIds = new Set(sessions.map((session) => session.id));
+    const bindings: Record<string, string> = {};
+    const recoveredBindings = this.recordValue(parsed, 'bindings');
+    if (recoveredBindings) {
+      for (const key of Object.keys(recoveredBindings).sort()) {
+        const id = recoveredBindings[key];
+        if (typeof id === 'string' && validIds.has(id) && this.isValidBindingKey(key)) bindings[key] = id;
+      }
+    }
+    for (const session of sessions) {
+      for (const binding of session.bindings) {
+        const key = this.bindingKey(binding.channelType, binding.externalConversationId);
+        bindings[key] ??= session.id;
+      }
+    }
+    const importedSources = this.arrayValue(parsed, 'importedSources')?.filter((source): source is string => typeof source === 'string') ?? [];
+    const recovered: SessionIndex = { version: 1, sessions: sessions.map((session) => this.toIndexEntry(session)), bindings, importedSources };
+    this.index = recovered;
+    this.writeIndex();
+    return recovered;
   }
 
   private readSession(id: string): Session {
@@ -410,6 +458,111 @@ export class SessionRepository {
     const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     renameSync(temp, path);
+  }
+
+  private emptyIndex(): SessionIndex {
+    return { version: 1, sessions: [], bindings: {}, importedSources: [] };
+  }
+
+  private sessionFileNames(): string[] {
+    return readdirSync(this.rootDir)
+      .filter((file) => file.endsWith('.json') && UUID_RE.test(basename(file, '.json')))
+      .sort();
+  }
+
+  private quarantine(path: string): void {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    let destination: string;
+    do {
+      destination = `${path}.invalid-${timestamp}-${randomUUID()}`;
+    } while (existsSync(destination));
+    renameSync(path, destination);
+  }
+
+  private isValidIndex(value: unknown, sessionFiles: string[]): value is SessionIndex {
+    if (!this.isRecord(value) || value.version !== 1 || !Array.isArray(value.sessions) || !this.isRecord(value.bindings)
+      || !Array.isArray(value.importedSources) || !value.importedSources.every((source) => typeof source === 'string')) return false;
+    const fileIds = sessionFiles.map((file) => basename(file, '.json'));
+    const entryIds: string[] = [];
+    for (const entry of value.sessions) {
+      if (!this.isValidIndexEntry(entry)) return false;
+      entryIds.push(entry.id);
+      try {
+        const session = JSON.parse(readFileSync(join(this.rootDir, `${entry.id}.json`), 'utf8')) as unknown;
+        if (!this.isValidSession(session, entry.id)) return false;
+        const canonicalEntry = this.toIndexEntry(session);
+        if (Object.entries(canonicalEntry).some(([key, value]) => entry[key as keyof SessionIndexEntry] !== value)) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (entryIds.length !== fileIds.length || [...new Set(entryIds)].sort().join('\0') !== fileIds.join('\0')) return false;
+    return Object.entries(value.bindings).every(([key, id]) => typeof id === 'string' && entryIds.includes(id) && this.isValidBindingKey(key));
+  }
+
+  private isValidIndexEntry(value: unknown): value is SessionIndexEntry {
+    return this.isRecord(value)
+      && typeof value.id === 'string' && UUID_RE.test(value.id) && value.id === value.id.toLowerCase()
+      && typeof value.shortId === 'string' && value.shortId === value.id.replaceAll('-', '').slice(0, 8)
+      && typeof value.alias === 'string' && ALIAS_RE.test(value.alias) && value.alias.length <= 64
+      && typeof value.title === 'string'
+      && TITLE_SOURCES.includes(value.titleSource as Session['titleSource'])
+      && this.isFiniteNumber(value.createdAt) && this.isFiniteNumber(value.updatedAt)
+      && SESSION_STATUSES.includes(value.status as Session['status'])
+      && Number.isInteger(value.revision) && (value.revision as number) >= 1;
+  }
+
+  private isValidSession(value: unknown, expectedId: string): value is Session {
+    if (!this.isRecord(value) || !this.isValidIndexEntry(value) || value.id !== expectedId
+      || !Array.isArray(value.bindings) || !Array.isArray(value.messages)) return false;
+    if (!value.bindings.every((binding) => this.isValidBinding(binding))) return false;
+    return value.messages.every((message) => this.isValidMessage(message, value.id));
+  }
+
+  private isValidBinding(value: unknown): value is SessionBinding {
+    return this.isRecord(value)
+      && CHANNEL_TYPES.includes(value.channelType as ChannelType)
+      && typeof value.externalConversationId === 'string' && value.externalConversationId.length > 0 && value.externalConversationId.length <= 512
+      && this.isFiniteNumber(value.createdAt) && this.isFiniteNumber(value.updatedAt);
+  }
+
+  private isValidMessage(value: unknown, sessionId: string): value is SessionMessage {
+    return this.isRecord(value)
+      && typeof value.id === 'string' && UUID_RE.test(value.id)
+      && value.sessionId === sessionId
+      && MESSAGE_ROLES.includes(value.role as SessionMessage['role'])
+      && MESSAGE_KINDS.includes(value.kind as SessionMessage['kind'])
+      && typeof value.content === 'string'
+      && this.isFiniteNumber(value.timestamp)
+      && Number.isInteger(value.sequence) && (value.sequence as number) >= 1
+      && (value.metadata === undefined || this.isRecord(value.metadata))
+      && (value.tokenCount === undefined || this.isFiniteNumber(value.tokenCount))
+      && (value.reasoning === undefined || typeof value.reasoning === 'string')
+      && (value.externalMessageId === undefined || typeof value.externalMessageId === 'string');
+  }
+
+  private isValidBindingKey(key: string): boolean {
+    const separator = key.indexOf('\0');
+    return separator > 0
+      && CHANNEL_TYPES.includes(key.slice(0, separator) as ChannelType)
+      && key.slice(separator + 1).length > 0
+      && key.slice(separator + 1).length <= 512;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private recordValue(value: unknown, key: string): Record<string, unknown> | undefined {
+    return this.isRecord(value) && this.isRecord(value[key]) ? value[key] : undefined;
+  }
+
+  private arrayValue(value: unknown, key: string): unknown[] | undefined {
+    return this.isRecord(value) && Array.isArray(value[key]) ? value[key] : undefined;
+  }
+
+  private isFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
   }
 
   private notifyMutation(): void {

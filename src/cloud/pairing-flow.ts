@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { exec } from 'node:child_process';
 import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
+import { openUrl } from '../utils/open-url.js';
 import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
 import type { CloudConfig } from './types.js';
 
@@ -19,7 +19,7 @@ export async function runCloudPairingFlow(
   console.log('');
   console.log(chalk.dim(`  Pairing code: ${code}`));
 
-  tryOpenBrowser(pairingUrl);
+  void tryOpenBrowser(pairingUrl);
 
   console.log(chalk.dim('  Waiting for approval (timeout in 5 minutes)...'));
 
@@ -257,22 +257,11 @@ function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig
   return p.apiKey.length > 0;
 }
 
-function tryOpenBrowser(url: string): void {
-  try {
-    const cmd = process.platform === 'darwin'
-      ? 'open'
-      : process.platform === 'win32'
-        ? 'start ""'
-        : 'xdg-open';
-    exec(`${cmd} "${url}"`, (err) => {
-      if (err) {
-        console.log(chalk.dim('  Could not open browser automatically. Please open the URL manually.'));
-      } else {
-        console.log(chalk.green('  ✓ Opened in browser.'));
-      }
-    });
-  } catch {
-    // Silently skip on any error — safe for headless/mobile/CI
+async function tryOpenBrowser(url: string): Promise<void> {
+  if (await openUrl(url)) {
+    console.log(chalk.green('  ✓ Opened in browser.'));
+  } else {
+    console.log(chalk.dim('  Could not open browser automatically. Please open the URL manually.'));
   }
 }
 

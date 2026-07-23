@@ -1001,7 +1001,9 @@ export class Agent {
     }
 
     this.config.providers.default = providerName as any;
+    const previousProviders = this.providers;
     this.providers = await ProviderRegistryImpl.create(this.config);
+    previousProviders.destroy();
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
@@ -1198,6 +1200,11 @@ export class Agent {
         externalMessageId: msg.id,
         metadata: { channelType: msg.channelType, channelId: msg.channelId, ...(requestId ? { requestId } : {}) },
       });
+      if (msg.channelType === 'cli') {
+        const activeSession = this.sessions.get(canonicalSession.id);
+        const cliChannel = this.channels.get('cli');
+        if (cliChannel instanceof CLIChannel) cliChannel.setCurrentSession(activeSession);
+      }
       const recentMemory = this.sessions.get(canonicalSession.id).messages
         .filter((entry) => entry.kind === 'message' && entry.role !== 'tool')
         .slice(-this.saverMode.adjustHistoryWindow(10));
@@ -2713,6 +2720,7 @@ RULES:
       await this.supervisor.haltAll();
     }
     this.backgroundTasks.destroy();
+    this.providers.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
   }
@@ -4675,6 +4683,9 @@ Is this productive iteration or a stuck loop?`,
         return `${label}: ${text.length > 280 ? `${text.slice(0, 277)}...` : text}`;
       }).join('\n');
     };
+    const syncCliSession = (session: ReturnType<SessionRepository['get']>) => {
+      if (channelType === 'cli' && channel instanceof CLIChannel) channel.setCurrentSession(session);
+    };
     try {
       if (content.trim().toLowerCase() === '/sessions') {
         const current = this.sessions.getByBinding(channelType, bindingId);
@@ -4688,6 +4699,7 @@ Is this productive iteration or a stuck loop?`,
       if (argument.toLowerCase() === 'new') {
         const session = this.sessions.create();
         this.sessions.bind(session.id, channelType, bindingId);
+        syncCliSession(session);
         await channel.send(`New session: ${format(session)}`, channelId);
         return;
       }
@@ -4710,6 +4722,7 @@ Is this productive iteration or a stuck loop?`,
         if (this.sessionSyncEnabled) this.sessions.markDeleted(session.id);
         else this.sessions.deletePermanently(session.id);
         const replacement = wasCurrent ? this.sessions.create({ binding: { channelType, externalConversationId: bindingId } }) : null;
+        if (replacement) syncCliSession(replacement);
         await channel.send(
           `Deleted session ${session.alias} [${session.shortId}].${this.sessionSyncEnabled ? ' Cloud deletion is queued.' : ''}${replacement ? ` New session: ${format(replacement)}` : ''}`,
           channelId,
@@ -4729,6 +4742,7 @@ Is this productive iteration or a stuck loop?`,
         session = this.sessions.create({ id: argument });
       }
       this.sessions.bind(session.id, channelType, bindingId);
+      syncCliSession(session);
       await channel.send(`Switched session: ${format(session)}\n\n${transcript(session)}`, channelId);
     } catch (error) {
       const message = error instanceof SessionResolutionError ? error.message : error instanceof Error ? error.message : String(error);
@@ -4759,7 +4773,10 @@ Is this productive iteration or a stuck loop?`,
         return;
       }
       if (this.sessions.get(sessionId).titleSource !== 'fallback') return;
-      this.sessions.updateTitle(sessionId, title, 'generated');
+      const session = this.sessions.updateTitle(sessionId, title, 'generated');
+      const currentCliSession = this.sessions.getByBinding('cli', 'current');
+      const cliChannel = this.channels.get('cli');
+      if (currentCliSession?.id === session.id && cliChannel instanceof CLIChannel) cliChannel.setCurrentSession(session);
       logger.info({ sessionId, title }, 'Generated canonical session title');
     } catch (error) {
       logger.debug({ sessionId, err: error instanceof Error ? error.message : String(error) }, 'Background session title generation failed');

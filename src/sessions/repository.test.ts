@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -19,6 +19,51 @@ describe('SessionRepository', () => {
     expect(reloaded.get(created.id).messages[0]).toMatchObject({ content: 'hello', sequence: 1, sessionId: created.id });
     expect(readdirSync(join(root, 'sessions')).some((file) => file.endsWith('.tmp'))).toBe(false);
     expect(JSON.parse(readFileSync(join(root, 'sessions', 'index.json'), 'utf8')).sessions[0].alias).toBe('amber-comet');
+  });
+
+  it('quarantines a malformed index and rebuilds sessions and bindings', () => {
+    const { root, repository } = fixture();
+    const session = repository.create({ binding: { channelType: 'cli', externalConversationId: 'current' } });
+    const sessionsDir = join(root, 'sessions');
+    writeFileSync(join(sessionsDir, 'index.json'), '{not json');
+    writeFileSync(join(sessionsDir, `${session.id}.json.123.tmp`), 'ignored');
+
+    const recovered = new SessionRepository({ rootDir: sessionsDir, autoMigrate: false });
+
+    expect(recovered.getByBinding('cli', 'current')?.id).toBe(session.id);
+    expect(recovered.list()).toHaveLength(1);
+    const files = readdirSync(sessionsDir);
+    expect(files.some((file) => /^index\.json\.invalid-/.test(file))).toBe(true);
+    expect(files).toContain(`${session.id}.json.123.tmp`);
+  });
+
+  it('rebuilds an index that references a missing session', () => {
+    const { root, repository } = fixture();
+    const present = repository.create({ alias: 'present-session' });
+    const missing = repository.create({ alias: 'missing-session' });
+    const sessionsDir = join(root, 'sessions');
+    unlinkSync(join(sessionsDir, `${missing.id}.json`));
+
+    const recovered = new SessionRepository({ rootDir: sessionsDir, autoMigrate: false });
+
+    expect(recovered.dump().map((session) => session.id)).toEqual([present.id]);
+    expect(() => recovered.get(missing.id)).toThrow(/not found/);
+    expect(readdirSync(sessionsDir).some((file) => /^index\.json\.invalid-/.test(file))).toBe(true);
+  });
+
+  it('quarantines a corrupt individual session while retaining valid sessions', () => {
+    const { root, repository } = fixture();
+    const valid = repository.create({ alias: 'valid-session' });
+    const corrupt = repository.create({ alias: 'corrupt-session' });
+    const sessionsDir = join(root, 'sessions');
+    writeFileSync(join(sessionsDir, `${corrupt.id}.json`), JSON.stringify({ id: corrupt.id, messages: null }));
+
+    const recovered = new SessionRepository({ rootDir: sessionsDir, autoMigrate: false });
+
+    expect(recovered.dump().map((session) => session.id)).toEqual([valid.id]);
+    const quarantined = readdirSync(sessionsDir).find((file) => file.startsWith(`${corrupt.id}.json.invalid-`));
+    expect(quarantined).toBeDefined();
+    expect(JSON.parse(readFileSync(join(sessionsDir, quarantined!), 'utf8'))).toEqual({ id: corrupt.id, messages: null });
   });
 
   it('resolves UUID prefixes and aliases without guessing ambiguity', () => {

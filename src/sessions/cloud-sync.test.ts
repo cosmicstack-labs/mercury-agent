@@ -92,4 +92,31 @@ describe('buildSessionSyncBatches', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it('aborts an in-flight sync when stopped', async () => {
+    vi.useFakeTimers();
+    const repository = new SessionRepository({ rootDir: mkdtempSync(join(tmpdir(), 'mercury-sync-stop-')), autoMigrate: false });
+    const session = repository.create();
+    repository.appendMessage(session.id, { role: 'user', content: 'hello' });
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn((_url, init: RequestInit = {}) => {
+      requestSignal = init.signal ?? undefined;
+      return new Promise((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true });
+      });
+    }));
+    const synchronizer = new CloudSessionSynchronizer(repository, () => ({
+      apiUrl: 'https://api.example.com',
+      agentId: 'aaaaaaaa-1111-4111-8111-111111111111',
+      token: 'token',
+    }));
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requestSignal?.aborted).toBe(false);
+    synchronizer.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requestSignal?.aborted).toBe(true);
+    expect(synchronizer.isEnabled()).toBe(false);
+  });
 });

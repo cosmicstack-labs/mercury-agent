@@ -83,6 +83,7 @@ export class CloudSessionSynchronizer {
   private active = false;
   private retryMs = 1_000;
   private unsubscribe?: () => void;
+  private abortController: AbortController | null = null;
 
   constructor(
     private repository: SessionRepository,
@@ -106,6 +107,8 @@ export class CloudSessionSynchronizer {
     this.unsubscribe = undefined;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.abortController?.abort();
+    this.abortController = null;
   }
 
   isEnabled(): boolean {
@@ -127,6 +130,8 @@ export class CloudSessionSynchronizer {
     if (this.running) return;
     this.running = true;
     this.dirty = false;
+    const abortController = new AbortController();
+    this.abortController = abortController;
     try {
       const config = this.getConfig();
       if (!config.apiUrl || !config.agentId || !config.token) throw new Error('Cloud session sync is not configured');
@@ -141,7 +146,7 @@ export class CloudSessionSynchronizer {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
           body: JSON.stringify(batch),
-          signal: AbortSignal.timeout(15_000),
+          signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(15_000)]),
         });
         if (!response.ok) {
           const detail = (await response.text().catch(() => '')).slice(0, 300);
@@ -150,19 +155,21 @@ export class CloudSessionSynchronizer {
         sessionCount += batch.sessions.length;
         messageCount += batch.messages.length;
       }
-      this.repository.purgeDeleted(deletedSessionIds);
+      if (this.active) this.repository.purgeDeleted(deletedSessionIds);
       this.retryMs = 1_000;
-      if (batches.length) logger.info({ batches: batches.length, sessions: sessionCount, messages: messageCount }, 'Canonical sessions synced to Mercury Cloud');
+      if (this.active && batches.length) logger.info({ batches: batches.length, sessions: sessionCount, messages: messageCount }, 'Canonical sessions synced to Mercury Cloud');
     } catch (error) {
       this.dirty = true;
-      logger.warn({ err: error instanceof Error ? error.message : String(error), retryMs: this.retryMs }, 'Canonical session sync failed; local sessions remain authoritative');
+      if (this.active) logger.warn({ err: error instanceof Error ? error.message : String(error), retryMs: this.retryMs }, 'Canonical session sync failed; local sessions remain authoritative');
       const delay = this.retryMs;
       this.retryMs = Math.min(this.retryMs * 2, 60_000);
       this.running = false;
+      if (this.abortController === abortController) this.abortController = null;
       if (this.active) this.requestSync(delay);
       return;
     }
     this.running = false;
+    if (this.abortController === abortController) this.abortController = null;
     if (this.active && this.dirty) this.requestSync();
   }
 }

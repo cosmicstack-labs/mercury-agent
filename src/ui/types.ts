@@ -116,6 +116,12 @@ export interface SaverInfo {
   savedLifetime: number;
 }
 
+export interface CurrentSessionInfo {
+  alias: string;
+  shortId: string;
+  title: string;
+}
+
 export interface MercuryAppState {
   mode: AppMode;
   programmingMode: ProgrammingModeState;
@@ -133,6 +139,7 @@ export interface MercuryAppState {
   isThinking: boolean;
   permissionPrompt: PermissionPromptState | null;
   workspace: WorkspaceState | null;
+  currentSession: CurrentSessionInfo | null;
 }
 
 export type BgTaskType = 'shell' | 'agent';
@@ -152,7 +159,7 @@ export interface BackgroundTaskInfo {
 }
 
 export interface PermissionPromptState {
-  type: 'mode' | 'ask' | 'continue';
+  type: 'mode' | 'ask' | 'continue' | 'choice';
   message: string;
   options?: Array<{ value: string; label: string }>;
   resolve: (value: string | boolean) => void;

@@ -7,7 +7,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 
 export interface TuiState {
@@ -35,6 +35,7 @@ export interface TuiState {
   lastStepLog: ToolStep[] | null;
   /** Elapsed ms for the last completed task. */
   lastStepLogElapsed: number | null;
+  currentSession: CurrentSessionInfo | null;
 }
 
 const defaultState: TuiState = {
@@ -60,6 +61,7 @@ const defaultState: TuiState = {
   saverInfo: null,
   lastStepLog: null,
   lastStepLogElapsed: null,
+  currentSession: null,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -647,7 +649,7 @@ export class CLIChannel extends BaseChannel {
       this.permissionResolver = (val) => resolve(String(val));
       this.update({
         permissionPrompt: {
-          type: 'mode',
+          type: 'choice',
           message: question,
           options,
           resolve: () => {},
@@ -686,6 +688,10 @@ export class CLIChannel extends BaseChannel {
 
   setProvider(name: string, model: string, badge?: string): void {
     this.update({ provider: { name, model, badge } });
+  }
+
+  setCurrentSession(session: CurrentSessionInfo | null): void {
+    this.update({ currentSession: session });
   }
 
   setTokenInfo(used: number, budget: number, percentage: number): void {

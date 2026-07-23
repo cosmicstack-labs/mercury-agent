@@ -33,6 +33,7 @@ export class MercuryCloudProvider extends BaseProvider {
         logger.warn({ err: err.message }, 'Mercury Cloud periodic token refresh failed');
       });
     }, 3 * 60 * 1000);
+    this.refreshTimer.unref?.();
   }
 
   private isTokenExpired(): boolean {
@@ -92,6 +93,17 @@ export class MercuryCloudProvider extends BaseProvider {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
     }
+  }
+
+  updateToken(token: string): void {
+    this.currentJwt = token;
+    this.config.apiKey = token;
+    const baseUrl = this.config.baseUrl || '';
+    this.client = createOpenAI({
+      apiKey: token,
+      baseURL: baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`,
+    });
+    this.modelInstance = this.client.chat(this.model);
   }
 
   async generateText(prompt: string, systemPrompt: string): Promise<LLMResponse> {

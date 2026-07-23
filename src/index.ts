@@ -2347,23 +2347,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   await agent.wake();
 
   let cloudClient: import('./cloud/client.js').MercuryCloudClient | undefined;
+  let sessionSynchronizer: CloudSessionSynchronizer | undefined;
   if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
     try {
       const { MercuryCloudClient } = await import('./cloud/client.js');
       cloudClient = new MercuryCloudClient(config.cloud.wsUrl, config.cloud.jwt, config.cloud.agentId, config.cloud.refreshToken, config.cloud.apiUrl);
-      const sessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
+      const activeSessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
         apiUrl: config.cloud.apiUrl,
         agentId: config.cloud.agentId,
         token: config.cloud.jwt,
       }));
+      sessionSynchronizer = activeSessionSynchronizer;
 
       cloudClient.on('conversation.sync.toggle', (msg) => {
         const enabled = msg.payload?.enabled === true;
         logger.info({ enabled }, 'Cloud command: toggle conversation persistence');
         agent.setSessionSyncEnabled(enabled);
-        if (enabled) sessionSynchronizer.start();
+        if (enabled) activeSessionSynchronizer.start();
         else {
-          sessionSynchronizer.stop();
+          activeSessionSynchronizer.stop();
           sessions.purgeDeleted(sessions.dump().filter((session) => session.status === 'deleted').map((session) => session.id));
         }
       });
@@ -2374,14 +2376,21 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           config.cloud.jwt = payload.jwt;
           config.cloud.refreshToken = payload.refreshToken;
           config.providers.mercuryCloud.apiKey = payload.jwt;
+          providers.updateApiKey('mercuryCloud', payload.jwt);
           saveConfig(config);
           logger.info('Mercury Cloud token refreshed and saved');
         }
       });
 
-      cloudClient.on('agent.restart', async () => {
-        logger.info('Cloud command: restart');
-        process.kill(process.pid, 'SIGHUP');
+      cloudClient.on('agent.restart', async (msg) => {
+        const reason = typeof msg.payload?.reason === 'string' ? msg.payload.reason : undefined;
+        if (reason === 'server_shutdown') {
+          logger.info('Mercury Cloud server is shutting down; staying alive for reconnect');
+          return;
+        }
+        // A detached Mercury process has no parent supervisor. Exiting here
+        // would turn a remote restart request into a permanent outage.
+        logger.warn({ reason }, 'Cloud restart request ignored; use a process supervisor or `mercury restart` on the host');
       });
 
       cloudClient.on('agent.status', () => {
@@ -3086,6 +3095,34 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
 
     // Keep CLI permission mode prompt, but do it after web server is live.
+    if (cliChannel) {
+      const current = sessions.getByBinding('cli', 'current');
+      const recent = sessions.list().filter((session) => session.messages.length > 0);
+      const resumable = [
+        ...(current?.messages.length ? [current] : []),
+        ...recent.filter((session) => session.id !== current?.id),
+      ].slice(0, 5);
+
+      let selected = current;
+      if (process.stdout.isTTY && resumable.length > 0) {
+        const choice = await cliChannel.presentChoicePrompt(
+          'Continue a previous session or start fresh?',
+          [
+            ...resumable.map((session) => ({
+              value: session.id,
+              label: `${session.alias} [${session.shortId}] - ${session.title} (${session.messages.length} messages)`,
+            })),
+            { value: 'new', label: 'Start a new session' },
+          ],
+        );
+        selected = choice === 'new' ? sessions.create() : sessions.get(choice);
+        sessions.bind(selected.id, 'cli', 'current');
+      }
+
+      selected ??= sessions.getOrCreateBound('cli', 'current');
+      cliChannel.setCurrentSession(selected);
+    }
+
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
@@ -3112,29 +3149,35 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     logger.info({ channels: activeCh, tools: toolNames, web: config.web.enabled }, 'Mercury is live (daemon mode)');
   }
 
-  const shutdown = async () => {
-    if (!isDaemon) {
-      console.log('');
-      console.log(chalk.dim(`  ${name} is shutting down...`));
-    } else {
-      logger.info('Mercury is shutting down (daemon mode)');
-    }
-    // Notify all channels that Mercury is stopping — users should never
-    // have to re-prompt to discover their task was killed mid-flight.
-    try {
-      await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
-    } catch { /* best effort */ }
-    if (userMemory) {
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      cloudClient?.disconnect();
+      sessionSynchronizer?.stop();
+      if (!isDaemon) {
+        console.log('');
+        console.log(chalk.dim(`  ${name} is shutting down...`));
+      } else {
+        logger.info('Mercury is shutting down (daemon mode)');
+      }
+      // Notify all channels that Mercury is stopping — users should never
+      // have to re-prompt to discover their task was killed mid-flight.
       try {
-        userMemory.consolidate();
-        userMemory.close();
-      } catch {}
-    }
-    await stopWebServer();
-    await agent.shutdown();
-    process.exit(0);
+        await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
+      } catch { /* best effort */ }
+      if (userMemory) {
+        try {
+          userMemory.consolidate();
+          userMemory.close();
+        } catch {}
+      }
+      await stopWebServer();
+      await agent.shutdown();
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
-
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 

@@ -103,6 +103,11 @@ export class ProviderRegistry {
     this.providers.set(name, provider);
   }
 
+  updateApiKey(name: string, apiKey: string): void {
+    const provider = this.providers.get(name) as (BaseProvider & { updateToken?: (token: string) => void }) | undefined;
+    provider?.updateToken?.(apiKey);
+  }
+
   getDefault(): BaseProvider {
     if (this.lastSuccessful) {
       const provider = this.providers.get(this.lastSuccessful);
@@ -141,5 +146,12 @@ export class ProviderRegistry {
 
   hasProviders(): boolean {
     return this.providers.size > 0;
+  }
+
+  destroy(): void {
+    for (const provider of this.providers.values()) {
+      (provider as BaseProvider & { destroy?: () => void }).destroy?.();
+    }
+    this.providers.clear();
   }
 }
