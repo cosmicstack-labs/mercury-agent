@@ -54,6 +54,19 @@ describe('MercuryCloudClient', () => {
     expect(socket.send).toHaveBeenCalledTimes(1);
   });
 
+  it('sends a command ACK with the durable request ID', () => {
+    const client = new MercuryCloudClient('ws://example.test', 'token', 'agent', 'refresh', 'https://api.example.com');
+    const socket = { readyState: WebSocket.OPEN, bufferedAmount: 0, send: vi.fn() };
+    (client as any).ws = socket;
+
+    expect(client.sendCommandAck('request-1')).toBe(true);
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({
+      type: 'agent.command.ack',
+      agentId: 'agent',
+      payload: { requestId: 'request-1' },
+    });
+  });
+
   it('does not reconnect after disconnect while refresh is in flight', async () => {
     let resolveRefresh!: (value: { jwt: string; refreshToken: string }) => void;
     refreshTokenMock.mockReturnValue(new Promise((resolve) => { resolveRefresh = resolve; }));

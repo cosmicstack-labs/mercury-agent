@@ -4,23 +4,7 @@ import { logger } from '../utils/logger.js';
 
 type ApprovalResolver = () => void;
 type ChoiceResolver = (value: string) => void;
-type CloudEventHandler = (event: ChatEvent) => void;
-
-function normalizeStreamText(current: string, incoming: string): string {
-  if (!current) return incoming;
-  if (!incoming || incoming === current || current.endsWith(incoming)) return current;
-  if (incoming.startsWith(current)) return incoming;
-
-  let overlap = 0;
-  const max = Math.min(current.length, incoming.length);
-  for (let size = max; size > 0; size--) {
-    if (current.slice(-size) === incoming.slice(0, size)) {
-      overlap = size;
-      break;
-    }
-  }
-  return current + incoming.slice(overlap);
-}
+type CloudEventHandler = (event: ChatEvent) => boolean;
 
 export interface ChatEvent {
   type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error';
@@ -96,13 +80,14 @@ export class WebChannel extends BaseChannel {
     this.sseClients.delete(id);
   }
 
-  private broadcast(event: ChatEvent): void {
+  private broadcast(event: ChatEvent): boolean {
+    let delivered = true;
     const targetId = typeof event.data?.targetId === 'string' ? event.data.targetId : undefined;
     if (targetId) {
       const cloudHandler = this.cloudEventHandlers.get(targetId);
       if (cloudHandler) {
-        cloudHandler(event);
-        if (event.type === 'text_done' || event.type === 'error') {
+        delivered = cloudHandler(event);
+        if (delivered && (event.type === 'text_done' || event.type === 'error')) {
           this.cloudEventHandlers.delete(targetId);
         }
       }
@@ -112,6 +97,7 @@ export class WebChannel extends BaseChannel {
       if (targetId && client.sessionId !== targetId) continue;
       client.send(event);
     }
+    return delivered;
   }
 
   resolveApproval(id: string, action: string): boolean {
@@ -148,10 +134,11 @@ export class WebChannel extends BaseChannel {
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
-    this.broadcast({
+    const delivered = this.broadcast({
       type: 'text_done',
       data: { fullText: content, elapsedMs, targetId },
     });
+    if (!delivered) throw new Error('Cloud WebSocket could not accept the terminal response');
   }
 
   async sendFile(_filePath: string, _targetId?: string): Promise<void> {
@@ -160,16 +147,12 @@ export class WebChannel extends BaseChannel {
 
   async stream(content: AsyncIterable<string>, targetId?: string): Promise<string> {
     let fullText = '';
-    let emittedText = '';
     for await (const chunk of content) {
-      const nextText = normalizeStreamText(emittedText, chunk);
-      const delta = nextText.slice(emittedText.length);
-      fullText = nextText;
-      emittedText = nextText;
-      if (!delta) continue;
+      fullText += chunk;
+      if (!chunk) continue;
       this.broadcast({
         type: 'text_delta',
-        data: { text: delta, targetId },
+        data: { text: chunk, targetId },
       });
     }
     return fullText;
@@ -311,8 +294,8 @@ export class WebChannel extends BaseChannel {
     });
   }
 
-  sendError(message: string, targetId?: string): void {
-    this.broadcast({
+  sendError(message: string, targetId?: string): boolean {
+    return this.broadcast({
       type: 'error',
       data: { message, targetId },
     });
@@ -353,6 +336,10 @@ export class WebChannel extends BaseChannel {
   emitCloudMessage(content: string, requestId: string, sessionId: string, externalConversationId: string, messageId: string | undefined, onEvent: CloudEventHandler): void {
     this.cloudEventHandlers.set(requestId, onEvent);
     this.emitMessageInThread(content, requestId, sessionId, requestId, externalConversationId, messageId);
+  }
+
+  hasCloudEventHandler(requestId: string): boolean {
+    return this.cloudEventHandlers.has(requestId);
   }
 
   setBypassPermissions(enabled: boolean): void {

@@ -67,6 +67,7 @@ import {
   clearSlackAccess,
 } from '../utils/config.js';
 import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
+import { WorkLedger, type WorkEntry } from './work-ledger.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -295,12 +296,11 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 25;
+const MAX_STEPS = 75;
 const MAX_RESPONSE_TOKENS = 4096;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
-const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
 const MAX_STALL_MS = 4 * 60 * 1000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
 
@@ -329,11 +329,13 @@ export class Agent {
   readonly scheduler: Scheduler;
   readonly capabilities: CapabilityRegistry;
   private running = false;
-  private messageQueue: ChannelMessage[] = [];
+  private messageQueue: Array<{ message: ChannelMessage; workKey?: string }> = [];
+  private queuedWorkKeys = new Set<string>();
   private processing = false;
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
+  private currentAbortReason: 'stalled' | 'backgrounded' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
@@ -348,6 +350,10 @@ export class Agent {
   readonly backgroundTasks: BackgroundTaskManager;
   private titleGenerationInFlight = new Set<string>();
   private sessionSyncEnabled = false;
+  private readonly workLedger: WorkLedger;
+  private currentWorkKey: string | null = null;
+  private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
+  private replayingOutbox = false;
 
   constructor(
     private config: MercuryConfig,
@@ -373,6 +379,7 @@ export class Agent {
     this.saverMode = new SaverMode(config);
     this.wireResearchModeToCapabilities();
     this.backgroundTasks = new BackgroundTaskManager();
+    this.workLedger = new WorkLedger();
 
     this.backgroundTasks.onGlobalComplete((task) => {
       this.notifyBackgroundTaskComplete(task);
@@ -404,6 +411,11 @@ export class Agent {
 
   isSessionSyncEnabled(): boolean {
     return this.sessionSyncEnabled;
+  }
+
+  acknowledgeCloudDelivery(requestId: string): void {
+    const key = `request:${requestId}`;
+    if (this.workLedger.get(key)) this.workLedger.markDelivered(key);
   }
 
   private wireResearchModeToCapabilities(): void {
@@ -453,26 +465,59 @@ export class Agent {
       return;
     }
 
+    let workKey: string | undefined;
+    if (!trimmed.startsWith('/')) {
+      const accepted = this.workLedger.accept(msg);
+      workKey = accepted.entry.key;
+      if (!accepted.accepted) {
+        void this.handleDuplicateWork(accepted.entry);
+        return;
+      }
+    }
+
     // Research-y message prompt: when research mode is off and the message looks
     // like a deep-research request, ask whether to run a full research pass.
     const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
     if (isUserMessage && !this.researchMode.isActive() && looksResearchy(trimmed)) {
-      this.promptResearchMode(msg).catch((err) => {
+      this.promptResearchMode(msg, workKey).catch((err) => {
         logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
-        this.messageQueue.push(msg);
+        this.queueMessage(msg, workKey);
         this.processQueue();
       });
       return;
     }
 
-    this.messageQueue.push(msg);
+    this.queueMessage(msg, workKey);
     this.processQueue();
   }
 
-  private async promptResearchMode(msg: ChannelMessage): Promise<void> {
+  private queueMessage(message: ChannelMessage, workKey?: string): void {
+    if (workKey && this.queuedWorkKeys.has(workKey)) return;
+    this.messageQueue.push({ message, workKey });
+    if (workKey) this.queuedWorkKeys.add(workKey);
+  }
+
+  private async handleDuplicateWork(entry: WorkEntry): Promise<void> {
+    if (entry.status === 'completed' && !entry.delivered && entry.finalResponse) {
+      await this.deliverLedgerEntry(entry);
+      return;
+    }
+    const channel = this.channels.getChannelForMessage(entry.message);
+    if (!channel || entry.message.channelType === 'internal') return;
+    const status = entry.status === 'completed'
+      ? 'This request already completed and its result was delivered.'
+      : entry.status === 'failed'
+        ? `This request previously failed: ${entry.error || 'unknown error'}`
+        : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
+    await channel.send(status, entry.message.channelId).catch((error) => {
+      logger.warn({ error, workKey: entry.key }, 'Unable to send duplicate work status');
+    });
+  }
+
+  private async promptResearchMode(msg: ChannelMessage, workKey?: string): Promise<void> {
     const channel = this.channels.getChannelForMessage(msg);
     if (!channel) {
-      this.messageQueue.push(msg);
+      this.queueMessage(msg, workKey);
       this.processQueue();
       return;
     }
@@ -495,7 +540,7 @@ export class Agent {
         await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
       }
     }
-    this.messageQueue.push(msg);
+    this.queueMessage(msg, workKey);
     this.processQueue();
   }
 
@@ -592,7 +637,7 @@ export class Agent {
       await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
     }
 
-    this.messageQueue.push(msg);
+    this.queueMessage(msg);
   }
 
   private async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
@@ -653,6 +698,7 @@ export class Agent {
       const sourceChannelType = this.currentMessage.channelType as any;
 
       if (this.currentAbort) {
+        this.currentAbortReason = 'backgrounded';
         this.currentAbort.abort();
       }
 
@@ -809,7 +855,6 @@ export class Agent {
     const tick = () => {
       if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
       const channel = this.channels.getChannelForMessage(msg);
-      if (!channel) return;
 
       const elapsedMs = Date.now() - this.currentMessage.timestamp;
       const stallMs = Date.now() - this.lastProgressAt;
@@ -818,11 +863,15 @@ export class Agent {
 
       if (stallMs >= MAX_STALL_MS * this.researchMode.getStallMsMultiplier() && this.currentAbort && !this.currentAbort.signal.aborted) {
         logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
+        this.currentAbortReason = 'stalled';
         this.currentAbort.abort();
-        void channel.send(
-          `⚠ Task stalled (no progress for ${stallSec}s). Stopped to avoid hanging. You can retry or use /bg current sooner for long tasks.`,
-          msg.channelId,
-        ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        if (channel) {
+          void channel.send(
+            `Mercury detected a stalled provider after ${stallSec}s without progress. Reconnecting and retrying automatically.`,
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        timer = setTimeout(tick, HEARTBEAT_MAX_MS);
         return;
       }
 
@@ -844,7 +893,7 @@ export class Agent {
         (channel as CLIChannel).sendHeartbeat(heartbeatText);
       } else if (channel instanceof WebChannel) {
         (channel as WebChannel).sendHeartbeat(heartbeatText, msg.channelId);
-      } else {
+      } else if (channel) {
         void channel.send(heartbeatText, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
 
@@ -912,20 +961,60 @@ export class Agent {
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     if (this.messageQueue.length === 0) return;
+    if (!this.running) return;
     if (!this.lifecycle.is('idle')) return;
 
     this.processing = true;
 
-    while (this.messageQueue.length > 0) {
-      const msg = this.messageQueue.shift()!;
-      try {
-        await this.handleMessage(msg);
-      } catch (err) {
-        logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+    try {
+      while (this.messageQueue.length > 0) {
+        const item = this.messageQueue.shift()!;
+        const msg = item.message;
+        if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+        this.currentWorkKey = item.workKey ?? null;
+        try {
+          if (item.workKey) this.workLedger.markRunning(item.workKey);
+          await this.handleMessage(msg);
+          if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
+            this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
+          }
+        } catch (err) {
+          if (item.workKey) {
+            const entry = this.workLedger.get(item.workKey);
+            if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
+            else this.workLedger.markFailed(item.workKey, err);
+          }
+          logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+        } finally {
+          this.currentWorkKey = null;
+          if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
+            this.lifecycle.transition('idle');
+          }
+        }
       }
+    } finally {
+      this.processing = false;
+      if (this.messageQueue.length > 0) void this.processQueue();
     }
+  }
 
-    this.processing = false;
+  private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown): number {
+    const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
+    const delayMs = Math.min(5_000 * 2 ** Math.min(attempts - 1, 6), 5 * 60_000);
+    this.workLedger.markRetry(workKey, error, Date.now() + delayMs);
+    const timer = setTimeout(() => {
+      const entry = this.workLedger.get(workKey);
+      if (!entry || entry.status !== 'queued') return;
+      this.queueMessage(entry.message, workKey);
+      void this.processQueue();
+    }, delayMs);
+    timer.unref?.();
+    return delayMs;
+  }
+
+  private isRetryableProviderError(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return /timeout|timed out|network|socket|connection|temporar|unavailable|overloaded|rate.?limit|\b429\b|\b5\d\d\b|econn|fetch failed|stalled/.test(message);
   }
 
   private channelProviderOverrides = new Map<string, { providerName: string; modelName: string; provider: BaseProvider }>();
@@ -1044,6 +1133,12 @@ export class Agent {
     await this.channels.startAll();
     this.running = true;
 
+    const recovered = this.workLedger.recoverInterrupted();
+    for (const entry of recovered) this.queueMessage(entry.message, entry.key);
+    await this.replayUndeliveredResponses();
+    this.startOutboxRetry();
+    void this.processQueue();
+
     const activeChannels = this.channels.getActiveChannels();
     const toolNames = this.capabilities.getToolNames();
     logger.info({ channels: activeChannels, tools: toolNames }, 'Mercury is awake');
@@ -1051,21 +1146,77 @@ export class Agent {
 
   async sleep(): Promise<void> {
     this.running = false;
+    if (this.outboxRetryTimer) {
+      clearInterval(this.outboxRetryTimer);
+      this.outboxRetryTimer = null;
+    }
     this.scheduler.stopAll();
     await this.channels.stopAll();
     this.lifecycle.transition('sleeping');
     logger.info('Mercury is sleeping');
   }
 
+  private async replayUndeliveredResponses(): Promise<void> {
+    if (this.replayingOutbox) return;
+    this.replayingOutbox = true;
+    try {
+      for (const entry of this.workLedger.getUndeliveredResponses()) {
+        await this.deliverLedgerEntry(entry);
+      }
+    } finally {
+      this.replayingOutbox = false;
+    }
+  }
+
+  private startOutboxRetry(): void {
+    if (this.outboxRetryTimer) return;
+    this.outboxRetryTimer = setInterval(() => {
+      if (this.running) void this.replayUndeliveredResponses();
+    }, 30_000);
+    this.outboxRetryTimer.unref?.();
+  }
+
+  private async deliverLedgerEntry(entry: WorkEntry): Promise<void> {
+    const channel = this.channels.getChannelForMessage(entry.message);
+    if (!channel || !entry.finalResponse) return;
+    const requestId = typeof entry.message.metadata?.requestId === 'string' ? entry.message.metadata.requestId : undefined;
+    const isCloudRequest = channel instanceof WebChannel
+      && typeof entry.message.metadata?.externalConversationId === 'string'
+      && requestId;
+    if (isCloudRequest && !channel.hasCloudEventHandler(requestId)) return;
+    try {
+      if (entry.status === 'failed' && channel instanceof WebChannel) {
+        if (!channel.sendError(entry.finalResponse, entry.message.channelId)) throw new Error('Cloud WebSocket could not accept the terminal error');
+      } else {
+        await channel.send(entry.finalResponse, entry.message.channelId);
+      }
+      if (!isCloudRequest) this.workLedger.markDelivered(entry.key);
+    } catch (error) {
+      this.workLedger.markDeliveryError(entry.key, error);
+      logger.warn({ error, workKey: entry.key }, 'Durable response replay failed');
+    }
+  }
+
+  private finalizeChannelTask(msg: ChannelMessage): void {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (channel instanceof TelegramChannel || channel instanceof SignalChannel || channel instanceof DiscordChannel || channel instanceof SlackChannel) {
+      channel.endTask(msg.channelId);
+      channel.resetStepCounter(msg.channelId);
+    }
+  }
+
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
+    let loopAbortController = new AbortController();
+    this.currentMessage = msg;
+    this.currentAbort = loopAbortController;
+    this.currentAbortReason = null;
     this.currentActivity = '';
     this.completedStepCount = 0;
     this.stepNarrative = [];
-    const stopHeartbeat = this.startForegroundHeartbeat(msg);
     this.markProgress('Starting...');
-    let wallTimeout: ReturnType<typeof setTimeout> | null = null;
+    const stopHeartbeat = this.startForegroundHeartbeat(msg);
     let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
@@ -1183,7 +1334,10 @@ export class Agent {
         }
       }
 
-      const systemPrompt = this.buildSystemPrompt();
+      let systemPrompt = this.buildSystemPrompt();
+      if (msg.metadata?.workRecovered === true) {
+        systemPrompt += '\n\n[SYSTEM: RECOVERED WORK] This request was recovered after the agent restarted or its prior run was interrupted. Inspect the current filesystem, external state, and conversation before acting. Do not repeat side effects that may already have completed. Continue from observed state, and explicitly report any ambiguity you cannot safely resolve.';
+      }
       const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
       const externalConversationId = msg.channelType === 'cli'
         ? 'current'
@@ -1460,19 +1614,11 @@ export class Agent {
       let result: any = null;
       let usedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
-      let streamedText = '';
+      let hasCompletedTool = false;
+      let hasStreamedOutput = false;
       const loopDetector = new ToolCallLoopDetector();
-      const loopAbortController = new AbortController();
       let loopWarningSent = false;
       let selfCheckCount = 0;
-
-      this.currentMessage = msg;
-      this.currentAbort = loopAbortController;
-      wallTimeout = setTimeout(() => {
-        if (!loopAbortController.signal.aborted) {
-          loopAbortController.abort();
-        }
-      }, MAX_FOREGROUND_WALL_MS);
 
       const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal' || (msg.channelType === 'discord' && this.config.channels.discord.streaming) || (msg.channelType === 'slack' && this.config.channels.slack.streaming);
 
@@ -1504,7 +1650,8 @@ export class Agent {
       const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const saverWasActive = this.saverMode.isActive();
 
-      for (const provider of fallbackIterator) {
+      const providersForAttempt = [...fallbackIterator];
+      for (const provider of [...providersForAttempt, ...providersForAttempt]) {
         try {
           this.markProgress(`Calling ${provider.name}...`);
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
@@ -1519,6 +1666,8 @@ export class Agent {
           }
 
           if (canStream && channel) {
+            let streamError: unknown;
+            let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
               system: systemPrompt,
@@ -1527,6 +1676,12 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              onError: ({ error }) => {
+                streamError = error;
+              },
+              onAbort: () => {
+                streamAborted = true;
+              },
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
@@ -1540,6 +1695,7 @@ export class Agent {
                   this.markProgress('Thinking...');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
+                  if (toolResults.length > 0) hasCompletedTool = true;
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
@@ -1774,34 +1930,28 @@ export class Agent {
               },
             });
 
-            let fullText: string;
-
-            if (msg.channelType === 'telegram') {
-              const tgChannel = this.channels.get('telegram');
-              if (tgChannel && 'sendStreamToChat' in tgChannel) {
-                const chatId = msg.channelId.startsWith('telegram:')
-                  ? Number(msg.channelId.split(':')[1])
-                  : Number(msg.channelId);
-                if (!isNaN(chatId)) {
-                  fullText = await (tgChannel as any).sendStreamToChat(chatId, this.withProgressStream(streamResult.textStream));
-                } else {
-                  fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
-                }
-              } else {
-                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
+            const trackedStream = this.withProgressStream((async function* () {
+              for await (const chunk of streamResult.textStream) {
+                if (chunk) hasStreamedOutput = true;
+                yield chunk;
               }
-            } else {
-              fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
-            }
+            })());
+            const streamedText = await channel.stream(trackedStream, msg.channelId);
 
-            const [usage] = await Promise.all([
+            const [usage, finishReason, streamReasoning] = await Promise.all([
               streamResult.usage,
+              streamResult.finishReason,
+              streamResult.reasoning,
             ]);
-
-            const streamReasoning = await streamResult.reasoning;
+            if (streamError) throw streamError;
+            if (streamAborted || finishReason === 'error') {
+              throw new Error(streamAborted ? 'Model stream was aborted before completion' : 'Model stream ended with an error');
+            }
+            const fullText = finishReason === 'length'
+              ? `${streamedText}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]`
+              : streamedText;
 
             result = { text: fullText, usage, reasoning: streamReasoning };
-            streamedText = fullText;
             loopDetector.recordStepText(fullText);
           } else {
             result = await generateText({
@@ -1825,6 +1975,7 @@ export class Agent {
                   this.markProgress('Thinking...');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
+                  if (toolResults.length > 0) hasCompletedTool = true;
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
@@ -2058,6 +2209,10 @@ export class Agent {
                 }
               },
             });
+            if (result.finishReason === 'error') throw new Error('Model generation ended with an error');
+            if (result.finishReason === 'length') {
+              result = { ...result, text: `${result.text}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]` };
+            }
           }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
@@ -2069,27 +2224,37 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          if (this.currentAbortReason === 'stalled' && !hasCompletedTool) {
+            lastError = new Error(`${provider.name} stalled without progress`);
+            this.currentAbortReason = null;
+            loopAbortController = new AbortController();
+            this.currentAbort = loopAbortController;
+            this.markProgress(`Retrying after ${provider.name} stalled...`);
+            logger.warn({ provider: provider.name }, 'Provider stalled; retrying with another healthy attempt');
+            continue;
+          }
+          if (this.currentAbortReason === 'backgrounded') {
+            result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
+            break;
+          }
           if (loopDetector.isHardAborted() || loopAbortController.signal.aborted) {
-            logger.info('Generation aborted due to loop detection — using partial response');
-            if (!result && streamedText) {
-              result = { text: streamedText, usage: undefined };
-            }
-            if (!result) {
-              const elapsedMs = Date.now() - startTime;
-              const timedOut = elapsedMs >= MAX_FOREGROUND_WALL_MS;
-              result = {
-                text: timedOut
-                  ? 'I stopped because this request exceeded the foreground time limit. Please retry with a narrower scope, or move it to background with /bg current sooner.'
-                  : 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.',
-                usage: undefined,
-              };
-            }
-            if (usedProvider) {
-              this.providers.markSuccess(usedProvider.name);
-            }
+            lastError = new Error(hasCompletedTool
+              ? 'Generation was interrupted after one or more tools completed. Current side effects may be partial; inspect state before retrying.'
+              : 'Generation was aborted by progress or loop safety controls.');
+            logger.info({ hasCompletedTool }, 'Generation aborted; recording an explicit failed state');
             break;
           }
           lastError = err;
+          if (hasStreamedOutput) {
+            lastError = new Error(`Provider stream was interrupted after partial output; refusing fallback to avoid combining two responses. Original error: ${err?.message || String(err)}`);
+            logger.error({ provider: provider.name, err }, 'Provider stream interrupted after visible output; fallback suppressed');
+            break;
+          }
+          if (hasCompletedTool) {
+            lastError = new Error(`Provider failed after a tool completed; refusing fallback to avoid duplicate side effects. Original error: ${err?.message || String(err)}`);
+            logger.error({ provider: provider.name, err }, 'Provider interrupted after tool completion; fallback suppressed');
+            break;
+          }
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
           if (channel && msg.channelType !== 'internal') {
             await channel.send(`  [Provider ${provider.name} failed, trying fallback...]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -2098,8 +2263,22 @@ export class Agent {
       }
 
       if (!result) {
-        const errMsg = `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
+        const errMsg = hasCompletedTool
+          ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
+          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
+        if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
+          const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError);
+          if (channel && msg.channelType !== 'internal') {
+            await channel.send(
+              `All providers are temporarily unavailable. This request is safely queued and will retry automatically in ${Math.round(delayMs / 1000)} seconds.`,
+              msg.channelId,
+            ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
+          }
+          this.lifecycle.transition('idle');
+          return;
+        }
+        if (this.currentWorkKey) this.workLedger.markFailed(this.currentWorkKey, errMsg, errMsg);
         if (channel && msg.channelType !== 'internal') {
           // End task before sending error so it goes through as a normal message
           if (channel instanceof TelegramChannel) {
@@ -2115,13 +2294,19 @@ export class Agent {
             (channel as SlackChannel).endTask(msg.channelId);
             (channel as SlackChannel).resetStepCounter(msg.channelId);
           }
-          await channel.send(errMsg, msg.channelId);
+          const delivered = channel instanceof WebChannel ? channel.sendError(errMsg, msg.channelId) : true;
+          if (!(channel instanceof WebChannel)) await channel.send(errMsg, msg.channelId);
+          const awaitsCloudAck = msg.channelType === 'web'
+            && typeof msg.metadata?.externalConversationId === 'string'
+            && typeof msg.metadata?.requestId === 'string';
+          if (this.currentWorkKey && delivered && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+          if (this.currentWorkKey && !delivered) this.workLedger.markDeliveryError(this.currentWorkKey, 'Terminal error delivery was not accepted');
         }
         this.lifecycle.transition('idle');
         return;
       }
 
-      const finalText = (streamedText || result.text || '').trim() || '(no text response)';
+      const finalText = (result.text || '').trim() || '(no text response)';
       this.markProgress('Finalizing response...');
 
       // Store plan output when in plan mode for later execution
@@ -2197,6 +2382,8 @@ export class Agent {
         });
       }
 
+      if (this.currentWorkKey) this.workLedger.markCompleted(this.currentWorkKey, finalText);
+
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
@@ -2227,7 +2414,7 @@ export class Agent {
           (channel as TelegramChannel).endTask(msg.channelId);
           // Flush deferred response
           const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || (!streamedText && finalText ? finalText : null);
+          const responseText = deferred || finalText;
           if (responseText && responseText.trim()) {
             await channel.send(responseText, msg.channelId, elapsed);
           }
@@ -2240,6 +2427,7 @@ export class Agent {
           // For Signal tasks: end task, flush deferred, send completion banner for substantial tasks
           const sigCh = channel as SignalChannel;
           if (isSubstantialTask) {
+            await sigCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2254,7 +2442,7 @@ export class Agent {
           } else {
             sigCh.endTask(msg.channelId);
             const deferred = sigCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2264,6 +2452,7 @@ export class Agent {
         } else if (channel instanceof DiscordChannel) {
           const dcCh = channel as DiscordChannel;
           if (isSubstantialTask) {
+            await dcCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2278,7 +2467,7 @@ export class Agent {
           } else {
             dcCh.endTask(msg.channelId);
             const deferred = dcCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2288,6 +2477,7 @@ export class Agent {
         } else if (channel instanceof SlackChannel) {
           const slCh = channel as SlackChannel;
           if (isSubstantialTask) {
+            await slCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2302,7 +2492,7 @@ export class Agent {
           } else {
             slCh.endTask(msg.channelId);
             const deferred = slCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2311,17 +2501,9 @@ export class Agent {
           }
         } else {
           // CLI or other channels — original flow
-          if (streamedText && streamedText.trim()) {
-            logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
-            // Web channel needs text_done after streaming to reset frontend state
-            if (channel instanceof WebChannel) {
-              await channel.send(streamedText, msg.channelId, elapsed);
-            }
-          } else {
-            logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
-            await channel.send(finalText, msg.channelId, elapsed);
-            this.markProgress();
-          }
+          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending durable response');
+          await channel.send(finalText, msg.channelId, elapsed);
+          this.markProgress();
           if (isSubstantialTask && channel instanceof CLIChannel) {
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
@@ -2340,18 +2522,48 @@ export class Agent {
         logger.debug('Internal prompt processed, no channel response needed');
       }
 
+      const awaitsCloudAck = msg.channelType === 'web'
+        && typeof msg.metadata?.externalConversationId === 'string'
+        && typeof msg.metadata?.requestId === 'string';
+      if (this.currentWorkKey && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+
       this.lifecycle.transition('idle');
     } catch (err) {
       logger.error({ err }, 'Error handling message');
+      const ledgerEntry = this.currentWorkKey ? this.workLedger.get(this.currentWorkKey) : undefined;
+      if (this.currentWorkKey) {
+        if (ledgerEntry?.status === 'completed') this.workLedger.markDeliveryError(this.currentWorkKey, err);
+        else if (ledgerEntry?.status !== 'failed') {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.workLedger.markFailed(
+            this.currentWorkKey,
+            err,
+            `I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`,
+          );
+        }
+      }
+      if (ledgerEntry?.status === 'completed') {
+        logger.warn({ err, workKey: this.currentWorkKey }, 'Final response persisted but delivery did not complete; retaining for replay');
+        return;
+      }
       // Always notify the user — they should never have to re-prompt
       // to find out their task died.
       const catchChannel = this.channels.getChannelForMessage(msg);
       if (catchChannel && msg.channelType !== 'internal') {
         const errMsg = err instanceof Error ? err.message : String(err);
-        void catchChannel.send(
-          `⚠ I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`,
-          msg.channelId,
-        ).catch((sendErr: any) => logger.warn({ sendErr }, 'Failed to notify user of handler error'));
+        try {
+          const finalError = `I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`;
+          const delivered = catchChannel instanceof WebChannel ? catchChannel.sendError(finalError, msg.channelId) : true;
+          if (!(catchChannel instanceof WebChannel)) await catchChannel.send(finalError, msg.channelId);
+          const awaitsCloudAck = msg.channelType === 'web'
+            && typeof msg.metadata?.externalConversationId === 'string'
+            && typeof msg.metadata?.requestId === 'string';
+          if (this.currentWorkKey && delivered && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+          if (this.currentWorkKey && !delivered) this.workLedger.markDeliveryError(this.currentWorkKey, 'Terminal error delivery was not accepted');
+        } catch (sendErr) {
+          if (this.currentWorkKey) this.workLedger.markDeliveryError(this.currentWorkKey, sendErr);
+          logger.warn({ sendErr }, 'Failed to notify user of handler error');
+        }
       }
       // Write crash flag so next startup also reports the failure.
       try {
@@ -2366,10 +2578,11 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
-      if (wallTimeout) clearTimeout(wallTimeout);
       stopHeartbeat();
+      this.finalizeChannelTask(msg);
       this.currentMessage = null;
       this.currentAbort = null;
+      this.currentAbortReason = null;
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];

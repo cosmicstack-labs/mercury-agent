@@ -24,6 +24,8 @@ export type WSMessageType =
   | 'agent.restart'
   | 'agent.status'
   | 'agent.command'
+  | 'agent.command.ack'
+  | 'agent.event.ack'
   | 'skill.install'
   | 'skill.remove'
   | 'memory.extract'

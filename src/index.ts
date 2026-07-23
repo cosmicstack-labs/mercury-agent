@@ -2393,6 +2393,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         logger.warn({ reason }, 'Cloud restart request ignored; use a process supervisor or `mercury restart` on the host');
       });
 
+      cloudClient.on('agent.event.ack', (msg) => {
+        const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : undefined;
+        if (requestId) agent.acknowledgeCloudDelivery(requestId);
+      });
+
       cloudClient.on('agent.status', () => {
         cloudClient!.send({
           type: 'agent.state',
@@ -2772,7 +2777,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
               }
             }
             webChannel.emitCloudMessage(message, requestId, sessionId, externalConversationId, messageId, (event) => {
-              cloudClient!.sendStream({
+              const delivered = cloudClient!.sendStream({
                 conversationId,
                 sessionId,
                 requestId,
@@ -2806,7 +2811,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
                 // full-research passes, unless the user re-enables it.
                 agent.researchMode.setOff();
               }
+              return delivered;
             });
+            cloudClient!.sendCommandAck(requestId);
           } catch (err: any) {
             cloudClient!.sendStream({
               conversationId,

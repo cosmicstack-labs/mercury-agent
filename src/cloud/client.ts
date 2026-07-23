@@ -180,8 +180,17 @@ export class MercuryCloudClient {
     });
   }
 
-  sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string; sessionId?: string; requestId?: string }): void {
-    this.send({
+  sendCommandAck(requestId: string): boolean {
+    return this.send({
+      type: 'agent.command.ack',
+      agentId: this.agentId,
+      payload: { requestId },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string; sessionId?: string; requestId?: string }): boolean {
+    return this.send({
       type: 'agent.stream',
       agentId: this.agentId,
       payload,

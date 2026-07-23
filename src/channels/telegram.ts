@@ -95,12 +95,10 @@ export class TelegramChannel extends BaseChannel {
     return this.taskActive.get(key) ?? false;
   }
 
-  /** Get and clear deferred response text (to send after task cleanup) */
+  /** Peek at deferred response text. A successful final send clears it. */
   popDeferredResponse(targetId?: string): string | undefined {
     const key = targetId || 'notification';
-    const text = this.deferredResponses.get(key);
-    this.deferredResponses.delete(key);
-    return text;
+    return this.deferredResponses.get(key);
   }
 
   /** Explicitly queue the final AI response to send after progress cleanup. */
@@ -296,8 +294,14 @@ export class TelegramChannel extends BaseChannel {
     }).catch((err: any) => {
       const message = err?.description || err?.message || String(err);
       logger.error({ err: message }, 'Telegram bot polling stopped');
-      // Don't null out this.bot here — stop() will handle cleanup.
-      // The guard (if this.bot) prevents a second instance from being created.
+      if (this.bot === bot) {
+        this.bot = null;
+        this.ready = false;
+        if (this.dedupCleanupInterval) {
+          clearInterval(this.dedupCleanupInterval);
+          this.dedupCleanupInterval = null;
+        }
+      }
     });
   }
 
@@ -334,6 +338,7 @@ export class TelegramChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.bot?.stop();
+    this.bot = null;
     this.ready = false;
     this.stopTypingLoop();
     if (this.dedupCleanupInterval) {
@@ -345,8 +350,7 @@ export class TelegramChannel extends BaseChannel {
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
     const chatIds = this.resolveTargetChatIds(targetId);
     if (chatIds.length === 0 || !this.bot) {
-      logger.warn({ targetId, chatIds }, 'Telegram send: no valid chat IDs');
-      return;
+      throw new Error(`Telegram send failed: no valid chat for ${targetId || 'notification'}`);
     }
 
     const key = targetId || 'notification';
@@ -394,9 +398,13 @@ export class TelegramChannel extends BaseChannel {
             await this.bot.api.sendMessage(chatId, this.stripHtml(chunk));
           } catch (err2: any) {
             logger.error({ err: err2.message, chatId }, 'Telegram send failed');
+            throw err2;
           }
         }
       }
+    }
+    if (this.deferredResponses.get(key) === content) {
+      this.deferredResponses.delete(key);
     }
   }
 
@@ -1619,18 +1627,7 @@ export class TelegramChannel extends BaseChannel {
     // Flush deferred AI response first (the actual answer the user wants to see)
     const deferred = this.deferredResponses.get(key);
     if (deferred && deferred.trim()) {
-      this.deferredResponses.delete(key);
-      const deferredHtml = mdToTelegram(deferred);
-      const chunks = this.splitMessage(deferredHtml, MAX_MESSAGE_LENGTH);
-      for (const chatId of chatIds) {
-        for (const chunk of chunks) {
-          try {
-            await this.bot?.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
-          } catch {
-            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
-          }
-        }
-      }
+      await this.send(deferred, targetId);
     }
 
     this.stepCounters.delete(key);
