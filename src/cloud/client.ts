@@ -1,5 +1,5 @@
 import type { WSMessage, WSMessageType } from './types.js';
-import { refreshToken } from './pairing.js';
+import type { CloudTokenStore } from './token-store.js';
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger.js';
 
@@ -11,10 +11,7 @@ const MAX_BUFFERED_AMOUNT = 1024 * 1024;
 export class MercuryCloudClient {
   private ws: WebSocket | null = null;
   private url: string;
-  private token: string;
-  private refreshTokenValue: string;
-  private apiUrl: string;
-  private agentId: string;
+  private tokenStore: CloudTokenStore;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private tokenCheckInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;
@@ -30,13 +27,11 @@ export class MercuryCloudClient {
   private lifecycleGeneration = 0;
   private authRefreshNeeded = false;
   private connectPromise: Promise<void> | null = null;
+  private tokenPreparation: Promise<string> | null = null;
 
-  constructor(url: string, token: string, agentId: string, refreshTokenVal: string, apiUrl: string) {
+  constructor(url: string, tokenStore: CloudTokenStore) {
     this.url = url;
-    this.token = token;
-    this.agentId = agentId;
-    this.refreshTokenValue = refreshTokenVal;
-    this.apiUrl = apiUrl;
+    this.tokenStore = tokenStore;
   }
 
   async connect(): Promise<void> {
@@ -44,11 +39,46 @@ export class MercuryCloudClient {
     if (this.connectPromise) return this.connectPromise;
     this.shouldReconnect = true;
     this.isConnecting = true;
+    const generation = this.lifecycleGeneration;
 
-    const wsUrl = `${this.url}?agentId=${this.agentId}&token=${this.token}`;
+    // Never attempt an authenticated handshake with a token that is already
+    // expired. Refresh first so every new/reconnected socket is validated by
+    // the server using current credentials.
+    try {
+      const preparation = this.tokenPreparation ?? this.tokenStore.rotateIfExpired(2 * 60_000);
+      this.tokenPreparation = preparation;
+      await preparation;
+      if (this.tokenPreparation === preparation) this.tokenPreparation = null;
+    } catch (error) {
+      this.tokenPreparation = null;
+      this.isConnecting = false;
+      if (this.shouldReconnect) this.scheduleReconnect();
+      throw error;
+    }
+    if (!this.shouldReconnect || generation !== this.lifecycleGeneration) {
+      this.isConnecting = false;
+      return;
+    }
+    if (this.isConnected()) {
+      this.isConnecting = false;
+      return;
+    }
+    if (this.connectPromise) return this.connectPromise;
+
+    // Pass the access token via an Authorization header rather than a URL
+    // query parameter so it never appears in server/proxy access logs.
+    // Also pass the long-lived agent API key via the X-Agent-Api-Key header
+    // so the server can authenticate the socket even when the JWT is expired.
+    const wsUrl = `${this.url}?agentId=${this.tokenStore.getAgentId()}`;
 
     try {
-      const socket = new WebSocket(wsUrl, { handshakeTimeout: 15_000 });
+      const headers: Record<string, string> = { Authorization: `Bearer ${this.tokenStore.getJwt()}` };
+      const agentApiKey = this.tokenStore.getAgentApiKey();
+      if (agentApiKey) headers['X-Agent-Api-Key'] = agentApiKey;
+      const socket = new WebSocket(wsUrl, {
+        handshakeTimeout: 15_000,
+        headers,
+      });
       this.ws = socket;
       this.connectPromise = new Promise<void>((resolve, reject) => {
         let opened = false;
@@ -174,7 +204,7 @@ export class MercuryCloudClient {
   sendResponse(payload: { message: string; conversationId?: string; sessionId?: string; requestId?: string; inReplyTo?: string }): void {
     this.send({
       type: 'agent.response',
-      agentId: this.agentId,
+      agentId: this.tokenStore.getAgentId(),
       payload,
       timestamp: new Date().toISOString(),
     });
@@ -183,7 +213,7 @@ export class MercuryCloudClient {
   sendCommandAck(requestId: string): boolean {
     return this.send({
       type: 'agent.command.ack',
-      agentId: this.agentId,
+      agentId: this.tokenStore.getAgentId(),
       payload: { requestId },
       timestamp: new Date().toISOString(),
     });
@@ -192,7 +222,7 @@ export class MercuryCloudClient {
   sendStream(payload: { event: string; data?: Record<string, unknown>; conversationId?: string; sessionId?: string; requestId?: string }): boolean {
     return this.send({
       type: 'agent.stream',
-      agentId: this.agentId,
+      agentId: this.tokenStore.getAgentId(),
       payload,
       timestamp: new Date().toISOString(),
     });
@@ -201,18 +231,10 @@ export class MercuryCloudClient {
   sendResearchArtifact(payload: { artifactId: string; title?: string; markdown: string; conversationId?: string; sessionId?: string; requestId?: string; topic?: string }): void {
     this.send({
       type: 'research.artifact',
-      agentId: this.agentId,
+      agentId: this.tokenStore.getAgentId(),
       payload,
       timestamp: new Date().toISOString(),
     });
-  }
-
-  updateToken(token: string): void {
-    this.token = token;
-  }
-
-  updateRefreshToken(refreshTokenVal: string): void {
-    this.refreshTokenValue = refreshTokenVal;
   }
 
   isConnected(): boolean {
@@ -239,7 +261,7 @@ export class MercuryCloudClient {
       }
       this.send({
         type: 'agent.heartbeat',
-        agentId: this.agentId,
+        agentId: this.tokenStore.getAgentId(),
         timestamp: new Date().toISOString(),
       });
     }, HEARTBEAT_INTERVAL_MS);
@@ -256,8 +278,8 @@ export class MercuryCloudClient {
   private startTokenCheck(): void {
     this.stopTokenCheck();
     this.tokenCheckInterval = setInterval(() => {
-      if (this.authRefreshNeeded || this.isTokenNearExpiry()) void this.tryRefreshAndReconnect();
-    }, 3 * 60 * 1000);
+      if (this.authRefreshNeeded || this.tokenStore.isJwtNearExpiry()) void this.tryRefreshAndReconnect();
+    }, 60_000);
     this.tokenCheckInterval.unref?.();
   }
 
@@ -269,17 +291,19 @@ export class MercuryCloudClient {
   }
 
   private async tryRefreshAndReconnect(): Promise<void> {
-    if (this.isRefreshing || !this.refreshTokenValue || !this.shouldReconnect) return;
+    if (this.isRefreshing || !this.tokenStore.getRefreshToken() || !this.shouldReconnect) return;
     this.isRefreshing = true;
     const generation = this.lifecycleGeneration;
 
     try {
-      const result = await refreshToken(this.apiUrl, this.refreshTokenValue);
+      const result = await this.tokenStore.rotate();
       if (!this.shouldReconnect || generation !== this.lifecycleGeneration) return;
-      this.token = result.jwt;
-      this.refreshTokenValue = result.refreshToken;
       this.authRefreshNeeded = false;
 
+      // Notify the rest of the agent that the tokens changed. The shared store
+      // already persisted + notified its listeners (including the provider);
+      // this synthetic event keeps the legacy `token.refreshed` handler path
+      // in index.ts in sync for any additional wiring.
       const refreshHandler = this.handlers.get('token.refreshed');
       if (refreshHandler) {
         for (const handler of refreshHandler) {
@@ -303,17 +327,6 @@ export class MercuryCloudClient {
       if (this.shouldReconnect && !this.isConnected()) this.scheduleReconnect();
     } finally {
       this.isRefreshing = false;
-    }
-  }
-
-  private isTokenNearExpiry(): boolean {
-    const parts = this.token.split('.');
-    if (parts.length !== 3) return true;
-    try {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as { exp?: number };
-      return typeof payload.exp !== 'number' || Date.now() >= payload.exp * 1000 - 60_000;
-    } catch {
-      return true;
     }
   }
 

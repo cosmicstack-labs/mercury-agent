@@ -172,6 +172,27 @@ async function performTokenRefresh(apiUrl: string, currentRefreshToken: string):
   return (await res.json()) as TokenRefreshResult;
 }
 
+/**
+ * Redeem a long-lived agent API key for a fresh JWT + refresh-token pair.
+ * This is the self-recovery path used when the refresh token has expired or
+ * been consumed: the agent API key never expires (only rotation via re-pair
+ * or agent deletion invalidates it), so a paired agent can always come back
+ * online without a browser re-pair.
+ */
+export async function redeemAgentApiKey(
+  apiUrl: string,
+  agentApiKey: string
+): Promise<TokenRefreshResult & { agentId: string }> {
+  const res = await fetch(`${apiUrl}/v1/auth/agent/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: agentApiKey }),
+  });
+
+  if (!res.ok) throw new Error(`Agent key redeem failed: ${res.status}`);
+  return (await res.json()) as TokenRefreshResult & { agentId: string };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

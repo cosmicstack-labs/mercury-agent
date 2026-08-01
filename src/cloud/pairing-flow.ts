@@ -1,13 +1,31 @@
 import chalk from 'chalk';
 import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
 import { openUrl } from '../utils/open-url.js';
-import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken } from './pairing.js';
+import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken, redeemAgentApiKey } from './pairing.js';
+import { getCloudTokenStore, initCloudTokenStore } from './token-store.js';
 import type { CloudConfig } from './types.js';
+import { MERCURY_CLOUD_API_URL, MERCURY_CLOUD_WS_URL } from './endpoints.js';
+
+/**
+ * After fresh credentials land in `config.cloud`, sync the shared in-memory
+ * token store (if one exists in this process) so the running WS client and
+ * provider pick up the new tokens without a restart.
+ */
+function syncTokenStore(config: MercuryConfig): void {
+  if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
+    const existing = getCloudTokenStore();
+    if (existing) {
+      existing.setTokens(config.cloud.jwt, config.cloud.refreshToken);
+    } else {
+      initCloudTokenStore(config);
+    }
+  }
+}
 
 export async function runCloudPairingFlow(
   config: MercuryConfig
 ): Promise<{ cloudConfig: CloudConfig; model: string } | null> {
-  const apiUrl = config.cloud.apiUrl || 'https://api.mercury.cloud';
+  const apiUrl = config.cloud.apiUrl || MERCURY_CLOUD_API_URL;
 
   console.log(chalk.dim('  Starting terminal pairing flow...'));
   console.log('');
@@ -53,11 +71,12 @@ export async function runCloudPairingFlow(
   const cloudConfig: CloudConfig = {
     enabled: true,
     apiUrl,
-    wsUrl: config.cloud.wsUrl || 'wss://api.mercury.cloud/ws',
+    wsUrl: config.cloud.wsUrl || MERCURY_CLOUD_WS_URL,
     jwt: result.jwt,
     refreshToken: result.refreshToken,
     agentId: result.agentId,
     tier: result.tier || 'free',
+    agentApiKey: result.apiKey || config.cloud.agentApiKey || '',
   };
 
   let model = 'mercury-flash';
@@ -118,6 +137,7 @@ export async function runCloudConnect(): Promise<void> {
         config.cloud.refreshToken = result.refreshToken;
         config.providers.mercuryCloud.apiKey = result.jwt;
         saveConfig(config);
+        syncTokenStore(config);
 
         // Re-validate with the fresh token
         const validNow = await validateCloudConnection(config);
@@ -132,7 +152,31 @@ export async function runCloudConnect(): Promise<void> {
       }
     }
 
-    // Refresh failed or no refresh token — re-pair
+    // Refresh token is dead — try redeeming the long-lived agent API key
+    // before forcing a full browser re-pair. This is the self-recovery path
+    // that keeps remotely-deployed agents online without manual intervention.
+    if (config.cloud.agentApiKey) {
+      console.log(chalk.yellow('  ⚠ Trying agent API key recovery...'));
+      try {
+        const result = await redeemAgentApiKey(config.cloud.apiUrl, config.cloud.agentApiKey);
+        config.cloud.jwt = result.jwt;
+        config.cloud.refreshToken = result.refreshToken;
+        config.providers.mercuryCloud.apiKey = result.jwt;
+        saveConfig(config);
+        syncTokenStore(config);
+        const validNow = await validateCloudConnection(config);
+        if (validNow) {
+          console.log(chalk.green('  ✓ Recovered via agent API key.'));
+          console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
+          console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
+          return;
+        }
+      } catch (err: any) {
+        console.log(chalk.red(`  ✗ Agent API key recovery failed: ${err.message}`));
+      }
+    }
+
+    // Refresh + agent key both failed — re-pair
     console.log(chalk.yellow('  ⚠ Session expired. Starting re-pairing flow...'));
     config.cloud.enabled = false;
     config.cloud.jwt = '';
@@ -154,6 +198,7 @@ export async function runCloudConnect(): Promise<void> {
     config.providers.default = 'mercuryCloud';
   }
   saveConfig(config);
+  syncTokenStore(config);
 
   console.log(chalk.green('  ✓ Mercury Cloud connected!'));
   console.log(chalk.dim(`    Agent ID: ${result.cloudConfig.agentId}`));
@@ -176,6 +221,7 @@ export async function runCloudDisconnect(): Promise<void> {
   config.cloud.jwt = '';
   config.cloud.refreshToken = '';
   config.cloud.agentId = '';
+  config.cloud.agentApiKey = '';
   config.providers.mercuryCloud.enabled = false;
   config.providers.mercuryCloud.apiKey = '';
 
@@ -241,6 +287,7 @@ export async function runCloudLogin(): Promise<void> {
     config.cloud.refreshToken = result.refreshToken;
     config.providers.mercuryCloud.apiKey = result.jwt;
     saveConfig(config);
+    syncTokenStore(config);
     console.log(chalk.green('  ✓ Token refreshed successfully.'));
   } catch (err: any) {
     console.log(chalk.red(`  ✗ Token refresh failed: ${err.message || err}`));

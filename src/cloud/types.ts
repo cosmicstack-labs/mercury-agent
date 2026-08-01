@@ -6,6 +6,7 @@ export interface CloudConfig {
   refreshToken: string;
   agentId: string;
   tier: string;
+  agentApiKey: string;
 }
 
 export interface PairingResult {
@@ -13,6 +14,7 @@ export interface PairingResult {
   refreshToken: string;
   agentId: string;
   tier: string;
+  apiKey?: string;
 }
 
 export interface TokenRefreshResult {

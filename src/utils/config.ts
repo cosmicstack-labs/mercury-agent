@@ -1,9 +1,15 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
 import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest } from '../types/channel.js';
+import {
+  LEGACY_SEED_API_URL,
+  LEGACY_SEED_WS_URL,
+  MERCURY_CLOUD_API_URL,
+  MERCURY_CLOUD_WS_URL,
+} from '../cloud/endpoints.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
 
@@ -69,6 +75,7 @@ export interface CloudConfig {
   refreshToken: string;
   agentId: string;
   tier: string;
+  agentApiKey: string;
 }
 
 export interface MercuryConfig {
@@ -217,8 +224,8 @@ function getEnvBool(key: string, fallback: boolean): boolean {
 
 export function getDefaultConfig(): MercuryConfig {
   const home = getMercuryHome();
-  const cloudApiUrl = getEnv('MERCURY_CLOUD_API_URL', 'https://api.mercury.cloud');
-  const cloudWsUrl = getEnv('MERCURY_CLOUD_WS_URL', 'wss://api.mercury.cloud/ws');
+  const cloudApiUrl = getEnv('MERCURY_CLOUD_API_URL', MERCURY_CLOUD_API_URL);
+  const cloudWsUrl = getEnv('MERCURY_CLOUD_WS_URL', MERCURY_CLOUD_WS_URL);
   return {
     identity: {
       name: getEnv('MERCURY_NAME', 'Mercury'),
@@ -233,6 +240,7 @@ export function getDefaultConfig(): MercuryConfig {
       refreshToken: getEnv('MERCURY_CLOUD_REFRESH_TOKEN', ''),
       agentId: getEnv('MERCURY_CLOUD_AGENT_ID', ''),
       tier: getEnv('MERCURY_CLOUD_TIER', 'free'),
+      agentApiKey: getEnv('MERCURY_CLOUD_AGENT_API_KEY', ''),
     },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
@@ -420,6 +428,9 @@ const CONFIG_PATH = join(getMercuryHome(), 'mercury.yaml');
 
 export function loadConfig(): MercuryConfig {
   if (existsSync(CONFIG_PATH)) {
+    // Tighten permissions on an existing config file that contains live
+    // tokens but was written before the 0600 default.
+    try { chmodSync(CONFIG_PATH, 0o600); } catch {}
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const fileConfig = parseYaml(raw) as Partial<MercuryConfig>;
     const defaults = getDefaultConfig();
@@ -438,10 +449,15 @@ export function loadConfig(): MercuryConfig {
   ));
 }
 
-function normalizeCloudConfig(config: MercuryConfig): MercuryConfig {
+export function normalizeCloudConfig(config: MercuryConfig): MercuryConfig {
   // Single source of truth: cloud.apiUrl/wsUrl define the Mercury Cloud backend.
   // providers.mercuryCloud.baseUrl is derived for the OpenAI-compatible client.
-  if (!config.cloud.apiUrl) config.cloud.apiUrl = 'https://api.mercury.cloud';
+  if (!config.cloud.apiUrl || config.cloud.apiUrl === LEGACY_SEED_API_URL) {
+    config.cloud.apiUrl = MERCURY_CLOUD_API_URL;
+  }
+  if (config.cloud.wsUrl === LEGACY_SEED_WS_URL) {
+    config.cloud.wsUrl = MERCURY_CLOUD_WS_URL;
+  }
   if (!config.cloud.wsUrl) config.cloud.wsUrl = deriveCloudWsUrl(config.cloud.apiUrl);
   config.providers.mercuryCloud.baseUrl = config.cloud.apiUrl;
   if (config.cloud.jwt && !config.providers.mercuryCloud.apiKey) {
@@ -459,7 +475,7 @@ function deriveCloudWsUrl(apiUrl: string): string {
     url.hash = '';
     return url.toString();
   } catch {
-    return 'wss://api.mercury.cloud/ws';
+    return MERCURY_CLOUD_WS_URL;
   }
 }
 
@@ -470,6 +486,9 @@ export function saveConfig(config: MercuryConfig): void {
     mkdirSync(dir, { recursive: true });
   }
   writeFileSync(CONFIG_PATH, stringifyYaml(config), 'utf-8');
+  // The config file contains live JWTs and refresh tokens. Restrict to the
+  // owner so other users on shared servers cannot read or rotate them.
+  try { chmodSync(CONFIG_PATH, 0o600); } catch {}
 }
 
 export function isSetupComplete(): boolean {
