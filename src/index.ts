@@ -1509,10 +1509,17 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Telegram (optional)'));
+  // On first run, show the how-to guide so the user knows how to get a bot
+  // token. On reconfig (e.g. `mercury doctor`), skip the guide for an
+  // already-configured channel — only re-show it if the user clears the
+  // existing token (by entering "none" or a new value).
+  const tgAlreadyConfigured = isReconfig && !!config.channels.telegram.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  if (!tgAlreadyConfigured) {
     console.log(chalk.dim('  To create a bot token:'));
     console.log(chalk.dim('    1. Open Telegram and message @BotFather'));
     console.log(chalk.dim('    2. Run /newbot and follow the prompts'));
@@ -1542,12 +1549,15 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Signal (optional)'));
+  const sigAlreadyConfigured = isReconfig && !!config.channels.signal.phoneNumber;
   if (isReconfig && config.channels.signal.phoneNumber) {
     console.log(chalk.dim('  Leave empty to keep current number. Enter "none" to disable Signal.'));
     console.log(chalk.dim('  Enter "reset" to start fresh (clear config, optionally delete binary).'));
     console.log(chalk.dim('  Enter "unregister" to unlink this device from Signal and clear all data.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+  }
+  if (!sigAlreadyConfigured) {
     console.log(chalk.dim('  Include country code, e.g. +1 for US, +44 for UK, +91 for India.'));
     console.log(chalk.dim('  Signal lets you chat with Mercury through a Signal group or private chat.'));
   }
@@ -1681,24 +1691,27 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Discord (optional)'));
+  const dcAlreadyConfigured = isReconfig && !!config.channels.discord.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
   }
-  console.log(chalk.dim('  To create a Discord bot:'));
-  console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
-  console.log(chalk.dim('    2. Click "New Application" → give it a name'));
-  console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
-  console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
-  console.log(chalk.dim('       - Message Content Intent'));
-  console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
-  console.log(chalk.dim('       Scopes: bot, applications.commands'));
-  console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
-  console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
-  console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
-  console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
-  console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  if (!dcAlreadyConfigured) {
+    console.log(chalk.dim('  To create a Discord bot:'));
+    console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+    console.log(chalk.dim('    2. Click "New Application" → give it a name'));
+    console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
+    console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
+    console.log(chalk.dim('       - Message Content Intent'));
+    console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
+    console.log(chalk.dim('       Scopes: bot, applications.commands'));
+    console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
+    console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
+    console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
+    console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
+    console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  }
   console.log('');
 
   const dcMask = isReconfig && config.channels.discord.botToken ? ` [${maskKey(config.channels.discord.botToken)}]` : '';
@@ -1755,29 +1768,32 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Slack (optional)'));
+  const slAlreadyConfigured = isReconfig && !!config.channels.slack.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
   }
-  console.log(chalk.dim('  To create a Slack app:'));
-  console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
-  console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
-  console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
-  console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
-  console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
-  console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
-  console.log(chalk.dim('       files:write, commands, app_mentions:read'));
-  console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
-  console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
-  console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
-  console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
-  console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
-  console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
-  console.log(chalk.dim('       and messages from the messages tab"'));
-  console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
-  console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
-  console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+  if (!slAlreadyConfigured) {
+    console.log(chalk.dim('  To create a Slack app:'));
+    console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
+    console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
+    console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
+    console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
+    console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
+    console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
+    console.log(chalk.dim('       files:write, commands, app_mentions:read'));
+    console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
+    console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
+    console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
+    console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
+    console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
+    console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
+    console.log(chalk.dim('       and messages from the messages tab"'));
+    console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
+    console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
+    console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+  }
 
   const slMask = isReconfig && config.channels.slack.botToken ? ` [${maskKey(config.channels.slack.botToken)}]` : '';
   const slackBotToken = await ask(chalk.white(`  Slack Bot Token${slMask} (starts with xoxb-): `));
