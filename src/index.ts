@@ -1089,9 +1089,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     const agentName = await ask(chalk.white(`  Agent name [${config.identity.name}]: `));
     if (agentName) config.identity.name = agentName;
   } else {
-    const ownerName = await ask(chalk.white('  Your name: '));
+    // Retry up to MAX_EMPTY_ATTEMPTS times before giving up, so an accidental
+    // Enter on the first-run "Your name" prompt doesn't immediately exit
+    // onboarding. Only exit after the user presses Enter with no value that
+    // many times in a row.
+    const MAX_EMPTY_ATTEMPTS = 3;
+    let ownerName = '';
+    let attempts = 0;
+    while (attempts < MAX_EMPTY_ATTEMPTS) {
+      ownerName = await ask(chalk.white('  Your name: '));
+      if (ownerName) break;
+      attempts++;
+      if (attempts < MAX_EMPTY_ATTEMPTS) {
+        console.log(chalk.red(`  Name is required. Please enter your name (${attempts}/${MAX_EMPTY_ATTEMPTS}).`));
+      }
+    }
     if (!ownerName) {
-      console.log(chalk.red('  Name is required.'));
+      console.log(chalk.red('  Name is required. Exiting setup — run `mercury` again to retry.'));
       process.exit(1);
     }
     config.identity.owner = ownerName;

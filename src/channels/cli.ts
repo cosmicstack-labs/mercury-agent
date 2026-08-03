@@ -518,7 +518,13 @@ export class CLIChannel extends BaseChannel {
       for await (const chunk of content) {
         full += chunk;
         const now = Date.now();
-        if (now - lastRender >= 16) {
+        // Throttle streaming re-renders to ~60ms. At 16ms the live Yoga
+        // tree was being recomputed on nearly every token, which — combined
+        // with markdown re-parsing of the full accumulated buffer each
+        // render — caused the visible "vibration"/flicker during generation.
+        // 60ms is fast enough to feel live while keeping each frame's layout
+        // stable.
+        if (now - lastRender >= 60) {
           this.update({
             chatMessages: this.state.chatMessages.map((m) =>
               m.id === msgId ? { ...m, content: full, streaming: true } : m,

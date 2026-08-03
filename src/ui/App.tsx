@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text, Spacer, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, Spacer, Static, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
 import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
@@ -1580,78 +1580,109 @@ function SpotifyBody({ activeIdx, nowPlaying, status, volume, albumArtAnsi }: { 
 
 function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; agentName: string }) {
   if (messages.length === 0) return null;
-  const visible = messages.slice(-50);
-  const cache = React.useRef<Map<string, string>>(new Map());
-  const wasStreaming = React.useRef<Set<string>>(new Set());
+
+  // Completed (non-streaming) messages go into <Static>, which writes them
+  // once to stdout's scrollback and removes them from the live Yoga tree.
+  // This prevents Ink's flex-shrink defaults from collapsing rows once the
+  // cumulative content height exceeds the terminal row count — the bug that
+  // made the chat appear to "shrink" after a few prompts. Users scroll back
+  // through history with the terminal's normal scrollback controls.
+  const staticMsgs = messages.filter((m) => !m.streaming);
+  // Live tree holds only the in-flight streaming message (if any).
+  const liveMsgs = messages.filter((m) => m.streaming);
+
   return (
-    <Box flexDirection="column" flexGrow={1} paddingX={1}>
-      {visible.map((msg) => {
-        const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
-        const roleColor = isCompletion ? 'green' : msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
-        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
-        if (isCompletion) {
-          const meta = msg.completionMeta;
-          const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-          return (
-            <Box key={msg.id} flexDirection="column" marginBottom={1}>
-              <Text color="green" bold>{msg.content}</Text>
-              {meta && (
-                <Box flexDirection="row" paddingLeft={2}>
-                  <Text color="gray">☿ </Text>
-                  <Text color="white" bold>{meta.model}</Text>
-                  <Text color="gray"> via </Text>
-                  <Text color="cyan">{meta.provider}</Text>
-                  <Text color="gray"> · </Text>
-                  <Text color="yellow">{formatTokens(meta.totalTokens)}</Text>
-                  <Text color="gray"> tokens · Budget </Text>
-                  {(() => {
-                    const pct = Math.round(meta.budgetPercentage);
-                    const barLen = 16;
-                    const filled = Math.round((pct / 100) * barLen);
-                    const barColor = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
-                    return (
-                      <>
-                        <Text color={barColor}>{'█'.repeat(filled)}</Text>
-                        <Text color="gray">{'░'.repeat(barLen - filled)}</Text>
-                        <Text color={barColor}> {pct}%</Text>
-                      </>
-                    );
-                  })()}
-                </Box>
-              )}
-            </Box>
-          );
-        }
-        let rendered: string;
-        if (msg.streaming) {
-          rendered = renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-          wasStreaming.current.add(msg.id);
-        } else if (wasStreaming.current.has(msg.id)) {
-          // Streaming just ended — re-render with final complete content
-          rendered = renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-          wasStreaming.current.delete(msg.id);
-        } else {
-          rendered = cache.current.get(msg.id) ?? renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-        }
-        return (
-          <Box key={msg.id} flexDirection="column" marginBottom={1}>
-            <Box>
-              <Text bold color={roleColor}>{prefix}:</Text>
-            </Box>
-            <Box marginLeft={2} flexDirection="column">
-              {rendered.split('\n').map((line, idx) => (
-                <Text key={`${msg.id}:${idx}`}>{line.length > 0 ? line : ' '}</Text>
-              ))}
-            </Box>
-          </Box>
-        );
-      })}
-    </Box>
+    <>
+      <Static items={staticMsgs}>
+        {(msg) => <MessageRow key={msg.id} msg={msg} agentName={agentName} />}
+      </Static>
+      <Box flexDirection="column" flexGrow={1} flexShrink={0} paddingX={1}>
+        {liveMsgs.map((msg) => (
+          <MessageRow key={msg.id} msg={msg} agentName={agentName} live />
+        ))}
+      </Box>
+    </>
   );
 }
+
+/**
+ * Renders a single chat message (user / agent / system completion banner).
+ *
+ * `live` marks the currently-streaming message; it gets `flexShrink={0}` so
+ * Ink's Yoga layout never compresses its rows while deltas are arriving,
+ * which is what previously caused the visible "font shrink" + flicker.
+ */
+const MessageRow = React.memo(function MessageRow({
+  msg,
+  agentName,
+  live,
+}: { msg: ChatMessage; agentName: string; live?: boolean }) {
+  const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
+  const roleColor = isCompletion
+    ? 'green'
+    : msg.role === 'user'
+      ? 'yellow'
+      : msg.role === 'system'
+        ? 'gray'
+        : 'cyan';
+  const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
+
+  if (isCompletion) {
+    const meta = msg.completionMeta;
+    const formatTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+    return (
+      <Box key={msg.id} flexDirection="column" marginBottom={1} flexShrink={0}>
+        <Text color="green" bold>
+          {msg.content}
+        </Text>
+        {meta && (
+          <Box flexDirection="row" paddingLeft={2} flexShrink={0}>
+            <Text color="gray">☿ </Text>
+            <Text color="white" bold>
+              {meta.model}
+            </Text>
+            <Text color="gray"> via </Text>
+            <Text color="cyan">{meta.provider}</Text>
+            <Text color="gray"> · </Text>
+            <Text color="yellow">{formatTokens(meta.totalTokens)}</Text>
+            <Text color="gray"> tokens · Budget </Text>
+            {(() => {
+              const pct = Math.round(meta.budgetPercentage);
+              const barLen = 16;
+              const filled = Math.round((pct / 100) * barLen);
+              const barColor = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+              return (
+                <>
+                  <Text color={barColor}>{'█'.repeat(filled)}</Text>
+                  <Text color="gray">{'░'.repeat(barLen - filled)}</Text>
+                  <Text color={barColor}> {pct}%</Text>
+                </>
+              );
+            })()}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
+  const rendered = renderMarkdown(msg.content);
+  return (
+    <Box key={msg.id} flexDirection="column" marginBottom={1} flexShrink={0}>
+      <Box flexShrink={0}>
+        <Text bold color={roleColor}>
+          {prefix}:
+        </Text>
+      </Box>
+      <Box marginLeft={2} flexDirection="column" flexShrink={0}>
+        {rendered.split('\n').map((line, idx) => (
+          <Box key={`${msg.id}:${idx}`} flexShrink={0}>
+            <Text>{line.length > 0 ? line : ' '}</Text>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+});
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
