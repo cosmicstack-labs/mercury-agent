@@ -809,9 +809,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   return (
     <Box flexDirection="column" flexGrow={1}>
       <StatusBarView state={state} />
-      <Static items={state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'))}>
-        {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
-      </Static>
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
@@ -1039,11 +1036,15 @@ function formatCompact(n: number): string {
 }
 
 function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
+  const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
   const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
   return (
     <Box flexDirection="row" flexGrow={1}>
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
+        <Static items={staticMessages}>
+          {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
+        </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
@@ -1061,6 +1062,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
   };
   const modeInfo = modeLabels[state.programmingMode];
   const fileSection = state.sidebarSections.find((s) => s.title === 'Files');
+  const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
   const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
 
   return (
@@ -1084,6 +1086,9 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
       <Box flexDirection="column" flexGrow={1}>
+        <Static items={staticMessages}>
+          {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
+        </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}

@@ -5,7 +5,9 @@ import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToke
 import { clearCloudTokenStore, getCloudTokenStore, initCloudTokenStore } from './token-store.js';
 import type { CloudConfig } from './types.js';
 import { MERCURY_CLOUD_API_URL, MERCURY_CLOUD_WS_URL } from './endpoints.js';
-import { getDaemonStatus, startBackground, stopDaemon } from '../cli/daemon.js';
+import { getDaemonStatus, getForegroundRuntimeStatus, startBackground, stopDaemon } from '../cli/daemon.js';
+import { isServiceInstalled, isServiceRunning, restartService, stopService } from '../cli/service.js';
+import { clearCloudRuntimeOnline, isCloudRuntimeOnline, waitForCloudRuntimeOnline } from './runtime-status.js';
 
 /**
  * After fresh credentials land in `config.cloud`, sync the shared in-memory
@@ -130,12 +132,14 @@ export async function runCloudConnect(): Promise<void> {
       console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
       console.log(chalk.dim(`    Tier: ${config.cloud.tier || 'free'}`));
       console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
+      await activateCloudRuntime(config.cloud.agentId, false);
       return;
     }
 
     // Token is expired/invalid — try to refresh
     if (config.cloud.refreshToken) {
       console.log(chalk.yellow('  ⚠ Mercury Cloud token expired. Refreshing...'));
+      let refreshed = false;
       try {
         const result = await refreshToken(config.cloud.apiUrl, config.cloud.refreshToken);
         config.cloud.jwt = result.jwt;
@@ -150,10 +154,14 @@ export async function runCloudConnect(): Promise<void> {
           console.log(chalk.green('  ✓ Mercury Cloud token refreshed successfully.'));
           console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
           console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
-          return;
+          refreshed = true;
         }
       } catch (err: any) {
         console.log(chalk.red(`  ✗ Token refresh failed: ${err.message}`));
+      }
+      if (refreshed) {
+        await activateCloudRuntime(config.cloud.agentId, true);
+        return;
       }
     }
 
@@ -162,6 +170,7 @@ export async function runCloudConnect(): Promise<void> {
     // that keeps remotely-deployed agents online without manual intervention.
     if (config.cloud.agentApiKey) {
       console.log(chalk.yellow('  ⚠ Trying agent API key recovery...'));
+      let recovered = false;
       try {
         const result = await redeemAgentApiKey(config.cloud.apiUrl, config.cloud.agentApiKey);
         if (!result.agentId || result.agentId !== config.cloud.agentId) {
@@ -177,10 +186,14 @@ export async function runCloudConnect(): Promise<void> {
           console.log(chalk.green('  ✓ Recovered via agent API key.'));
           console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
           console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
-          return;
+          recovered = true;
         }
       } catch (err: any) {
         console.log(chalk.red(`  ✗ Agent API key recovery failed: ${err.message}`));
+      }
+      if (recovered) {
+        await activateCloudRuntime(config.cloud.agentId, true);
+        return;
       }
     }
 
@@ -215,19 +228,28 @@ export async function runCloudConnect(): Promise<void> {
   console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
   console.log(chalk.dim(`    Model: ${result.model}`));
   console.log('');
-  console.log(chalk.cyan('  Mercury Cloud is ready!'));
-  console.log(chalk.yellow('  Run `mercury start` to begin using your agent.'));
+  await activateCloudRuntime(result.cloudConfig.agentId, true);
+  console.log(chalk.cyan('  Mercury Cloud is ready and the agent runtime is online.'));
 }
 
 export async function runCloudDisconnect(): Promise<void> {
   const daemonWasRunning = getDaemonStatus().running;
+  const foregroundWasRunning = getForegroundRuntimeStatus().running;
+  const serviceWasRunning = isServiceRunning();
+  const runtimeWasRunning = daemonWasRunning || foregroundWasRunning || serviceWasRunning;
+  if (foregroundWasRunning) {
+    throw new Error('Mercury is running in the foreground. Stop that session before disconnecting Cloud so in-memory credentials cannot remain active');
+  }
   if (daemonWasRunning) {
     console.log(chalk.dim('  Stopping the running agent before clearing Cloud credentials...'));
     const stopped = await stopDaemon();
     if (!stopped) {
       throw new Error('Could not stop the running Mercury daemon; Cloud credentials were not changed');
     }
+  } else if (serviceWasRunning && !stopService()) {
+    throw new Error('Could not stop the Mercury system service; Cloud credentials were not changed');
   }
+  clearCloudRuntimeOnline();
 
   let config = loadConfig();
   const hadCloudState = config.cloud.enabled
@@ -268,10 +290,10 @@ export async function runCloudDisconnect(): Promise<void> {
   const hasOfflineProvider = Object.values(config.providers).some((provider) =>
     typeof provider === 'object' && provider.name !== 'mercuryCloud' && isProviderConfiguredSafe(provider)
   );
-  if (daemonWasRunning && hasOfflineProvider) {
+  if (runtimeWasRunning && hasOfflineProvider) {
     console.log(chalk.dim('  Restarting Mercury with the configured offline provider...'));
-    startBackground();
-  } else if (daemonWasRunning) {
+    startManagedRuntime();
+  } else if (runtimeWasRunning) {
     console.log(chalk.yellow('  Mercury remains stopped because no offline provider is configured.'));
   } else {
     console.log(chalk.dim('  Stop any foreground Mercury process to discard its in-memory Cloud session.'));
@@ -327,6 +349,43 @@ export async function runCloudLogin(): Promise<void> {
   } catch (err: any) {
     console.log(chalk.red(`  ✗ Token refresh failed: ${err.message || err}`));
     console.log(chalk.yellow('  Run `mercury cloud connect` to re-pair.'));
+    return;
+  }
+  await activateCloudRuntime(config.cloud.agentId, true);
+}
+
+async function activateCloudRuntime(agentId: string, credentialsChanged: boolean): Promise<void> {
+  const foreground = getForegroundRuntimeStatus();
+  const daemon = getDaemonStatus();
+  const serviceRunning = isServiceRunning();
+  if (foreground.running) {
+    if (!credentialsChanged && isCloudRuntimeOnline(agentId, 'foreground')) {
+      console.log(chalk.green(`  Mercury Cloud WebSocket is already online in foreground PID ${foreground.pid}.`));
+      return;
+    }
+    if (!daemon.running && !serviceRunning) {
+      throw new Error('Cloud credentials were saved, but Mercury is running only in the foreground. Restart that foreground session to activate its Cloud WebSocket');
+    }
+    console.log(chalk.yellow(`  Foreground Mercury (PID: ${foreground.pid}) keeps its local session while the managed Cloud runtime restarts.`));
+  }
+  clearCloudRuntimeOnline();
+  if (daemon.running) {
+    console.log(chalk.dim(`  Restarting Mercury (PID: ${daemon.pid}) to activate Cloud...`));
+    if (!await stopDaemon()) {
+      throw new Error('Cloud credentials were saved, but the running Mercury process could not be restarted');
+    }
+  }
+  startManagedRuntime();
+  if (!await waitForCloudRuntimeOnline(agentId, 20_000, 'daemon')) {
+    throw new Error('Mercury restarted, but its Cloud WebSocket did not become online within 20 seconds');
+  }
+}
+
+function startManagedRuntime(): void {
+  if (isServiceInstalled()) {
+    restartService();
+  } else {
+    startBackground();
   }
 }
 

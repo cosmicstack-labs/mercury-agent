@@ -32,6 +32,26 @@ export function isServiceInstalled(): boolean {
   return false;
 }
 
+export function isServiceRunning(): boolean {
+  if (!isServiceInstalled()) return false;
+  try {
+    if (process.platform === 'darwin') {
+      const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
+      const output = execSync(`launchctl print ${target}`, { encoding: 'utf-8' });
+      return /state\s*=\s*running/.test(output);
+    }
+    if (process.platform === 'linux') {
+      execSync('systemctl --user is-active --quiet mercury.service', { stdio: 'pipe' });
+      return true;
+    }
+    if (process.platform === 'win32') {
+      const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo list /v`, { encoding: 'utf-8', shell: 'cmd.exe' });
+      return /^Status:\s+Running\s*$/im.test(output);
+    }
+  } catch {}
+  return false;
+}
+
 function getNodeBinPath(): string {
   return process.execPath;
 }
@@ -111,6 +131,66 @@ export function showServiceStatus(): void {
   } else if (platform === 'win32') {
     showWindowsStatus();
   }
+}
+
+export function restartService(): void {
+  if (!isServiceInstalled()) throw new Error('Mercury system service is not installed');
+
+  if (process.platform === 'darwin') {
+    const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
+    try {
+      execSync(`launchctl kickstart -k ${target}`, { stdio: 'inherit' });
+    } catch {
+      const plistPath = join(homedir(), 'Library', 'LaunchAgents', 'com.cosmicstack.mercury.plist');
+      execSync(`launchctl load "${plistPath}"`, { stdio: 'inherit' });
+      execSync(`launchctl kickstart -k ${target}`, { stdio: 'inherit' });
+    }
+    return;
+  }
+
+  if (process.platform === 'linux') {
+    execSync('systemctl --user restart mercury.service', { stdio: 'inherit' });
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      execSync(`schtasks /end /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe', shell: 'cmd.exe' });
+    } catch {}
+    execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'inherit', shell: 'cmd.exe' });
+    return;
+  }
+
+  throw new Error(`Unsupported platform: ${process.platform}`);
+}
+
+export function stopService(): boolean {
+  if (!isServiceInstalled()) return true;
+
+  if (process.platform === 'darwin') {
+    const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
+    try { execSync(`launchctl kill SIGTERM ${target}`, { stdio: 'inherit' }); } catch {}
+    return waitForServiceStop();
+  }
+  if (process.platform === 'linux') {
+    execSync('systemctl --user stop mercury.service', { stdio: 'inherit' });
+    return !isServiceRunning();
+  }
+  if (process.platform === 'win32') {
+    try { execSync(`schtasks /end /tn "${WIN_TASK_NAME}"`, { stdio: 'inherit', shell: 'cmd.exe' }); } catch {}
+    return waitForServiceStop();
+  }
+  return true;
+}
+
+function waitForServiceStop(): boolean {
+  const deadline = Date.now() + 5_000;
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+  while (Date.now() < deadline) {
+    if (!isServiceRunning()) return true;
+    Atomics.wait(waitBuffer, 0, 0, 100);
+  }
+  return !isServiceRunning();
 }
 
 function showTermuxServiceHelp(action: 'install' | 'uninstall' | 'status'): void {

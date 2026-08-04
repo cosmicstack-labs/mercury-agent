@@ -28,10 +28,12 @@ export class MercuryCloudClient {
   private authRefreshNeeded = false;
   private connectPromise: Promise<void> | null = null;
   private tokenPreparation: Promise<string> | null = null;
+  private readonly onConnectionChange?: (connected: boolean) => void;
 
-  constructor(url: string, tokenStore: CloudTokenStore) {
+  constructor(url: string, tokenStore: CloudTokenStore, onConnectionChange?: (connected: boolean) => void) {
     this.url = url;
     this.tokenStore = tokenStore;
+    this.onConnectionChange = onConnectionChange;
   }
 
   async connect(): Promise<void> {
@@ -88,6 +90,7 @@ export class MercuryCloudClient {
           this.awaitingPong = false;
           this.startHeartbeat();
           this.startTokenCheck();
+          this.onConnectionChange?.(true);
           resolve();
           for (const handler of this.connectedHandlers) {
             this.runHandler('connected', handler);
@@ -118,6 +121,7 @@ export class MercuryCloudClient {
           this.stopTokenCheck();
           this.ws = null;
           this.connectPromise = null;
+          this.onConnectionChange?.(false);
 
           if (!this.shouldReconnect) return;
           this.authRefreshNeeded = code === 1008;
@@ -147,6 +151,7 @@ export class MercuryCloudClient {
     this.connectPromise = null;
     this.stopHeartbeat();
     this.stopTokenCheck();
+    this.onConnectionChange?.(false);
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

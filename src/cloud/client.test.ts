@@ -39,7 +39,8 @@ describe('MercuryCloudClient', () => {
     if (typeof address === 'string' || address === null) throw new Error('Expected TCP WebSocket address');
 
     const handlerError = vi.spyOn(logger, 'error').mockImplementation(() => logger);
-    const client = new MercuryCloudClient(`ws://127.0.0.1:${address.port}`, makeStore());
+    const connectionChange = vi.fn();
+    const client = new MercuryCloudClient(`ws://127.0.0.1:${address.port}`, makeStore(), connectionChange);
     client.on('agent.status', async () => {
       throw new Error('handler exploded');
     });
@@ -49,12 +50,14 @@ describe('MercuryCloudClient', () => {
 
     await client.connect();
     expect(client.isConnected()).toBe(true);
+    expect(connectionChange).toHaveBeenCalledWith(true);
     await vi.waitFor(() => expect(handlerError).toHaveBeenCalledWith(
       expect.objectContaining({ err: 'handler exploded', type: 'agent.status' }),
       'Mercury Cloud WebSocket handler failed',
     ));
 
     client.disconnect();
+    expect(connectionChange).toHaveBeenLastCalledWith(false);
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 

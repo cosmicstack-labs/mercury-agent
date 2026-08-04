@@ -69,13 +69,14 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
+import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
@@ -2073,6 +2074,8 @@ function runPlatformDoctor(): void {
 }
 
 async function runAgent(isDaemon: boolean = false): Promise<void> {
+  const runtimeMode = isDaemon ? 'daemon' : 'foreground';
+  registerRuntimeProcess(runtimeMode);
   let config = loadConfig();
   config = ensureCreatorField(config);
   const name = config.identity.name;
@@ -2370,7 +2373,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
     try {
       const { MercuryCloudClient } = await import('./cloud/client.js');
-      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, cloudTokenStore!);
+      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, cloudTokenStore!, (connected) => {
+        if (connected) markCloudRuntimeOnline(config.cloud.agentId, runtimeMode);
+        else clearCloudRuntimeOnline(process.pid);
+      });
       const activeSessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
         apiUrl: config.cloud.apiUrl,
         agentId: config.cloud.agentId,
@@ -3255,6 +3261,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       }
       await stopWebServer();
       await agent.shutdown();
+      clearCloudRuntimeOnline();
+      releaseRuntimeProcess(runtimeMode);
       process.exit(0);
     })();
     return shutdownPromise;
