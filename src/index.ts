@@ -1473,32 +1473,13 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
     const configuredProviders = getConfiguredProviderNames(config);
     if (configuredProviders.length === 0) {
+      saveConfig(config);
       console.log('');
-      console.log(chalk.yellow('  No LLM providers were configured.'));
-      console.log(chalk.dim('  Mercury needs at least one provider to work.'));
-      console.log(chalk.dim('  DeepSeek offers a free API key at platform.deepseek.com'));
+      console.log(chalk.yellow('  No LLM provider configured yet. Run `mercury doctor` when ready to add one.'));
       console.log('');
-      console.log(chalk.white('  Options:'));
-      console.log(chalk.white('    1. Try again — choose a provider and enter an API key'));
-      console.log(chalk.white('    2. Skip for now — you can run `mercury doctor` later'));
-      console.log('');
-
-      const skipChoice = await ask(chalk.white('  Press Enter to try again, or type "skip" to exit setup: '));
-      if (skipChoice.toLowerCase() === 'skip') {
-        saveConfig(config);
-        const home = getMercuryHome();
-        console.log('');
-        console.log(chalk.green(`  ✓ Config saved to ${home}/mercury.yaml`));
-        console.log(chalk.yellow('  No providers configured yet. Run `mercury doctor` when ready.'));
-        console.log('');
-        process.exit(0);
-      }
-
-      console.log('');
-      continue;
+    } else {
+      await chooseDefaultProvider(config);
     }
-
-    await chooseDefaultProvider(config);
     break;
   }
   } else {
