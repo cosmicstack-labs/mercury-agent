@@ -135,14 +135,14 @@ export function startBackground(): void {
   }
 }
 
-export async function stopDaemon(): Promise<void> {
+export async function stopDaemon(): Promise<boolean> {
   const status = getDaemonStatus();
 
   if (!status.pid) {
     console.log(chalk.yellow('  Mercury is not running as a daemon.'));
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return true;
   }
 
   if (!status.running) {
@@ -150,7 +150,7 @@ export async function stopDaemon(): Promise<void> {
     try { unlinkSync(pidPath()); } catch {}
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return true;
   }
 
   try {
@@ -161,10 +161,9 @@ export async function stopDaemon(): Promise<void> {
     }
   } catch {
     console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
-    try { unlinkSync(pidPath()); } catch {}
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return false;
   }
 
   console.log(chalk.dim(`  Stopping Mercury (PID: ${status.pid})...`));
@@ -183,6 +182,10 @@ export async function stopDaemon(): Promise<void> {
     } catch { /* already dead */ }
     // Wait briefly for SIGKILL to take effect
     await new Promise(resolve => setTimeout(resolve, 500));
+    if (isProcessRunning(status.pid)) {
+      console.log(chalk.red(`  Failed to stop PID ${status.pid}. Cloud disconnect aborted.`));
+      return false;
+    }
   }
 
   try { unlinkSync(pidPath()); } catch {}
@@ -191,11 +194,12 @@ export async function stopDaemon(): Promise<void> {
 
   console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   console.log('');
+  return true;
 }
 
 export async function restartDaemon(): Promise<void> {
   if (getDaemonStatus().running) {
-    await stopDaemon();
+    if (!await stopDaemon()) return;
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));

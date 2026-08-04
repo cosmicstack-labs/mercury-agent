@@ -67,14 +67,10 @@ export class MercuryCloudClient {
 
     // Pass the access token via an Authorization header rather than a URL
     // query parameter so it never appears in server/proxy access logs.
-    // Also pass the long-lived agent API key via the X-Agent-Api-Key header
-    // so the server can authenticate the socket even when the JWT is expired.
     const wsUrl = `${this.url}?agentId=${this.tokenStore.getAgentId()}`;
 
     try {
       const headers: Record<string, string> = { Authorization: `Bearer ${this.tokenStore.getJwt()}` };
-      const agentApiKey = this.tokenStore.getAgentApiKey();
-      if (agentApiKey) headers['X-Agent-Api-Key'] = agentApiKey;
       const socket = new WebSocket(wsUrl, {
         handshakeTimeout: 15_000,
         headers,

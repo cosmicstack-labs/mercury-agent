@@ -41,10 +41,7 @@ export class MercuryCloudProvider extends BaseProvider {
 
   private cloudHeaders(): Record<string, string> | undefined {
     if (!this.tokenStore) return undefined;
-    const headers: Record<string, string> = { 'X-Agent-Id': this.tokenStore.getAgentId() };
-    const apiKey = this.tokenStore.getAgentApiKey();
-    if (apiKey) headers['X-Agent-Api-Key'] = apiKey;
-    return headers;
+    return { 'X-Agent-Id': this.tokenStore.getAgentId() };
   }
 
   private rebuildClient(jwt: string): void {

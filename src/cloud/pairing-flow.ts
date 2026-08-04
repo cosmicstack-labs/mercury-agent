@@ -1,10 +1,11 @@
 import chalk from 'chalk';
-import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
+import { loadConfig, saveConfig, updateConfig, type MercuryConfig } from '../utils/config.js';
 import { openUrl } from '../utils/open-url.js';
 import { PairingFailureError, startPairingFlow, pollPairingComplete, refreshToken, redeemAgentApiKey } from './pairing.js';
-import { getCloudTokenStore, initCloudTokenStore } from './token-store.js';
+import { clearCloudTokenStore, getCloudTokenStore, initCloudTokenStore } from './token-store.js';
 import type { CloudConfig } from './types.js';
 import { MERCURY_CLOUD_API_URL, MERCURY_CLOUD_WS_URL } from './endpoints.js';
+import { getDaemonStatus, startBackground, stopDaemon } from '../cli/daemon.js';
 
 /**
  * After fresh credentials land in `config.cloud`, sync the shared in-memory
@@ -14,7 +15,8 @@ import { MERCURY_CLOUD_API_URL, MERCURY_CLOUD_WS_URL } from './endpoints.js';
 function syncTokenStore(config: MercuryConfig): void {
   if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
     const existing = getCloudTokenStore();
-    if (existing) {
+    if (existing?.matchesIdentity(config.cloud.apiUrl, config.cloud.agentId)) {
+      existing.setAgentApiKey(config.cloud.agentApiKey);
       existing.setTokens(config.cloud.jwt, config.cloud.refreshToken);
     } else {
       initCloudTokenStore(config);
@@ -76,7 +78,7 @@ export async function runCloudPairingFlow(
     refreshToken: result.refreshToken,
     agentId: result.agentId,
     tier: result.tier || 'free',
-    agentApiKey: result.apiKey || config.cloud.agentApiKey || '',
+    agentApiKey: result.apiKey || '',
   };
 
   let model = 'mercury-flash';
@@ -162,6 +164,9 @@ export async function runCloudConnect(): Promise<void> {
       console.log(chalk.yellow('  ⚠ Trying agent API key recovery...'));
       try {
         const result = await redeemAgentApiKey(config.cloud.apiUrl, config.cloud.agentApiKey);
+        if (!result.agentId || result.agentId !== config.cloud.agentId) {
+          throw new Error('Agent API key identity mismatch; browser re-pairing is required');
+        }
         config.cloud.jwt = result.jwt;
         config.cloud.refreshToken = result.refreshToken;
         config.providers.mercuryCloud.apiKey = result.jwt;
@@ -192,16 +197,18 @@ export async function runCloudConnect(): Promise<void> {
     return;
   }
 
-  config.cloud = result.cloudConfig;
-  config.providers.mercuryCloud.apiKey = result.cloudConfig.jwt;
-  config.providers.mercuryCloud.model = result.model;
-  config.providers.mercuryCloud.enabled = true;
-  if (config.providers.default !== 'mercuryCloud') {
-    console.log(chalk.dim(`  Switching default provider to Mercury Cloud (was ${config.providers.default})`));
-    config.providers.default = 'mercuryCloud';
+  const previousDefault = config.providers.default;
+  const pairedConfig = updateConfig((latest) => {
+    latest.cloud = result.cloudConfig;
+    latest.providers.mercuryCloud.apiKey = result.cloudConfig.jwt;
+    latest.providers.mercuryCloud.model = result.model;
+    latest.providers.mercuryCloud.enabled = true;
+    latest.providers.default = 'mercuryCloud';
+  });
+  if (previousDefault !== 'mercuryCloud') {
+    console.log(chalk.dim(`  Switching default provider to Mercury Cloud (was ${previousDefault})`));
   }
-  saveConfig(config);
-  syncTokenStore(config);
+  syncTokenStore(pairedConfig);
 
   console.log(chalk.green('  ✓ Mercury Cloud connected!'));
   console.log(chalk.dim(`    Agent ID: ${result.cloudConfig.agentId}`));
@@ -213,37 +220,62 @@ export async function runCloudConnect(): Promise<void> {
 }
 
 export async function runCloudDisconnect(): Promise<void> {
-  const config = loadConfig();
-
-  if (!config.cloud.enabled) {
-    console.log(chalk.yellow('  Mercury Cloud is not connected.'));
-    return;
+  const daemonWasRunning = getDaemonStatus().running;
+  if (daemonWasRunning) {
+    console.log(chalk.dim('  Stopping the running agent before clearing Cloud credentials...'));
+    const stopped = await stopDaemon();
+    if (!stopped) {
+      throw new Error('Could not stop the running Mercury daemon; Cloud credentials were not changed');
+    }
   }
 
-  config.cloud.enabled = false;
-  config.cloud.jwt = '';
-  config.cloud.refreshToken = '';
-  config.cloud.agentId = '';
-  config.cloud.agentApiKey = '';
-  config.providers.mercuryCloud.enabled = false;
-  config.providers.mercuryCloud.apiKey = '';
+  let config = loadConfig();
+  const hadCloudState = config.cloud.enabled
+    || !!config.cloud.jwt
+    || !!config.cloud.refreshToken
+    || !!config.cloud.agentId
+    || !!config.cloud.agentApiKey
+    || config.providers.mercuryCloud.enabled
+    || !!config.providers.mercuryCloud.apiKey;
 
-  if (config.providers.default === 'mercuryCloud') {
-    const configured = Object.values(config.providers)
+  config = updateConfig((latest) => {
+    latest.cloud.enabled = false;
+    latest.cloud.jwt = '';
+    latest.cloud.refreshToken = '';
+    latest.cloud.agentId = '';
+    latest.cloud.agentApiKey = '';
+    latest.providers.mercuryCloud.enabled = false;
+    latest.providers.mercuryCloud.apiKey = '';
+
+    if (latest.providers.default !== 'mercuryCloud') return;
+    const configured = Object.values(latest.providers)
       .filter((p): p is import('../utils/config.js').ProviderConfig =>
         typeof p === 'object' && p.name !== 'mercuryCloud' && isProviderConfiguredSafe(p)
       );
     if (configured.length > 0) {
-      config.providers.default = configured[0].name as import('../utils/config.js').ProviderName;
+      latest.providers.default = configured[0].name as import('../utils/config.js').ProviderName;
       console.log(chalk.dim(`  Default provider switched to ${configured[0].name}`));
     } else {
       console.log(chalk.yellow('  No other providers configured. Run `mercury setup` to configure offline providers.'));
     }
-  }
+  });
+  clearCloudTokenStore();
+  console.log(hadCloudState
+    ? chalk.green('  ✓ Local Mercury Cloud credentials cleared.')
+    : chalk.yellow('  Mercury Cloud was already disconnected; stale credentials were scrubbed.'));
+  console.log(chalk.dim('  The cloud agent remains registered remotely. Delete it in the dashboard to revoke server-side credentials.'));
 
-  saveConfig(config);
-  console.log(chalk.green('  ✓ Mercury Cloud disconnected. Offline (BYOK) mode active.'));
-  console.log(chalk.yellow('  Restart Mercury: `mercury restart`'));
+  const hasOfflineProvider = Object.values(config.providers).some((provider) =>
+    typeof provider === 'object' && provider.name !== 'mercuryCloud' && isProviderConfiguredSafe(provider)
+  );
+  if (daemonWasRunning && hasOfflineProvider) {
+    console.log(chalk.dim('  Restarting Mercury with the configured offline provider...'));
+    startBackground();
+  } else if (daemonWasRunning) {
+    console.log(chalk.yellow('  Mercury remains stopped because no offline provider is configured.'));
+  } else {
+    console.log(chalk.dim('  Stop any foreground Mercury process to discard its in-memory Cloud session.'));
+  }
 }
 
 export async function runCloudStatus(): Promise<void> {

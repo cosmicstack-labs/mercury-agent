@@ -68,14 +68,17 @@ describe('MercuryCloudClient', () => {
       (store.getJwt as ReturnType<typeof vi.fn>).mockReturnValue('fresh-token');
       return 'fresh-token';
     });
-    const authorization = new Promise<string | undefined>((resolve) => {
-      server.once('connection', (_socket, request) => resolve(request.headers.authorization));
+    const requestHeaders = new Promise<{ authorization?: string; agentApiKey?: string }>((resolve) => {
+      server.once('connection', (_socket, request) => resolve({
+        authorization: request.headers.authorization,
+        agentApiKey: request.headers['x-agent-api-key'] as string | undefined,
+      }));
     });
     const client = new MercuryCloudClient(`ws://127.0.0.1:${address.port}`, store);
 
     await client.connect();
 
-    await expect(authorization).resolves.toBe('Bearer fresh-token');
+    await expect(requestHeaders).resolves.toEqual({ authorization: 'Bearer fresh-token', agentApiKey: undefined });
     expect(store.rotateIfExpired).toHaveBeenCalledWith(2 * 60_000);
     client.disconnect();
     await new Promise<void>((resolve) => server.close(() => resolve()));

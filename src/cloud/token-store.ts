@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig, type MercuryConfig } from '../utils/config.js';
+import { loadConfig, saveConfig, updateConfig, type MercuryConfig } from '../utils/config.js';
 import { refreshToken as rotateRefreshToken, redeemAgentApiKey } from './pairing.js';
 import { logger } from '../utils/logger.js';
 
@@ -38,6 +38,7 @@ export class CloudTokenStore {
   private listeners = new Set<TokenRefreshListener>();
   private inflight: Promise<TokenPair> | null = null;
   private readonly liveConfig?: MercuryConfig;
+  private active = true;
 
   constructor(jwt: string, refreshTokenValue: string, apiUrl: string, agentId: string, liveConfig?: MercuryConfig, agentApiKey?: string) {
     this.jwt = jwt;
@@ -72,7 +73,12 @@ export class CloudTokenStore {
     return this.agentApiKey;
   }
 
+  matchesIdentity(apiUrl: string, agentId: string): boolean {
+    return this.active && this.apiUrl === apiUrl && this.agentId === agentId;
+  }
+
   setAgentApiKey(apiKey: string): void {
+    if (!this.active) throw new Error('Mercury Cloud credentials have been invalidated');
     this.agentApiKey = apiKey;
     if (this.liveConfig) this.liveConfig.cloud.agentApiKey = apiKey;
     this.persistAgentApiKey(apiKey);
@@ -93,6 +99,7 @@ export class CloudTokenStore {
    * has already persisted (e.g. the pairing flow writes config itself).
    */
   setTokens(jwt: string, refreshTokenValue: string): void {
+    if (!this.active) throw new Error('Mercury Cloud credentials have been invalidated');
     this.jwt = jwt;
     this.refreshTokenValue = refreshTokenValue;
     if (this.liveConfig) {
@@ -112,8 +119,13 @@ export class CloudTokenStore {
    * config. This is the path used by background rotation.
    */
   setTokensAndPersist(jwt: string, refreshTokenValue: string): void {
+    updateConfig((config) => {
+      this.assertActivePersistedIdentity(config);
+      config.cloud.jwt = jwt;
+      config.cloud.refreshToken = refreshTokenValue;
+      config.providers.mercuryCloud.apiKey = jwt;
+    });
     this.setTokens(jwt, refreshTokenValue);
-    this.persistToConfig(jwt, refreshTokenValue);
   }
 
   /**
@@ -123,6 +135,7 @@ export class CloudTokenStore {
    * long-lived agent API key so the agent self-recovers without a re-pair.
    */
   async rotate(): Promise<TokenPair> {
+    if (!this.active) throw new Error('Mercury Cloud credentials have been invalidated');
     if (this.inflight) return this.inflight;
     if (!this.refreshTokenValue && !this.agentApiKey) throw new Error('No refresh token or agent API key available');
 
@@ -130,6 +143,7 @@ export class CloudTokenStore {
       const tokenBeingRotated = this.refreshTokenValue;
       const persisted = this.readNewerPersistedTokens(tokenBeingRotated);
       if (persisted) return persisted;
+      if (!this.active) throw new Error('Mercury Cloud was disconnected or re-paired');
 
       if (tokenBeingRotated) {
         try {
@@ -137,6 +151,7 @@ export class CloudTokenStore {
           this.setTokensAndPersist(result.jwt, result.refreshToken);
           return result;
         } catch (error) {
+          if (!this.active) throw error;
           // Another Mercury process may have won the single-use rotation and
           // persisted the successor while this request was in flight.
           for (const delay of [50, 150, 300]) {
@@ -172,6 +187,9 @@ export class CloudTokenStore {
   private async redeemWithAgentKey(): Promise<TokenPair> {
     if (!this.agentApiKey) throw new Error('No agent API key available for recovery');
     const result = await redeemAgentApiKey(this.apiUrl, this.agentApiKey);
+    if (!result.agentId || result.agentId !== this.agentId) {
+      throw new Error('Agent API key identity mismatch; re-pair Mercury Cloud');
+    }
     this.setTokensAndPersist(result.jwt, result.refreshToken);
     return { jwt: result.jwt, refreshToken: result.refreshToken };
   }
@@ -199,15 +217,27 @@ export class CloudTokenStore {
     return () => this.listeners.delete(listener);
   }
 
-  private persistToConfig(jwt: string, refreshTokenValue: string): void {
-    try {
-      const config = loadConfig();
-      config.cloud.jwt = jwt;
-      config.cloud.refreshToken = refreshTokenValue;
-      config.providers.mercuryCloud.apiKey = jwt;
-      saveConfig(config);
-    } catch (err) {
-      logger.warn({ err: (err as Error).message }, 'Failed to persist refreshed cloud tokens to config');
+  invalidate(): void {
+    if (!this.active) return;
+    this.active = false;
+    this.jwt = '';
+    this.refreshTokenValue = '';
+    this.agentApiKey = '';
+    for (const listener of this.listeners) {
+      try { listener({ jwt: '', refreshToken: '' }); } catch {}
+    }
+    this.listeners.clear();
+  }
+
+  private assertActivePersistedIdentity(config: MercuryConfig): void {
+    if (
+      !config.cloud.enabled
+      || !config.providers.mercuryCloud.enabled
+      || config.cloud.agentId !== this.agentId
+      || config.cloud.apiUrl !== this.apiUrl
+    ) {
+      this.invalidate();
+      throw new Error('Mercury Cloud was disconnected or re-paired while credentials were refreshing');
     }
   }
 
@@ -215,9 +245,16 @@ export class CloudTokenStore {
     try {
       const config = loadConfig();
       if (
-        config.cloud.agentId !== this.agentId
+        !config.cloud.enabled
+        || !config.providers.mercuryCloud.enabled
+        || config.cloud.agentId !== this.agentId
         || config.cloud.apiUrl !== this.apiUrl
-        || !config.cloud.jwt
+      ) {
+        this.invalidate();
+        return null;
+      }
+      if (
+        !config.cloud.jwt
         || !config.cloud.refreshToken
         || config.cloud.refreshToken === comparedRefreshToken
       ) return null;
@@ -248,6 +285,7 @@ let store: CloudTokenStore | null = null;
  * re-pair updates the store with the new credentials.
  */
 export function initCloudTokenStore(config: MercuryConfig): CloudTokenStore {
+  store?.invalidate();
   const next = new CloudTokenStore(
     config.cloud.jwt,
     config.cloud.refreshToken,
@@ -262,4 +300,9 @@ export function initCloudTokenStore(config: MercuryConfig): CloudTokenStore {
 
 export function getCloudTokenStore(): CloudTokenStore | null {
   return store;
+}
+
+export function clearCloudTokenStore(): void {
+  store?.invalidate();
+  store = null;
 }

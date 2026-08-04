@@ -79,14 +79,15 @@ export async function pollPairingComplete(
         consecutiveErrors = 0;
         const data = await res.json() as PairingResult & PairingFailureDetails & { status?: string; error?: string };
 
+        // Fail closed if the server reports a terminal failure, even if a
+        // malformed response also contains credentials.
+        if (data.status === 'failed') {
+          throw new PairingFailureError(data.error || 'Pairing was rejected', data);
+        }
+
         // Success — has tokens and agentId
         if (data.jwt && data.refreshToken && data.agentId) {
           return data;
-        }
-
-        // Check for explicit failure from the server
-        if (data.status === 'failed' && data.error) {
-          throw new PairingFailureError(data.error, data);
         }
 
         // 200 with pending/approved/completing — keep polling
@@ -103,6 +104,14 @@ export async function pollPairingComplete(
 
       if (res.status === 404) {
         throw new Error('Pairing code not found or expired. Run `mercury cloud connect` again.');
+      }
+
+      if (res.status === 403 || res.status === 409) {
+        const data = await res.json().catch(() => ({})) as PairingFailureDetails & { error?: string; message?: string };
+        throw new PairingFailureError(
+          data.error || data.message || `Pairing was rejected (${res.status})`,
+          data,
+        );
       }
 
       // Non-404 error (401, 403, 500, etc.) — retry a few times, then fail

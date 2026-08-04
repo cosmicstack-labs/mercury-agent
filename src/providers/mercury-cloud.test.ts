@@ -30,7 +30,6 @@ describe('MercuryCloudProvider authentication', () => {
       apiKey: 'jwt-1',
       headers: {
         'X-Agent-Id': 'agent-1',
-        'X-Agent-Api-Key': 'mcapk_1',
       },
     }));
 

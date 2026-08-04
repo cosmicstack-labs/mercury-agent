@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, closeSync, openSync, renameSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -425,6 +425,7 @@ export function getDefaultConfig(): MercuryConfig {
 }
 
 const CONFIG_PATH = join(getMercuryHome(), 'mercury.yaml');
+const CONFIG_LOCK_PATH = `${CONFIG_PATH}.lock`;
 
 export function loadConfig(): MercuryConfig {
   if (existsSync(CONFIG_PATH)) {
@@ -480,15 +481,78 @@ function deriveCloudWsUrl(apiUrl: string): string {
 }
 
 export function saveConfig(config: MercuryConfig): void {
+  const lockFd = acquireConfigLock();
+  try {
+    saveConfigUnlocked(config);
+  } finally {
+    releaseConfigLock(lockFd);
+  }
+}
+
+export function updateConfig(mutator: (config: MercuryConfig) => void): MercuryConfig {
+  const lockFd = acquireConfigLock();
+  try {
+    const config = loadConfig();
+    mutator(config);
+    saveConfigUnlocked(config);
+    return config;
+  } finally {
+    releaseConfigLock(lockFd);
+  }
+}
+
+function saveConfigUnlocked(config: MercuryConfig): void {
   config = normalizeCloudConfig(config);
   const dir = getMercuryHome();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(CONFIG_PATH, stringifyYaml(config), 'utf-8');
+  const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tempPath, stringifyYaml(config), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tempPath, CONFIG_PATH);
+  } finally {
+    try { unlinkSync(tempPath); } catch {}
+  }
   // The config file contains live JWTs and refresh tokens. Restrict to the
   // owner so other users on shared servers cannot read or rotate them.
   try { chmodSync(CONFIG_PATH, 0o600); } catch {}
+}
+
+function acquireConfigLock(): number {
+  const dir = getMercuryHome();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const deadline = Date.now() + 2_000;
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+  while (true) {
+    try {
+      const fd = openSync(CONFIG_LOCK_PATH, 'wx', 0o600);
+      writeFileSync(fd, String(process.pid), 'utf-8');
+      return fd;
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error;
+      let ownerPid = 0;
+      try { ownerPid = parseInt(readFileSync(CONFIG_LOCK_PATH, 'utf-8'), 10); } catch {}
+      let ownerAlive = false;
+      if (ownerPid > 0) {
+        try { process.kill(ownerPid, 0); ownerAlive = true; } catch {}
+      }
+      if (ownerAlive) {
+        if (Date.now() >= deadline) {
+          throw new Error(`Mercury configuration is still being updated by process ${ownerPid}; retry the command`);
+        }
+        Atomics.wait(waitBuffer, 0, 0, 25);
+        continue;
+      }
+      try { unlinkSync(CONFIG_LOCK_PATH); } catch {}
+    }
+  }
+}
+
+function releaseConfigLock(fd: number): void {
+  try { closeSync(fd); } catch {}
+  try { unlinkSync(CONFIG_LOCK_PATH); } catch {}
 }
 
 export function isSetupComplete(): boolean {
