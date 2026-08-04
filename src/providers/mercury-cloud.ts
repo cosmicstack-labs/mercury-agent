@@ -3,111 +3,67 @@ import { generateText, streamText } from 'ai';
 import { BaseProvider } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
-import { refreshToken } from '../cloud/pairing.js';
-import { loadConfig, saveConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import type { CloudTokenStore } from '../cloud/token-store.js';
 
 export class MercuryCloudProvider extends BaseProvider {
   readonly name: string;
   readonly model: string;
   private client: ReturnType<typeof createOpenAI>;
   private modelInstance: ReturnType<ReturnType<typeof createOpenAI>['languageModel']>;
-  private currentJwt: string;
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
-  private refreshPromise: Promise<void> | null = null;
+  private tokenStore: CloudTokenStore | null;
+  private removeTokenListener: (() => void) | null = null;
 
-  constructor(config: ProviderConfig) {
+  constructor(config: ProviderConfig, tokenStore: CloudTokenStore | null = null) {
     super(config);
     this.name = config.name;
     this.model = config.model;
-    this.currentJwt = config.apiKey || 'cloud-jwt-placeholder';
+    this.tokenStore = tokenStore;
 
+    const jwt = tokenStore?.getJwt() ?? config.apiKey ?? 'cloud-jwt-placeholder';
     this.client = createOpenAI({
-      apiKey: this.currentJwt,
+      apiKey: jwt,
       baseURL: config.baseUrl?.endsWith('/v1') ? config.baseUrl : `${config.baseUrl}/v1`,
+      headers: this.cloudHeaders(),
     });
     this.modelInstance = this.client.chat(config.model);
 
-    this.refreshTimer = setInterval(() => {
-      this.refreshIfExpired().catch((err) => {
-        logger.warn({ err: err.message }, 'Mercury Cloud periodic token refresh failed');
+    // Swap the cached JWT whenever the shared token store rotates. This
+    // replaces the old independent 3-minute proactive refresh timer, which
+    // raced the WS client for the single-use refresh token and eventually
+    // burned it.
+    if (tokenStore) {
+      this.removeTokenListener = tokenStore.addListener((tokens) => {
+        this.rebuildClient(tokens.jwt);
       });
-    }, 3 * 60 * 1000);
-    this.refreshTimer.unref?.();
-  }
-
-  private isTokenExpired(): boolean {
-    const parts = this.currentJwt.split('.');
-    if (parts.length !== 3) return true;
-    try {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-      const exp = payload.exp * 1000;
-      return Date.now() > exp - 60_000;
-    } catch {
-      return true;
     }
   }
 
-  private async refreshIfExpired(): Promise<void> {
-    if (!this.isTokenExpired()) return;
-
-    if (this.refreshPromise) return this.refreshPromise;
-
-    this.refreshPromise = this.doRefresh().finally(() => {
-      this.refreshPromise = null;
-    });
-
-    return this.refreshPromise;
+  private cloudHeaders(): Record<string, string> | undefined {
+    if (!this.tokenStore) return undefined;
+    const headers: Record<string, string> = { 'X-Agent-Id': this.tokenStore.getAgentId() };
+    const apiKey = this.tokenStore.getAgentApiKey();
+    if (apiKey) headers['X-Agent-Api-Key'] = apiKey;
+    return headers;
   }
 
-  private async doRefresh(): Promise<void> {
-    const config = loadConfig();
-    if (!config.cloud.refreshToken) {
-      logger.warn('No refresh token available — user needs to run `mercury cloud connect`');
-      return;
-    }
-
-    try {
-      const result = await refreshToken(config.cloud.apiUrl, config.cloud.refreshToken);
-      this.currentJwt = result.jwt;
-      const baseUrl = this.config.baseUrl || config.cloud.apiUrl;
-      this.config.apiKey = result.jwt;
-      this.client = createOpenAI({
-        apiKey: this.currentJwt,
-        baseURL: baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`,
-      });
-      this.modelInstance = this.client.chat(this.model);
-      config.cloud.jwt = result.jwt;
-      config.cloud.refreshToken = result.refreshToken;
-      config.providers.mercuryCloud.apiKey = result.jwt;
-      saveConfig(config);
-      logger.info('Mercury Cloud token refreshed and saved');
-    } catch (err: any) {
-      logger.error({ err: err.message }, 'Mercury Cloud token refresh failed');
-      throw err;
-    }
-  }
-
-  destroy(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-  }
-
-  updateToken(token: string): void {
-    this.currentJwt = token;
-    this.config.apiKey = token;
+  private rebuildClient(jwt: string): void {
     const baseUrl = this.config.baseUrl || '';
     this.client = createOpenAI({
-      apiKey: token,
+      apiKey: jwt,
       baseURL: baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`,
+      headers: this.cloudHeaders(),
     });
     this.modelInstance = this.client.chat(this.model);
   }
 
+  destroy(): void {
+    this.removeTokenListener?.();
+    this.removeTokenListener = null;
+  }
+
   async generateText(prompt: string, systemPrompt: string): Promise<LLMResponse> {
-    await this.refreshIfExpired().catch(() => {});
+    await this.ensureFreshToken().catch(() => {});
 
     try {
       const result = await generateText({
@@ -125,9 +81,15 @@ export class MercuryCloudProvider extends BaseProvider {
         provider: this.name,
       };
     } catch (err: any) {
-      if (this.isRetryableError(err)) {
+      if (this.isRetryableError(err) && this.tokenStore) {
         logger.warn('Mercury Cloud 401 — refreshing token and retrying...');
-        await this.doRefresh().catch(() => {});
+        try {
+          const rotated = await this.tokenStore.rotate();
+          this.rebuildClient(rotated.jwt);
+        } catch (rotateErr: any) {
+          logger.warn({ err: rotateErr.message }, 'Mercury Cloud reactive refresh failed');
+          throw err;
+        }
         const result = await generateText({
           model: this.modelInstance,
           system: systemPrompt,
@@ -148,18 +110,42 @@ export class MercuryCloudProvider extends BaseProvider {
   }
 
   async *streamText(prompt: string, systemPrompt: string): AsyncIterable<LLMStreamChunk> {
-    await this.refreshIfExpired().catch(() => {});
+    await this.ensureFreshToken().catch(() => {});
 
-    const result = streamText({
-      model: this.modelInstance,
-      system: systemPrompt,
-      prompt,
-    });
+    try {
+      const result = streamText({
+        model: this.modelInstance,
+        system: systemPrompt,
+        prompt,
+      });
 
-    for await (const chunk of (await result).textStream) {
-      yield { text: chunk, done: false };
+      for await (const chunk of (await result).textStream) {
+        yield { text: chunk, done: false };
+      }
+      yield { text: '', done: true };
+    } catch (err: any) {
+      // streamText previously had no 401-retry path, which meant a streaming
+      // chat would fail where a non-streaming chat would recover. Retry once
+      // after a reactive rotation.
+      if (!this.isRetryableError(err) || !this.tokenStore) throw err;
+      logger.warn('Mercury Cloud stream 401 — refreshing token and retrying...');
+      try {
+        const rotated = await this.tokenStore.rotate();
+        this.rebuildClient(rotated.jwt);
+      } catch (rotateErr: any) {
+        logger.warn({ err: rotateErr.message }, 'Mercury Cloud reactive stream refresh failed');
+        throw err;
+      }
+      const result = streamText({
+        model: this.modelInstance,
+        system: systemPrompt,
+        prompt,
+      });
+      for await (const chunk of (await result).textStream) {
+        yield { text: chunk, done: false };
+      }
+      yield { text: '', done: true };
     }
-    yield { text: '', done: true };
   }
 
   isAvailable(): boolean {
@@ -167,14 +153,20 @@ export class MercuryCloudProvider extends BaseProvider {
   }
 
   private isRetryableError(err: any): boolean {
+    const status = err?.statusCode ?? err?.status ?? err?.response?.status;
+    if (typeof status === 'number') return status === 401;
     const msg = err?.message || '';
-    return msg.includes('401') || msg.includes('Unauthorized') || msg.includes('Forbidden');
+    return msg.includes('401') || msg.includes('Unauthorized');
   }
 
   async ensureFreshToken(): Promise<void> {
-    await this.refreshIfExpired().catch((err) => {
+    if (!this.tokenStore) return;
+    try {
+      const jwt = await this.tokenStore.rotateIfExpired();
+      this.rebuildClient(jwt);
+    } catch (err: any) {
       logger.warn({ err: err.message }, 'Mercury Cloud token refresh failed');
-    });
+    }
   }
 
   async getModelInstanceAsync(): Promise<any> {
@@ -183,8 +175,8 @@ export class MercuryCloudProvider extends BaseProvider {
   }
 
   getModelInstance(): any {
-    if (this.isTokenExpired()) {
-      this.refreshIfExpired().catch((err) => {
+    if (this.tokenStore?.isJwtNearExpiry()) {
+      this.tokenStore.rotateIfExpired().catch((err) => {
         logger.warn({ err: err.message }, 'Mercury Cloud token refresh failed in getModelInstance');
       });
     }

@@ -36,6 +36,7 @@ import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
+import { getCloudTokenStore } from '../cloud/token-store.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -69,6 +70,9 @@ import {
 } from '../utils/config.js';
 import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
 import { WorkLedger, type WorkEntry } from './work-ledger.js';
+import { MAX_PROVIDER_ATTEMPT_MS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
+import { requiresFinalSend } from './response-delivery.js';
+import { updateCliProviderStatus } from './provider-status.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -336,7 +340,7 @@ export class Agent {
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
-  private currentAbortReason: 'stalled' | 'backgrounded' | null = null;
+  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
@@ -850,6 +854,12 @@ export class Agent {
     })();
   }
 
+  private withProviderDeadline<T>(operation: PromiseLike<T>, controller: AbortController, deadlineAt: number): Promise<T> {
+    return withAbortDeadline(operation, controller, deadlineAt - Date.now(), () => {
+      this.currentAbortReason = 'time-limit';
+    });
+  }
+
   private startForegroundHeartbeat(msg: ChannelMessage): () => void {
     if (msg.channelType === 'internal') return () => {};
 
@@ -1086,11 +1096,18 @@ export class Agent {
       return { ok: false, message: `Provider \`${providerName}\` is not configured for this local agent.` };
     }
 
-    const provider = await createProvider({ ...config, model: modelName || config.model });
+    const provider = await createProvider(
+      { ...config, model: modelName || config.model },
+      providerName === 'mercuryCloud' ? getCloudTokenStore() : undefined,
+    );
     if (!provider) {
       return { ok: false, message: `Provider \`${providerName}\` is not available in the running registry.` };
     }
 
+    const previousOverride = this.channelProviderOverrides.get(channelId)?.provider as (BaseProvider & { destroy?: () => void }) | undefined;
+    if (previousOverride !== provider && this.providers.get(previousOverride?.name) !== previousOverride) {
+      previousOverride?.destroy?.();
+    }
     this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
 
     if (options.persist && providerName in this.config.providers) {
@@ -1098,11 +1115,11 @@ export class Agent {
       const providerConfig = this.config.providers[providerKey];
       providerConfig.model = provider.getModel();
       providerConfig.enabled = true;
-      if (providerName === 'mercuryCloud') {
-        this.config.providers.default = 'mercuryCloud';
-      }
+      this.config.providers.default = providerName as ProviderName;
       this.providers.set(providerName, provider);
+      this.providers.setDefault(providerName);
       saveConfig(this.config);
+      updateCliProviderStatus(this.channels.get('cli'), providerName, provider.getModel());
     }
 
     const saved = options.persist ? ' Saved as the default for future sessions.' : '';
@@ -1117,15 +1134,12 @@ export class Agent {
 
     this.config.providers.default = providerName as any;
     const previousProviders = this.providers;
-    this.providers = await ProviderRegistryImpl.create(this.config);
+    this.providers = await ProviderRegistryImpl.create(this.config, getCloudTokenStore());
     previousProviders.destroy();
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
-    const cliChannel = this.channels.get('cli');
-    if (cliChannel && cliChannel instanceof CLIChannel) {
-      cliChannel.setProvider(providerName, model);
-    }
+    updateCliProviderStatus(this.channels.get('cli'), providerName, model);
 
     return { ok: true, message: `Session model switched to **${providerName}** · **${model}**.` };
   }
@@ -1263,8 +1277,7 @@ export class Agent {
     }
 
       const isInternal = msg.channelType === 'internal';
-      const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
-      if (isInternal || isScheduled) {
+      if (isInternal) {
         this.capabilities.permissions.setAutoApproveAll(true);
         this.capabilities.permissions.addTempScope('/', true, true);
       }
@@ -1459,6 +1472,7 @@ export class Agent {
         // (any error → proceed with local-only context). 5-min cache per query.
         const ck = this.config.memory.collaborativeKnowledge;
         const cloud = this.config.cloud;
+        const tokenStore = getCloudTokenStore();
         if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl) {
           try {
             const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
@@ -1470,10 +1484,17 @@ export class Agent {
               msg.content,
               { limit: 10 },
               (newJwt, newRefresh) => {
-                cloud.jwt = newJwt;
-                cloud.refreshToken = newRefresh;
-                this.config.providers.mercuryCloud.apiKey = newJwt;
-                saveConfig(this.config);
+                // Route every rotation through the shared store so all
+                // consumers see the new tokens. Fallback to direct config
+                // mutation if the store isn't initialized (older code path).
+                if (tokenStore) {
+                  tokenStore.setTokensAndPersist(newJwt, newRefresh);
+                } else {
+                  cloud.jwt = newJwt;
+                  cloud.refreshToken = newRefresh;
+                  this.config.providers.mercuryCloud.apiKey = newJwt;
+                  saveConfig(this.config);
+                }
               },
             );
             const deduped = dedupeAgainstLocal(poolHits, localSummaries);
@@ -1654,6 +1675,8 @@ export class Agent {
       let lastError: any = null;
       let hasCompletedTool = false;
       let hasStreamedOutput = false;
+      let cliResponseStreamed = false;
+      let requiresContinuationApproval = false;
       const loopDetector = new ToolCallLoopDetector();
       let loopWarningSent = false;
       let selfCheckCount = 0;
@@ -1691,7 +1714,9 @@ export class Agent {
       const providersForAttempt = [...fallbackIterator];
       for (const provider of [...providersForAttempt, ...providersForAttempt]) {
         try {
+          const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
+          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
@@ -1700,7 +1725,7 @@ export class Agent {
 
           // Ensure Mercury Cloud token is fresh before getting model instance
           if ('ensureFreshToken' in provider && typeof (provider as any).ensureFreshToken === 'function') {
-            await (provider as any).ensureFreshToken();
+            await this.withProviderDeadline((provider as any).ensureFreshToken(), loopAbortController, providerDeadlineAt);
           }
 
           if (canStream && channel) {
@@ -1974,13 +1999,22 @@ export class Agent {
                 yield chunk;
               }
             })());
-            const streamedText = await channel.stream(trackedStream, msg.channelId);
+            const streamedText = await this.withProviderDeadline(
+              channel.stream(trackedStream, msg.channelId),
+              loopAbortController,
+              providerDeadlineAt,
+            );
+            cliResponseStreamed = channel instanceof CLIChannel;
 
-            const [usage, finishReason, streamReasoning] = await Promise.all([
-              streamResult.usage,
-              streamResult.finishReason,
-              streamResult.reasoning,
-            ]);
+            const [usage, finishReason, streamReasoning] = await this.withProviderDeadline(
+              Promise.all([
+                streamResult.usage,
+                streamResult.finishReason,
+                streamResult.reasoning,
+              ]),
+              loopAbortController,
+              providerDeadlineAt,
+            );
             if (streamError) throw streamError;
             if (streamAborted || finishReason === 'error') {
               throw new Error(streamAborted ? 'Model stream was aborted before completion' : 'Model stream ended with an error');
@@ -1992,7 +2026,7 @@ export class Agent {
             result = { text: fullText, usage, reasoning: streamReasoning };
             loopDetector.recordStepText(fullText);
           } else {
-            result = await generateText({
+            result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
@@ -2246,10 +2280,14 @@ export class Agent {
                   }
                 }
               },
-            });
+            }), loopAbortController, providerDeadlineAt);
             if (result.finishReason === 'error') throw new Error('Model generation ended with an error');
             if (result.finishReason === 'length') {
               result = { ...result, text: `${result.text}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]` };
+            }
+            if (channel instanceof CLIChannel) {
+              await channel.send(result.text, msg.channelId, Date.now() - startTime);
+              cliResponseStreamed = true;
             }
           }
 
@@ -2262,6 +2300,13 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          if (this.currentAbortReason === 'time-limit') {
+            lastError = new Error(`${provider.name} exceeded the 10-minute provider-attempt limit`);
+            requiresContinuationApproval = true;
+            this.currentAbortReason = null;
+            logger.warn({ provider: provider.name }, 'Provider attempt reached hard deadline; waiting for user decision');
+            break;
+          }
           if (this.currentAbortReason === 'stalled' && !hasCompletedTool) {
             lastError = new Error(`${provider.name} stalled without progress`);
             this.currentAbortReason = null;
@@ -2294,34 +2339,71 @@ export class Agent {
             break;
           }
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
-          if (channel && msg.channelType !== 'internal') {
-            await channel.send(`  [Provider ${provider.name} failed, trying fallback...]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-          }
+          await this.sendProgressNotice(msg, `Provider ${provider.name} failed. Trying fallback...`)
+            .catch((e) => logger.warn({ e }, 'channel send failed'));
         }
       }
 
       if (!result) {
-        const errMsg = hasCompletedTool
+        let errMsg = hasCompletedTool
           ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
           : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
-        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput)) {
-          const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
-          await this.sendProgressNotice(
-            msg,
-            `Progress was checkpointed. Mercury will inspect the existing artifacts and continue with a different approach in ${Math.round(delayMs / 1000)} seconds.`,
-          ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
-          this.lifecycle.transition('idle');
-          return;
+        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
+          const continuationAttempt = typeof msg.metadata?.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 0;
+          const needsApproval = needsContinuationApproval(continuationAttempt, requiresContinuationApproval);
+          if (needsApproval) {
+            this.markProgress('Waiting for your decision...');
+            const reason = requiresContinuationApproval
+              ? 'The current provider attempt reached its 10-minute hard limit.'
+              : `Mercury has already made ${continuationAttempt} automatic continuation attempts.`;
+            const shouldContinue = channel && msg.channelType !== 'internal'
+              ? await channel.askToContinue(
+                `${reason} Existing files and completed tool work have been preserved. Continue with another inspected attempt?`,
+                msg.channelId,
+              ).catch(() => false)
+              : false;
+            if (!shouldContinue) {
+              errMsg = `${reason} Work is paused with existing artifacts preserved. Send "continue" when you want Mercury to inspect the current state and resume.`;
+            } else {
+              const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
+              await this.sendProgressNotice(
+                msg,
+                `Progress remains checkpointed. Mercury will inspect the existing artifacts and continue in ${Math.round(delayMs / 1000)} seconds.`,
+              ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
+              this.lifecycle.transition('idle');
+              return;
+            }
+          } else {
+            const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
+            await this.sendProgressNotice(
+              msg,
+              `Progress was checkpointed. Mercury will inspect the existing artifacts and continue with a different approach in ${Math.round(delayMs / 1000)} seconds.`,
+            ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
+            this.lifecycle.transition('idle');
+            return;
+          }
         }
         if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
-          const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError);
-          await this.sendProgressNotice(
-            msg,
-            `All providers are temporarily unavailable. This request is safely queued and will retry automatically in ${Math.round(delayMs / 1000)} seconds.`,
-          ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
-          this.lifecycle.transition('idle');
-          return;
+          const attempts = this.workLedger.get(this.currentWorkKey)?.attempts ?? 1;
+          const shouldContinue = !needsRetryApproval(attempts) || (
+            channel && msg.channelType !== 'internal'
+              ? await channel.askToContinue(
+                `All providers have failed ${attempts} attempts. No tool side effects were recorded. Retry again?`,
+                msg.channelId,
+              ).catch(() => false)
+              : false
+          );
+          if (shouldContinue) {
+            const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError);
+            await this.sendProgressNotice(
+              msg,
+              `All providers are temporarily unavailable. This request is safely queued and will retry in ${Math.round(delayMs / 1000)} seconds.`,
+            ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
+            this.lifecycle.transition('idle');
+            return;
+          }
+          errMsg = `All providers failed ${attempts} attempts. Work is paused. Send "continue" when you want Mercury to try again.`;
         }
         if (this.currentWorkKey) this.workLedger.markFailed(this.currentWorkKey, errMsg, errMsg);
         if (channel && msg.channelType !== 'internal') {
@@ -2547,12 +2629,7 @@ export class Agent {
         } else {
           // CLI or other channels — original flow
           logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending durable response');
-          // If the response was already streamed to the channel, the
-          // streamed ChatMessage is already in chatMessages with the full
-          // content — calling send() again would duplicate it. Only send
-          // when streaming did not produce output (non-streaming providers,
-          // fallbacks, or aborted streams).
-          if (!hasStreamedOutput && finalText && finalText.trim()) {
+          if (requiresFinalSend(msg.channelType, cliResponseStreamed)) {
             await channel.send(finalText, msg.channelId, elapsed);
           }
           this.markProgress();
@@ -2638,7 +2715,7 @@ export class Agent {
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];
-      if (isInternal || isScheduled) {
+      if (isInternal) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
       this.capabilities.permissions.clearElevation();
@@ -3647,6 +3724,10 @@ Is this productive iteration or a stuck loop?`,
 
       const ensureFreshToken = async (): Promise<string> => {
         try {
+          const store = getCloudTokenStore();
+          if (store) {
+            return await store.rotateIfExpired();
+          }
           const parts = cfg.cloud.jwt.split('.');
           if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
@@ -3677,7 +3758,7 @@ Is this productive iteration or a stuck loop?`,
             await channel.send(`Failed to fetch cloud models (HTTP ${res.status}). Your token may have expired — run \`mercury cloud login\`.`, channelId);
             return true;
           }
-          const data = await res.json() as { data: Array<{ id: string; label: string; tier_required: string; context_window: number; available: boolean; is_branded?: boolean }> };
+          const data = await res.json() as { data: Array<{ id: string; label: string; tier_required: string; context_window: number; available: boolean; is_branded?: boolean; discount_percent?: number }> };
           const models = data.data || [];
           if (models.length === 0) {
             await channel.send('No models available.', channelId);
@@ -3691,7 +3772,8 @@ Is this productive iteration or a stuck loop?`,
           const formatModel = (m: typeof models[0]) => {
             const marker = m.id === currentModel ? ' ← current' : '';
             const lock = m.available ? '' : ' 🔒';
-            return `• ${m.id} · ${m.label} (${m.tier_required})${lock}${marker}`;
+            const discount = m.discount_percent && m.discount_percent > 0 ? ` (${m.discount_percent}% off input)` : '';
+            return `• ${m.id} · ${m.label} (${m.tier_required})${discount}${lock}${marker}`;
           };
 
           const lines = [
@@ -3723,11 +3805,14 @@ Is this productive iteration or a stuck loop?`,
             if (modelId) {
               cfg.providers.mercuryCloud.model = modelId;
               cfg.providers.mercuryCloud.enabled = true;
+              cfg.providers.default = 'mercuryCloud';
               const { saveConfig } = await import('../utils/config.js');
               saveConfig(cfg);
               this.config = cfg;
-              const { MercuryCloudProvider } = await import('../providers/mercury-cloud.js');
-              this.providers.set('mercuryCloud', new MercuryCloudProvider(cfg.providers.mercuryCloud));
+              const provider = await createProvider(cfg.providers.mercuryCloud, getCloudTokenStore());
+              this.providers.set('mercuryCloud', provider);
+              this.providers.setDefault('mercuryCloud');
+              updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
               await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
             }
           }
@@ -3753,8 +3838,10 @@ Is this productive iteration or a stuck loop?`,
           const { saveConfig } = await import('../utils/config.js');
           saveConfig(cfg);
           this.config = cfg;
-          const { MercuryCloudProvider } = await import('../providers/mercury-cloud.js');
-          this.providers.set('mercuryCloud', new MercuryCloudProvider(cfg.providers.mercuryCloud));
+          const provider = await createProvider(cfg.providers.mercuryCloud, getCloudTokenStore());
+          this.providers.set('mercuryCloud', provider);
+          this.providers.setDefault('mercuryCloud');
+          updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
           await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
         } catch (err) {
           await channel.send(`Error switching model: ${(err as Error).message}`, channelId);

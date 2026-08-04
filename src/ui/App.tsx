@@ -8,6 +8,7 @@ import { renderMarkdown } from '../utils/markdown.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
+import { getViewportWindow, normalizeTerminalText } from './terminal-viewport.js';
 
 const MERCURY_LOGO = [
   '    __  _____________  ________  ________  __',
@@ -78,6 +79,7 @@ export interface TuiAppProps {
 
 export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
   const { exit } = useApp();
+  const terminalSize = useTerminalSize();
   const [input, setInput] = React.useState('');
   const [cursorPos, setCursorPos] = React.useState(0);
   const setInputAndCursor = (text: string, pos?: number) => {
@@ -99,8 +101,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   const [inputHistory, setInputHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number>(-1);
   const [historyDraft, setHistoryDraft] = React.useState<string>('');
-  const [workspacePane, setWorkspacePane] = React.useState<'files' | 'details' | 'git'>('files');
-  const [detailCursor, setDetailCursor] = React.useState(0);
   const [gitCursor, setGitCursor] = React.useState(0);
 
   const slashCommands = React.useMemo(() => [
@@ -222,6 +222,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   React.useEffect(() => {
     setSkillSelIdx(0);
   }, [skillSuggestions.length, input]);
+
+  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
 
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
@@ -557,7 +559,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
       // Tab cycles focus: explorer → code → right panel (chat or git)
       if (key.tab) {
-        const showRight = (process.stdout.columns || 80) >= 100;
+        const showRight = terminalSize.cols >= 100;
         const rightFocus = rightPanel === 'chat' ? 'chat' : 'git';
         const cycle = showRight ? ['explorer', 'code', rightFocus] : ['explorer', 'code'];
         const nextIdx = (cycle.indexOf(focusArea) + 1) % cycle.length;
@@ -578,12 +580,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         }
 
         if (focusArea === 'code') {
-          if (key.upArrow) { onInput('/ws scroll -1'); return; }
-          if (key.downArrow) { onInput('/ws scroll 1'); return; }
-          if (key.pageUp) { onInput('/ws scroll -15'); return; }
-          if (key.pageDown) { onInput('/ws scroll 15'); return; }
-          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws scroll -10'); return; }
-          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws scroll 10'); return; }
+          const viewerLines = Math.max(1, (terminalSize.rows - 11));
+          if (key.upArrow) { onInput(`/ws scroll -1 ${viewerLines}`); return; }
+          if (key.downArrow) { onInput(`/ws scroll 1 ${viewerLines}`); return; }
+          if (key.pageUp) { onInput(`/ws scroll ${-viewerLines} ${viewerLines}`); return; }
+          if (key.pageDown) { onInput(`/ws scroll ${viewerLines} ${viewerLines}`); return; }
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput(`/ws scroll ${-viewerLines} ${viewerLines}`); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput(`/ws scroll ${viewerLines} ${viewerLines}`); return; }
+          if ((key as any).home) { onInput('/ws scroll-home'); return; }
+          if ((key as any).end) { onInput(`/ws scroll-end ${viewerLines}`); return; }
         }
 
         if (focusArea === 'git') {
@@ -597,12 +602,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         }
 
         if (focusArea === 'chat') {
-          if (key.upArrow) { onInput('/ws chat-scroll -1'); return; }
-          if (key.downArrow) { onInput('/ws chat-scroll 1'); return; }
-          if (key.pageUp) { onInput('/ws chat-scroll -10'); return; }
-          if (key.pageDown) { onInput('/ws chat-scroll 10'); return; }
-          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws chat-scroll -8'); return; }
-          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws chat-scroll 8'); return; }
+          if (key.upArrow) { onInput('/ws chat-scroll 1'); return; }
+          if (key.downArrow) { onInput('/ws chat-scroll -1'); return; }
+          if (key.pageUp) { onInput('/ws chat-scroll 10'); return; }
+          if (key.pageDown) { onInput('/ws chat-scroll -10'); return; }
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws chat-scroll 10'); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws chat-scroll -10'); return; }
+          if ((key as any).home) { onInput('/ws chat-home'); return; }
+          if ((key as any).end) { onInput('/ws chat-end'); return; }
         }
       }
     }
@@ -799,17 +806,21 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     );
   }
 
-  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
-
   return (
     <Box flexDirection="column" flexGrow={1}>
       <StatusBarView state={state} />
+      <Static items={state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'))}>
+        {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
+      </Static>
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
-      {state.mode === 'coding' ? <CodingBody state={state} /> : null}
-      {(state.mode === 'workspace' || state.mode === 'chat') ? (
-        <ChatBody state={state} />
+      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} /> : null}
+      {state.mode === 'workspace' ? (
+        <WorkspaceBody state={state} gitCursor={gitCursor} height={Math.max(8, terminalSize.rows - 6)} cols={terminalSize.cols} onInput={onInput} />
+      ) : null}
+      {state.mode === 'chat' ? (
+        <ChatBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} />
       ) : null}
       {state.permissionPrompt && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
@@ -862,7 +873,7 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   const more = tasks.length > 3 ? ` +${tasks.length - 3} more` : '';
 
   return (
-    <Box paddingX={1} paddingBottom={0}>
+    <Box paddingX={1} paddingBottom={0} height={2} overflow="hidden">
       <Text color="gray">{'─'.repeat(50)}</Text>
       <Box flexDirection="column" width="100%">
         <Box>
@@ -899,7 +910,7 @@ function StatusBarView({ state }: { state: TuiState }) {
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={3} overflow="hidden">
       <Box paddingX={1}>
         <Text color={BRAND.logo}>☿</Text>
         <Text> </Text>
@@ -917,7 +928,7 @@ function StatusBarView({ state }: { state: TuiState }) {
           <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
           <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
         </Box>
-        <Text color="magenta">{providerBadge}</Text>
+        <Text color="magenta" wrap="truncate-end">{providerBadge}</Text>
       </Box>
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
@@ -946,7 +957,7 @@ function TokenBarView({ state }: { state: TuiState }) {
   const isWorkspace = state.mode === 'workspace' && state.workspace;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={2} overflow="hidden">
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
@@ -1027,12 +1038,13 @@ function formatCompact(n: number): string {
   return String(n);
 }
 
-function ChatBody({ state }: { state: TuiState }) {
+function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
   return (
     <Box flexDirection="row" flexGrow={1}>
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
-        <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
+        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
@@ -1041,7 +1053,7 @@ function ChatBody({ state }: { state: TuiState }) {
   );
 }
 
-function CodingBody({ state }: { state: TuiState }) {
+function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
   const modeLabels: Record<ProgrammingModeState, { label: string; color: string }> = {
     off: { label: 'OFF', color: 'gray' },
     plan: { label: 'PLAN', color: 'yellow' },
@@ -1049,6 +1061,7 @@ function CodingBody({ state }: { state: TuiState }) {
   };
   const modeInfo = modeLabels[state.programmingMode];
   const fileSection = state.sidebarSections.find((s) => s.title === 'Files');
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
 
   return (
     <Box flexDirection="row" flexGrow={1}>
@@ -1071,7 +1084,7 @@ function CodingBody({ state }: { state: TuiState }) {
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
+        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
@@ -1090,7 +1103,12 @@ function useTerminalSize(): { rows: number; cols: number } {
   React.useEffect(() => {
     const onResize = () => setSize({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
     stdout.on('resize', onResize);
-    return () => { stdout.off('resize', onResize); };
+    const fallback = setInterval(onResize, 500);
+    fallback.unref?.();
+    return () => {
+      stdout.off('resize', onResize);
+      clearInterval(fallback);
+    };
   }, [stdout]);
   return size;
 }
@@ -1140,7 +1158,7 @@ function ExplorerPanel({
   panelHeight: number;
   isFocused: boolean;
 }) {
-  const windowSize = Math.max(1, panelHeight - 2); // leave room for header + footer
+  const windowSize = Math.max(1, panelHeight - 3); // border + header
   const explorerStart = Math.max(0, Math.min(ws.selectedIndex - Math.floor(windowSize / 2), Math.max(0, ws.nodes.length - windowSize)));
   const visible = ws.nodes.slice(explorerStart, explorerStart + windowSize);
 
@@ -1190,14 +1208,15 @@ function CodeViewerPanel({
   panelHeight: number;
   isFocused: boolean;
 }) {
-  const viewerLines = Math.max(1, panelHeight - 3); // header + separator + footer
+  const viewerLines = Math.max(1, panelHeight - 4); // border + header + footer
   const preview = ws.openedFilePreview;
-  const offset = ws.codeScrollOffset;
   const totalLines = preview.length;
+  const maxOffset = Math.max(0, totalLines - viewerLines);
+  const offset = Math.max(0, Math.min(maxOffset, ws.codeScrollOffset));
   const visibleLines = preview.slice(offset, offset + viewerLines);
   const lineNumWidth = Math.max(3, String(offset + viewerLines).length);
   const fileName = ws.openedFilePath
-    ? ws.openedFilePath.replace(ws.rootPath + '/', '')
+    ? ws.openedFilePath.slice(ws.rootPath.length).replace(/^[/\\]+/, '') || ws.openedFilePath
     : '';
 
   return (
@@ -1264,7 +1283,7 @@ function GitPanel({
   isFocused: boolean;
   gitCursor: number;
 }) {
-  const listHeight = Math.max(1, panelHeight - 6); // header + branch + staged/unstaged labels + footer + border
+  const listHeight = Math.max(1, panelHeight - 5); // border + header + stats + footer
   const gitStart = Math.max(0, Math.min(gitCursor - Math.floor(listHeight / 2), Math.max(0, ws.gitFiles.length - listHeight)));
   const visible = ws.gitFiles.slice(gitStart, gitStart + listHeight);
 
@@ -1320,13 +1339,15 @@ function AgentOutputPanel({
   panelHeight,
   isFocused,
   scrollOffset,
+  onScrollClamp,
 }: {
   state: TuiState;
   panelHeight: number;
   isFocused: boolean;
   scrollOffset: number;
+  onScrollClamp: (distance: number) => void;
 }) {
-  const viewLines = Math.max(1, panelHeight - 4); // header + thinking + footer + border
+  const viewLines = Math.max(1, panelHeight - 5 - (state.isThinking ? 1 : 0)); // border + header + status + footer
 
   // Build a flat array of rendered lines from messages
   const allLines: Array<{ key: string; node: React.ReactNode }> = [];
@@ -1334,7 +1355,7 @@ function AgentOutputPanel({
   for (const msg of state.chatMessages) {
     const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
     const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'Sys' : state.agentName;
-    const contentLines = msg.content.split('\n');
+    const contentLines = normalizeTerminalText(msg.content).split('\n');
 
     // First line with role prefix
     allLines.push({
@@ -1367,15 +1388,14 @@ function AgentOutputPanel({
     });
   }
 
-  // Auto-scroll to bottom if no manual offset, or use scrollOffset
   const totalLines = allLines.length;
-  const effectiveOffset = scrollOffset === 0
-    ? Math.max(0, totalLines - viewLines) // auto-scroll to bottom
-    : Math.max(0, Math.min(scrollOffset, totalLines - viewLines));
-
-  const visibleLines = allLines.slice(effectiveOffset, effectiveOffset + viewLines);
-  const hiddenAbove = effectiveOffset;
-  const hiddenBelow = Math.max(0, totalLines - effectiveOffset - viewLines);
+  const viewport = getViewportWindow(totalLines, viewLines, scrollOffset);
+  React.useEffect(() => {
+    if (viewport.distanceFromBottom !== scrollOffset) onScrollClamp(viewport.distanceFromBottom);
+  }, [onScrollClamp, scrollOffset, viewport.distanceFromBottom]);
+  const visibleLines = allLines.slice(viewport.start, viewport.end);
+  const hiddenAbove = viewport.start;
+  const hiddenBelow = Math.max(0, totalLines - viewport.end);
 
   return (
     <Box
@@ -1390,9 +1410,6 @@ function AgentOutputPanel({
         <Spacer />
         <Text dimColor>{state.chatMessages.length} msg{state.chatMessages.length !== 1 ? 's' : ''}</Text>
       </Box>
-      {hiddenAbove > 0 && (
-        <Box paddingX={1}><Text dimColor>↑ {hiddenAbove} line{hiddenAbove !== 1 ? 's' : ''} above</Text></Box>
-      )}
       {visibleLines.length === 0 ? (
         <Box flexDirection="column" flexGrow={1} alignItems="center" justifyContent="center">
           <Text dimColor>No messages yet.</Text>
@@ -1404,8 +1421,8 @@ function AgentOutputPanel({
         ))
       )}
       {/* Fill remaining space */}
-      {visibleLines.length > 0 && visibleLines.length < viewLines - (hiddenAbove > 0 ? 1 : 0) && (
-        Array.from({ length: viewLines - visibleLines.length - (hiddenAbove > 0 ? 1 : 0) }, (_, i) => (
+      {visibleLines.length > 0 && visibleLines.length < viewLines && (
+        Array.from({ length: viewLines - visibleLines.length }, (_, i) => (
           <Box key={`apad-${i}`}><Text> </Text></Box>
         ))
       )}
@@ -1420,16 +1437,18 @@ function AgentOutputPanel({
           })()}</Text>
         </Box>
       )}
+      <Box paddingX={1} height={1}>
+        <Text dimColor>↑{hiddenAbove} · {viewport.start + (totalLines > 0 ? 1 : 0)}-{viewport.end}/{totalLines} · ↓{hiddenBelow}</Text>
+      </Box>
       <Box paddingX={1}>
-        <Text dimColor>{isFocused ? '↑↓ scroll · Ctrl+G git · Esc back' : 'Ctrl+J focus'}</Text>
+        <Text dimColor>{isFocused ? '↑↓ · PgUp/PgDn · Home/End · Esc back' : 'Ctrl+J focus'}</Text>
       </Box>
     </Box>
   );
 }
 
-function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { state: TuiState; workspacePane: 'files' | 'details' | 'git'; detailCursor: number; gitCursor: number }) {
+function WorkspaceBody({ state, gitCursor, height, cols, onInput }: { state: TuiState; gitCursor: number; height: number; cols: number; onInput: (text: string) => void }) {
   const ws = state.workspace;
-  const { rows, cols } = useTerminalSize();
 
   if (!ws?.active) {
     return (
@@ -1443,10 +1462,7 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
   const focusArea = ws.focusArea;
   const rightPanel = ws.rightPanel;
 
-  // Layout math: rows budget
-  // statusBar(2) + tabBar(1) + inputBox(3) = 6 fixed rows
-  const fixedOverhead = 6;
-  const idePanelHeight = Math.max(8, rows - fixedOverhead);
+  const idePanelHeight = Math.max(4, height - 1); // tab bar occupies one row
 
   // Column widths — 3 columns: explorer | code | right panel (chat or git)
   let explorerWidth: number;
@@ -1468,9 +1484,9 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
   }
 
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" height={height} overflow="hidden">
       <WorkspaceTabBar ws={ws} focusArea={focusArea} cols={cols} />
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={idePanelHeight} overflow="hidden">
         <Box width={explorerWidth}>
           <ExplorerPanel
             ws={ws}
@@ -1493,6 +1509,7 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
                 panelHeight={idePanelHeight}
                 isFocused={focusArea === 'chat'}
                 scrollOffset={ws.chatScrollOffset}
+                onScrollClamp={(distance) => onInput(`/ws chat-set ${distance}`)}
               />
             ) : (
               <GitPanel
@@ -1578,30 +1595,15 @@ function SpotifyBody({ activeIdx, nowPlaying, status, volume, albumArtAnsi }: { 
   );
 }
 
-function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; agentName: string }) {
+function ChatMessagesView({ messages, agentName, maxLines }: { messages: ChatMessage[]; agentName: string; maxLines?: number }) {
   if (messages.length === 0) return null;
 
-  // Completed (non-streaming) messages go into <Static>, which writes them
-  // once to stdout's scrollback and removes them from the live Yoga tree.
-  // This prevents Ink's flex-shrink defaults from collapsing rows once the
-  // cumulative content height exceeds the terminal row count — the bug that
-  // made the chat appear to "shrink" after a few prompts. Users scroll back
-  // through history with the terminal's normal scrollback controls.
-  const staticMsgs = messages.filter((m) => !m.streaming);
-  // Live tree holds only the in-flight streaming message (if any).
-  const liveMsgs = messages.filter((m) => m.streaming);
-
   return (
-    <>
-      <Static items={staticMsgs}>
-        {(msg) => <MessageRow key={msg.id} msg={msg} agentName={agentName} />}
-      </Static>
-      <Box flexDirection="column" flexGrow={1} flexShrink={0} paddingX={1}>
-        {liveMsgs.map((msg) => (
-          <MessageRow key={msg.id} msg={msg} agentName={agentName} live />
-        ))}
-      </Box>
-    </>
+    <Box flexDirection="column" flexGrow={1} flexShrink={0} paddingX={1}>
+      {messages.slice(-50).map((msg) => (
+        <MessageRow key={msg.id} msg={msg} agentName={agentName} maxLines={maxLines} />
+      ))}
+    </Box>
   );
 }
 
@@ -1615,8 +1617,8 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
 const MessageRow = React.memo(function MessageRow({
   msg,
   agentName,
-  live,
-}: { msg: ChatMessage; agentName: string; live?: boolean }) {
+  maxLines,
+}: { msg: ChatMessage; agentName: string; maxLines?: number }) {
   const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
   const roleColor = isCompletion
     ? 'green'
@@ -1665,7 +1667,10 @@ const MessageRow = React.memo(function MessageRow({
     );
   }
 
-  const rendered = renderMarkdown(msg.content);
+  const renderedLines = renderMarkdown(msg.content).split('\n');
+  const visibleLines = maxLines && renderedLines.length > maxLines
+    ? ['…', ...renderedLines.slice(-(maxLines - 1))]
+    : renderedLines;
   return (
     <Box key={msg.id} flexDirection="column" marginBottom={1} flexShrink={0}>
       <Box flexShrink={0}>
@@ -1674,7 +1679,7 @@ const MessageRow = React.memo(function MessageRow({
         </Text>
       </Box>
       <Box marginLeft={2} flexDirection="column" flexShrink={0}>
-        {rendered.split('\n').map((line, idx) => (
+        {visibleLines.map((line, idx) => (
           <Box key={`${msg.id}:${idx}`} flexShrink={0}>
             <Text>{line.length > 0 ? line : ' '}</Text>
           </Box>

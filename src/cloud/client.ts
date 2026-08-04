@@ -291,7 +291,11 @@ export class MercuryCloudClient {
   }
 
   private async tryRefreshAndReconnect(): Promise<void> {
-    if (this.isRefreshing || !this.tokenStore.getRefreshToken() || !this.shouldReconnect) return;
+    if (
+      this.isRefreshing
+      || (!this.tokenStore.getRefreshToken() && !this.tokenStore.getAgentApiKey())
+      || !this.shouldReconnect
+    ) return;
     this.isRefreshing = true;
     const generation = this.lifecycleGeneration;
 

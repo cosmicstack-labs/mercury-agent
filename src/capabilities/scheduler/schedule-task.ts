@@ -2,8 +2,9 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import cron from 'node-cron';
 import type { Scheduler, ScheduledTaskManifest } from '../../core/scheduler.js';
+import type { PermissionManager } from '../permissions.js';
 
-export function createScheduleTaskTool(scheduler: Scheduler, getContext: () => { channelId: string; channelType: string }) {
+export function createScheduleTaskTool(scheduler: Scheduler, permissions: PermissionManager, getContext: () => { channelId: string; channelType: string }) {
   return tool({
     description: 'Schedule a task. Use "cron" for recurring tasks (e.g. "0 9 * * *" for daily at 9am) or "delay_seconds" for one-shot delayed tasks (e.g. 15 for "remind me in 15 seconds"). Provide exactly one of cron or delay_seconds.',
     inputSchema: zodSchema(z.object({
@@ -24,6 +25,9 @@ export function createScheduleTaskTool(scheduler: Scheduler, getContext: () => {
       if (!prompt && !skill_name) {
         return 'Either prompt or skill_name must be provided so the task has something to do.';
       }
+
+      const approved = await permissions.requestApproval(`Create scheduled task: ${description}`);
+      if (!approved) return 'Permission denied: scheduled task creation was not approved.';
 
       const id = `task-${Date.now().toString(36)}`;
       const ctx = getContext();

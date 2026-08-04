@@ -75,6 +75,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { initCloudTokenStore } from './cloud/token-store.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
@@ -2100,7 +2101,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const tokenBudget = new TokenBudget(config);
-  const providers = await ProviderRegistry.create(config);
+
+  // Initialize the shared cloud token store before providers so the
+  // MercuryCloud provider can read from / write back to the single source of
+  // truth for the access + (single-use) refresh token.
+  const cloudTokenStore = config.cloud.enabled && config.cloud.jwt && config.cloud.agentId
+    ? initCloudTokenStore(config)
+    : null;
+  const providers = await ProviderRegistry.create(config, cloudTokenStore);
 
   if (!providers.hasProviders()) {
     if (isDaemon) {
@@ -2362,15 +2370,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
     try {
       const { MercuryCloudClient } = await import('./cloud/client.js');
-      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, config.cloud.jwt, config.cloud.agentId, config.cloud.refreshToken, config.cloud.apiUrl);
+      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, cloudTokenStore!);
       const activeSessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
         apiUrl: config.cloud.apiUrl,
         agentId: config.cloud.agentId,
-        token: config.cloud.jwt,
+        token: cloudTokenStore!.getJwt(),
       }));
       sessionSynchronizer = activeSessionSynchronizer;
 
+      let syncSettingReceived = false;
+      let syncFallbackTimer: ReturnType<typeof setTimeout> | undefined;
       cloudClient.on('conversation.sync.toggle', (msg) => {
+        syncSettingReceived = true;
+        if (syncFallbackTimer) clearTimeout(syncFallbackTimer);
         const enabled = msg.payload?.enabled === true;
         logger.info({ enabled }, 'Cloud command: toggle conversation persistence');
         agent.setSessionSyncEnabled(enabled);
@@ -2381,6 +2393,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         }
       });
 
+      // The shared token store already persists rotations to disk and
+      // notifies the provider via its listener. This legacy synthetic event
+      // only needs to mirror the new JWT into the in-memory config object
+      // used by closures above and keep the provider's apiKey in sync.
       cloudClient.on('token.refreshed' as any, (msg: any) => {
         const payload = msg.payload as { jwt: string; refreshToken: string } | undefined;
         if (payload) {
@@ -2388,7 +2404,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           config.cloud.refreshToken = payload.refreshToken;
           config.providers.mercuryCloud.apiKey = payload.jwt;
           providers.updateApiKey('mercuryCloud', payload.jwt);
-          saveConfig(config);
           logger.info('Mercury Cloud token refreshed and saved');
         }
       });
@@ -2640,6 +2655,18 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         const providerOverride = msg.payload?.provider as string | undefined;
         const controlType = msg.payload?.controlType as string | undefined;
 
+        const allowedControlTypes = new Set([
+          'session.create', 'session.delete', 'session.archive', 'permission.resolve', 'choice.resolve',
+          'interaction.cancel', 'permission.mode', 'model.list', 'model.select',
+        ]);
+        if ((msg.agentId && msg.agentId !== config.cloud.agentId)
+          || (controlType && (!allowedControlTypes.has(controlType) || typeof message === 'string'))
+          || (!controlType && typeof message !== 'string')) {
+          logger.warn({ type: controlType, agentId: msg.agentId }, 'Rejected invalid or mixed Cloud command envelope');
+          cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid Cloud command envelope.' } });
+          return;
+        }
+
         if (controlType === 'session.delete') {
           if (!suppliedSessionId || msg.payload?.confirmation !== suppliedSessionId) {
             cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Session deletion requires the exact session ID as confirmation.' } });
@@ -2659,6 +2686,72 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           } catch (error) {
             cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
           }
+          return;
+        }
+
+        if (controlType === 'session.create') {
+          if (!suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Session creation requires a canonical session ID.' } });
+            return;
+          }
+          try {
+            const alias = typeof msg.payload?.alias === 'string' ? msg.payload.alias : undefined;
+            const title = typeof msg.payload?.title === 'string' ? msg.payload.title : undefined;
+            const titleSource = msg.payload?.titleSource === 'user' || msg.payload?.titleSource === 'generated' ? msg.payload.titleSource : 'fallback';
+            const created = sessions.create({ id: suppliedSessionId, alias, title, titleSource });
+            sessions.bind(created.id, 'web', `cloud:${conversationId || suppliedSessionId}`);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId: created.id,
+              requestId,
+              event: 'session_created',
+              data: { sessionId: created.id, alias: created.alias, title: created.title, revision: created.revision },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          }
+          return;
+        }
+
+        if (controlType === 'permission.resolve' || controlType === 'choice.resolve' || controlType === 'interaction.cancel') {
+          const id = msg.payload?.id as string | undefined;
+          const value = controlType === 'permission.resolve'
+            ? msg.payload?.action as string | undefined
+            : msg.payload?.value as string | undefined;
+          if (!suppliedSessionId || !id || (controlType !== 'interaction.cancel' && typeof value !== 'string')) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid or incomplete interaction resolution.' } });
+            return;
+          }
+          const resolved = controlType === 'permission.resolve'
+            ? webChannel.resolveApproval(id, value!, requestId)
+            : controlType === 'choice.resolve'
+              ? webChannel.resolveChoice(id, value!, requestId)
+              : webChannel.cancelInteraction(id, requestId);
+          const resolvedEvent = controlType === 'choice.resolve' || controlType === 'interaction.cancel' ? 'choice_resolved' : 'permission_resolved';
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: resolved ? resolvedEvent : 'error',
+            data: resolved ? { id, value, cancelled: controlType === 'interaction.cancel' } : { message: 'Interaction expired, was already used, or does not belong to this request.' },
+          });
+          return;
+        }
+
+        if (controlType === 'permission.mode') {
+          const action = msg.payload?.action;
+          if (!suppliedSessionId || (action !== 'allow-all' && action !== 'ask-me')) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid permission mode request.' } });
+            return;
+          }
+          webChannel.setSessionPermissionMode(suppliedSessionId, action);
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: 'permission_mode_set',
+            data: { mode: action },
+          });
           return;
         }
 
@@ -2691,51 +2784,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
               data: { message: error instanceof Error ? error.message : String(error) },
             });
           }
-          return;
-        }
-
-        if (controlType === 'permission.resolve') {
-          const id = msg.payload?.id as string | undefined;
-          const action = msg.payload?.action as string | undefined;
-          if (id && action) {
-            const resolved = webChannel.resolveApproval(id, action);
-            cloudClient!.sendStream({
-              conversationId,
-              sessionId,
-              requestId,
-              event: resolved ? 'permission_resolved' : 'error',
-              data: resolved ? { id, action } : { message: 'Permission prompt expired or was not found.' },
-            });
-          }
-          return;
-        }
-
-        if (controlType === 'choice.resolve') {
-          const id = msg.payload?.id as string | undefined;
-          const value = msg.payload?.value as string | undefined;
-          if (id && typeof value === 'string') {
-            const resolved = webChannel.resolveChoice(id, value);
-            cloudClient!.sendStream({
-              conversationId,
-              sessionId,
-              requestId,
-              event: resolved ? 'choice_resolved' : 'error',
-              data: resolved ? { id, value } : { message: 'Choice prompt expired or was not found.' },
-            });
-          }
-          return;
-        }
-
-        if (controlType === 'permission.mode') {
-          const action = msg.payload?.action as string | undefined;
-          webChannel.setBypassPermissions(action === 'allow-all');
-          cloudClient!.sendStream({
-            conversationId,
-            sessionId,
-            requestId,
-            event: 'permission_mode_set',
-            data: { mode: action === 'allow-all' ? 'allow-all' : 'ask-me' },
-          });
           return;
         }
 
@@ -2853,6 +2901,20 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
       await cloudClient.connect();
       logger.info('Mercury Cloud WebSocket connected');
+
+      // Fallback: if the server doesn't send conversation.sync.toggle within 5s
+      // (e.g. message dropped or delayed), start sync anyway. The toggle handler
+      // remains the authority and will stop it if the server says disabled.
+      if (!syncSettingReceived) {
+        syncFallbackTimer = setTimeout(() => {
+          if (!syncSettingReceived && !activeSessionSynchronizer.isEnabled()) {
+            logger.info('No conversation.sync.toggle received within 5s — starting sync as fallback');
+            agent.setSessionSyncEnabled(true);
+            activeSessionSynchronizer.start();
+          }
+        }, 5_000);
+        syncFallbackTimer.unref?.();
+      }
     } catch (err: any) {
       logger.warn({ err: err.message }, 'Failed to start Mercury Cloud WS client');
     }
@@ -3046,14 +3108,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
+    const { channelId } = capabilities.getChannelContext();
     if (channelType === 'telegram' && tgChannel) {
-      return tgChannel.askPermission(prompt);
+      return tgChannel.askPermission(prompt, channelId);
     }
     if (channelType === 'signal' && channels.get('signal')) {
-      return (channels.get('signal') as SignalChannel).askPermission(prompt);
+      return (channels.get('signal') as SignalChannel).askPermission(prompt, channelId);
     }
     if (channelType === 'web' && webChannel) {
-      return webChannel.askPermission(prompt);
+      return webChannel.askPermission(prompt, channelId);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);

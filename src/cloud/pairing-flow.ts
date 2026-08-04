@@ -85,25 +85,28 @@ export async function runCloudPairingFlow(
       headers: { Authorization: `Bearer ${result.jwt}` },
     });
     if (res.ok) {
-      const data = (await res.json()) as { models?: Array<{ id: string; label: string }> };
-      if (data.models && data.models.length > 0) {
+      const data = (await res.json()) as { data?: Array<{ id: string; label: string; discount_percent?: number }> };
+      const models = data.data;
+      if (models && models.length > 0) {
         console.log(chalk.dim('  Available models:'));
-        for (let i = 0; i < data.models.length; i++) {
-          console.log(chalk.white(`    ${i + 1}. ${data.models[i].label} (${data.models[i].id})`));
+        for (let i = 0; i < models.length; i++) {
+          const discount = models[i].discount_percent;
+          const discountTag = discount && discount > 0 ? chalk.green(` (${discount}% off input)`) : '';
+          console.log(chalk.white(`    ${i + 1}. ${models[i].label} (${models[i].id})`) + discountTag);
         }
         console.log('');
         const choice = await import('readline').then(async (rl) => {
           const r = rl.createInterface({ input: process.stdin, output: process.stdout });
           return new Promise<string>((resolve) => {
-            r.question(chalk.white(`  Choose a model [1-${data.models!.length}, Enter for 1]: `), (ans) => {
+            r.question(chalk.white(`  Choose a model [1-${models.length}, Enter for 1]: `), (ans) => {
               r.close();
               resolve(ans || '1');
             });
           });
         });
         const idx = parseInt(choice, 10) - 1;
-        if (idx >= 0 && idx < data.models.length) {
-          model = data.models[idx].id;
+        if (idx >= 0 && idx < models.length) {
+          model = models[idx].id;
         }
       }
     }

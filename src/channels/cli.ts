@@ -97,6 +97,8 @@ export class CLIChannel extends BaseChannel {
   private rawModeWatchdog: NodeJS.Timeout | null = null;
   private statusPoller: NodeJS.Timeout | null = null;
   private statusPollerBusy = false;
+  private rerenderQueued = false;
+  private rerenderScheduled = false;
   private statusProviders: {
     tokens?: () => { used: number; budget: number; percentage: number };
     saver?: () => { state: import('../core/saver-mode.js').SaverModeState; savedToday: number; savedLifetime: number };
@@ -184,27 +186,42 @@ export class CLIChannel extends BaseChannel {
 
   private rerender(): void {
     if (!this.inkInstance) return;
-    this.inkInstance.rerender(
-      React.createElement(TuiApp, {
-        state: this.state,
-        onInput: (text: string) => { this.inputHandler?.(text); },
-        onPermissionResolve: (value: string | boolean) => {
-          if (this.permissionResolver) {
-            this.permissionResolver(value);
-            this.permissionResolver = null;
-          }
-          this.update({ permissionPrompt: null });
-        },
-        onExit: () => {
-          this.stopRawModeWatchdog();
-          this.inkInstance?.unmount();
-          this.inkInstance = null;
-          this.releaseRawMode();
-          this.exitHandler?.();
-        },
-        spotifyClient: this.spotifyClient,
-      }),
-    );
+    if (this.rerenderScheduled) {
+      this.rerenderQueued = true;
+      return;
+    }
+    this.rerenderScheduled = true;
+    const flush = () => {
+      this.rerenderScheduled = false;
+      const inkInstance = this.inkInstance;
+      if (!inkInstance) return;
+      inkInstance.rerender(
+        React.createElement(TuiApp, {
+          state: this.state,
+          onInput: (text: string) => { this.inputHandler?.(text); },
+          onPermissionResolve: (value: string | boolean) => {
+            if (this.permissionResolver) {
+              this.permissionResolver(value);
+              this.permissionResolver = null;
+            }
+            this.update({ permissionPrompt: null });
+          },
+          onExit: () => {
+            this.stopRawModeWatchdog();
+            this.inkInstance?.unmount();
+            this.inkInstance = null;
+            this.releaseRawMode();
+            this.exitHandler?.();
+          },
+          spotifyClient: this.spotifyClient,
+        }),
+      );
+      if (this.rerenderQueued) {
+        this.rerenderQueued = false;
+        flush();
+      }
+    };
+    setImmediate(flush);
   }
 
   mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: () => void): void {
@@ -254,8 +271,19 @@ export class CLIChannel extends BaseChannel {
         return;
       }
       if (trimmed.startsWith('/ws scroll ')) {
-        const delta = parseInt(trimmed.slice(11), 10);
-        if (!isNaN(delta)) this.scrollWorkspaceCode(delta);
+        const [deltaRaw, viewportRaw] = trimmed.slice(11).trim().split(/\s+/);
+        const delta = parseInt(deltaRaw, 10);
+        const viewportLines = parseInt(viewportRaw, 10);
+        if (!isNaN(delta)) this.scrollWorkspaceCode(delta, Number.isFinite(viewportLines) ? viewportLines : 1);
+        return;
+      }
+      if (trimmed === '/ws scroll-home') {
+        this.scrollWorkspaceCodeToBoundary('top');
+        return;
+      }
+      if (trimmed.startsWith('/ws scroll-end ')) {
+        const viewportLines = parseInt(trimmed.slice(15), 10);
+        this.scrollWorkspaceCodeToBoundary('bottom', Number.isFinite(viewportLines) ? viewportLines : 1);
         return;
       }
       if (trimmed.startsWith('/ws focus ')) {
@@ -270,6 +298,19 @@ export class CLIChannel extends BaseChannel {
       if (trimmed.startsWith('/ws chat-scroll ')) {
         const delta = parseInt(trimmed.slice(16), 10);
         if (!isNaN(delta)) this.scrollWorkspaceChat(delta);
+        return;
+      }
+      if (trimmed.startsWith('/ws chat-set ')) {
+        const distance = parseInt(trimmed.slice(13), 10);
+        if (Number.isFinite(distance)) this.setWorkspaceChatDistance(distance);
+        return;
+      }
+      if (trimmed === '/ws chat-home') {
+        this.setWorkspaceChatBoundary('top');
+        return;
+      }
+      if (trimmed === '/ws chat-end') {
+        this.setWorkspaceChatBoundary('bottom');
         return;
       }
       if (trimmed === '/menu' || trimmed === '/m') {
@@ -497,22 +538,11 @@ export class CLIChannel extends BaseChannel {
   async stream(content: AsyncIterable<string>, _targetId?: string): Promise<string> {
     const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     let full = '';
+    let started = false;
     let lastRender = 0;
 
     this.clearHeartbeat();
-
-    const initialMsg: ChatMessage = {
-      id: msgId,
-      role: 'agent',
-      content: '',
-      timestamp: Date.now(),
-      streaming: true,
-    };
-
-    this.update({
-      chatMessages: [...this.state.chatMessages, initialMsg],
-      isThinking: true,
-    });
+    this.update({ isThinking: true });
 
     try {
       for await (const chunk of content) {
@@ -524,41 +554,42 @@ export class CLIChannel extends BaseChannel {
         // render — caused the visible "vibration"/flicker during generation.
         // 60ms is fast enough to feel live while keeping each frame's layout
         // stable.
-        if (now - lastRender >= 60) {
+        if (!started || now - lastRender >= 60) {
+          const streamedMessage = { id: msgId, role: 'agent' as const, content: full, timestamp: now, streaming: true };
           this.update({
-            chatMessages: this.state.chatMessages.map((m) =>
-              m.id === msgId ? { ...m, content: full, streaming: true } : m,
-            ),
+            chatMessages: started
+              ? this.state.chatMessages.map((message) => message.id === msgId ? streamedMessage : message)
+              : [...this.state.chatMessages, streamedMessage],
+            isThinking: true,
           });
+          started = true;
           lastRender = now;
         }
       }
     } catch (err) {
-      // Stream was interrupted (API disconnect, abort, etc.). Save
-      // whatever partial text we accumulated so the user doesn't lose it.
       logger.warn({ err, partialLen: full.length }, 'CLI stream interrupted, saving partial text');
       if (full.length > 0) {
+        const interruptedMessage = { id: msgId, role: 'agent' as const, content: full + '\n\n⚠ Stream was interrupted. Partial response shown above.', timestamp: Date.now(), streaming: false };
         this.update({
-          chatMessages: this.state.chatMessages.map((m) =>
-            m.id === msgId ? { ...m, content: full + '\n\n⚠ Stream was interrupted. Partial response shown above.', streaming: false } : m,
-          ),
+          chatMessages: started
+            ? this.state.chatMessages.map((message) => message.id === msgId ? interruptedMessage : message)
+            : [...this.state.chatMessages, interruptedMessage],
           isThinking: false,
         });
       } else {
         this.update({
-          chatMessages: this.state.chatMessages.map((m) =>
-            m.id === msgId ? { ...m, content: '⚠ Stream was interrupted before any response was generated.', streaming: false } : m,
-          ),
+          chatMessages: [...this.state.chatMessages, { id: msgId, role: 'agent', content: '⚠ Stream was interrupted before any response was generated.', timestamp: Date.now(), streaming: false }],
           isThinking: false,
         });
       }
       return full;
     }
 
+    const finalMessage = { id: msgId, role: 'agent' as const, content: full, timestamp: Date.now(), streaming: false };
     this.update({
-      chatMessages: this.state.chatMessages.map((m) =>
-        m.id === msgId ? { ...m, content: full, streaming: false } : m,
-      ),
+      chatMessages: started
+        ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
+        : [...this.state.chatMessages, finalMessage],
       isThinking: false,
     });
 
@@ -1015,14 +1046,23 @@ export class CLIChannel extends BaseChannel {
     this.update({ workspace: { ...ws, openedFilePath: null, openedFilePreview: [], codeScrollOffset: 0, focusArea: 'explorer', lastAction: 'Closed file preview' } });
   }
 
-  scrollWorkspaceCode(delta: number): void {
+  scrollWorkspaceCode(delta: number, viewportLines = 1): void {
     const ws = this.state.workspace;
     if (!ws?.active || !ws.openedFilePreview.length) return;
-    const maxOffset = Math.max(0, ws.openedFilePreview.length - 1);
+    const maxOffset = Math.max(0, ws.openedFilePreview.length - Math.max(1, viewportLines));
     const next = Math.max(0, Math.min(maxOffset, ws.codeScrollOffset + delta));
     if (next !== ws.codeScrollOffset) {
       this.update({ workspace: { ...ws, codeScrollOffset: next } });
     }
+  }
+
+  private scrollWorkspaceCodeToBoundary(boundary: 'top' | 'bottom', viewportLines = 1): void {
+    const ws = this.state.workspace;
+    if (!ws?.active || !ws.openedFilePreview.length) return;
+    const codeScrollOffset = boundary === 'top'
+      ? 0
+      : Math.max(0, ws.openedFilePreview.length - Math.max(1, viewportLines));
+    this.update({ workspace: { ...ws, codeScrollOffset } });
   }
 
   setWorkspaceFocus(area: 'explorer' | 'code' | 'git' | 'chat'): void {
@@ -1045,10 +1085,29 @@ export class CLIChannel extends BaseChannel {
   scrollWorkspaceChat(delta: number): void {
     const ws = this.state.workspace;
     if (!ws?.active) return;
-    const maxOffset = Math.max(0, this.state.chatMessages.length - 1);
-    const next = Math.max(0, Math.min(maxOffset, ws.chatScrollOffset + delta));
+    const next = Math.max(0, ws.chatScrollOffset + delta);
     if (next !== ws.chatScrollOffset) {
       this.update({ workspace: { ...ws, chatScrollOffset: next } });
+    }
+  }
+
+  private setWorkspaceChatBoundary(boundary: 'top' | 'bottom'): void {
+    const ws = this.state.workspace;
+    if (!ws?.active) return;
+    this.update({
+      workspace: {
+        ...ws,
+        chatScrollOffset: boundary === 'top' ? Number.MAX_SAFE_INTEGER : 0,
+      },
+    });
+  }
+
+  private setWorkspaceChatDistance(distance: number): void {
+    const ws = this.state.workspace;
+    if (!ws?.active) return;
+    const chatScrollOffset = Math.max(0, distance);
+    if (chatScrollOffset !== ws.chatScrollOffset) {
+      this.update({ workspace: { ...ws, chatScrollOffset } });
     }
   }
 
@@ -1066,7 +1125,7 @@ export class CLIChannel extends BaseChannel {
   private readFilePreview(filePath: string): string[] {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      return raw.split('\n').slice(0, 500);
+      return raw.replace(/\r\n?/g, '\n').split('\n').slice(0, 500);
     } catch {
       return ['(Unable to read file preview)'];
     }

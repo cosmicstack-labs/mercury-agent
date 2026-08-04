@@ -121,6 +121,7 @@ export class CapabilityRegistry {
   setChannelContext(channelId: string, channelType: string): void {
     this.currentChannelId = channelId;
     this.currentChannelType = channelType;
+    this.permissions.setCurrentContext(channelType, channelId);
   }
 
   getChannelContext(): { channelId: string; channelType: string } {
@@ -210,7 +211,7 @@ export class CapabilityRegistry {
     }
 
     if (this.scheduler) {
-      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, () => this.getChannelContext());
+      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, this.permissions, () => this.getChannelContext());
       this.tools.list_scheduled_tasks = createListTasksTool(this.scheduler);
       this.tools.cancel_scheduled_task = createCancelTaskTool(this.scheduler);
       logger.info('Scheduler tools registered');
@@ -231,8 +232,8 @@ export class CapabilityRegistry {
       this.tools.git_status = createGitStatusTool(() => this.getCwd());
       this.tools.git_diff = createGitDiffTool(() => this.getCwd());
       this.tools.git_log = createGitLogTool(() => this.getCwd());
-      this.tools.git_add = createGitAddTool(() => this.getCwd());
-      this.tools.git_commit = createGitCommitTool(() => this.getCwd());
+      this.tools.git_add = createGitAddTool(this.permissions, () => this.getCwd());
+      this.tools.git_commit = createGitCommitTool(this.permissions, () => this.getCwd());
       this.tools.git_push = createGitPushTool(this.permissions, () => this.getCwd());
       logger.info('Git tools registered');
     }

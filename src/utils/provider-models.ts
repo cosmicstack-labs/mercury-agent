@@ -1,6 +1,7 @@
 import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
+import { MERCURY_CLOUD_API_URL } from '../cloud/endpoints.js';
 
 export interface ProviderModelCatalog {
   models: string[];
@@ -430,7 +431,7 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
 }
 
 async function fetchMercuryCloudModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
-  const baseUrl = trimTrailingSlash(config.baseUrl || 'https://api.mercury.cloud');
+  const baseUrl = trimTrailingSlash(config.baseUrl || MERCURY_CLOUD_API_URL);
   const jwt = config.apiKey;
 
   if (!jwt) {

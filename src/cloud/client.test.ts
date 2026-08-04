@@ -2,9 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { logger } from '../utils/logger.js';
 
-const { refreshTokenMock } = vi.hoisted(() => ({ refreshTokenMock: vi.fn() }));
-vi.mock('./pairing.js', () => ({ refreshToken: refreshTokenMock }));
-
 import { MercuryCloudClient } from './client.js';
 import type { CloudTokenStore } from './token-store.js';
 
@@ -32,7 +29,6 @@ function makeStore(jwt = 'token', refreshTokenValue = 'refresh', agentId = 'agen
 
 afterEach(() => {
   vi.restoreAllMocks();
-  refreshTokenMock.mockReset();
 });
 
 describe('MercuryCloudClient', () => {
@@ -132,8 +128,8 @@ describe('MercuryCloudClient', () => {
 
   it('does not reconnect after disconnect while refresh is in flight', async () => {
     let resolveRefresh!: (value: { jwt: string; refreshToken: string }) => void;
-    refreshTokenMock.mockReturnValue(new Promise((resolve) => { resolveRefresh = resolve; }));
     const store = makeStore();
+    (store.rotate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((resolve) => { resolveRefresh = resolve; }));
     const client = new MercuryCloudClient('ws://example.test', store);
     const connect = vi.spyOn(client, 'connect');
 
@@ -146,13 +142,25 @@ describe('MercuryCloudClient', () => {
   });
 
   it('schedules another attempt after a transient auth refresh failure', async () => {
-    refreshTokenMock.mockRejectedValue(new Error('temporarily unavailable'));
-    const client = new MercuryCloudClient('ws://example.test', makeStore());
+    const store = makeStore();
+    (store.rotate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('temporarily unavailable'));
+    const client = new MercuryCloudClient('ws://example.test', store);
     (client as any).authRefreshNeeded = true;
 
     await (client as any).tryRefreshAndReconnect();
 
     expect((client as any).reconnectTimer).not.toBeNull();
+    client.disconnect();
+  });
+
+  it('refreshes with the agent key when no refresh token remains', async () => {
+    const store = makeStore('expired-token', '');
+    const client = new MercuryCloudClient('ws://example.test', store);
+    vi.spyOn(client, 'connect').mockResolvedValue();
+
+    await (client as any).tryRefreshAndReconnect();
+
+    expect(store.rotate).toHaveBeenCalledOnce();
     client.disconnect();
   });
 

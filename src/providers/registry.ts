@@ -3,10 +3,10 @@ import { isProviderConfigured } from '../utils/config.js';
 import type { BaseProvider } from './base.js';
 import { logger } from '../utils/logger.js';
 
-export async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
+export async function createProvider(pc: ProviderConfig, tokenStore?: import('../cloud/token-store.js').CloudTokenStore | null): Promise<BaseProvider> {
   if (pc.name === 'mercuryCloud') {
     const { MercuryCloudProvider } = await import('./mercury-cloud.js');
-    return new MercuryCloudProvider(pc);
+    return new MercuryCloudProvider(pc, tokenStore ?? null);
   } else if (pc.name === 'anthropic') {
     const { AnthropicProvider } = await import('./anthropic.js');
     return new AnthropicProvider(pc);
@@ -48,7 +48,7 @@ export class ProviderRegistry {
     this.defaultName = defaultName;
   }
 
-  static async create(config: MercuryConfig): Promise<ProviderRegistry> {
+  static async create(config: MercuryConfig, tokenStore?: import('../cloud/token-store.js').CloudTokenStore | null): Promise<ProviderRegistry> {
     const registry = new ProviderRegistry(config.providers.default);
 
     const entries: ProviderConfig[] = [
@@ -74,7 +74,7 @@ export class ProviderRegistry {
     const configured = entries.filter(pc => isProviderConfigured(pc));
     const results = await Promise.allSettled(
       configured.map(async (pc) => {
-        const provider = await createProvider(pc);
+        const provider = await createProvider(pc, pc.name === 'mercuryCloud' ? tokenStore : undefined);
         return { name: pc.name, model: pc.model, provider };
       })
     );
@@ -101,6 +101,12 @@ export class ProviderRegistry {
     const existing = this.providers.get(name) as (BaseProvider & { destroy?: () => void }) | undefined;
     existing?.destroy?.();
     this.providers.set(name, provider);
+  }
+
+  setDefault(name: string): void {
+    if (!this.providers.has(name)) throw new Error(`Provider is not registered: ${name}`);
+    this.defaultName = name;
+    this.lastSuccessful = null;
   }
 
   updateApiKey(name: string, apiKey: string): void {

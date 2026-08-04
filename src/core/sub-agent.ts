@@ -139,9 +139,6 @@ export class SubAgent {
         this.capabilities.setCwd(this.config.workingDirectory);
       }
 
-      this.capabilities.permissions.setAutoApproveAll(true);
-      this.capabilities.permissions.addTempScope('/', true, true);
-
       this.capabilities.setChannelContext(
         this.config.sourceChannelId || 'internal',
         this.config.sourceChannelType || 'internal',
@@ -338,7 +335,6 @@ export class SubAgent {
         if (this.config.workingDirectory) {
           this.capabilities.setCwd(originalCwd);
         }
-        this.capabilities.permissions.setAutoApproveAll(false);
         this.capabilities.permissions.clearElevation();
         this.fileLockManager.releaseAll(this.config.id);
       }

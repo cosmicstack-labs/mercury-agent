@@ -1,10 +1,19 @@
 import { BaseChannel } from './base.js';
 import type { ChannelMessage } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
+import { randomUUID } from 'node:crypto';
 
-type ApprovalResolver = () => void;
-type ChoiceResolver = (value: string) => void;
 type CloudEventHandler = (event: ChatEvent) => boolean;
+
+type PendingInteractionKind = 'permission' | 'continue' | 'mode' | 'choice';
+
+interface PendingInteraction {
+  kind: PendingInteractionKind;
+  targetId?: string;
+  allowedValues: Set<string>;
+  resolve: (value: string) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 export interface ChatEvent {
   type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error';
@@ -41,13 +50,12 @@ class SSEClient {
 export class WebChannel extends BaseChannel {
   readonly type = 'web' as const;
   private sseClients: Map<string, SSEClient> = new Map();
-  private pendingApprovals: Map<string, ApprovalResolver> = new Map();
-  private pendingContinues: Map<string, ApprovalResolver> = new Map();
-  private pendingPermModes: Map<string, ApprovalResolver> = new Map();
-  private pendingChoices: Map<string, ChoiceResolver> = new Map();
+  private pendingInteractions = new Map<string, PendingInteraction>();
   private agentName: string;
   private stepCounter: Map<string, number> = new Map();
   private cloudEventHandlers: Map<string, CloudEventHandler> = new Map();
+  private cloudRequestSessions = new Map<string, string>();
+  private permissionModes = new Map<string, 'allow-all' | 'ask-me'>();
   private bypassPermissions = false;
   private restrictUser = false;
 
@@ -67,6 +75,11 @@ export class WebChannel extends BaseChannel {
       client.close();
     }
     this.sseClients.clear();
+    for (const [id, interaction] of this.pendingInteractions) {
+      clearTimeout(interaction.timer);
+      interaction.resolve(interaction.kind === 'mode' ? 'ask-me' : interaction.kind === 'choice' ? '' : 'no');
+      this.pendingInteractions.delete(id);
+    }
   }
 
   addSSEClient(controller: ReadableStreamDefaultController, sessionId?: string): string {
@@ -89,6 +102,7 @@ export class WebChannel extends BaseChannel {
         delivered = cloudHandler(event);
         if (delivered && (event.type === 'text_done' || event.type === 'error')) {
           this.cloudEventHandlers.delete(targetId);
+          this.cloudRequestSessions.delete(targetId);
         }
       }
     }
@@ -100,37 +114,72 @@ export class WebChannel extends BaseChannel {
     return delivered;
   }
 
-  resolveApproval(id: string, action: string): boolean {
-    const key = `${id}:${action}`;
-    const resolver = this.pendingApprovals.get(key);
-    if (resolver) {
-      this.pendingApprovals.delete(key);
-      resolver();
-      return true;
-    }
-    // also check continues
-    const continueResolver = this.pendingContinues.get(key);
-    if (continueResolver) {
-      this.pendingContinues.delete(key);
-      continueResolver();
-      return true;
-    }
-    // and perm modes
-    const modeResolver = this.pendingPermModes.get(key);
-    if (modeResolver) {
-      this.pendingPermModes.delete(key);
-      modeResolver();
-      return true;
-    }
-    return false;
+  resolveApproval(id: string, action: string, targetId?: string): boolean {
+    return this.resolveInteraction(id, action, targetId, ['permission', 'continue', 'mode']);
   }
 
-  resolveChoice(id: string, value: string): boolean {
-    const resolver = this.pendingChoices.get(id);
-    if (!resolver) return false;
-    this.pendingChoices.delete(id);
-    resolver(value);
+  resolveChoice(id: string, value: string, targetId?: string): boolean {
+    return this.resolveInteraction(id, value, targetId, ['choice']);
+  }
+
+  cancelInteraction(id: string, targetId?: string): boolean {
+    const interaction = this.pendingInteractions.get(id);
+    if (!interaction || (interaction.targetId && interaction.targetId !== targetId)) return false;
+    this.pendingInteractions.delete(id);
+    clearTimeout(interaction.timer);
+    interaction.resolve(interaction.kind === 'choice' ? '' : interaction.kind === 'mode' ? 'ask-me' : 'no');
     return true;
+  }
+
+  private resolveInteraction(id: string, value: string, targetId: string | undefined, kinds: PendingInteractionKind[]): boolean {
+    const interaction = this.pendingInteractions.get(id);
+    if (!interaction || !kinds.includes(interaction.kind) || !interaction.allowedValues.has(value)) return false;
+    if (interaction.targetId && interaction.targetId !== targetId) return false;
+    this.pendingInteractions.delete(id);
+    clearTimeout(interaction.timer);
+    interaction.resolve(value);
+    return true;
+  }
+
+  private waitForInteraction(
+    id: string,
+    kind: PendingInteractionKind,
+    values: string[],
+    targetId: string | undefined,
+    fallback: string,
+  ): Promise<string> {
+    const boundTargetId = targetId && this.cloudEventHandlers.has(targetId) ? targetId : undefined;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const interaction = this.pendingInteractions.get(id);
+        if (!interaction) return;
+        this.pendingInteractions.delete(id);
+        this.broadcast({
+          type: interaction.kind === 'choice' ? 'choice_resolved' : 'permission_resolved',
+          data: { id, status: 'expired', targetId: interaction.targetId },
+        });
+        resolve(fallback);
+      }, 120_000);
+      this.pendingInteractions.set(id, {
+        kind,
+        targetId: boundTargetId,
+        allowedValues: new Set(values),
+        resolve,
+        timer,
+      });
+    });
+  }
+
+  private isPermissionBypassed(targetId?: string): boolean {
+    if (this.bypassPermissions) return true;
+    const sessionId = targetId ? this.cloudRequestSessions.get(targetId) : undefined;
+    return !!sessionId && this.permissionModes.get(sessionId) === 'allow-all';
+  }
+
+  private hasInteractiveTarget(targetId?: string): boolean {
+    if (!targetId) return this.sseClients.size > 0;
+    if (this.cloudEventHandlers.has(targetId)) return true;
+    return [...this.sseClients.values()].some((client) => client.sessionId === targetId);
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
@@ -163,89 +212,48 @@ export class WebChannel extends BaseChannel {
   }
 
   async askPermission(prompt: string, _targetId?: string): Promise<string> {
-    if (this.bypassPermissions) return 'yes';
-    const id = `perm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (this.isPermissionBypassed(_targetId)) return 'yes';
+    if (!this.hasInteractiveTarget(_targetId)) return 'no';
+    const id = `perm_${randomUUID()}`;
     this.broadcast({
       type: 'permission_request',
       data: { id, prompt, options: ['yes', 'always', 'no'], targetId: _targetId },
     });
 
-    return new Promise((resolve) => {
-      const yesKey = `${id}:yes`;
-      const alwaysKey = `${id}:always`;
-      const noKey = `${id}:no`;
-      this.pendingApprovals.set(yesKey, () => resolve('yes'));
-      this.pendingApprovals.set(alwaysKey, () => resolve('always'));
-      this.pendingApprovals.set(noKey, () => resolve('no'));
-
-      setTimeout(() => {
-        this.pendingApprovals.delete(yesKey);
-        this.pendingApprovals.delete(alwaysKey);
-        this.pendingApprovals.delete(noKey);
-        resolve('no');
-      }, 120_000);
-    });
+    return this.waitForInteraction(id, 'permission', ['yes', 'always', 'no'], _targetId, 'no');
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
-    if (this.bypassPermissions) return true;
-    const id = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (!this.hasInteractiveTarget(_targetId)) return false;
+    const id = `loop_${randomUUID()}`;
     this.broadcast({
       type: 'permission_continue',
       data: { id, question, options: ['yes', 'no'], targetId: _targetId },
     });
 
-    return new Promise((resolve) => {
-      const yesKey = `${id}:yes`;
-      const noKey = `${id}:no`;
-      this.pendingContinues.set(yesKey, () => resolve(true));
-      this.pendingContinues.set(noKey, () => resolve(false));
-
-      setTimeout(() => {
-        this.pendingContinues.delete(yesKey);
-        this.pendingContinues.delete(noKey);
-        resolve(false);
-      }, 120_000);
-    });
+    return this.waitForInteraction(id, 'continue', ['yes', 'no'], _targetId, 'no').then((value) => value === 'yes');
   }
 
   askPermissionMode(): Promise<'allow-all' | 'ask-me'> {
     if (this.bypassPermissions) return Promise.resolve('allow-all');
-    const id = `mode_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `mode_${randomUUID()}`;
     this.broadcast({
       type: 'permission_mode',
       data: { id, options: ['ask-me', 'allow-all'] },
     });
 
-    return new Promise((resolve) => {
-      const askKey = `${id}:ask-me`;
-      const allowKey = `${id}:allow-all`;
-      this.pendingPermModes.set(askKey, () => resolve('ask-me'));
-      this.pendingPermModes.set(allowKey, () => resolve('allow-all'));
-
-      setTimeout(() => {
-        this.pendingPermModes.delete(askKey);
-        this.pendingPermModes.delete(allowKey);
-        resolve('ask-me');
-      }, 120_000);
-    });
+    return this.waitForInteraction(id, 'mode', ['ask-me', 'allow-all'], undefined, 'ask-me') as Promise<'allow-all' | 'ask-me'>;
   }
 
   async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>, targetId?: string): Promise<string> {
-    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (!this.hasInteractiveTarget(targetId)) return '';
+    const id = `choice_${randomUUID()}`;
     this.broadcast({
       type: 'choice_prompt',
       data: { id, question, options, targetId },
     });
 
-    return new Promise((resolve) => {
-      this.pendingChoices.set(id, resolve);
-      setTimeout(() => {
-        if (!this.pendingChoices.has(id)) return;
-        this.pendingChoices.delete(id);
-        resolve(options[0]?.value || '');
-      }, 120_000);
-    });
+    return this.waitForInteraction(id, 'choice', options.map((option) => option.value), targetId, '');
   }
 
   sendToolFeedback(toolName: string, args: Record<string, unknown>, targetId?: string): void {
@@ -335,6 +343,7 @@ export class WebChannel extends BaseChannel {
 
   emitCloudMessage(content: string, requestId: string, sessionId: string, externalConversationId: string, messageId: string | undefined, onEvent: CloudEventHandler): void {
     this.cloudEventHandlers.set(requestId, onEvent);
+    this.cloudRequestSessions.set(requestId, sessionId);
     this.emitMessageInThread(content, requestId, sessionId, requestId, externalConversationId, messageId);
   }
 
@@ -344,6 +353,10 @@ export class WebChannel extends BaseChannel {
 
   setBypassPermissions(enabled: boolean): void {
     this.bypassPermissions = enabled;
+  }
+
+  setSessionPermissionMode(sessionId: string, mode: 'allow-all' | 'ask-me'): void {
+    this.permissionModes.set(sessionId, mode);
   }
 
   setRestrictUser(enabled: boolean): void {

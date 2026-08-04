@@ -287,6 +287,9 @@ export class PermissionManager {
   private autoApproveAll = false;
   private elevatedCommands: Set<string> = new Set();
   private currentChannelType: string = 'cli';
+  private currentChannelId: string = 'cli';
+  private approvedCommandsByContext = new Map<string, Set<string>>();
+  private approvedWritesByContext = new Map<string, Set<string>>();
 
   private tempScopes: FileScope[] = [];
 
@@ -299,6 +302,11 @@ export class PermissionManager {
     this.currentChannelType = type;
   }
 
+  setCurrentContext(type: string, id: string): void {
+    this.currentChannelType = type;
+    this.currentChannelId = id;
+  }
+
   getCurrentChannelType(): string {
     return this.currentChannelType;
   }
@@ -307,12 +315,25 @@ export class PermissionManager {
     this.askHandler = handler;
   }
 
+  async requestApproval(prompt: string): Promise<boolean> {
+    if (this.currentChannelType === 'internal') return true;
+    if (!this.askHandler) return false;
+    const result = await this.askHandler(prompt);
+    return result === 'yes' || result === 'always';
+  }
+
   setAutoApproveAll(value: boolean): void {
     this.autoApproveAll = value;
   }
 
   isAutoApproveAll(): boolean {
     return this.autoApproveAll;
+  }
+
+  private isGlobalAutoApproveActive(): boolean {
+    // Web/Cloud grants are resolved per session by WebChannel; a Local CLI
+    // allow-all setting must never silently elevate remote requests.
+    return this.autoApproveAll && this.currentChannelType !== 'web';
   }
 
   elevateForSkill(allowedTools: string[]): void {
@@ -402,21 +423,23 @@ export class PermissionManager {
     }
 
     // Write access: in auto-approve-all mode, allow if scope covers it
-    if (mode === 'write' && this.autoApproveAll) {
+    const contextWriteApproved = this.approvedWritesByContext.get(this.currentChannelId)?.has(resolved) === true;
+    if (mode === 'write' && (this.isGlobalAutoApproveActive() || contextWriteApproved)) {
       if (scope && scope.write) return { allowed: true };
       if (tempScope && tempScope.write) return { allowed: true };
     }
 
     // Write access in ask-me mode: ALWAYS prompt the user, even if scope exists
-    if (mode === 'write' && !this.autoApproveAll && this.askHandler && this.currentChannelType !== 'internal') {
+    if (mode === 'write' && !this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
       const scopeAllows = (scope && scope.write) || (tempScope && tempScope.write);
       if (scopeAllows) {
         // Scope allows it, but user wants to confirm — prompt with file path
         const result = await this.askHandler(`Write to file: ${resolved}`);
         if (result === 'yes') return { allowed: true };
         if (result === 'always') {
-          // User chose "always" — switch to auto-approve for the rest of this session
-          this.autoApproveAll = true;
+          const approved = this.approvedWritesByContext.get(this.currentChannelId) ?? new Set<string>();
+          approved.add(resolved);
+          this.approvedWritesByContext.set(this.currentChannelId, approved);
           return { allowed: true };
         }
         return { allowed: false, reason: `User denied write to ${path}` };
@@ -433,7 +456,7 @@ export class PermissionManager {
       return { allowed: false, reason: `Permission denied: ${mode} access to ${path}` };
     }
 
-    if (!this.autoApproveAll && this.askHandler && this.currentChannelType !== 'internal') {
+    if (!this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
       return this.requestScopeExternal(path, mode);
     }
 
@@ -456,16 +479,6 @@ export class PermissionManager {
   ];
 
   async checkShellCommand(command: string): Promise<{ allowed: boolean; reason?: string; needsApproval: boolean }> {
-    if (this.autoApproveAll) {
-      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (auto-approve-all mode)');
-      return { allowed: true, needsApproval: false };
-    }
-
-    if (this.isShellElevated()) {
-      logger.info({ cmd: command.trim() }, 'Shell command auto-approved (skill elevation)');
-      return { allowed: true, needsApproval: false };
-    }
-
     const shell = this.manifest.capabilities.shell;
     if (!shell.enabled) {
       return { allowed: false, reason: 'Shell capability is disabled', needsApproval: false };
@@ -486,6 +499,21 @@ export class PermissionManager {
       }
     }
 
+    if (this.isGlobalAutoApproveActive()) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (Local allow-all mode)');
+      return { allowed: true, needsApproval: false };
+    }
+
+    if (this.isShellElevated()) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (skill elevation)');
+      return { allowed: true, needsApproval: false };
+    }
+
+    if (this.approvedCommandsByContext.get(this.currentChannelId)?.has(trimmed)) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved for this interaction context');
+      return { allowed: true, needsApproval: false };
+    }
+
     if (shell.cwdOnly) {
       for (const segment of segments) {
         const hasPathTraversal = this.hasPathBeyondCwd(segment);
@@ -502,7 +530,7 @@ export class PermissionManager {
     // Matching the full trimmed string would let `cat foo; rm -rf ~` slip
     // through because `cat *` matches the entire concatenation.
     const allSegmentsSafeRead = segments.length > 0 && segments.every((segment) =>
-      PermissionManager.SAFE_READ_PATTERNS.some((p) => this.matchPattern(segment, p))
+      this.isSafeReadSegment(segment)
     );
     if (allSegmentsSafeRead) {
       logger.info({ cmd: trimmed, segments: segments.length }, 'Shell command auto-approved (safe read-only)');
@@ -516,14 +544,28 @@ export class PermissionManager {
         return { allowed: true, needsApproval: false };
       }
       if (result === 'always') {
-        // User chose "always" — switch to auto-approve for the rest of this session
-        this.autoApproveAll = true;
+        const approved = this.approvedCommandsByContext.get(this.currentChannelId) ?? new Set<string>();
+        approved.add(trimmed);
+        this.approvedCommandsByContext.set(this.currentChannelId, approved);
         return { allowed: true, needsApproval: false };
       }
       return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
     }
 
     return { allowed: false, reason: 'Command not in auto-approve list — requires approval', needsApproval: true };
+  }
+
+  private isSafeReadSegment(segment: string): boolean {
+    // Redirection turns otherwise read-only commands such as cat/echo into writes.
+    if (/\d*(?:>{1,2}|<{1,2})|&>/.test(segment)) return false;
+    if (/^find\b.*(?:^|\s)-(?:delete|exec|execdir|ok|okdir)\b/.test(segment)) return false;
+    const branchArgs = segment.match(/^git\s+branch(?:\s+(.*))?$/)?.[1]?.trim();
+    if (branchArgs && (
+      !branchArgs.startsWith('-')
+      || /(?:^|\s)(?:-[dDmMcC]\b|--(?:delete|move|copy|edit-description|set-upstream-to|unset-upstream|track)\b)/.test(branchArgs)
+    )) return false;
+    if (/^git\s+diff\b.*(?:--output(?:=|\s)|--no-index\b)/.test(segment)) return false;
+    return PermissionManager.SAFE_READ_PATTERNS.some((pattern) => this.matchPattern(segment, pattern));
   }
 
   isGitReadAllowed(): boolean {
