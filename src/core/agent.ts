@@ -2547,7 +2547,14 @@ export class Agent {
         } else {
           // CLI or other channels — original flow
           logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending durable response');
-          await channel.send(finalText, msg.channelId, elapsed);
+          // If the response was already streamed to the channel, the
+          // streamed ChatMessage is already in chatMessages with the full
+          // content — calling send() again would duplicate it. Only send
+          // when streaming did not produce output (non-streaming providers,
+          // fallbacks, or aborted streams).
+          if (!hasStreamedOutput && finalText && finalText.trim()) {
+            await channel.send(finalText, msg.channelId, elapsed);
+          }
           this.markProgress();
           if (isSubstantialTask && channel instanceof CLIChannel) {
             const completionMeta = {
