@@ -132,8 +132,9 @@ export async function runCloudConnect(): Promise<void> {
       console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
       console.log(chalk.dim(`    Tier: ${config.cloud.tier || 'free'}`));
       console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
-      // Already connected and valid — don't restart anything.
-      // The caller will launch the TUI if no daemon is running.
+      // Ensure a background daemon is running so the WebSocket stays alive
+      // even after the user exits the foreground TUI.
+      await ensureDaemonRunning();
       return;
     }
 
@@ -161,7 +162,8 @@ export async function runCloudConnect(): Promise<void> {
         console.log(chalk.red(`  ✗ Token refresh failed: ${err.message}`));
       }
       if (refreshed) {
-        // Token refreshed — don't restart daemon. Caller launches TUI if needed.
+        // Token refreshed — restart daemon so it picks up the new token.
+        await ensureDaemonRunning();
         return;
       }
     }
@@ -193,7 +195,8 @@ export async function runCloudConnect(): Promise<void> {
         console.log(chalk.red(`  ✗ Agent API key recovery failed: ${err.message}`));
       }
       if (recovered) {
-        // Recovered — don't restart daemon. Caller launches TUI if needed.
+        // Recovered — restart daemon so it picks up the new token.
+        await ensureDaemonRunning();
         return;
       }
     }
@@ -229,10 +232,11 @@ export async function runCloudConnect(): Promise<void> {
   console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
   console.log(chalk.dim(`    Model: ${result.model}`));
   console.log('');
-  // Don't restart/kill any daemon here. The caller (cloud connect command)
-  // will launch the foreground TUI, which establishes the WebSocket itself.
-  // If a daemon was already running, the new credentials will be picked up
-  // on its next token refresh cycle.
+  // Start a background daemon so the WebSocket stays alive even after the
+  // user exits the foreground TUI. This is the original behavior — the daemon
+  // handles failovers, message queuing, and keeps the agent online on the
+  // cloud dashboard.
+  await ensureDaemonRunning();
 }
 
 export async function runCloudDisconnect(): Promise<void> {
@@ -354,8 +358,34 @@ export async function runCloudLogin(): Promise<void> {
     console.log(chalk.yellow('  Run `mercury cloud connect` to re-pair.'));
     return;
   }
-  // Don't restart daemon — the running process will pick up the new token
-  // via syncTokenStore, or the user can run `mercury` to start fresh.
+  // Restart daemon so it picks up the new token.
+  await ensureDaemonRunning();
+}
+
+async function ensureDaemonRunning(): Promise<void> {
+  const daemon = getDaemonStatus();
+  const serviceRunning = isServiceRunning();
+
+  if (daemon.running || serviceRunning) {
+    // A managed runtime is already running. Restart it so it picks up the
+    // new/refreshed credentials.
+    if (daemon.running) {
+      console.log(chalk.dim(`  Restarting Mercury (PID: ${daemon.pid}) to activate Cloud...`));
+      if (!await stopDaemon()) {
+        console.log(chalk.yellow('  ⚠ Could not restart the running daemon. It may need a manual restart.'));
+        return;
+      }
+    }
+    startManagedRuntime();
+    // Give it a moment to come up — don't hard-fail if the WebSocket takes
+    // a few seconds. The daemon will keep retrying on its own.
+    console.log(chalk.green('  ✓ Mercury daemon restarted with Cloud credentials.'));
+  } else {
+    // No daemon running — start one in the background. This keeps the
+    // WebSocket alive even after the user exits the foreground TUI.
+    startManagedRuntime();
+    console.log(chalk.green('  ✓ Mercury daemon started in the background.'));
+  }
 }
 
 async function activateCloudRuntime(agentId: string, credentialsChanged: boolean): Promise<void> {

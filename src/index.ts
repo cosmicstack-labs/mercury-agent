@@ -4391,14 +4391,14 @@ cloud
       console.log('');
       return;
     }
-    // If Mercury wasn't already running as a daemon, launch the foreground
-    // TUI so the user can start chatting immediately instead of being stuck
-    // at the shell prompt.
-    if (!wasDaemonRunning && isSetupComplete()) {
+    // Always launch the foreground TUI so the user can start chatting
+    // immediately. The background daemon (started by runCloudConnect) keeps
+    // the WebSocket alive even after the user exits the foreground.
+    if (isSetupComplete()) {
       console.log(chalk.cyan('\n  Launching Mercury...\n'));
       await runAgent();
     } else {
-      console.log(chalk.cyan('\n  Mercury is running in the background. Run `mercury` to start chatting.'));
+      console.log(chalk.cyan('\n  Mercury daemon is running in the background. Run `mercury` to start chatting.'));
       console.log('');
     }
   });
