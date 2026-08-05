@@ -910,51 +910,71 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
 
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
-
   const pct = state.tokenInfo?.percentage ?? 0;
-  const pctColor = saverActive
-    ? saverColor
-    : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
+  const pctColor = saverActive ? saverColor : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
 
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
-
   const isWorkspace = state.mode === 'workspace' && state.workspace;
   const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
-  const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
-  const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
 
-  // Build the token bar string
-  const tokenBarStr = state.tokenInfo
-    ? `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`
-    : '';
+  // Build ordered segments — each is a string. We join with " │ " and
+  // truncate the entire line to the terminal width at the end.
+  const parts: string[] = [];
 
-  // Build the provider string
-  const providerStr = state.provider ? `${state.provider.name} · ${state.provider.model}` : '';
+  // 1. Agent name (max 14)
+  parts.push(truncateStr(state.agentName, 14));
 
-  // Build the session string
-  const sessionStr = state.currentSession ? `${state.currentSession.alias} [${state.currentSession.shortId}]` : '';
+  // 2. View + permission
+  parts.push(`View:${viewLabel} ${state.permissionMode === 'allow-all' ? '🔓' : '🔒'}`);
 
-  // Build the workspace string
-  let workspaceStr = '';
+  // 3. Token bar
+  if (state.tokenInfo) {
+    parts.push(`${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`);
+  }
+
+  // 4. Provider — shorten "Mercury Cloud" to "Cloud" to save space
+  if (state.provider) {
+    const pName = state.provider.name.replace('Mercury Cloud', 'Cloud');
+    parts.push(`${pName} · ${truncateStr(state.provider.model, 20)}`);
+  }
+
+  // 5. Session
+  if (state.currentSession) {
+    parts.push(`${truncateStr(state.currentSession.alias, 12)} [${state.currentSession.shortId}]`);
+  }
+
+  // 6. Workspace
   if (isWorkspace && state.workspace) {
     const ws = state.workspace;
-    workspaceStr = `⎇ ${ws.branch}`;
-    if (ws.ahead > 0 || ws.behind > 0) workspaceStr += `${ws.ahead > 0 ? ` ↑${ws.ahead}` : ''}${ws.behind > 0 ? ` ↓${ws.behind}` : ''}`;
-    if (ws.stagedCount > 0 || ws.unstagedCount > 0) workspaceStr += `${ws.stagedCount > 0 ? ` S${ws.stagedCount}` : ''}${ws.unstagedCount > 0 ? ` M${ws.unstagedCount}` : ''}`;
+    let wsStr = `⎇ ${truncateStr(ws.branch, 12)}`;
+    if (ws.ahead > 0) wsStr += ` ↑${ws.ahead}`;
+    if (ws.behind > 0) wsStr += ` ↓${ws.behind}`;
+    if (ws.stagedCount > 0) wsStr += ` S${ws.stagedCount}`;
+    if (ws.unstagedCount > 0) wsStr += ` M${ws.unstagedCount}`;
+    parts.push(wsStr);
   }
 
-  // Build the bg/agents string
-  let extraStr = '';
-  if (!isWorkspace && runningBg > 0) extraStr += `⏳ ${runningBg}bg`;
-  if (!isWorkspace && runningAgents > 0) extraStr += `${extraStr ? ' ' : ''}🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`;
+  // 7. Background tasks
+  if (!isWorkspace && runningBg > 0) parts.push(`⏳${runningBg}bg`);
 
-  // Saver suffix
-  let saverStr = '';
+  // 8. Sub-agents
+  if (!isWorkspace && runningAgents > 0) parts.push(`🤖${runningAgents}a`);
+
+  // 9. Saver
   if (saverActive) {
-    saverStr = `⚡SAVER${state.saverInfo!.state === 'auto' ? '(auto)' : ''}`;
-    if (state.saverInfo!.savedToday > 0) saverStr += ` ~${formatCompact(state.saverInfo!.savedToday)}`;
+    let s = `⚡SAVER${state.saverInfo!.state === 'auto' ? '(a)' : ''}`;
+    if (state.saverInfo!.savedToday > 0) s += ` ~${formatCompact(state.saverInfo!.savedToday)}`;
+    parts.push(s);
   }
+
+  // 10. Project context
+  if (state.projectContext) parts.push(truncateStr(state.projectContext, 14));
+
+  // Join and truncate to terminal width
+  const line = parts.join(' │ ');
+  const maxLen = Math.max(20, cols - 2);
+  const truncated = line.length > maxLen ? line.slice(0, maxLen - 1) + '…' : line;
 
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -962,86 +982,15 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
         <Text color="gray">{'─'.repeat(Math.max(20, cols - 2))}</Text>
       </Box>
       <Box paddingX={1} paddingBottom={0} height={1} overflow="hidden">
-        {/* Column 1: Agent name + mode (fixed 16 chars) */}
-        <Box width={16} flexShrink={0}>
-          <Text bold color="cyan">{truncate(state.agentName, 16)}</Text>
-          {modeLabel && <Text color={modeColor} bold> {modeLabel.trim()}</Text>}
-        </Box>
-        <Text color="gray">│</Text>
-
-        {/* Column 2: View + permission (fixed 14 chars) */}
-        <Box width={14} flexShrink={0}>
-          <Text color="yellow">View:{viewLabel} </Text>
-          <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text>
-          {state.projectContext && <Text color="blue"> {truncate(state.projectContext, 4)}</Text>}
-        </Box>
-        <Text color="gray">│</Text>
-
-        {/* Column 3: Token bar (fixed 20 chars) */}
-        {state.tokenInfo ? (
-          <Box width={20} flexShrink={0}>
-            {saverActive && <Text color={saverColor} bold>⚡ </Text>}
-            <Text color={pctColor}>{truncate(tokenBarStr, 20)}</Text>
-          </Box>
-        ) : (
-          <Box width={20} flexShrink={0}>
-            <Text color="gray">—</Text>
-          </Box>
-        )}
-        <Text color="gray">│</Text>
-
-        {/* Column 4: Provider (flex, truncated) */}
-        <Box flexShrink={0} width={Math.max(10, Math.min(30, providerStr.length + 2))}>
-          <Text color="magenta">{truncate(providerStr, 30)}</Text>
-        </Box>
-
-        {/* Column 5: Session (flex, truncated) */}
-        {sessionStr && (
-          <>
-            <Text color="gray">│</Text>
-            <Box flexShrink={0} width={Math.max(8, Math.min(22, sessionStr.length + 2))}>
-              <Text color="cyan">{truncate(sessionStr, 22)}</Text>
-            </Box>
-          </>
-        )}
-
-        {/* Column 6: Workspace (flex, truncated) */}
-        {workspaceStr && (
-          <>
-            <Text color="gray">│</Text>
-            <Box flexShrink={0} width={Math.max(8, Math.min(20, workspaceStr.length + 2))}>
-              <Text color="blue">{truncate(workspaceStr, 20)}</Text>
-            </Box>
-          </>
-        )}
-
-        {/* Column 7: Extra (bg/agents) */}
-        {extraStr && (
-          <>
-            <Text color="gray">│</Text>
-            <Box flexShrink={0} width={Math.max(6, Math.min(16, extraStr.length + 2))}>
-              <Text color="cyan">{truncate(extraStr, 16)}</Text>
-            </Box>
-          </>
-        )}
-
-        {/* Column 8: Saver */}
-        {saverStr && (
-          <>
-            <Text color="gray">│</Text>
-            <Box flexShrink={0} width={Math.max(6, Math.min(18, saverStr.length + 2))}>
-              <Text color={saverColor} bold>{truncate(saverStr, 18)}</Text>
-            </Box>
-          </>
-        )}
+        <Text wrap="truncate" bold>{truncated}</Text>
       </Box>
     </Box>
   );
 }
 
-function truncate(text: string, maxLen: number): string {
+function truncateStr(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 1) + '…';
+  return text.slice(0, Math.max(1, maxLen - 1)) + '…';
 }
 
 function formatCompact(n: number): string {
