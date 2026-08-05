@@ -132,7 +132,8 @@ export async function runCloudConnect(): Promise<void> {
       console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
       console.log(chalk.dim(`    Tier: ${config.cloud.tier || 'free'}`));
       console.log(chalk.dim(`    API URL: ${config.cloud.apiUrl}`));
-      await activateCloudRuntime(config.cloud.agentId, false);
+      // Already connected and valid — don't restart anything.
+      // The caller will launch the TUI if no daemon is running.
       return;
     }
 
