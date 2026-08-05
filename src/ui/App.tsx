@@ -869,7 +869,7 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   const more = tasks.length > 3 ? ` +${tasks.length - 3} more` : '';
 
   return (
-    <Box paddingX={1} paddingBottom={0} height={2} overflow="hidden">
+    <Box paddingX={1} paddingBottom={0} flexShrink={0}>
       <Text color="gray">{'─'.repeat(50)}</Text>
       <Box flexDirection="column" width="100%">
         <Box>
@@ -928,7 +928,7 @@ function TokenBarView({ state }: { state: TuiState }) {
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
 
   return (
-    <Box flexDirection="column" height={2} overflow="hidden">
+    <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
