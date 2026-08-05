@@ -808,7 +808,6 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <StatusBarView state={state} />
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
@@ -888,44 +887,16 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   );
 }
 
-function StatusBarView({ state }: { state: TuiState }) {
-  const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
-  const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
-  const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
-  const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
+const HEADER_SENTINEL_ID = '__mercury_header__';
 
-  // Dynamic subtitle based on thinking state
-  const runningStep = [...state.toolSteps].reverse().find((s) => s.status === 'running');
-  const doneSteps = state.toolSteps.filter((s) => s.status === 'done').length;
-  let subtitle: React.ReactNode;
-  if (state.isThinking) {
-    const activity = runningStep ? runningStep.label : 'Processing';
-    const stepCount = doneSteps > 0 ? `step ${doneSteps + 1}` : 'step 1';
-    subtitle = <Text color="green">● {stepCount} · {activity}</Text>;
-  } else {
-    subtitle = <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>;
-  }
-
+function HeaderBanner(): React.ReactNode {
   return (
-    <Box flexDirection="column" height={3} overflow="hidden">
+    <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
         <Text color={BRAND.logo}>☿</Text>
         <Text> </Text>
         <Text bold color={BRAND.title}>MERCURY</Text>
-        {subtitle}
-      </Box>
-      <Box paddingX={1} paddingBottom={0}>
-        <Box flexGrow={1}>
-          <Text bold color="cyan">{state.agentName}</Text>
-          {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
-          {state.saverInfo && state.saverInfo.state !== 'off' && (
-            <Text> <Text color="gray">|</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
-          )}
-          {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
-          <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
-          <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
-        </Box>
-        <Text color="magenta" wrap="truncate-end">{providerBadge}</Text>
+        <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>
       </Box>
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
@@ -952,6 +923,9 @@ function TokenBarView({ state }: { state: TuiState }) {
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
 
   const isWorkspace = state.mode === 'workspace' && state.workspace;
+  const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
+  const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
+  const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
 
   return (
     <Box flexDirection="column" height={2} overflow="hidden">
@@ -959,6 +933,15 @@ function TokenBarView({ state }: { state: TuiState }) {
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
       <Box paddingX={1} paddingBottom={0}>
+        <Text bold color="cyan">{state.agentName}</Text>
+        {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
+        {state.saverInfo && state.saverInfo.state !== 'off' && (
+          <Text> <Text color="gray">│</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
+        )}
+        {state.projectContext && <Text> <Text color="gray">│</Text> <Text color="blue">{state.projectContext}</Text></Text>}
+        <Text> <Text color="gray">│</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
+        <Text> <Text color="gray">│</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
+
         {state.tokenInfo && (
           <>
             {saverActive && (
@@ -981,7 +964,7 @@ function TokenBarView({ state }: { state: TuiState }) {
         {state.provider && (
           <>
             <Text color="gray"> │ </Text>
-            <Text color="magenta">{state.provider.model}</Text>
+            <Text color="magenta">{state.provider.name} · {state.provider.model}</Text>
           </>
         )}
 
@@ -1038,12 +1021,15 @@ function formatCompact(n: number): string {
 function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
   const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
   const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
   return (
     <Box flexDirection="row" flexGrow={1}>
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
-        <Static items={staticMessages}>
-          {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
+        <Static items={staticItems}>
+          {(item) => typeof item === 'string'
+            ? <HeaderBanner key={item} />
+            : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
@@ -1064,6 +1050,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
   const fileSection = state.sidebarSections.find((s) => s.title === 'Files');
   const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
   const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
 
   return (
     <Box flexDirection="row" flexGrow={1}>
@@ -1086,8 +1073,10 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        <Static items={staticMessages}>
-          {(message) => <ChatMessagesView key={message.id} messages={[message]} agentName={state.agentName} />}
+        <Static items={staticItems}>
+          {(item) => typeof item === 'string'
+            ? <HeaderBanner key={item} />
+            : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}

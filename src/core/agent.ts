@@ -513,6 +513,11 @@ export class Agent {
     }
     const channel = this.channels.getChannelForMessage(entry.message);
     if (!channel || entry.message.channelType === 'internal') return;
+    // For the web (Cloud chat) channel, don't send duplicate-status messages
+    // to the user. The Cloud dashboard already handles dedup on its end, and
+    // sending "This request is already running" creates a bad UX — the user
+    // sees a confusing system message instead of silence.
+    if (entry.message.channelType === 'web') return;
     const status = entry.status === 'completed'
       ? 'This request already completed and its result was delivered.'
       : entry.status === 'failed'
