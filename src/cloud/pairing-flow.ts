@@ -161,7 +161,7 @@ export async function runCloudConnect(): Promise<void> {
         console.log(chalk.red(`  ✗ Token refresh failed: ${err.message}`));
       }
       if (refreshed) {
-        await activateCloudRuntime(config.cloud.agentId, true);
+        // Token refreshed — don't restart daemon. Caller launches TUI if needed.
         return;
       }
     }
@@ -193,7 +193,7 @@ export async function runCloudConnect(): Promise<void> {
         console.log(chalk.red(`  ✗ Agent API key recovery failed: ${err.message}`));
       }
       if (recovered) {
-        await activateCloudRuntime(config.cloud.agentId, true);
+        // Recovered — don't restart daemon. Caller launches TUI if needed.
         return;
       }
     }
@@ -229,8 +229,10 @@ export async function runCloudConnect(): Promise<void> {
   console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
   console.log(chalk.dim(`    Model: ${result.model}`));
   console.log('');
-  await activateCloudRuntime(result.cloudConfig.agentId, true);
-  console.log(chalk.cyan('  Mercury Cloud is ready and the agent runtime is online.'));
+  // Don't restart/kill any daemon here. The caller (cloud connect command)
+  // will launch the foreground TUI, which establishes the WebSocket itself.
+  // If a daemon was already running, the new credentials will be picked up
+  // on its next token refresh cycle.
 }
 
 export async function runCloudDisconnect(): Promise<void> {
@@ -352,7 +354,8 @@ export async function runCloudLogin(): Promise<void> {
     console.log(chalk.yellow('  Run `mercury cloud connect` to re-pair.'));
     return;
   }
-  await activateCloudRuntime(config.cloud.agentId, true);
+  // Don't restart daemon — the running process will pick up the new token
+  // via syncTokenStore, or the user can run `mercury` to start fresh.
 }
 
 async function activateCloudRuntime(agentId: string, credentialsChanged: boolean): Promise<void> {
