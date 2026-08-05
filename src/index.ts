@@ -2073,6 +2073,122 @@ function runPlatformDoctor(): void {
   }
 }
 
+/**
+ * Build a channel-config report payload from the local MercuryConfig. Only
+ * includes channels that have any meaningful config (token / phone number).
+ * Sent to the cloud on connect and after applying a cloud-pushed update so
+ * the dashboard can show an accurate "configured" state.
+ */
+function buildChannelConfigReport(config: MercuryConfig): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const tg = config.channels.telegram;
+  if (tg.botToken) {
+    payload.telegram = {
+      enabled: tg.enabled,
+      botToken: tg.botToken,
+      streaming: tg.streaming,
+    };
+  }
+  const sl = config.channels.slack;
+  if (sl.botToken || sl.appToken) {
+    payload.slack = {
+      enabled: sl.enabled,
+      botToken: sl.botToken,
+      appToken: sl.appToken,
+      channelId: sl.channelId,
+      teamId: sl.teamId,
+      streaming: sl.streaming,
+    };
+  }
+  const dc = config.channels.discord;
+  if (dc.botToken) {
+    payload.discord = {
+      enabled: dc.enabled,
+      botToken: dc.botToken,
+      guildId: dc.guildId,
+      channelId: dc.channelId,
+      adminRoleName: dc.adminRoleName,
+      streaming: dc.streaming,
+    };
+  }
+  const sig = config.channels.signal;
+  if (sig.phoneNumber) {
+    payload.signal = {
+      enabled: sig.enabled,
+      phoneNumber: sig.phoneNumber,
+      mode: sig.mode,
+    };
+  }
+  return payload;
+}
+
+/**
+ * Apply a channel-config update pushed from the cloud to the in-memory config.
+ * Only the supplied channel blocks are merged; omitted channels are untouched.
+ * When a new bot token is provided, the channel is enabled and prior access
+ * lists are cleared so the new bot starts from a clean pairing state.
+ */
+function applyChannelConfigUpdate(config: MercuryConfig, payload: Record<string, unknown>): void {
+  const tg = payload.telegram as Record<string, unknown> | undefined;
+  if (tg) {
+    if (typeof tg.botToken === 'string' && tg.botToken.length > 0) {
+      if (tg.botToken !== config.channels.telegram.botToken) {
+        config.channels.telegram.botToken = tg.botToken;
+        config.channels.telegram.enabled = true;
+        config.channels.telegram.admins = [];
+        config.channels.telegram.members = [];
+        config.channels.telegram.pending = [];
+      }
+    }
+    if (typeof tg.enabled === 'boolean') config.channels.telegram.enabled = tg.enabled;
+    if (typeof tg.streaming === 'boolean') config.channels.telegram.streaming = tg.streaming;
+  }
+
+  const sl = payload.slack as Record<string, unknown> | undefined;
+  if (sl) {
+    if (typeof sl.botToken === 'string' && sl.botToken.length > 0 && sl.botToken !== config.channels.slack.botToken) {
+      config.channels.slack.botToken = sl.botToken;
+      config.channels.slack.enabled = true;
+      config.channels.slack.admins = [];
+      config.channels.slack.members = [];
+      config.channels.slack.pending = [];
+    }
+    if (typeof sl.appToken === 'string' && sl.appToken.length > 0) {
+      config.channels.slack.appToken = sl.appToken;
+    }
+    if (typeof sl.channelId === 'string') config.channels.slack.channelId = sl.channelId;
+    if (typeof sl.teamId === 'string') config.channels.slack.teamId = sl.teamId;
+    if (typeof sl.enabled === 'boolean') config.channels.slack.enabled = sl.enabled;
+    if (typeof sl.streaming === 'boolean') config.channels.slack.streaming = sl.streaming;
+  }
+
+  const dc = payload.discord as Record<string, unknown> | undefined;
+  if (dc) {
+    if (typeof dc.botToken === 'string' && dc.botToken.length > 0 && dc.botToken !== config.channels.discord.botToken) {
+      config.channels.discord.botToken = dc.botToken;
+      config.channels.discord.enabled = true;
+      config.channels.discord.admins = [];
+      config.channels.discord.members = [];
+      config.channels.discord.pending = [];
+    }
+    if (typeof dc.guildId === 'string') config.channels.discord.guildId = dc.guildId;
+    if (typeof dc.channelId === 'string') config.channels.discord.channelId = dc.channelId;
+    if (typeof dc.adminRoleName === 'string') config.channels.discord.adminRoleName = dc.adminRoleName;
+    if (typeof dc.enabled === 'boolean') config.channels.discord.enabled = dc.enabled;
+    if (typeof dc.streaming === 'boolean') config.channels.discord.streaming = dc.streaming;
+  }
+
+  const sig = payload.signal as Record<string, unknown> | undefined;
+  if (sig) {
+    if (typeof sig.phoneNumber === 'string' && sig.phoneNumber.length > 0) {
+      config.channels.signal.phoneNumber = sig.phoneNumber;
+      config.channels.signal.enabled = true;
+    }
+    if (sig.mode === 'group' || sig.mode === 'private') config.channels.signal.mode = sig.mode;
+    if (typeof sig.enabled === 'boolean') config.channels.signal.enabled = sig.enabled;
+  }
+}
+
 async function runAgent(isDaemon: boolean = false): Promise<void> {
   const runtimeMode = isDaemon ? 'daemon' : 'foreground';
   registerRuntimeProcess(runtimeMode);
@@ -2438,6 +2554,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             status: 'online',
             provider: getProviderLabel(config.providers.default),
             model: config.providers[config.providers.default]?.model ?? 'unknown',
+            uptime: process.uptime(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      // When the user switches models from the CLI (/cloud use or /models),
+      // proactively notify Mercury Cloud so the dashboard updates in real time.
+      agent.setModelChangeCallback((provider, model) => {
+        if (!cloudClient) return;
+        cloudClient.send({
+          type: 'agent.state',
+          agentId: config.cloud.agentId,
+          payload: {
+            status: 'online',
+            provider: provider === 'mercuryCloud' ? 'Mercury Cloud' : provider,
+            model,
             uptime: process.uptime(),
           },
           timestamp: new Date().toISOString(),
@@ -2905,8 +3038,55 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         }
       });
 
+      // Cloud → agent: apply a channel configuration update pushed from the
+      // dashboard (onboarding or settings). Only supplied channel blocks are
+      // merged into mercury.yaml; omitted channels are left untouched. The
+      // agent reports the resulting full snapshot back so the cloud stays in
+      // sync (and stores a masked view of secrets).
+      cloudClient.on('channel.config.update', async (msg) => {
+        const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : crypto.randomUUID();
+        logger.info('Cloud command: channel.config.update');
+        try {
+          applyChannelConfigUpdate(config, msg.payload ?? {});
+          const { saveConfig } = await import('./utils/config.js');
+          saveConfig(config);
+          logger.info('Channel configuration updated from Mercury Cloud and saved to mercury.yaml');
+
+          cloudClient!.send({
+            type: 'channel.config.report',
+            agentId: config.cloud.agentId,
+            payload: buildChannelConfigReport(config),
+            timestamp: new Date().toISOString(),
+          });
+          cloudClient!.send({
+            type: 'channel.config.ack',
+            agentId: config.cloud.agentId,
+            payload: { requestId, success: true, config: buildChannelConfigReport(config) },
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err: any) {
+          logger.warn({ err: err.message }, 'Failed to apply channel.config.update');
+          cloudClient!.send({
+            type: 'channel.config.ack',
+            agentId: config.cloud.agentId,
+            payload: { requestId, success: false, error: err.message },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
       await cloudClient.connect();
       logger.info('Mercury Cloud WebSocket connected');
+
+      // Report the current channel configuration to the cloud once connected
+      // so the dashboard can show an accurate "configured" state without
+      // waiting for the user to open settings. Best-effort — don't block.
+      cloudClient.send({
+        type: 'channel.config.report',
+        agentId: config.cloud.agentId,
+        payload: buildChannelConfigReport(config),
+        timestamp: new Date().toISOString(),
+      });
 
       // Fallback: if the server doesn't send conversation.sync.toggle within 5s
       // (e.g. message dropped or delayed), start sync anyway. The toggle handler

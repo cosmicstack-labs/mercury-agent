@@ -359,6 +359,7 @@ export class Agent {
   private currentWorkKey: string | null = null;
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
   private replayingOutbox = false;
+  private modelChangeCallback?: (provider: string, model: string) => void;
 
   constructor(
     private config: MercuryConfig,
@@ -1125,6 +1126,7 @@ export class Agent {
       this.providers.setDefault(providerName);
       saveConfig(this.config);
       updateCliProviderStatus(this.channels.get('cli'), providerName, provider.getModel());
+      this.notifyModelChange(providerName, provider.getModel());
     }
 
     const saved = options.persist ? ' Saved as the default for future sessions.' : '';
@@ -1162,6 +1164,18 @@ export class Agent {
   /** Public wrapper for web API model switching. */
   async switchProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
     return this.switchSessionProvider(providerName);
+  }
+
+  /** Register a callback that fires whenever the active model changes. */
+  setModelChangeCallback(cb: (provider: string, model: string) => void): void {
+    this.modelChangeCallback = cb;
+  }
+
+  /** Notify cloud (if connected) that the provider/model changed. */
+  private notifyModelChange(providerName: string, model: string): void {
+    if (this.modelChangeCallback) {
+      try { this.modelChangeCallback(providerName, model); } catch {}
+    }
   }
 
   async birth(): Promise<void> {
@@ -3818,6 +3832,7 @@ Is this productive iteration or a stuck loop?`,
               this.providers.set('mercuryCloud', provider);
               this.providers.setDefault('mercuryCloud');
               updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
+              this.notifyModelChange('mercuryCloud', modelId);
               await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
             }
           }
@@ -3847,6 +3862,7 @@ Is this productive iteration or a stuck loop?`,
           this.providers.set('mercuryCloud', provider);
           this.providers.setDefault('mercuryCloud');
           updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
+          this.notifyModelChange('mercuryCloud', modelId);
           await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
         } catch (err) {
           await channel.send(`Error switching model: ${(err as Error).message}`, channelId);
