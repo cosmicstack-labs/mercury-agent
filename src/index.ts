@@ -69,7 +69,7 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
@@ -3341,9 +3341,24 @@ program
 
 program
   .command('stop')
-  .description('Stop a background Mercury process')
+  .description('Stop a running Mercury process (daemon or foreground)')
   .action(async () => {
-    await stopDaemon();
+    const foreground = getForegroundRuntimeStatus();
+    const daemon = getDaemonStatus();
+
+    if (!foreground.running && !daemon.running) {
+      console.log(chalk.yellow('  Mercury is not running.'));
+      console.log('');
+      return;
+    }
+
+    if (foreground.running) {
+      await stopForegroundRuntime();
+    }
+
+    if (daemon.running) {
+      await stopDaemon();
+    }
   });
 
 program
