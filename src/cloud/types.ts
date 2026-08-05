@@ -46,10 +46,7 @@ export type WSMessageType =
   | 'agent.response'
   | 'agent.stream'
   | 'research.artifact'
-  | 'token.refreshed'
-  | 'channel.config.update'
-  | 'channel.config.report'
-  | 'channel.config.ack';
+  | 'token.refreshed';
 
 export interface WSMessage {
   type: WSMessageType;
