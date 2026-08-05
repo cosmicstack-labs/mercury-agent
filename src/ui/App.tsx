@@ -849,7 +849,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
-      <TokenBarView state={state} />
+      <TokenBarView state={state} cols={terminalSize.cols} />
     </Box>
   );
 }
@@ -905,21 +905,18 @@ function HeaderBanner(): React.ReactNode {
   );
 }
 
-function TokenBarView({ state }: { state: TuiState }) {
+function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
   if (!state.tokenInfo && !state.provider && !state.currentSession) return null;
 
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
 
-  // Color the percentage based on usage thresholds (or saver state if active)
   const pct = state.tokenInfo?.percentage ?? 0;
   const pctColor = saverActive
     ? saverColor
     : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
 
-  // Sub-agent count (running only)
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
-  // Background task count (running only)
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
 
   const isWorkspace = state.mode === 'workspace' && state.workspace;
@@ -927,89 +924,124 @@ function TokenBarView({ state }: { state: TuiState }) {
   const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
 
+  // Build the token bar string
+  const tokenBarStr = state.tokenInfo
+    ? `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`
+    : '';
+
+  // Build the provider string
+  const providerStr = state.provider ? `${state.provider.name} · ${state.provider.model}` : '';
+
+  // Build the session string
+  const sessionStr = state.currentSession ? `${state.currentSession.alias} [${state.currentSession.shortId}]` : '';
+
+  // Build the workspace string
+  let workspaceStr = '';
+  if (isWorkspace && state.workspace) {
+    const ws = state.workspace;
+    workspaceStr = `⎇ ${ws.branch}`;
+    if (ws.ahead > 0 || ws.behind > 0) workspaceStr += `${ws.ahead > 0 ? ` ↑${ws.ahead}` : ''}${ws.behind > 0 ? ` ↓${ws.behind}` : ''}`;
+    if (ws.stagedCount > 0 || ws.unstagedCount > 0) workspaceStr += `${ws.stagedCount > 0 ? ` S${ws.stagedCount}` : ''}${ws.unstagedCount > 0 ? ` M${ws.unstagedCount}` : ''}`;
+  }
+
+  // Build the bg/agents string
+  let extraStr = '';
+  if (!isWorkspace && runningBg > 0) extraStr += `⏳ ${runningBg}bg`;
+  if (!isWorkspace && runningAgents > 0) extraStr += `${extraStr ? ' ' : ''}🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`;
+
+  // Saver suffix
+  let saverStr = '';
+  if (saverActive) {
+    saverStr = `⚡SAVER${state.saverInfo!.state === 'auto' ? '(auto)' : ''}`;
+    if (state.saverInfo!.savedToday > 0) saverStr += ` ~${formatCompact(state.saverInfo!.savedToday)}`;
+  }
+
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
-        <Text color="gray">{'─'.repeat(50)}</Text>
+        <Text color="gray">{'─'.repeat(Math.max(20, cols - 2))}</Text>
       </Box>
-      <Box paddingX={1} paddingBottom={0}>
-        <Text bold color="cyan">{state.agentName}</Text>
-        {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
-        {state.saverInfo && state.saverInfo.state !== 'off' && (
-          <Text> <Text color="gray">│</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
-        )}
-        {state.projectContext && <Text> <Text color="gray">│</Text> <Text color="blue">{state.projectContext}</Text></Text>}
-        <Text> <Text color="gray">│</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
-        <Text> <Text color="gray">│</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
+      <Box paddingX={1} paddingBottom={0} height={1} overflow="hidden">
+        {/* Column 1: Agent name + mode (fixed 16 chars) */}
+        <Box width={16} flexShrink={0}>
+          <Text bold color="cyan">{truncate(state.agentName, 16)}</Text>
+          {modeLabel && <Text color={modeColor} bold> {modeLabel.trim()}</Text>}
+        </Box>
+        <Text color="gray">│</Text>
 
-        {state.tokenInfo && (
+        {/* Column 2: View + permission (fixed 14 chars) */}
+        <Box width={14} flexShrink={0}>
+          <Text color="yellow">View:{viewLabel} </Text>
+          <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text>
+          {state.projectContext && <Text color="blue"> {truncate(state.projectContext, 4)}</Text>}
+        </Box>
+        <Text color="gray">│</Text>
+
+        {/* Column 3: Token bar (fixed 20 chars) */}
+        {state.tokenInfo ? (
+          <Box width={20} flexShrink={0}>
+            {saverActive && <Text color={saverColor} bold>⚡ </Text>}
+            <Text color={pctColor}>{truncate(tokenBarStr, 20)}</Text>
+          </Box>
+        ) : (
+          <Box width={20} flexShrink={0}>
+            <Text color="gray">—</Text>
+          </Box>
+        )}
+        <Text color="gray">│</Text>
+
+        {/* Column 4: Provider (flex, truncated) */}
+        <Box flexShrink={0} width={Math.max(10, Math.min(30, providerStr.length + 2))}>
+          <Text color="magenta">{truncate(providerStr, 30)}</Text>
+        </Box>
+
+        {/* Column 5: Session (flex, truncated) */}
+        {sessionStr && (
           <>
-            {saverActive && (
-              <Text color={saverColor} bold>⚡ </Text>
-            )}
-            <Text color={pctColor}>{pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'} </Text>
-            <Text color={pctColor}>
-              [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
-            </Text>
-            <Text color={pctColor} bold> {pct}%</Text>
-            {saverActive && state.saverInfo!.savedToday > 0 && (
-              <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
-            )}
-            {saverActive && state.saverInfo!.savedToday === 0 && (
-              <Text color={saverColor}> · SAVER</Text>
-            )}
+            <Text color="gray">│</Text>
+            <Box flexShrink={0} width={Math.max(8, Math.min(22, sessionStr.length + 2))}>
+              <Text color="cyan">{truncate(sessionStr, 22)}</Text>
+            </Box>
           </>
         )}
 
-        {state.provider && (
+        {/* Column 6: Workspace (flex, truncated) */}
+        {workspaceStr && (
           <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">{state.provider.name} · {state.provider.model}</Text>
+            <Text color="gray">│</Text>
+            <Box flexShrink={0} width={Math.max(8, Math.min(20, workspaceStr.length + 2))}>
+              <Text color="blue">{truncate(workspaceStr, 20)}</Text>
+            </Box>
           </>
         )}
 
-        {state.currentSession && (
+        {/* Column 7: Extra (bg/agents) */}
+        {extraStr && (
           <>
-            <Text color="gray"> │ </Text>
-            <Text color="cyan">{state.currentSession.alias}</Text>
-            <Text color="gray"> [{state.currentSession.shortId}]</Text>
+            <Text color="gray">│</Text>
+            <Box flexShrink={0} width={Math.max(6, Math.min(16, extraStr.length + 2))}>
+              <Text color="cyan">{truncate(extraStr, 16)}</Text>
+            </Box>
           </>
         )}
 
-        {isWorkspace && (
+        {/* Column 8: Saver */}
+        {saverStr && (
           <>
-            <Text color="gray"> │ </Text>
-            <Text color="blue">⎇ {state.workspace!.branch}</Text>
-            {(state.workspace!.ahead > 0 || state.workspace!.behind > 0) && (
-              <Text color="yellow">
-                {state.workspace!.ahead > 0 ? ` ↑${state.workspace!.ahead}` : ''}
-                {state.workspace!.behind > 0 ? ` ↓${state.workspace!.behind}` : ''}
-              </Text>
-            )}
-            {(state.workspace!.stagedCount > 0 || state.workspace!.unstagedCount > 0) && (
-              <Text color="gray">
-                {state.workspace!.stagedCount > 0 ? <Text color="green"> S{state.workspace!.stagedCount}</Text> : null}
-                {state.workspace!.unstagedCount > 0 ? <Text color="yellow"> M{state.workspace!.unstagedCount}</Text> : null}
-              </Text>
-            )}
-          </>
-        )}
-
-        {!isWorkspace && runningBg > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="cyan">⏳ {runningBg} bg</Text>
-          </>
-        )}
-        {!isWorkspace && runningAgents > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
+            <Text color="gray">│</Text>
+            <Box flexShrink={0} width={Math.max(6, Math.min(18, saverStr.length + 2))}>
+              <Text color={saverColor} bold>{truncate(saverStr, 18)}</Text>
+            </Box>
           </>
         )}
       </Box>
     </Box>
   );
+}
+
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen - 1) + '…';
 }
 
 function formatCompact(n: number): string {
