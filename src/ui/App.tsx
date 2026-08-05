@@ -916,65 +916,67 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
   const isWorkspace = state.mode === 'workspace' && state.workspace;
-  const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
 
-  // Build ordered segments — each is a string. We join with " │ " and
-  // truncate the entire line to the terminal width at the end.
-  const parts: string[] = [];
+  // Build colored segments — each has {text, color}. Rendered inline with │.
+  const segments: { text: string; color: string }[] = [];
 
-  // 1. Agent name (max 14)
-  parts.push(truncateStr(state.agentName, 14));
-
-  // 2. View + permission
-  parts.push(`View:${viewLabel} ${state.permissionMode === 'allow-all' ? '🔓' : '🔒'}`);
-
-  // 3. Token bar
+  // 1. Token bar
   if (state.tokenInfo) {
-    parts.push(`${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`);
+    if (saverActive) segments.push({ text: '⚡', color: saverColor });
+    segments.push({
+      text: `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`,
+      color: pctColor,
+    });
+    if (saverActive && state.saverInfo!.savedToday > 0) {
+      segments.push({ text: `~${formatCompact(state.saverInfo!.savedToday)}`, color: 'green' });
+    }
   }
 
-  // 4. Provider — shorten "Mercury Cloud" to "Cloud" to save space
+  // 2. Provider
   if (state.provider) {
-    const pName = state.provider.name.replace('Mercury Cloud', 'Cloud');
-    parts.push(`${pName} · ${truncateStr(state.provider.model, 20)}`);
+    segments.push({ text: `${state.provider.name} · ${state.provider.model}`, color: 'magenta' });
   }
 
-  // 5. Session
+  // 3. Session
   if (state.currentSession) {
-    parts.push(`${truncateStr(state.currentSession.alias, 12)} [${state.currentSession.shortId}]`);
+    segments.push({ text: `${state.currentSession.alias} [${state.currentSession.shortId}]`, color: 'cyan' });
   }
 
-  // 6. Workspace
+  // 4. Workspace
   if (isWorkspace && state.workspace) {
     const ws = state.workspace;
-    let wsStr = `⎇ ${truncateStr(ws.branch, 12)}`;
+    let wsStr = `⎇ ${ws.branch}`;
     if (ws.ahead > 0) wsStr += ` ↑${ws.ahead}`;
     if (ws.behind > 0) wsStr += ` ↓${ws.behind}`;
     if (ws.stagedCount > 0) wsStr += ` S${ws.stagedCount}`;
     if (ws.unstagedCount > 0) wsStr += ` M${ws.unstagedCount}`;
-    parts.push(wsStr);
+    segments.push({ text: wsStr, color: 'blue' });
   }
 
-  // 7. Background tasks
-  if (!isWorkspace && runningBg > 0) parts.push(`⏳${runningBg}bg`);
-
-  // 8. Sub-agents
-  if (!isWorkspace && runningAgents > 0) parts.push(`🤖${runningAgents}a`);
-
-  // 9. Saver
-  if (saverActive) {
-    let s = `⚡SAVER${state.saverInfo!.state === 'auto' ? '(a)' : ''}`;
-    if (state.saverInfo!.savedToday > 0) s += ` ~${formatCompact(state.saverInfo!.savedToday)}`;
-    parts.push(s);
+  // 5. Background tasks
+  if (!isWorkspace && runningBg > 0) {
+    segments.push({ text: `⏳ ${runningBg}bg`, color: 'cyan' });
   }
 
-  // 10. Project context
-  if (state.projectContext) parts.push(truncateStr(state.projectContext, 14));
+  // 6. Sub-agents
+  if (!isWorkspace && runningAgents > 0) {
+    segments.push({ text: `🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`, color: 'magenta' });
+  }
 
-  // Join and truncate to terminal width
-  const line = parts.join(' │ ');
+  // Calculate total width and drop segments from the right if they don't fit
+  const sepStr = ' │ ';
   const maxLen = Math.max(20, cols - 2);
-  const truncated = line.length > maxLen ? line.slice(0, maxLen - 1) + '…' : line;
+  let totalLen = segments.reduce((sum, s, i) => sum + s.text.length + (i > 0 ? sepStr.length : 0), 0);
+  const visible = [...segments];
+  while (totalLen > maxLen && visible.length > 1) {
+    const removed = visible.pop()!;
+    totalLen -= removed.text.length + sepStr.length;
+  }
+  if (totalLen > maxLen && visible.length > 0) {
+    const last = visible[visible.length - 1];
+    const excess = totalLen - maxLen;
+    last.text = last.text.slice(0, Math.max(1, last.text.length - excess - 1)) + '…';
+  }
 
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -982,7 +984,12 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
         <Text color="gray">{'─'.repeat(Math.max(20, cols - 2))}</Text>
       </Box>
       <Box paddingX={1} paddingBottom={0} height={1} overflow="hidden">
-        <Text wrap="truncate" bold>{truncated}</Text>
+        {visible.map((seg, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <Text color="gray">{sepStr}</Text>}
+            <Text color={seg.color} wrap="truncate">{seg.text}</Text>
+          </React.Fragment>
+        ))}
       </Box>
     </Box>
   );
