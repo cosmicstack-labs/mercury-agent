@@ -358,26 +358,37 @@ async function activateCloudRuntime(agentId: string, credentialsChanged: boolean
   const foreground = getForegroundRuntimeStatus();
   const daemon = getDaemonStatus();
   const serviceRunning = isServiceRunning();
+  const hadManagedRuntime = daemon.running || serviceRunning;
+
   if (foreground.running) {
     if (!credentialsChanged && isCloudRuntimeOnline(agentId, 'foreground')) {
       console.log(chalk.green(`  Mercury Cloud WebSocket is already online in foreground PID ${foreground.pid}.`));
       return;
     }
-    if (!daemon.running && !serviceRunning) {
+    if (!hadManagedRuntime) {
       throw new Error('Cloud credentials were saved, but Mercury is running only in the foreground. Restart that foreground session to activate its Cloud WebSocket');
     }
     console.log(chalk.yellow(`  Foreground Mercury (PID: ${foreground.pid}) keeps its local session while the managed Cloud runtime restarts.`));
   }
   clearCloudRuntimeOnline();
-  if (daemon.running) {
-    console.log(chalk.dim(`  Restarting Mercury (PID: ${daemon.pid}) to activate Cloud...`));
-    if (!await stopDaemon()) {
-      throw new Error('Cloud credentials were saved, but the running Mercury process could not be restarted');
+
+  // Only restart/start a managed runtime if one was already running.
+  // For fresh pairings where no daemon was running, the caller (e.g. the
+  // `cloud connect` command) will launch the foreground TUI which handles
+  // the WebSocket connection itself.
+  if (hadManagedRuntime) {
+    if (daemon.running) {
+      console.log(chalk.dim(`  Restarting Mercury (PID: ${daemon.pid}) to activate Cloud...`));
+      if (!await stopDaemon()) {
+        throw new Error('Cloud credentials were saved, but the running Mercury process could not be restarted');
+      }
     }
-  }
-  startManagedRuntime();
-  if (!await waitForCloudRuntimeOnline(agentId, 20_000, 'daemon')) {
-    throw new Error('Mercury restarted, but its Cloud WebSocket did not become online within 20 seconds');
+    startManagedRuntime();
+    if (!await waitForCloudRuntimeOnline(agentId, 20_000, 'daemon')) {
+      throw new Error('Mercury restarted, but its Cloud WebSocket did not become online within 20 seconds');
+    }
+  } else {
+    console.log(chalk.dim('  Cloud credentials saved. Start Mercury with `mercury` to begin.'));
   }
 }
 

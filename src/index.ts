@@ -4382,13 +4382,25 @@ cloud
   .description('Connect to Mercury Cloud via terminal pairing')
   .action(async () => {
     console.log('');
+    const wasDaemonRunning = getDaemonStatus().running;
     try {
       const { runCloudConnect } = await import('./cloud/pairing-flow.js');
       await runCloudConnect();
     } catch (err: any) {
       console.log(chalk.red(`  ✗ ${err.message || err}`));
+      console.log('');
+      return;
     }
-    console.log('');
+    // If Mercury wasn't already running as a daemon, launch the foreground
+    // TUI so the user can start chatting immediately instead of being stuck
+    // at the shell prompt.
+    if (!wasDaemonRunning && isSetupComplete()) {
+      console.log(chalk.cyan('\n  Launching Mercury...\n'));
+      await runAgent();
+    } else {
+      console.log(chalk.cyan('\n  Mercury is running in the background. Run `mercury` to start chatting.'));
+      console.log('');
+    }
   });
 
 cloud
