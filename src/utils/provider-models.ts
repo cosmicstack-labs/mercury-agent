@@ -445,9 +445,10 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
   interface MercuryCloudModel {
     id: string;
     label: string;
+    available?: boolean;
   }
 
-  const data = await fetchJson<{ models: MercuryCloudModel[] }>(
+  const data = await fetchJson<{ object: string; data: MercuryCloudModel[] }>(
     `${baseUrl}/v1/models`,
     {
       headers: {
@@ -457,7 +458,13 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
     'Could not fetch Mercury Cloud models. Check your cloud connection.',
   );
 
-  const ids = (data.models || []).map((m) => m.id);
+  // The Cloud /v1/models endpoint returns an OpenAI-shaped { object: 'list', data: [...] }
+  // payload with a per-model `available` flag computed from the user's subscription tier.
+  // Only surface models the user is approved for; fall back to the full list if the flag
+  // is missing (older API deployments) so the dropdown is never empty.
+  const allModels = Array.isArray(data.data) ? data.data : [];
+  const allowed = allModels.filter((m) => m.available === true).map((m) => m.id);
+  const ids = allowed.length > 0 ? allowed : allModels.map((m) => m.id);
   const models = uniq(ids);
   return {
     recommendedModel: config.model && models.includes(config.model) ? config.model : models[0] || config.model || 'mercury-mini',
