@@ -16,3 +16,18 @@ All runtime data lives in `~/.mercury/` — not in your project directory.
 | `~/.mercury/memory/` | Short-term, long-term, episodic memory |
 | `~/.mercury/daemon.pid` | Background process PID |
 | `~/.mercury/daemon.log` | Daemon mode logs |
+| `~/.mercury/boards.db` | Kanban boards database (SQLite) |
+
+## Web Dashboard Config
+
+Add to `~/.mercury/mercury.yaml`:
+
+```yaml
+web:
+  enabled: true
+  port: 6174        # default
+  username: mercury
+  password: Mercury@123
+```
+
+Or use environment variables: `MERCURY_PORT`, `MERCURY_WEB_USER`, `MERCURY_WEB_PASS`.

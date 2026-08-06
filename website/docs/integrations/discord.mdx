@@ -1,0 +1,146 @@
+---
+id: discord
+title: Discord
+---
+
+Mercury connects to Discord as a bot, providing a real-time conversational interface with slash commands, streaming responses, rich embeds, and an organization-style access model with admin roles and pairing codes.
+
+## Prerequisites
+
+- A **Discord account** with permission to manage a server (or create one).
+- A **Discord Bot Token** from the [Discord Developer Portal](https://discord.com/developers/applications).
+- A **server (guild)** where you have admin privileges to invite the bot.
+
+:::warning[Platform note]
+
+Discord integration requires Node.js 18 or later (the `discord.js` v14 dependency). The standalone binary includes all necessary dependencies automatically.
+
+:::
+
+## Setup
+
+### Step 1: Create a Discord Application
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**.
+2. Give it a name (e.g. "Mercury") and click **Create**.
+3. Navigate to **Bot** in the left sidebar and click **Reset Token** to generate a bot token. Copy it — you'll need it in Step 4.
+4. Under **Privileged Gateway Intents**, enable:
+   - **Message Content Intent** — required for Mercury to read your messages.
+   - **Server Members Intent** — required for the access control system.
+5. Click **Save Changes**.
+
+### Step 2: Invite the Bot to Your Server
+
+1. Navigate to **OAuth2** → **URL Generator** in the left sidebar.
+2. Under **Scopes**, select: `bot`, `applications.commands`.
+3. Under **Bot Permissions**, select:
+   - Send Messages
+   - Read Message History
+   - Use Slash Commands
+   - Attach Files
+   - Embed Links
+4. Copy the generated URL and open it in your browser to invite the bot to your server.
+
+### Step 3: Create an Admin Role (Optional)
+
+1. In your Discord server, go to **Server Settings** → **Roles**.
+2. Create a role named **Mercury Admin** (or any name you prefer).
+3. Assign this role to yourself and anyone else who should have admin control over Mercury.
+
+### Step 4: Configure Mercury
+
+Run `mercury doctor` and select Discord when prompted, or set these environment variables:
+
+```bash
+# Required
+DISCORD_ENABLED=true
+DISCORD_BOT_TOKEN=your-bot-token-here
+
+# Optional — restrict to a specific server
+DISCORD_GUILD_ID=
+
+# Optional — restrict to a specific channel
+DISCORD_CHANNEL_ID=
+
+# Optional — admin role name (default: "Mercury Admin")
+DISCORD_ADMIN_ROLE_NAME=Mercury Admin
+
+# Optional — enable streaming (edit-in-place) responses (default: true)
+DISCORD_STREAMING=true
+```
+
+Or add them to `~/.mercury/.env`.
+
+### Step 5: Pair
+
+1. Start Mercury: `mercury up`
+2. In Discord, type `/start` in any channel where the bot is present.
+3. Mercury will display a **pairing code**. Enter it in the CLI:
+   ```bash
+   mercury discord pair <code>
+   ```
+4. You are now the Discord admin. Other users can request access with `/start`, and you can approve them.
+
+## Access Model
+
+Mercury Discord uses an **organization access model** with admins and members.
+
+| Role | Description | Can approve requests? |
+|------|-------------|----------------------|
+| **Admin** | First user to pair (or anyone with the configured admin role). Can approve/reject access requests, promote/demote users. | Yes |
+| **Member** | Approved by an admin. Can send messages and receive responses. | No |
+| **Pending** | Sent `/start` but not yet approved. | No |
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `mercury discord list` | Show approved admins, members, and pending requests |
+| `mercury discord approve <userId>` | Approve a pending request by Discord user ID |
+| `mercury discord reject <userId>` | Reject a pending request |
+| `mercury discord remove <userId>` | Remove an approved admin or member |
+| `mercury discord promote <userId>` | Promote a member to admin |
+| `mercury discord demote <userId>` | Demote an admin to member |
+| `mercury discord reset` | Clear all Discord access (start fresh) |
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| Slash commands | Built-in `/start`, `/status`, `/progress`, `/permissions`, `/models`, and more |
+| Streaming responses | Messages are edited in place as tokens arrive (toggle with `DISCORD_STREAMING`) |
+| Rich embeds | Task progress and completion banners use Discord embeds for visual clarity |
+| DM support | Private conversations work alongside server channels |
+| Admin role integration | Discord server roles can be used for access control |
+| Rate limiting | Built-in busy detection and rate limiting for shared servers |
+| File handling | Send and receive file attachments |
+
+## Configuration Reference
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DISCORD_ENABLED` | Enable/disable Discord channel | `false` |
+| `DISCORD_BOT_TOKEN` | Bot token from Discord Developer Portal | — |
+| `DISCORD_GUILD_ID` | Restrict to a specific server. Leave empty for all servers. | — |
+| `DISCORD_CHANNEL_ID` | Restrict to a specific channel. Leave empty for all channels. | — |
+| `DISCORD_ADMIN_ROLE_NAME` | Discord role name that grants admin access | `Mercury Admin` |
+| `DISCORD_STREAMING` | Enable real-time streaming (edit-in-place) | `true` |
+
+## Troubleshooting
+
+**Bot doesn't respond to messages**
+- Make sure **Message Content Intent** is enabled in the Discord Developer Portal.
+- Check that `DISCORD_ENABLED=true` and `DISCORD_BOT_TOKEN` is set correctly.
+- Run `mercury logs` to check for connection errors.
+
+**Bot joins servers it shouldn't**
+- Set `DISCORD_GUILD_ID` to restrict the bot to your server only.
+- If the bot joins an unconfigured guild, it will automatically leave and log a warning.
+
+**Slash commands not showing up**
+- Slash commands are registered when the bot starts. Restart Mercury (`mercury restart`) if commands don't appear immediately.
+- Discord caches slash commands — it may take up to an hour for changes to propagate globally.
+
+**Streaming not working**
+- Ensure `DISCORD_STREAMING=true` (default).
+- Discord rate-limits message edits — Mercury handles this automatically by falling back to new messages when rate-limited.

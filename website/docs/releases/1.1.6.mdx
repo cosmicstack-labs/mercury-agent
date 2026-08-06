@@ -1,0 +1,63 @@
+---
+id: 1.1.6
+title: v1.1.6
+---
+
+Release `1.1.6` focuses on a major CLI/TUI upgrade, workspace IDE flow, background execution reliability, and docs coverage.
+
+## Highlights
+
+- New Ink-based interactive TUI with improved startup, status, and activity views.
+- Workspace IDE mode with explorer, preview, git panel, coding chat, and keyboard navigation.
+- Background task system for long-running shell and agent work (`/bg ...`) with live status.
+- Sub-agent lifecycle integration with background tracking and coding delegation (`/code agent <task>`).
+- Spotify UX revamp (Spotify Deck), shortcuts, volume up/down, and optional inline album art.
+- New runtime model switching commands (`/models`, `/models use <provider>`).
+- New platform diagnostics command (`mercury doctor --platform`).
+- Default seeded `web-search` skill for fresh installs.
+
+## CLI/TUI Improvements
+
+- Added minimal/detailed activity views and updated controls.
+- Improved streaming responsiveness and markdown rendering stability.
+- Added coding shortcuts:
+  - `Ctrl+P` plan
+  - `Ctrl+X` execute
+  - `Esc` / `Ctrl+Q` exit workspace
+- Improved startup permission picker behavior and one-step confirm flow.
+- Added raw-mode watchdog to improve terminal input reliability across environments.
+
+## Workspace + Coding
+
+- Introduced `/ws` command family with open/refresh/stage/commit/undo/exit.
+- Added dedicated coding workspace docs page and updated command references.
+- Added automatic handoff of interrupted long tasks to background workers.
+
+## Background Tasks + Sub-Agents
+
+- Added `BackgroundTaskManager` integration into agent lifecycle.
+- Added `/bg current` to move active work to background.
+- Added `/bg list`, `/bg <id>`, `/bg cancel <id>`, `/bg clear` for operational control.
+- Added supervisor lifecycle hooks so agent progress/completion is reflected in background board.
+
+## Spotify
+
+- Added Spotify Deck-style panel and clearer action feedback.
+- Added keyboard shortcuts in player mode (`N`, `P`, `+`, `-`, `Z`, `Esc`).
+- Added separate volume up/down controls.
+- Added safe-gated inline album art support (`MERCURY_SPOTIFY_ART=1`, iTerm local sessions).
+
+## Docs
+
+- Expanded Docusaurus docs for:
+  - coding workspace mode
+  - sub-agents + background tasks
+  - platform diagnostics
+  - Spotify player shortcuts and album art gating
+  - default `web-search` skill
+  - Docker status guidance (no first-party Docker assets shipped in repo)
+
+## Notes
+
+- This release includes broad UX/system changes across TUI, background execution, and docs.
+- For provider/model management, use `mercury doctor` to configure and `/models` to switch session model.

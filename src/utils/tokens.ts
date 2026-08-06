@@ -19,6 +19,7 @@ export interface TokenLogEntry {
   outputTokens: number;
   totalTokens: number;
   channelType: string;
+  agentId?: string;
 }
 
 const TOKEN_FILE = 'token-usage.json';
@@ -35,10 +36,19 @@ export class TokenBudget {
   private lastResetDate: string;
   private requestLog: TokenLogEntry[] = [];
   private forceNext = false;
+  private perAgentUsage: Map<string, number> = new Map();
+  /** Estimated tokens saved today by saver mode (resets daily). */
+  private dailySaved = 0;
+  /** Cumulative lifetime estimated tokens saved (persisted). */
+  private lifetimeSaved = 0;
 
   constructor(private config: MercuryConfig) {
     this.dailyBudget = config.tokens.dailyBudget;
     this.lastResetDate = new Date().toISOString().split('T')[0];
+    const lifetime = (config.tokens as any).saverTokensSavedLifetime;
+    if (typeof lifetime === 'number' && Number.isFinite(lifetime) && lifetime > 0) {
+      this.lifetimeSaved = lifetime;
+    }
     this.restore();
   }
 
@@ -64,6 +74,7 @@ export class TokenBudget {
   resetUsage(): void {
     this.dailyUsed = 0;
     this.requestLog = [];
+    this.perAgentUsage.clear();
     this.persist();
     logger.info('Token usage reset to zero');
   }
@@ -94,7 +105,20 @@ export class TokenBudget {
     const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
     this.dailyUsed += totalTokens;
     this.requestLog.push(logEntry);
+
+    if (entry.agentId) {
+      const agentUsed = this.perAgentUsage.get(entry.agentId) ?? 0;
+      this.perAgentUsage.set(entry.agentId, agentUsed + totalTokens);
+    }
+
     this.persist();
+  }
+
+  getUsageByAgent(agentId: string): { used: number; percentage: number } {
+    this.resetIfNewDay();
+    const used = this.perAgentUsage.get(agentId) ?? 0;
+    const budget = safeNumber(this.dailyBudget);
+    return { used, percentage: budget > 0 ? (used / budget) * 100 : 0 };
   }
 
   getRemaining(): number {
@@ -110,9 +134,38 @@ export class TokenBudget {
   }
 
   getStatusText(): string {
+    const used = this.sanitizeCount(this.dailyUsed);
     const pct = Math.round(this.getUsagePercentage());
     const remaining = this.getRemaining();
-    return `Token budget: ${this.dailyUsed.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
+    return `Token budget: ${used.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
+  }
+
+  /**
+   * Record an estimated savings from Token Saver Mode. Updates both the
+   * per-day counter (resets at day rollover) and the lifetime counter
+   * (persisted to mercury.yaml). Negative or zero values are ignored.
+   */
+  recordSavings(estimatedTokens: number): void {
+    const n = safeNumber(estimatedTokens);
+    if (n <= 0) return;
+    this.resetIfNewDay();
+    this.dailySaved += n;
+    this.lifetimeSaved += n;
+    try {
+      (this.config.tokens as any).saverTokensSavedLifetime = this.lifetimeSaved;
+      saveConfig(this.config);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to persist saver lifetime counter');
+    }
+  }
+
+  getSavedToday(): number {
+    this.resetIfNewDay();
+    return this.dailySaved;
+  }
+
+  getSavedLifetime(): number {
+    return this.lifetimeSaved;
   }
 
   private resetIfNewDay(): void {
@@ -121,6 +174,8 @@ export class TokenBudget {
       this.dailyUsed = 0;
       this.lastResetDate = today;
       this.requestLog = [];
+      this.perAgentUsage.clear();
+      this.dailySaved = 0;
       this.persist();
       logger.info('Token budget reset for new day');
     }
@@ -130,7 +185,7 @@ export class TokenBudget {
     const path = join(getMercuryHome(), TOKEN_FILE);
     try {
       const data = {
-        dailyUsed: this.dailyUsed,
+        dailyUsed: this.sanitizeCount(this.dailyUsed),
         dailyBudget: this.dailyBudget,
         lastResetDate: this.lastResetDate,
         requestLog: this.requestLog.slice(-200),
@@ -148,10 +203,24 @@ export class TokenBudget {
       const raw = readFileSync(path, 'utf-8');
       const data = JSON.parse(raw) as Partial<TokenTracker>;
       const today = new Date().toISOString().split('T')[0];
+      let repaired = false;
+      const rawLogLength = Array.isArray(data.requestLog) ? data.requestLog.length : 0;
+      const restoredLogs = Array.isArray(data.requestLog)
+        ? data.requestLog
+          .map((entry) => this.sanitizeLogEntry(entry as Omit<TokenLogEntry, 'timestamp'> & { timestamp?: unknown }, this.sanitizeTimestamp((entry as any)?.timestamp)))
+          .filter((entry) => entry.totalTokens > 0)
+        : [];
+      if (restoredLogs.length !== rawLogLength) {
+        repaired = true;
+      }
       if (data.lastResetDate === today) {
         const restored = safeNumber(data.dailyUsed);
-        if (!isNaN(restored)) {
+        if (data.dailyUsed != null && !isNaN(restored) && restored > 0) {
           this.dailyUsed = restored;
+        } else {
+          // Recompute from valid log entries when dailyUsed is corrupted/null
+          this.dailyUsed = restoredLogs.reduce((sum, entry) => sum + entry.totalTokens, 0);
+          repaired = true;
         }
         this.requestLog = (data.requestLog ?? []).map((entry: any) => ({
           ...entry,
@@ -161,8 +230,36 @@ export class TokenBudget {
         }));
       }
       this.lastResetDate = data.lastResetDate ?? today;
+      if (repaired) {
+        this.persist();
+      }
     } catch (err) {
       logger.warn({ err }, 'Failed to restore token usage');
     }
+  }
+
+  private sanitizeCount(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+
+  private sanitizeTimestamp(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : Date.now();
+  }
+
+  private sanitizeLogEntry(entry: Omit<TokenLogEntry, 'timestamp'> & { timestamp?: unknown }, timestamp: number): TokenLogEntry {
+    const inputTokens = this.sanitizeCount(entry.inputTokens);
+    const outputTokens = this.sanitizeCount(entry.outputTokens);
+    const rawTotal = this.sanitizeCount(entry.totalTokens);
+    const totalTokens = rawTotal > 0 ? rawTotal : inputTokens + outputTokens;
+
+    return {
+      timestamp: this.sanitizeTimestamp(timestamp),
+      provider: typeof entry.provider === 'string' && entry.provider ? entry.provider : 'unknown',
+      model: typeof entry.model === 'string' && entry.model ? entry.model : 'unknown',
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      channelType: typeof entry.channelType === 'string' && entry.channelType ? entry.channelType : 'unknown',
+    };
   }
 }

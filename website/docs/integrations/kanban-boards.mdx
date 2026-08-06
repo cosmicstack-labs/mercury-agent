@@ -1,0 +1,162 @@
+---
+title: "Kanban Boards (Beta)"
+sidebar_label: "Kanban Boards"
+---
+
+# Kanban Boards (Beta)
+
+:::caution Beta
+Kanban Boards are a beta feature in v1.1.9. The data model and API surface are stable, but expect UI refinements in subsequent releases. The web dashboard labels this section **"Kanban Boards (Beta mode)"**.
+:::
+
+Mercury's Kanban system provides persistent task management with agent-driven execution. Boards are stored in SQLite (with JSON fallback) and accessible via the Web Dashboard (`/board`) or the REST/SSE API.
+
+## Cards
+
+| Property | Description |
+|----------|-------------|
+| Title | Card name |
+| Description | Markdown-rendered task description |
+| Status | `pending`, `running`, `paused`, `done`, `failed`, `question` |
+| Priority | `critical`, `high`, `normal`, `low` |
+| Labels | Arbitrary tags for categorization |
+| Comments | Threaded comments with author tracking |
+| Attachments | Linked files (stored on disk, downloadable) |
+| Dependencies | Blocks/blocked-by relationships |
+| Parent–child | Hierarchical card grouping |
+
+### Status meanings
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Not yet picked up — waiting to be run |
+| `running` | The agent is actively working on it |
+| `paused` | Execution paused (often after token-budget exhaustion or manual halt) |
+| `done` | Completed successfully |
+| `failed` | The agent could not complete the card |
+| `question` | The agent has a clarifying question and is awaiting human feedback |
+
+The `question` status is what powers the **Feedback** loop — when the agent needs input, it parks the card in `question` and waits for you to respond from the UI or via `POST /api/boards/:id/feedback/:feedbackId/respond`.
+
+## Web Dashboard UI
+
+### Board list (`/board`)
+
+- Header reads **"Kanban Boards (Beta mode)"**.
+- Create new boards, generate boards from a natural-language description, archive, delete, activate / deactivate.
+
+### Board view (`/board/:boardId`)
+
+- **Columns** — one per status, each scrollable independently (Trello-style). The whole row scrolls horizontally if you have many statuses.
+- **Cards** — drag and drop a card between columns to change status. The drag handler calls `PATCH /api/boards/:boardId/cards/:cardId` with the new status.
+- **Description rendering** — card descriptions are full Markdown (lists, code, headings). Descriptions longer than 280 characters are truncated with a **"See more"** link.
+  - Clicking the truncated text (or "See more") opens the full description in a modal with scrolling and full Markdown.
+  - The **pencil icon** next to the description is the only way to enter edit mode — clicking the description body itself just opens the read-only modal. This prevents accidental edits.
+- **AI Plan** — click *Plan* on a card and Mercury drafts an execution plan (`GET /api/boards/:id/execution-plan`) you can review before running. Smart execution runs the plan card-by-card respecting dependencies.
+- **Run / Halt** — per-card `Run` (▶) and `Halt` (■) buttons. Board-level `Run all` and `Halt all` buttons in the toolbar.
+- **Feedback** — when a card is in `question` status, a callout appears at the top with the question text and a response field.
+
+## Agent Execution
+
+When a card is run, the agent autonomously processes the task:
+
+1. Card status moves to `running`.
+2. Agent executes the described task within a configurable **token budget**.
+3. On completion the status moves to `done` and a comment is appended with results.
+4. If the token budget is exhausted, execution auto-pauses (`paused`).
+5. If the agent needs human input, status moves to `question` and a feedback record is created.
+
+### Cascade execution
+
+`POST /api/boards/:boardId/cards/:cardId/cascade` runs the selected card and recursively all of its dependents in dependency order.
+
+### Smart execution
+
+`POST /api/boards/:id/smart-execute` walks the whole board, picking up `pending` cards whose dependencies are `done`, until either the board is fully `done` or it hits an unresolved blocker.
+
+## Board Context
+
+Each board can define context that is injected into every card's prompt:
+
+- **Working directory** — where file operations execute (`POST /api/boards/:id/context/directory`)
+- **Custom variables** — key-value pairs (`/context/variables`)
+- **Instructions** — system-level guidance (`/context/instructions`)
+- **Structure definition** — expected project layout (`/context/structure`)
+- **Knowledge base** — reference material (`/context/knowledge`)
+
+## API Surface
+
+### Boards
+
+```
+GET    /api/boards
+POST   /api/boards
+GET    /api/boards/:id
+PATCH  /api/boards/:id
+DELETE /api/boards/:id
+POST   /api/boards/:id/activate
+POST   /api/boards/:id/deactivate
+POST   /api/boards/:id/generate                # natural-language board generation
+GET    /api/boards/:id/execution-plan
+POST   /api/boards/:id/smart-execute
+POST   /api/boards/:id/run-all
+POST   /api/boards/:id/halt-all
+```
+
+### Cards
+
+```
+POST   /api/boards/:id/cards
+POST   /api/boards/:id/cards/bulk
+PATCH  /api/boards/:boardId/cards/:cardId
+DELETE /api/boards/:boardId/cards/:cardId
+POST   /api/boards/:id/cards/reorder
+POST   /api/boards/:id/cards/clear-done
+POST   /api/boards/:boardId/cards/:cardId/run
+POST   /api/boards/:boardId/cards/:cardId/halt
+POST   /api/boards/:boardId/cards/:cardId/cascade
+```
+
+### Comments, attachments, labels, hierarchy
+
+```
+GET    /api/boards/:boardId/cards/:cardId/comments
+POST   /api/boards/:boardId/cards/:cardId/comments
+DELETE /api/boards/:boardId/cards/:cardId/comments/:commentId
+GET    /api/boards/:boardId/cards/:cardId/attachments
+POST   /api/boards/:boardId/cards/:cardId/attachments
+DELETE /api/boards/:boardId/cards/:cardId/attachments/:attachmentId
+GET    /api/boards/:boardId/cards/:cardId/attachments/:attachmentId/content
+GET    /api/boards/:boardId/cards/:cardId/attachments/:attachmentId/download
+POST   /api/boards/:boardId/cards/:cardId/labels
+DELETE /api/boards/:boardId/cards/:cardId/labels/:labelId
+POST   /api/boards/:boardId/cards/:cardId/parent
+POST   /api/boards/:boardId/cards/:cardId/dependencies
+DELETE /api/boards/:boardId/cards/:cardId/dependencies/:depId
+```
+
+### Context
+
+```
+GET  /api/boards/:id/context
+POST /api/boards/:id/context/directory
+POST /api/boards/:id/context/variables
+POST /api/boards/:id/context/instructions
+POST /api/boards/:id/context/structure
+POST /api/boards/:id/context/knowledge
+```
+
+### Feedback (`question` status)
+
+```
+GET  /api/boards/:id/feedback
+POST /api/boards/:boardId/feedback/:feedbackId/respond
+```
+
+### Real-time updates (SSE)
+
+```
+GET /api/boards/:id/events
+```
+
+Subscribe to a Server-Sent Events stream for live status updates as cards are processed (status changes, comments added, feedback raised).

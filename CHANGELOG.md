@@ -1,5 +1,117 @@
 # Changelog
 
+## 1.1.13 — Chatty Mercury
+
+Mercury gets chatty. Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are, with end-to-end encryption, organization access models, and real-time streaming. Plus long-running loop fixes, CLI heartbeat improvements, and crash recovery.
+
+### New
+
+- **Discord channel** — Full bot integration with slash commands, streaming responses, rich embeds, organization access with admin roles and pairing codes, DM + channel support, and rate limiting. Config: `DISCORD_ENABLED`, `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`, `DISCORD_ADMIN_ROLE_NAME`, `DISCORD_STREAMING`.
+- **Slack channel** — Socket Mode bot (no public endpoint needed) with slash commands, streaming edits, organization access with admin/member roles, channel + DM support, and @mention awareness. Config: `SLACK_ENABLED`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`, `SLACK_TEAM_ID`, `SLACK_STREAMING`.
+- **Signal channel** — End-to-end encrypted via `signal-cli` bridge. Group mode (named "Mercury" group) and private DM mode. Auto-managed `signal-cli` binary (download, register, start, health-check). Pairing-code access control. Phone number redaction in CLI output. Linux (x64/ARM64) native binaries available; macOS requires Java 17+; Windows not supported. Config: `SIGNAL_ENABLED`, `SIGNAL_PHONE_NUMBER`, `SIGNAL_MODE`, `SIGNAL_GROUP_ID`, `SIGNAL_GROUP_NAME`.
+- **Crash recovery** — New crash flag system (`~/.mercury/.crash-flag`) writes a JSON file on ungraceful exit. On next startup, Mercury reads the flag, reports what happened, and deletes it. The watchdog also writes a crash flag on max-restart exceeded, with a synchronous stderr write as last-gasp logging.
+
+### Fixed
+
+- **CLI heartbeat updates in place** — The CLI now updates the same message instead of stacking new "⏳ Working..." messages during long-running tasks. Other channels (Telegram, Discord, Slack, Signal) continue sending separate heartbeat messages.
+- **All 12 silent task failure paths eliminated** — Every loop condition, tool limit, and stall now sends an explicit error message to the channel. No more silent disappearances mid-task.
+- **Step log collapse** — Active step logs show at most 3 visible steps (running + last 2 completed). Full history available via Ctrl+D or `/log`. Idle shows compact summary line.
+- **ThinkingIndicator shows "Processing"** — Replaces agent name with a neutral label; long operations show `/bg current` hint.
+- **Ollama Local routed through OpenAI compat** — `ollamaLocal` now uses `OpenAICompatProvider` with `useChatApi: true`, bypassing the `ollama-ai-provider` v1 specification incompatibility with AI SDK v6.
+- **Daemon graceful shutdown** — `stopDaemon` is now async: sends SIGTERM, waits up to 5 seconds, escalates to SIGKILL. Stale `signal-cli` processes are cleaned up on stop.
+- **Channel send errors logged** — All `.catch(() => {})` on channel sends replaced with `.catch((e) => logger.warn({ e }, 'channel send failed'))`.
+
+### Internal
+
+- New `src/signal/` module: `binary.ts` (download/verify signal-cli), `jsonrpc.ts` (JSON-RPC client), `process.ts` (lifecycle), `setup.ts` (registration flow).
+- New `src/core/crash-flag.ts` — crash flag read/write/clear.
+- `src/types/channel.ts` — new types for Signal, Discord, Slack access models.
+- `src/utils/config.ts` — config sections, access functions, and legacy migrations for all three new channels.
+- `src/channels/registry.ts` — notification priority: Signal → Telegram → Discord → Slack → CLI.
+- `package.json` — new dependencies: `discord.js` v14, `@slack/bolt` v4.
+
+### Migration from 1.1.12
+
+No breaking changes. All new channels are **off by default** — enable via `mercury doctor` or environment variables. Existing configs, providers, threads, kanban boards, and Second Brain data carry over unchanged.
+
+## 1.1.12 — Daemon fix for standalone binaries
+
+Hotfix on top of 1.1.11. The standalone single-file binaries shipped in 1.1.11 could not start in the background — which also meant Telegram never came online when Mercury was installed via the one-line installer (the recommended path for servers).
+
+### Fixed
+
+- **Daemon now starts correctly from standalone binaries** — `src/cli/daemon.ts` used to spawn the daemon as `[process.execPath, process.argv[1], 'start', '--daemon']`. For npm installs that became `node dist/index.js start --daemon` and worked. For `bun --compile` standalone binaries, `process.execPath` is the Mercury binary itself and `process.argv[1]` is a bun-virtual `$bunfs/...` path, so the spawn became `mercury "$bunfs/..." start --daemon` — Commander treated the bunfs path as an unknown subcommand, the child died immediately, and `channels.startAll()` (the only place Telegram is started in daemon mode) was never reached.
+- **`mercury service install` no longer persists broken commands** — the LaunchAgent plist, systemd unit, and Windows Task Scheduler entry now contain the binary-only invocation (no script path) when running from a standalone binary, so auto-start on boot works end-to-end.
+- **Telegram now comes online in background mode for standalone-binary users** — direct consequence of the daemon fix.
+
+### Internal
+
+- New `isStandaloneBinary()` / `buildDaemonSpawnArgs()` helpers in `src/cli/daemon.ts` plus `getServiceLaunchArgs()` in `src/cli/service.ts`, wired through every OS installer. Detection uses `process.versions.bun`, `$bunfs` / `~BUN` markers in `argv[1]`, and the `execPath` basename — so `node`, `bun <script>`, and standalone `mercury` invocations all do the right thing.
+
+### Migration from 1.1.11
+
+No changes required. After upgrading, run `mercury restart` (or `mercury service uninstall && mercury service install` if you had the service installed under 1.1.11 with the broken command persisted).
+
+## 1.1.11 — Token Saver Mode, Skills System & Standalone Binaries
+
+The biggest release since the 1.1.x line started. Adds a full **Skill System**, a **Token Saver Mode** for cheaper sessions, **standalone binaries** for users who don't want npm, and a redesigned bottom status bar with per-step spinners.
+
+### New
+
+- **Token Saver Mode + bottom status bar overhaul + per-step spinners** (#69) — opt-in mode that aggressively trims context, plus a new persistent status bar at the bottom of the TUI showing provider/model/token usage live, with per-step spinners replacing the single global one.
+- **Skill System** (#67) — Mercury can now load and route to user-defined skills. Skills are markdown-defined behaviors that get injected on demand based on keyword/semantic match.
+- **Screenshot skill** — full website capture with viewport sizing and dark/light mode toggle.
+- **Standalone binaries + one-line installers** (#61) — `mercury` now ships as a single executable for macOS (arm64/x64), Linux (x64/arm64), and Windows (x64). No Node install required. Per-OS docs and a hero install widget on the website.
+- **Domain migration** — `mercury.cosmicstack.org` → `mercuryagent.sh`.
+- **Chinese translations** for README, ARCHITECTURE, and CHANGELOG (#53).
+
+### Fixed
+
+- **Skill ambiguity prompt** (#68) — no more 10-skill fan-out on weak matches; users get a numbered picker when the router is uncertain.
+- **Spurious ambiguity prompts on weak keyword overlap** — the matcher used to trigger the picker on incidental word overlap; now requires real signal.
+- **Release asset names aligned with published binaries** (#63) — fixes installer scripts that were pointing at the wrong filenames.
+- **Per-segment shell pattern checks** (#48) — the shell permission guard now validates each shell segment independently instead of trusting a single combined check.
+
+### Maintenance
+
+- **Removed `anonymous-file-uploader` skill** — no longer needed.
+- **`pino` upgraded** 9.14.0 → ^10.3.1 (#51).
+- Spinner polish and docs updates throughout.
+
+### Migration from 1.1.9
+
+No breaking changes. Skill system is opt-in (drop markdown files in `~/.mercury/skills/`). Token Saver Mode is off by default — enable it from the session menu or via config. Standalone binaries are an alternative install path; `npm i -g @cosmicstack/mercury-agent` keeps working exactly as before.
+
+> Note: `1.1.10` was skipped to keep numbering aligned across publish channels.
+
+## 1.1.5 — Smoother Onboarding
+
+### Fixed: Onboarding no longer blocks users without Ollama
+
+The onboarding flow had a critical UX problem: if a user didn't have Ollama running locally or an API key handy, they'd get stuck in infinite loops with no way to skip. This release makes onboarding smooth and forgiving.
+
+**Key changes:**
+
+1. **Ollama Local is now skippable** — If Ollama isn't running, you can skip it entirely or manually enter a model name. No more infinite retry loops.
+
+2. **All provider setups allow skipping** — Every API key prompt now offers manual model name entry when the provider API is unreachable, and a clear skip option. The error messages changed from red (failure) to yellow (warning) to reduce frustration.
+
+3. **"No provider" trap removed** — Previously, if you couldn't configure any provider, you were stuck in an infinite loop. Now you can type "skip" to save your config and return later with `mercury doctor`. A hint about DeepSeek's free API is shown.
+
+4. **Ollama Local default model cleared** — The default was `gpt-oss:20b` (a non-standard model). Now defaults to empty, and the preferred model list uses common names like `llama3.2`, `mistral`, `phi3`, etc.
+
+5. **Clearer first-run instructions** — The LLM Providers step now says "You can skip any provider by pressing Enter" and notes DeepSeek offers free keys.
+
+### Summary of Changes
+
+| File | Change |
+|------|--------|
+| `src/index.ts` | `promptOllamaLocalModelSelection` — allow skipping base URL, manual model entry on fetch failure |
+| `src/index.ts` | `promptApiKeyWithModelSelection` — manual model entry on API fetch failure, skip option |
+| `src/index.ts` | `configure()` — "skip" option when no providers configured, hint about free keys |
+| `src/utils/config.ts` | Ollama Local default model changed from `gpt-oss:20b` to empty string |
+| `src/utils/provider-models.ts` | Ollama Local preferred models updated to common names |
+
 ## 1.1.4 — OpenAI Compilations & Provider Visibility
 
 ### New: OpenAI Compilations Provider

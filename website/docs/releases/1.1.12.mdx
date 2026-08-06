@@ -1,0 +1,136 @@
+---
+title: "v1.1.12 — Daemon Hotfix"
+sidebar_label: "v1.1.12"
+description: "Hotfix on top of v1.1.11. Standalone binaries can now start in the background, so Telegram works again for users who installed Mercury via the one-line installer."
+image: /img/og/1.1.11.png
+keywords: [mercury, mercury-agent, hotfix, daemon, telegram, standalone-binary, release, 1.1.12]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.1.12 — Daemon Hotfix" />
+  <meta property="og:description" content="Standalone binaries can now start in the background. Telegram works again for users who installed Mercury via the one-line installer." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.1.12" />
+  <meta property="og:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.1.12 — Daemon Hotfix" />
+  <meta name="twitter:description" content="Daemon now starts correctly from standalone binaries. Telegram is live again." />
+  <meta name="twitter:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.1.12" />
+</Head>
+
+# v1.1.12 — Daemon Hotfix
+
+> **Hotfix on top of [v1.1.11](/docs/releases/1.1.11).** If you installed Mercury via the one-line installer (or `npm i -g` on a Bun-compiled binary), this release fixes a critical bug where the background daemon refused to start — which also meant Telegram never came online.
+
+If you are running `1.1.11` from a standalone binary on a web server or any always-on box, **upgrade now**.
+
+## What was broken
+
+`mercury start` (and `mercury up`, and `mercury service install`) spawned the daemon child with:
+
+```ts
+spawn(process.execPath, [process.argv[1], 'start', '--daemon'], ...)
+```
+
+This worked for npm installs (`node dist/index.js start --daemon`) but completely broke standalone Bun-compiled binaries:
+
+- `process.execPath` was `/usr/local/bin/mercury` — the binary itself.
+- `process.argv[1]` was a bun-virtual `/$bunfs/root/.../index.js` path that exists only inside the compiled binary's embedded filesystem.
+
+The spawn became `mercury "/$bunfs/root/..." start --daemon`. Commander treated the bunfs path as an unknown subcommand, the child died instantly, the PID file was written and then immediately reaped — and `channels.startAll()` (the only place Telegram's `bot.start()` runs in daemon mode) was never reached.
+
+`mercury service install` had the same flaw, but worse: it persisted that bad command into the macOS LaunchAgent plist / Linux systemd unit / Windows Task Scheduler entry, so the failure also survived reboots.
+
+## Fixed
+
+- **Daemon spawn now picks the right invocation per install channel** — new `isStandaloneBinary()` detection in `src/cli/daemon.ts` looks at `process.versions.bun`, `$bunfs` / `~BUN` markers in `argv[1]`, and the `execPath` basename. It builds:
+  - `[node, dist/index.js, 'start', '--daemon']` for npm installs.
+  - `[bun, src/index.ts, 'start', '--daemon']` for `bun <script>` dev runs.
+  - `[mercury, 'start', '--daemon']` for standalone binaries (no script path).
+- **System-service files are correct on both channels** — `getServiceLaunchArgs()` is now wired into the macOS / Linux / Windows installers in `src/cli/service.ts`, so the persisted LaunchAgent plist `ProgramArguments`, systemd `ExecStart=`, and Task Scheduler command all use the binary-only invocation when running standalone. Auto-start on boot works end-to-end again.
+- **Telegram comes back online in background mode** — a direct consequence of the daemon fix. No Telegram-specific code changed.
+
+## Who is affected
+
+| Install path | 1.1.11 background mode | 1.1.12 background mode |
+|---|---|---|
+| `npm i -g @cosmicstack/mercury-agent` | ✅ Works | ✅ Works |
+| `curl … install.sh \| sh` (standalone) | ❌ Broken | ✅ Works |
+| `irm … install.ps1 \| iex` (standalone) | ❌ Broken | ✅ Works |
+| `mercury service install` (standalone) | ❌ Broken (also persists across reboots) | ✅ Works |
+| `mercury` from `bun src/index.ts …` (dev) | ✅ Works | ✅ Works |
+
+## Upgrade
+
+**npm:**
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.1.12
+mercury restart
+```
+
+**Standalone (macOS / Linux):**
+
+```bash
+curl -fsSL https://mercuryagent.sh/install.sh | bash
+mercury restart
+```
+
+**Standalone (Windows):**
+
+```powershell
+irm https://mercuryagent.sh/install.ps1 | iex
+mercury restart
+```
+
+**If you had `mercury service install` set up under 1.1.11** (broken command was persisted into the service file), reinstall the service after upgrading the binary:
+
+```bash
+mercury service uninstall
+mercury service install
+```
+
+## Verify
+
+```bash
+mercury start
+mercury status   # should show a live PID
+mercury logs     # should show "Mercury is live (daemon mode)" and Telegram polling startup
+```
+
+If you use Telegram, send a message to your bot — it should respond as before.
+
+## Standalone binaries
+
+Same five targets as v1.1.11:
+
+| OS | Architecture | Binary |
+|---|---|---|
+| macOS | Apple Silicon | `mercury-macos-arm64` |
+| macOS | Intel | `mercury-macos-x64` |
+| Linux | x86-64 | `mercury-linux-x64` |
+| Linux | ARM64 | `mercury-linux-arm64` |
+| Windows | x86-64 | `mercury-win-x64.exe` |
+
+Direct downloads:
+
+- [mercury-macos-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/mercury-macos-arm64)
+- [mercury-macos-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/mercury-macos-x64)
+- [mercury-linux-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/mercury-linux-x64)
+- [mercury-linux-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/mercury-linux-arm64)
+- [mercury-win-x64.exe](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/mercury-win-x64.exe)
+- [checksums.txt](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.12/checksums.txt)
+
+## Files changed
+
+- `src/cli/daemon.ts` — `isStandaloneBinary()` + `buildDaemonSpawnArgs()`; `ensureDaemonRunning()` uses them.
+- `src/cli/service.ts` — `getServiceLaunchArgs()` wired into macOS / Linux / Windows installers.
+
+No new dependencies. No breaking changes. No config migrations.
+
+**Full changelog:** [v1.1.11 → v1.1.12](https://github.com/cosmicstack-labs/mercury-agent/compare/v1.1.11...v1.1.12)

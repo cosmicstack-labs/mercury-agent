@@ -11,7 +11,7 @@ export function createGitStatusTool(getCwd: () => string) {
     execute: async ({ path }) => {
       try {
         const cmd = path ? `git -C "${path}" status --porcelain` : 'git status --porcelain';
-        const result = execSync(cmd, { encoding: 'utf-8', timeout: 10000, cwd: getCwd() });
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 20000, cwd: getCwd() });
         if (!result.trim()) return 'Working tree clean — no changes.';
         return result.trim();
       } catch (err: any) {

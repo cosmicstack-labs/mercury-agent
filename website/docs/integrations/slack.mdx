@@ -1,0 +1,195 @@
+---
+id: slack
+title: Slack
+---
+
+Mercury connects to Slack as a Socket Mode bot, providing a real-time conversational interface with slash commands, streaming responses, and an organization-style access model with pairing codes and admin controls.
+
+## Prerequisites
+
+- A **Slack workspace** where you can install apps.
+- A **Slack App** with Bot Token (`xoxb-`) and App-Level Token (`xapp-`).
+- Node.js 18 or later (for the `@slack/bolt` v4 dependency).
+
+:::warning[Socket Mode required]
+
+Mercury uses **Socket Mode**, which means it connects to Slack via WebSocket — no public endpoint or HTTPS certificate is needed. Your Slack app must have Socket Mode enabled and an App-Level Token with `connections:write` scope.
+
+:::
+
+## Setup
+
+### Step 1: Create a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App** → **From scratch**.
+2. Give it a name (e.g. "Mercury") and select your workspace.
+3. Click **Create App**.
+
+### Step 2: Enable Socket Mode and Get App-Level Token
+
+1. In your app's settings, navigate to **Socket Mode** in the left sidebar.
+2. Toggle **Enable Socket Mode** on.
+3. Enter a token name (e.g. "mercury-socket") and click **Generate**.
+4. Copy the `xapp-` token — you'll need this as `SLACK_APP_TOKEN`.
+
+### Step 3: Configure Bot Token Scopes
+
+1. Navigate to **OAuth & Permissions** in the left sidebar.
+2. Under **Bot Token Scopes**, add these scopes:
+   - `chat:write` — send messages
+   - `chat:write.public` — send messages in channels the bot hasn't joined
+   - `chat:write.customize` — customize message appearance (for streaming edits)
+   - `channels:history` — read channel messages
+   - `groups:history` — read private channel messages
+   - `im:history` — read direct messages
+   - `im:write` — send direct messages
+   - `files:write` — upload files
+   - `commands` — handle slash commands
+   - `app_mentions:read` — respond to @mentions
+
+3. Click **Install App to Workspace** (or reinstall if already installed).
+4. Copy the **Bot User OAuth Token** (`xoxb-`) — this is `SLACK_BOT_TOKEN`.
+
+### Step 4: Enable Event Subscriptions
+
+1. Navigate to **Event Subscriptions** in the left sidebar.
+2. Toggle **Enable Events** on.
+3. Under **Subscribe to bot events**, add:
+   - `message.channels` — receive messages in public channels
+   - `message.groups` — receive messages in private channels
+   - `message.im` — receive direct messages
+   - `app_mention` — respond when @mentioned
+
+4. Click **Save Changes**.
+
+### Step 5: Enable Interactivity
+
+1. Navigate to **Interactivity & Shortcuts** in the left sidebar.
+2. Toggle **Interactivity** on.
+3. Click **Save Changes**.
+
+### Step 6: Create the Slash Command
+
+1. Navigate to **Slash Commands** in the left sidebar.
+2. Click **Create New Command**.
+3. Fill in:
+   - **Command**: `/mercury`
+   - **Request URL**: (leave default — Socket Mode handles this)
+   - **Short description**: `Interact with Mercury Agent`
+   - **Usage hint**: `start | status | help`
+4. Click **Save**.
+
+### Step 7: Enable App Home Messages
+
+1. Navigate to **App Home** in the left sidebar.
+2. Check **Allow users to send Slash commands and messages from the messages tab**.
+3. Click **Save**.
+
+### Step 8: Invite the Bot to a Channel
+
+In Slack, go to the channel where you want Mercury to respond and type:
+```
+/invite @Mercury
+```
+
+### Step 9: Configure Mercury
+
+Run `mercury doctor` and select Slack when prompted, or set these environment variables:
+
+```bash
+# Required
+SLACK_ENABLED=true
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_APP_TOKEN=xapp-your-app-token
+
+# Optional — restrict to a specific channel
+SLACK_CHANNEL_ID=
+
+# Optional — workspace/team ID
+SLACK_TEAM_ID=
+
+# Optional — enable streaming (edit-in-place) responses (default: true)
+SLACK_STREAMING=true
+```
+
+Or add them to `~/.mercury/.env`.
+
+### Step 10: Pair
+
+1. Start Mercury: `mercury up`
+2. In Slack, DM the bot or mention it in a channel with: `/mercury start`
+3. Mercury will display a **pairing code**. Enter it in the CLI:
+   ```bash
+   mercury slack pair <code>
+   ```
+4. You are now the Slack admin. Other users can request access, and you can approve them from the CLI.
+
+## Access Model
+
+Mercury Slack uses an **organization access model** with admins and members.
+
+| Role | Description | Can approve requests? |
+|------|-------------|----------------------|
+| **Admin** | First user to pair. Can approve/reject access requests, promote/demote users. | Yes |
+| **Member** | Approved by an admin. Can send messages and receive responses. | No |
+| **Pending** | Sent `/mercury start` but not yet approved. | No |
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `mercury slack list` | Show approved admins, members, and pending requests |
+| `mercury slack approve <userId>` | Approve a pending request by Slack user ID |
+| `mercury slack reject <userId>` | Reject a pending request |
+| `mercury slack remove <userId>` | Remove an approved admin or member |
+| `mercury slack promote <userId>` | Promote a member to admin |
+| `mercury slack demote <userId>` | Demote an admin to member |
+| `mercury slack reset` | Clear all Slack access (start fresh) |
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| Socket Mode | No public endpoint needed — connects via WebSocket |
+| Streaming responses | Messages are edited in place as tokens arrive |
+| Slash commands | `/mercury` for start, status, help, and more |
+| Channel + DM support | Works in channels (when @mentioned) and direct messages |
+| Organization access | Admin/member roles with pairing-code onboarding |
+| App mentions | Respond when @mentioned in channels |
+| File handling | Send and receive file attachments |
+
+## Configuration Reference
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SLACK_ENABLED` | Enable/disable Slack channel | `false` |
+| `SLACK_BOT_TOKEN` | Bot User OAuth Token (`xoxb-`) | — |
+| `SLACK_APP_TOKEN` | App-Level Token for Socket Mode (`xapp-`) | — |
+| `SLACK_CHANNEL_ID` | Restrict to a specific channel. Leave empty for all channels. | — |
+| `SLACK_TEAM_ID` | Workspace/Team ID (optional) | — |
+| `SLACK_STREAMING` | Enable real-time streaming (edit-in-place) | `true` |
+
+## Troubleshooting
+
+**Bot doesn't respond to messages**
+- Make sure `SLACK_ENABLED=true` and both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set.
+- Verify the bot token starts with `xoxb-` and the app token starts with `xapp-`.
+- Check that event subscriptions include `message.channels`, `message.groups`, `message.im`, and `app_mention`.
+- Run `mercury logs` to check for connection errors.
+
+**Socket Mode connection failures**
+- Ensure Socket Mode is enabled in your Slack App settings.
+- Verify the App-Level Token has the `connections:write` scope.
+- If you're behind a firewall, ensure WebSocket connections to `wss://slack.com` are allowed.
+
+**Bot doesn't respond in channels**
+- Make sure you've invited the bot to the channel: `/invite @Mercury`
+- Check that `channels:history` and `chat:write.public` scopes are enabled.
+
+**Slash commands not working**
+- Make sure Interactivity is enabled in your Slack App settings.
+- Verify the `/mercury` slash command is configured correctly.
+
+**Streaming not working**
+- Ensure `SLACK_STREAMING=true` (default).
+- Slack rate-limits message edits — Mercury handles this automatically by falling back to new messages when rate-limited.

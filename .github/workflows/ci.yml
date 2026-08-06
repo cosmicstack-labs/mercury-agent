@@ -92,24 +92,49 @@ jobs:
       - name: Run CI in Termux container
         shell: bash
         run: |
+          cat > /tmp/termux-ci.sh <<'CI_SCRIPT'
+          #!/bin/sh
+          set -ex
+          export PATH=/data/data/com.termux/files/usr/bin:$PATH
+          export HOME=/home/builder
+          export npm_config_cache=/home/builder/project/.npm-cache
+          export TERMUX_VERSION=u0
+          # pkg update can hit bad mirrors; retry with a known-good mirror if needed
+          pkg update -y || {
+            echo 'pkg update failed, trying specific mirror...'
+            termux-change-repo || true
+            pkg update -y
+          }
+          pkg install -y git nodejs-lts python build-essential
+          cd /home/builder/project
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
+          rm -rf node_modules/rollup
+          ln -s @rollup/wasm-node node_modules/rollup
+          # .bin symlinks aren't in PATH in Termux's ash — add them explicitly
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          node node_modules/tsup/dist/cli-default.js
+          node scripts/post-build.cjs
+          node node_modules/vitest/vitest.mjs run
+          CI_SCRIPT
+          chmod +x /tmp/termux-ci.sh
+
           docker run --rm \
             --privileged \
             --entrypoint /entrypoint_root.sh \
             -v "${{ github.workspace }}:/home/builder/project" \
+            -v /tmp/termux-ci.sh:/tmp/termux-ci.sh:ro \
             -e "HOME=/home/builder" \
             termux/termux-docker:x86_64 \
             bash -c "
               set -e
-              chown -R system:system /home/builder/project
-              su - system -c '
-                set -e
-                pkg update -y
-                pkg install -y git nodejs-lts
-                cd /home/builder/project
-                npm ci
-                npm run build
-                npm test
-              '
+              chown -R system:system /home/builder
+              mkdir -p /home/builder/.npm
+              chown -R system:system /home/builder/.npm
+              cp /tmp/termux-ci.sh /home/builder/termux-ci.sh
+              chown system:system /home/builder/termux-ci.sh
+              chmod +x /home/builder/termux-ci.sh
+              su system /home/builder/termux-ci.sh
             "
 
   publish:

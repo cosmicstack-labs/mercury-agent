@@ -1,6 +1,6 @@
 {
   "name": "@cosmicstack/mercury-agent",
-  "version": "1.1.4",
+  "version": "1.1.13",
   "description": "Soul-driven AI agent with Second Brain memory, permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI or Telegram.",
   "type": "module",
   "main": "dist/index.js",
@@ -8,7 +8,12 @@
     "mercury": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup",
+    "build:ui": "cd ui && npm run build",
+    "build": "tsup && node scripts/post-build.cjs",
+    "build:bin": "npm run build && node scripts/build-bin.cjs",
+    "build:bin:all": "npm run build && node scripts/build-bin.cjs --all",
+    "build:bin:force": "npm run build && node scripts/build-bin.cjs --force",
+    "build:bin:all:force": "npm run build && node scripts/build-bin.cjs --all --force",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -42,7 +47,7 @@
     "type": "git",
     "url": "git+https://github.com/cosmicstack-labs/mercury-agent.git"
   },
-  "homepage": "https://mercury.cosmicstack.org",
+  "homepage": "https://mercuryagent.sh",
   "bugs": {
     "url": "https://github.com/cosmicstack-labs/mercury-agent/issues"
   },
@@ -51,23 +56,32 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/web/static"
   ],
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/deepseek": "^2.0.29",
     "@ai-sdk/openai": "^3.0.53",
     "@grammyjs/auto-retry": "^2.0.2",
+    "@hono/node-server": "^2.0.0",
+    "@slack/bolt": "^4.7.3",
     "ai": "^6.0.168",
+    "bcryptjs": "^3.0.3",
     "chalk": "^5.4.0",
     "commander": "^12.1.0",
+    "discord.js": "^14.26.4",
     "dotenv": "^16.4.7",
     "grammy": "^1.42.0",
-    "js-tiktoken": "^1.0.19",
+    "hono": "^4.12.15",
+    "ink": "^5.2.1",
     "marked": "^14.1.4",
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",
-    "pino": "^9.6.0",
+    "pino": "^10.3.1",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^18.3.1",
+    "sql.js": "^1.14.1",
     "yaml": "^2.7.0",
     "zod": "^3.25.76"
   },
@@ -75,15 +89,21 @@
     "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.0",
     "@types/node-cron": "^3.0.11",
-    "@types/react": "^18.3.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^18.3.28",
+    "react-devtools-core": "^4.28.5",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }

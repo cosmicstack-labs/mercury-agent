@@ -3,8 +3,10 @@ id: starting
 title: Starting Mercury
 ---
 
-:::tip Recommended: mercury up
+:::tip[Recommended: mercury up]
+
 The easiest way to run Mercury persistently. Installs the system service if needed, starts the daemon, and ensures it's running.
+
 :::
 
 ```bash
@@ -27,7 +29,7 @@ Starts Mercury as a background daemon by default. Telegram becomes your primary 
 mercury start --foreground
 ```
 
-Runs Mercury attached to your terminal with a readline prompt. Press `Ctrl+C` to exit. All conversation happens in your terminal with real-time text streaming and markdown rendering. Shorthand: `mercury start -f`.
+Runs Mercury attached to your terminal with the Ink TUI interface. Press `Ctrl+C` to exit. The CLI supports chat, coding workspace mode, progress views, and interactive permission prompts. Shorthand: `mercury start -f`.
 
 When running in background mode, you can stop it with:
 

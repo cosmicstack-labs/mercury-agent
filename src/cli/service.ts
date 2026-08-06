@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { execSync } from 'node:child_process';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { isStandaloneBinary } from './daemon.js';
 
 const SERVICE_NAME = 'mercury';
 const SERVICE_DESC = 'Mercury — Soul-Driven AI Agent';
@@ -37,6 +38,19 @@ function getDistPath(): string {
     return join(homedir(), '.nvm', 'versions', 'node', `v${process.version.slice(1)}`, 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js');
   }
   return join(process.argv[1], '..', '..', 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js');
+}
+
+/**
+ * Returns the argv pieces a system-service file should use to launch Mercury
+ * as a daemon. For npm installs this is `node <dist/index.js> start --daemon`;
+ * for standalone (bun --compile) binaries it is just `<mercury> start --daemon`
+ * because `process.argv[1]` is a bun-virtual path that must not be persisted.
+ */
+function getServiceLaunchArgs(): string[] {
+  if (isStandaloneBinary()) {
+    return [process.execPath, 'start', '--daemon'];
+  }
+  return [getNodeBinPath(), getDistPath(), 'start', '--daemon'];
 }
 
 export function installService(): void {
@@ -95,6 +109,9 @@ function installMac(): void {
   const logPath = join(home, 'daemon.log');
   const errPath = join(home, 'daemon-error.log');
 
+  const launchArgs = getServiceLaunchArgs();
+  const programArgsXml = launchArgs.map((a) => `    <string>${a}</string>`).join('\n');
+
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -103,10 +120,7 @@ function installMac(): void {
   <string>com.cosmicstack.mercury</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${nodeBin}</string>
-    <string>${scriptPath}</string>
-    <string>start</string>
-    <string>--daemon</string>
+${programArgsXml}
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -210,13 +224,17 @@ function installLinux(): void {
   const scriptPath = getDistPath();
   const home = getMercuryHome();
 
+  const execStart = getServiceLaunchArgs()
+    .map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+    .join(' ');
+
   const service = `[Unit]
 Description=${SERVICE_DESC}
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${nodeBin} ${scriptPath} start --daemon
+ExecStart=${execStart}
 Restart=on-failure
 RestartSec=5
 Environment=PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}
@@ -316,7 +334,7 @@ function installWindows(): void {
   const home = getMercuryHome();
   const logPath = join(home, 'daemon.log');
 
-  const cmd = `"${nodeBin}" "${scriptPath}" start --daemon`;
+  const cmd = getServiceLaunchArgs().map((a) => `"${a}"`).join(' ');
 
   try {
     execSync(

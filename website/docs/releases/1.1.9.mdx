@@ -1,0 +1,130 @@
+---
+title: "v1.1.9 — Mercury Web, Kanban & Subconscious Memory"
+sidebar_label: "v1.1.9"
+---
+
+Release `1.1.9` introduces the **Mercury Web Dashboard** — a full React SPA at `localhost:6174` — alongside a persistent **Kanban board system**, an in-browser **Workspace IDE** with Git and AI commit messages, a **dual-layer (conscious + subconscious) Second Brain**, intelligent **skill batching**, and a cross-platform build pipeline.
+
+> **Note:** Version `1.1.8` was published briefly and then unpublished before reaching wide distribution due to a dependency-tree issue (a transitive `next` dependency inflating install size by ~285 MB). `1.1.9` ships the same feature set with a leaner dependency graph — install footprint dropped from ~429 MB to ~87 MB (**−80%**).
+
+## Highlights
+
+- **Mercury Web Dashboard** — React SPA with PWA install, login, dark/light theme, multi-thread chat with SSE streaming.
+- **Workspace IDE** — file tree, multi-tab editor, integrated terminal, Source Control panel with **AI-generated conventional commit messages**, and a maximizable bottom panel.
+- **Kanban Boards (Beta)** — persistent SQLite-backed task boards with Markdown descriptions, AI execution plans, cascade & smart execution, board context, attachments, comments, dependencies, and a `question`-status feedback loop.
+- **Second Brain — Conscious + Subconscious** — dual-tier memory model, person tracking with aliases & relationships, goals view, and graph visualization.
+- **Skill Batching & Intent Router** — automatic grouping for multi-skill invocations, plus a web UI to install skills from URL, activate/deactivate, and delete.
+- **Cross-platform build** — a Node-based `post-build.cjs` replaces the old shell pipeline; runs identically on macOS, Linux, and Windows.
+
+## Mercury Web Dashboard
+
+The dashboard is **opt-in**: enable it via `mercury doctor` or by setting `web.enabled: true` in `mercury.yaml`. It binds to `127.0.0.1:6174` only and is never exposed to the network.
+
+- **Authentication** — username/password login with HTTP-only session cookies. Default credentials: `mercury` / `Mercury@123`. Editable from Settings → Account.
+- **PWA install** — install Mercury from the browser address bar to launch it in its own window.
+- **Pages** — Status, Chat, Tasks, Board, Workspace, Second Brain (Memory / Persons / Goals / Graph), Providers, Permissions, Skills, Schedules, Usage, Profit Sharing, Settings.
+- **Multi-thread Chat** — every conversation lives at `/chat/:threadId`. Threads have a deletable sidebar, a per-thread model switcher, and a **Code Mode** toggle that flips the agent into coding context for that thread.
+- **Real-time updates** — Server-Sent Events stream agent activity, tool calls, and Kanban status changes.
+- **Theme** — light / dark / system toggle in Settings → Appearance.
+- **Settings cleanup** — agent personality is no longer editable from the web UI; the new **Defaults** card holds default provider and daily token budget.
+
+## Workspace IDE
+
+A full in-browser editor at `/workspace`.
+
+- **Folder picker** — choose any directory on your machine; the choice is persisted across restarts.
+- **File Explorer** — collapsible tree with refresh, resizable left panel.
+- **Multi-tab editor** — syntax highlighting for 20+ languages; per-tab dirty state; `Cmd/Ctrl+S` to save.
+- **Bottom panel** — split between **Terminal** (with command history) and a **Chat** thread scoped to the workspace. A new **Maximize / Minimize** button expands the panel to fill the workspace area.
+- **Source Control panel** — staged / unstaged file list, per-file diff viewer, branch switcher with create-new-branch, last 15 commits, pull/push/refresh buttons (with spinning indicator and a "Refreshed" toast on manual refresh).
+- **AI Commit Message Generation** — click the sparkle icon and Mercury auto-stages unstaged changes and drafts a conventional-commit message from the diff using the default provider.
+- **Resizable layout** — Explorer, Bottom panel, and Source Control panel all resize independently, including correct inverted-direction resizing on the right edge.
+
+## Kanban Board System (Beta)
+
+Persistent task boards backed by SQLite (with JSON fallback). Labelled **"Kanban Boards (Beta mode)"** in the UI.
+
+- **Real status set** — `pending`, `running`, `paused`, `done`, `failed`, `question`. Drag-and-drop between columns updates status.
+- **Per-column scrolling** — Trello-style: each column scrolls independently inside a horizontally-scrolling board.
+- **Markdown descriptions** with **"See more"** truncation at 280 chars; click the description to open a full-screen modal, click the pencil to edit.
+- **AI Execution Plan** — preview what the agent will do before running a card.
+- **Cascade execution** — run a card and recursively all of its dependents in dependency order.
+- **Smart execution** — board-wide walk that picks up `pending` cards whose dependencies are `done`.
+- **Token-budget aware** — long-running cards auto-pause when their token budget is exhausted.
+- **`question` feedback loop** — when the agent needs human input, the card moves to `question` and surfaces a feedback callout for you to respond.
+- **Board context** — per-board working directory, custom variables, instructions, structure definition, and knowledge base, all injected into card prompts.
+- **Collaboration** — comments, attachments (with download), labels, parent–child hierarchy, and blocks/blocked-by dependencies.
+- **SSE event stream** — `/api/boards/:id/events` for live status updates.
+
+## Second Brain — Conscious + Subconscious
+
+A two-tier memory model inspired by how human memory actually behaves.
+
+- **Conscious tier** (`durable`, `active` scopes) — top-of-mind, always available for retrieval.
+- **Subconscious tier** (`subconscious` scope) — out of active recall, **no further confidence decay**, recalled automatically when contextually relevant.
+- After **30 days without being referenced**, an active memory moves to the subconscious instead of being deleted.
+- When a subconscious memory is recalled into a relevant conversation, it is **promoted back to conscious**.
+- Hard deletion happens only on explicit dismissal — otherwise memories live forever in the subconscious.
+
+Other Second Brain improvements:
+
+- **Persons** — alias resolution, relationship mapping, and dedicated detail pages with last-seen and related memories.
+- **Goals & Projects** — filtered views over `type: goal` and `type: project` memories with inline add.
+- **Graph view** — force-directed visualization of memories, persons, and goals.
+- **Better extraction** — persons are now extracted from `identity`, `project`, and `episode` memories (not just `relationship`); multi-type extraction in a single pass; dedup rules; resilient fallbacks for malformed LLM output.
+
+The Telegram `/memory` menu gained a 💤 **Subconscious** button mirroring the web view.
+
+## Skill Batching & Intent Router
+
+- **Skill batching** — related skills are automatically grouped for efficient multi-skill execution.
+- **Intent router** — classifies natural-language input and dispatches to the matching skill or batch using `intents`, `categories`, and `tags` from each skill's frontmatter.
+- **Web UI** — install skills from a `SKILL.md` URL, toggle active/inactive, and delete from `/skills`.
+- **Progressive disclosure** — only frontmatter is held in context until a skill is invoked, keeping token usage low.
+
+## Sub-Agent & Background Improvements
+
+- Friendly background task IDs (e.g. `swift-fox`) carried forward with stability fixes.
+- Token-counter recovery: if `dailyUsed` becomes corrupted, Mercury rebuilds it from the request log on startup.
+- Improved interrupt handling — in-flight work auto-backgrounds on interrupt and continues asynchronously.
+
+## TUI Improvements
+
+- The TUI dashboard now displays **web server status** so you can see at a glance whether the dashboard is live and on which port.
+
+## Knowledge Graph UX
+
+- **Cleaner canvas** — the always-on text labels were causing severe overlap and unreadability on dense graphs. Labels now appear only on the hovered / selected node, with a rounded background pill for legibility.
+- **Smarter tooltip** — shows the full, untruncated memory summary (was previously trimmed to ~60 chars), wraps onto multiple lines, and flips to the left of the cursor when near the right edge so it's never clipped.
+- **Click-to-open detail dialog** — single-click on any node now opens a Radix dialog that fetches the full memory record (`GET /api/brain/memory/:id`) and shows summary, detail body, scope, importance, confidence, evidence count, source, and timestamps. Drag / pan still work — a 4 px / 500 ms threshold distinguishes a click from a drag.
+- **Graceful fallback** — nodes without a backing memory record (e.g. synthesized aggregates) still render their data inside the dialog.
+
+## Build System
+
+- **Cross-platform `scripts/post-build.cjs`** replaces shell-only build steps — runs identically on macOS, Linux, and Windows. Calls `npx vite build`, copies `ui/dist` to `dist/web/ui`, and writes a kill-switch service worker.
+- **PWA cache kill-switch** — older versions of Mercury Web could serve stale bundles from the PWA cache. The new build writes a self-unregistering service worker that clears caches and reloads clients on first load after upgrade, guaranteeing users see the new UI.
+- Clean production build output with reduced artifact size and clearer logs.
+
+## Dependency Cleanup
+
+Three runtime dependencies were declared in `package.json` but never imported by `src/`:
+
+- `geist` — Vercel font wrapper. Fonts are vendored directly in `src/web/static/vendor/geist/`; the npm package transitively dragged in `next` and `@next/*` (~285 MB).
+- `js-tiktoken` — no usages anywhere in source.
+- `react-dom` — only used by `ui/` (which has its own `package.json`); `ink` does not require it.
+
+Removing all three reduces the end-user install footprint dramatically:
+
+| Metric | Before | After |
+|---|---|---|
+| `node_modules` size | ~429 MB | ~87 MB |
+| Package count | 114 | 95 |
+
+No functional change — typecheck, `tsup` bundle, and Vite UI build all pass unchanged.
+
+## Notes
+
+- The web dashboard is **opt-in** — Mercury still runs CLI-only by default; the web server starts only when `web.enabled: true`.
+- All data (boards, memory, threads, skills) lives in `~/.mercury/`. Nothing leaves your machine.
+- The Kanban board is a **beta** feature in this release — the data model and API are stable, but expect UI refinements in subsequent versions.
+- Web channel feedback is welcome via `/feedback` or GitHub issues.

@@ -1,0 +1,190 @@
+/* ---- Killipi Interactive Mascot ---- */
+
+.killipi-container {
+  --killipi-stroke: rgba(0, 212, 255, 0.8);
+  --killipi-feature: rgba(0, 212, 255, 0.9);
+  --killipi-bg: #06060a;
+  --killipi-face-bg: rgba(0, 212, 255, 0.04);
+  --killipi-face-highlight: rgba(0, 212, 255, 0.08);
+  position: relative;
+  width: 220px;
+  height: 220px;
+  margin: 0 auto 32px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  animation: killipi-float 4s ease-in-out infinite;
+  transition: transform 0.2s ease;
+}
+
+.killipi-container:active {
+  transform: scale(0.95) !important;
+}
+
+/* Floating animation */
+@keyframes killipi-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.killipi-hovered {
+  animation: killipi-float-fast 2s ease-in-out infinite;
+}
+
+@keyframes killipi-float-fast {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-14px); }
+}
+
+/* SVG */
+.killipi-svg {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.15));
+  transition: filter 0.3s ease;
+}
+
+.killipi-hovered .killipi-svg {
+  filter: drop-shadow(0 0 30px rgba(0, 212, 255, 0.3));
+}
+
+/* Outer ring pulse */
+.killipi-outer-ring {
+  animation: killipi-ring-pulse 3s ease-in-out infinite;
+}
+
+@keyframes killipi-ring-pulse {
+  0%, 100% { stroke-opacity: 0.6; }
+  50% { stroke-opacity: 1; }
+}
+
+/* Ambient glow layers */
+.killipi-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.killipi-glow-1 {
+  inset: -30px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.08) 0%, transparent 70%);
+  animation: killipi-glow-breathe 4s ease-in-out infinite;
+}
+
+.killipi-glow-2 {
+  inset: -60px;
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.04) 0%, transparent 60%);
+  animation: killipi-glow-breathe 5s ease-in-out infinite reverse;
+}
+
+.killipi-hovered .killipi-glow-1 {
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.14) 0%, transparent 70%);
+}
+
+@keyframes killipi-glow-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+/* Orbiting particles */
+.killipi-particles {
+  position: absolute;
+  inset: -20px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.killipi-particle {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: rgba(0, 212, 255, 0.6);
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.4);
+  animation: killipi-orbit 6s linear infinite;
+  animation-delay: var(--particle-delay);
+}
+
+@keyframes killipi-orbit {
+  0% {
+    transform: rotate(var(--particle-angle)) translateX(110px) rotate(calc(-1 * var(--particle-angle)));
+    opacity: 0;
+  }
+  10% { opacity: 0.8; }
+  90% { opacity: 0.8; }
+  100% {
+    transform: rotate(calc(var(--particle-angle) + 360deg)) translateX(110px) rotate(calc(-1 * (var(--particle-angle) + 360deg)));
+    opacity: 0;
+  }
+}
+
+.killipi-hovered .killipi-particle {
+  background: rgba(0, 212, 255, 0.9);
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.6);
+  animation-duration: 4s;
+}
+
+/* Expression status label */
+.killipi-label {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.killipi-status {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.8em;
+  color: rgba(0, 212, 255, 0.6);
+  letter-spacing: 0.05em;
+  animation: killipi-status-fade 0.3s ease;
+}
+
+.killipi-status-happy {
+  color: rgba(40, 200, 64, 0.8);
+}
+
+.killipi-status-surprised {
+  color: rgba(254, 188, 46, 0.8);
+  font-weight: 700;
+}
+
+.killipi-status-wink {
+  color: rgba(167, 139, 250, 0.8);
+}
+
+@keyframes killipi-status-fade {
+  0% { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .killipi-container {
+    width: 160px;
+    height: 160px;
+    margin-bottom: 24px;
+  }
+  .killipi-particle {
+    animation-name: killipi-orbit-mobile;
+  }
+  @keyframes killipi-orbit-mobile {
+    0% {
+      transform: rotate(var(--particle-angle)) translateX(80px) rotate(calc(-1 * var(--particle-angle)));
+      opacity: 0;
+    }
+    10% { opacity: 0.8; }
+    90% { opacity: 0.8; }
+    100% {
+      transform: rotate(calc(var(--particle-angle) + 360deg)) translateX(80px) rotate(calc(-1 * (var(--particle-angle) + 360deg)));
+      opacity: 0;
+    }
+  }
+}

@@ -24,6 +24,10 @@ Mercury is a soul-driven, token-efficient AI agent that runs 24/7. It is an **or
 | Channels | Communication | `src/channels/` |
 | Heartbeat/scheduler | Circadian rhythm | `src/core/scheduler.ts` |
 | Lifecycle | Awake/Sleep/Think | `src/core/lifecycle.ts` |
+| Sub-agents | Worker bees | `src/core/sub-agent.ts` + `src/core/supervisor.ts` |
+| File locks | Coordination | `src/core/file-lock.ts` |
+| Task board | Shared state | `src/core/task-board.ts` |
+| Resource manager | Capacity planner | `src/core/resource-manager.ts` |
 
 ## Directory Structure
 
@@ -38,7 +42,12 @@ src/
 ├── core/                 # Channel-agnostic brain
 │   ├── agent.ts          # Multi-step agentic loop (generateText with tools)
 │   ├── lifecycle.ts      # State machine
-│   └── scheduler.ts     # Cron + heartbeat
+│   ├── scheduler.ts      # Cron + heartbeat
+│   ├── sub-agent.ts      # Sub-agent worker (isolated agentic loop)
+│   ├── supervisor.ts     # Sub-agent supervisor (spawn/halt/orchestrate)
+│   ├── file-lock.ts      # File lock manager (reader-writer locks)
+│   ├── task-board.ts      # Shared task state persistence
+│   └── resource-manager.ts # System resource detection
 ├── capabilities/         # Agentic tools & permissions
 │   ├── permissions.ts    # Permission manager (read/write scope, shell blocklist)
 │   ├── registry.ts      # Registers all AI SDK tools + skill/scheduler tools
@@ -52,6 +61,10 @@ src/
 │       ├── schedule-task.ts
 │       ├── list-tasks.ts
 │       └── cancel-task.ts
+│   └── subagents/       # Sub-agent tools
+│       ├── delegate-task.ts
+│       ├── list-agents.ts
+│       └── stop-agent.ts
 ├── memory/               # Persistence layer
 │   ├── store.ts          # Short/long/episodic memory
 │   ├── second-brain-db.ts # SQLite storage engine (FTS5)
@@ -163,6 +176,17 @@ All runtime data lives in `~/.mercury/` (not the project directory):
 
 Mercury's second brain is an autonomous, persistent user model that learns from conversations over time. It is not a raw chat log and it is not a document dump. It stores compact, structured memories it believes may help in future conversations.
 
+### Conscious and Subconscious
+
+The second brain has two layers:
+
+| Layer | What | How it works |
+|---|---|---|
+| **Conscious** | Memories actively used in conversations | Retrieved via FTS5, scored, injected into the system prompt (up to 5 memories / 900 chars) |
+| **Subconscious** | Memories that haven't been referenced in 30+ days | Stored but dormant. Only searched when conscious results are weak. Recalled to conscious on strong match. |
+
+Nothing is ever permanently deleted (except explicitly cleared by the user or superseded by conflict resolution). Memories flow: **conscious → subconscious** (30 days unseen) and **subconscious → conscious** (strong recall match).
+
 ### How It Learns (Background, Invisible)
 
 For each non-trivial conversation:
@@ -172,11 +196,23 @@ For each non-trivial conversation:
    - Merges with existing memory if >= 74% overlap (strengthens evidence)
    - Auto-resolves conflicts (higher confidence wins, equal confidence → newer wins)
    - Auto-tiers: identity/preference → durable, goal/project → active
-   - Promotes active → durable after 3+ reinforcing observations
    - Stores weak memories with low confidence — they decay naturally
-4. On each heartbeat, Mercury consolidates (re-synthesizes profile/active summaries, generates reflections) and prunes (dismisses stale memories, promotes reinforced ones).
+4. On each heartbeat, Mercury consolidates (re-synthesizes profile/active summaries, generates reflections) and prunes:
+   - Promotes active → durable after 3+ reinforcing observations
+   - Moves stale memories (30+ days unseen) from conscious to subconscious
+   - Hard-deletes only explicitly dismissed memories (user Clear All, conflict superseded)
 
-The user never sees or waits for this process. No tool calls are involved in the agentic loop.
+### Subconscious Recall
+
+When `retrieveRelevant()` searches for memories to inject into the prompt:
+
+1. **Pass 1**: FTS5 search on conscious memories (scope = active/durable)
+2. **Score and rank** conscious results using the conscious scoring formula
+3. **Check**: If fewer than 3 results score above 0.5 (weak conscious match), proceed to Pass 2
+4. **Pass 2**: FTS5 search on subconscious memories (scope = subconscious)
+5. **Score and rank** subconscious results using the subconscious scoring formula (keyword match weighted higher)
+6. **Promote**: Any subconscious memory selected is promoted back to conscious (scope set to active or durable via `inferScope`)
+7. Both conscious and recalled subconscious memories share the same 5-slot / 900-char budget
 
 ### What It Does Not Store
 
@@ -190,9 +226,9 @@ The user never sees or waits for this process. No tool calls are involved in the
 /memory        → Opens arrow-key menu (CLI) or sends overview (Telegram)
 
 Menu:
-  Overview          — total memories, breakdown by type, learning status
-  Recent            — last 10 memories (type + summary + confidence)
-  Search            — full-text search across all memories
+  Overview          — conscious memories, subconscious memories, breakdown by type, learning status
+  Recent            — last 10 conscious memories (type + summary + confidence + scope)
+  Search            — full-text search across all memories (conscious + subconscious)
   Pause Learning    — toggle: stop/resume storing new memories
   Clear All         — confirm, then wipes all memories
   Back
@@ -296,3 +332,192 @@ When a scheduled task fires:
 - `schedule_task`: Create a cron task with prompt or skill_name
 - `list_scheduled_tasks`: Show all scheduled tasks
 - `cancel_scheduled_task`: Remove a scheduled task
+
+## Sub-Agents
+
+Mercury supports sub-agents — independent worker processes that run in the same Node.js process as async coroutines. Sub-agents allow Mercury to handle multiple tasks concurrently without blocking the main agent.
+
+### Why Sub-Agents?
+
+- **Non-blocking**: The main agent stays available for new messages while sub-agents work
+- **Resource-aware**: Max concurrent agents auto-detected from CPU cores and available RAM
+- **Coordinated**: File locks prevent conflicting writes between agents
+- **Controllable**: `/agents`, `/halt`, `/stop`, `/reset` commands for full user control
+- **Non-blocking**: Sub-agents run in background — the main agent stays responsive to new messages
+- **Visible**: Progress notifications (`🔄 Agent a1: Using: read_file`) and completion messages (`✅ Agent a1 completed (8.2s)`) are sent to the user's channel
+- **Fast-path commands**: Slash commands like `/agents`, `/halt`, `/spotify`, `/code` are processed immediately even while the main agent is busy
+
+### Architecture
+
+```
+User message → Main Agent → Decide:
+  ├─ Quick response → Handle inline, respond directly
+  └─ Heavy task → delegate_task tool → Spawn Sub-Agent (non-blocking)
+       → Main Agent responds: "🤖 Agent a1 is working on..."
+       → Main Agent stays available for next message
+       → Sub-Agent progress: "🔄 Agent a1: Using: read_file, edit_file"
+       → Sub-Agent completes: "✅ Agent a1 completed (8.2s): result..."
+       → User can type /agents to check status at any time
+```
+
+### Component Overview
+
+| Component | File | Purpose |
+|---|---|---|
+| SubAgent | `src/core/sub-agent.ts` | Worker: isolated agentic loop with abort, file locks, progress |
+| SubAgentSupervisor | `src/core/supervisor.ts` | Orchestrator: spawn/halt/queue, resource management |
+| FileLockManager | `src/core/file-lock.ts` | Read/write locks: multiple readers, exclusive writer, auto-release |
+| TaskBoard | `src/core/task-board.ts` | Shared state: task status, progress, persisted to disk |
+| ResourceManager | `src/core/resource-manager.ts` | System detection: CPU cores, RAM, max concurrent formula |
+
+### Resource Limits
+
+Default max concurrent sub-agents = `clamp(1, cpus - 1, floor(availableRAM_GB / 2))`
+
+Override via `/agents set max <n>` or `SUBAGENTS_MAX_CONCURRENT` env var.
+
+### Lifecycle
+
+```
+unborn → birthing → onboarding → idle ⇄ thinking → responding → idle
+                                                  ↓
+                                          idle → delegating → idle
+                                          idle → sleeping → awakening → idle
+```
+
+The `delegating` state covers when the main agent hands off a task to a sub-agent.
+
+### Sub-Agent Tools
+
+| Tool | Description |
+|---|---|
+| `delegate_task` | Delegate a task to a sub-agent worker |
+| `list_agents` | List active sub-agents and their status |
+| `stop_agent` | Stop a sub-agent (or all) |
+
+### User Commands
+
+| Command | Description |
+|---|---|
+| `/agents` | List all sub-agents (status, task, progress) |
+| `/agents stop <id>` | Halt a specific sub-agent |
+| `/agents stop all` | Halt all sub-agents |
+| `/agents pause <id>` | Pause a sub-agent after current step |
+| `/agents resume <id>` | Resume a paused sub-agent |
+| `/agents config` | Show resource allocation |
+| `/agents set max <n>` | Override max concurrent agents |
+| `/halt` | Emergency stop all agents + clear queue |
+| `/stop` | Stop all agents + clear queue + release locks + clear task board |
+| `/reset` | Full reset: stop all + clear context (requires confirmation) |
+
+### Programming Mode
+
+Mercury has a built-in programming mode (activated via `/code plan`) that optimizes it for IDE-grade coding tasks. It operates in two states:
+
+**Plan Mode** (`/code plan`): Mercury explores the codebase, analyzes problems, presents multiple approaches via `ask_user`, and outlines a step-by-step implementation plan — without writing code.
+
+**Execute Mode** (`/code execute`): Mercury implements the approved plan step by step, running builds/tests after changes, committing at checkpoints, and delegating independent subtasks to sub-agents.
+
+| Command | Description |
+|---|---|
+| `/code` | Show current programming mode status |
+| `/code plan` | Switch to plan mode (analyze, present options, no coding) |
+| `/code execute` | Switch to execute mode (implement plan step by step) |
+| `/code off` | Exit programming mode |
+| `/code toggle` | Cycle: off → plan → execute → off |
+
+The `ask_user` tool enables Mercury to present choices (approaches, libraries, strategies) using arrow-key menus in CLI and inline keyboards in Telegram.
+
+### File Lock Semantics
+
+- **Read locks**: Multiple sub-agents can read the same file simultaneously
+- **Write locks**: Exclusive — only one agent can write to a file at a time
+- **Auto-release**: Locks are released when a sub-agent terminates ( completion, failure, or halt)
+- **Deadlock detection**: Supervisor detects circular wait conditions between agents
+
+### Task Board Persistence
+
+All sub-agent task states are persisted to `~/.mercury/memory/task-board.json`, surviving process restarts.
+
+### Config
+
+```yaml
+subagents:
+  enabled: true        # Enable/disable sub-agent system
+  maxConcurrent: 0      # 0 = auto-detect from CPU/RAM, >0 = manual override
+  mode: auto            # auto = auto-detect, manual = use maxConcurrent value
+```
+
+Environment overrides: `SUBAGENTS_ENABLED`, `SUBAGENTS_MAX_CONCURRENT`, `SUBAGENTS_MODE`
+## Spotify Integration
+
+Mercury can control the user's Spotify playback remotely via the Spotify Web API. Music plays on the user's own devices (phone, web, desktop, TV, speakers) — not locally.
+
+### Setup
+
+1. Create a Spotify app at https://developer.spotify.com/dashboard
+2. Set the redirect URI to `http://127.0.0.1:8888/callback`
+3. Set `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env`
+4. Run `/spotify auth` in Mercury — this opens a browser for OAuth authorization
+5. Tokens are stored in `~/.mercury/mercury.yaml` and auto-refreshed
+
+### Device Selection
+
+Spotify's device API lists all active devices the user is logged into. Mercury sends play/pause/skip commands to whichever device the user selects — it never plays audio locally.
+
+### DJ Skill
+
+The `spotify` skill (`/skills/spotify/SKILL.md`) activates DJ mode:
+- Searches Spotify based on mood/genre/activity
+- Presents choices via `ask_user` (arrow keys on CLI, inline buttons on Telegram)
+- Manages playback, queues, likes, and playlists
+- Creates curated playlists from user's taste
+
+### Player UI
+
+**CLI**: `/spotify player` opens an interactive arrow-key menu:
+```
+  ▶  Play / Resume
+  ⏸  Pause
+  ⏭  Next Track
+  ⏮  Previous Track
+  🔀 Toggle Shuffle
+  🔁 Cycle Repeat
+  🎵 Now Playing
+  📱 Devices
+  🔍 Search & Play
+  🔊 Set Volume
+  📋 Add to Queue
+  ❤️  Like Current Track
+  ✕  Exit Player
+```
+
+**Telegram**: Playback controls as inline keyboard buttons.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/spotify` | Show connection status |
+| `/spotify auth` | Start OAuth flow (opens browser) |
+| `/spotify player` | Interactive player (CLI only) |
+| `/spotify devices` | List active Spotify devices |
+| `/spotify device <id>` | Set active device |
+| `/spotify now` | Show currently playing track |
+
+### Config
+
+```yaml
+spotify:
+  enabled: true
+  clientId: ...
+  clientSecret: ...
+  redirectUri: http://127.0.0.1:8888/callback
+  accessToken: ...
+  refreshToken: ...
+  expiresAt: ...
+  scopes: [...]
+  deviceId: ...
+```
+
+Environment overrides: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`

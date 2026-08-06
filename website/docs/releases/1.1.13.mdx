@@ -1,0 +1,239 @@
+---
+title: "v1.1.13 — Chatty Mercury"
+sidebar_label: "v1.1.13"
+description: "Mercury gets chatty. Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are, with end-to-end encryption, organization access models, and real-time streaming. Plus long-running loop fixes, CLI heartbeat improvements, and crash recovery."
+image: /img/og/1.1.11.png
+keywords: [mercury, mercury-agent, chatty-mercury, discord, slack, signal, channel, release, 1.1.13]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.1.13 — Chatty Mercury" />
+  <meta property="og:description" content="Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are, with end-to-end encryption, organization access, and real-time streaming. Plus long-running loop fixes and crash recovery." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.1.13" />
+  <meta property="og:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.1.13 — Chatty Mercury" />
+  <meta name="twitter:description" content="Discord · Slack · Signal — three new channels, end-to-end encryption, organization access, and real-time streaming. Plus long-running loop fixes and crash recovery." />
+  <meta name="twitter:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.1.13" />
+</Head>
+
+# v1.1.13 — Chatty Mercury
+
+> **Mercury gets chatty. Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are.**
+
+`1.1.13` is the communication release. Mercury now speaks six languages: CLI, Web Dashboard, Telegram, **Discord**, **Slack**, and **Signal**. Every new channel has its own access model (pairing codes, admin roles, member approval), streaming responses, and real-time task progress. Signal adds end-to-end encryption for the privacy-first crowd, with Mercury auto-managing the `signal-cli` binary.
+
+Beyond channels, this release fixes the **long-running cycle problem** — the silent task failures that could make Mercury disappear mid-task. The CLI now updates heartbeats **in-place** instead of stacking new messages, step logs collapse to 3 lines (Ctrl+D for full history), and a **crash flag** system means Mercury tells you what happened when it restarts after an ungraceful exit.
+
+> **Why "Chatty Mercury"?** This release triples the number of ways to talk to Mercury. The Mercury planet glyph (☿) has always been the messenger — now the messenger speaks Discord, Slack, and Signal too.
+
+## At a glance
+
+| Area | What changed |
+|---|---|
+| **Discord** | Full bot integration with slash commands, embeds, streaming, org access, admin roles |
+| **Slack** | Socket Mode bot with slash commands, streaming edits, org access, pairing codes |
+| **Signal** | E2E encrypted via signal-cli bridge, group + private modes, auto-managed binary |
+| **CLI heartbeat** | Updates one message in place instead of stacking — no more wall-of-progress |
+| **Step logs** | Collapsed to 3 lines max during tasks; Ctrl+D reveals full history |
+| **Silent task failures** | All 12 silent failure paths eliminated — channels always get an error message |
+| **Crash recovery** | Crash flag written on ungraceful exit; next startup reports what happened |
+| **Daemon shutdown** | Graceful SIGTERM → wait → SIGKILL, plus stale signal-cli cleanup |
+| **Ollama Local** | Routed through OpenAI compat to fix AI SDK v1 specification error |
+| **ThinkingIndicator** | Shows "Processing" instead of agent name; /bg hint on long operations |
+
+## New Channels
+
+### Discord
+
+Mercury now runs as a full Discord bot with:
+
+- **Slash commands**: `/start`, `/status`, `/progress`, `/permissions`, `/models`, and more
+- **Streaming responses**: Messages are edited in place as tokens arrive
+- **Rich embeds**: Task progress and completion banners use Discord embeds
+- **Organization access**: Admin roles (configurable role name, default "Mercury Admin") and member approval via pairing codes
+- **DM + channel support**: Works in both DMs and server channels
+- **Guild restriction**: Optionally restrict to a single server
+- **Rate limiting**: Built-in busy detection and cooldown for shared servers
+
+Configuration: `DISCORD_ENABLED`, `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`, `DISCORD_ADMIN_ROLE_NAME`, `DISCORD_STREAMING`.
+
+See: [Discord integration docs](/docs/integrations/discord).
+
+### Slack
+
+Mercury connects via **Socket Mode** — no public endpoint or HTTPS certificate needed:
+
+- **Socket Mode**: Connects via WebSocket; works behind NAT and firewalls
+- **Slash commands**: `/mercury` command for start, status, help, and more
+- **Streaming responses**: Messages edited in place as tokens stream in
+- **Organization access**: Admin/member roles with pairing-code onboarding
+- **Channel + DM support**: Responds to @mentions in channels and direct messages
+- **App mentions**: Natural conversation when mentioned in channels
+
+Configuration: `SLACK_ENABLED`, `SLACK_BOT_TOKEN` (xoxb-), `SLACK_APP_TOKEN` (xapp-), `SLACK_CHANNEL_ID`, `SLACK_TEAM_ID`, `SLACK_STREAMING`.
+
+See: [Slack integration docs](/docs/integrations/slack).
+
+### Signal
+
+Mercury connects through `signal-cli` for **end-to-end encrypted** communication:
+
+- **E2E encryption**: All messages travel through Signal's encryption — Mercury never stores plaintext
+- **Group mode (default)**: Mercury listens in a named "Mercury" group
+- **Private mode**: 1:1 DM conversations
+- **Auto-managed signal-cli**: Mercury downloads, registers, starts, and health-checks `signal-cli` automatically
+- **Pairing codes**: New users pair via CLI code — same secure flow as Telegram
+- **Phone number redaction**: CLI output always redacts phone numbers
+- **Message dedup**: Duplicate messages filtered within a 60-second window
+
+:::warning[Platform requirements]
+
+Signal integration requires:
+- **Linux** (x64 or ARM64): Native `signal-cli` binaries available — no Java needed
+- **macOS** (Apple Silicon or Intel): Java 17+ required for `signal-cli` JAR
+- **Windows**: Not supported — no `signal-cli` binary available
+- A real phone number for Signal verification (one-time setup)
+- Network access to `https://chat.signal.org` and `https://storage.signal.org`
+
+:::
+
+Configuration: `SIGNAL_ENABLED`, `SIGNAL_PHONE_NUMBER`, `SIGNAL_MODE`, `SIGNAL_GROUP_ID`, `SIGNAL_GROUP_NAME`.
+
+See: [Signal integration docs](/docs/integrations/signal).
+
+## CLI Improvements
+
+### Heartbeat updates in place
+
+Previously, the CLI would send a new "⏳ Working..." message for every heartbeat interval during long-running tasks, creating a wall of progress messages. In `1.1.13`, the CLI **updates the same message in place** — you see a single line that changes, not a stack of duplicates.
+
+Other channels (Telegram, Discord, Slack, Signal) continue to send separate heartbeat messages since they can't update messages the same way.
+
+### Collapsed step logs
+
+During active tasks, step logs now show at most **3 visible steps** (running + last 2 completed). All other steps are collapsed into an "N earlier" summary. Press **Ctrl+D** (or type `/log`) to reveal the full step history.
+
+When a task completes, a single compact summary line replaces the step view: `✓ edit_file (+4) · Ctrl+D for details`.
+
+### Processing indicator
+
+The `ThinkingIndicator` now shows **"Processing"** instead of the agent name, and long operations display a `/bg current` hint so users know they can background the task.
+
+## Long-Running Cycle Fixes
+
+This release eliminates all 12 silent task failure paths. Previously, when Mercury hit a loop condition or task stall, it could silently stop responding — the user would see no feedback at all. Now, every failure path sends an explicit message to the channel:
+
+- **Tool call limit** (25 calls): "Tool call limit reached. Stopping to prevent runaway loop."
+- **Identical call loop**: "Mercury Autopilot · Identical call loop — `{tool}` called Nx with same params."
+- **Failing loop**: "Mercury Autopilot · Failing loop — `{tool}` called Nx, all failing."
+- **Reasoning loop** (thinking without action): "I'm stuck in a reasoning loop. Stopping."
+- **Task stall** (no progress for configurable seconds): "Task stalled. Stopped to avoid hanging."
+
+Every `.catch(() => {})` on channel sends has been replaced with `.catch((e) => logger.warn({ e }, 'channel send failed'))` so send failures are also logged rather than silently swallowed.
+
+## Crash Recovery
+
+A new **crash flag** system (`src/core/crash-flag.ts`) writes a JSON file to `~/.mercury/.crash-flag` when Mercury crashes or is killed mid-task. On next startup, Mercury reads the flag, reports what happened to the user, and deletes the flag. This means you'll never again return to Mercury after a crash and find a blank slate with no indication of what went wrong.
+
+The watchdog also writes a crash flag when it hits the max-restart limit, and includes a synchronous `stderr` write as a last-gasp log so the error is visible even if the logger itself is broken.
+
+## Daemon Shutdown Improvements
+
+- **Graceful shutdown**: `stopDaemon` now sends SIGTERM and waits up to 5 seconds for the process to exit. If it doesn't, it escalates to SIGKILL.
+- **Stale signal-cli cleanup**: `killStaleSignalCliProcesses()` runs on every daemon stop, cleaning up orphaned signal-cli processes.
+- **Async stop**: `stopDaemon` is now async, and `restartDaemon` uses it properly — no more race conditions between stop and start.
+
+## Ollama Local Fix
+
+`ollamaLocal` is now routed through the **OpenAI-compatible provider** instead of `ollama-ai-provider`. The `ollama-ai-provider` package declares `specificationVersion = "v1"`, which is incompatible with AI SDK v6 (which requires v2/v3). Since local Ollama has exposed `/v1/chat/completions` since v0.1.14, the OpenAI compat path works perfectly and avoids the specification mismatch entirely.
+
+This is the same routing pattern already used for `ollamaCloud` and `openaiCompat` — proven and reliable.
+
+## Files changed
+
+### New files
+- `src/channels/discord.ts` — Discord channel implementation (1,274 lines)
+- `src/channels/signal.ts` — Signal channel implementation (1,034 lines)
+- `src/channels/slack.ts` — Slack channel implementation (887 lines)
+- `src/signal/binary.ts` — signal-cli binary management (download, verify, register)
+- `src/signal/jsonrpc.ts` — JSON-RPC client for signal-cli communication
+- `src/signal/process.ts` — signal-cli process lifecycle management
+- `src/signal/setup.ts` — Signal registration and configuration flow
+- `src/core/crash-flag.ts` — Crash flag system for ungraceful exit recovery
+- `src/utils/markdown.ts` — Markdown-to-Discord and Markdown-to-Slack converters
+- `src/utils/redact.ts` — Phone number redaction for Signal
+- `src/utils/manual.ts` — Channel-specific help text (Discord, Slack)
+- `src/utils/discord-access.test.ts` — Discord access model tests
+- `src/utils/slack-access.test.ts` — Slack access model tests
+
+### Modified files
+- `src/core/agent.ts` — Channel registration for Discord/Slack/Signal; heartbeat in-place for CLI; all 12 silent task failure paths now send error messages; crash flag on task failure
+- `src/channels/registry.ts` — Registers Discord, Slack, Signal; notification channel priority: Signal → Telegram → Discord → Slack → CLI
+- `src/channels/cli.ts` — `sendHeartbeat()` method for in-place heartbeat updates
+- `src/channels/telegram.ts` — Minor send-error logging
+- `src/channels/index.ts` — Exports new channels
+- `src/types/channel.ts` — New types: `SignalAccessUser`, `SignalPendingRequest`, `DiscordAccessUser`, `DiscordPendingRequest`, `SlackAccessUser`, `SlackPendingRequest`, and channel config interfaces
+- `src/utils/config.ts` — Signal/Discord/Slack config sections, access management functions, migration for legacy data
+- `src/index.ts` — Signal/Discord/Slack CLI commands (pair, list, approve, reject, remove, promote, demote, reset), onboarding flows, redactPhone import
+- `src/cli/daemon.ts` — `killStaleSignalCliProcesses` on stop; async `stopDaemon` with graceful SIGTERM → SIGKILL
+- `src/cli/watchdog.ts` — Writes crash flag on max-restart exceeded
+- `src/providers/registry.ts` — `ollamaLocal` routed through `OpenAICompatProvider` with `useChatApi: true`
+- `src/ui/App.tsx` — Step log collapse to 3 lines; Ctrl+D for `/log`; ThinkingIndicator shows "Processing"; `/bg current` hint on long ops
+- `package.json` — Version bumped to 1.1.13; new dependencies: `discord.js`, `@slack/bolt`
+
+No breaking changes. All new channels are **opt-in** — set `DISCORD_ENABLED=true`, `SLACK_ENABLED=true`, or `SIGNAL_ENABLED=true` to activate. Existing configs carry over unchanged.
+
+## Upgrade
+
+**npm:**
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.1.13
+mercury restart
+```
+
+**Standalone (macOS / Linux):**
+
+```bash
+curl -fsSL https://mercuryagent.sh/install.sh | bash
+mercury restart
+```
+
+**Standalone (Windows):**
+
+```powershell
+irm https://mercuryagent.sh/install.ps1 | iex
+mercury restart
+```
+
+No config migrations needed. All new channels are off by default — enable them in `mercury doctor` or `~/.mercury/.env`.
+
+## Standalone binaries
+
+Same five targets as v1.1.12:
+
+| OS | Architecture | Binary |
+|---|---|---|
+| macOS | Apple Silicon | `mercury-macos-arm64` |
+| macOS | Intel | `mercury-macos-x64` |
+| Linux | x86-64 | `mercury-linux-x64` |
+| Linux | ARM64 | `mercury-linux-arm64` |
+| Windows | x86-64 | `mercury-win-x64.exe` |
+
+Direct downloads:
+
+- [mercury-macos-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/mercury-macos-arm64)
+- [mercury-macos-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/mercury-macos-x64)
+- [mercury-linux-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/mercury-linux-x64)
+- [mercury-linux-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/mercury-linux-arm64)
+- [mercury-win-x64.exe](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/mercury-win-x64.exe)
+- [checksums.txt](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.13/checksums.txt)
+
+**Full changelog:** [v1.1.12 → v1.1.13](https://github.com/cosmicstack-labs/mercury-agent/compare/v1.1.12...v1.1.13)

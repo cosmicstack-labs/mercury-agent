@@ -1,5 +1,9 @@
 node_modules/
 dist/
+release/
+sea-config.json
+website/static/install.sh
+website/static/install.ps1
 .env
 *.log
 .DS_Store

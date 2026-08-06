@@ -1,0 +1,129 @@
+---
+id: build-from-source
+title: Build From Source
+---
+
+Mercury can be built from source two ways:
+
+1. **Standard build** — produces the regular ESM bundle in `dist/`, the same artifact published to npm. Good for local development, contributions, and `npm link`.
+2. **Standalone executable** — produces a single self-contained binary that embeds the JS runtime and the entire Mercury bundle. End-users do **not** need Node.js installed.
+
+## Prerequisites
+
+- **Node.js ≥ 20** — required for the build toolchain.
+- **[Bun](https://bun.sh) ≥ 1.3** — only needed if you're building standalone binaries.
+
+Install Bun:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Standard Build
+
+```bash
+git clone https://github.com/cosmicstack-labs/mercury-agent.git
+cd mercury-agent
+npm install
+npm run build           # tsup + post-build (UI, static assets, wasm)
+npm start               # runs node dist/index.js
+```
+
+To use your local build as the global `mercury` command:
+
+```bash
+npm link
+mercury --help
+```
+
+## Standalone Executable
+
+Mercury uses [`bun build --compile`](https://bun.sh/docs/bundler/executables) to embed the entire bundle into a single platform-native binary. The resulting file runs on machines with **no Node.js, no Bun, and no dependencies** installed.
+
+### Quick start
+
+```bash
+npm install
+npm run build:bin       # builds the binary for your current OS/arch
+./release/v1.1.9/mercury-macos-arm64 --help
+```
+
+### All build commands
+
+| Command | Targets | Behavior on existing build |
+|---|---|---|
+| `npm run build:bin` | host only | skip if already built |
+| `npm run build:bin:all` | all 5 platforms | skip per-target |
+| `npm run build:bin:force` | host only | overwrite |
+| `npm run build:bin:all:force` | all 5 platforms | overwrite |
+
+Supported targets for `--all`:
+
+- macOS arm64 (Apple Silicon)
+- macOS x64 (Intel)
+- Linux x64
+- Linux arm64
+- Windows x64
+
+### Output layout
+
+The build script reads the version from `package.json` and writes binaries into a versioned subfolder. Older builds are **never overwritten** — you can keep many versions side-by-side.
+
+```
+release/
+├── latest                       → symlink to the most-recent version
+├── v1.1.9/
+│   ├── mercury-macos-arm64
+│   ├── mercury-macos-x64
+│   ├── mercury-linux-x64
+│   ├── mercury-linux-arm64
+│   ├── mercury-win-x64.exe
+│   └── checksums.txt            (SHA-256 for every binary in the folder)
+└── v1.2.0/
+    └── ...
+```
+
+Bump `version` in `package.json` before building and the script automatically creates a new folder. If a binary for the current version+target already exists, the script **skips** it (printing `↷ skip (already built)`) unless you pass `--force`.
+
+Verify integrity with the generated checksums:
+
+```bash
+cd release/v1.1.9
+shasum -a 256 -c checksums.txt
+# mercury-macos-arm64: OK
+```
+
+### Cross-compilation
+
+Bun ships its own runtime per target, so you can build **all five platforms from any one host** (e.g. produce a Windows `.exe` from your Mac):
+
+```bash
+npm run build:bin:all
+```
+
+Native node modules can't cross-compile, but Mercury's only native dep (`better-sqlite3`) is **optional** — at runtime the binary falls back to `sql.js` (pure JS + wasm). Cross-compiled binaries are fully functional.
+
+### macOS code signing
+
+Unsigned binaries trigger Gatekeeper on first launch. For local use, right-click → Open once and macOS will remember the choice. For distribution:
+
+```bash
+codesign --sign "Developer ID Application: Your Name" release/v1.1.9/mercury-macos-arm64
+xcrun notarytool submit release/v1.1.9/mercury-macos-arm64 --apple-id ... --wait
+```
+
+:::tip[Why Bun and not pkg / Node SEA?]
+
+Mercury's dependency graph includes ESM modules with top-level `await` (`ink`, `yoga-layout`). Both `pkg` and Node.js Single Executable Applications require CommonJS entry points and can't transform top-level await. Bun runs ESM natively and embeds its own runtime, so it sidesteps the whole problem.
+
+:::
+
+## Troubleshooting
+
+**`bun: command not found`** — install Bun with `curl -fsSL https://bun.sh/install | bash`, then either restart your shell or use the explicit path `~/.bun/bin/bun`.
+
+**`ERROR: dist/index.js not found`** — the bin script depends on the standard build. The `build:bin` npm script chains both; if you ran the bin script directly, prefix with `npm run build`.
+
+**Binary silently exits with code 0** — usually means the `package.json` version lookup failed. The build pipeline injects the version at compile time via `tsup --define`. If you've modified the entry file, make sure the `pkgVersion` fallback path remains intact (see `src/index.ts`).
+
+**Stale `release/latest` symlink** — re-running any `build:bin` command repairs the symlink to point at the current `package.json` version.

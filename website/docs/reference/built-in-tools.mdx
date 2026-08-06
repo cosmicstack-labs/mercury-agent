@@ -55,3 +55,33 @@ Mercury has a built-in toolset it can use during conversations. These are not CL
 | `list_scheduled_tasks` | View all scheduled tasks | Scheduler |
 | `cancel_scheduled_task` | Cancel a scheduled task | Scheduler |
 | `budget_status` | Check token budget usage | System |
+| `ask_user` | Ask the user a question with choices (CLI: arrow menu, Telegram: inline buttons) | System |
+
+## Sub-Agent Delegation
+
+| Tool | What it does | Parameters |
+|------|-------------|------------|
+| `delegate_task` | Spawn a sub-agent with an isolated context | `task`, `workingDirectory?`, `priority?`, `allowedTools?` |
+| `list_agents` | List active sub-agents and their status | — |
+| `stop_agent` | Stop a sub-agent (or all) | `agentId` (`"a1"` or `"all"`) |
+
+## Spotify
+
+These tools are available when Spotify is connected. Search and info tools are read-only; playback tools require Spotify Premium.
+
+| Tool | What it does | Parameters |
+|------|-------------|------------|
+| `spotify_search` | Search for tracks, artists, albums, playlists | `query`, `type?`, `limit?` |
+| `spotify_play` | Play a track, album, or playlist | `uri?`, `deviceId?` |
+| `spotify_pause` | Pause playback | `deviceId?` |
+| `spotify_next` | Skip to next track | — |
+| `spotify_previous` | Skip to previous track | — |
+| `spotify_now_playing` | Show currently playing track info | — |
+| `spotify_devices` | List available playback devices | — |
+| `spotify_queue` | Add a track to the playback queue | `uri` |
+| `spotify_like` | Save a track to your library | `trackId` |
+| `spotify_volume` | Set playback volume | `percent` (0–100) |
+| `spotify_shuffle` | Toggle shuffle | `state` (boolean) |
+| `spotify_repeat` | Set repeat mode | `state` (`off`/`track`/`context`) |
+| `spotify_top_tracks` | Get user's top tracks | `timeRange?`, `limit?` |
+| `spotify_playlists` | Get user's playlists | — |
