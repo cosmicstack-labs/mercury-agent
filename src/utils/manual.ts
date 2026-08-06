@@ -85,6 +85,10 @@ export function getManual(): string {
     ['mercury telegram promote <id>', 'Promote a Telegram member to admin'],
     ['mercury telegram demote <id>', 'Demote a Telegram admin to member'],
     ['mercury telegram unpair', 'Reset all Telegram access'],
+    ['mercury signal approve <code>', 'Approve a Signal pairing code'],
+    ['mercury signal unpair', 'Reset all Signal access'],
+    ['mercury signal reset', 'Full reset: clear access, delete binary, unlink device'],
+    ['mercury signal status', 'Show Signal configuration and connection status'],
     ['mercury help', 'Show this manual'],
     ['mercury service install', 'Install as system service (auto-start)'],
     ['mercury service uninstall', 'Uninstall system service'],
@@ -133,6 +137,13 @@ export function getManual(): string {
     ['/stream', 'Toggle text streaming on/off (Telegram)'],
     ['/stream on', 'Enable streaming (live text updates)'],
     ['/stream off', 'Disable streaming (single message)'],
+    ['/saver', 'Show Token Saver Mode status and tokens saved'],
+    ['/saver on', 'Manually enable Token Saver Mode (terser, faster, cheaper)'],
+    ['/saver off', 'Disable Token Saver Mode'],
+    ['/saver toggle', 'Toggle Token Saver Mode on/off'],
+    ['/saver threshold <0-100>', 'Auto-engage threshold (default 75%; 0 to disable)'],
+    ['/saver auto on|off', 'Enable/disable automatic engagement at threshold'],
+    ['/saver routing on|off', 'Prefer cheap providers when saver is active (opt-in)'],
     ['/agents', 'List all sub-agents and their status'],
     ['/agents stop <id|all>', 'Stop a sub-agent or all sub-agents'],
     ['/agents pause <id>', 'Pause a running sub-agent'],
@@ -269,6 +280,16 @@ export function getTelegramHelp(): string {
   lines.push('/budget set <n> — Set daily token budget');
   lines.push('');
 
+  lines.push('**Token Saver**');
+  lines.push('/saver — Show saver status and tokens saved');
+  lines.push('/saver on — Manually enable Token Saver Mode');
+  lines.push('/saver off — Disable Token Saver Mode');
+  lines.push('/saver toggle — Toggle on/off');
+  lines.push('/saver threshold <0-100> — Auto-engage threshold (default 75%)');
+  lines.push('/saver auto on|off — Enable/disable automatic engagement');
+  lines.push('/saver routing on|off — Prefer cheap providers while active (opt-in)');
+  lines.push('');
+
   lines.push('**Programming Mode**');
   lines.push('/code — Show current mode');
   lines.push('/code plan — Analyze and present options (no coding)');
@@ -316,6 +337,82 @@ export function getTelegramHelp(): string {
   lines.push('**Access**');
   lines.push('/start — Request access to this Mercury instance');
   lines.push('/unpair — Reset all Telegram access (admin only)');
+
+  return lines.join('\n');
+}
+
+export function getDiscordHelp(): string {
+  const lines: string[] = [];
+
+  lines.push('\u263f **Mercury \u2014 Discord Commands**');
+  lines.push('');
+  lines.push('**Guild Channels**');
+  lines.push('All guild members can chat in configured channels.');
+  lines.push('Admins (guild owner + "Mercury Admin" role) control permissions.');
+  lines.push('');
+
+  lines.push('**General**');
+  lines.push('/help \u2014 Show this command list');
+  lines.push('/status \u2014 Config, budget, and uptime');
+  lines.push('/progress \u2014 Live status for the current task');
+  lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
+  lines.push('/models \u2014 List providers or switch AI model');
+  lines.push('');
+
+  lines.push('**Budget**');
+  lines.push('/budget \u2014 Show token budget status');
+  lines.push('/budget override \u2014 Allow one request past budget');
+  lines.push('/budget reset \u2014 Reset usage to zero');
+  lines.push('/budget set <n> \u2014 Set daily token budget');
+  lines.push('');
+
+  lines.push('**Token Saver**');
+  lines.push('/saver \u2014 Show saver status and tokens saved');
+  lines.push('/saver on \u2014 Manually enable Token Saver Mode');
+  lines.push('/saver off \u2014 Disable Token Saver Mode');
+  lines.push('/saver toggle \u2014 Toggle on/off');
+  lines.push('');
+
+  lines.push('**DM Access**');
+  lines.push('/start \u2014 Request DM access (send in a DM)');
+  lines.push('/unpair \u2014 Reset all Discord DM access (admin only)');
+
+  return lines.join('\n');
+}
+
+export function getSlackHelp(): string {
+  const lines: string[] = [];
+
+  lines.push('\u263f **Mercury \u2014 Slack Commands**');
+  lines.push('');
+  lines.push('**Workspace Channels**');
+  lines.push('All workspace members can chat in configured channels.');
+  lines.push('Admins control DM access permissions.');
+  lines.push('');
+
+  lines.push('**General**');
+  lines.push('/mercury help \u2014 Show this command list');
+  lines.push('/mercury status \u2014 Config, budget, and uptime');
+  lines.push('/mercury stop \u2014 Stop all agents');
+  lines.push('');
+
+  lines.push('**Budget**');
+  lines.push('/mercury budget \u2014 Show token budget status');
+  lines.push('/mercury budget override \u2014 Allow one request past budget');
+  lines.push('/mercury budget reset \u2014 Reset usage to zero');
+  lines.push('/mercury budget set <n> \u2014 Set daily token budget');
+  lines.push('');
+
+  lines.push('**Token Saver**');
+  lines.push('/mercury saver \u2014 Show saver status and tokens saved');
+  lines.push('/mercury saver on \u2014 Manually enable Token Saver Mode');
+  lines.push('/mercury saver off \u2014 Disable Token Saver Mode');
+  lines.push('/mercury saver toggle \u2014 Toggle on/off');
+  lines.push('');
+
+  lines.push('**DM Access**');
+  lines.push('/mercury start \u2014 Request DM access');
+  lines.push('/mercury unpair \u2014 Reset all Slack DM access (admin only)');
 
   return lines.join('\n');
 }

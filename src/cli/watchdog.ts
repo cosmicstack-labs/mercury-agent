@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { writeCrashFlag } from '../core/crash-flag.js';
 
 const MAX_RESTARTS = 10;
 const RESTART_WINDOW_MS = 60_000;
@@ -18,6 +19,13 @@ export async function runWithWatchdog(agentFn: () => Promise<void>): Promise<voi
 
       if (restartCount >= MAX_RESTARTS) {
         logger.error({ restartCount }, 'Max restarts exceeded within 60s. Exiting.');
+        writeCrashFlag({
+          reason: `Max restarts exceeded (${restartCount} crashes in 60s). Last error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300),
+          timestamp: Date.now(),
+        });
+        // Last-gasp: synchronous stderr write so the log always shows
+        // even if the logger is broken.
+        process.stderr.write(`[mercury] FATAL: Max restarts exceeded (${restartCount} in 60s). Last error: ${err instanceof Error ? err.message : String(err)}\n`);
         process.exit(1);
       }
 

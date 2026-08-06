@@ -3,8 +3,8 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Mercury',
-  tagline: 'Soul-driven AI agent with permission guardrails',
+  title: 'Mercury Agent — Soul-driven',
+  tagline: 'Soul-driven AI agent with Second Brain memory, permission-hardened tools, and a Skill System. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal.',
   favicon: 'img/favicon.svg',
 
   future: {
@@ -20,6 +20,23 @@ const config: Config = {
 
   onBrokenLinks: 'throw',
   onBrokenAnchors: 'warn',
+
+  // Default page metadata. Per-page `image:` frontmatter overrides for OG/Twitter cards.
+  // See website/static/img/og/README.md for the per-page convention.
+  headTags: [
+    {
+      tagName: 'meta',
+      attributes: { name: 'twitter:site', content: '@mercuryagent' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { property: 'og:site_name', content: 'Mercury Agent — Soul-driven' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { name: 'application-name', content: 'Mercury Agent' },
+    },
+  ],
 
   i18n: {
     defaultLocale: 'en',
@@ -66,9 +83,15 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: '☿ Mercury',
+      title: '☿ Mercury Agent',
+      logo: {
+        alt: 'Mercury Agent — Soul-driven',
+        src: 'img/favicon.svg',
+        srcDark: 'img/favicon.svg',
+      },
       items: [
         {to: '/docs', label: 'Docs', position: 'left'},
+        {to: '/docs/releases/1.1.13', label: 'Releases', position: 'left'},
         {
           href: 'https://github.com/cosmicstack-labs/mercury-agent',
           label: 'GitHub',

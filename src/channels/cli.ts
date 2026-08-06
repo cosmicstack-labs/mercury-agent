@@ -2,12 +2,12 @@ import React from 'react';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFile } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 
 export interface TuiState {
@@ -30,6 +30,11 @@ export interface TuiState {
   workspace: WorkspaceState | null;
   backgroundTasks: BackgroundTaskInfo[];
   web: { enabled: boolean; port: number } | null;
+  saverInfo: SaverInfo | null;
+  /** Last completed step log, preserved after completion wipes toolSteps. Ctrl+D dumps this. */
+  lastStepLog: ToolStep[] | null;
+  /** Elapsed ms for the last completed task. */
+  lastStepLogElapsed: number | null;
 }
 
 const defaultState: TuiState = {
@@ -52,7 +57,26 @@ const defaultState: TuiState = {
   workspace: null,
   backgroundTasks: [],
   web: null,
+  saverInfo: null,
+  lastStepLog: null,
+  lastStepLogElapsed: null,
 };
+
+function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].status !== b[i].status || a[i].progress !== b[i].progress) return false;
+  }
+  return true;
+}
+
+function shallowEqualBgTasks(a: BackgroundTaskInfo[], b: BackgroundTaskInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].status !== b[i].status || a[i].runningMs !== b[i].runningMs) return false;
+  }
+  return true;
+}
 
 export class CLIChannel extends BaseChannel {
   readonly type = 'cli' as const;
@@ -63,11 +87,20 @@ export class CLIChannel extends BaseChannel {
   private permissionResolver: ((value: string | boolean) => void) | null = null;
   private menuDepth = 0;
   private menuAbortController: AbortController | null = null;
+  private heartbeatMsgId: string | null = null;
   private stepCount = 0;
   private stepStartTime = 0;
   private state: TuiState = { ...defaultState };
   private spotifyClient: any = null;
   private rawModeWatchdog: NodeJS.Timeout | null = null;
+  private statusPoller: NodeJS.Timeout | null = null;
+  private statusPollerBusy = false;
+  private statusProviders: {
+    tokens?: () => { used: number; budget: number; percentage: number };
+    saver?: () => { state: import('../core/saver-mode.js').SaverModeState; savedToday: number; savedLifetime: number };
+    subAgents?: () => SubAgentInfo[];
+    bgTasks?: () => BackgroundTaskInfo[];
+  } = {};
 
   constructor(agentName: string = 'Mercury') {
     super();
@@ -87,6 +120,7 @@ export class CLIChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.stopRawModeWatchdog();
+    this.stopStatusPoller();
     this.inkInstance?.unmount();
     this.inkInstance = null;
     this.releaseRawMode();
@@ -135,6 +169,15 @@ export class CLIChannel extends BaseChannel {
   private update(partial: Partial<TuiState>): void {
     this.state = { ...this.state, ...partial };
     this.rerender();
+  }
+
+  /** Update an existing chat message's content in place (by ID). */
+  private updateMessage(id: string, content: string, extra?: Partial<ChatMessage>): void {
+    this.update({
+      chatMessages: this.state.chatMessages.map((m) =>
+        m.id === id ? { ...m, content, timestamp: Date.now(), ...extra } : m,
+      ),
+    });
   }
 
   private rerender(): void {
@@ -251,6 +294,44 @@ export class CLIChannel extends BaseChannel {
         this.update({ viewMode: this.state.viewMode === 'balanced' ? 'detailed' : 'balanced' });
         return;
       }
+      // Show last task's full step log (triggered by Ctrl+D or /log)
+      if (trimmed === '/log') {
+        const steps = this.state.toolSteps.length > 0 ? this.state.toolSteps : (this.state.lastStepLog ?? []);
+        if (steps.length > 0) {
+          const elapsed = this.state.lastStepLogElapsed;
+          const suffix = this.state.toolSteps.length > 0 ? ' (active)' : '';
+          const elapsedSec = elapsed != null ? ` · ${Math.round(elapsed / 1000)}s` : '';
+          const lines = steps.map((s) => {
+            const icon = s.status === 'done' ? '✓' : s.status === 'error' ? '✗' : '→';
+            const time = s.elapsed != null ? ` (${s.elapsed.toFixed(1)}s)` : '';
+            const result = s.result ? ` · ${s.result}` : '';
+            return `${icon} ${s.label}${time}${result}`;
+          });
+          const header = `── Step log (${steps.filter((s) => s.status === 'done').length}/${steps.length} done${elapsedSec}${suffix}) ──`;
+          const msg: ChatMessage = {
+            id: `log-${Date.now().toString(36)}`,
+            role: 'system',
+            content: `${header}\n${lines.join('\n')}`,
+            timestamp: Date.now(),
+          };
+          this.update({ chatMessages: [...this.state.chatMessages, msg] });
+        } else {
+          const msg: ChatMessage = {
+            id: `log-${Date.now().toString(36)}`,
+            role: 'system',
+            content: 'No step history available yet. Run a task first, then press Ctrl+D.',
+            timestamp: Date.now(),
+          };
+          this.update({ chatMessages: [...this.state.chatMessages, msg] });
+        }
+        return;
+      }
+      // Clear stale tool steps from the previous task so the activity
+      // panel starts fresh for each new user message.
+      if (this.state.toolSteps.length > 0) {
+        this.update({ toolSteps: [] });
+        this.stepCount = 0;
+      }
       onInput(trimmed);
     };
 
@@ -287,13 +368,49 @@ export class CLIChannel extends BaseChannel {
       content,
       timestamp: Date.now(),
     };
+    // Clear any lingering heartbeat message when we send a real response.
+    if (this.heartbeatMsgId) {
+      this.state.chatMessages = this.state.chatMessages.filter((m) => m.id !== this.heartbeatMsgId);
+      this.heartbeatMsgId = null;
+    }
     this.update({
       chatMessages: [...this.state.chatMessages, msg],
       isThinking: false,
     });
   }
 
+  /**
+   * Send or replace a heartbeat progress message. First call creates a new
+   * message; subsequent calls update it in place. This avoids stacking
+   * multiple "⏳ Working..." messages in the chat history.
+   */
+  sendHeartbeat(content: string): void {
+    if (this.heartbeatMsgId) {
+      // Update existing heartbeat message in place.
+      this.updateMessage(this.heartbeatMsgId, content, { role: 'system' });
+    } else {
+      // First heartbeat — create the message.
+      const id = `heartbeat-${Date.now().toString(36)}`;
+      this.heartbeatMsgId = id;
+      const msg: ChatMessage = { id, role: 'system', content, timestamp: Date.now() };
+      this.update({
+        chatMessages: [...this.state.chatMessages, msg],
+        isThinking: true,
+      });
+    }
+  }
+
+  /** Clear the heartbeat message (called when processing completes). */
+  clearHeartbeat(): void {
+    if (this.heartbeatMsgId) {
+      this.state.chatMessages = this.state.chatMessages.filter((m) => m.id !== this.heartbeatMsgId);
+      this.heartbeatMsgId = null;
+      this.rerender();
+    }
+  }
+
   sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta): void {
+    this.clearHeartbeat();
     const secs = Math.floor(elapsedMs / 1000);
     const mins = Math.floor(secs / 60);
     const remSecs = secs % 60;
@@ -312,6 +429,8 @@ export class CLIChannel extends BaseChannel {
       chatMessages: [...this.state.chatMessages, msg],
       isThinking: false,
       toolSteps: [],
+      lastStepLog: this.state.toolSteps.length > 0 ? [...this.state.toolSteps] : (this.state.lastStepLog ?? null),
+      lastStepLogElapsed: elapsedMs,
     });
   }
 
@@ -349,9 +468,11 @@ export class CLIChannel extends BaseChannel {
       toolName,
       label,
       status: 'running',
+      startedAt: Date.now(),
     };
     this.stepCount += 1;
     this.stepStartTime = Date.now();
+    logger.debug({ tool: toolName, args }, 'voice.tui step start');
     this.update({
       toolSteps: [...this.state.toolSteps, step],
       isThinking: true,
@@ -359,14 +480,15 @@ export class CLIChannel extends BaseChannel {
   }
 
   sendStepDone(toolName: string, result: unknown): void {
+    const summary = formatToolResult(toolName, result);
     const toolSteps = this.state.toolSteps.map((step) => {
       if (step.status === 'running') {
         const elapsed = this.stepStartTime ? (Date.now() - this.stepStartTime) / 1000 : 0;
-        const summary = formatToolResult(toolName, result);
         return { ...step, status: 'done' as const, elapsed, result: summary || undefined };
       }
       return step;
     });
+    logger.debug({ tool: toolName, summary }, 'voice.tui step done');
     this.update({ toolSteps });
   }
 
@@ -374,6 +496,8 @@ export class CLIChannel extends BaseChannel {
     const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     let full = '';
     let lastRender = 0;
+
+    this.clearHeartbeat();
 
     const initialMsg: ChatMessage = {
       id: msgId,
@@ -388,17 +512,39 @@ export class CLIChannel extends BaseChannel {
       isThinking: true,
     });
 
-    for await (const chunk of content) {
-      full += chunk;
-      const now = Date.now();
-      if (now - lastRender >= 16) {
+    try {
+      for await (const chunk of content) {
+        full += chunk;
+        const now = Date.now();
+        if (now - lastRender >= 16) {
+          this.update({
+            chatMessages: this.state.chatMessages.map((m) =>
+              m.id === msgId ? { ...m, content: full, streaming: true } : m,
+            ),
+          });
+          lastRender = now;
+        }
+      }
+    } catch (err) {
+      // Stream was interrupted (API disconnect, abort, etc.). Save
+      // whatever partial text we accumulated so the user doesn't lose it.
+      logger.warn({ err, partialLen: full.length }, 'CLI stream interrupted, saving partial text');
+      if (full.length > 0) {
         this.update({
           chatMessages: this.state.chatMessages.map((m) =>
-            m.id === msgId ? { ...m, content: full, streaming: true } : m,
+            m.id === msgId ? { ...m, content: full + '\n\n⚠ Stream was interrupted. Partial response shown above.', streaming: false } : m,
           ),
+          isThinking: false,
         });
-        lastRender = now;
+      } else {
+        this.update({
+          chatMessages: this.state.chatMessages.map((m) =>
+            m.id === msgId ? { ...m, content: '⚠ Stream was interrupted before any response was generated.', streaming: false } : m,
+          ),
+          isThinking: false,
+        });
       }
+      return full;
     }
 
     this.update({
@@ -546,6 +692,15 @@ export class CLIChannel extends BaseChannel {
     this.update({ tokenInfo: { used, budget, percentage } });
   }
 
+  setSaverMode(state: import('../core/saver-mode.js').SaverModeState, savedToday: number, savedLifetime: number): void {
+    if (state === 'off' && savedToday === 0 && savedLifetime === 0) {
+      // Keep null to preserve zero-impact UI when saver has never been touched.
+      this.update({ saverInfo: null });
+      return;
+    }
+    this.update({ saverInfo: { state, savedToday, savedLifetime } });
+  }
+
   setWebInfo(enabled: boolean, port: number): void {
     this.update({ web: { enabled, port } });
   }
@@ -585,6 +740,120 @@ export class CLIChannel extends BaseChannel {
     const selectedPath = this.state.workspace.selectedPath ?? undefined;
     const workspace = this.buildWorkspaceState(this.state.workspace.rootPath, selectedPath, 'Workspace refreshed');
     this.update({ workspace });
+  }
+
+  /**
+   * Register provider callbacks the poller will sample on every tick.
+   * Called once at boot from index.ts. Each callback should be cheap
+   * (just a getter on already-in-memory state).
+   */
+  setStatusProviders(providers: typeof this.statusProviders): void {
+    this.statusProviders = { ...this.statusProviders, ...providers };
+  }
+
+  /**
+   * Start the 2s status poller. Refreshes:
+   *  - token budget bar (every tick)
+   *  - saver mode state (every tick)
+   *  - sub-agent counts (every tick)
+   *  - background task counts (every tick)
+   *  - workspace git state (every tick, async, only if workspace is active)
+   *
+   * Each section diff-checks its values before calling update() so
+   * idle ticks cause zero React re-renders.
+   */
+  startStatusPoller(intervalMs = 2000): void {
+    this.stopStatusPoller();
+    this.statusPoller = setInterval(() => { void this.statusPollerTick(); }, intervalMs);
+    // Fire once immediately so the first paint is fresh.
+    void this.statusPollerTick();
+  }
+
+  stopStatusPoller(): void {
+    if (this.statusPoller) {
+      clearInterval(this.statusPoller);
+      this.statusPoller = null;
+    }
+  }
+
+  private async statusPollerTick(): Promise<void> {
+    // Re-entrancy guard: if a previous git read is still in flight we skip.
+    if (this.statusPollerBusy) return;
+    this.statusPollerBusy = true;
+    try {
+      const patch: Partial<TuiState> = {};
+
+      // 1. Token budget
+      if (this.statusProviders.tokens) {
+        const t = this.statusProviders.tokens();
+        const cur = this.state.tokenInfo;
+        if (!cur || cur.used !== t.used || cur.budget !== t.budget || cur.percentage !== t.percentage) {
+          patch.tokenInfo = { used: t.used, budget: t.budget, percentage: t.percentage };
+        }
+      }
+
+      // 2. Saver mode
+      if (this.statusProviders.saver) {
+        const s = this.statusProviders.saver();
+        const cur = this.state.saverInfo;
+        const shouldShow = !(s.state === 'off' && s.savedToday === 0 && s.savedLifetime === 0);
+        if (!shouldShow) {
+          if (cur !== null) patch.saverInfo = null;
+        } else if (!cur || cur.state !== s.state || cur.savedToday !== s.savedToday || cur.savedLifetime !== s.savedLifetime) {
+          patch.saverInfo = { state: s.state, savedToday: s.savedToday, savedLifetime: s.savedLifetime };
+        }
+      }
+
+      // 3. Sub-agents
+      if (this.statusProviders.subAgents) {
+        const agents = this.statusProviders.subAgents();
+        if (!shallowEqualSubAgents(this.state.subAgents, agents)) {
+          patch.subAgents = agents;
+        }
+      }
+
+      // 4. Background tasks
+      if (this.statusProviders.bgTasks) {
+        const tasks = this.statusProviders.bgTasks();
+        if (!shallowEqualBgTasks(this.state.backgroundTasks, tasks)) {
+          patch.backgroundTasks = tasks;
+        }
+      }
+
+      // 5. Workspace git state (async — branch/files/ahead/behind can
+      // change from outside Mercury, so we re-read every tick)
+      if (this.state.workspace?.active) {
+        const root = this.state.workspace.rootPath;
+        const fresh = await this.readGitStateAsync(root);
+        const cur = this.state.workspace;
+        if (
+          cur.branch !== fresh.branch ||
+          cur.ahead !== fresh.ahead ||
+          cur.behind !== fresh.behind ||
+          cur.stagedCount !== fresh.stagedCount ||
+          cur.unstagedCount !== fresh.unstagedCount ||
+          cur.gitFiles.length !== fresh.files.length
+        ) {
+          patch.workspace = {
+            ...cur,
+            branch: fresh.branch,
+            ahead: fresh.ahead,
+            behind: fresh.behind,
+            stagedCount: fresh.stagedCount,
+            unstagedCount: fresh.unstagedCount,
+            gitFiles: fresh.files,
+          };
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        this.update(patch);
+      }
+    } catch {
+      // Polling should never crash the UI loop.
+    } finally {
+      this.statusPollerBusy = false;
+    }
   }
 
   stageWorkspaceFile(filePath: string): { ok: boolean; message: string } {
@@ -704,7 +973,7 @@ export class CLIChannel extends BaseChannel {
     const nodes = this.buildTreeNodes(rootPath, expanded, 0);
     const selectedIndex = Math.max(0, nodes.findIndex((n) => n.path === selectedPath));
     const selectedNode = nodes[selectedIndex] || nodes[0] || null;
-    const { files, branch, stagedCount, unstagedCount } = this.readGitState(rootPath);
+    const { files, branch, stagedCount, unstagedCount, ahead, behind } = this.readGitState(rootPath);
     return {
       active: true,
       rootPath,
@@ -717,6 +986,8 @@ export class CLIChannel extends BaseChannel {
       stagedCount,
       unstagedCount,
       branch,
+      ahead,
+      behind,
       lastAction,
       codeScrollOffset: this.state.workspace?.codeScrollOffset ?? 0,
       focusArea: this.state.workspace?.focusArea ?? 'explorer',
@@ -815,27 +1086,61 @@ export class CLIChannel extends BaseChannel {
     return nodes;
   }
 
-  private readGitState(rootPath: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number } {
+  private readGitState(rootPath: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number } {
     try {
       const branch = execSync('git branch --show-current', { cwd: rootPath, stdio: 'pipe' }).toString().trim() || 'detached';
-      const out = execSync('git status --porcelain', { cwd: rootPath, stdio: 'pipe' }).toString();
-      const files: WorkspaceGitFile[] = out
-        .split('\n')
-        .map((line) => line.trimEnd())
-        .filter(Boolean)
-        .map((line) => {
-          const x = line[0] || ' ';
-          const y = line[1] || ' ';
-          const rel = line.slice(3).trim();
-          const staged = x !== ' ' && x !== '?';
-          const status = `${x}${y}`.trim() || '??';
-          return { path: rel, staged, status };
-        });
-      const stagedCount = files.filter((f) => f.staged).length;
-      const unstagedCount = files.length - stagedCount;
-      return { files, branch, stagedCount, unstagedCount };
+      const out = execSync('git status --porcelain=v1 --branch', { cwd: rootPath, stdio: 'pipe' }).toString();
+      return this.parseGitOutput(branch, out);
     } catch {
-      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0 };
+      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0, ahead: 0, behind: 0 };
+    }
+  }
+
+  private parseGitOutput(branch: string, statusOut: string): { files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number } {
+    const lines = statusOut.split('\n');
+    let ahead = 0;
+    let behind = 0;
+    const header = lines[0] || '';
+    const aheadMatch = header.match(/ahead (\d+)/);
+    const behindMatch = header.match(/behind (\d+)/);
+    if (aheadMatch) ahead = parseInt(aheadMatch[1], 10);
+    if (behindMatch) behind = parseInt(behindMatch[1], 10);
+    const files: WorkspaceGitFile[] = lines
+      .slice(1)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => {
+        const x = line[0] || ' ';
+        const y = line[1] || ' ';
+        const rel = line.slice(3).trim();
+        const staged = x !== ' ' && x !== '?';
+        const status = `${x}${y}`.trim() || '??';
+        return { path: rel, staged, status };
+      });
+    const stagedCount = files.filter((f) => f.staged).length;
+    const unstagedCount = files.length - stagedCount;
+    return { files, branch, stagedCount, unstagedCount, ahead, behind };
+  }
+
+  private execAsync(cmd: string, args: string[], cwd: string, timeoutMs = 1500): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 512 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout.toString());
+      });
+    });
+  }
+
+  private async readGitStateAsync(rootPath: string): Promise<{ files: WorkspaceGitFile[]; branch: string; stagedCount: number; unstagedCount: number; ahead: number; behind: number }> {
+    try {
+      const [branchOut, statusOut] = await Promise.all([
+        this.execAsync('git', ['branch', '--show-current'], rootPath),
+        this.execAsync('git', ['status', '--porcelain=v1', '--branch'], rootPath),
+      ]);
+      const branch = branchOut.trim() || 'detached';
+      return this.parseGitOutput(branch, statusOut);
+    } catch {
+      return { files: [], branch: 'not-a-git-repo', stagedCount: 0, unstagedCount: 0, ahead: 0, behind: 0 };
     }
   }
 

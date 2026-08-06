@@ -1,4 +1,5 @@
 import type { ProgrammingModeState } from '../core/programming-mode.js';
+import type { SaverModeState } from '../core/saver-mode.js';
 import type { SubAgentStatus } from '../types/agent.js';
 import type { PermissionMode } from '../channels/base.js';
 
@@ -31,6 +32,8 @@ export interface WorkspaceState {
   stagedCount: number;
   unstagedCount: number;
   branch: string;
+  ahead: number;
+  behind: number;
   lastAction: string;
   codeScrollOffset: number;
   focusArea: 'explorer' | 'code' | 'git' | 'chat';
@@ -64,6 +67,7 @@ export interface ToolStep {
   toolName: string;
   label: string;
   status: 'running' | 'done' | 'error';
+  startedAt?: number;
   elapsed?: number;
   result?: string;
 }
@@ -104,6 +108,12 @@ export interface TokenInfo {
   used: number;
   budget: number;
   percentage: number;
+}
+
+export interface SaverInfo {
+  state: SaverModeState;
+  savedToday: number;
+  savedLifetime: number;
 }
 
 export interface MercuryAppState {

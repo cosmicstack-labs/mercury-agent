@@ -4,6 +4,45 @@ import { join } from 'node:path';
 import process from 'node:process';
 import chalk from 'chalk';
 import { getMercuryHome } from '../utils/config.js';
+import { killStaleSignalCliProcesses } from '../signal/jsonrpc.js';
+
+/**
+ * Detect whether Mercury is running from a standalone, single-file binary
+ * (produced by `bun build --compile`). In that case `process.execPath` IS
+ * the Mercury binary and `process.argv[1]` is a bun-virtual path (e.g.
+ * `/$bunfs/root/...`) that must NOT be forwarded to a child process.
+ */
+export function isStandaloneBinary(): boolean {
+  // Bun sets this flag whenever the runtime is bun (including --compile output).
+  const isBunRuntime = typeof (process.versions as any).bun === 'string';
+  if (!isBunRuntime) return false;
+
+  const arg1 = process.argv[1];
+  if (!arg1) return true;
+  // Bun's embedded fs path markers (POSIX `$bunfs`, Windows `B:/~BUN/`).
+  if (arg1.includes('$bunfs') || arg1.includes('/~BUN/') || arg1.includes('\\~BUN\\')) return true;
+  // Heuristic: standalone binary's execPath is not `node`/`bun` (it's the app name).
+  const execName = (process.execPath.split(/[\\/]/).pop() || '').toLowerCase();
+  if (!execName.startsWith('node') && !execName.startsWith('bun')) return true;
+  return false;
+}
+
+/**
+ * Build the argv used to respawn Mercury as a detached daemon.
+ * For standalone binaries we invoke the binary directly (no script path),
+ * because Commander treats the bun-virtual path as an unknown subcommand.
+ */
+export function buildDaemonSpawnArgs(): { command: string; args: string[] } {
+  if (isStandaloneBinary()) {
+    return { command: process.execPath, args: ['start', '--daemon'] };
+  }
+  const script = process.argv[1];
+  if (!script) {
+    // Last-resort guard — caller will surface the error via ensureDaemonRunning().
+    throw new Error('Cannot determine Mercury entry script for daemon spawn');
+  }
+  return { command: process.execPath, args: [script, 'start', '--daemon'] };
+}
 
 const PID_FILE = 'daemon.pid';
 const LOG_FILE = 'daemon.log';
@@ -63,7 +102,8 @@ export function ensureDaemonRunning(): { pid: number; fresh: boolean } {
   const isWin = process.platform === 'win32';
   const outFd = openSync(logFile, 'a');
 
-  const child = spawn(process.execPath, [process.argv[1], 'start', '--daemon'], {
+  const { command, args } = buildDaemonSpawnArgs();
+  const child = spawn(command, args, {
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env },
@@ -95,20 +135,22 @@ export function startBackground(): void {
   }
 }
 
-export function stopDaemon(): void {
+export async function stopDaemon(): Promise<void> {
   const status = getDaemonStatus();
 
   if (!status.pid) {
     console.log(chalk.yellow('  Mercury is not running as a daemon.'));
+    killStaleSignalCliProcesses();
     console.log('');
-    process.exit(0);
+    return;
   }
 
   if (!status.running) {
     console.log(chalk.yellow(`  Stale PID file found (PID: ${status.pid} is not running). Cleaning up.`));
     try { unlinkSync(pidPath()); } catch {}
+    killStaleSignalCliProcesses();
     console.log('');
-    process.exit(0);
+    return;
   }
 
   try {
@@ -117,34 +159,43 @@ export function stopDaemon(): void {
     } else {
       process.kill(status.pid, 'SIGTERM');
     }
-    console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   } catch {
     console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
+    try { unlinkSync(pidPath()); } catch {}
+    killStaleSignalCliProcesses();
+    console.log('');
+    return;
+  }
+
+  console.log(chalk.dim(`  Stopping Mercury (PID: ${status.pid})...`));
+
+  // Wait up to 5 seconds for the process to exit
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(status.pid)) break;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  if (isProcessRunning(status.pid)) {
+    console.log(chalk.yellow('  Mercury did not exit gracefully, forcing...'));
+    try {
+      process.kill(status.pid, 'SIGKILL');
+    } catch { /* already dead */ }
+    // Wait briefly for SIGKILL to take effect
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
   try { unlinkSync(pidPath()); } catch {}
+
+  killStaleSignalCliProcesses();
+
+  console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   console.log('');
 }
 
 export async function restartDaemon(): Promise<void> {
-  const status = getDaemonStatus();
-
-  if (status.running && status.pid) {
-    console.log(chalk.yellow(`  Stopping Mercury (PID: ${status.pid})...`));
-    try {
-      if (process.platform === 'win32') {
-        process.kill(status.pid);
-      } else {
-        process.kill(status.pid, 'SIGTERM');
-      }
-    } catch {
-      // process may have already exited
-    }
-    try { unlinkSync(pidPath()); } catch {}
-    console.log(chalk.green('  Mercury stopped.'));
-    // Wait for port release before restarting
-    const waitMs = process.platform === 'win32' ? 2000 : 1000;
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  if (getDaemonStatus().running) {
+    await stopDaemon();
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));

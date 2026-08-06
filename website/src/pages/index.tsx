@@ -415,16 +415,20 @@ export default function LandingPage(): React.ReactElement {
   return (
     <>
       <Head>
-        <title>Mercury — AI Agent That Thinks, Acts, and Asks Permission</title>
-        <meta name="description" content="An AI coding agent with real-time progress, multi-agent orchestration, intelligent loop detection, and hardened permissions. Runs 24/7 from CLI or Telegram." />
-        <meta property="og:title" content="Mercury — AI Agent That Thinks, Acts, and Asks Permission" />
-        <meta property="og:description" content="An AI coding agent with real-time progress, multi-agent orchestration, and hardened permissions. Runs 24/7 from CLI or Telegram." />
+        <title>Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission</title>
+        <meta name="description" content="Mercury Agent — a soul-driven AI agent with Second Brain memory, permission-hardened tools, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta property="og:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
+        <meta property="og:description" content="A soul-driven AI agent with Second Brain memory, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
         <meta property="og:url" content="https://mercuryagent.sh" />
-        <meta property="og:image" content="https://mercuryagent.sh/img/card.png" />
+        <meta property="og:image" content="https://mercuryagent.sh/img/og/home.png" />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Mercury — AI Agent That Thinks, Acts, and Asks Permission" />
-        <meta name="twitter:image" content="https://mercuryagent.sh/img/card.png" />
+        <meta name="twitter:site" content="@mercuryagent" />
+        <meta name="twitter:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
+        <meta name="twitter:description" content="Second Brain memory · Skill System · Token Saver · Standalone binaries · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta name="twitter:image" content="https://mercuryagent.sh/img/og/home.png" />
+        <link rel="canonical" href="https://mercuryagent.sh/" />
       </Head>
 
       <div className="lp-page">
@@ -432,7 +436,7 @@ export default function LandingPage(): React.ReactElement {
         <nav className="lp-nav">
           <div className="lp-nav-inner">
             <Link to="/" className="lp-nav-logo">
-              <span className="lp-nav-logo-icon">☿</span> Mercury
+              <span className="lp-nav-logo-icon">☿</span> Mercury Agent
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
               <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
@@ -459,17 +463,24 @@ export default function LandingPage(): React.ReactElement {
           <div className="lp-hero-glow" />
           <div className="lp-container lp-hero-content">
             <Killipi />
+            <div className="lp-hero-eyebrow" aria-label="Mercury Agent — Soul-driven">
+              <span className="lp-hero-eyebrow-mark">☿</span>
+              <span className="lp-hero-eyebrow-text">Mercury Agent · Soul-driven</span>
+              <span className="lp-hero-eyebrow-badge">v1.1.13 · Chatty Mercury</span>
+            </div>
             <h1 className="lp-hero-title">
               The AI agent that<br />
               <span className="lp-hero-highlight">thinks, acts, and asks.</span>
             </h1>
             <p className="lp-hero-sub">
-              Multi-agent orchestration. Real-time progress. Intelligent loop detection.
-              40+ tools. Permission guardrails. Runs 24/7 from your terminal or Telegram.
+              A <strong>soul-driven</strong> agent with Second Brain memory, a full Skill System, Token Saver Mode,
+              multi-agent orchestration, 40+ permission-hardened tools, and standalone binaries on every major OS.
+              Runs 24/7 from your terminal, browser, Telegram, Discord, Slack, or Signal.
             </p>
             <div className="lp-hero-actions">
               <Link href="#live-demo" className="lp-btn lp-btn-primary">See It Work</Link>
               <Link to="/docs" className="lp-btn lp-btn-secondary">Get Started</Link>
+              <Link to="/docs/releases/1.1.13" className="lp-btn lp-btn-ghost">What's new in 1.1.13 →</Link>
             </div>
             <HeroInstall />
           </div>
@@ -566,10 +577,10 @@ export default function LandingPage(): React.ReactElement {
           </div>
         </section>
 
-        {/* Channels — CLI + Web + Telegram */}
+        {/* Channels — CLI + Web + Telegram + Discord + Slack + Signal */}
         <section id="channels" className="lp-section lp-section-alt">
           <div className="lp-container">
-            <h2 className="lp-section-title">Three Channels, One Agent</h2>
+            <h2 className="lp-section-title">Six Channels, One Agent</h2>
             <p className="lp-section-sub">Same capabilities. Different interfaces. All real-time.</p>
             <div className="lp-channels-grid lp-reveal">
               <div className="lp-channel-card">
@@ -581,7 +592,7 @@ export default function LandingPage(): React.ReactElement {
                   <li>Ink-based TUI with live progress view</li>
                   <li>Slash command autocomplete with arrow navigation</li>
                   <li>Workspace IDE mode with file explorer and git panel</li>
-                  <li>Keyboard shortcuts: Ctrl+B (background), Ctrl+T (view), Ctrl+P (plan)</li>
+                  <li>Keyboard shortcuts: Ctrl+B (background), Ctrl+D (log), Ctrl+P (plan)</li>
                   <li>Multi-line input, input history, streaming output</li>
                   <li>Interactive Spotify player with seek and volume</li>
                 </ul>
@@ -612,6 +623,48 @@ export default function LandingPage(): React.ReactElement {
                   <li>Inline keyboards for permissions and mode selection</li>
                   <li>File uploads with auto-type detection</li>
                   <li>Organization access model with admin/member roles</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">🎮</span>
+                  <h3>Discord</h3>
+                </div>
+                <ul>
+                  <li>Full bot integration with slash commands</li>
+                  <li>Channel-scoped or DM conversations</li>
+                  <li>Organization access with admin roles and pairing codes</li>
+                  <li>Streaming responses with in-place edits</li>
+                  <li>Embeds for rich task progress and completion banners</li>
+                  <li>Rate-limiting and busy detection for shared servers</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">#</span>
+                  <h3>Slack</h3>
+                </div>
+                <ul>
+                  <li>Socket Mode bot — no public endpoint needed</li>
+                  <li>Channel and DM support with thread awareness</li>
+                  <li>Organization access with admin/member roles</li>
+                  <li>Streaming responses via message edits</li>
+                  <li>Slash command /mercury for quick interactions</li>
+                  <li>App mentions and message events for natural conversation</li>
+                </ul>
+              </div>
+              <div className="lp-channel-card">
+                <div className="lp-channel-header">
+                  <span className="lp-channel-icon">🔒</span>
+                  <h3>Signal</h3>
+                </div>
+                <ul>
+                  <li>End-to-end encrypted via signal-cli bridge</li>
+                  <li>Group mode (Mercury group) or private DM mode</li>
+                  <li>Pairing code flow for secure onboarding</li>
+                  <li>Auto-managed signal-cli binary (download + register)</li>
+                  <li>Rate-limiting and dedup for reliable message handling</li>
+                  <li>Runs on Linux and macOS (arm64 / x64)</li>
                 </ul>
               </div>
             </div>

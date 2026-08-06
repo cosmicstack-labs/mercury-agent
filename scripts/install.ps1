@@ -136,6 +136,23 @@ catch {
 if (Test-Path $binPath) { Remove-Item $binPath -Force }
 Move-Item -Path $tmp -Destination $binPath -Force
 
+# Download web dashboard assets (required for the web UI).
+$webTarUrl = "$GhDl/v$version/web.tar.gz"
+$webTmp = Join-Path $env:TEMP ("mercury-web-" + [guid]::NewGuid().ToString('N') + '.tar.gz')
+try {
+    Invoke-WebRequest -Uri $webTarUrl -OutFile $webTmp -UseBasicParsing
+    $webDir = Join-Path $binDir 'web'
+    New-Item -ItemType Directory -Force -Path $webDir | Out-Null
+    tar -xzf $webTmp -C $binDir 2>$null
+    Write-Info 'Web dashboard assets installed'
+}
+catch {
+    Write-Warn2 'Web dashboard assets not found for v'"$version — web UI will not work"
+}
+finally {
+    Remove-Item $webTmp -Force -ErrorAction SilentlyContinue
+}
+
 Write-Info "Installed to $binPath"
 
 $pathUpdated = Update-UserPath -BinDir $binDir

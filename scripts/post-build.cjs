@@ -30,34 +30,42 @@ const wasmDest = path.join(staticDest, 'vendor', 'sql-wasm.wasm');
 fs.mkdirSync(path.dirname(wasmDest), { recursive: true });
 fs.copyFileSync(wasmSrc, wasmDest);
 
-// 3. Build UI (install deps if needed)
+// 3. Build UI (install deps if needed). Skip on Termux — esbuild has no
+// prebuilt binary for android/x86_64, and the CLI agent does not need
+// the web dashboard to run. The web UI is exercised by the linux/macos/
+// windows CI jobs; Termux only needs to confirm the CLI builds.
 const uiDir = path.join(__dirname, '..', 'ui');
-if (!fs.existsSync(path.join(uiDir, 'node_modules'))) {
-  console.log('  Installing UI dependencies...');
-  execSync('npm install', { cwd: uiDir, stdio: 'pipe' });
-}
-console.log('  Building UI...');
-try {
-  execSync('npx vite build', { cwd: uiDir, stdio: 'pipe' });
-} catch (e) {
-  // PWA terser plugin fails on Node <20 (crypto not defined) but assets are still built
-  if (!fs.existsSync(path.join(uiDir, 'dist', 'index.html'))) {
-    // Real failure — show output for debugging
-    if (e.stdout) process.stderr.write(e.stdout);
-    if (e.stderr) process.stderr.write(e.stderr);
-    console.error('ERROR: Vite build failed and no output was produced');
-    process.exit(1);
+const isTermux = process.env.TERMUX_VERSION || fs.existsSync('/data/data/com.termux');
+if (isTermux) {
+  console.log('  Skipping UI build on Termux (esbuild has no android/x86_64 prebuilt).');
+} else {
+  if (!fs.existsSync(path.join(uiDir, 'node_modules'))) {
+    console.log('  Installing UI dependencies...');
+    execSync('npm install', { cwd: uiDir, stdio: 'pipe' });
+  }
+  console.log('  Building UI...');
+  try {
+    execSync('npx vite build', { cwd: uiDir, stdio: 'pipe' });
+  } catch (e) {
+    // PWA terser plugin fails on Node <20 (crypto not defined) but assets are still built
+    if (!fs.existsSync(path.join(uiDir, 'dist', 'index.html'))) {
+      // Real failure — show output for debugging
+      if (e.stdout) process.stderr.write(e.stdout);
+      if (e.stderr) process.stderr.write(e.stderr);
+      console.error('ERROR: Vite build failed and no output was produced');
+      process.exit(1);
+    }
   }
 }
 
 // 4. Copy ui/dist -> dist/web/ui
 const uiDistSrc = path.join(uiDir, 'dist');
 const uiDistDest = path.join(__dirname, '..', 'dist', 'web', 'ui');
-if (!fs.existsSync(uiDistSrc)) {
-  console.error('ERROR: ui/dist does not exist after vite build');
-  process.exit(1);
+if (fs.existsSync(uiDistSrc)) {
+  copyDirSync(uiDistSrc, uiDistDest);
+} else {
+  console.log('  No ui/dist present (e.g. Termux build) — skipping UI copy.');
 }
-copyDirSync(uiDistSrc, uiDistDest);
 
 // 5. Write a self-unregistering service worker.
 // PWA is currently disabled — any previously-installed SW would keep serving
@@ -75,6 +83,8 @@ self.addEventListener('activate', (event) => {
   })());
 });
 `;
-fs.writeFileSync(path.join(uiDistDest, 'sw.js'), killSwitchSW);
+if (fs.existsSync(uiDistDest)) {
+  fs.writeFileSync(path.join(uiDistDest, 'sw.js'), killSwitchSW);
+}
 
 console.log('  ✓ Build complete');

@@ -15,6 +15,9 @@
  *       mercury-linux-x64
  *       mercury-linux-arm64
  *       mercury-win-x64.exe
+ *       web/                     ← static assets for the web dashboard
+ *         static/...
+ *         ui/...
  *       checksums.txt
  *     v1.2.0/ ...
  *     latest -> v1.2.0    (symlink to most-recent build)
@@ -44,6 +47,19 @@ const os = require('node:os');
 const root = path.join(__dirname, '..');
 const releaseRoot = path.join(root, 'release');
 const entry = path.join(root, 'dist', 'index.js');
+
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
 
 // Read version straight from package.json — single source of truth.
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -126,6 +142,19 @@ function compile(bun, target, { force }) {
     if (fs.existsSync(alt) && target.out.endsWith('.exe')) fs.renameSync(alt, outPath);
   }
 
+  // Copy web assets (UI + static) alongside the binary so the web dashboard
+  // works in standalone mode.  server.ts resolves these relative to execPath
+  // when running as a Bun-compiled binary.
+  const webSrc = path.join(root, 'dist', 'web');
+  const webDest = path.join(versionDir, 'web');
+  if (fs.existsSync(webSrc)) {
+    copyDirSync(webSrc, webDest);
+    console.log(`  ✓ web assets copied to ${path.relative(root, webDest)}`);
+  } else {
+    console.warn(`  ⚠ dist/web/ not found — web dashboard will not work in the binary`);
+    console.warn(`    Run \`npm run build\` first to generate web assets.`);
+  }
+
   const stat = fs.statSync(outPath);
   const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
   console.log(`  ✓ ${path.relative(root, outPath)}  (${sizeMB} MB)\n`);
@@ -134,15 +163,24 @@ function compile(bun, target, { force }) {
 
 function writeChecksums(builtPaths) {
   const checksumsPath = path.join(versionDir, 'checksums.txt');
-  // Re-hash everything that exists in versionDir so re-runs keep the file
-  // accurate even when only a subset was rebuilt.
-  const entries = fs.readdirSync(versionDir)
-    .filter((f) => f !== 'checksums.txt')
-    .filter((f) => fs.statSync(path.join(versionDir, f)).isFile())
-    .sort();
-  const lines = entries.map((name) => `${sha256(path.join(versionDir, name))}  ${name}`);
+  // Collect all files in versionDir (including web/ subdirectory)
+  const files = [];
+  function walk(dir, base) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      const relPath = base ? `${base}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(fullPath, relPath);
+      } else if (entry.name !== 'checksums.txt') {
+        files.push({ fullPath, relPath });
+      }
+    }
+  }
+  walk(versionDir, '');
+  files.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const lines = files.map(({ fullPath, relPath }) => `${sha256(fullPath)}  ${relPath}`);
   fs.writeFileSync(checksumsPath, lines.join('\n') + '\n');
-  console.log(`  ✓ checksums.txt (${entries.length} file${entries.length === 1 ? '' : 's'})`);
+  console.log(`  ✓ checksums.txt (${files.length} file${files.length === 1 ? '' : 's'})`);
 }
 
 function updateLatestSymlink() {
@@ -183,6 +221,23 @@ for (const target of targets) {
 }
 
 writeChecksums(results.map((r) => r.outPath));
+
+// Create a web.tar.gz for GitHub release uploads so installers can fetch
+// dashboard assets separately (the binary doesn't embed them).
+const webDir = path.join(root, 'dist', 'web');
+if (fs.existsSync(webDir)) {
+  const webTarPath = path.join(versionDir, 'web.tar.gz');
+  try {
+    execSync(`tar -czf "${webTarPath}" -C "${path.dirname(webDir)}" web`, { cwd: root, stdio: 'pipe' });
+    const sizeKB = (fs.statSync(webTarPath).size / 1024).toFixed(0);
+    console.log(`  ✓ web.tar.gz (${sizeKB} KB)`);
+  } catch (e) {
+    console.warn(`  ⚠ Failed to create web.tar.gz: ${e.message}`);
+  }
+} else {
+  console.warn('  ⚠ dist/web/ not found — skipping web.tar.gz');
+}
+
 updateLatestSymlink();
 
 const built = results.filter((r) => !r.skipped).length;

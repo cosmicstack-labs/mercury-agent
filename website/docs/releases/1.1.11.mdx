@@ -1,0 +1,253 @@
+---
+title: "v1.1.11 — Skilly Mercury"
+sidebar_label: "v1.1.11"
+description: "Mercury becomes a skillful platform. Skill System, Token Saver Mode, standalone binaries on five OS targets, redesigned bottom status bar with per-step spinners, and a new built-in screenshot skill."
+image: /img/og/1.1.11.png
+keywords: [mercury, mercury-agent, skilly-mercury, skill-system, token-saver, standalone-binary, release, 1.1.11]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.1.11 — Skilly Mercury" />
+  <meta property="og:description" content="Mercury becomes a skillful platform. Skill System, Token Saver Mode, standalone binaries on five OS targets, redesigned bottom status bar with per-step spinners, and a new built-in screenshot skill." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.1.11" />
+  <meta property="og:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.1.11 — Skilly Mercury" />
+  <meta name="twitter:description" content="Skill System · Token Saver · Standalone binaries · Per-step spinners · Built-in screenshot skill." />
+  <meta name="twitter:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.1.11" />
+</Head>
+
+# v1.1.11 — Skilly Mercury
+
+> **Mercury graduates from "agent with skills" to a skillful platform.**
+
+`1.1.11` is the largest release of the `1.1.x` line. Mercury now ships as a **single standalone binary on five OS targets**, learns new behaviors via a full **Skill System** with markdown-defined skills, and gives every session a live **bottom status bar** with per-tool spinners and token usage. A new **Token Saver Mode** cuts spend on long-running agents, and the bundled **screenshot skill** lets Mercury capture any website out of the box.
+
+> **Why "Skilly Mercury"?** This is the release where skills became a first-class citizen. Mercury can now load skills from disk, route to them on demand, batch them, and ship with a curated set of defaults. The Mercury planet glyph (☿) is now a skilful messenger — composing, scheduling, screenshotting, and saving tokens on your behalf.
+
+> **Note:** Version `1.1.10` was skipped to keep numbering aligned across publish channels (npm, GitHub Releases, standalone-binary CDN).
+
+## At a glance
+
+| Area | What changed |
+|---|---|
+| **Skill System** | Full registry, intent router, default skill seeds, ambiguity picker (`#1`, `#2`, …), batching |
+| **Token Saver Mode** | Auto-engages at 75% of daily budget; `⚡SAVER` status-bar badge; persistable |
+| **Standalone binaries** | macOS arm64/x64, Linux x64/arm64, Windows x64 — no Node required |
+| **Bottom status bar** | Live provider · model · tokens · saver state; per-step spinner per tool call |
+| **Built-in skills** | `web-search`, `tweet-notifier`, `screenshot` (with viewport + dark/light mode) |
+| **Skill routing** | No more 10-skill fan-out on weak matches; numbered picker for genuine ambiguity |
+| **Shell guard** | Per-segment pattern checks for chained commands (`;`, `&&`, `||`, `|`) |
+| **Packaging** | One-line installers for every OS, hero install widget on the website |
+
+## Skill System
+
+Mercury can now load **user-defined behaviors** from `~/.mercury/skills/` and route to them based on natural-language intent. Skills are markdown files with YAML frontmatter — no code required.
+
+### What a skill looks like
+
+```markdown
+---
+name: my-skill
+description: One sentence describing when to use this.
+version: 1.0.0
+category: productivity
+intents:
+  - schedule a thing
+  - book the meeting
+tags: [scheduling, calendar]
+allowed-tools:
+  - schedule_task
+  - send_message
+---
+
+# My Skill
+
+Markdown body becomes Mercury's playbook when this skill is invoked.
+Workflow, rules, examples — Mercury reads it on demand.
+```
+
+### How routing works
+
+1. Mercury holds only the **frontmatter** of every skill in context (cheap).
+2. On each user message, the **intent router** scores skills against `intents`, `categories`, and `tags`.
+3. **High-confidence single match** → skill body is injected and Mercury executes.
+4. **Multiple plausible matches** → you get a numbered **ambiguity picker** (pick `#1`, `#2`, …).
+5. **Weak signal** → no skill is loaded; Mercury answers normally.
+
+This was the biggest UX fix in `1.1.11`: pre-release, weak keyword overlap could fire 10 skills at once. The router now requires real signal before triggering — and when it does ask, it asks cleanly.
+
+### Default skill seeds
+
+New installs and `mercury doctor --seed-skills` ship with:
+
+- **`web-search`** — DuckDuckGo HTML search + summarized sources, `fetch_url`-based.
+- **`tweet-notifier`** — Schedule tweets, route through founder approval, notify supporters at every state (`draft → scheduled → pending_approval → approved → posted`).
+- **`screenshot`** — full-page website capture with configurable viewport and dark/light color scheme. See [Screenshot skill](#built-in-screenshot-skill) below.
+
+Browse and install community skills at **[skills.mercuryagent.sh](https://skills.mercuryagent.sh)**.
+
+See: [`docs/reference/skills`](/docs/reference/skills) for full architecture, [`docs/cli-commands/skills`](/docs/cli-commands/skills) for the commands.
+
+## Built-in screenshot skill
+
+The `screenshot` skill takes full-page captures of any URL via Playwright/Chromium:
+
+```
+> take a screenshot of https://mercuryagent.sh in dark mode mobile
+```
+
+Mercury asks for missing parameters (viewport, color scheme), generates a temporary Playwright script, runs it headless, and saves a timestamped PNG to `~/Desktop/`. On Telegram, the result is sent as a photo attachment.
+
+Preset viewports: `mobile` (375 × 812), `tablet` (768 × 1024), `desktop` (1280 × 800), `desktop HD` (1920 × 1080), or custom. Color schemes: `light` / `dark` (emulates `prefers-color-scheme`).
+
+Requires Playwright/Chromium installed (`npx playwright install chromium`).
+
+## Token Saver Mode
+
+A battery-saver-style optimization for long-running sessions.
+
+| Knob | Normal | Saver |
+|---|---|---|
+| `maxOutputTokens` | 100% | × 0.4 |
+| Step budget | 100% | × 0.5 |
+| History window | 10 turns | 4 turns |
+| System prompt | normal | + "be terse" suffix |
+
+States: `off`, `on` (manual), `auto` (engaged at 75% of daily budget).
+
+```
+/saver on        # manually enable
+/saver off       # disable
+/saver auto on   # opt into auto-engage (default)
+/saver status    # show state and lifetime tokens saved
+```
+
+When saver auto-engages, Mercury notifies you once so you understand why response style just changed. Lifetime tokens saved are tracked separately on the `TokenBudget` and shown in `/saver status`.
+
+The bottom status bar shows **`⚡SAVER`** in cyan whenever saver is active (manual or auto).
+
+See: [`docs/reference/token-saver`](/docs/reference/token-saver).
+
+## Bottom status bar overhaul
+
+The TUI now has a **persistent bottom status bar** that shows, in real time:
+
+```
+☿ mercury  ·  deepseek · deepseek-chat  ·  12.3k / 100k tokens  ·  ⚡SAVER  ·  ● step 5 · ✂️ Editing App.tsx
+```
+
+- **Provider · model** — the active LLM for this session.
+- **Token budget** — used / daily limit, updates as each request completes.
+- **Saver badge** — `⚡SAVER` (manual) or `⚡SAVER·auto` (auto-engaged).
+- **Per-step spinner** — replaces the single global spinner; one indicator per tool call so you can see exactly where the agent is.
+
+This replaces the previous global "thinking…" spinner with a per-step view, which makes long multi-tool runs feel much more transparent.
+
+## Standalone binaries
+
+Mercury now ships as a **single executable** on five targets:
+
+| OS | Architecture | Binary |
+|---|---|---|
+| macOS | Apple Silicon | `mercury-macos-arm64` |
+| macOS | Intel | `mercury-macos-x64` |
+| Linux | x86-64 | `mercury-linux-x64` |
+| Linux | ARM64 | `mercury-linux-arm64` |
+| Windows | x86-64 | `mercury-win-x64.exe` |
+
+No Node.js required. Built with `bun build --compile` (Bun ships its own runtime per target, so cross-compile works end-to-end). The optional `better-sqlite3` native module is skipped in standalone builds and falls back to `sql.js` automatically.
+
+### One-line installers
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://mercuryagent.sh/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://mercuryagent.sh/install.ps1 | iex
+```
+
+Or grab the binary directly:
+
+- [mercury-macos-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/mercury-macos-arm64)
+- [mercury-macos-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/mercury-macos-x64)
+- [mercury-linux-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/mercury-linux-x64)
+- [mercury-linux-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/mercury-linux-arm64)
+- [mercury-win-x64.exe](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/mercury-win-x64.exe)
+- [checksums.txt](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.1.11/checksums.txt)
+
+Per-platform install guides: [macOS](/docs/getting-started/platforms/macos) · [Linux](/docs/getting-started/platforms/linux) · [Windows](/docs/getting-started/platforms/windows) · [Termux / Alpine / Pi Zero](/docs/getting-started/platforms/termux).
+
+### Still prefer npm?
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.1.11
+```
+
+Everything works exactly the same; this release adds binaries, it doesn't replace npm.
+
+## Skill ambiguity picker
+
+When the router can't pick a single skill confidently, Mercury now prints a clean numbered picker instead of fanning out:
+
+```
+I'm not sure which skill you want. Pick a number:
+
+  #1  tweet-notifier — Schedule tweets with founder approval
+  #2  schedule-task  — Schedule any background task at a future time
+
+Reply with #1 / #2, or describe what you want differently.
+```
+
+Type `#1` (or `1`) and Mercury continues with that skill. This replaces the previous behaviour where weak keyword overlap could trigger all 10 matching skills simultaneously.
+
+## Shell permission guard — per-segment checks
+
+The shell-permission guard now validates each segment of a chained command independently. Previously, a combined pattern check could let a disallowed command slip through when joined with `;`, `&&`, `||`, or `|`. Each segment is now matched against the allow-list separately. (Addresses a reported advisory.)
+
+## Smaller things
+
+- **`anonymous-file-uploader` skill removed** — no longer needed.
+- **`pino` upgraded** 9.14.0 → ^10.3.1 ([#51](https://github.com/cosmicstack-labs/mercury-agent/pull/51)).
+- **Domain migration** — `mercury.cosmicstack.org` → `mercuryagent.sh` (CNAME updated; old domain redirects via GitHub Pages).
+- **Chinese translations** for README, ARCHITECTURE, and CHANGELOG ([#53](https://github.com/cosmicstack-labs/mercury-agent/pull/53)).
+- **Release asset names** aligned with the published binaries so the one-line installers stop 404-ing on older fixtures ([#63](https://github.com/cosmicstack-labs/mercury-agent/pull/63)).
+
+## Upgrade
+
+```bash
+# npm
+npm install -g @cosmicstack/mercury-agent@1.1.11
+
+# standalone (re-run the installer, it overwrites in place)
+curl -fsSL https://mercuryagent.sh/install.sh | bash
+```
+
+No breaking changes. Skill System and Token Saver Mode are both **opt-in** for existing users:
+
+- Drop skills into `~/.mercury/skills/<skill-name>/SKILL.md` (or run `mercury doctor --seed-skills` to get the defaults).
+- Run `/saver auto on` once to opt into auto-engage; the manual `/saver on` toggle is always available.
+
+Existing configs, providers, threads, kanban boards, and Second Brain data all carry over unchanged.
+
+## Pull requests included
+
+- [#69](https://github.com/cosmicstack-labs/mercury-agent/pull/69) — Token Saver Mode + bottom status bar overhaul + per-step spinners
+- [#68](https://github.com/cosmicstack-labs/mercury-agent/pull/68) — Stop 10-skill fan-out; ambiguity picker
+- [#67](https://github.com/cosmicstack-labs/mercury-agent/pull/67) — Mercury Skills (feat/mercury-skills)
+- [#63](https://github.com/cosmicstack-labs/mercury-agent/pull/63) — Align release asset names with published binaries
+- [#61](https://github.com/cosmicstack-labs/mercury-agent/pull/61) — Standalone binaries, one-line installers, per-OS docs & hero install widget
+- [#53](https://github.com/cosmicstack-labs/mercury-agent/pull/53) — Chinese translations
+- [#51](https://github.com/cosmicstack-labs/mercury-agent/pull/51) — pino 9 → 10
+- [#48](https://github.com/cosmicstack-labs/mercury-agent/pull/48) — Per-segment shell pattern checks
+
+**Full changelog:** [v1.1.9 → v1.1.11](https://github.com/cosmicstack-labs/mercury-agent/compare/v1.1.9...v1.1.11)

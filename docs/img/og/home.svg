@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a14"/>
+      <stop offset="100%" stop-color="#11111e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- Top eyebrow -->
+  <g transform="translate(80, 92)">
+    <circle cx="18" cy="18" r="18" fill="url(#accent)"/>
+    <text x="18" y="25" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800" fill="#0a0a14" text-anchor="middle">☿</text>
+    <text x="52" y="26" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="#ffffff">Mercury Agent  ·  Soul-driven</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="80" y="270" font-family="Inter, system-ui, sans-serif" font-size="84" font-weight="900" fill="#ffffff" letter-spacing="-2.5">The AI agent that</text>
+  <text x="80" y="362" font-family="Inter, system-ui, sans-serif" font-size="84" font-weight="900" fill="url(#accent)" letter-spacing="-2.5">thinks, acts, and asks.</text>
+
+  <!-- Sub -->
+  <text x="80" y="430" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="500" fill="#9ca3af">
+    Second Brain memory  ·  Skill System  ·  Token Saver  ·  40+ permission-hardened tools
+  </text>
+  <text x="80" y="462" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="500" fill="#9ca3af">
+    Runs 24/7 from CLI, Web, or Telegram
+  </text>
+
+  <!-- Bottom row -->
+  <g transform="translate(80, 540)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="20" font-weight="600" fill="#00d4ff">
+      $ npm install -g @cosmicstack/mercury-agent
+    </text>
+  </g>
+
+  <!-- URL -->
+  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#6b7280" text-anchor="end">mercuryagent.sh</text>
+</svg>

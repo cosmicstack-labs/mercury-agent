@@ -67,6 +67,50 @@
 .lp-hero-glow { position: absolute; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 800px; background: radial-gradient(circle, rgba(0,212,255,0.06) 0%, transparent 70%); pointer-events: none; }
 .lp-hero-content { position: relative; text-align: center; }
 .lp-hero-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; border: 1px solid var(--border); background: rgba(0,212,255,0.04); color: var(--cyan); font-size: 0.82em; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 28px; }
+
+/* Soul-driven eyebrow — sits above the hero h1 */
+.lp-hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 12px;
+  margin: 0 auto 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hover);
+  background: linear-gradient(135deg, rgba(0,212,255,0.06) 0%, rgba(168,85,247,0.06) 100%);
+  font-size: 0.86em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--white-bright);
+  backdrop-filter: blur(8px);
+}
+.lp-hero-eyebrow-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%);
+  color: #0a0a14;
+  font-weight: 800;
+  font-size: 0.95em;
+  line-height: 1;
+}
+.lp-hero-eyebrow-text { white-space: nowrap; }
+.lp-hero-eyebrow-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(0,212,255,0.12);
+  color: var(--cyan);
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+@media (max-width: 520px) {
+  .lp-hero-eyebrow { flex-wrap: wrap; justify-content: center; padding: 8px 12px; }
+  .lp-hero-eyebrow-text { white-space: normal; }
+}
 .lp-hero-title { font-size: clamp(2.2em, 5vw, 3.8em); font-weight: 800; line-height: 1.15; margin-bottom: 20px; color: var(--white-bright); letter-spacing: -0.02em; }
 .lp-hero-highlight { background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 .lp-hero-sub { color: var(--gray); max-width: 560px; margin: 0 auto 36px; font-size: 1.1em; line-height: 1.65; }
@@ -338,6 +382,8 @@
 .lp-btn-primary:hover { background: #33ddff; box-shadow: 0 0 30px rgba(0,212,255,0.3); text-decoration: none !important; }
 .lp-btn-secondary { background: transparent; color: var(--cyan) !important; border: 1px solid var(--cyan-dim); }
 .lp-btn-secondary:hover { background: var(--cyan-glow); text-decoration: none !important; }
+.lp-btn-ghost { background: transparent; color: var(--gray) !important; border: 1px solid transparent; padding: 12px 18px; font-weight: 600; }
+.lp-btn-ghost:hover { color: var(--cyan) !important; background: rgba(0,212,255,0.04); text-decoration: none !important; }
 
 /* ---- Terminal ---- */
 .lp-terminal-window { background: var(--bg-terminal); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; text-align: left; box-shadow: 0 12px 60px rgba(0,0,0,0.5), 0 0 100px rgba(0,212,255,0.04); }

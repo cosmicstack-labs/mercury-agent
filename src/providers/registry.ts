@@ -11,8 +11,13 @@ async function createProvider(pc: ProviderConfig): Promise<BaseProvider> {
     const { DeepSeekProvider } = await import('./deepseek.js');
     return new DeepSeekProvider(pc);
   } else if (pc.name === 'ollamaLocal') {
-    const { OllamaProvider } = await import('./ollama.js');
-    return new OllamaProvider(pc);
+    // Route through OpenAI-compatible provider — local Ollama exposes
+    // /v1/chat/completions since v0.1.14. The ollama-ai-provider package
+    // declares specificationVersion = "v1" which is incompatible with
+    // AI SDK v6 (requires v2/v3). Using the OpenAI compat path avoids
+    // this entirely.
+    const { OpenAICompatProvider } = await import('./openai-compat.js');
+    return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });

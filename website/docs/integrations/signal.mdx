@@ -1,0 +1,232 @@
+---
+id: signal
+title: Signal
+---
+
+Mercury connects to Signal via a `signal-cli` bridge, providing an end-to-end encrypted conversational interface with support for group chats and private DMs, pairing-code access control, and real-time task progress.
+
+## Prerequisites
+
+:::danger[Important: Platform and dependency requirements]
+
+Signal integration has specific requirements that must be met before it will work:
+
+1. **Operating system**: Linux (x64 or ARM64) or macOS (Apple Silicon or Intel). **Windows is not supported** — `signal-cli` native binaries are not available for Windows.
+2. **`signal-cli`**: Mercury automatically downloads and manages `signal-cli` v0.14.5. On Linux, native binaries are available for x64 and ARM64. On macOS (or on Linux without native binaries), Mercury falls back to the Java-based `signal-cli` which requires **Java 17+** (`java` on your `PATH`).
+3. **Phone number**: You need a real phone number capable of receiving SMS or calls for Signal verification during registration. This number will be your Mercury bot's Signal identity.
+4. **Network access**: Signal servers must be reachable from your machine. If you're behind a firewall, ensure `signal-cli` can reach `https://chat.signal.org` and `https://storage.signal.org`.
+5. **Storage**: Approximately 50 MB for the `signal-cli` binary/JAR plus data storage in `~/.mercury/signal-cli/`.
+
+:::
+
+:::warning[First-time registration]
+
+On first run, Mercury will guide you through the `signal-cli` registration process. This involves:
+1. Registering your phone number with Signal (SMS or voice verification).
+2. Verifying the code Signal sends you.
+3. Setting a Signal profile name for the bot.
+
+This is a **one-time setup** — once registered, Mercury will automatically start the `signal-cli` daemon on subsequent launches.
+
+:::
+
+## How It Works
+
+Mercury's Signal integration works by running `signal-cli` in JSON-RPC mode as a managed subprocess. Mercury:
+
+1. **Downloads** the correct `signal-cli` binary for your platform (or uses the JAR if native binaries aren't available).
+2. **Registers** the phone number with Signal on first run (interactive CLI flow).
+3. **Starts** the `signal-cli` JSON-RPC daemon as a managed subprocess.
+4. **Communicates** via JSON-RPC over a local socket — no external API needed.
+5. **Manages** the daemon lifecycle (start, stop, health checks, auto-restart).
+
+All messages between you and Mercury travel through Signal's **end-to-end encryption**. Mercury never stores your Signal messages.
+
+## Setup
+
+### Step 1: Install Java (if needed)
+
+On macOS, Java is typically already available. On Linux, install it if you don't have it:
+
+```bash
+# Ubuntu/Debian
+sudo apt install openjdk-17-jre
+
+# Fedora/RHEL
+sudo dnf install java-17-openjdk
+
+# Alpine
+apk add openjdk17
+```
+
+To verify:
+```bash
+java -version
+# Should show 17 or later
+```
+
+:::tip[Skip Java on Linux with native binaries]
+
+On Linux x64 and ARM64, Mercury can use `signal-cli` native binaries that don't require Java at all. Mercury will automatically detect and use native binaries when available. Only install Java if you're on macOS or if the native binary doesn't work on your Linux system.
+
+:::
+
+### Step 2: Configure Mercury
+
+Run `mercury doctor` and select Signal when prompted, or set these environment variables:
+
+```bash
+# Required
+SIGNAL_ENABLED=true
+SIGNAL_PHONE_NUMBER=+1234567890    # Your bot's phone number (E.164 format)
+
+# Optional — "group" (default) or "private"
+SIGNAL_MODE=group
+
+# Optional — restrict to a specific Signal group
+SIGNAL_GROUP_ID=
+SIGNAL_GROUP_NAME=Mercury
+```
+
+Or add them to `~/.mercury/.env`.
+
+### Step 3: Start Mercury and Register
+
+```bash
+mercury up
+```
+
+On first launch with Signal enabled, Mercury will:
+1. Download `signal-cli` to `~/.mercury/signal-cli/`.
+2. Start the registration flow:
+   ```
+   Signal: Registering +1234567890 with Signal...
+   Signal: Verification code sent. Enter the code:
+   ```
+3. Enter the verification code you receive via SMS or call.
+4. Set a profile name for your bot (e.g. "Mercury").
+
+After registration is complete, Mercury will save the credentials and auto-start `signal-cli` on subsequent launches.
+
+### Step 4: Start Chatting
+
+#### Group Mode (default)
+
+1. Create a Signal group named **"Mercury"** (or your configured `SIGNAL_GROUP_NAME`).
+2. Add your Mercury bot's phone number to the group.
+3. Mercury will automatically detect the group and start responding.
+
+#### Private Mode
+
+Set `SIGNAL_MODE=private` to use 1:1 DMs instead of a group. Send a message directly to the bot's phone number.
+
+### Step 5: Pair
+
+When a new user sends a message to the Mercury bot for the first time, they'll receive instructions to pair:
+
+1. Send `/pair` to the bot on Signal.
+2. The bot will respond with a pairing code.
+3. Enter the code in the CLI:
+   ```bash
+   mercury signal pair <code>
+   ```
+4. You are now the Signal admin. Other users can request access by messaging the bot, and admins can approve them.
+
+## Access Model
+
+Mercury Signal uses an **organization access model** with admins and members.
+
+| Role | Description | Can approve requests? |
+|------|-------------|----------------------|
+| **Admin** | First user to pair. Can approve/reject access requests, promote/demote users. | Yes |
+| **Member** | Approved by an admin. Can send messages and receive responses. | No |
+| **Pending** | Sent `/start` but not yet approved. | No |
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `mercury signal list` | Show approved admins, members, and pending requests |
+| `mercury signal approve <userId>` | Approve a pending request |
+| `mercury signal reject <userId>` | Reject a pending request |
+| `mercury signal remove <userId>` | Remove an approved admin or member |
+| `mercury signal promote <userId>` | Promote a member to admin |
+| `mercury signal demote <userId>` | Demote an admin to member |
+| `mercury signal reset` | Clear all Signal access (start fresh) |
+
+:::warning[Phone number display]
+
+In CLI output, phone numbers are **redacted** (e.g. `+1***890`) for privacy. The full numbers are stored in `~/.mercury/mercury.yaml` but never displayed in logs or terminal output.
+
+:::
+
+## Modes
+
+### Group Mode (default)
+
+Mercury listens for messages in a Signal group named "Mercury" (configurable via `SIGNAL_GROUP_NAME`). This is the recommended mode because:
+
+- Messages are visible to all group members (useful for team collaboration).
+- Mercury auto-detects the group by name.
+- You can override the group with `SIGNAL_GROUP_ID` for precise control.
+
+### Private Mode
+
+Set `SIGNAL_MODE=private` for 1:1 conversations. In this mode:
+
+- Mercury only responds to direct messages (not group messages).
+- Each user gets their own conversation thread.
+- Access control still applies — unapproved users see a pairing prompt.
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| End-to-end encryption | All messages use Signal's E2E encryption |
+| Group and private modes | Listen in a named group or respond to DMs |
+| Pairing code onboarding | Secure admin setup via CLI pairing code |
+| Auto-managed signal-cli | Download, register, start, and health-check handled automatically |
+| Message deduplication | Duplicate messages are filtered within a 60-second window |
+| Rate limiting | Built-in busy detection prevents message flooding |
+| Long message splitting | Messages over 4000 characters are split into multiple Signal messages |
+| Phone number redaction | CLI output always redacts phone numbers for privacy |
+
+## Configuration Reference
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SIGNAL_ENABLED` | Enable/disable Signal channel | `false` |
+| `SIGNAL_PHONE_NUMBER` | Bot's phone number (E.164 format, e.g. `+1234567890`) | — |
+| `SIGNAL_MODE` | `"group"` or `"private"` | `group` |
+| `SIGNAL_GROUP_ID` | Restrict to a specific Signal group (hex ID). Leave empty for auto-detect by name. | — |
+| `SIGNAL_GROUP_NAME` | Name of the Signal group to auto-detect | `Mercury` |
+
+## Troubleshooting
+
+**signal-cli won't start**
+- On macOS: Make sure Java 17+ is installed and `java` is on your `PATH`.
+- On Linux: Try the native binary first. If it fails, install Java 17+ and Mercury will fall back to the JAR.
+- Run `mercury logs` for detailed error output.
+
+**Registration fails**
+- Make sure your phone number is in E.164 format (e.g. `+1234567890`).
+- Ensure your phone number can receive SMS or calls from Signal.
+- If you've previously registered this number, you may need to re-register: `mercury signal unregister` then start again.
+
+**Bot doesn't respond in the group**
+- Verify the group name matches `SIGNAL_GROUP_NAME` (default: "Mercury").
+- Try setting `SIGNAL_GROUP_ID` directly to the group's hex ID (you can find it in `mercury logs`).
+- Make sure the bot's phone number has been added to the group.
+
+**"Unpaired" response**
+- New users need to send `/pair` and then complete the CLI pairing flow.
+- If you've lost admin access, run `mercury signal reset` to start fresh.
+
+**signal-cli crashes repeatedly**
+- Check `~/.mercury/signal-cli/` for the data directory. Corrupted data can cause crashes.
+- Try removing the data directory and re-registering: **Warning:** this will delete your Signal identity and you'll need to re-register.
+- Check `mercury logs` for the specific error.
+
+**Windows is not supported**
+- Signal integration requires `signal-cli` which does not have Windows native binaries.
+- Consider using Docker with a Linux container if you need Signal on a Windows host.

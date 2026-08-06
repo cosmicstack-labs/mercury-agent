@@ -42,7 +42,7 @@ const MAX_TASKS = 20;
 const PRUNE_AGE_MS = 60 * 60 * 1000;
 const SIGTERM_GRACE_MS = 3000;
 const MAX_PREVIEW = 200;
-const DEFAULT_SHELL_TIMEOUT_MS = 0;
+const DEFAULT_SHELL_TIMEOUT_MS = 30 * 60 * 1000;
 const BG_TASKS_FILE = 'background-tasks.json';
 
 let taskCounter = 0;
@@ -434,6 +434,9 @@ export class BackgroundTaskManager {
           task.status = 'failed';
           task.completedAt = Date.now();
           task.stderr = `${task.stderr}\nRecovered after restart: task was running when process exited.`.trim();
+          // Notify the user about recovered (failed) tasks so they don't
+          // have to check /bg list to discover what happened.
+          this.notifyComplete(task);
         }
         this.tasks.set(task.id, task);
         usedIds.add(task.id);

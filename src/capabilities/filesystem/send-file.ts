@@ -7,15 +7,16 @@ import type { PermissionManager } from '../permissions.js';
 export function createSendFileTool(
   permissions: PermissionManager,
   getCwd: () => string,
-  sendFile: (filePath: string) => Promise<void>,
+  sendFile: (filePath: string, channel?: string) => Promise<void>,
 ) {
   return tool({
     description:
-      'Send a file to the user. On Telegram the file is uploaded as an attachment to the relevant approved recipients. On CLI the file path and size are displayed. The path must be within an allowed read scope.',
+      'Send a file to the user. Use the channel parameter to send via a specific channel (signal, telegram). If omitted, sends via the current channel or the best available channel.',
     inputSchema: zodSchema(z.object({
       path: z.string().describe('Absolute or relative path to the file to send'),
+      channel: z.enum(['signal', 'telegram']).optional().describe('The channel to send the file via. Use this when the user explicitly requests a specific channel, e.g. "send via Signal" or "send to Telegram".'),
     })),
-    execute: async ({ path }) => {
+    execute: async ({ path, channel }) => {
       const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
       const check = await permissions.checkFsAccess(resolved, 'read');
       if (!check.allowed) {
@@ -37,7 +38,7 @@ export function createSendFileTool(
       }
 
       try {
-        await sendFile(resolved);
+        await sendFile(resolved, channel);
         const filename = basename(resolved);
         const sizeStr =
           stat.size > 1024 * 1024

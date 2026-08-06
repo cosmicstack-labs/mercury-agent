@@ -144,6 +144,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/skills remove ',
     '/skills help',
     '/stream',
+    '/saver',
+    '/saver on',
+    '/saver off',
+    '/saver toggle',
+    '/saver threshold ',
+    '/saver auto on',
+    '/saver auto off',
+    '/saver routing on',
+    '/saver routing off',
     '/view',
     '/view balanced',
     '/view detailed',
@@ -168,6 +177,47 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   React.useEffect(() => {
     setSlashSelIdx(0);
   }, [slashSuggestions.length, input]);
+
+  // ── Skill picker (`#name` prefix) ──
+  // Mirrors the slash picker. Triggered when input starts with `#`. Matches
+  // skills by name prefix first, then by name-substring, then by
+  // description-substring (case-insensitive). The selected entry inserts as
+  // `#skill-name ` so the user can continue typing their request.
+  const skillSuggestions = React.useMemo(() => {
+    if (!input.startsWith('#')) return [] as Array<{ name: string; description: string }>;
+    const q = input.slice(1).split(/\s/)[0].toLowerCase();
+    const skills = state.skills || [];
+    if (!q) {
+      return skills.slice(0, 8).map((s) => ({ name: s.name, description: s.description }));
+    }
+    const prefix: typeof skills = [];
+    const nameSub: typeof skills = [];
+    const descSub: typeof skills = [];
+    for (const s of skills) {
+      const n = s.name.toLowerCase();
+      if (n.startsWith(q)) prefix.push(s);
+      else if (n.includes(q)) nameSub.push(s);
+      else if ((s.description || '').toLowerCase().includes(q)) descSub.push(s);
+    }
+    return [...prefix, ...nameSub, ...descSub]
+      .slice(0, 8)
+      .map((s) => ({ name: s.name, description: s.description }));
+  }, [input, state.skills]);
+
+  const [skillSelIdx, setSkillSelIdx] = React.useState(0);
+  React.useEffect(() => {
+    setSkillSelIdx(0);
+  }, [skillSuggestions.length, input]);
+
+  const completeSkillSelection = React.useCallback(() => {
+    const picked = skillSuggestions[skillSelIdx];
+    if (!picked) return false;
+    // If the user already typed something after the hash-token, keep it.
+    const rest = input.slice(1).split(/\s(.*)/s)[1] || '';
+    const next = rest ? `#${picked.name} ${rest}` : `#${picked.name} `;
+    setInputAndCursor(next);
+    return true;
+  }, [skillSuggestions, skillSelIdx, input]);
 
   React.useEffect(() => {
     if (state.mode !== 'splash') return;
@@ -428,6 +478,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         return;
       }
 
+      // Skill picker: first Enter fills the selection (so the user can keep
+      // typing their request after the skill name); second Enter submits.
+      if (skillSuggestions.length > 0) {
+        const picked = skillSuggestions[skillSelIdx];
+        const expected = picked ? `#${picked.name}` : '';
+        if (picked && !trimmed.startsWith(expected + ' ') && trimmed !== expected) {
+          completeSkillSelection();
+          return;
+        }
+      }
+
       if (trimmed) {
         onInput(trimmed);
         setInputHistory((prev) => {
@@ -554,6 +615,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       return;
     }
 
+    // Ctrl+D → show last task's step log (when not in workspace nav mode,
+    // which uses Ctrl+D for scrolling).  Splash mode also uses 'd' key.
+    if (key.ctrl && (ch === 'd' || ch === 'D') && !state.permissionPrompt && state.mode !== 'workspace') {
+      onInput('/log');
+      return;
+    }
+
     // Ctrl+N → insert newline (multi-line input)
     if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
       setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
@@ -573,6 +641,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.tab) {
       if (input.startsWith('/') && slashSuggestions.length > 0) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
+      } else if (input.startsWith('#') && skillSuggestions.length > 0) {
+        completeSkillSelection();
       }
       return;
     }
@@ -595,6 +665,18 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       }
       if (key.downArrow) {
         setSlashSelIdx((i) => (i < slashSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+    }
+
+    // Up/down arrow: navigate skill (#) suggestions when popup is visible
+    if (skillSuggestions.length > 0) {
+      if (key.upArrow) {
+        setSkillSelIdx((i) => (i > 0 ? i - 1 : skillSuggestions.length - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSkillSelIdx((i) => (i < skillSuggestions.length - 1 ? i + 1 : 0));
         return;
       }
     }
@@ -734,6 +816,18 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
+      {showInput && skillSuggestions.length > 0 && (
+        <Box flexDirection="column" paddingX={1}>
+          <Text dimColor>Skills (↑↓ navigate · Tab/Enter to select):</Text>
+          {skillSuggestions.map((s, idx) => (
+            <Text key={s.name} color={idx === skillSelIdx ? 'magenta' : 'gray'}>
+              {idx === skillSelIdx ? '›' : ' '} #{s.name}
+              {s.description ? <Text dimColor> — {s.description.slice(0, 70)}{s.description.length > 70 ? '…' : ''}</Text> : null}
+            </Text>
+          ))}
+        </Box>
+      )}
+      <TokenBarView state={state} />
     </Box>
   );
 }
@@ -774,11 +868,6 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
 function StatusBarView({ state }: { state: TuiState }) {
   const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
   const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
-  let tokenBar = '';
-  if (state.tokenInfo) {
-    const filled = Math.min(20, Math.round(state.tokenInfo.percentage / 5));
-    tokenBar = `[${'█'.repeat(filled)}${'░'.repeat(20 - filled)}] ${state.tokenInfo.percentage}%`;
-  }
   const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
   const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
 
@@ -806,6 +895,9 @@ function StatusBarView({ state }: { state: TuiState }) {
         <Box flexGrow={1}>
           <Text bold color="cyan">{state.agentName}</Text>
           {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
+          {state.saverInfo && state.saverInfo.state !== 'off' && (
+            <Text> <Text color="gray">|</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
+          )}
           {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
           <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
           <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
@@ -815,15 +907,101 @@ function StatusBarView({ state }: { state: TuiState }) {
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
       </Box>
-      {state.tokenInfo && (
-        <Box paddingX={1}>
-          <Text color="cyan">Tokens </Text>
-          <Text>{tokenBar}</Text>
-          <Text color="gray"> {state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()}</Text>
-        </Box>
-      )}
     </Box>
   );
+}
+
+function TokenBarView({ state }: { state: TuiState }) {
+  if (!state.tokenInfo && !state.provider) return null;
+
+  const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
+  const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
+
+  // Color the percentage based on usage thresholds (or saver state if active)
+  const pct = state.tokenInfo?.percentage ?? 0;
+  const pctColor = saverActive
+    ? saverColor
+    : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
+
+  // Sub-agent count (running only)
+  const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
+  // Background task count (running only)
+  const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
+
+  const isWorkspace = state.mode === 'workspace' && state.workspace;
+
+  return (
+    <Box flexDirection="column">
+      <Box paddingX={1}>
+        <Text color="gray">{'─'.repeat(50)}</Text>
+      </Box>
+      <Box paddingX={1} paddingBottom={0}>
+        {state.tokenInfo && (
+          <>
+            {saverActive && (
+              <Text color={saverColor} bold>⚡ </Text>
+            )}
+            <Text color={pctColor}>{pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'} </Text>
+            <Text color={pctColor}>
+              [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
+            </Text>
+            <Text color={pctColor} bold> {pct}%</Text>
+            {saverActive && state.saverInfo!.savedToday > 0 && (
+              <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
+            )}
+            {saverActive && state.saverInfo!.savedToday === 0 && (
+              <Text color={saverColor}> · SAVER</Text>
+            )}
+          </>
+        )}
+
+        {state.provider && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="magenta">{state.provider.model}</Text>
+          </>
+        )}
+
+        {isWorkspace && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="blue">⎇ {state.workspace!.branch}</Text>
+            {(state.workspace!.ahead > 0 || state.workspace!.behind > 0) && (
+              <Text color="yellow">
+                {state.workspace!.ahead > 0 ? ` ↑${state.workspace!.ahead}` : ''}
+                {state.workspace!.behind > 0 ? ` ↓${state.workspace!.behind}` : ''}
+              </Text>
+            )}
+            {(state.workspace!.stagedCount > 0 || state.workspace!.unstagedCount > 0) && (
+              <Text color="gray">
+                {state.workspace!.stagedCount > 0 ? <Text color="green"> S{state.workspace!.stagedCount}</Text> : null}
+                {state.workspace!.unstagedCount > 0 ? <Text color="yellow"> M{state.workspace!.unstagedCount}</Text> : null}
+              </Text>
+            )}
+          </>
+        )}
+
+        {!isWorkspace && runningBg > 0 && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="cyan">⏳ {runningBg} bg</Text>
+          </>
+        )}
+        {!isWorkspace && runningAgents > 0 && (
+          <>
+            <Text color="gray"> │ </Text>
+            <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
+          </>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 function ChatBody({ state }: { state: TuiState }) {
@@ -832,7 +1010,7 @@ function ChatBody({ state }: { state: TuiState }) {
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
@@ -871,7 +1049,7 @@ function CodingBody({ state }: { state: TuiState }) {
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
-        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} />}
+        {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
@@ -1452,31 +1630,99 @@ function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; ag
   );
 }
 
-function ToolStepsView({ steps, viewMode }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed' }) {
-  const visible = viewMode === 'detailed' ? steps.slice(-20) : steps.slice(-5);
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/**
+ * Animated row for a currently-running tool step.
+ *
+ * Shows a braille spinner + live elapsed counter so the user gets
+ * continuous feedback during long operations (1-2 min tool calls
+ * like screenshots, large file ops, sub-agent dispatches).
+ *
+ * Color escalates to signal long runs:
+ *   < 30s : cyan       — normal
+ *   30-90s: yellow     — "still working" hint
+ *   > 90s : red        — long-op warning (mentions Ctrl+C)
+ */
+function RunningStepRow({ step }: { step: ToolStep }) {
+  const [frame, setFrame] = React.useState(0);
+  const [elapsed, setElapsed] = React.useState(() =>
+    step.startedAt ? Math.floor((Date.now() - step.startedAt) / 1000) : 0,
+  );
+
+  React.useEffect(() => {
+    const startedAt = step.startedAt ?? Date.now();
+    const timer = setInterval(() => {
+      setFrame((v) => (v + 1) % SPINNER_FRAMES.length);
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 80);
+    return () => clearInterval(timer);
+  }, [step.startedAt]);
+
+  const tone = elapsed >= 90 ? 'red' : elapsed >= 30 ? 'yellow' : 'cyan';
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const timeStr = mins > 0 ? `${mins}m${secs.toString().padStart(2, '0')}s` : `${secs}s`;
+
+  return (
+    <Box>
+      <Text color={tone}>{SPINNER_FRAMES[frame]}</Text>
+      <Text> </Text>
+      <Text color={tone} bold>{step.label}</Text>
+      <Text dimColor> · {timeStr}</Text>
+      {elapsed >= 30 && elapsed < 90 && <Text color="yellow" dimColor> · still working</Text>}
+      {elapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels, /bg current to background)</Text>}
+    </Box>
+  );
+}
+
+function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode: 'balanced' | 'detailed'; idle?: boolean }) {
+  // When idle (task complete), show a single compact summary line.
+  // Full history is accessible via Ctrl+D (/log).
+  if (idle) {
+    const last = [...steps].reverse().find((s) => s.status === 'done' || s.status === 'error') ?? steps[steps.length - 1];
+    if (!last) return null;
+    const totalDone = steps.filter((s) => s.status === 'done').length;
+    const icon = last.status === 'done' ? '✓' : last.status === 'error' ? '✗' : '·';
+    const more = totalDone > 1 ? ` (+${totalDone - 1})` : '';
+    return (
+      <Box marginLeft={2} marginTop={1}>
+        <Text dimColor>{icon} {last.label}{more} · Ctrl+D for details</Text>
+      </Box>
+    );
+  }
+
+  // Active: show at most 3 visible steps (running + last 2 done).
+  // All other steps are collapsed into "N earlier" — no scrolling list.
+  const MAX_VISIBLE = 3;
   const totalDone = steps.filter((s) => s.status === 'done').length;
-  const totalRunning = steps.filter((s) => s.status === 'running').length;
-  const hiddenCount = Math.max(0, steps.length - visible.length);
+  const doneSteps = steps.filter((s) => s.status === 'done');
+  const runningSteps = steps.filter((s) => s.status === 'running');
+  const hiddenCount = Math.max(0, steps.length - MAX_VISIBLE);
+  const visible = [
+    ...doneSteps.slice(-(MAX_VISIBLE - runningSteps.length)),
+    ...runningSteps,
+  ].slice(-MAX_VISIBLE);
+
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color="gray">Activity</Text>
-        <Text dimColor> · {totalDone} done{totalRunning > 0 ? `, ${totalRunning} running` : ''}</Text>
-        {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier steps hidden</Text>}
+        <Text color="gray" bold>⏳</Text>
+        <Text color="gray"> {totalDone} done{runningSteps.length > 0 ? `, ${runningSteps.length} running` : ''}</Text>
+        {hiddenCount > 0 && <Text dimColor> · {hiddenCount} earlier</Text>}
       </Box>
-      {visible.map((step) => (
-        <Box key={step.id}>
-          <Text>
-            {step.status === 'running' ? '⏳' : step.status === 'done' ? '✅' : '❌'}
-          </Text>
-          <Text> </Text>
-          <Text dimColor={step.status === 'done'} color={step.status === 'running' ? 'cyan' : undefined} bold={step.status === 'running'}>{step.label}</Text>
-          {step.status === 'running' && <Text color="yellow"> …</Text>}
-          {step.status === 'done' && step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
-          {viewMode === 'detailed' && step.result && <Text dimColor> · {step.result}</Text>}
-        </Box>
-      ))}
-      <Text dimColor>Ctrl+T toggles view · /progress for full history</Text>
+      {visible.map((step) => {
+        if (step.status === 'running') {
+          return <RunningStepRow key={step.id} step={step} />;
+        }
+        return (
+          <Box key={step.id}>
+            <Text color="green">✓</Text>
+            <Text dimColor> {step.label}</Text>
+            {step.elapsed != null && <Text dimColor> ({step.elapsed.toFixed(1)}s)</Text>}
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -1501,30 +1747,37 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
   const doneSteps = steps.filter((s) => s.status === 'done');
   const totalSteps = steps.length;
 
-  // Determine current action label
   const currentAction = runningStep
     ? runningStep.label
     : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
-  // Format elapsed time
-  const mins = Math.floor(elapsed / 60);
-  const secs = elapsed % 60;
+  const displayElapsed = runningStep?.startedAt
+    ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0)
+    : elapsed;
+  const actionTone = displayElapsed >= 90 ? 'red' : displayElapsed >= 30 ? 'yellow' : 'white';
+
+  const mins = Math.floor(displayElapsed / 60);
+  const secs = displayElapsed % 60;
   const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  // Show at most 2 most recent completed steps (keeps total lines ≤ 3)
+  const recentDone = doneSteps.slice(-2);
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
       <Box>
-        <Text color="cyan">{spinner}</Text>
+        <Text color={actionTone === 'white' ? 'cyan' : actionTone}>{spinner}</Text>
         <Text> </Text>
-        <Text color="cyan" bold>{totalSteps > 0 ? agentName : 'Processing'}</Text>
+        <Text color="cyan" bold>{totalSteps > 0 ? 'Processing' : 'Processing'}</Text>
         <Text dimColor>{totalSteps > 0 ? ` · step ${totalSteps} · ${timeStr}` : ` · ${timeStr}`}</Text>
       </Box>
       <Box marginLeft={4}>
-        <Text color="white" bold>{currentAction}</Text>
+        <Text color={actionTone} bold>{currentAction}</Text>
+        {displayElapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels, /bg current to background)</Text>}
       </Box>
-      {doneSteps.length > 0 && (
+      {recentDone.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>
-          {doneSteps.slice(-3).map((step) => (
+          {recentDone.map((step) => (
             <Box key={step.id}>
               <Text color="green">✓</Text>
               <Text dimColor> {step.label}</Text>

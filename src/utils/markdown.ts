@@ -231,3 +231,146 @@ export function mdToTelegram(text: string): string {
 
   return out;
 }
+
+export function mdToSignal(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
+    const placeholder = `__CB_${codeBlocks.length}__`;
+    codeBlocks.push(code.trim());
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `__IC_${inlineCodes.length}__`;
+    inlineCodes.push(code);
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `__LK_${links.length}__`;
+    links.push(`${label} (${href})`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '*$1*');
+  out = out.replace(/^## (.+)$/gm, '*$1*');
+  out = out.replace(/^# (.+)$/gm, '*$1*');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '_$1_');
+  out = out.replace(/~~([^~]+)~~/g, '~$1~');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`__IC_${i}__`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`__CB_${i}__`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`__LK_${i}__`, links[i]);
+  }
+
+  if (out.length > 4000) {
+    out = out.slice(0, 3990) + '...';
+  }
+
+  return out;
+}
+
+export function mdToDiscord(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    const placeholder = `__DCB_${codeBlocks.length}__`;
+    codeBlocks.push(`\`\`\`${lang}\n${code.trim()}\n\`\`\``);
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `__DIC_${inlineCodes.length}__`;
+    inlineCodes.push(`\`${code}\``);
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `__DLK_${links.length}__`;
+    links.push(`[${label}](${href})`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '__$1__');
+  out = out.replace(/^## (.+)$/gm, '**$1**');
+  out = out.replace(/^# (.+)$/gm, '**$1**');
+  out = out.replace(/~~([^~]+)~~/g, '~~$1~~');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`__DIC_${i}__`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`__DCB_${i}__`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`__DLK_${i}__`, links[i]);
+  }
+
+  if (out.length > 2000) {
+    out = out.slice(0, 1990) + '...';
+  }
+
+  return out;
+}
+
+export function mdToSlack(text: string): string {
+  let out = text;
+
+  const codeBlocks: string[] = [];
+  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    const placeholder = `__SCB_${codeBlocks.length}__`;
+    codeBlocks.push(`\`\`\`${lang}\n${code.trim()}\n\`\`\``);
+    return placeholder;
+  });
+
+  const inlineCodes: string[] = [];
+  out = out.replace(/`([^`]+)`/g, (_match, code) => {
+    const placeholder = `__SIC_${inlineCodes.length}__`;
+    inlineCodes.push(`\`${code}\``);
+    return placeholder;
+  });
+
+  const links: string[] = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const placeholder = `__SLK_${links.length}__`;
+    links.push(`<${href}|${label}>`);
+    return placeholder;
+  });
+
+  out = out.replace(/^### (.+)$/gm, '*$1*');
+  out = out.replace(/^## (.+)$/gm, '*$1*');
+  out = out.replace(/^# (.+)$/gm, '*$1*');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '_$1_');
+  out = out.replace(/~~([^~]+)~~/g, '~$1~');
+  out = out.replace(/^- /gm, '• ');
+
+  for (let i = 0; i < inlineCodes.length; i++) {
+    out = out.replace(`__SIC_${i}__`, inlineCodes[i]);
+  }
+  for (let i = 0; i < codeBlocks.length; i++) {
+    out = out.replace(`__SCB_${i}__`, codeBlocks[i]);
+  }
+  for (let i = 0; i < links.length; i++) {
+    out = out.replace(`__SLK_${i}__`, links[i]);
+  }
+
+  if (out.length > 40000) {
+    out = out.slice(0, 39990) + '...';
+  }
+
+  return out;
+}

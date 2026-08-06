@@ -23,10 +23,30 @@ import {
   promoteTelegramUserToAdmin,
   demoteTelegramAdmin,
   hasTelegramAdmins,
+  getSignalAccessSummary,
+  hasSignalAdmins as hasSignalAdminsFn,
+  findSignalPendingRequest,
+  approveSignalPendingRequestByPairingCode,
+  clearSignalAccess,
+  getDiscordAccessSummary,
+  hasDiscordAdmins as hasDiscordAdminsFn,
+  findDiscordPendingRequest,
+  approveDiscordPendingRequest,
+  approveDiscordPendingRequestByPairingCode,
+  rejectDiscordPendingRequest,
+  removeDiscordUser,
+  clearDiscordAccess,
+  getSlackAccessSummary,
+  findSlackPendingRequest,
+  approveSlackPendingRequest,
+  rejectSlackPendingRequest,
+  removeSlackUser,
+  clearSlackAccess,
 } from './utils/config.js';
 import type { MercuryConfig } from './utils/config.js';
 import type { ProviderName } from './utils/config.js';
 import { logger } from './utils/logger.js';
+import { redactPhone } from './utils/redact.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { UserMemoryStore } from './memory/user-memory.js';
@@ -40,13 +60,15 @@ import { SpotifyClient } from './spotify/client.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { CLIChannel } from './channels/cli.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { SignalChannel } from './channels/signal.js';
+import { DiscordChannel } from './channels/discord.js';
 import { WebChannel } from './channels/web.js';
 import { TokenBudget } from './utils/tokens.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
@@ -571,6 +593,35 @@ function formatTelegramUser(user: {
   return `${user.userId}${username}${firstName}`;
 }
 
+function formatSignalUser(user: {
+  phoneNumber: string;
+  name?: string;
+  role?: string;
+}): string {
+  const name = user.name ? ` (${user.name})` : '';
+  const role = user.role ? ` [${user.role}]` : '';
+  return `${redactPhone(user.phoneNumber)}${name}${role}`;
+}
+
+function printSignalAccessState(config: MercuryConfig): void {
+  const admins = config.channels.signal.admins;
+  const members = config.channels.signal.members;
+  const pending = config.channels.signal.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => `${entry.phoneNumber} [code: ${entry.pairingCode}]`).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+  console.log(`  Mode:            ${chalk.white(config.channels.signal.mode)}`);
+  if (config.channels.signal.groupId) {
+    console.log(`  Group:           ${chalk.white(config.channels.signal.groupName || config.channels.signal.groupId)}`);
+  }
+  console.log(`  Admins:          ${admins.length > 0 ? chalk.green(admins.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:         ${members.length > 0 ? chalk.green(members.map(formatSignalUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
 function printTelegramAccessState(config: MercuryConfig): void {
   const admins = config.channels.telegram.admins;
   const members = config.channels.telegram.members;
@@ -587,6 +638,72 @@ function printTelegramAccessState(config: MercuryConfig): void {
   console.log(`  Admins:          ${admins.length > 0 ? chalk.green(admins.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Members:         ${members.length > 0 ? chalk.green(members.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
+function formatDiscordUser(user: {
+  userId: string;
+  username?: string;
+  displayName?: string;
+  role?: string;
+}): string {
+  const username = user.username ? ` (@${user.username})` : '';
+  const displayName = user.displayName ? ` ${user.displayName}` : '';
+  const role = user.role ? ` [${user.role}]` : '';
+  return `${user.userId}${username}${displayName}${role}`;
+}
+
+function printDiscordAccessState(config: MercuryConfig): void {
+  const admins = config.channels.discord.admins;
+  const members = config.channels.discord.members;
+  const pending = config.channels.discord.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => {
+        const code = entry.pairingCode ? ` [code: ${entry.pairingCode}]` : '';
+        return `${formatDiscordUser(entry)}${code}`;
+      }).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Discord Access:  ${chalk.white(getDiscordAccessSummary(config))}`);
+  if (config.channels.discord.guildId) {
+    console.log(`  Guild:            ${chalk.white(config.channels.discord.guildId)}`);
+  }
+  if (config.channels.discord.channelId) {
+    console.log(`  Channel:          ${chalk.white(config.channels.discord.channelId)}`);
+  }
+  if (config.channels.discord.adminRoleName) {
+    console.log(`  Admin Role:        ${chalk.white(config.channels.discord.adminRoleName)}`);
+  }
+  console.log(`  Admins:           ${admins.length > 0 ? chalk.green(admins.map(formatDiscordUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:          ${members.length > 0 ? chalk.green(members.map(formatDiscordUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:          ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+}
+
+function formatSlackUser(user: { userId: string; userName?: string; displayName?: string }): string {
+  const userName = user.userName ? ` (@${user.userName})` : '';
+  const displayName = user.displayName ? ` ${user.displayName}` : '';
+  return `${user.userId}${userName}${displayName}`;
+}
+
+function printSlackAccessState(config: MercuryConfig): void {
+  const admins = config.channels.slack.admins;
+  const members = config.channels.slack.members;
+  const pending = config.channels.slack.pending;
+  const pendingSummary = pending.length > 0
+    ? pending.map((entry) => formatSlackUser(entry)).join(', ')
+    : '';
+
+  console.log('');
+  console.log(`  Slack Access:  ${chalk.white(getSlackAccessSummary(config))}`);
+  if (config.channels.slack.teamId) {
+    console.log(`  Team:           ${chalk.white(config.channels.slack.teamId)}`);
+  }
+  if (config.channels.slack.channelId) {
+    console.log(`  Channel:        ${chalk.white(config.channels.slack.channelId)}`);
+  }
+  console.log(`  Admins:         ${admins.length > 0 ? chalk.green(admins.map(formatSlackUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Members:        ${members.length > 0 ? chalk.green(members.map(formatSlackUser).join(', ')) : chalk.dim('none')}`);
+  console.log(`  Pending:        ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
 }
 
 function restartDaemonIfRunning(message?: string): void {
@@ -642,6 +759,294 @@ async function completeInitialTelegramPairing(config: MercuryConfig): Promise<vo
     }
   } finally {
     await telegram.stop();
+  }
+}
+
+async function completeInitialSignalSetup(config: MercuryConfig): Promise<void> {
+  if (!config.channels.signal.enabled || !config.channels.signal.phoneNumber) {
+    return;
+  }
+
+  // Already paired
+  if (hasSignalAdminsFn(config)) {
+    console.log(chalk.green('  ✓ Signal already paired.'));
+    if (config.channels.signal.mode === 'group' && config.channels.signal.groupName) {
+      console.log(chalk.dim(`  Group: ${config.channels.signal.groupName}`));
+    }
+    console.log(chalk.dim('  To unregister, run: mercury signal unregister'));
+    console.log('');
+    const keepConfig = await ask(chalk.white('  Keep the existing configuration? (Y/n): '));
+    if (keepConfig.toLowerCase() !== 'n' && keepConfig.toLowerCase() !== 'no') {
+      return;
+    }
+    // Clear pairing data but keep phone number — fall through to fresh pairing
+    config.channels.signal.admins = [];
+    config.channels.signal.members = [];
+    config.channels.signal.pending = [];
+    config.channels.signal.groupId = undefined;
+    config.channels.signal.groupName = undefined;
+
+    // Re-ask mode since we're starting fresh
+    const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+    config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+    saveConfig(config);
+    console.log(chalk.dim('  Configuration cleared. Starting fresh pairing...'));
+
+    // Kill any running signal-cli daemon so group list is fresh
+    try {
+      const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+      killStaleSignalCliProcesses();
+    } catch { /* ignore */ }
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Signal Setup'));
+
+  const { ensureSignalCli, checkJavaAvailable, isNativeAvailable } = await import('./signal/binary.js');
+  const { checkSignalSetup, registerSignalNumber, verifySignalNumber, startLinking, waitForLinkCompletion, cancelLinking, printQrCode } = await import('./signal/setup.js');
+
+  // Step 1: Check Java if needed (macOS/Windows have no native binary)
+  if (!isNativeAvailable() && !checkJavaAvailable()) {
+    console.log(chalk.red('  ✗ Java (JRE 17+) is required for Signal on this platform.'));
+    console.log(chalk.dim('  No native signal-cli binary is available for macOS/Windows.'));
+    console.log(chalk.dim('  Install Java: https://adoptium.net/ or run: brew install openjdk'));
+    console.log(chalk.dim('  Then re-run: mercury doctor'));
+    return;
+  }
+
+  // Step 2: Download signal-cli binary
+  try {
+    const binaryPath = await ensureSignalCli();
+    const { isWrapperScript, isJarBinary: isJar } = await import('./signal/binary.js');
+    const binaryType = isWrapperScript(binaryPath) ? 'JAR (wrapper)'
+      : isJar(binaryPath) ? 'JAR'
+      : 'native binary';
+    console.log(chalk.green(`  ✓ signal-cli installed (${binaryType})`));
+  } catch (err: any) {
+    console.log(chalk.red(`  ✗ Failed to download signal-cli: ${err.message}`));
+    if (!isNativeAvailable()) {
+      console.log(chalk.dim('  Make sure Java (JRE 17+) is installed and accessible.'));
+    }
+    console.log(chalk.dim('  You can try again later with: mercury doctor'));
+    return;
+  }
+
+  // Step 3: Check if already linked
+  const status = await checkSignalSetup(config);
+  if (status.linked) {
+    console.log(chalk.green('  ✓ Signal device is already linked.'));
+  } else {
+    // Step 3b: Register number if needed
+    if (!status.registered) {
+      console.log(chalk.yellow('  This phone number is not registered with Signal.'));
+      console.log(chalk.dim('  You need to register it first:'));
+
+      const registerAnswer = await ask(chalk.white('  Register this number with Signal? (y/N): '));
+      if (registerAnswer.toLowerCase() !== 'y' && registerAnswer.toLowerCase() !== 'yes') {
+        console.log(chalk.dim('  You can register later by running: mercury signal register'));
+        return;
+      }
+
+      const voice = await ask(chalk.white('  Verify via SMS or voice call? (sms/voice) [sms]: '));
+      const useVoice = voice.toLowerCase().startsWith('voice');
+
+      console.log(chalk.dim('  Sending verification code...'));
+      const regResult = await registerSignalNumber(config.channels.signal.phoneNumber, useVoice);
+      if (!regResult.success) {
+        console.log(chalk.red(`  ✗ Registration failed: ${regResult.error}`));
+        return;
+      }
+      console.log(chalk.green('  ✓ Verification code sent.'));
+
+      const code = await ask(chalk.white('  Enter the verification code: '));
+      if (!code) {
+        console.log(chalk.red('  Verification code is required.'));
+        return;
+      }
+
+      const verifyResult = await verifySignalNumber(config.channels.signal.phoneNumber, code.trim());
+      if (!verifyResult.success) {
+        console.log(chalk.red(`  ✗ Verification failed: ${verifyResult.error}`));
+        return;
+      }
+      console.log(chalk.green('  ✓ Number verified.'));
+    }
+
+    // Step 4: Link as secondary device
+    console.log('');
+    console.log(chalk.dim('  Linking Mercury as a secondary device on your Signal account.'));
+    console.log(chalk.dim('  1. Open Signal on your phone'));
+    console.log(chalk.dim('  2. Go to Settings > Linked Devices'));
+    console.log(chalk.dim('  3. Tap "+" to add a new device'));
+    console.log('');
+
+    const linkAnswer = await ask(chalk.white('  Ready to link? Press Enter to generate a QR code...'));
+    const session = await startLinking();
+    if (!session) {
+      console.log(chalk.red('  ✗ Failed to generate linking URI.'));
+      console.log(chalk.dim('  Make sure signal-cli is installed and Java is available.'));
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.cyan('  Scan this QR code with Signal:'));
+    console.log('');
+    printQrCode(session.uri);
+    console.log('');
+    console.log(chalk.dim('  Mercury is waiting for you to complete the link...'));
+
+    const linked = await waitForLinkCompletion(session, 120_000);
+    if (linked) {
+      console.log(chalk.green('  ✓ Signal device linked successfully.'));
+    } else {
+      console.log(chalk.yellow('  Linking timed out or failed.'));
+      console.log(chalk.dim('  Run mercury doctor to try again.'));
+      return;
+    }
+  }
+
+  // Step 5: Pairing — start daemon and wait for pairing code
+  console.log('');
+  console.log(chalk.bold.white('  Signal Pairing'));
+
+  const signalChannel = new SignalChannel(config);
+  try {
+    await signalChannel.start();
+  } catch (err: any) {
+    console.log(chalk.red(`  ✗ Failed to start Signal daemon: ${err.message}`));
+    console.log(chalk.dim('  Make sure signal-cli is working by running: mercury signal status'));
+    console.log(chalk.dim('  You can pair manually by sending /pair in Signal and running: mercury signal approve <code>'));
+    return;
+  }
+
+  if (!signalChannel.running) {
+    console.log(chalk.red('  ✗ Signal daemon did not start.'));
+    console.log(chalk.dim('  You can pair manually by sending /pair in Signal and running: mercury signal approve <code>'));
+    return;
+  }
+
+  // Detect Mercury group now that the daemon is running
+  let groupFound = false;
+  if (config.channels.signal.mode === 'group') {
+    if (config.channels.signal.groupId) {
+      groupFound = true;
+      console.log(chalk.dim('  Your Mercury group is already configured.'));
+    } else {
+      console.log(chalk.dim('  Searching for "Mercury" group...'));
+      try {
+        const group = await signalChannel.listGroups();
+        if (group) {
+          config.channels.signal.groupId = group.groupId;
+          config.channels.signal.groupName = group.groupName;
+          saveConfig(config);
+          groupFound = true;
+          console.log(chalk.green(`  ✓ Found group: ${group.groupName}`));
+        }
+      } catch {
+        // Group search may fail
+      }
+    }
+
+    if (groupFound) {
+      console.log(chalk.dim('  Send /pair in the Mercury group to get a pairing code.'));
+    } else {
+      console.log(chalk.dim('  1. Create a Signal group named "Mercury" (or use an existing one)'));
+      console.log(chalk.dim('  2. Add your linked number to the group'));
+      console.log(chalk.dim('  3. Send /pair in the group'));
+    }
+  } else {
+    // Private mode: auto-pair the linked number as admin
+    // In private mode, the linked number IS the admin — no need for a pairing code
+    if (!hasSignalAdminsFn(config) && config.channels.signal.phoneNumber) {
+      config.channels.signal.admins.push({
+        phoneNumber: config.channels.signal.phoneNumber,
+        role: 'admin',
+        pairedAt: new Date().toISOString(),
+      });
+      saveConfig(config);
+      console.log(chalk.green('  ✓ Auto-paired as admin (private mode).'));
+      console.log(chalk.dim('  Mercury will respond to messages in your "Note to Self" chat.'));
+      console.log('');
+      await signalChannel.stop();
+      saveConfig(config);
+      return;
+    }
+    console.log(chalk.dim('  Send /pair in your Signal "Note to Self" chat to get a pairing code.'));
+  }
+  console.log('');
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Signal Pairing Code (or press Enter to skip): '));
+      if (!pairingCode) {
+        console.log(chalk.dim('  You can pair later by sending /pair in Signal and running: mercury signal approve <code>'));
+        break;
+      }
+
+      // Reload config from disk — SignalChannel may have saved the pending request
+      const freshConfig = loadConfig();
+      const approved = approveSignalPendingRequestByPairingCode(freshConfig, pairingCode.trim());
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid. Make sure you sent /pair in Signal and enter the exact code.'));
+        continue;
+      }
+
+      Object.assign(config, freshConfig);
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Signal paired. First admin: ${formatSignalUser(approved)}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await signalChannel.stop();
+  }
+
+  saveConfig(config);
+}
+
+async function completeInitialDiscordPairing(config: MercuryConfig): Promise<void> {
+  if (!config.channels.discord.enabled || !config.channels.discord.botToken || hasDiscordAdminsFn(config)) {
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.white('  Discord Pairing'));
+  console.log(chalk.dim('  1. Open Discord and DM your bot.'));
+  console.log(chalk.dim('  2. Send /start to receive your pairing code.'));
+  console.log(chalk.dim('  3. Paste that pairing code below to finish setup.'));
+  console.log('');
+
+  const discordChannel = new DiscordChannel(config);
+  try {
+    await discordChannel.start();
+  } catch (err: any) {
+    console.log(chalk.red(`\n  ✗ ${err.message || err}`));
+    console.log('');
+    await discordChannel.stop();
+    return;
+  }
+
+  try {
+    while (true) {
+      const pairingCode = await ask(chalk.white('  Discord Pairing Code: '));
+      if (!pairingCode) {
+        console.log(chalk.red('  Discord pairing code is required to continue.'));
+        continue;
+      }
+
+      const approved = approveDiscordPendingRequestByPairingCode(config, pairingCode.trim());
+      if (!approved) {
+        console.log(chalk.red('  That pairing code is not valid yet. Send /start in Discord, then paste the exact code here.'));
+        continue;
+      }
+
+      saveConfig(config);
+      console.log(chalk.green(`  ✓ Discord paired. First admin: ${formatDiscordUser(approved)}.`));
+      console.log('');
+      break;
+    }
+  } finally {
+    await discordChannel.stop();
   }
 }
 
@@ -1054,6 +1459,295 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
   hr();
   console.log('');
+  console.log(chalk.bold.white('  Signal (optional)'));
+  if (isReconfig && config.channels.signal.phoneNumber) {
+    console.log(chalk.dim('  Leave empty to keep current number. Enter "none" to disable Signal.'));
+    console.log(chalk.dim('  Enter "reset" to start fresh (clear config, optionally delete binary).'));
+    console.log(chalk.dim('  Enter "unregister" to unlink this device from Signal and clear all data.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+    console.log(chalk.dim('  Include country code, e.g. +1 for US, +44 for UK, +91 for India.'));
+    console.log(chalk.dim('  Signal lets you chat with Mercury through a Signal group or private chat.'));
+  }
+  console.log('');
+
+  const signalPhoneCurrent = isReconfig && config.channels.signal.phoneNumber ? ` [${redactPhone(config.channels.signal.phoneNumber)}]` : '';
+  const signalPhoneInput = await ask(chalk.white(`  Signal phone number${signalPhoneCurrent}: `));
+
+  if (isReconfig && signalPhoneInput.toLowerCase() === 'none') {
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    clearSignalAccess(config);
+    saveConfig(config);
+  } else if (isReconfig && signalPhoneInput.toLowerCase() === 'unregister') {
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will unlink this device from Signal and clear all Mercury Signal data.'));
+    console.log(chalk.yellow('  Mercury will no longer be able to send or receive Signal messages.'));
+    console.log('');
+    const confirmUnregister = await ask(chalk.white('  Continue? (y/N): '));
+    if (confirmUnregister.toLowerCase() !== 'y' && confirmUnregister.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+    } else {
+      const phoneNumberToDelete = config.channels.signal.phoneNumber;
+
+      // Send goodbye message (best effort, skip if signal-cli not installed or target gone)
+      const { findSignalCli, sendSignalMessage } = await import('./signal/setup.js');
+      if (findSignalCli()) {
+        const target: { groupId?: string; recipient?: string } = {};
+        if (config.channels.signal.mode === 'group' && config.channels.signal.groupId) {
+          target.groupId = config.channels.signal.groupId;
+        } else if (config.channels.signal.admins.length > 0) {
+          target.recipient = config.channels.signal.admins[0].phoneNumber;
+        }
+        if (target.groupId || target.recipient) {
+          try {
+            await sendSignalMessage(config.channels.signal.phoneNumber, 'Mercury has been unregistered from this conversation. It will no longer respond here. To reconnect, the admin needs to set up Signal again with: mercury doctor', target);
+          } catch { /* best effort */ }
+        }
+      }
+
+      const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+      killStaleSignalCliProcesses();
+
+      // Unregister from Signal server
+      console.log(chalk.dim('  Unlinking device from Signal...'));
+      const { unregisterSignalNumber } = await import('./signal/setup.js');
+      const unregResult = await unregisterSignalNumber(config.channels.signal.phoneNumber);
+      if (unregResult.success) {
+        console.log(chalk.green('  ✓ Device unlinked from Signal server.'));
+      } else {
+        console.log(chalk.yellow('  ⚠ Could not reach Signal server to unlink device.'));
+        console.log(chalk.dim('  Local data has been cleared. The device will be unlinked automatically.'));
+      }
+
+      clearSignalAccess(config);
+      config.channels.signal.enabled = false;
+      config.channels.signal.phoneNumber = '';
+      config.channels.signal.groupId = undefined;
+      config.channels.signal.groupName = undefined;
+      saveConfig(config);
+
+      const { deleteSignalCliAccountData } = await import('./signal/setup.js');
+      if (phoneNumberToDelete) {
+        deleteSignalCliAccountData(phoneNumberToDelete);
+      }
+
+      console.log(chalk.green('  ✓ Signal data cleared.'));
+
+      const setupNew = await ask(chalk.white('  Set up Signal with a new number now? (y/N): '));
+      if (setupNew.toLowerCase() === 'y' || setupNew.toLowerCase() === 'yes') {
+        const newPhone = await ask(chalk.white('  New Signal phone number (e.g. +1234567890): '));
+        if (newPhone) {
+          config.channels.signal.phoneNumber = newPhone.trim();
+          config.channels.signal.enabled = true;
+          const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+          config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+          saveConfig(config);
+        }
+      }
+    }
+  } else if (isReconfig && signalPhoneInput.toLowerCase() === 'reset') {
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will clear all Signal access and group connection.'));
+    const deleteBinary = await ask(chalk.white('  Also delete the signal-cli binary? (y/N): '));
+    if (deleteBinary.toLowerCase() === 'y' || deleteBinary.toLowerCase() === 'yes') {
+      const { removeSignalCli, getSignalCliDir } = await import('./signal/setup.js');
+      const { existsSync } = await import('node:fs');
+      if (existsSync(getSignalCliDir())) {
+        removeSignalCli();
+        console.log(chalk.green('  ✓ Signal binary removed.'));
+      }
+    }
+
+    console.log(chalk.green('  ✓ Signal config reset.'));
+    console.log(chalk.dim('  Continue below to set up Signal with a new number.'));
+    console.log('');
+
+    const newPhone = await ask(chalk.white('  New Signal phone number (e.g. +1234567890): '));
+    if (newPhone) {
+      config.channels.signal.phoneNumber = newPhone.trim();
+      config.channels.signal.enabled = true;
+
+      const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+      config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+
+      saveConfig(config);
+    }
+  } else if (signalPhoneInput) {
+    if (signalPhoneInput !== config.channels.signal.phoneNumber) {
+      clearSignalAccess(config);
+    }
+    config.channels.signal.phoneNumber = signalPhoneInput.trim();
+    config.channels.signal.enabled = true;
+
+    const modeAnswer = await ask(chalk.white('  Mode — group or private? [group]: '));
+    config.channels.signal.mode = modeAnswer.toLowerCase().startsWith('private') ? 'private' : 'group';
+
+    saveConfig(config);
+  } else if (!config.channels.signal.phoneNumber) {
+    config.channels.signal.enabled = false;
+    saveConfig(config);
+  }
+
+  await completeInitialSignalSetup(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Discord (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  console.log(chalk.dim('  To create a Discord bot:'));
+  console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+  console.log(chalk.dim('    2. Click "New Application" → give it a name'));
+  console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
+  console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
+  console.log(chalk.dim('       - Message Content Intent'));
+  console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
+  console.log(chalk.dim('       Scopes: bot, applications.commands'));
+  console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
+  console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
+  console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
+  console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
+  console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  console.log('');
+
+  const dcMask = isReconfig && config.channels.discord.botToken ? ` [${maskKey(config.channels.discord.botToken)}]` : '';
+  const discordToken = await ask(chalk.white(`  Discord Bot Token${dcMask}: `));
+  if (isReconfig && discordToken.toLowerCase() === 'none') {
+    config.channels.discord.enabled = false;
+    config.channels.discord.botToken = '';
+    clearDiscordAccess(config);
+  } else if (discordToken) {
+    if (discordToken !== config.channels.discord.botToken) {
+      clearDiscordAccess(config);
+    }
+    config.channels.discord.botToken = discordToken;
+    appendToEnv('DISCORD_BOT_TOKEN', discordToken);
+    config.channels.discord.enabled = true;
+  }
+
+  if (config.channels.discord.enabled && config.channels.discord.botToken) {
+    if (!config.channels.discord.guildId) {
+      console.log('');
+      console.log(chalk.dim('  To find your Server ID: in Discord, go to Settings → App Settings →'));
+      console.log(chalk.dim('  Advanced → toggle Developer Mode ON. Then right-click your server'));
+      console.log(chalk.dim('  name in the sidebar → Copy Server ID.'));
+      const guildId = await ask(chalk.white('  Discord Guild/Server ID (optional — leave empty for all servers): '));
+      if (guildId.trim()) {
+        config.channels.discord.guildId = guildId.trim();
+      }
+    }
+
+    if (!config.channels.discord.channelId) {
+      console.log(chalk.dim('  To find a Channel ID: right-click the channel name in the sidebar → Copy Channel ID.'));
+      const channelId = await ask(chalk.white('  Discord Channel ID (optional — leave empty for all channels): '));
+      if (channelId.trim()) {
+        config.channels.discord.channelId = channelId.trim();
+      }
+    }
+
+    const adminRoleCurrent = isReconfig && config.channels.discord.adminRoleName ? ` [${config.channels.discord.adminRoleName}]` : '';
+    const adminRoleName = await ask(chalk.white(`  Admin role name${adminRoleCurrent} [Mercury Admin]: `));
+    if (adminRoleName.trim()) {
+      config.channels.discord.adminRoleName = adminRoleName.trim();
+    } else if (!config.channels.discord.adminRoleName) {
+      config.channels.discord.adminRoleName = 'Mercury Admin';
+    }
+
+    saveConfig(config);
+  } else if (!config.channels.discord.botToken) {
+    config.channels.discord.enabled = false;
+    saveConfig(config);
+  }
+
+  await completeInitialDiscordPairing(config);
+
+  hr();
+  console.log('');
+  console.log(chalk.bold.white('  Slack (optional)'));
+  if (isReconfig) {
+    console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
+  } else {
+    console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  console.log(chalk.dim('  To create a Slack app:'));
+  console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
+  console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
+  console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
+  console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
+  console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
+  console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
+  console.log(chalk.dim('       files:write, commands, app_mentions:read'));
+  console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
+  console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
+  console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
+  console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
+  console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
+  console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
+  console.log(chalk.dim('       and messages from the messages tab"'));
+  console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
+  console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
+  console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+
+  const slMask = isReconfig && config.channels.slack.botToken ? ` [${maskKey(config.channels.slack.botToken)}]` : '';
+  const slackBotToken = await ask(chalk.white(`  Slack Bot Token${slMask} (starts with xoxb-): `));
+  if (isReconfig && slackBotToken.toLowerCase() === 'none') {
+    config.channels.slack.enabled = false;
+    config.channels.slack.botToken = '';
+    clearSlackAccess(config);
+  } else if (slackBotToken) {
+    if (slackBotToken !== config.channels.slack.botToken) {
+      clearSlackAccess(config);
+    }
+    config.channels.slack.botToken = slackBotToken;
+    appendToEnv('SLACK_BOT_TOKEN', slackBotToken);
+  }
+
+  if (config.channels.slack.enabled || config.channels.slack.botToken) {
+    const slAppMask = isReconfig && config.channels.slack.appToken ? ` [${maskKey(config.channels.slack.appToken)}]` : '';
+    const slackAppToken = await ask(chalk.white(`  Slack App-Level Token${slAppMask} (starts with xapp-): `));
+    if (slackAppToken && slackAppToken.toLowerCase() !== 'none') {
+      config.channels.slack.appToken = slackAppToken;
+      appendToEnv('SLACK_APP_TOKEN', slackAppToken);
+    } else if (slackAppToken.toLowerCase() === 'none') {
+      config.channels.slack.appToken = '';
+    }
+
+    if (config.channels.slack.botToken) {
+      config.channels.slack.enabled = true;
+
+      if (!config.channels.slack.channelId) {
+        console.log(chalk.dim('  To find a Channel ID: right-click the channel name → Copy Channel ID.'));
+        const slChannelId = await ask(chalk.white('  Slack Channel ID (optional — leave empty for all channels): '));
+        if (slChannelId.trim()) {
+          config.channels.slack.channelId = slChannelId.trim();
+        }
+      }
+
+      if (!config.channels.slack.teamId) {
+        const slTeamId = await ask(chalk.white('  Slack Team/Workspace ID (optional): '));
+        if (slTeamId.trim()) {
+          config.channels.slack.teamId = slTeamId.trim();
+        }
+      }
+
+      saveConfig(config);
+    }
+  } else if (!config.channels.slack.botToken) {
+    config.channels.slack.enabled = false;
+    saveConfig(config);
+  }
+
+  hr();
+  console.log('');
   console.log(chalk.bold.white('  GitHub Integration (optional)'));
   console.log(chalk.dim('  Connect Mercury to GitHub so it can create PRs, manage issues,'));
   console.log(chalk.dim('  review code, and co-author commits on your behalf.'));
@@ -1303,6 +1997,23 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   config = ensureCreatorField(config);
   const name = config.identity.name;
 
+  // Check for crash flag from previous run — if Mercury crashed mid-task,
+  // report it to the user immediately so they don't have to investigate.
+  const { readCrashFlag, clearCrashFlag } = await import('./core/crash-flag.js');
+  const crashFlag = readCrashFlag();
+  if (crashFlag) {
+    clearCrashFlag();
+    const age = Math.round((Date.now() - crashFlag.timestamp) / 1000);
+    const timeAgo = age >= 60 ? `${Math.floor(age / 60)}m ago` : `${age}s ago`;
+    const msg = `⚠ Mercury crashed ${timeAgo}: ${crashFlag.reason}`;
+    if (!isDaemon) {
+      console.log(chalk.yellow(`  ${msg}`));
+      console.log(chalk.dim('  If you had an active task, it was interrupted. You can retry.\n'));
+    } else {
+      logger.warn({ crashFlag }, 'Previous crash detected');
+    }
+  }
+
   if (!isDaemon) {
     logger.info(`${name} is waking up...`);
   } else {
@@ -1417,17 +2128,38 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
   });
 
-  capabilities.setSendFileHandler(async (filePath: string) => {
+  capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
     const { channelId, channelType } = capabilities.getChannelContext();
     const telegram = channels.get('telegram');
+    const signal = channels.get('signal');
+
+    // Explicit channel override from the user
+    if (channel === 'signal' && signal) {
+      await signal.sendFile(filePath, channelType === 'signal' ? channelId : undefined);
+      return;
+    }
+    if (channel === 'telegram' && telegram) {
+      await telegram.sendFile(filePath, channelType === 'telegram' ? channelId : undefined);
+      return;
+    }
 
     if (channelType === 'telegram' && telegram) {
       await telegram.sendFile(filePath, channelId);
       return;
     }
 
+    if (channelType === 'signal' && signal) {
+      await signal.sendFile(filePath, channelId);
+      return;
+    }
+
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.sendFile(filePath);
+      return;
+    }
+
+    if (config.channels.signal.enabled && signal && hasSignalAdminsFn(config)) {
+      await signal.sendFile(filePath);
       return;
     }
 
@@ -1496,7 +2228,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       bootCli.setSkills(skillInfos);
       bootCli.setProvider(getProviderLabel(defaultProvider), defaultModel);
       bootCli.setTokenInfo(tokenBudget.getDailyUsed(), tokenBudget.getBudget(), Math.round(tokenBudget.getUsagePercentage()));
+      bootCli.setSaverMode(agent.saverMode.getState(), tokenBudget.getSavedToday(), tokenBudget.getSavedLifetime());
       bootCli.setWebInfo(config.web.enabled, config.web.port);
+      // Wire live status providers so the bottom bar refreshes every 2s
+      // without waiting for an LLM call or queue completion.
+      bootCli.setStatusProviders({
+        tokens: () => ({
+          used: tokenBudget.getDailyUsed(),
+          budget: tokenBudget.getBudget(),
+          percentage: Math.round(tokenBudget.getUsagePercentage()),
+        }),
+        saver: () => ({
+          state: agent.saverMode.getState(),
+          savedToday: tokenBudget.getSavedToday(),
+          savedLifetime: tokenBudget.getSavedLifetime(),
+        }),
+        subAgents: () => supervisor ? supervisor.getActiveAgents().map((a) => ({
+          id: a.id,
+          task: a.task,
+          status: a.status,
+          progress: a.progress,
+          startedAt: 0,
+        })) : [],
+        bgTasks: () => agent.backgroundTasks.getAllSummaries(),
+      });
+      bootCli.startStatusPoller(2000);
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
@@ -1512,9 +2268,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
+  const sigChannel = channels.get('signal') as SignalChannel | undefined;
 
   if (tgChannel) {
     tgChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
+  }
+
+  if (sigChannel) {
+    sigChannel.setChatCommandContext(capabilities.getChatCommandContext()!);
   }
 
   setWebWebChannel(webChannel);
@@ -1695,6 +2456,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (channelType === 'telegram' && tgChannel) {
       return tgChannel.askPermission(prompt);
     }
+    if (channelType === 'signal' && channels.get('signal')) {
+      return (channels.get('signal') as SignalChannel).askPermission(prompt);
+    }
     if (channelType === 'web' && webChannel) {
       return webChannel.askPermission(prompt);
     }
@@ -1710,6 +2474,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      }
+    });
+  }
+
+  if (sigChannel) {
+    sigChannel.setOnPermissionMode((mode) => {
+      if (mode === 'allow-all') {
+        capabilities.permissions.setAutoApproveAll(true);
+        capabilities.permissions.addTempScope('/', true, true);
+        logger.info('Signal: Allow All mode set for session');
       }
     });
   }
@@ -1779,6 +2553,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     } else {
       logger.info('Mercury is shutting down (daemon mode)');
     }
+    // Notify all channels that Mercury is stopping — users should never
+    // have to re-prompt to discover their task was killed mid-flight.
+    try {
+      await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
+    } catch { /* best effort */ }
     if (userMemory) {
       try {
         userMemory.consolidate();
@@ -1794,7 +2573,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   if (!isDaemon && process.platform !== 'win32') {
-    process.on('SIGHUP', () => {
+    process.on('SIGHUP', async () => {
       logger.info('SIGHUP received — terminal closed. Daemonizing.');
       try {
         const result = tryAutoDaemonize();
@@ -1802,9 +2581,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           logger.info(`Forked daemon. Foreground process exiting.`);
         } else {
           logger.warn('SIGHUP received but daemonization failed. Shutting down.');
+          // Notify before forced exit
+          try {
+            await agent.notifyAllChannels('⚠ Mercury lost its terminal and could not daemonize. Shutting down — your task was interrupted.');
+          } catch { /* best effort */ }
         }
       } catch {
         logger.warn('SIGHUP received but daemonization failed. Shutting down.');
+        try {
+          await agent.notifyAllChannels('⚠ Mercury lost its terminal and could not daemonize. Shutting down — your task was interrupted.');
+        } catch { /* best effort */ }
       }
       process.exit(0);
     });
@@ -1858,8 +2644,8 @@ program
 program
   .command('stop')
   .description('Stop a background Mercury process')
-  .action(() => {
-    stopDaemon();
+  .action(async () => {
+    await stopDaemon();
   });
 
 program
@@ -1949,6 +2735,18 @@ program
     console.log(`  Provider: ${chalk.white(getProviderLabel(config.providers.default))}`);
     console.log(`  Telegram: ${config.channels.telegram.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
     console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+    console.log(`  Signal:   ${config.channels.signal.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.signal.phoneNumber) {
+      console.log(`  Signal Access: ${chalk.white(getSignalAccessSummary(config))}`);
+    }
+    console.log(`  Discord:  ${config.channels.discord.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.discord.botToken) {
+      console.log(`  Discord Access: ${chalk.white(getDiscordAccessSummary(config))}`);
+    }
+    console.log(`  Slack:    ${config.channels.slack.enabled ? chalk.green('enabled') : chalk.dim('disabled')}`);
+    if (config.channels.slack.botToken) {
+      console.log(`  Slack Access: ${chalk.white(getSlackAccessSummary(config))}`);
+    }
     console.log(`  Web:      ${config.web.enabled ? chalk.green(`enabled (http://localhost:${config.web.port})`) : chalk.dim('disabled')}`);
     console.log(`  Skills:   ${skills.length > 0 ? chalk.green(skills.map(s => s.name).join(', ')) : chalk.dim('none')}`);
     console.log(`  Budget:   ${chalk.white(config.tokens.dailyBudget.toLocaleString())} tokens/day`);
@@ -1968,6 +2766,15 @@ program
     console.log(`  Daemon:   ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
     console.log(`  Home:     ${chalk.dim(home)}`);
     printTelegramAccessState(config);
+    if (config.channels.signal.phoneNumber) {
+      printSignalAccessState(config);
+    }
+    if (config.channels.discord.botToken) {
+      printDiscordAccessState(config);
+    }
+    if (config.channels.slack.botToken) {
+      printSlackAccessState(config);
+    }
     console.log('');
   });
 
@@ -2177,6 +2984,517 @@ telegramCmd
     console.log('');
   });
 
+const signalCmd = program
+  .command('signal')
+  .description('Manage Signal channel access and setup');
+
+signalCmd
+  .command('approve <code>')
+  .description('Approve a pending Signal pairing request by code')
+  .action(async (code: string) => {
+    const config = loadConfig();
+
+    if (!hasSignalAdminsFn(config)) {
+      const approved = approveSignalPendingRequestByPairingCode(config, code.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending Signal pairing found for code ${code.trim()}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Signal admin ${approved.phoneNumber}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const pending = findSignalPendingRequest(config, code.trim());
+    if (!pending) {
+      console.log('');
+      console.log(chalk.red(`  No pending Signal pairing found for ${code.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.yellow(`  A Signal admin already exists. New members must be approved by an admin in Signal.`));
+    console.log('');
+  });
+
+signalCmd
+  .command('unpair')
+  .description('Reset all Signal access and group connection')
+  .action(() => {
+    const config = loadConfig();
+    const hasAny = config.channels.signal.admins.length > 0
+      || config.channels.signal.members.length > 0
+      || config.channels.signal.pending.length > 0;
+
+    if (!hasAny) {
+      console.log('');
+      console.log(chalk.dim('  Signal access is already empty.'));
+      console.log('');
+      return;
+    }
+
+    clearSignalAccess(config);
+    saveConfig(config);
+
+    console.log('');
+    console.log(chalk.green('  ✓ Signal access reset.'));
+    console.log(chalk.dim('  Send /pair in Signal to reconnect.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('reset')
+  .description('Full reset: clear Signal access, delete binary, and unlink device')
+  .option('--keep-binary', 'Keep the signal-cli binary (only clear config)')
+  .action(async (opts) => {
+    const { removeSignalCli, getSignalCliDir, checkJavaAvailable, ensureSignalCli } = await import('./signal/setup.js');
+    const config = loadConfig();
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will:'));
+    console.log(chalk.yellow('  • Clear all Signal access (admins, members, pending)'));
+    console.log(chalk.yellow('  • Remove group connection'));
+    console.log(chalk.yellow('  • Disable the Signal channel'));
+    if (!opts.keepBinary) {
+      console.log(chalk.yellow('  • Delete the signal-cli binary from disk'));
+    }
+    console.log('');
+
+    const answer = await ask(chalk.white('  Continue? [y/N] '));
+    if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+      console.log('');
+      return;
+    }
+
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    saveConfig(config);
+
+    if (!opts.keepBinary) {
+      const signalDir = getSignalCliDir();
+      const { existsSync } = await import('node:fs');
+      if (existsSync(signalDir)) {
+        removeSignalCli();
+        console.log(chalk.green('  ✓ Signal binary removed.'));
+      }
+    }
+
+    console.log(chalk.green('  ✓ Signal reset complete.'));
+    console.log(chalk.dim('  Run `mercury doctor` to set up Signal again.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+signalCmd
+  .command('status')
+  .description('Show Signal configuration and connection status')
+  .action(async () => {
+    const config = loadConfig();
+    const { checkSignalSetup } = await import('./signal/setup.js');
+
+    console.log('');
+    console.log(chalk.bold.white('  Signal Status'));
+    console.log('');
+
+    if (!config.channels.signal.phoneNumber) {
+      console.log(chalk.dim('  Not configured. Run `mercury doctor` to set up Signal.'));
+      console.log('');
+      return;
+    }
+
+    console.log(`  Phone:     ${chalk.white(config.channels.signal.phoneNumber)}`);
+    console.log(`  Mode:      ${chalk.white(config.channels.signal.mode)}`);
+    console.log(`  Enabled:   ${config.channels.signal.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Paired:    ${hasSignalAdminsFn(config) ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:    ${chalk.white(getSignalAccessSummary(config))}`);
+
+    if (config.channels.signal.mode === 'group') {
+      console.log(`  Group:     ${chalk.white(config.channels.signal.groupName || config.channels.signal.groupId || 'Not set')}`);
+    }
+
+    const status = await checkSignalSetup(config);
+    console.log(`  Binary:    ${status.binaryOk ? chalk.green('found') : chalk.red('not found')}`);
+    console.log(`  Linked:    ${status.linked ? chalk.green('yes') : chalk.red('no')}`);
+
+    if (status.errors.length > 0) {
+      console.log('');
+      for (const err of status.errors) {
+        console.log(chalk.red(`  • ${err}`));
+      }
+    }
+
+    console.log('');
+  });
+
+signalCmd
+  .command('register')
+  .description('Register a phone number with Signal (sends verification code)')
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.channels.signal.phoneNumber) {
+      console.log('');
+      console.log(chalk.red('  No Signal phone number configured. Run mercury doctor first.'));
+      console.log('');
+      return;
+    }
+
+    const { registerSignalNumber, verifySignalNumber } = await import('./signal/setup.js');
+    console.log('');
+    console.log(chalk.bold.white('  Signal Registration'));
+    console.log(chalk.dim(`  Phone: ${redactPhone(config.channels.signal.phoneNumber)}`));
+    console.log('');
+
+    const voice = await ask(chalk.white('  Verify via SMS or voice call? (sms/voice) [sms]: '));
+    const useVoice = voice.toLowerCase().startsWith('voice');
+
+    console.log(chalk.dim('  Sending verification code...'));
+    const result = await registerSignalNumber(config.channels.signal.phoneNumber, useVoice);
+    if (!result.success) {
+      console.log(chalk.red(`  ✗ Registration failed: ${result.error}`));
+      return;
+    }
+    console.log(chalk.green('  ✓ Verification code sent.'));
+
+    const code = await ask(chalk.white('  Enter the verification code: '));
+    if (!code) {
+      console.log(chalk.red('  Verification code is required.'));
+      return;
+    }
+
+    const verifyResult = await verifySignalNumber(config.channels.signal.phoneNumber, code.trim());
+    if (!verifyResult.success) {
+      console.log(chalk.red(`  ✗ Verification failed: ${verifyResult.error}`));
+      return;
+    }
+    console.log(chalk.green('  ✓ Number verified and registered.'));
+    console.log('');
+  });
+
+signalCmd
+  .command('unregister')
+  .description('Unlink this device from Signal and clear all Mercury Signal data')
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.channels.signal.phoneNumber) {
+      console.log('');
+      console.log(chalk.dim('  No Signal phone number configured.'));
+      console.log('');
+      return;
+    }
+
+    console.log('');
+    console.log(chalk.yellow('  ⚠️  This will:'));
+    console.log(chalk.yellow('  • Send a goodbye message to your Signal group/chat'));
+    console.log(chalk.yellow('  • Unlink this device from the Signal server'));
+    console.log(chalk.yellow('  • Clear all Signal access data (admins, members, group connection)'));
+    console.log('');
+
+    const answer = await ask(chalk.white('  Continue? (y/N): '));
+    if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+      console.log(chalk.dim('  Cancelled.'));
+      console.log('');
+      return;
+    }
+
+    // Send goodbye message (best effort, skip if signal-cli not installed)
+    const { findSignalCli } = await import('./signal/setup.js');
+    const { sendSignalMessage } = await import('./signal/setup.js');
+    if (findSignalCli()) {
+      const target: { groupId?: string; recipient?: string } = {};
+      if (config.channels.signal.mode === 'group' && config.channels.signal.groupId) {
+        target.groupId = config.channels.signal.groupId;
+      } else if (config.channels.signal.admins.length > 0) {
+        target.recipient = config.channels.signal.admins[0].phoneNumber;
+      }
+      if (target.groupId || target.recipient) {
+        try {
+          await sendSignalMessage(config.channels.signal.phoneNumber, 'Mercury has been unregistered from this conversation. It will no longer respond here. To reconnect, the admin needs to set up Signal again with: mercury doctor', target);
+        } catch { /* best effort */ }
+      }
+    }
+
+    const { killStaleSignalCliProcesses } = await import('./signal/jsonrpc.js');
+    killStaleSignalCliProcesses();
+
+    // Unregister from Signal server
+    console.log(chalk.dim('  Unlinking device from Signal...'));
+    const { unregisterSignalNumber } = await import('./signal/setup.js');
+    const result = await unregisterSignalNumber(config.channels.signal.phoneNumber);
+    if (result.success) {
+      console.log(chalk.green('  ✓ Device unlinked from Signal server.'));
+    } else {
+      console.log(chalk.yellow('  ⚠ Could not reach Signal server to unlink device.'));
+      console.log(chalk.dim('  Local data has been cleared. The device will be unlinked automatically.'));
+    }
+
+    // Delete signal-cli local account data so checkLocalAccountData returns false
+    const phoneNumberToDelete = config.channels.signal.phoneNumber;
+    clearSignalAccess(config);
+    config.channels.signal.enabled = false;
+    config.channels.signal.phoneNumber = '';
+    config.channels.signal.groupId = undefined;
+    config.channels.signal.groupName = undefined;
+    saveConfig(config);
+
+    const { deleteSignalCliAccountData } = await import('./signal/setup.js');
+    if (phoneNumberToDelete) {
+      deleteSignalCliAccountData(phoneNumberToDelete);
+    }
+
+    console.log(chalk.green('  ✓ Signal data cleared.'));
+    console.log(chalk.dim('  Run mercury doctor to set up Signal again.'));
+    console.log('');
+
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+  });
+
+const discordCmd = program
+  .command('discord')
+  .description('Manage Discord channel access and setup');
+
+discordCmd
+  .command('list')
+  .description('Show approved Discord users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    console.log('');
+    printDiscordAccessState(config);
+    console.log('');
+  });
+
+discordCmd
+  .command('approve <code>')
+  .description('Approve a pending Discord pairing request by code')
+  .action(async (code: string) => {
+    const config = loadConfig();
+
+    if (!hasDiscordAdminsFn(config)) {
+      const approved = approveDiscordPendingRequestByPairingCode(config, code.trim());
+      if (!approved) {
+        console.log('');
+        console.log(chalk.red(`  No pending Discord pairing found for code ${code.trim()}.`));
+        console.log('');
+        return;
+      }
+
+      saveConfig(config);
+      console.log('');
+      console.log(chalk.green(`  ✓ Approved first Discord admin ${formatDiscordUser(approved)}.`));
+      restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+      console.log('');
+      return;
+    }
+
+    const pending = findDiscordPendingRequest(config, code.trim());
+    if (!pending) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for ${code.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    const approved = approveDiscordPendingRequest(config, pending.userId);
+    if (!approved) {
+      console.log(chalk.red('  Failed to approve request.'));
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Approved Discord user ${formatDiscordUser(approved)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('reject <userId>')
+  .description('Reject a pending Discord access request')
+  .action(async (userId: string) => {
+    const config = loadConfig();
+    const rejected = rejectDiscordPendingRequest(config, userId.trim());
+    if (!rejected) {
+      console.log('');
+      console.log(chalk.red(`  No pending Discord request found for ${userId.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Rejected Discord request for ${formatDiscordUser(rejected)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('remove <userId>')
+  .description('Remove an approved Discord user')
+  .action(async (userId: string) => {
+    const config = loadConfig();
+    const removed = removeDiscordUser(config, userId.trim());
+    if (!removed) {
+      console.log('');
+      console.log(chalk.red(`  No Discord user found with ID ${userId.trim()}.`));
+      console.log('');
+      return;
+    }
+
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green(`  ✓ Removed Discord access for ${formatDiscordUser(removed)}.`));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('reset')
+  .description('Clear all Discord access data')
+  .action(async () => {
+    const config = loadConfig();
+    clearDiscordAccess(config);
+    config.channels.discord.enabled = false;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Discord access reset complete.'));
+    console.log(chalk.dim('  Run `mercury doctor` to set up Discord again.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+discordCmd
+  .command('status')
+  .description('Show Discord configuration and connection status')
+  .action(() => {
+    const config = loadConfig();
+
+    console.log('');
+    console.log(chalk.bold.white('  Discord Status'));
+    console.log('');
+
+    if (!config.channels.discord.botToken) {
+      console.log(chalk.dim('  Not configured. Run `mercury doctor` to set up Discord.'));
+      console.log('');
+      return;
+    }
+
+    console.log(`  Enabled:     ${config.channels.discord.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Paired:      ${hasDiscordAdminsFn(config) ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:      ${chalk.white(getDiscordAccessSummary(config))}`);
+    if (config.channels.discord.guildId) {
+      console.log(`  Guild:       ${chalk.white(config.channels.discord.guildId)}`);
+    }
+    if (config.channels.discord.channelId) {
+      console.log(`  Channel:     ${chalk.white(config.channels.discord.channelId)}`);
+    }
+    if (config.channels.discord.adminRoleName) {
+      console.log(`  Admin Role:  ${chalk.white(config.channels.discord.adminRoleName)}`);
+    }
+    console.log(`  Streaming:   ${config.channels.discord.streaming ? chalk.green('yes') : chalk.dim('no')}`);
+
+    console.log('');
+  });
+
+const slackCmd = program
+  .command('slack')
+  .description('Manage Slack channel access and setup');
+
+slackCmd
+  .command('list')
+  .description('Show approved Slack users and pending access requests')
+  .action(() => {
+    const config = loadConfig();
+    printSlackAccessState(config);
+  });
+
+slackCmd
+  .command('approve <userId>')
+  .description('Approve a pending Slack access request')
+  .action((userId: string) => {
+    const config = loadConfig();
+
+    const approved = approveSlackPendingRequest(config, userId);
+
+    if (!approved) {
+      console.log(chalk.red(`No pending Slack request found for "${userId}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.green(`Approved Slack user ${formatSlackUser(approved)}.`));
+  });
+
+slackCmd
+  .command('reject <userId>')
+  .description('Reject a pending Slack access request')
+  .action((userId: string) => {
+    const config = loadConfig();
+
+    const rejected = rejectSlackPendingRequest(config, userId);
+    if (!rejected) {
+      console.log(chalk.red(`No pending Slack request found for "${userId}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.yellow(`Rejected Slack request for ${formatSlackUser(rejected)}.`));
+  });
+
+slackCmd
+  .command('remove <userId>')
+  .description('Remove an approved Slack user')
+  .action((userId: string) => {
+    const config = loadConfig();
+
+    const removed = removeSlackUser(config, userId);
+    if (!removed) {
+      console.log(chalk.red(`No approved Slack user found for "${userId}".`));
+      process.exit(1);
+    }
+
+    saveConfig(config);
+    console.log(chalk.yellow(`Removed Slack access for ${formatSlackUser(removed)}.`));
+  });
+
+slackCmd
+  .command('reset')
+  .description('Clear all Slack access data and disable Slack')
+  .action(() => {
+    const config = loadConfig();
+    clearSlackAccess(config);
+    config.channels.slack.enabled = false;
+    saveConfig(config);
+    console.log(chalk.yellow('Slack access reset. Channel disabled.'));
+  });
+
+slackCmd
+  .command('status')
+  .description('Show Slack configuration and connection status')
+  .action(() => {
+    const config = loadConfig();
+    console.log(`  Enabled:     ${config.channels.slack.enabled ? chalk.green('yes') : chalk.dim('no')}`);
+    if (!config.channels.slack.botToken) {
+      console.log(chalk.dim('  Not configured. Run mercury doctor to set up Slack.'));
+    }
+    if (config.channels.slack.channelId) {
+      console.log(`  Channel:     ${chalk.white(config.channels.slack.channelId)}`);
+    }
+    if (config.channels.slack.teamId) {
+      console.log(`  Team:         ${chalk.white(config.channels.slack.teamId)}`);
+    }
+    console.log(`  Streaming:   ${config.channels.slack.streaming ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`  Access:       ${chalk.white(getSlackAccessSummary(config))}`);
+    console.log('');
+  });
+
 const serviceCmd = program
   .command('service')
   .description('Manage Mercury as a system service (auto-start, crash recovery)');
@@ -2202,9 +3520,9 @@ serviceCmd
     showServiceStatus();
   });
 
-program
+  program
   .command('upgrade')
-  .description('Upgrade Mercury to the latest version from npm')
+  .description('Upgrade Mercury to the latest version')
   .action(async () => {
     console.log('');
     console.log(chalk.cyan(`  Mercury ${chalk.white(`v${pkgVersion}`)}`));
@@ -2213,11 +3531,47 @@ program
     const daemon = getDaemonStatus();
     if (daemon.running) {
       console.log(chalk.dim('  Stopping background daemon...'));
-      stopDaemon();
-      await new Promise((r) => setTimeout(r, 1000));
+      await stopDaemon();
       console.log(chalk.green('  ✓ Daemon stopped'));
     }
 
+    const standalone = isStandaloneBinary();
+
+    if (standalone) {
+      // Standalone binary: re-run the installer script which downloads the
+      // latest release from GitHub and replaces the binary in-place.
+      console.log(chalk.dim('  Standalone binary detected — re-running installer...'));
+      console.log('');
+
+      const { execSync } = await import('node:child_process');
+      const platform = process.platform;
+      const binPath = process.execPath;
+
+      if (platform === 'win32') {
+        // Windows: use PowerShell installer
+        const psCmd = `irm https://mercuryagent.sh/install.ps1 | iex`;
+        try {
+          execSync(psCmd, { stdio: 'inherit', shell: 'powershell.exe' });
+        } catch {
+          console.log(chalk.red('  ✗ Upgrade failed. Try manually:'));
+          console.log(chalk.dim('    irm https://mercuryagent.sh/install.ps1 | iex'));
+        }
+      } else {
+        // macOS / Linux: use shell installer
+        const shCmd = 'curl -fsSL https://mercuryagent.sh/install.sh | sh';
+        try {
+          execSync(shCmd, { stdio: 'inherit' });
+        } catch {
+          console.log(chalk.red('  ✗ Upgrade failed. Try manually:'));
+          console.log(chalk.dim('    curl -fsSL https://mercuryagent.sh/install.sh | sh'));
+        }
+      }
+
+      console.log('');
+      return;
+    }
+
+    // npm install: use npm to upgrade.
     console.log(chalk.dim('  Checking for latest version...'));
     const { execSync } = await import('node:child_process');
 

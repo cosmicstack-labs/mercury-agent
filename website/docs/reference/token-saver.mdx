@@ -1,0 +1,133 @@
+---
+id: token-saver
+title: Token Saver Mode
+---
+
+Token Saver Mode is a battery-saver-style optimization layer for LLM calls. When active, Mercury produces shorter, terser responses, runs fewer reasoning steps, and uses a smaller history window — saving tokens at the cost of some verbosity and exploration depth.
+
+It is designed to **never affect behavior when disabled**. With saver `off`, every LLM call uses exactly the same parameters as a Mercury install without saver support.
+
+## How It Works
+
+When Token Saver Mode is active, Mercury changes four things about every LLM call:
+
+| Lever | Default (off) | Saver active |
+|-------|---------------|--------------|
+| `maxOutputTokens` per response | `4096` | `1638` (× 0.4) |
+| Step budget per request | `25` steps | `12` steps (÷ 2) |
+| Recent-history window injected as context | `10` messages | `4` messages |
+| System prompt suffix | (none) | "Be terse, no preamble, no restatement, …" |
+
+A fifth lever — **cheap-provider routing** — is available as an opt-in (`/saver routing on`). When enabled while saver is active, Mercury reorders the provider fallback list to prefer cheaper providers first (e.g., DeepSeek and Ollama before Claude or GPT-4). It is off by default to avoid surprising provider switches mid-task.
+
+These changes apply to both the main agent and any sub-agents the supervisor spawns.
+
+## Three States
+
+Saver mode has three states:
+
+- **`off`** — disabled. Mercury runs with original parameters. Zero-impact.
+- **`on`** — manually enabled. Persists across restarts.
+- **`auto`** — automatically engaged because daily usage crossed the threshold. Resets to `off` automatically when usage drops well below the threshold (5-point hysteresis) or at the next daily-budget reset.
+
+You can always force-disable auto with `/saver off` (one-shot) or `/saver auto off` (turns auto-engagement off permanently).
+
+## Auto-Engagement
+
+By default, saver auto-engages at **75%** of your daily token budget. When that happens, Mercury sends a one-time notice to the active channel so you know response style is about to change:
+
+> ⚡ Token Saver Mode auto-enabled (75% of daily budget reached). Responses may be shorter and step limits lower. Disable with `/saver off`.
+
+If usage drops below 70% (the threshold minus 5-point hysteresis), saver auto-disengages and sends a corresponding notification.
+
+You can change the threshold or disable auto-engagement entirely:
+
+```text
+/saver threshold 80      # auto-engage at 80% instead of 75%
+/saver threshold 0       # disable auto-engagement (equivalent to /saver auto off)
+/saver auto off          # disable auto-engagement (preserves threshold value)
+```
+
+## Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/saver` | Show saver status, today's savings, and lifetime savings |
+| `/saver on` | Manually enable saver (persisted) |
+| `/saver off` | Disable saver (also clears any auto-engagement state) |
+| `/saver toggle` | Flip saver on/off |
+| `/saver threshold <0-100>` | Set auto-engage threshold as a percentage of daily budget |
+| `/saver auto on\|off` | Master switch for automatic engagement at threshold |
+| `/saver routing on\|off` | Opt-in: prefer cheap providers while saver is active |
+
+All commands work on both CLI and Telegram.
+
+## Status Display
+
+When saver is active, the CLI status bar shows a colored `⚡SAVER` badge next to the agent name:
+
+- **Green** `⚡SAVER` — manually enabled (`/saver on`)
+- **Yellow** `⚡SAVER (auto)` — auto-engaged at threshold
+
+The token usage bar gains a `· saved ~N` suffix showing today's estimated savings. The `/status` command also includes a saver line.
+
+## Tokens Saved — Estimation
+
+Mercury keeps two counters:
+
+- **Saved today** — estimated tokens saved since midnight (resets at daily-budget rollover)
+- **Saved lifetime** — cumulative estimate across all time, persisted to `~/.mercury/mercury.yaml`
+
+Estimation per request is rough but transparent:
+
+```
+saved = output_headroom + history_trim_estimate
+
+output_headroom    = min(MAX_RESPONSE_TOKENS - effective_cap,
+                          MAX_RESPONSE_TOKENS - actual_output_tokens)
+history_trim       = (normal_window - saver_window) × 120 tokens/message
+```
+
+Treat these numbers as guidance — they are not exact, since the actual savings depend on how short the model chooses to be. Mercury does not preflight-tokenize requests, because most supported providers (Anthropic, DeepSeek, Grok, Ollama, etc.) use different tokenizers than OpenAI's `tiktoken`.
+
+## Configuration
+
+Saver state is persisted in `~/.mercury/mercury.yaml` under the `tokens` section:
+
+```yaml
+tokens:
+  dailyBudget: 1000000
+  saverMode: false               # true when user runs /saver on
+  saverAutoEnabled: true         # master switch for auto-engagement
+  saverAutoThreshold: 75         # percentage at which auto-engage triggers
+  saverTokensSavedLifetime: 0    # lifetime savings counter
+```
+
+All fields are optional. Existing installs without saver fields work unchanged — defaults are applied silently on read, and no file is rewritten until you first toggle saver on or it auto-engages.
+
+## Zero-Impact Guarantee When Off
+
+When `saverMode: false` (the default) and saver has never auto-engaged:
+
+- `maxOutputTokens` and `stopWhen` use their original constants byte-for-byte
+- The recent-history window is `10` exactly
+- The system prompt is identical to a pre-saver install, including the existing `>70%` "Be concise" nudge
+- The CLI status bar omits the `⚡SAVER` badge entirely (no layout change)
+- `mercury.yaml` and `token-usage.json` are not rewritten
+- The provider fallback order is untouched
+
+The only observable difference from a pre-saver install is the addition of `/saver` to the slash-command autocomplete list and the Telegram BotFather command menu.
+
+## When to Use It
+
+Useful situations:
+
+- **You're close to your daily budget** — auto-engagement handles this automatically at 75%
+- **You're doing quick lookups or status checks** — manual `/saver on` keeps responses tight
+- **You're running an unattended batch of agent tasks** — saver caps response size to avoid runaway output
+- **You're on a metered/limited plan** — combine `/saver on` with `/saver routing on` to prefer cheap providers
+
+Less useful situations:
+
+- **Deep debugging or code exploration** — the smaller history window and shorter responses can hurt continuity
+- **Long-form writing** — the "be terse" suffix actively fights against generating long content

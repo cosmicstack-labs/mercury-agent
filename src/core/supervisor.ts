@@ -33,6 +33,7 @@ export class SubAgentSupervisor {
   private capabilities: CapabilityRegistry;
   private tokenBudget: TokenBudget;
   private channels: ChannelRegistry;
+  private saverMode?: import('./saver-mode.js').SaverMode;
 
   private notifyCallback?: NotifyCallback;
   private lifecycleCallbacks: AgentLifecycleCallback[] = [];
@@ -76,6 +77,11 @@ export class SubAgentSupervisor {
     this.notifyCallback = cb;
   }
 
+  /** Inject SaverMode so spawned sub-agents inherit the user's saver preferences. */
+  setSaverMode(saver: import('./saver-mode.js').SaverMode): void {
+    this.saverMode = saver;
+  }
+
   setLifecycleCallback(cb: AgentLifecycleCallback): void {
     // Additive — don't overwrite previous callbacks
     this.lifecycleCallbacks.push(cb);
@@ -83,7 +89,7 @@ export class SubAgentSupervisor {
 
   private fireLifecycleEvent(event: Parameters<AgentLifecycleCallback>[0]): void {
     for (const cb of this.lifecycleCallbacks) {
-      try { cb(event); } catch {}
+      try { cb(event); } catch (err) { logger.warn({ err }, 'supervisor lifecycle callback threw'); }
     }
   }
 
@@ -170,6 +176,7 @@ export class SubAgentSupervisor {
       tokenBudget: this.tokenBudget,
       fileLockManager: this.fileLockManager,
       taskBoard: this.taskBoard,
+      saverMode: this.saverMode,
     });
 
     this.activeAgents.set(config.id, subAgent);
@@ -182,7 +189,7 @@ export class SubAgentSupervisor {
       if (entry) {
         const channelType = entry.sourceChannelType || 'cli';
         const channelId = entry.sourceChannelId || 'cli';
-        this.notify(channelType, channelId, `🔄 Agent ${agentId}: ${progress}`).catch(() => {});
+        this.notify(channelType, channelId, `🔄 Agent ${agentId}: ${progress}`).catch((e) => logger.warn({ e, agentId }, 'supervisor progress notify failed'));
       }
     });
 
@@ -209,6 +216,17 @@ export class SubAgentSupervisor {
       this.activeAgents.delete(config.id);
       this.fileLockManager.releaseAll(config.id);
       this.pausedAgents.delete(config.id);
+      // Notify the user — they should never have to discover a crashed
+      // sub-agent by re-prompting.
+      const entry = this.taskBoard.get(config.id);
+      if (entry) {
+        const channelType = entry.sourceChannelType || 'cli';
+        const channelId = entry.sourceChannelId || 'cli';
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await this.notify(channelType, channelId,
+          `❌ **Agent ${config.id}** crashed unexpectedly: "${entry.task.slice(0, 40)}"\nError: ${errMsg.slice(0, 150)}`,
+        ).catch((e) => logger.warn({ e, agentId: config.id }, 'Failed to notify user of sub-agent crash'));
+      }
       await this.processWaitQueue();
     });
   }

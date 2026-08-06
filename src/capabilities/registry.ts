@@ -83,7 +83,7 @@ export class CapabilityRegistry {
   private supervisor?: SubAgentSupervisor;
   private spotifyClient?: SpotifyClient;
   private userMemory?: UserMemoryStore;
-  private sendFileHandler?: (filePath: string) => Promise<void>;
+  private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
   private currentChannelId = 'cli';
   private currentChannelType = 'cli';
@@ -124,7 +124,7 @@ export class CapabilityRegistry {
     this.currentCwd = dir;
   }
 
-  setSendFileHandler(handler: (filePath: string) => Promise<void>): void {
+  setSendFileHandler(handler: (filePath: string, channel?: string) => Promise<void>): void {
     this.sendFileHandler = handler;
   }
 

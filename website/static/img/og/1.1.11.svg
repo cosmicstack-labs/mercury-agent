@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a14"/>
+      <stop offset="100%" stop-color="#11111e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#1a1a2a" stroke-width="1" opacity="0.6">
+    <line x1="0" y1="120" x2="1200" y2="120"/>
+    <line x1="0" y1="510" x2="1200" y2="510"/>
+  </g>
+
+  <!-- Top eyebrow: Mercury Agent · Soul-driven -->
+  <g transform="translate(80, 92)">
+    <circle cx="18" cy="18" r="18" fill="url(#accent)"/>
+    <text x="18" y="25" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="20" font-weight="800" fill="#0a0a14" text-anchor="middle">☿</text>
+    <text x="52" y="26" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#ffffff" letter-spacing="0.5">Mercury Agent  ·  Soul-driven</text>
+  </g>
+
+  <!-- Version pill -->
+  <g transform="translate(80, 180)">
+    <rect width="290" height="44" rx="22" fill="#00d4ff" fill-opacity="0.12" stroke="#00d4ff" stroke-opacity="0.5" stroke-width="1.5"/>
+    <text x="22" y="29" font-family="JetBrains Mono, ui-monospace, monospace" font-size="18" font-weight="700" fill="#00d4ff">v1.1.11 · Skilly Mercury</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="80" y="320" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="76" font-weight="900" fill="#ffffff" letter-spacing="-2">Mercury becomes a</text>
+  <text x="80" y="404" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="76" font-weight="900" fill="url(#accent)" letter-spacing="-2">skillful platform.</text>
+
+  <!-- Sub -->
+  <text x="80" y="470" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="24" font-weight="500" fill="#9ca3af">
+    Skill System  ·  Token Saver Mode  ·  Standalone binaries  ·  5 OS targets
+  </text>
+
+  <!-- Bottom row -->
+  <g transform="translate(80, 540)">
+    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="18" font-weight="600" fill="#00d4ff">
+      $ curl -fsSL https://mercuryagent.sh/install.sh | bash
+    </text>
+  </g>
+
+  <!-- URL -->
+  <text x="1120" y="570" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#6b7280" text-anchor="end">mercuryagent.sh</text>
+
+  <!-- Decorative spinner dots -->
+  <g transform="translate(960, 250)" opacity="0.85">
+    <circle cx="0" cy="0" r="6" fill="#00d4ff"/>
+    <circle cx="22" cy="0" r="6" fill="#00d4ff" opacity="0.65"/>
+    <circle cx="44" cy="0" r="6" fill="#00d4ff" opacity="0.35"/>
+    <text x="70" y="6" font-family="JetBrains Mono, ui-monospace, monospace" font-size="16" fill="#9ca3af">⚡SAVER · step 5</text>
+  </g>
+</svg>

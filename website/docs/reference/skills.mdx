@@ -23,7 +23,21 @@ A skill bundles:
     └── references/   # optional
 ```
 
-On first run, Mercury seeds a `_template` directory and a built-in `web-search` skill. If `web-search/SKILL.md` already exists, it is left alone — your customizations are never overwritten.
+On first run, Mercury seeds a `_template` directory and a curated set of built-in skills. If a seeded `SKILL.md` already exists, it is left alone — your customizations are never overwritten.
+
+### Bundled default skills
+
+As of `v1.1.11`, fresh installs (or `mercury doctor --seed-skills`) come with three built-in skills:
+
+| Skill | What it does | Tools used |
+|---|---|---|
+| `web-search` | DuckDuckGo HTML search + summarized sources with cross-referencing. | `fetch_url` |
+| `tweet-notifier` | Schedule tweets with founder approval and supporter notifications. | `schedule_task`, `send_message`, `save_memory`, `search_memory`, `fetch_url`, `github_api` |
+| `screenshot` | Full-page website screenshots via Playwright with configurable viewport (mobile/desktop/HD/custom) and dark/light color scheme. Output goes to `~/Desktop/<domain>-<timestamp>.png`. | `run_command`, `create_file`, `write_file`, `send_file`, `cd`, `send_message` |
+
+The `screenshot` skill requires Playwright/Chromium (`npx playwright install chromium`). On Telegram, the captured image is sent as a photo attachment.
+
+Browse and install community skills at **[skills.mercuryagent.sh](https://skills.mercuryagent.sh)**.
 
 ## SKILL.md format
 
