@@ -439,6 +439,7 @@ export default function LandingPage(): React.ReactElement {
               <span className="lp-nav-logo-icon">☿</span> Mercury Agent
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
+              <Link to="/cloud" onClick={() => setMobileMenuOpen(false)}>Mercury Cloud</Link>
               <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
               <Link to="/#live-demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
               <Link to="/#channels" onClick={() => setMobileMenuOpen(false)}>Channels</Link>
@@ -466,7 +467,7 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-eyebrow" aria-label="Mercury Agent — Soul-driven">
               <span className="lp-hero-eyebrow-mark">☿</span>
               <span className="lp-hero-eyebrow-text">Mercury Agent · Soul-driven</span>
-              <span className="lp-hero-eyebrow-badge">v1.1.13 · Chatty Mercury</span>
+              <span className="lp-hero-eyebrow-badge">v1.2.0 · Cloudy Mercury</span>
             </div>
             <h1 className="lp-hero-title">
               The AI agent that<br />
@@ -478,11 +479,65 @@ export default function LandingPage(): React.ReactElement {
               Runs 24/7 from your terminal, browser, Telegram, Discord, Slack, or Signal.
             </p>
             <div className="lp-hero-actions">
-              <Link href="#live-demo" className="lp-btn lp-btn-primary">See It Work</Link>
-              <Link to="/docs" className="lp-btn lp-btn-secondary">Get Started</Link>
-              <Link to="/docs/releases/1.1.13" className="lp-btn lp-btn-ghost">What's new in 1.1.13 →</Link>
+              <Link to="/cloud" className="lp-btn lp-btn-primary">Try Mercury Cloud</Link>
+              <Link href="#live-demo" className="lp-btn lp-btn-secondary">See It Work</Link>
+              <Link to="/docs/releases/1.2.0" className="lp-btn lp-btn-ghost">What's new in 1.2.0 →</Link>
             </div>
             <HeroInstall />
+          </div>
+        </section>
+
+        {/* Mercury Cloud Hero Banner */}
+        <section id="cloud" className="lp-section lp-section-cloud">
+          <div className="lp-container">
+            <div className="lp-cloud-banner lp-reveal">
+              <div className="lp-cloud-banner-left">
+                <div className="lp-cloud-badge">☁ New in 1.2.0</div>
+                <h2 className="lp-cloud-title">Mercury Cloud</h2>
+                <p className="lp-cloud-lead">
+                  Pair from the terminal. Stay online forever. Mercury Cloud is a hosted backend that
+                  keeps your agent reachable over a persistent WebSocket — no port forwarding, no
+                  reverse proxy, no certificates. Auto-rotating JWTs, long-lived agent API keys for
+                  headless self-recovery, and a shared memory pool across all your agents.
+                </p>
+                <div className="lp-cloud-actions">
+                  <Link to="/cloud" className="lp-btn lp-btn-primary">Explore Mercury Cloud →</Link>
+                  <Link to="/docs/releases/1.2.0" className="lp-btn lp-btn-ghost">Release notes</Link>
+                </div>
+              </div>
+              <div className="lp-cloud-banner-right">
+                <div className="lp-cloud-features">
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">⚡</span>
+                    <div>
+                      <h4>Plug-and-play setup</h4>
+                      <p>One command pairs your agent. No servers, no ports, no DNS.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🔒</span>
+                    <div>
+                      <h4>Self-healing auth</h4>
+                      <p>JWT + refresh + agent API key. Stays online even after token death.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🧠</span>
+                    <div>
+                      <h4>Shared memory pool</h4>
+                      <p>Search across all your agents' memories from the cloud.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🎛️</span>
+                    <div>
+                      <h4>Remote dashboard</h4>
+                      <p>Manage agents, install skills, and monitor from the browser.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -869,6 +924,7 @@ export default function LandingPage(): React.ReactElement {
             <p className="lp-section-sub">Configure one or stack them all. Mercury falls back automatically and tracks which provider last succeeded.</p>
             <div className="lp-provider-grid lp-reveal">
               {[
+                { name: 'Mercury Cloud', desc: 'Hosted backend with plug-and-play pairing. Auto-rotating JWTs, shared memory pool, remote dashboard.', badge: 'NEW' },
                 { name: 'ChatGPT Web', desc: 'Use your ChatGPT Plus/Pro subscription. OAuth login, no API key.', badge: 'NEW' },
                 { name: 'GitHub Copilot', desc: 'Your Copilot subscription — access OpenAI, Anthropic, and Google models.', badge: 'NEW' },
                 { name: 'DeepSeek', desc: 'Cost-effective with strong reasoning. Default provider.' },
@@ -902,6 +958,7 @@ export default function LandingPage(): React.ReactElement {
                 </thead>
                 <tbody>
                   {[
+                    ['Mercury Cloud', 'Terminal pairing + WebSocket + shared memory', '—', '—'],
                     ['Multi-Agent Orchestration', 'Parallel workers + file locks', '—', '—'],
                     ['Loop Detection (Autopilot)', 'Diversity + success analysis', '—', '—'],
                     ['Real-Time Progress', 'Single edited status card + pin', '—', '—'],
@@ -972,6 +1029,7 @@ export default function LandingPage(): React.ReactElement {
             </div>
             <p className="lp-cta-sub">60 seconds to your own AI agent.</p>
             <div className="lp-cta-links">
+              <Link to="/cloud">Mercury Cloud</Link>
               <Link to="/docs">Documentation</Link>
               <a href="https://github.com/cosmicstack-labs/mercury-agent" target="_blank" rel="noopener">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues" target="_blank" rel="noopener">Report an Issue</a>
@@ -987,6 +1045,7 @@ export default function LandingPage(): React.ReactElement {
               <span className="lp-footer-tagline">by Cosmic Stack</span>
             </div>
             <div className="lp-footer-links">
+              <Link to="/cloud">Mercury Cloud</Link>
               <Link to="/docs">Docs</Link>
               <a href="https://github.com/cosmicstack-labs/mercury-agent">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues">Issues</a>

@@ -1,0 +1,218 @@
+---
+title: "v1.2.0 — Cloudy Mercury"
+sidebar_label: "v1.2.0"
+description: "Mercury meets the cloud. Terminal pairing, JWT auth with self-recovery, Cloud WebSocket for real-time remote control, shared memory pool search, and cross-platform fixes for Windows and Termux. Patch set 1.2.0 → 1.2.1 → 1.2.2."
+image: /img/og/1.1.11.png
+keywords: [mercury, mercury-agent, cloudy-mercury, mercury-cloud, pairing, websocket, shared-memory, release, 1.2.0, 1.2.1, 1.2.2]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.2.0 — Cloudy Mercury" />
+  <meta property="og:description" content="Mercury meets the cloud. Terminal pairing, JWT auth with self-recovery, Cloud WebSocket, shared memory pool search, and cross-platform fixes for Windows and Termux." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.2.0" />
+  <meta property="og:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.2.0 — Cloudy Mercury" />
+  <meta name="twitter:description" content="Mercury Cloud — terminal pairing, JWT auth, Cloud WebSocket, shared memory pool, and cross-platform fixes." />
+  <meta name="twitter:image" content="https://mercuryagent.sh/img/og/1.1.11.png" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.2.0" />
+</Head>
+
+# v1.2.0 — Cloudy Mercury
+
+> **Mercury meets the cloud.** Pair from the terminal, authenticate with auto-rotating JWTs, stay online over a Cloud WebSocket, and search a shared memory pool across all your agents.
+
+`1.2.0` is the cloud release. **Mercury Cloud** is a hosted backend that turns a local Mercury install into a remotely managed, always-on agent — no port forwarding, no reverse proxy, no manual certificate management. Pair once from the terminal, and Mercury maintains a persistent WebSocket to the cloud, relaying commands, streaming responses, and syncing memory in real time.
+
+This release ships as a **patch set**: `1.2.0` (the launch), `1.2.1` (runtime activation hardening), and `1.2.2` (cross-platform CI and packaging fixes). All three are covered on this page.
+
+> **Why "Cloudy Mercury"?** The Mercury planet (☿) has always been the messenger. Cloudy Mercury gives that messenger a cloud — a persistent connection that keeps it reachable, synced, and self-healing even when your terminal is closed.
+
+## At a glance
+
+| Area | What changed |
+|---|---|
+| **Mercury Cloud** | Hosted backend with terminal pairing, JWT + refresh token auth, long-lived agent API key, Cloud WebSocket, and remote dashboard |
+| **Pairing flow** | `mercury cloud connect` opens a browser-based pairing URL; poll-based completion with structured failure codes |
+| **Auth & recovery** | Auto-rotating JWTs via single-use refresh tokens; long-lived agent API key for headless self-recovery without re-pairing |
+| **Cloud WebSocket** | Persistent WSS connection with 30s heartbeat, exponential reconnect, and real-time message relay |
+| **Runtime activation** | `activateCloudRuntime` guards foreground/daemon state, waits for WebSocket online, and propagates failures |
+| **Shared memory pool** | `searchPool()` fetches cross-agent context from the cloud, cached in SQLite for 5 minutes per query |
+| **Token store** | Shared in-memory token store keeps the WS client and provider in sync during rotation |
+| **Termux (Android)** | `better-sqlite3` is now optional — `--help` and `--version` work without the native addon |
+| **Windows** | File-mode and posix-path fixes for `work-ledger` and `platform.ts` |
+| **Provider** | Mercury Cloud is a first-class provider with model selection at pairing time |
+
+## Mercury Cloud
+
+### Terminal pairing
+
+Run `mercury cloud connect` and Mercury opens a browser-based pairing URL. The flow is poll-based with a 5-minute timeout and structured failure codes (e.g. `AGENT_LIMIT_REACHED` with upgrade guidance):
+
+```sh
+mercury cloud connect
+```
+
+Once paired, Mercury saves:
+
+- A **JWT** (short-lived, auto-rotated)
+- A **refresh token** (single-use, rotated on every refresh)
+- An **agent API key** (long-lived, for headless self-recovery)
+- The **agent ID** and **tier**
+
+### Authentication & self-recovery
+
+Mercury Cloud uses a three-tier token strategy:
+
+1. **JWT** — used for API and WebSocket auth. Auto-refreshed before expiry.
+2. **Refresh token** — single-use, rotated on every refresh. If the JWT expires, Mercury tries the refresh token first.
+3. **Agent API key** — long-lived, never expires. If both JWT and refresh token are dead, Mercury redeems the agent API key to get fresh tokens without a browser re-pair.
+
+This means a remotely-deployed agent on a server or Termux can stay online indefinitely without manual intervention — the agent API key is the self-healing path.
+
+### Cloud WebSocket
+
+After pairing, Mercury maintains a persistent WSS connection to `wss://backend.mercuryagent.sh/ws` with:
+
+- **30-second heartbeat** to detect dead connections
+- **Exponential backoff reconnect** (up to 50 attempts)
+- **Pre-connect token rotation** — never handshakes with an expired JWT
+- **Message relay** — remote commands, streaming responses, skill installs, memory operations, and conversation sync
+
+The WebSocket stays alive even after you exit the foreground TUI — the background daemon keeps it open.
+
+### Shared memory pool
+
+Mercury Cloud agents can search a **shared memory pool** — cross-agent context that lives in the cloud. After local Second Brain retrieval, the agent calls `searchPool()` to fetch additional context from other agents in your fleet. Results are cached in a local SQLite DB for 5 minutes per query to kill per-turn network cost.
+
+### Remote dashboard
+
+Manage your agent from the cloud dashboard at [cloud.mercuryagent.sh](https://cloud.mercuryagent.sh) — send messages, install skills, view memory, and monitor status. The dashboard talks to your local agent over the Cloud WebSocket.
+
+## Runtime activation
+
+The `activateCloudRuntime` function is the single entry point for starting or restarting a managed runtime after Cloud credentials land. It:
+
+- **Checks foreground state** — rejects if Mercury is running only in the foreground (can't activate Cloud without a managed runtime)
+- **Accepts already-online foreground** — if credentials didn't change and the foreground WebSocket is already online, returns without restarting
+- **Stops a running daemon** — graceful SIGTERM before starting a fresh one
+- **Starts a managed runtime** — `restartService()` if a system service is installed, otherwise `startBackground()`
+- **Waits for WebSocket online** — up to 20 seconds; throws if the Cloud WebSocket doesn't come up
+- **Propagates failures** — throws if `stopDaemon` fails, so the caller knows credentials were saved but the runtime is stale
+
+## Provider integration
+
+Mercury Cloud is a first-class provider (`mercuryCloud`) backed by an OpenAI-compatible API at `https://backend.mercuryagent.sh/v1`. At pairing time, Mercury fetches the available models and prompts you to choose:
+
+```
+Available models:
+  1. Mercury Flash (mercury-flash)
+  2. Mercury Pro (mercury-pro)
+  3. ...
+Choose a model [1-N, Enter for 1]:
+```
+
+The provider's JWT is automatically swapped when the shared token store rotates — no race conditions, no burned refresh tokens.
+
+## Cross-platform fixes
+
+### v1.2.1 — Runtime activation hardening
+
+Restored `activateCloudRuntime` as the single activation path for `cloud connect` and `cloud login`, replacing a simpler `ensureDaemonRunning` that had dropped foreground checks, WebSocket verification, and failure propagation. This fixed 8 failing pairing-flow tests.
+
+### v1.2.2 — Windows, Termux, and packaging
+
+- **Windows**: `resolveShell` now uses `posix.join` for the Termux shell path (was backslash-joined on Windows). `work-ledger.test.ts` skips the `0o600` mode assertion on Windows (chmod is a no-op for owner bits).
+- **Termux**: `better-sqlite3` is now lazy-loaded via `createRequire` in `pool-search.ts`, so `--help` and `--version` work without the native addon (it doesn't compile on Android).
+- **CI**: The Termux CI job treats `better-sqlite3` as optional (the runtime already falls back gracefully).
+
+## CLI commands
+
+| Command | Description |
+|---|---|
+| `mercury cloud connect` | Pair with Mercury Cloud via browser |
+| `mercury cloud disconnect` | Clear Cloud credentials and stop the agent |
+| `mercury cloud status` | Show Cloud connection status and usage |
+| `mercury cloud login` | Refresh the JWT using the stored refresh token |
+
+## Files changed
+
+### New files
+- `src/cloud/pairing.ts` — Pairing flow (start, poll, structured failures), token refresh, agent API key redemption
+- `src/cloud/pairing-flow.ts` — High-level `runCloudConnect`, `runCloudDisconnect`, `runCloudLogin`, `runCloudStatus`, `activateCloudRuntime`
+- `src/cloud/pairing-flow.test.ts` — 12 tests covering all activation paths
+- `src/cloud/client.ts` — `MercuryCloudClient` WebSocket client with heartbeat, reconnect, and token rotation
+- `src/cloud/token-store.ts` — Shared in-memory token store with listener-based rotation
+- `src/cloud/runtime-status.ts` — Cloud WebSocket online tracking and `waitForCloudRuntimeOnline`
+- `src/cloud/pool-search.ts` — Shared memory pool search with SQLite cache
+- `src/cloud/types.ts` — Cloud config, pairing result, and WS message types
+- `src/cloud/endpoints.ts` — Mercury Cloud API, WS, and dashboard URLs
+- `src/providers/mercury-cloud.ts` — Mercury Cloud as a first-class provider
+
+### Modified files
+- `src/index.ts` — `cloud` CLI subcommands (connect, disconnect, status, login)
+- `src/utils/config.ts` — Cloud config section, `mercuryCloud` provider, migrations
+- `src/core/agent.ts` — Cloud client integration, `searchPool()` call after local retrieval
+- `src/utils/platform.ts` — `posix.join` for Termux shell path (Windows fix)
+- `src/core/work-ledger.test.ts` — Skip `0o600` mode assertion on Windows
+
+## Patch history
+
+| Version | Focus |
+|---|---|
+| **1.2.0** | Mercury Cloud launch — pairing, auth, WebSocket, shared memory pool, provider integration |
+| **1.2.1** | Runtime activation hardening — restored `activateCloudRuntime` checks, fixed 8 pairing-flow tests |
+| **1.2.2** | Cross-platform fixes — Windows path/mode, Termux optional `better-sqlite3`, CI stabilization |
+
+## Upgrade
+
+**npm:**
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.2.2
+mercury restart
+```
+
+**Standalone (macOS / Linux):**
+
+```bash
+curl -fsSL https://mercuryagent.sh/install.sh | sh
+mercury restart
+```
+
+**Standalone (Windows):**
+
+```powershell
+irm https://mercuryagent.sh/install.ps1 | iex
+mercury restart
+```
+
+No config migrations needed. Mercury Cloud is **opt-in** — run `mercury cloud connect` to pair. Existing configs, providers, threads, kanban boards, and Second Brain data carry over unchanged.
+
+## Standalone binaries
+
+Same five targets as v1.1.13:
+
+| OS | Architecture | Binary |
+|---|---|---|
+| macOS | Apple Silicon | `mercury-macos-arm64` |
+| macOS | Intel | `mercury-macos-x64` |
+| Linux | x86-64 | `mercury-linux-x64` |
+| Linux | ARM64 | `mercury-linux-arm64` |
+| Windows | x86-64 | `mercury-win-x64.exe` |
+
+Direct downloads:
+
+- [mercury-macos-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/mercury-macos-arm64)
+- [mercury-macos-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/mercury-macos-x64)
+- [mercury-linux-x64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/mercury-linux-x64)
+- [mercury-linux-arm64](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/mercury-linux-arm64)
+- [mercury-win-x64.exe](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/mercury-win-x64.exe)
+- [checksums.txt](https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.2.2/checksums.txt)
+
+**Full changelog:** [v1.1.13 → v1.2.2](https://github.com/cosmicstack-labs/mercury-agent/compare/v1.1.13...v1.2.2)

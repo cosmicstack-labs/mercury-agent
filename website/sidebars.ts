@@ -76,12 +76,21 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'releases/releases',
+        'releases/1.2.0',
         'releases/1.1.13',
         'releases/1.1.12',
         'releases/1.1.11',
         'releases/1.1.9',
         'releases/1.1.7',
         'releases/1.1.6',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Mercury Cloud',
+      collapsed: false,
+      items: [
+        'cloud/mercury-cloud',
       ],
     },
   ],
