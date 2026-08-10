@@ -115,6 +115,8 @@ jobs:
           export PATH="$PWD/node_modules/.bin:$PATH"
           node node_modules/tsup/dist/cli-default.js
           node scripts/post-build.cjs
+          node -e "try { const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.prepare('select 1').get(); db.close(); console.log('better-sqlite3 OK'); } catch (e) { console.log('better-sqlite3 unavailable (optional on Termux):', e.message); }"
+          node -e "const { spawnSync } = require('node:child_process'); const r = spawnSync(process.execPath, ['dist/index.js', '--help'], { encoding: 'utf8' }); if (r.status !== 0 || !r.stdout.includes('Usage:')) process.exit(1)"
           node node_modules/vitest/vitest.mjs run
           CI_SCRIPT
           chmod +x /tmp/termux-ci.sh

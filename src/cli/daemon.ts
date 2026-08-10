@@ -45,18 +45,43 @@ export function buildDaemonSpawnArgs(): { command: string; args: string[] } {
 }
 
 const PID_FILE = 'daemon.pid';
+const FOREGROUND_PID_FILE = 'foreground.pid';
 const LOG_FILE = 'daemon.log';
 
 function pidPath(): string {
   return join(getMercuryHome(), PID_FILE);
 }
 
+function foregroundPidPath(): string {
+  return join(getMercuryHome(), FOREGROUND_PID_FILE);
+}
+
 function logPath(): string {
   return join(getMercuryHome(), LOG_FILE);
 }
 
+export function registerRuntimeProcess(mode: 'daemon' | 'foreground'): void {
+  const path = mode === 'daemon' ? pidPath() : foregroundPidPath();
+  const existing = readTrackedPid(path);
+  if (existing && existing !== process.pid && isProcessRunning(existing)) {
+    throw new Error(`Mercury ${mode} runtime is already running (PID: ${existing})`);
+  }
+  const home = getMercuryHome();
+  if (!existsSync(home)) mkdirSync(home, { recursive: true });
+  writeFileSync(path, String(process.pid));
+}
+
+export function releaseRuntimeProcess(mode: 'daemon' | 'foreground'): void {
+  const path = mode === 'daemon' ? pidPath() : foregroundPidPath();
+  if (readTrackedPid(path) !== process.pid) return;
+  try { unlinkSync(path); } catch {}
+}
+
 export function readPid(): number | null {
-  const path = pidPath();
+  return readTrackedPid(pidPath());
+}
+
+function readTrackedPid(path: string): number | null {
   if (!existsSync(path)) return null;
   try {
     const pid = parseInt(readFileSync(path, 'utf-8').trim(), 10);
@@ -65,6 +90,43 @@ export function readPid(): number | null {
   } catch {
     return null;
   }
+}
+
+export function getForegroundRuntimeStatus(): { running: boolean; pid: number | null } {
+  const path = foregroundPidPath();
+  const pid = readTrackedPid(path);
+  if (!pid) return { running: false, pid: null };
+  if (!isProcessRunning(pid)) {
+    try { unlinkSync(path); } catch {}
+    return { running: false, pid: null };
+  }
+  return { running: true, pid };
+}
+
+export async function stopForegroundRuntime(): Promise<boolean> {
+  const status = getForegroundRuntimeStatus();
+  if (!status.running || !status.pid) return true;
+
+  try {
+    process.kill(status.pid, process.platform === 'win32' ? undefined : 'SIGTERM');
+  } catch {
+    return false;
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline && isProcessRunning(status.pid)) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  if (isProcessRunning(status.pid)) {
+    try { process.kill(status.pid, 'SIGKILL'); } catch {}
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  if (isProcessRunning(status.pid)) return false;
+  if (readTrackedPid(foregroundPidPath()) === status.pid) {
+    try { unlinkSync(foregroundPidPath()); } catch {}
+  }
+  console.log(chalk.green(`  Stopped foreground Mercury (PID: ${status.pid})`));
+  return true;
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -135,14 +197,14 @@ export function startBackground(): void {
   }
 }
 
-export async function stopDaemon(): Promise<void> {
+export async function stopDaemon(): Promise<boolean> {
   const status = getDaemonStatus();
 
   if (!status.pid) {
     console.log(chalk.yellow('  Mercury is not running as a daemon.'));
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return true;
   }
 
   if (!status.running) {
@@ -150,7 +212,7 @@ export async function stopDaemon(): Promise<void> {
     try { unlinkSync(pidPath()); } catch {}
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return true;
   }
 
   try {
@@ -161,10 +223,9 @@ export async function stopDaemon(): Promise<void> {
     }
   } catch {
     console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
-    try { unlinkSync(pidPath()); } catch {}
     killStaleSignalCliProcesses();
     console.log('');
-    return;
+    return false;
   }
 
   console.log(chalk.dim(`  Stopping Mercury (PID: ${status.pid})...`));
@@ -183,6 +244,10 @@ export async function stopDaemon(): Promise<void> {
     } catch { /* already dead */ }
     // Wait briefly for SIGKILL to take effect
     await new Promise(resolve => setTimeout(resolve, 500));
+    if (isProcessRunning(status.pid)) {
+      console.log(chalk.red(`  Failed to stop PID ${status.pid}. Cloud disconnect aborted.`));
+      return false;
+    }
   }
 
   try { unlinkSync(pidPath()); } catch {}
@@ -191,11 +256,12 @@ export async function stopDaemon(): Promise<void> {
 
   console.log(chalk.green(`  Mercury stopped (PID: ${status.pid})`));
   console.log('');
+  return true;
 }
 
 export async function restartDaemon(): Promise<void> {
   if (getDaemonStatus().running) {
-    await stopDaemon();
+    if (!await stopDaemon()) return;
   }
 
   console.log(chalk.yellow('  Starting Mercury...'));

@@ -62,6 +62,7 @@ export class SlackChannel extends BaseChannel {
 
   beginTask(targetId?: string): void {
     const key = targetId || 'notification';
+    if (this.taskActive.get(key)) return;
     this.taskActive.set(key, true);
     this.deferredResponses.delete(key);
     this.statusNotices.delete(key);
@@ -69,7 +70,7 @@ export class SlackChannel extends BaseChannel {
 
   endTask(targetId?: string): void {
     const key = targetId || 'notification';
-    this.taskActive.set(key, false);
+    this.taskActive.delete(key);
   }
 
   isTaskActive(targetId?: string): boolean {
@@ -391,12 +392,26 @@ export class SlackChannel extends BaseChannel {
 
   async send(content: string, targetId?: string, _elapsedMs?: number): Promise<void> {
     const channel = this.resolveTargetChannel(targetId);
-    if (!channel) return;
+    if (!channel) throw new Error(`Slack send failed: no valid channel for ${targetId || 'notification'}`);
 
     const key = targetId || 'notification';
 
     if (this.isTaskActive(targetId)) {
-      this.deferredResponses.set(key, content);
+      const isStatusNotice = content.startsWith('☿ ') || content.startsWith('⚠') || content.startsWith('  [') || content.length < 200;
+      if (isStatusNotice) {
+        const notices = this.statusNotices.get(key) || [];
+        notices.push(content.length > 80 ? content.slice(0, 77) + '...' : content);
+        this.statusNotices.set(key, notices);
+        const counter = this.stepCounters.get(key) || 0;
+        const history = this.stepHistory.get(key) || [];
+        const description = [
+          ...history.slice(-5).map((h) => `:white_check_mark: ${h}`),
+          ...notices.slice(-SlackChannel.MAX_STATUS_NOTICES),
+        ].join('\n');
+        await this.updateStatusBlock(key, `:gear: Mercury working (step ${counter})`, description || 'Processing...');
+      } else {
+        this.deferredResponses.set(key, content);
+      }
       return;
     }
 
@@ -413,7 +428,11 @@ export class SlackChannel extends BaseChannel {
         });
       } catch (e) {
         logger.warn({ err: e }, 'Slack send failed');
+        throw e;
       }
+    }
+    if (this.deferredResponses.get(key) === content) {
+      this.deferredResponses.delete(key);
     }
   }
 
@@ -721,7 +740,6 @@ export class SlackChannel extends BaseChannel {
 
     const deferred = this.deferredResponses.get(key);
     if (deferred) {
-      this.deferredResponses.delete(key);
       await this.send(deferred, targetId);
     }
 

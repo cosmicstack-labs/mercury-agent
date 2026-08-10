@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
 import { logger } from '../utils/logger.js';
+import { isTermux } from '../utils/platform.js';
 
 const SIGNAL_CLI_VERSION = '0.14.5';
 const MERCURY_HOME = () => process.env.MERCURY_HOME || path.join(homedir(), '.mercury');
@@ -16,12 +17,19 @@ const NATIVE_PLATFORMS: Record<string, string> = {
   'linux-x64': `signal-cli-${SIGNAL_CLI_VERSION}-Linux-native.tar.gz`,
 };
 
-function getPlatformKey(): string {
-  return `${process.platform}-${process.arch}`;
+function getPlatformKey(
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch,
+): string {
+  return `${platform}-${arch}`;
 }
 
-export function isNativeAvailable(): boolean {
-  return getPlatformKey() in NATIVE_PLATFORMS;
+export function isNativeAvailable(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch,
+): boolean {
+  return !isTermux(env, platform) && getPlatformKey(platform, arch) in NATIVE_PLATFORMS;
 }
 
 function getNativeArchiveName(): string | null {
@@ -44,9 +52,37 @@ function getJarPath(): string {
   return path.join(SIGNAL_CLI_DIR(), 'lib', `signal-cli-${SIGNAL_CLI_VERSION}.jar`);
 }
 
+function isScript(pathname: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(pathname, 'r');
+    const header = Buffer.alloc(2);
+    fs.readSync(fd, header, 0, header.length, 0);
+    return header.toString() === '#!';
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function makeExecutable(pathname: string): boolean {
+  try {
+    fs.chmodSync(pathname, 0o755);
+    fs.accessSync(pathname, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isUsableManagedLauncher(pathname: string): boolean {
+  return existsSync(pathname) && (!isTermux() || isScript(pathname)) && makeExecutable(pathname);
+}
+
 export function findSignalCli(): string | null {
   const binaryPath = getBinaryPath();
-  if (existsSync(binaryPath)) {
+  if (isUsableManagedLauncher(binaryPath)) {
     return binaryPath;
   }
 
@@ -58,7 +94,7 @@ export function findSignalCli(): string | null {
   const whichCmd = process.platform === 'win32' ? 'where' : 'which';
   try {
     const systemPath = execSync(`${whichCmd} signal-cli 2>/dev/null`, { encoding: 'utf-8', stdio: 'pipe' }).trim();
-    if (systemPath) return systemPath;
+    if (systemPath && (!isTermux() || getSignalCliVersion(systemPath))) return systemPath;
   } catch { /* not on PATH */ }
 
   return null;
@@ -209,7 +245,7 @@ export async function downloadSignalCli(preferNative: boolean = true): Promise<s
     mkdirSync(dir, { recursive: true });
   }
 
-  if (existsSync(expectedBinary)) {
+  if (isUsableManagedLauncher(expectedBinary) && getSignalCliVersion(expectedBinary)) {
     logger.info({ path: expectedBinary }, 'Signal CLI native binary already exists');
     return expectedBinary;
   }
@@ -233,7 +269,12 @@ export async function downloadSignalCli(preferNative: boolean = true): Promise<s
       if (!existsSync(binaryPath)) {
         throw new Error(`Native binary not found after extraction at ${binaryPath}`);
       }
-      try { fs.chmodSync(binaryPath, 0o755); } catch { /* ignore */ }
+      if (!makeExecutable(binaryPath)) {
+        throw new Error(`Native binary is not executable at ${binaryPath}`);
+      }
+      if (!getSignalCliVersion(binaryPath)) {
+        throw new Error('Native binary failed its version check');
+      }
       logger.info({ path: binaryPath }, 'Signal CLI native binary installed');
       return binaryPath;
     } catch (nativeErr: any) {
@@ -248,9 +289,10 @@ export async function downloadSignalCli(preferNative: boolean = true): Promise<s
   if (!checkJavaAvailable()) {
     throw new Error(
       'Signal CLI requires Java (JRE 17+) on this platform.\n' +
-      'No native binary is available for macOS/Windows, and Java was not found.\n' +
-      'Install Java: https://adoptium.net/ or `brew install openjdk`\n' +
-      'Then run: mercury doctor'
+      'No compatible native binary is available, and Java was not found.\n' +
+      (isTermux()
+        ? 'Install Java with `pkg install openjdk-17`, then run: mercury doctor'
+        : 'Install Java: https://adoptium.net/ or `brew install openjdk`\nThen run: mercury doctor')
     );
   }
 
@@ -269,7 +311,9 @@ export async function downloadSignalCli(preferNative: boolean = true): Promise<s
   // Prefer the wrapper script which handles classpath and JAVA_HOME
   const binaryPath = getBinaryPath();
   if (existsSync(binaryPath)) {
-    try { fs.chmodSync(binaryPath, 0o755); } catch { /* ignore */ }
+    if (!makeExecutable(binaryPath)) {
+      throw new Error(`signal-cli wrapper is not executable at ${binaryPath}`);
+    }
     logger.info({ path: binaryPath }, 'Signal CLI installed (wrapper script + JAR)');
     return binaryPath;
   }

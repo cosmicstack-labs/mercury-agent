@@ -31,6 +31,7 @@ const ACCESS_ACTION_PREFIX = 'tg_access';
 const MEMORY_ACTION_PREFIX = 'tg_memory';
 
 type ApprovalResolver = () => void;
+type ChoiceResolver = (value: string) => void;
 
 export class TelegramChannel extends BaseChannel {
   readonly type = 'telegram' as const;
@@ -39,9 +40,15 @@ export class TelegramChannel extends BaseChannel {
   private typingInterval: NodeJS.Timeout | null = null;
   private chatCommandContext?: import('../capabilities/registry.js').ChatCommandContext;
   private pendingApprovals: Map<string, ApprovalResolver> = new Map();
+  private pendingChoices: Map<string, ChoiceResolver> = new Map();
+  private processedMessages = new Map<string, number>();
+  private static readonly DEDUP_TTL = 5 * 60_000;
+  private static readonly DEDUP_MAX_SIZE = 10_000;
+  private dedupCleanupInterval: NodeJS.Timeout | null = null;
   private permissionModes = new Map<number, PermissionMode>();
   private onPermissionMode?: (mode: PermissionMode, chatId: number) => void;
   private statusMessageIds = new Map<string, number>();
+  private statusUpdateQueues = new Map<string, Promise<void>>();
   private stepCounters = new Map<string, number>();
   private stepHistory = new Map<string, string[]>();
   private statusText = new Map<string, string>();
@@ -88,12 +95,18 @@ export class TelegramChannel extends BaseChannel {
     return this.taskActive.get(key) ?? false;
   }
 
-  /** Get and clear deferred response text (to send after task cleanup) */
+  /** Peek at deferred response text. A successful final send clears it. */
   popDeferredResponse(targetId?: string): string | undefined {
     const key = targetId || 'notification';
-    const text = this.deferredResponses.get(key);
-    this.deferredResponses.delete(key);
-    return text;
+    return this.deferredResponses.get(key);
+  }
+
+  /** Explicitly queue the final AI response to send after progress cleanup. */
+  deferResponse(targetId: string | undefined, content: string): void {
+    const key = targetId || 'notification';
+    if (content.trim()) {
+      this.deferredResponses.set(key, content);
+    }
   }
 
   setOnPermissionMode(handler: (mode: PermissionMode, chatId: number) => void): void {
@@ -125,6 +138,16 @@ export class TelegramChannel extends BaseChannel {
       const command = this.getCommandName(text);
 
       if (!userId) return;
+
+      const dedupKey = `${chatId}:${ctx.message.message_id}`;
+      if (this.processedMessages.has(dedupKey)) {
+        logger.debug({ chatId, messageId: ctx.message.message_id }, 'Telegram: dedup skipping message');
+        return;
+      }
+      this.processedMessages.set(dedupKey, Date.now());
+      if (this.processedMessages.size > TelegramChannel.DEDUP_MAX_SIZE) {
+        this.cleanupDedup();
+      }
 
       if (ctx.chat.type !== 'private') {
         await this.sendDirectMessage(chatId, 'This bot is only available in private one-to-one chats.');
@@ -223,6 +246,21 @@ export class TelegramChannel extends BaseChannel {
         return;
       }
 
+      if (data.startsWith('choice:')) {
+        const [, id, value] = data.split(':');
+        const resolver = id ? this.pendingChoices.get(id) : undefined;
+        if (!resolver) {
+          await ctx.answerCallbackQuery({ text: 'Expired' });
+          return;
+        }
+
+        this.pendingChoices.delete(id);
+        resolver(value ?? '');
+        await ctx.answerCallbackQuery({ text: 'Selected' });
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, 'telegram editMessageReplyMarkup failed'));
+        return;
+      }
+
       const resolver = this.pendingApprovals.get(data);
       if (!resolver) {
         await ctx.answerCallbackQuery({ text: 'Expired' });
@@ -241,6 +279,8 @@ export class TelegramChannel extends BaseChannel {
 
     this.bot = bot;
 
+    this.dedupCleanupInterval = setInterval(() => this.cleanupDedup(), 30_000);
+
     // Start long-polling in the background.
     // bot.start() blocks until the first getUpdates succeeds, which can take
     // 30-40s on slow networks. Don't block Mercury startup — let it connect
@@ -254,8 +294,14 @@ export class TelegramChannel extends BaseChannel {
     }).catch((err: any) => {
       const message = err?.description || err?.message || String(err);
       logger.error({ err: message }, 'Telegram bot polling stopped');
-      // Don't null out this.bot here — stop() will handle cleanup.
-      // The guard (if this.bot) prevents a second instance from being created.
+      if (this.bot === bot) {
+        this.bot = null;
+        this.ready = false;
+        if (this.dedupCleanupInterval) {
+          clearInterval(this.dedupCleanupInterval);
+          this.dedupCleanupInterval = null;
+        }
+      }
     });
   }
 
@@ -292,15 +338,19 @@ export class TelegramChannel extends BaseChannel {
 
   async stop(): Promise<void> {
     this.bot?.stop();
+    this.bot = null;
     this.ready = false;
     this.stopTypingLoop();
+    if (this.dedupCleanupInterval) {
+      clearInterval(this.dedupCleanupInterval);
+      this.dedupCleanupInterval = null;
+    }
   }
 
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
     const chatIds = this.resolveTargetChatIds(targetId);
     if (chatIds.length === 0 || !this.bot) {
-      logger.warn({ targetId, chatIds }, 'Telegram send: no valid chat IDs');
-      return;
+      throw new Error(`Telegram send failed: no valid chat for ${targetId || 'notification'}`);
     }
 
     const key = targetId || 'notification';
@@ -348,9 +398,13 @@ export class TelegramChannel extends BaseChannel {
             await this.bot.api.sendMessage(chatId, this.stripHtml(chunk));
           } catch (err2: any) {
             logger.error({ err: err2.message, chatId }, 'Telegram send failed');
+            throw err2;
           }
         }
       }
+    }
+    if (this.deferredResponses.get(key) === content) {
+      this.deferredResponses.delete(key);
     }
   }
 
@@ -496,12 +550,17 @@ export class TelegramChannel extends BaseChannel {
     // Check all task-active keys since we have chatId not targetId
     const activeKey = this.findActiveTaskKey(chatId);
     if (activeKey) {
-      let full = '';
-      for await (const chunk of textStream) {
-        full += chunk;
+      this.startTypingLoop(chatId);
+      try {
+        let full = '';
+        for await (const chunk of textStream) {
+          full += chunk;
+        }
+        this.deferredResponses.set(activeKey, full);
+        return full;
+      } finally {
+        this.stopTypingLoop();
       }
-      this.deferredResponses.set(activeKey, full);
-      return full;
     }
 
     const STREAM_EDIT_INTERVAL = 1500;
@@ -623,6 +682,40 @@ export class TelegramChannel extends BaseChannel {
         this.pendingApprovals.delete(`${id}:no`);
         if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
         resolve('no');
+      }, 120_000);
+    });
+  }
+
+  async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>, targetId?: string): Promise<string> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const chatId = chatIds[0];
+    if (!chatId || !this.bot) return options[0]?.value || '';
+
+    const id = `choice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const keyboard = new InlineKeyboard();
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      keyboard.text(option.label.slice(0, 60), `choice:${id}:${option.value}`);
+      if (i < options.length - 1 && (i + 1) % 2 === 0) {
+        keyboard.row();
+      }
+    }
+
+    const html = mdToTelegram(question);
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: keyboard });
+      this.trackEphemeral(targetId, msg.message_id);
+    } catch {
+      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), { reply_markup: keyboard });
+      this.trackEphemeral(targetId, msg.message_id);
+    }
+
+    return new Promise((resolve) => {
+      this.pendingChoices.set(id, resolve);
+      setTimeout(() => {
+        if (!this.pendingChoices.has(id)) return;
+        this.pendingChoices.delete(id);
+        resolve(options[0]?.value || '');
       }, 120_000);
     });
   }
@@ -1353,6 +1446,22 @@ export class TelegramChannel extends BaseChannel {
   }
 
   private async updateStatusMessage(text: string, targetId?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const previous = this.statusUpdateQueues.get(key) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => this.updateStatusMessageNow(text, targetId));
+    this.statusUpdateQueues.set(key, next);
+    try {
+      await next;
+    } finally {
+      if (this.statusUpdateQueues.get(key) === next) {
+        this.statusUpdateQueues.delete(key);
+      }
+    }
+  }
+
+  private async updateStatusMessageNow(text: string, targetId?: string): Promise<void> {
     const chatIds = this.resolveTargetChatIds(targetId);
     if (chatIds.length === 0 || !this.bot) return;
 
@@ -1366,7 +1475,13 @@ export class TelegramChannel extends BaseChannel {
         try {
           await this.bot.api.editMessageText(chatId, existingMsgId, html, { parse_mode: 'HTML' });
           return;
-        } catch {
+        } catch (err: any) {
+          const description = err?.description || err?.message || '';
+          if (String(description).includes('message is not modified')) {
+            return;
+          }
+          await this.unpinStatusMessage(targetId);
+          await this.bot.api.deleteMessage(chatId, existingMsgId).catch(() => {});
           this.statusMessageIds.delete(key);
         }
       }
@@ -1387,6 +1502,10 @@ export class TelegramChannel extends BaseChannel {
 
   private async deleteStatusMessage(targetId?: string): Promise<void> {
     const key = targetId || 'notification';
+    const pendingUpdate = this.statusUpdateQueues.get(key);
+    if (pendingUpdate) {
+      await pendingUpdate.catch(() => {});
+    }
     const msgId = this.statusMessageIds.get(key);
     if (msgId && this.bot) {
       // Unpin before deleting if this was pinned
@@ -1493,35 +1612,8 @@ export class TelegramChannel extends BaseChannel {
   }
 
   async sendCompletion(elapsedMs: number, stepCount: number, targetId?: string, meta?: { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; budgetUsed: number; budgetTotal: number; budgetPercentage: number }): Promise<void> {
-    const secs = Math.floor(elapsedMs / 1000);
-    const mins = Math.floor(secs / 60);
-    const remSecs = secs % 60;
-    const timeStr = mins > 0 ? `${mins}m ${remSecs}s` : `${secs}s`;
-    const stepsStr = stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? 's' : ''}` : '';
-    const parts = [stepsStr, timeStr].filter(Boolean).join(' · ');
-
     const key = targetId || 'notification';
-    const history = this.stepHistory.get(key) || [];
-    const recentHistory = history.slice(-5);
-
-    const lines = [
-      `✅ **Task complete** (${parts})`,
-    ];
-
-    if (meta) {
-      const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-      lines.push(`☿ ${meta.model} via ${meta.provider} · ${formatTokens(meta.totalTokens)} tokens`);
-      const pct = Math.round(meta.budgetPercentage);
-      const barLen = 15;
-      const filled = Math.round((pct / 100) * barLen);
-      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-      lines.push(`Budget: ${bar} ${pct}% (${formatTokens(meta.budgetUsed)} / ${formatTokens(meta.budgetTotal)})`);
-    }
-
-    if (recentHistory.length > 0) {
-      lines.push('');
-      lines.push(...recentHistory.map(h => `  ✓ ${h}`));
-    }
+    logger.info({ elapsedMs, stepCount, provider: meta?.provider, model: meta?.model }, 'Telegram task complete');
 
     // Clean up: unpin + delete the status card, clean up ephemeral messages
     await this.deleteStatusMessage(targetId);
@@ -1535,28 +1627,7 @@ export class TelegramChannel extends BaseChannel {
     // Flush deferred AI response first (the actual answer the user wants to see)
     const deferred = this.deferredResponses.get(key);
     if (deferred && deferred.trim()) {
-      this.deferredResponses.delete(key);
-      const deferredHtml = mdToTelegram(deferred);
-      const chunks = this.splitMessage(deferredHtml, MAX_MESSAGE_LENGTH);
-      for (const chatId of chatIds) {
-        for (const chunk of chunks) {
-          try {
-            await this.bot?.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
-          } catch {
-            await this.bot?.api.sendMessage(chatId, this.stripHtml(chunk)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
-          }
-        }
-      }
-    }
-
-    // Send the completion banner as a separate message
-    const html = mdToTelegram(lines.join('\n'));
-    for (const chatId of chatIds) {
-      try {
-        await this.bot?.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
-      } catch {
-        await this.bot?.api.sendMessage(chatId, this.stripHtml(html)).catch((e: any) => logger.warn({ e }, "telegram html send failed"));
-      }
+      await this.send(deferred, targetId);
     }
 
     this.stepCounters.delete(key);
@@ -1635,5 +1706,14 @@ export class TelegramChannel extends BaseChannel {
       return { chatId };
     }
     return null;
+  }
+
+  private cleanupDedup(): void {
+    const now = Date.now();
+    for (const [key, ts] of this.processedMessages) {
+      if (now - ts > TelegramChannel.DEDUP_TTL) {
+        this.processedMessages.delete(key);
+      }
+    }
   }
 }

@@ -1,9 +1,15 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, closeSync, openSync, renameSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
 import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest } from '../types/channel.js';
+import {
+  LEGACY_SEED_API_URL,
+  LEGACY_SEED_WS_URL,
+  MERCURY_CLOUD_API_URL,
+  MERCURY_CLOUD_WS_URL,
+} from '../cloud/endpoints.js';
 
 const MERCURY_HOME = join(homedir(), '.mercury');
 
@@ -48,6 +54,7 @@ export interface TelegramPendingRequest {
 }
 
 export type ProviderName =
+  | 'mercuryCloud'
   | 'openai'
   | 'anthropic'
   | 'deepseek'
@@ -60,14 +67,27 @@ export type ProviderName =
   | 'chatgptWeb'
   | 'githubCopilot';
 
+export interface CloudConfig {
+  enabled: boolean;
+  apiUrl: string;
+  wsUrl: string;
+  jwt: string;
+  refreshToken: string;
+  agentId: string;
+  tier: string;
+  agentApiKey: string;
+}
+
 export interface MercuryConfig {
   identity: {
     name: string;
     owner: string;
     creator?: string;
   };
+  cloud: CloudConfig;
   providers: {
     default: ProviderName;
+    mercuryCloud: ProviderConfig;
     openai: ProviderConfig;
     anthropic: ProviderConfig;
     deepseek: ProviderConfig;
@@ -138,6 +158,14 @@ export interface MercuryConfig {
     secondBrain: {
       enabled: boolean;
     };
+    collaborativeKnowledge?: {
+      /** When true, new memories extracted via remember() are marked shareable. */
+      shareLearning?: boolean;
+      /** When true, the agent queries the cloud shared pool for additional
+       *  context after retrieving from its local second brain. Defaults to
+       *  true when the agent is paired with Mercury Cloud. */
+      poolSearch?: boolean;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -196,14 +224,33 @@ function getEnvBool(key: string, fallback: boolean): boolean {
 
 export function getDefaultConfig(): MercuryConfig {
   const home = getMercuryHome();
+  const cloudApiUrl = getEnv('MERCURY_CLOUD_API_URL', MERCURY_CLOUD_API_URL);
+  const cloudWsUrl = getEnv('MERCURY_CLOUD_WS_URL', MERCURY_CLOUD_WS_URL);
   return {
     identity: {
       name: getEnv('MERCURY_NAME', 'Mercury'),
       owner: getEnv('MERCURY_OWNER', ''),
       creator: getEnv('MERCURY_CREATOR', ''),
     },
+    cloud: {
+      enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
+      apiUrl: cloudApiUrl,
+      wsUrl: cloudWsUrl,
+      jwt: getEnv('MERCURY_CLOUD_JWT', ''),
+      refreshToken: getEnv('MERCURY_CLOUD_REFRESH_TOKEN', ''),
+      agentId: getEnv('MERCURY_CLOUD_AGENT_ID', ''),
+      tier: getEnv('MERCURY_CLOUD_TIER', 'free'),
+      agentApiKey: getEnv('MERCURY_CLOUD_AGENT_API_KEY', ''),
+    },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
+      mercuryCloud: {
+        name: 'mercuryCloud',
+        apiKey: '',
+        baseUrl: cloudApiUrl,
+        model: getEnv('MERCURY_CLOUD_MODEL', 'mercury-mini'),
+        enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
+      },
       openai: {
         name: 'openai',
         apiKey: getEnv('OPENAI_API_KEY', ''),
@@ -340,6 +387,10 @@ export function getDefaultConfig(): MercuryConfig {
       secondBrain: {
         enabled: getEnvBool('SECOND_BRAIN_ENABLED', true),
       },
+      collaborativeKnowledge: {
+        shareLearning: getEnvBool('SHARE_LEARNING', false),
+        poolSearch: getEnvBool('POOL_SEARCH', true),
+      },
     },
     heartbeat: {
       intervalMinutes: getEnvNum('HEARTBEAT_INTERVAL_MINUTES', 60),
@@ -374,13 +425,17 @@ export function getDefaultConfig(): MercuryConfig {
 }
 
 const CONFIG_PATH = join(getMercuryHome(), 'mercury.yaml');
+const CONFIG_LOCK_PATH = `${CONFIG_PATH}.lock`;
 
 export function loadConfig(): MercuryConfig {
   if (existsSync(CONFIG_PATH)) {
+    // Tighten permissions on an existing config file that contains live
+    // tokens but was written before the 0600 default.
+    try { chmodSync(CONFIG_PATH, 0o600); } catch {}
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const fileConfig = parseYaml(raw) as Partial<MercuryConfig>;
     const defaults = getDefaultConfig();
-    return migrateLegacyDiscordAccess(
+    return normalizeCloudConfig(migrateLegacyDiscordAccess(
       migrateLegacyOllamaLocalBaseUrl(
         migrateLegacyOllamaCloudBaseUrl(
           migrateLegacySignalAccess(
@@ -388,19 +443,116 @@ export function loadConfig(): MercuryConfig {
           ),
         ),
       ),
-    );
+    ));
   }
-  return migrateLegacyDiscordAccess(
+  return normalizeCloudConfig(migrateLegacyDiscordAccess(
     migrateLegacyTelegramAccess(getDefaultConfig()),
-  );
+  ));
+}
+
+export function normalizeCloudConfig(config: MercuryConfig): MercuryConfig {
+  // Single source of truth: cloud.apiUrl/wsUrl define the Mercury Cloud backend.
+  // providers.mercuryCloud.baseUrl is derived for the OpenAI-compatible client.
+  if (!config.cloud.apiUrl || config.cloud.apiUrl === LEGACY_SEED_API_URL) {
+    config.cloud.apiUrl = MERCURY_CLOUD_API_URL;
+  }
+  if (config.cloud.wsUrl === LEGACY_SEED_WS_URL) {
+    config.cloud.wsUrl = MERCURY_CLOUD_WS_URL;
+  }
+  if (!config.cloud.wsUrl) config.cloud.wsUrl = deriveCloudWsUrl(config.cloud.apiUrl);
+  config.providers.mercuryCloud.baseUrl = config.cloud.apiUrl;
+  if (config.cloud.jwt && !config.providers.mercuryCloud.apiKey) {
+    config.providers.mercuryCloud.apiKey = config.cloud.jwt;
+  }
+  return config;
+}
+
+function deriveCloudWsUrl(apiUrl: string): string {
+  try {
+    const url = new URL(apiUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/ws`;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return MERCURY_CLOUD_WS_URL;
+  }
 }
 
 export function saveConfig(config: MercuryConfig): void {
+  const lockFd = acquireConfigLock();
+  try {
+    saveConfigUnlocked(config);
+  } finally {
+    releaseConfigLock(lockFd);
+  }
+}
+
+export function updateConfig(mutator: (config: MercuryConfig) => void): MercuryConfig {
+  const lockFd = acquireConfigLock();
+  try {
+    const config = loadConfig();
+    mutator(config);
+    saveConfigUnlocked(config);
+    return config;
+  } finally {
+    releaseConfigLock(lockFd);
+  }
+}
+
+function saveConfigUnlocked(config: MercuryConfig): void {
+  config = normalizeCloudConfig(config);
   const dir = getMercuryHome();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(CONFIG_PATH, stringifyYaml(config), 'utf-8');
+  const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tempPath, stringifyYaml(config), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tempPath, CONFIG_PATH);
+  } finally {
+    try { unlinkSync(tempPath); } catch {}
+  }
+  // The config file contains live JWTs and refresh tokens. Restrict to the
+  // owner so other users on shared servers cannot read or rotate them.
+  try { chmodSync(CONFIG_PATH, 0o600); } catch {}
+}
+
+function acquireConfigLock(): number {
+  const dir = getMercuryHome();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const deadline = Date.now() + 2_000;
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+  while (true) {
+    try {
+      const fd = openSync(CONFIG_LOCK_PATH, 'wx', 0o600);
+      writeFileSync(fd, String(process.pid), 'utf-8');
+      return fd;
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error;
+      let ownerPid = 0;
+      try { ownerPid = parseInt(readFileSync(CONFIG_LOCK_PATH, 'utf-8'), 10); } catch {}
+      let ownerAlive = false;
+      if (ownerPid > 0) {
+        try { process.kill(ownerPid, 0); ownerAlive = true; } catch {}
+      }
+      if (ownerAlive) {
+        if (Date.now() >= deadline) {
+          throw new Error(`Mercury configuration is still being updated by process ${ownerPid}; retry the command`);
+        }
+        Atomics.wait(waitBuffer, 0, 0, 25);
+        continue;
+      }
+      try { unlinkSync(CONFIG_LOCK_PATH); } catch {}
+    }
+  }
+}
+
+function releaseConfigLock(fd: number): void {
+  try { closeSync(fd); } catch {}
+  try { unlinkSync(CONFIG_LOCK_PATH); } catch {}
 }
 
 export function isSetupComplete(): boolean {
@@ -446,6 +598,9 @@ export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
 
 export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
+  if (provider.name === 'mercuryCloud') {
+    return provider.model.length > 0;
+  }
   if (provider.name === 'ollamaLocal') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;
   }

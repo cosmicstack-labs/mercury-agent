@@ -49,6 +49,7 @@ import { logger } from './utils/logger.js';
 import { redactPhone } from './utils/redact.js';
 import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
+import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -68,13 +69,15 @@ import { CapabilityRegistry } from './capabilities/registry.js';
 import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
-import { startBackground, stopDaemon, showLogs, getDaemonStatus, restartDaemon, tryAutoDaemonize, isStandaloneBinary } from './cli/daemon.js';
+import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders } from './web/server.js';
+import { initCloudTokenStore } from './cloud/token-store.js';
+import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -142,6 +145,7 @@ function maskKey(key: string): string {
 }
 
 const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
+  { key: 'mercuryCloud', label: 'Mercury Cloud (hosted — no API keys needed)' },
   { key: 'deepseek', label: 'DeepSeek' },
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
@@ -165,6 +169,7 @@ function getConfiguredProviderNames(config: MercuryConfig): ProviderName[] {
 
 function getProviderLabel(name: ProviderName): string {
   if (name === 'chatgptWeb') return 'OpenAI (ChatGPT Plus/Pro)';
+  if (name === 'mercuryCloud') return 'Mercury Cloud';
   return PROVIDER_OPTIONS.find((option) => option.key === name)?.label || name;
 }
 
@@ -635,9 +640,21 @@ function printTelegramAccessState(config: MercuryConfig): void {
 
   console.log('');
   console.log(`  Telegram Access: ${chalk.white(getTelegramAccessSummary(config))}`);
+  console.log(`  Enabled:         ${config.channels.telegram.enabled ? chalk.green('yes') : chalk.red('no')}`);
+  console.log(`  Bot Token:       ${config.channels.telegram.botToken ? chalk.green('configured') : chalk.red('missing')}`);
   console.log(`  Admins:          ${admins.length > 0 ? chalk.green(admins.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Members:         ${members.length > 0 ? chalk.green(members.map(formatTelegramUser).join(', ')) : chalk.dim('none')}`);
   console.log(`  Pending:         ${pending.length > 0 ? chalk.yellow(pendingSummary) : chalk.dim('none')}`);
+
+  if (!config.channels.telegram.enabled && config.channels.telegram.botToken) {
+    console.log(chalk.yellow('  Warning:         Telegram has a bot token but is disabled. Run `mercury telegram enable`.'));
+  }
+  if (config.channels.telegram.enabled && !config.channels.telegram.botToken) {
+    console.log(chalk.yellow('  Warning:         Telegram is enabled but has no bot token. Run `mercury doctor`.'));
+  }
+  if (config.channels.telegram.enabled && config.channels.telegram.botToken && admins.length === 0 && pending.length === 0) {
+    console.log(chalk.yellow('  Pairing:         Send /start to the bot, then run `mercury telegram approve <pairing-code>`.'));
+  }
 }
 
 function formatDiscordUser(user: {
@@ -1074,9 +1091,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     const agentName = await ask(chalk.white(`  Agent name [${config.identity.name}]: `));
     if (agentName) config.identity.name = agentName;
   } else {
-    const ownerName = await ask(chalk.white('  Your name: '));
+    // Retry up to MAX_EMPTY_ATTEMPTS times before giving up, so an accidental
+    // Enter on the first-run "Your name" prompt doesn't immediately exit
+    // onboarding. Only exit after the user presses Enter with no value that
+    // many times in a row.
+    const MAX_EMPTY_ATTEMPTS = 3;
+    let ownerName = '';
+    let attempts = 0;
+    while (attempts < MAX_EMPTY_ATTEMPTS) {
+      ownerName = await ask(chalk.white('  Your name: '));
+      if (ownerName) break;
+      attempts++;
+      if (attempts < MAX_EMPTY_ATTEMPTS) {
+        console.log(chalk.red(`  Name is required. Please enter your name (${attempts}/${MAX_EMPTY_ATTEMPTS}).`));
+      }
+    }
     if (!ownerName) {
-      console.log(chalk.red('  Name is required.'));
+      console.log(chalk.red('  Name is required. Exiting setup — run `mercury` again to retry.'));
       process.exit(1);
     }
     config.identity.owner = ownerName;
@@ -1089,16 +1120,65 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
   hr();
   console.log('');
-  console.log(chalk.bold.white('  LLM Providers'));
-  if (isReconfig) {
-    console.log(chalk.dim('  Choose which providers to configure now. Existing values are shown where available.'));
-  } else {
-    console.log(chalk.dim('  Choose one or more providers. You can skip any provider by pressing Enter.'));
-    console.log(chalk.dim('  Press Enter to configure DeepSeek by default (free at platform.deepseek.com).'));
-  }
+  console.log(chalk.bold.white('  Mercury Cloud or Offline?'));
   console.log('');
+  if (!isReconfig) {
+    console.log(chalk.dim('  Mercury Cloud routes LLM calls through our servers — no API keys needed.'));
+    console.log(chalk.dim('  Offline (BYOK) uses your own API keys stored locally.'));
+    console.log('');
+  }
 
-   while (true) {
+  const cloudChoice = await selectWithArrowKeys(
+    isReconfig ? 'Connection Mode' : 'Choose your mode',
+    [
+      { value: 'cloud', label: 'Mercury Cloud (hosted — no API keys needed)' },
+      { value: 'offline', label: 'Offline / BYOK (bring your own keys)' },
+    ],
+  );
+
+  let llmConfiguredByCloud = false;
+
+  if (cloudChoice === 'cloud') {
+    console.log('');
+    console.log(chalk.dim('  Connecting to Mercury Cloud...'));
+    console.log('');
+    try {
+      const { runCloudPairingFlow } = await import('./cloud/pairing-flow.js');
+      const result = await runCloudPairingFlow(config);
+      if (result) {
+        config.cloud = result.cloudConfig;
+        config.providers.mercuryCloud.apiKey = result.cloudConfig.jwt;
+        config.providers.mercuryCloud.model = result.model;
+        config.providers.mercuryCloud.enabled = true;
+        config.providers.default = 'mercuryCloud';
+        saveConfig(config);
+        console.log(chalk.green('  ✓ Mercury Cloud connected!'));
+        console.log(chalk.dim(`    Agent ID: ${result.cloudConfig.agentId}`));
+        console.log(chalk.dim(`    Tier: ${result.cloudConfig.tier}`));
+        console.log(chalk.dim(`    Model: ${result.model}`));
+        llmConfiguredByCloud = true;
+      }
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ Cloud connection failed: ${err.message || err}`));
+      console.log(chalk.yellow('  Falling back to offline (BYOK) mode.'));
+    }
+  } else {
+    config.cloud.enabled = false;
+  }
+
+  if (!llmConfiguredByCloud) {
+    hr();
+    console.log('');
+    console.log(chalk.bold.white('  LLM Providers'));
+    if (isReconfig) {
+      console.log(chalk.dim('  Choose which providers to configure now. Existing values are shown where available.'));
+    } else {
+      console.log(chalk.dim('  Choose one or more providers. You can skip any provider by pressing Enter.'));
+      console.log(chalk.dim('  Press Enter to configure DeepSeek by default (free at platform.deepseek.com).'));
+    }
+    console.log('');
+
+    while (true) {
     const selectedProviders = await chooseProvidersToConfigure(config, isReconfig);
     console.log('');
 
@@ -1395,42 +1475,34 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
 
     const configuredProviders = getConfiguredProviderNames(config);
     if (configuredProviders.length === 0) {
+      saveConfig(config);
       console.log('');
-      console.log(chalk.yellow('  No LLM providers were configured.'));
-      console.log(chalk.dim('  Mercury needs at least one provider to work.'));
-      console.log(chalk.dim('  DeepSeek offers a free API key at platform.deepseek.com'));
+      console.log(chalk.yellow('  No LLM provider configured yet. Run `mercury doctor` when ready to add one.'));
       console.log('');
-      console.log(chalk.white('  Options:'));
-      console.log(chalk.white('    1. Try again — choose a provider and enter an API key'));
-      console.log(chalk.white('    2. Skip for now — you can run `mercury doctor` later'));
-      console.log('');
-
-      const skipChoice = await ask(chalk.white('  Press Enter to try again, or type "skip" to exit setup: '));
-      if (skipChoice.toLowerCase() === 'skip') {
-        saveConfig(config);
-        const home = getMercuryHome();
-        console.log('');
-        console.log(chalk.green(`  ✓ Config saved to ${home}/mercury.yaml`));
-        console.log(chalk.yellow('  No providers configured yet. Run `mercury doctor` when ready.'));
-        console.log('');
-        process.exit(0);
-      }
-
-      console.log('');
-      continue;
+    } else {
+      await chooseDefaultProvider(config);
     }
-
-    await chooseDefaultProvider(config);
     break;
+  }
+  } else {
+    console.log('');
+    console.log(chalk.dim('  Continuing with shared Mercury setup: channels, integrations, budget, and web dashboard.'));
   }
 
   hr();
   console.log('');
   console.log(chalk.bold.white('  Telegram (optional)'));
+  // On first run, show the how-to guide so the user knows how to get a bot
+  // token. On reconfig (e.g. `mercury doctor`), skip the guide for an
+  // already-configured channel — only re-show it if the user clears the
+  // existing token (by entering "none" or a new value).
+  const tgAlreadyConfigured = isReconfig && !!config.channels.telegram.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
+  }
+  if (!tgAlreadyConfigured) {
     console.log(chalk.dim('  To create a bot token:'));
     console.log(chalk.dim('    1. Open Telegram and message @BotFather'));
     console.log(chalk.dim('    2. Run /newbot and follow the prompts'));
@@ -1460,12 +1532,15 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Signal (optional)'));
+  const sigAlreadyConfigured = isReconfig && !!config.channels.signal.phoneNumber;
   if (isReconfig && config.channels.signal.phoneNumber) {
     console.log(chalk.dim('  Leave empty to keep current number. Enter "none" to disable Signal.'));
     console.log(chalk.dim('  Enter "reset" to start fresh (clear config, optionally delete binary).'));
     console.log(chalk.dim('  Enter "unregister" to unlink this device from Signal and clear all data.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later with mercury doctor.'));
+  }
+  if (!sigAlreadyConfigured) {
     console.log(chalk.dim('  Include country code, e.g. +1 for US, +44 for UK, +91 for India.'));
     console.log(chalk.dim('  Signal lets you chat with Mercury through a Signal group or private chat.'));
   }
@@ -1599,24 +1674,27 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Discord (optional)'));
+  const dcAlreadyConfigured = isReconfig && !!config.channels.discord.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
   }
-  console.log(chalk.dim('  To create a Discord bot:'));
-  console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
-  console.log(chalk.dim('    2. Click "New Application" → give it a name'));
-  console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
-  console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
-  console.log(chalk.dim('       - Message Content Intent'));
-  console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
-  console.log(chalk.dim('       Scopes: bot, applications.commands'));
-  console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
-  console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
-  console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
-  console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
-  console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  if (!dcAlreadyConfigured) {
+    console.log(chalk.dim('  To create a Discord bot:'));
+    console.log(chalk.dim('    1. Go to https://discord.com/developers/applications'));
+    console.log(chalk.dim('    2. Click "New Application" → give it a name'));
+    console.log(chalk.dim('    3. Navigate to Bot → Click "Reset Token" → Copy the token'));
+    console.log(chalk.dim('    4. Enable Privileged Gateway Intents:'));
+    console.log(chalk.dim('       - Message Content Intent'));
+    console.log(chalk.dim('    5. Go to OAuth2 → URL Generator:'));
+    console.log(chalk.dim('       Scopes: bot, applications.commands'));
+    console.log(chalk.dim('       Bot Permissions: Send Messages, Read Message History,'));
+    console.log(chalk.dim('       Use Slash Commands, Attach Files, Embed Links'));
+    console.log(chalk.dim('    6. Open the generated URL to invite the bot to your server'));
+    console.log(chalk.dim('    7. Optionally create a "Mercury Admin" role in your server'));
+    console.log(chalk.dim('  Guild members can chat openly. DMs require pairing (like Telegram).'));
+  }
   console.log('');
 
   const dcMask = isReconfig && config.channels.discord.botToken ? ` [${maskKey(config.channels.discord.botToken)}]` : '';
@@ -1673,29 +1751,32 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
   hr();
   console.log('');
   console.log(chalk.bold.white('  Slack (optional)'));
+  const slAlreadyConfigured = isReconfig && !!config.channels.slack.botToken;
   if (isReconfig) {
     console.log(chalk.dim('  Leave empty to keep current value. Enter "none" to disable.'));
   } else {
     console.log(chalk.dim('  Leave empty to skip. You can add it later.'));
   }
-  console.log(chalk.dim('  To create a Slack app:'));
-  console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
-  console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
-  console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
-  console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
-  console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
-  console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
-  console.log(chalk.dim('       files:write, commands, app_mentions:read'));
-  console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
-  console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
-  console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
-  console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
-  console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
-  console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
-  console.log(chalk.dim('       and messages from the messages tab"'));
-  console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
-  console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
-  console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+  if (!slAlreadyConfigured) {
+    console.log(chalk.dim('  To create a Slack app:'));
+    console.log(chalk.dim('    1. Go to https://api.slack.com/apps → Create New App → From scratch'));
+    console.log(chalk.dim('    2. Under "Socket Mode", enable it and generate an App-Level Token'));
+    console.log(chalk.dim('       with connections:write scope → copy the xapp- token'));
+    console.log(chalk.dim('    3. Under "OAuth & Permissions", add Bot Token Scopes:'));
+    console.log(chalk.dim('       chat:write, chat:write.public, chat:write.customize,'));
+    console.log(chalk.dim('       channels:history, groups:history, im:history, im:write,'));
+    console.log(chalk.dim('       files:write, commands, app_mentions:read'));
+    console.log(chalk.dim('    4. Install app to workspace → copy Bot User OAuth Token (xoxb-)'));
+    console.log(chalk.dim('    5. Under "Event Subscriptions", enable and subscribe to:'));
+    console.log(chalk.dim('       message.channels, message.groups, message.im, app_mention'));
+    console.log(chalk.dim('    6. Under "Interactivity & Shortcuts", enable interactivity'));
+    console.log(chalk.dim('    7. Under "Slash Commands", create /mercury command'));
+    console.log(chalk.dim('    8. Under "App Home", check "Allow users to send Slash commands'));
+    console.log(chalk.dim('       and messages from the messages tab"'));
+    console.log(chalk.dim('    9. Invite the bot to your channel: /invite @Mercury'));
+    console.log(chalk.dim('    10. DM the bot /mercury start to become the first admin.'));
+    console.log(chalk.dim('  Channel members can chat openly. DMs require admin approval.'));
+  }
 
   const slMask = isReconfig && config.channels.slack.botToken ? ` [${maskKey(config.channels.slack.botToken)}]` : '';
   const slackBotToken = await ask(chalk.white(`  Slack Bot Token${slMask} (starts with xoxb-): `));
@@ -1993,6 +2074,8 @@ function runPlatformDoctor(): void {
 }
 
 async function runAgent(isDaemon: boolean = false): Promise<void> {
+  const runtimeMode = isDaemon ? 'daemon' : 'foreground';
+  registerRuntimeProcess(runtimeMode);
   let config = loadConfig();
   config = ensureCreatorField(config);
   const name = config.identity.name;
@@ -2021,7 +2104,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   const tokenBudget = new TokenBudget(config);
-  const providers = await ProviderRegistry.create(config);
+
+  // Initialize the shared cloud token store before providers so the
+  // MercuryCloud provider can read from / write back to the single source of
+  // truth for the access + (single-use) refresh token.
+  const cloudTokenStore = config.cloud.enabled && config.cloud.jwt && config.cloud.agentId
+    ? initCloudTokenStore(config)
+    : null;
+  const providers = await ProviderRegistry.create(config, cloudTokenStore);
 
   if (!providers.hasProviders()) {
     if (isDaemon) {
@@ -2061,6 +2151,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const identity = new Identity();
   migrateLegacyMemory();
   const shortTerm = new ShortTermMemory(config);
+  const sessions = new SessionRepository();
+  setWebSessions(sessions);
   const longTerm = new LongTermMemory(config);
   const episodic = new EpisodicMemory(config);
 
@@ -2126,6 +2218,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memorySetLearningPaused: (paused: boolean) => { if (userMemory) userMemory.setLearningPaused(paused); },
     memoryClear: () => userMemory ? userMemory.clear() : 0,
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
+    memoryIsShareLearning: () => userMemory ? userMemory.isShareLearning() : false,
+    memorySetShareLearning: (enabled: boolean) => { if (userMemory) userMemory.setShareLearning(enabled); },
   });
 
   capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
@@ -2189,7 +2283,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   capabilities.registerAll();
 
   const agent = new Agent(
-    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler,
+    config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
+    async ({ userMessage, assistantMessage, providerName }) => {
+      const provider = providers.get(providerName) ?? providers.getDefault();
+      const result = await provider.generateText(
+        `User: ${userMessage.slice(0, 1500)}\nAssistant: ${assistantMessage.slice(0, 1500)}`,
+        'Create a concise 3-7 word title for this conversation. Return only the title with no quotes, markdown, prefix, or punctuation.',
+      );
+      return result.text;
+    },
   );
 
   agent.setSkillLoader(skillLoader);
@@ -2266,6 +2368,564 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   await agent.birth();
   await agent.wake();
 
+  let cloudClient: import('./cloud/client.js').MercuryCloudClient | undefined;
+  let sessionSynchronizer: CloudSessionSynchronizer | undefined;
+  if (config.cloud.enabled && config.cloud.jwt && config.cloud.agentId) {
+    try {
+      const { MercuryCloudClient } = await import('./cloud/client.js');
+      cloudClient = new MercuryCloudClient(config.cloud.wsUrl, cloudTokenStore!, (connected) => {
+        if (connected) markCloudRuntimeOnline(config.cloud.agentId, runtimeMode);
+        else clearCloudRuntimeOnline(process.pid);
+      });
+      const activeSessionSynchronizer = new CloudSessionSynchronizer(sessions, () => ({
+        apiUrl: config.cloud.apiUrl,
+        agentId: config.cloud.agentId,
+        token: cloudTokenStore!.getJwt(),
+      }));
+      sessionSynchronizer = activeSessionSynchronizer;
+
+      let syncSettingReceived = false;
+      let syncFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+      cloudClient.on('conversation.sync.toggle', (msg) => {
+        syncSettingReceived = true;
+        if (syncFallbackTimer) clearTimeout(syncFallbackTimer);
+        const enabled = msg.payload?.enabled === true;
+        logger.info({ enabled }, 'Cloud command: toggle conversation persistence');
+        agent.setSessionSyncEnabled(enabled);
+        if (enabled) activeSessionSynchronizer.start();
+        else {
+          activeSessionSynchronizer.stop();
+          sessions.purgeDeleted(sessions.dump().filter((session) => session.status === 'deleted').map((session) => session.id));
+        }
+      });
+
+      // The shared token store already persists rotations to disk and
+      // notifies the provider via its listener. This legacy synthetic event
+      // only needs to mirror the new JWT into the in-memory config object
+      // used by closures above and keep the provider's apiKey in sync.
+      cloudClient.on('token.refreshed' as any, (msg: any) => {
+        const payload = msg.payload as { jwt: string; refreshToken: string } | undefined;
+        if (payload) {
+          config.cloud.jwt = payload.jwt;
+          config.cloud.refreshToken = payload.refreshToken;
+          config.providers.mercuryCloud.apiKey = payload.jwt;
+          providers.updateApiKey('mercuryCloud', payload.jwt);
+          logger.info('Mercury Cloud token refreshed and saved');
+        }
+      });
+
+      cloudClient.on('agent.restart', async (msg) => {
+        const reason = typeof msg.payload?.reason === 'string' ? msg.payload.reason : undefined;
+        if (reason === 'server_shutdown') {
+          logger.info('Mercury Cloud server is shutting down; staying alive for reconnect');
+          return;
+        }
+        // A detached Mercury process has no parent supervisor. Exiting here
+        // would turn a remote restart request into a permanent outage.
+        logger.warn({ reason }, 'Cloud restart request ignored; use a process supervisor or `mercury restart` on the host');
+      });
+
+      cloudClient.on('agent.event.ack', (msg) => {
+        const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : undefined;
+        if (requestId) agent.acknowledgeCloudDelivery(requestId);
+      });
+
+      cloudClient.on('agent.status', () => {
+        cloudClient!.send({
+          type: 'agent.state',
+          agentId: config.cloud.agentId,
+          payload: {
+            status: 'online',
+            provider: getProviderLabel(config.providers.default),
+            model: config.providers[config.providers.default]?.model ?? 'unknown',
+            uptime: process.uptime(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      cloudClient.on('skill.install', async (msg) => {
+        const skillUrl = msg.payload?.skillUrl as string | undefined;
+        if (skillUrl) {
+          logger.info({ skillUrl }, 'Cloud command: install skill');
+          try {
+            await skillLoader.installFromUrl(skillUrl);
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: true, skillUrl },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err: any) {
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: false, error: err.message },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      });
+
+      cloudClient.on('skill.remove', async (msg) => {
+        const skillName = msg.payload?.skillName as string | undefined;
+        if (skillName) {
+          logger.info({ skillName }, 'Cloud command: remove skill');
+          try {
+            skillLoader.deleteSkill(skillName);
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: true, action: 'remove', skillName },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err: any) {
+            cloudClient!.send({
+              type: 'skill.ack',
+              agentId: config.cloud.agentId,
+              payload: { success: false, error: err.message },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      });
+
+      cloudClient.on('memory.extract', async () => {
+        logger.info('Cloud command: extract memory');
+        const memData: Record<string, unknown> = {};
+        const syncEntries: { type: string; content: string; metadata?: Record<string, unknown>; timestamp?: string }[] = [];
+
+        try {
+          const ltFacts = longTerm.getAll();
+          memData['long-term'] = ltFacts;
+          for (const fact of ltFacts) {
+            syncEntries.push({
+              type: 'long-term',
+              content: `${fact.topic}: ${fact.fact}`,
+              metadata: { topic: fact.topic, confidence: (fact as any).confidence },
+              timestamp: new Date(fact.timestamp).toISOString(),
+            });
+          }
+
+          const epEvents = episodic.getRecent(100);
+          memData['episodic'] = epEvents;
+          for (const event of epEvents) {
+            syncEntries.push({
+              type: 'episodic',
+              content: event.summary || JSON.stringify(event),
+              metadata: { type: event.type, channelType: event.channelType, important: event.metadata?.important },
+              timestamp: new Date(event.timestamp).toISOString(),
+            });
+          }
+
+          if (userMemory) {
+            const summary = userMemory.getSummary();
+            memData['second-brain'] = summary;
+            const recent = userMemory.getRecent(100);
+            for (const mem of recent) {
+              syncEntries.push({
+                type: 'second-brain',
+                content: mem.summary || mem.detail || JSON.stringify(mem),
+                metadata: { type: mem.type, confidence: mem.confidence, importance: mem.importance, scope: mem.scope },
+                timestamp: new Date(mem.createdAt).toISOString(),
+              });
+            }
+          }
+        } catch (err: any) {
+          memData['error'] = err.message;
+        }
+
+        cloudClient!.send({
+          type: 'memory.dump',
+          agentId: config.cloud.agentId,
+          payload: memData,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (syncEntries.length > 0 && config.cloud.apiUrl) {
+          try {
+            await fetch(`${config.cloud.apiUrl}/v1/memory/sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${config.cloud.jwt}`,
+              },
+              body: JSON.stringify({ agentId: config.cloud.agentId, entries: syncEntries }),
+            });
+            logger.info({ count: syncEntries.length }, 'Memory synced to Mercury Cloud');
+          } catch (syncErr: any) {
+            logger.warn({ err: syncErr.message }, 'Failed to sync memory to cloud');
+          }
+        }
+      });
+
+      // Cloud → agent: fetch shareable memories newer than a cursor (incremental).
+      // Returns only shareable=1, non-dismissed rows with updated_at > since.
+      cloudClient.on('memory.fetch', async (msg) => {
+        const since = (msg.payload?.since as number) ?? 0;
+        const limit = (msg.payload?.limit as number) ?? 500;
+        const requestId = (msg.payload?.requestId as string) ?? '';
+
+        logger.info({ since, limit, requestId }, 'Cloud command: fetch shareable memories');
+
+        try {
+          const memories = userMemory
+            ? userMemory.getShareableSince(since, limit).map((m) => ({
+                id: m.id,
+                type: m.type,
+                categories: m.categories,
+                summary: m.summary,
+                detail: m.detail ?? null,
+                scope: m.scope,
+                evidenceKind: m.evidenceKind,
+                source: m.source,
+                confidence: m.confidence,
+                importance: m.importance,
+                durability: m.durability,
+                evidenceCount: m.evidenceCount,
+                provenance: m.provenance ?? null,
+                createdAt: m.createdAt,
+                updatedAt: m.updatedAt,
+              }))
+            : [];
+
+          cloudClient!.send({
+            type: 'memory.fetch.result',
+            agentId: config.cloud.agentId,
+            payload: { requestId, memories },
+            timestamp: new Date().toISOString(),
+          });
+
+          logger.info({ count: memories.length, requestId }, 'Cloud fetch: sent shareable memories');
+        } catch (err: any) {
+          logger.warn({ err: err.message }, 'Cloud fetch: failed to gather memories');
+          cloudClient!.send({
+            type: 'memory.fetch.result',
+            agentId: config.cloud.agentId,
+            payload: { requestId, memories: [] },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      // Cloud → agent: toggle shared learning on/off. When on, new memories
+      // extracted via remember() are marked shareable so the cloud fetch can
+      // pull them into the collaborative pool. Persisted to config on the agent.
+      cloudClient.on('memory.share-learning.toggle', async (msg) => {
+        const enabled = Boolean(msg.payload?.enabled);
+        logger.info({ enabled }, 'Cloud command: toggle shared learning');
+        if (userMemory) {
+          userMemory.setShareLearning(enabled);
+          try {
+            if (!config.memory.collaborativeKnowledge) config.memory.collaborativeKnowledge = {};
+            config.memory.collaborativeKnowledge.shareLearning = enabled;
+            const { saveConfig } = await import('./utils/config.js');
+            saveConfig(config);
+          } catch { /* best-effort */ }
+        }
+      });
+
+      cloudClient.on('conversation.history', async (msg) => {
+        logger.info('Cloud command: conversation history');
+        const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : '';
+        try {
+          const payload = buildConversationHistoryPayload(sessions, {
+            requestId,
+            sessionId: typeof msg.payload?.sessionId === 'string' ? msg.payload.sessionId : undefined,
+            cursor: typeof msg.payload?.cursor === 'string' ? msg.payload.cursor : undefined,
+            limit: typeof msg.payload?.limit === 'number' ? msg.payload.limit : undefined,
+          }, config.cloud.agentId);
+          cloudClient!.send({
+            type: 'conversation.dump',
+            agentId: config.cloud.agentId,
+            payload,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err: any) {
+          cloudClient!.send({
+            type: 'conversation.dump',
+            agentId: config.cloud.agentId,
+            payload: { requestId, error: err.message },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      cloudClient.on('agent.command', async (msg) => {
+        const message = msg.payload?.message as string | undefined;
+        const fromAgentId = msg.payload?.fromAgentId as string | undefined;
+        const conversationId = msg.payload?.conversationId as string | undefined;
+        const suppliedSessionId = msg.payload?.sessionId as string | undefined;
+        const requestId = (msg.payload?.requestId as string | undefined) || crypto.randomUUID();
+        const messageId = msg.payload?.messageId as string | undefined;
+        const providerOverride = msg.payload?.provider as string | undefined;
+        const controlType = msg.payload?.controlType as string | undefined;
+
+        const allowedControlTypes = new Set([
+          'session.create', 'session.delete', 'session.archive', 'permission.resolve', 'choice.resolve',
+          'interaction.cancel', 'permission.mode', 'model.list', 'model.select',
+        ]);
+        if ((msg.agentId && msg.agentId !== config.cloud.agentId)
+          || (controlType && (!allowedControlTypes.has(controlType) || typeof message === 'string'))
+          || (!controlType && typeof message !== 'string')) {
+          logger.warn({ type: controlType, agentId: msg.agentId }, 'Rejected invalid or mixed Cloud command envelope');
+          cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid Cloud command envelope.' } });
+          return;
+        }
+
+        if (controlType === 'session.delete') {
+          if (!suppliedSessionId || msg.payload?.confirmation !== suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Session deletion requires the exact session ID as confirmation.' } });
+            return;
+          }
+          try {
+            const target = sessions.get(suppliedSessionId);
+            if (target.id !== suppliedSessionId) throw new Error('Session deletion requires the exact canonical session ID.');
+            const deleted = sessions.deletePermanently(target.id);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId: deleted.id,
+              requestId,
+              event: 'session_deleted',
+              data: { sessionId: deleted.id },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          }
+          return;
+        }
+
+        if (controlType === 'session.create') {
+          if (!suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Session creation requires a canonical session ID.' } });
+            return;
+          }
+          try {
+            const alias = typeof msg.payload?.alias === 'string' ? msg.payload.alias : undefined;
+            const title = typeof msg.payload?.title === 'string' ? msg.payload.title : undefined;
+            const titleSource = msg.payload?.titleSource === 'user' || msg.payload?.titleSource === 'generated' ? msg.payload.titleSource : 'fallback';
+            const created = sessions.create({ id: suppliedSessionId, alias, title, titleSource });
+            sessions.bind(created.id, 'web', `cloud:${conversationId || suppliedSessionId}`);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId: created.id,
+              requestId,
+              event: 'session_created',
+              data: { sessionId: created.id, alias: created.alias, title: created.title, revision: created.revision },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          }
+          return;
+        }
+
+        if (controlType === 'permission.resolve' || controlType === 'choice.resolve' || controlType === 'interaction.cancel') {
+          const id = msg.payload?.id as string | undefined;
+          const value = controlType === 'permission.resolve'
+            ? msg.payload?.action as string | undefined
+            : msg.payload?.value as string | undefined;
+          if (!suppliedSessionId || !id || (controlType !== 'interaction.cancel' && typeof value !== 'string')) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid or incomplete interaction resolution.' } });
+            return;
+          }
+          const resolved = controlType === 'permission.resolve'
+            ? webChannel.resolveApproval(id, value!, requestId)
+            : controlType === 'choice.resolve'
+              ? webChannel.resolveChoice(id, value!, requestId)
+              : webChannel.cancelInteraction(id, requestId);
+          const resolvedEvent = controlType === 'choice.resolve' || controlType === 'interaction.cancel' ? 'choice_resolved' : 'permission_resolved';
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: resolved ? resolvedEvent : 'error',
+            data: resolved ? { id, value, cancelled: controlType === 'interaction.cancel' } : { message: 'Interaction expired, was already used, or does not belong to this request.' },
+          });
+          return;
+        }
+
+        if (controlType === 'permission.mode') {
+          const action = msg.payload?.action;
+          if (!suppliedSessionId || (action !== 'allow-all' && action !== 'ask-me')) {
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid permission mode request.' } });
+            return;
+          }
+          webChannel.setSessionPermissionMode(suppliedSessionId, action);
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: 'permission_mode_set',
+            data: { mode: action },
+          });
+          return;
+        }
+
+        const externalConversationId = `cloud:${conversationId || suppliedSessionId || 'default'}`;
+        let cloudSession;
+        try {
+          cloudSession = sessions.getOrCreateBound('web', externalConversationId, suppliedSessionId);
+        } catch (error) {
+          cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: error instanceof Error ? error.message : String(error) } });
+          return;
+        }
+        const sessionId = cloudSession.id;
+
+        if (controlType === 'session.archive') {
+          try {
+            const archived = sessions.archive(sessionId);
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId,
+              requestId,
+              event: 'session_archived',
+              data: { sessionId: archived.id, revision: archived.revision },
+            });
+          } catch (error) {
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId,
+              requestId,
+              event: 'error',
+              data: { message: error instanceof Error ? error.message : String(error) },
+            });
+          }
+          return;
+        }
+
+        if (controlType === 'model.list') {
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId,
+            requestId,
+            event: 'model_options',
+            data: {
+              providers: await agent.listChatModelOptions(),
+              current: agent.getCurrentProvider(),
+            },
+          });
+          return;
+        }
+
+        if (controlType === 'model.select') {
+          const provider = msg.payload?.provider as string | undefined;
+          const model = msg.payload?.model as string | undefined;
+          if (!provider) {
+            cloudClient!.sendStream({ conversationId, sessionId, requestId, event: 'error', data: { message: 'No provider selected.' } });
+            return;
+          }
+
+          const result = await agent.setChannelProviderOverride(sessionId, provider, model, { persist: true });
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId,
+            requestId,
+            event: result.ok ? 'model_selected' : 'error',
+            data: result.ok ? result : { message: result.message },
+          });
+          return;
+        }
+
+        if (message) {
+          if (fromAgentId) {
+            logger.info({ fromAgentId, messagePreview: message.slice(0, 50) }, 'Cloud relay: message from another agent');
+          } else {
+            logger.info({ messagePreview: message.slice(0, 50) }, 'Cloud command: send message to agent');
+          }
+          try {
+            if (providerOverride) {
+              const modelOverride = msg.payload?.model as string | undefined;
+              const override = await agent.setChannelProviderOverride(sessionId, providerOverride, modelOverride);
+              if (!override.ok) {
+                cloudClient!.sendStream({ conversationId, sessionId, requestId, event: 'error', data: { message: override.message } });
+                return;
+              }
+            }
+            webChannel.emitCloudMessage(message, requestId, sessionId, externalConversationId, messageId, (event) => {
+              const delivered = cloudClient!.sendStream({
+                conversationId,
+                sessionId,
+                requestId,
+                event: event.type,
+                data: event.data,
+              });
+
+              // When research mode produced a final article, also emit a
+              // research.artifact message so the Cloud dashboard can render it
+              // as a full research page (View Research).
+              if (
+                event.type === 'text_done' &&
+                agent.researchMode.isActive() &&
+                event.data &&
+                typeof event.data.fullText === 'string' &&
+                event.data.fullText.includes('# ')
+              ) {
+                const fullText = event.data.fullText as string;
+                const titleMatch = fullText.match(/^#\s+(.+)$/m);
+                cloudClient!.sendResearchArtifact({
+                  artifactId: `research-${conversationId || Date.now()}`,
+                  title: titleMatch ? titleMatch[1].trim() : undefined,
+                  markdown: fullText,
+                  conversationId,
+                  sessionId,
+                  requestId,
+                  topic: agent.researchMode.getTopic() || undefined,
+                });
+                // Research mode produced its artifact; exit research mode so
+                // follow-ups in the same thread become refinements, not fresh
+                // full-research passes, unless the user re-enables it.
+                agent.researchMode.setOff();
+              }
+              return delivered;
+            });
+            cloudClient!.sendCommandAck(requestId);
+          } catch (err: any) {
+            cloudClient!.sendStream({
+              conversationId,
+              sessionId,
+              requestId,
+              event: 'error',
+              data: { message: `Unable to process cloud chat message: ${err.message}` },
+            });
+          }
+        }
+      });
+
+      cloudClient.on('agent.message.relay', async (msg) => {
+        const targetAgentId = msg.payload?.targetAgentId as string | undefined;
+        const relayMessage = msg.payload?.message as string | undefined;
+        if (targetAgentId && relayMessage) {
+          logger.info({ targetAgentId, messagePreview: relayMessage.slice(0, 50) }, 'Cloud: relaying message to another agent');
+          cloudClient!.send({
+            type: 'agent.message.relay',
+            agentId: config.cloud.agentId,
+            payload: { targetAgentId, message: relayMessage, fromAgentId: config.cloud.agentId },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+
+      await cloudClient.connect();
+      logger.info('Mercury Cloud WebSocket connected');
+
+      // Fallback: if the server doesn't send conversation.sync.toggle within 5s
+      // (e.g. message dropped or delayed), start sync anyway. The toggle handler
+      // remains the authority and will stop it if the server says disabled.
+      if (!syncSettingReceived) {
+        syncFallbackTimer = setTimeout(() => {
+          if (!syncSettingReceived && !activeSessionSynchronizer.isEnabled()) {
+            logger.info('No conversation.sync.toggle received within 5s — starting sync as fallback');
+            agent.setSessionSyncEnabled(true);
+            activeSessionSynchronizer.start();
+          }
+        }, 5_000);
+        syncFallbackTimer.unref?.();
+      }
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Failed to start Mercury Cloud WS client');
+    }
+  }
+
   const cliChannel = channels.get('cli') as CLIChannel | undefined;
   const tgChannel = channels.get('telegram') as TelegramChannel | undefined;
   const sigChannel = channels.get('signal') as SignalChannel | undefined;
@@ -2279,6 +2939,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   setWebWebChannel(webChannel);
+  setWebSessionSyncEnabled(() => agent.isSessionSyncEnabled());
   setWebProgrammingMode(agent.programmingMode);
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider) => agent.switchProvider(provider));
@@ -2453,14 +3114,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   capabilities.permissions.onAsk(async (prompt: string) => {
     const channelType = capabilities.permissions.getCurrentChannelType();
+    const { channelId } = capabilities.getChannelContext();
     if (channelType === 'telegram' && tgChannel) {
-      return tgChannel.askPermission(prompt);
+      return tgChannel.askPermission(prompt, channelId);
     }
     if (channelType === 'signal' && channels.get('signal')) {
-      return (channels.get('signal') as SignalChannel).askPermission(prompt);
+      return (channels.get('signal') as SignalChannel).askPermission(prompt, channelId);
     }
     if (channelType === 'web' && webChannel) {
-      return webChannel.askPermission(prompt);
+      return webChannel.askPermission(prompt, channelId);
     }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
@@ -2520,6 +3182,34 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
 
     // Keep CLI permission mode prompt, but do it after web server is live.
+    if (cliChannel) {
+      const current = sessions.getByBinding('cli', 'current');
+      const recent = sessions.list().filter((session) => session.messages.length > 0);
+      const resumable = [
+        ...(current?.messages.length ? [current] : []),
+        ...recent.filter((session) => session.id !== current?.id),
+      ].slice(0, 5);
+
+      let selected = current;
+      if (process.stdout.isTTY && resumable.length > 0) {
+        const choice = await cliChannel.presentChoicePrompt(
+          'Continue a previous session or start fresh?',
+          [
+            ...resumable.map((session) => ({
+              value: session.id,
+              label: `${session.alias} [${session.shortId}] - ${session.title} (${session.messages.length} messages)`,
+            })),
+            { value: 'new', label: 'Start a new session' },
+          ],
+        );
+        selected = choice === 'new' ? sessions.create() : sessions.get(choice);
+        sessions.bind(selected.id, 'cli', 'current');
+      }
+
+      selected ??= sessions.getOrCreateBound('cli', 'current');
+      cliChannel.setCurrentSession(selected);
+    }
+
     const mode = cliChannel && await cliChannel.askPermissionMode?.();
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
@@ -2546,29 +3236,37 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     logger.info({ channels: activeCh, tools: toolNames, web: config.web.enabled }, 'Mercury is live (daemon mode)');
   }
 
-  const shutdown = async () => {
-    if (!isDaemon) {
-      console.log('');
-      console.log(chalk.dim(`  ${name} is shutting down...`));
-    } else {
-      logger.info('Mercury is shutting down (daemon mode)');
-    }
-    // Notify all channels that Mercury is stopping — users should never
-    // have to re-prompt to discover their task was killed mid-flight.
-    try {
-      await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
-    } catch { /* best effort */ }
-    if (userMemory) {
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      cloudClient?.disconnect();
+      sessionSynchronizer?.stop();
+      if (!isDaemon) {
+        console.log('');
+        console.log(chalk.dim(`  ${name} is shutting down...`));
+      } else {
+        logger.info('Mercury is shutting down (daemon mode)');
+      }
+      // Notify all channels that Mercury is stopping — users should never
+      // have to re-prompt to discover their task was killed mid-flight.
       try {
-        userMemory.consolidate();
-        userMemory.close();
-      } catch {}
-    }
-    await stopWebServer();
-    await agent.shutdown();
-    process.exit(0);
+        await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
+      } catch { /* best effort */ }
+      if (userMemory) {
+        try {
+          userMemory.consolidate();
+          userMemory.close();
+        } catch {}
+      }
+      await stopWebServer();
+      await agent.shutdown();
+      clearCloudRuntimeOnline();
+      releaseRuntimeProcess(runtimeMode);
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
-
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
@@ -2643,9 +3341,24 @@ program
 
 program
   .command('stop')
-  .description('Stop a background Mercury process')
+  .description('Stop a running Mercury process (daemon or foreground)')
   .action(async () => {
-    await stopDaemon();
+    const foreground = getForegroundRuntimeStatus();
+    const daemon = getDaemonStatus();
+
+    if (!foreground.running && !daemon.running) {
+      console.log(chalk.yellow('  Mercury is not running.'));
+      console.log('');
+      return;
+    }
+
+    if (foreground.running) {
+      await stopForegroundRuntime();
+    }
+
+    if (daemon.running) {
+      await stopDaemon();
+    }
   });
 
 program
@@ -2796,6 +3509,42 @@ telegramCmd
     const config = loadConfig();
     console.log('');
     printTelegramAccessState(config);
+    console.log('');
+  });
+
+telegramCmd
+  .command('enable')
+  .description('Enable Telegram channel if a bot token is configured')
+  .action(() => {
+    const config = loadConfig();
+    if (!config.channels.telegram.botToken) {
+      console.log('');
+      console.log(chalk.red('  Telegram bot token is missing. Run `mercury doctor` to configure Telegram first.'));
+      console.log('');
+      return;
+    }
+
+    config.channels.telegram.enabled = true;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Telegram channel enabled.'));
+    if (getTelegramApprovedUsers(config).length === 0) {
+      console.log(chalk.dim('  Send /start to the bot, then approve the pairing code with `mercury telegram approve <code>`.'));
+    }
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
+    console.log('');
+  });
+
+telegramCmd
+  .command('disable')
+  .description('Disable Telegram channel without removing its bot token or access list')
+  .action(() => {
+    const config = loadConfig();
+    config.channels.telegram.enabled = false;
+    saveConfig(config);
+    console.log('');
+    console.log(chalk.green('  ✓ Telegram channel disabled.'));
+    restartDaemonIfRunning('Restarting the background daemon to apply the change immediately...');
     console.log('');
   });
 
@@ -3638,6 +4387,76 @@ program
     setWebPassword(password);
     console.log(chalk.green('  ✓ Web dashboard password updated.'));
     console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
+    console.log('');
+  });
+
+const cloud = program.command('cloud').description('Manage Mercury Cloud connection');
+
+cloud
+  .command('connect')
+  .description('Connect to Mercury Cloud via terminal pairing')
+  .action(async () => {
+    console.log('');
+    const wasDaemonRunning = getDaemonStatus().running;
+    try {
+      const { runCloudConnect } = await import('./cloud/pairing-flow.js');
+      await runCloudConnect();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+      console.log('');
+      return;
+    }
+    // Always launch the foreground TUI so the user can start chatting
+    // immediately. The background daemon (started by runCloudConnect) keeps
+    // the WebSocket alive even after the user exits the foreground.
+    if (isSetupComplete()) {
+      console.log(chalk.cyan('\n  Launching Mercury...\n'));
+      await runAgent();
+    } else {
+      console.log(chalk.cyan('\n  Mercury daemon is running in the background. Run `mercury` to start chatting.'));
+      console.log('');
+    }
+  });
+
+cloud
+  .command('disconnect')
+  .description('Disconnect from Mercury Cloud and switch to offline (BYOK) mode')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudDisconnect } = await import('./cloud/pairing-flow.js');
+      await runCloudDisconnect();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
+    console.log('');
+  });
+
+cloud
+  .command('status')
+  .description('Show Mercury Cloud connection status')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudStatus } = await import('./cloud/pairing-flow.js');
+      await runCloudStatus();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
+    console.log('');
+  });
+
+cloud
+  .command('login')
+  .description('Refresh Mercury Cloud authentication token')
+  .action(async () => {
+    console.log('');
+    try {
+      const { runCloudLogin } = await import('./cloud/pairing-flow.js');
+      await runCloudLogin();
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ ${err.message || err}`));
+    }
     console.log('');
   });
 

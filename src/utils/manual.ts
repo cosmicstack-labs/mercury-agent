@@ -112,6 +112,12 @@ export function getManual(): string {
     ['/menu', 'Open the CLI command picker with arrow-key navigation'],
     ['/help', 'Show this manual'],
     ['/status', 'Show config and budget info'],
+    ['/sessions', 'List active canonical sessions'],
+    ['/session new', 'Create and switch to a new session'],
+    ['/session <ref>', 'Switch by UUID/prefix/alias'],
+    ['/session current', 'Show the current session'],
+    ['/session archive <ref>', 'Archive a session'],
+    ['/session delete <ref>', 'Permanently delete a session after confirmation'],
     ['/progress', 'Show live status for the current long task'],
     ['/telegram', 'CLI chat only: open the Telegram management menu'],
     ['/telegram pending', 'CLI chat only: list pending Telegram requests'],
@@ -158,6 +164,11 @@ export function getManual(): string {
     ['/code agent <task>', 'Delegate a coding task to a sub-agent in background'],
     ['/code off', 'Exit programming mode'],
     ['/code toggle', 'Cycle through: off → plan → execute → off'],
+    ['/research', 'Show research mode status'],
+    ['/research on', 'Enable deep research mode (web research + rich markdown article)'],
+    ['/research off', 'Exit research mode'],
+    ['/research toggle', 'Toggle research mode on/off'],
+    ['/research <topic>', 'Enable research mode for a specific topic'],
     ['/ws exit', 'Exit workspace IDE mode back to general chat'],
     ['/ws open <path>', 'Open a workspace directory in IDE mode'],
     ['/ws refresh', 'Refresh file tree + git status panel'],
@@ -270,6 +281,7 @@ export function getTelegramHelp(): string {
   lines.push('/progress — Live status for the current task');
   lines.push('/permissions — Switch Ask Me / Allow All mode');
   lines.push('/models — List providers or switch AI model');
+  lines.push('/cloud models — List Mercury Cloud models and switch');
   lines.push('/stream — Toggle text streaming on/off');
   lines.push('');
 
@@ -297,6 +309,14 @@ export function getTelegramHelp(): string {
   lines.push('/code off — Exit programming mode');
   lines.push('/code toggle — Cycle: off → plan → execute → off');
   lines.push('/code agent <task> — Delegate coding to a sub-agent');
+  lines.push('');
+
+  lines.push('**Research Mode**');
+  lines.push('/research — Show current research mode status');
+  lines.push('/research on — Enable deep web research + rich markdown article');
+  lines.push('/research off — Exit research mode');
+  lines.push('/research toggle — Toggle research mode');
+  lines.push('/research <topic> — Enable research mode for a specific topic');
   lines.push('');
 
   lines.push('**Sub-Agents**');
@@ -357,6 +377,7 @@ export function getDiscordHelp(): string {
   lines.push('/progress \u2014 Live status for the current task');
   lines.push('/permissions \u2014 Switch Ask Me / Allow All mode');
   lines.push('/models \u2014 List providers or switch AI model');
+  lines.push('/cloud models \u2014 List Mercury Cloud models and switch');
   lines.push('');
 
   lines.push('**Budget**');

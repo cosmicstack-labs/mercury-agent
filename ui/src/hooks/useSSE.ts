@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useChatStore } from "@/stores/chat";
-import api from "@/lib/api";
 
 interface SSEResult {
   connected: boolean;
@@ -14,13 +13,15 @@ export function useSSE(): SSEResult {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const store = useChatStore;
+  const activeSessionId = useChatStore((state) => state.activeThreadId);
 
   const connect = useCallback(() => {
     if (esRef.current) {
       esRef.current.close();
     }
 
-    const es = new EventSource("/api/chat/events");
+    const query = activeSessionId ? `?sessionId=${encodeURIComponent(activeSessionId)}` : "";
+    const es = new EventSource(`/api/chat/events${query}`);
     esRef.current = es;
 
     es.onopen = () => {
@@ -104,13 +105,7 @@ export function useSSE(): SSEResult {
           timestamp: new Date().toISOString(),
         });
 
-        // Persist assistant message to thread
-        const threadId = store.getState().activeThreadId;
-        if (threadId) {
-          api.chat.threads.addMessage(threadId, "assistant", fullText)
-            .then(() => store.getState().bumpThreadVersion())
-            .catch(() => {});
-        }
+        store.getState().bumpThreadVersion();
       } catch {
         // Always reset busy state even if parsing fails
         store.getState().clearStreaming();
@@ -155,7 +150,7 @@ export function useSSE(): SSEResult {
         timestamp: new Date().toISOString(),
       });
     });
-  }, [store]);
+  }, [store, activeSessionId]);
 
   useEffect(() => {
     connect();

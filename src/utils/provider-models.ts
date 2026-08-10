@@ -1,13 +1,14 @@
 import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
+import { MERCURY_CLOUD_API_URL } from '../cloud/endpoints.js';
 
 export interface ProviderModelCatalog {
   models: string[];
   recommendedModel: string;
 }
 
-const MAX_MODEL_OPTIONS = 7;
+const MAX_MODEL_OPTIONS = 50;
 
 const OPENAI_PREFERRED_MODELS = [
   'gpt-5.2',
@@ -92,11 +93,39 @@ const GITHUB_COPILOT_PREFERRED_MODELS = [
   'gemini-3.1-pro-preview',
 ] as const;
 
+const MERCURY_CLOUD_PREFERRED_MODELS = [
+  'mercury-mini',
+  'mercury-flash',
+  'mercury-pro',
+  'mercury-reason',
+  'mercury-opus',
+  'mercury-gpt5',
+] as const;
+
 export class ProviderModelFetchError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ProviderModelFetchError';
   }
+}
+
+export function getPreferredModelsForProvider(provider: ProviderName): string[] {
+  const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
+    deepseek: DEEPSEEK_PREFERRED_MODELS,
+    openai: OPENAI_PREFERRED_MODELS,
+    anthropic: ANTHROPIC_PREFERRED_MODELS,
+    grok: GROK_PREFERRED_MODELS,
+    ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
+    ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
+    openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
+    mimo: MIMO_PREFERRED_MODELS,
+    mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
+    chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
+    githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+  };
+
+  return [...preferredByProvider[provider]];
 }
 
 interface OpenAIModelResponse {
@@ -189,6 +218,7 @@ function chooseRecommendedModel(
   currentModel?: string,
 ): string {
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -227,6 +257,7 @@ export function buildModelCatalog(
 
   const recommendedModel = chooseRecommendedModel(provider, filtered, currentModel);
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
+    mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -399,10 +430,56 @@ async function fetchMiMoTokenPlanModels(config: ProviderConfig): Promise<Provide
   return buildModelCatalog('mimoTokenPlan', ids, config.model);
 }
 
+async function fetchMercuryCloudModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
+  const baseUrl = trimTrailingSlash(config.baseUrl || MERCURY_CLOUD_API_URL);
+  const jwt = config.apiKey;
+
+  if (!jwt) {
+    return buildModelCatalog(
+      'mercuryCloud',
+      [...MERCURY_CLOUD_PREFERRED_MODELS],
+      config.model || 'mercury-mini',
+    );
+  }
+
+  interface MercuryCloudModel {
+    id: string;
+    label: string;
+    available?: boolean;
+  }
+
+  const data = await fetchJson<{ object: string; data: MercuryCloudModel[] }>(
+    `${baseUrl}/v1/models`,
+    {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+      },
+    },
+    'Could not fetch Mercury Cloud models. Check your cloud connection.',
+  );
+
+  // The Cloud /v1/models endpoint returns an OpenAI-shaped { object: 'list', data: [...] }
+  // payload with a per-model `available` flag computed from the user's subscription tier.
+  // Only surface models the user is approved for; fall back to the full list if the flag
+  // is missing (older API deployments) so the dropdown is never empty.
+  const allModels = Array.isArray(data.data) ? data.data : [];
+  const allowed = allModels.filter((m) => m.available === true).map((m) => m.id);
+  const ids = allowed.length > 0 ? allowed : allModels.map((m) => m.id);
+  const models = uniq(ids);
+  return {
+    recommendedModel: config.model && models.includes(config.model) ? config.model : models[0] || config.model || 'mercury-mini',
+    models: limitModels(models.filter((model) => model !== config.model)),
+  };
+}
+
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
 ): Promise<ProviderModelCatalog> {
+  if (provider === 'mercuryCloud') {
+    return fetchMercuryCloudModels(config);
+  }
+
   if (provider === 'anthropic') {
     return fetchAnthropicModels(config);
   }
