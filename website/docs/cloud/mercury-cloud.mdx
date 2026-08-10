@@ -1,0 +1,90 @@
+---
+title: "Mercury Cloud"
+sidebar_label: "Mercury Cloud"
+description: "Hosted backend for Mercury Agent — terminal pairing, auto-rotating JWTs, Cloud WebSocket, shared memory pool, and remote dashboard. Plug-and-play setup with no port forwarding."
+---
+
+# Mercury Cloud
+
+Mercury Cloud is a hosted backend that turns a local Mercury install into a remotely managed, always-on agent. Pair once from the terminal, and Mercury maintains a persistent WebSocket to the cloud — no port forwarding, no reverse proxy, no certificate management.
+
+## Quick start
+
+```sh
+mercury cloud connect
+```
+
+This opens a browser-based pairing URL. Once paired, Mercury saves your credentials and starts a background daemon that keeps the Cloud WebSocket alive even after you exit the terminal.
+
+## How it works
+
+1. **Pair** — `mercury cloud connect` opens a browser URL. Poll-based completion with structured failure codes (e.g. agent capacity reached).
+2. **Authenticate** — Mercury receives a JWT (short-lived), a refresh token (single-use), and an agent API key (long-lived).
+3. **Connect** — A background daemon maintains a persistent WSS connection to `wss://backend.mercuryagent.sh/ws` with 30-second heartbeats and automatic reconnect.
+4. **Stay online** — The daemon keeps the WebSocket alive even after you close the terminal. The agent API key enables headless self-recovery without browser re-pairing.
+
+## Authentication & self-recovery
+
+Mercury Cloud uses a three-tier token strategy:
+
+| Token | Lifetime | Purpose |
+|---|---|---|
+| **JWT** | Short-lived | API and WebSocket auth. Auto-refreshed before expiry. |
+| **Refresh token** | Single-use | Rotated on every refresh. Used to get a new JWT. |
+| **Agent API key** | Long-lived | Headless self-recovery. Never expires. |
+
+If the JWT expires, Mercury tries the refresh token. If the refresh token is also dead, Mercury redeems the agent API key to get fresh tokens — no browser re-pairing needed. This means a server or Termux deployment stays online indefinitely.
+
+## Shared memory pool
+
+Mercury Cloud agents can search a **shared memory pool** — cross-agent context that lives in the cloud. After local Second Brain retrieval, the agent calls `searchPool()` to fetch additional context from other agents in your fleet. Results are cached locally for 5 minutes per query.
+
+## Remote dashboard
+
+Manage your agent from [cloud.mercuryagent.sh](https://cloud.mercuryagent.sh) — send messages, install skills, view memory, and monitor status. The dashboard communicates with your local agent over the Cloud WebSocket.
+
+## Models
+
+Mercury Cloud offers multiple models. At pairing time, Mercury fetches the available models and prompts you to choose:
+
+```
+Available models:
+  1. Mercury Flash (mercury-flash)
+  2. Mercury Pro (mercury-pro)
+  ...
+Choose a model [1-N, Enter for 1]:
+```
+
+Switch models later with `/cloud use <model-id>` or `mercury doctor`.
+
+## CLI commands
+
+| Command | Description |
+|---|---|
+| `mercury cloud connect` | Pair with Mercury Cloud via browser |
+| `mercury cloud disconnect` | Clear Cloud credentials and stop the agent |
+| `mercury cloud status` | Show Cloud connection status and usage |
+| `mercury cloud login` | Refresh the JWT using the stored refresh token |
+
+## Configuration
+
+Mercury Cloud config is stored in `mercury.yaml` under the `cloud` section:
+
+```yaml
+cloud:
+  enabled: true
+  apiUrl: https://backend.mercuryagent.sh
+  wsUrl: wss://backend.mercuryagent.sh/ws
+  agentId: your-agent-id
+  tier: free
+```
+
+The JWT, refresh token, and agent API key are also stored here (they auto-rotate). You don't need to manage them manually.
+
+## Disconnect
+
+```sh
+mercury cloud disconnect
+```
+
+This stops the running agent, clears all Cloud credentials, switches the default provider back to your offline provider, and restarts Mercury in offline mode. The agent remains registered on the cloud dashboard — delete it there to revoke server-side credentials.
