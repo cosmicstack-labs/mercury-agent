@@ -416,9 +416,9 @@ export default function LandingPage(): React.ReactElement {
     <>
       <Head>
         <title>Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission</title>
-        <meta name="description" content="Mercury Agent — a soul-driven AI agent with Second Brain memory, permission-hardened tools, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta name="description" content="Mercury Agent — a soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta property="og:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta property="og:description" content="A soul-driven AI agent with Second Brain memory, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta property="og:description" content="Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
         <meta property="og:url" content="https://mercuryagent.sh" />
@@ -426,7 +426,7 @@ export default function LandingPage(): React.ReactElement {
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:site" content="@mercuryagent" />
         <meta name="twitter:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta name="twitter:description" content="Second Brain memory · Skill System · Token Saver · Standalone binaries · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta name="twitter:description" content="Soul-driven AI agent · Permission-hardened tools · Token budgets · Multi-channel access · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta name="twitter:image" content="https://mercuryagent.sh/img/og/home.png" />
         <link rel="canonical" href="https://mercuryagent.sh/" />
       </Head>
