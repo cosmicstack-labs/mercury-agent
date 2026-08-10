@@ -1,9 +1,15 @@
 import { join } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { getMemoryDir } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { refreshToken } from './pairing.js';
+
+type BetterSqlite3Database = import('better-sqlite3').Database;
+const require = createRequire(import.meta.url);
+function loadDatabase(): typeof import('better-sqlite3') {
+  return require('better-sqlite3');
+}
 
 /**
  * Cloud shared-pool search client for the agent.
@@ -52,14 +58,14 @@ interface CacheRow {
   fetched_at: number;
 }
 
-let cacheDb: Database.Database | null = null;
+let cacheDb: BetterSqlite3Database | null = null;
 
-function getCacheDb(): Database.Database {
+function getCacheDb(): BetterSqlite3Database {
   if (cacheDb) return cacheDb;
   const dir = getMemoryDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const dbPath = join(dir, 'pool-search-cache.db');
-  cacheDb = new Database(dbPath);
+  cacheDb = loadDatabase()(dbPath);
   cacheDb.exec(`
     CREATE TABLE IF NOT EXISTS pool_search_cache (
       query_hash TEXT PRIMARY KEY,
