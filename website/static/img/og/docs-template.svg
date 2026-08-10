@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#06060a"/>
+      <stop offset="100%" stop-color="#0d0d14"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="50%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- Logo mark + brand -->
+  <g transform="translate(80, 80)">
+    <rect width="44" height="44" rx="10" fill="url(#logoGrad)"/>
+    <text x="22" y="33" font-family="serif" font-size="28" fill="white" text-anchor="middle">☿</text>
+    <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Agent  ·  Docs</text>
+  </g>
+
+  <!-- Docs badge -->
+  <g transform="translate(80, 160)">
+    <rect width="90" height="28" rx="8" fill="rgba(0,212,255,0.10)" stroke="rgba(0,212,255,0.20)"/>
+    <text x="45" y="19" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#00d4ff" text-anchor="middle" letter-spacing="1.5">DOCS</text>
+  </g>
+
+  <!-- Page title (dynamically replaced) -->
+  {{TITLE_SVG}}
+
+  <!-- Page description (dynamically replaced) -->
+  {{DESC_SVG}}
+
+  <!-- URL -->
+  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#4a4a58" text-anchor="end">mercuryagent.sh/docs</text>
+</svg>
