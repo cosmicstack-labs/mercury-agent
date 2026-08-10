@@ -471,8 +471,8 @@ export default function LandingPage(): React.ReactElement {
               <span className="lp-hero-eyebrow-badge">v1.2.0 · Cloudy Mercury</span>
             </div>
             <h1 className="lp-hero-title">
-              The AI agent that<br />
-              <span className="lp-hero-highlight">thinks, acts, and asks.</span>
+              Soul-driven AI agent with<br />
+              <span className="lp-hero-highlight">permission-hardened tools, token budgets, and multi-channel access.</span>
             </h1>
             <p className="lp-hero-sub">
               A <strong>soul-driven</strong> agent with Second Brain memory, a full Skill System, Token Saver Mode,
@@ -546,7 +546,7 @@ export default function LandingPage(): React.ReactElement {
         <section id="pillars" className="lp-section">
           <div className="lp-container">
             <h2 className="lp-section-title">Built Different</h2>
-            <p className="lp-section-sub">Three principles that define Mercury.</p>
+            <p className="lp-section-sub">The AI agent that <strong>thinks, acts, and asks.</strong> Three principles that define Mercury.</p>
             <div className="lp-pillars">
               <div className="lp-pillar lp-reveal">
                 <div className="lp-pillar-icon">
