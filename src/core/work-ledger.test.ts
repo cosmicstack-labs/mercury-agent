@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ChannelMessage } from '../types/channel.js';
@@ -54,7 +54,9 @@ describe('WorkLedger', () => {
     expect(recovered[0].message.metadata?.workWasInterrupted).toBe(false);
     expect(recovered[1].message.metadata?.workWasInterrupted).toBe(true);
     expect(recovered[1].attempts).toBe(1);
-    expect(statSync(filePath).mode & 0o777).toBe(0o600);
+    if (platform() !== 'win32') {
+      expect(statSync(filePath).mode & 0o777).toBe(0o600);
+    }
     expect(JSON.parse(readFileSync(filePath, 'utf8')).version).toBe(1);
   });
 

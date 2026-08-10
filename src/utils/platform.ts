@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { posix as posixPath } from 'node:path';
 
 export function isTermux(
   env: NodeJS.ProcessEnv = process.env,
@@ -20,7 +20,7 @@ export function resolveShell(
 ): string {
   const candidates = [env.MERCURY_SHELL, env.SHELL];
   if (isTermux(env, platform)) {
-    candidates.push(env.PREFIX ? join(env.PREFIX, 'bin', 'sh') : undefined);
+    candidates.push(env.PREFIX ? posixPath.join(env.PREFIX, 'bin', 'sh') : undefined);
   }
   candidates.push('/bin/sh');
 
