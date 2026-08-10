@@ -86,8 +86,8 @@ const config: Config = {
       title: '☿ Mercury Agent',
       logo: {
         alt: 'Mercury Agent — Soul-driven',
-        src: 'img/favicon.svg',
-        srcDark: 'img/favicon.svg',
+        src: 'img/logo-light.png',
+        srcDark: 'img/logo-dark.png',
       },
       items: [
         {to: '/docs', label: 'Docs', position: 'left'},
