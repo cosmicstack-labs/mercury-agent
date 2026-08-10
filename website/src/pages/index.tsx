@@ -415,18 +415,18 @@ export default function LandingPage(): React.ReactElement {
   return (
     <>
       <Head>
-        <title>Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission</title>
-        <meta name="description" content="Mercury Agent — a soul-driven AI agent with Second Brain memory, permission-hardened tools, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
-        <meta property="og:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta property="og:description" content="A soul-driven AI agent with Second Brain memory, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <title>Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools</title>
+        <meta name="description" content="Mercury Agent — a soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta property="og:title" content="Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools" />
+        <meta property="og:description" content="Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
         <meta property="og:url" content="https://mercuryagent.sh" />
         <meta property="og:image" content="https://mercuryagent.sh/img/og/home.png" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:site" content="@mercuryagent" />
-        <meta name="twitter:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta name="twitter:description" content="Second Brain memory · Skill System · Token Saver · Standalone binaries · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta name="twitter:title" content="Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools" />
+        <meta name="twitter:description" content="Soul-driven AI agent · Permission-hardened tools · Token budgets · Multi-channel access · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta name="twitter:image" content="https://mercuryagent.sh/img/og/home.png" />
         <link rel="canonical" href="https://mercuryagent.sh/" />
       </Head>
@@ -471,8 +471,8 @@ export default function LandingPage(): React.ReactElement {
               <span className="lp-hero-eyebrow-badge">v1.2.0 · Cloudy Mercury</span>
             </div>
             <h1 className="lp-hero-title">
-              The AI agent that<br />
-              <span className="lp-hero-highlight">thinks, acts, and asks.</span>
+              Soul-driven AI agent<br />
+              <span className="lp-hero-highlight">with permission-hardened tools.</span>
             </h1>
             <p className="lp-hero-sub">
               A <strong>soul-driven</strong> agent with Second Brain memory, a full Skill System, Token Saver Mode,
@@ -546,7 +546,7 @@ export default function LandingPage(): React.ReactElement {
         <section id="pillars" className="lp-section">
           <div className="lp-container">
             <h2 className="lp-section-title">Built Different</h2>
-            <p className="lp-section-sub">Three principles that define Mercury.</p>
+            <p className="lp-section-sub">The AI agent that <strong>thinks, acts, and asks.</strong> Three principles that define Mercury.</p>
             <div className="lp-pillars">
               <div className="lp-pillar lp-reveal">
                 <div className="lp-pillar-icon">

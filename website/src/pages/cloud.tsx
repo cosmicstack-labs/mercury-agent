@@ -138,12 +138,12 @@ export default function CloudPage(): React.ReactElement {
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
         <meta property="og:url" content="https://mercuryagent.sh/cloud" />
-        <meta property="og:image" content="https://mercuryagent.sh/img/og/home.png" />
+        <meta property="og:image" content="https://mercuryagent.sh/img/og/cloud.png" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:site" content="@mercuryagent" />
         <meta name="twitter:title" content="Mercury Cloud — Plug-and-play cloud backend" />
         <meta name="twitter:description" content="Terminal pairing, auto-rotating JWTs, Cloud WebSocket, shared memory pool, and remote dashboard." />
-        <meta name="twitter:image" content="https://mercuryagent.sh/img/og/home.png" />
+        <meta name="twitter:image" content="https://mercuryagent.sh/img/og/cloud.png" />
         <link rel="canonical" href="https://mercuryagent.sh/cloud" />
       </Head>
 

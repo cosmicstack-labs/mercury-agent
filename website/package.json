@@ -7,8 +7,8 @@
     "prestart": "node scripts/copy-installers.cjs",
     "start": "docusaurus start",
     "prebuild": "node scripts/copy-installers.cjs",
-    "build": "docusaurus build",
-    "build:prod": "node scripts/copy-installers.cjs && docusaurus build && rm -rf ../docs && cp -r build ../docs && touch ../docs/.nojekyll",
+    "build": "docusaurus build && node scripts/generate-og-cards.cjs",
+    "build:prod": "node scripts/copy-installers.cjs && docusaurus build && node scripts/generate-og-cards.cjs && rm -rf ../docs && cp -r build ../docs && touch ../docs/.nojekyll",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
@@ -32,6 +32,7 @@
     "@docusaurus/module-type-aliases": "3.10.0",
     "@docusaurus/tsconfig": "3.10.0",
     "@docusaurus/types": "3.10.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/react": "^19.0.0",
     "typescript": "~6.0.2"
   },
