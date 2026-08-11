@@ -23,8 +23,7 @@
 
   <!-- Logo mark -->
   <g transform="translate(80, 80)">
-    <rect width="44" height="44" rx="10" fill="url(#logoGrad)"/>
-    <text x="22" y="33" font-family="serif" font-size="28" fill="white" text-anchor="middle">☿</text>
+    {{LOGO_SVG}}
     <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Agent  ·  v1.2.0</text>
     <rect x="62" y="38" width="120" height="22" rx="6" fill="rgba(0,212,255,0.12)"/>
     <text x="122" y="53" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="700" fill="#00d4ff" text-anchor="middle">Cloudy Mercury</text>

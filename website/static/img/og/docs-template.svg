@@ -23,8 +23,7 @@
 
   <!-- Logo mark + brand -->
   <g transform="translate(80, 80)">
-    <rect width="44" height="44" rx="10" fill="url(#logoGrad)"/>
-    <text x="22" y="33" font-family="serif" font-size="28" fill="white" text-anchor="middle">☿</text>
+    {{LOGO_SVG}}
     <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Agent  ·  Docs</text>
   </g>
 

@@ -29,6 +29,23 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+// Embed the white logo PNG as a base64 <image> element for use inside SVGs.
+// logo-dark.png is the white ☿ glyph (for dark backgrounds).
+let logoBase64 = null;
+function getLogoSvg() {
+  if (logoBase64) return logoBase64;
+  const logoPath = path.join(ogSrcDir, '..', 'logo-dark.png');
+  if (!fs.existsSync(logoPath)) {
+    // Fallback to gradient square
+    return '<rect width="44" height="44" rx="10" fill="url(#logoGrad)"/>\n    <text x="22" y="33" font-family="serif" font-size="28" fill="white" text-anchor="middle">☿</text>';
+  }
+  const buf = fs.readFileSync(logoPath);
+  const b64 = buf.toString('base64');
+  // Scale the 500x500 logo down to 44x44
+  logoBase64 = `<image x="0" y="0" width="44" height="44" href="data:image/png;base64,${b64}"/>`;
+  return logoBase64;
+}
+
 function renderSvgToPng(svgPath, pngPath) {
   const svg = fs.readFileSync(svgPath, 'utf8');
   const resvg = new Resvg(svg, {
@@ -45,12 +62,16 @@ function renderSvgToPng(svgPath, pngPath) {
 
 function renderStaticCards() {
   ensureDir(ogOutDir);
+  const logoSvg = getLogoSvg();
   const statics = ['home', 'cloud'];
   for (const name of statics) {
-    const svg = path.join(ogSrcDir, `${name}.svg`);
-    const png = path.join(ogOutDir, `${name}.png`);
-    if (fs.existsSync(svg)) {
-      renderSvgToPng(svg, png);
+    const svgPath = path.join(ogSrcDir, `${name}.svg`);
+    const pngPath = path.join(ogOutDir, `${name}.png`);
+    if (fs.existsSync(svgPath)) {
+      let svg = fs.readFileSync(svgPath, 'utf8');
+      svg = svg.replace('{{LOGO_SVG}}', logoSvg);
+      fs.writeFileSync(svgPath, svg);
+      renderSvgToPng(svgPath, pngPath);
       console.log(`  ✓ og/${name}.png`);
     }
   }
@@ -138,6 +159,7 @@ function generateDocsCards() {
   }
 
   const template = fs.readFileSync(path.join(ogSrcDir, 'docs-template.svg'), 'utf8');
+  const logoSvg = getLogoSvg();
   let count = 0;
 
   function walk(dir) {
@@ -181,6 +203,7 @@ function generateDocsCards() {
       const descSvg = descToSvg(desc, nextY + 20);
 
       const svg = template
+        .replace('{{LOGO_SVG}}', logoSvg)
         .replace('{{TITLE_SVG}}', titleSvg)
         .replace('{{DESC_SVG}}', descSvg);
 
