@@ -436,7 +436,7 @@ export default function LandingPage(): React.ReactElement {
         <nav className="lp-nav">
           <div className="lp-nav-inner">
             <Link to="/" className="lp-nav-logo">
-              <img src="/img/logo-light.png" alt="Mercury Agent" className="lp-nav-logo-img" />
+              <img src="/img/logo-dark.png" alt="Mercury Agent" className="lp-nav-logo-img" />
               Mercury Agent
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
@@ -1042,7 +1042,7 @@ export default function LandingPage(): React.ReactElement {
         <footer className="lp-footer">
           <div className="lp-container lp-footer-inner">
             <div>
-              <img src="/img/logo-full-light.png" alt="Mercury" className="lp-footer-logo-img" />
+              <img src="/img/logo-full-dark.png" alt="Mercury" className="lp-footer-logo-img" />
               <span className="lp-footer-tagline">by Cosmic Stack</span>
             </div>
             <div className="lp-footer-links">

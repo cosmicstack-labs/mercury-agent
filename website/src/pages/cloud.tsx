@@ -152,7 +152,7 @@ export default function CloudPage(): React.ReactElement {
         <nav className="lp-nav">
           <div className="lp-nav-inner">
             <Link to="/" className="lp-nav-logo">
-              <img src="/img/logo-light.png" alt="Mercury Agent" className="lp-nav-logo-img" />
+              <img src="/img/logo-dark.png" alt="Mercury Agent" className="lp-nav-logo-img" />
               Mercury Agent
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
@@ -178,7 +178,7 @@ export default function CloudPage(): React.ReactElement {
           <div className="lp-hero-glow" />
           <div className="lp-container lp-hero-content">
             <div className="lp-hero-eyebrow">
-              <span className="lp-hero-eyebrow-mark"><img src="/img/logo-light.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: '50%' }} /></span>
+              <span className="lp-hero-eyebrow-mark"><img src="/img/logo-dark.png" alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: '50%' }} /></span>
               <span className="lp-hero-eyebrow-text">Mercury Cloud · v1.2.0</span>
               <span className="lp-hero-eyebrow-badge">Cloudy Mercury</span>
             </div>
@@ -349,7 +349,7 @@ export default function CloudPage(): React.ReactElement {
         <footer className="lp-footer">
           <div className="lp-container lp-footer-inner">
             <div>
-              <img src="/img/logo-full-light.png" alt="Mercury" className="lp-footer-logo-img" />
+              <img src="/img/logo-full-dark.png" alt="Mercury" className="lp-footer-logo-img" />
               <span className="lp-footer-tagline">by Cosmic Stack</span>
             </div>
             <div className="lp-footer-links">

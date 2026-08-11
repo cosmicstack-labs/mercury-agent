@@ -48,9 +48,6 @@
 .lp-nav-logo:hover { text-decoration: none !important; }
 .lp-nav-logo-icon { font-size: 1.2em; }
 .lp-nav-logo-img { width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0; }
-@media (prefers-color-scheme: dark) {
-  .lp-nav-logo-img { content: url('/img/logo-dark.png'); }
-}
 .lp-nav-links { display: flex; gap: 28px; align-items: center; }
 .lp-nav-links a { color: var(--gray); font-size: 0.88em; font-weight: 500; transition: color 0.2s; text-decoration: none !important; letter-spacing: 0.01em; }
 .lp-nav-links a:hover { color: var(--white); text-decoration: none !important; }
@@ -518,9 +515,6 @@
 .lp-footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
 .lp-footer-logo { font-family: var(--font); font-weight: 700; color: var(--cyan); }
 .lp-footer-logo-img { height: 28px; width: auto; vertical-align: middle; }
-@media (prefers-color-scheme: dark) {
-  .lp-footer-logo-img { content: url('/img/logo-full-dark.png'); }
-}
 .lp-footer-tagline { color: var(--gray-dim); font-size: 0.88em; margin-left: 12px; }
 .lp-footer-links { display: flex; gap: 24px; }
 .lp-footer-links a { color: var(--gray-dim); font-size: 0.88em; }
