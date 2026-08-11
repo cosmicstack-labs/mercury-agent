@@ -74,9 +74,11 @@ export class SessionRepository {
       if (input.binding) this.bind(existing.id, input.binding.channelType, input.binding.externalConversationId);
       return this.get(existing.id);
     }
-    const alias = input.alias ? input.alias.toLowerCase() : this.generateAlias(id);
+    const requestedAlias = input.alias ? input.alias.toLowerCase() : undefined;
+    const alias = requestedAlias && !this.index.sessions.some((entry) => entry.alias.toLowerCase() === requestedAlias)
+      ? requestedAlias
+      : this.generateAlias(id);
     this.assertAlias(alias);
-    if (this.index.sessions.some((entry) => entry.alias.toLowerCase() === alias)) throw new Error(`Session alias already exists: ${alias}`);
     const now = Date.now();
     const title = input.title?.trim() || 'New session';
     const session: Session = {
