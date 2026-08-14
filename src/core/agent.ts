@@ -340,7 +340,7 @@ export class Agent {
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
-  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | null = null;
+  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | 'stopped' | 'halted' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
@@ -592,12 +592,18 @@ export class Agent {
     }
 
     if (trimmed === '/halt' || trimmed === '/stop') {
+      if (this.currentAbort && !this.currentAbort.signal.aborted) {
+        this.currentAbortReason = trimmed === '/stop' ? 'stopped' : 'halted';
+        this.currentAbort.abort();
+      }
       if (this.supervisor) {
         await this.supervisor.haltAll();
         if (trimmed === '/stop') {
           this.supervisor.clearTaskBoard();
         }
         await channel.send(trimmed === '/halt' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.', msg.channelId);
+      } else {
+        await channel.send(trimmed === '/halt' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.', msg.channelId);
       }
       return;
     }
@@ -2323,6 +2329,11 @@ export class Agent {
           }
           if (this.currentAbortReason === 'backgrounded') {
             result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
+            break;
+          }
+          if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
+            result = { text: `This task was ${this.currentAbortReason} by the user.`, usage: undefined };
+            this.currentAbortReason = null;
             break;
           }
           if (loopDetector.isHardAborted() || loopAbortController.signal.aborted) {
