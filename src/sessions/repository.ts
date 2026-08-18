@@ -14,8 +14,28 @@ const SESSION_STATUSES: Session['status'][] = ['active', 'archived', 'deleted'];
 const MESSAGE_ROLES: SessionMessage['role'][] = ['user', 'assistant', 'system', 'tool'];
 const MESSAGE_KINDS: SessionMessage['kind'][] = ['message', 'command', 'error', 'permission', 'progress', 'tool-call', 'tool-result'];
 
-const ADJECTIVES = ['amber', 'brisk', 'calm', 'clear', 'cosmic', 'eager', 'gentle', 'lucky', 'quiet', 'rapid', 'silver', 'warm'];
-const NOUNS = ['comet', 'falcon', 'forest', 'harbor', 'meteor', 'orbit', 'otter', 'planet', 'river', 'rocket', 'signal', 'star'];
+const ADJECTIVES = [
+  'amber', 'arctic', 'autumn', 'azure', 'birch', 'blue', 'bold', 'brave', 'brisk', 'bronze', 'calm', 'cerulean',
+  'clear', 'cobalt', 'coral', 'cosmic', 'crimson', 'crystal', 'cyan', 'daring', 'dawn', 'dusk', 'eager', 'ember',
+  'emerald', 'frost', 'gentle', 'glacial', 'golden', 'granite', 'harbor', 'indigo', 'ivory', 'jade', 'keen', 'lavender',
+  'lucky', 'lunar', 'magenta', 'maple', 'marble', 'midnight', 'misty', 'noble', 'northern', 'obsidian', 'ocean', 'olive',
+  'onyx', 'opal', 'pearl', 'pine', 'polar', 'quiet', 'rapid', 'rose', 'ruby', 'rust', 'saffron', 'sage',
+  'sapphire', 'scarlet', 'silver', 'slate', 'solar', 'spring', 'stellar', 'stone', 'summer', 'sunny', 'teal', 'thunder',
+  'tiger', 'topaz', 'violet', 'warm', 'willow', 'winter', 'wise', 'wren', 'zephyr', 'zenith', 'aurora', 'boreal',
+  'cobalt', 'copper', 'delta', 'dune', 'fable', 'fjord', 'gleam', 'hazel', 'helm', 'iris', 'jet', 'kelp',
+  'linden', 'moss', 'nimbus', 'ochre', 'palm', 'quartz', 'ridge', 'shale', 'tide', 'umber', 'valley', 'whisper',
+];
+const NOUNS = [
+  'comet', 'falcon', 'forest', 'harbor', 'meteor', 'orbit', 'otter', 'planet', 'river', 'rocket', 'signal', 'star',
+  'aurora', 'badger', 'bass', 'breeze', 'brook', 'canyon', 'cape', 'cedar', 'cliff', 'cloud', 'coast', 'cove',
+  'dawn', 'dolphin', 'dune', 'eagle', 'echo', 'fawn', 'fern', 'finch', 'flame', 'fox', 'glade', 'goose',
+  'grove', 'gull', 'hawk', 'heron', 'hill', 'hollow', 'ibis', 'jay', 'kite', 'lake', 'lark', 'leaf',
+  'lynx', 'maple', 'marsh', 'meadow', 'mint', 'moon', 'mote', 'oak', 'peak', 'pine', 'plume', 'pond',
+  'quail', 'rain', 'ridge', 'robin', 'sage', 'shore', 'sparrow', 'spring', 'spruce', 'stone', 'stream', 'sun',
+  'swan', 'swift', 'tide', 'vista', 'wave', 'whale', 'willow', 'wind', 'wolf', 'wren', 'zenith', 'bloom',
+  'coral', 'dew', 'drift', 'ember', 'frost', 'gem', 'haven', 'iris', 'jet', 'kelp', 'lily', 'mist',
+  'nexus', 'onyx', 'opal', 'pearl', 'quartz', 'ripple', 'slate', 'thorn', 'umber', 'violet', 'zephyr', 'anchor',
+];
 
 interface SessionIndexEntry {
   id: string;
@@ -364,11 +384,8 @@ export class SessionRepository {
 
   private generateAlias(id: string): string {
     const seed = Number.parseInt(id.replaceAll('-', '').slice(0, 8), 16);
-    for (let offset = 0; offset < ADJECTIVES.length * NOUNS.length; offset++) {
-      const alias = `${ADJECTIVES[(seed + offset) % ADJECTIVES.length]}-${NOUNS[(Math.floor(seed / ADJECTIVES.length) + offset) % NOUNS.length]}`;
-      if (!this.index.sessions.some((entry) => entry.alias === alias)) return alias;
-    }
-    return `session-${id.replaceAll('-', '').slice(0, 8)}`;
+    const suffix = Math.random().toString(36).slice(2, 5);
+    return `${ADJECTIVES[seed % ADJECTIVES.length]}-${NOUNS[Math.floor(seed / ADJECTIVES.length) % NOUNS.length]}-${suffix}`;
   }
 
   private fallbackTitle(content: string): string {

@@ -88,7 +88,7 @@ export class CloudSessionSynchronizer {
   constructor(
     private repository: SessionRepository,
     private getConfig: () => SessionSyncConfig,
-    private debounceMs = 1_000,
+    private debounceMs = 300,
   ) {}
 
   start(): void {
