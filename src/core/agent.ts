@@ -2500,6 +2500,7 @@ export class Agent {
             channelType: msg.channelType,
             channelId: msg.channelId,
             ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
+            ...(usedProvider ? { provider: usedProvider.name, model: usedProvider.model } : {}),
           },
         });
         if (msg.channelType !== 'internal' && msg.senderId !== 'system' && usedProvider) {
