@@ -78,7 +78,7 @@ export class ResearchMode {
     suffix += '\n\nResearch workflow:';
     suffix += '\n1. Break the question into sub-questions and plan which sources to consult.';
     suffix += '\n2. ALWAYS use web_search and fetch_url to gather real, current information from the web. Do not rely on memory or prior knowledge for facts, dates, or news — verify everything live.';
-    suffix += '\n3. When a page contains relevant images (infographics, diagrams, charts, photos), preserve their original image URLs in the final markdown using `![alt](url)` syntax so the article is rich and visual.';
+    suffix += '\n3. Build a visual plan while researching. Actively inspect source pages for relevant photos, diagrams, charts, maps, or infographics and preserve their original direct image URLs.';
     suffix += '\n4. Cross-check claims across multiple sources. Prefer primary sources, official statements, and reputable outlets.';
     suffix += '\n5. Take as many tool steps as the research genuinely requires — do not stop early. Long-running research is expected and will not be killed.';
     suffix += '\n6. After gathering sources, synthesize a single comprehensive research article in rich markdown.';
@@ -87,7 +87,9 @@ export class ResearchMode {
     suffix += '\n- Include a short TL;DR summary near the top.';
     suffix += '\n- Use `##` section headings for sub-topics.';
     suffix += '\n- Cite sources inline as markdown links, e.g. "[according to NOAA](https://...)".';
-    suffix += '\n- Embed any relevant images from sources using `![description](https://image-url)` so the article feels rich.';
+    suffix += '\n- Include 2-4 editorially relevant images when credible sources provide them: one strong lead image near the top and additional visuals beside the sections they support.';
+    suffix += '\n- Embed images as `![specific descriptive alt text](https://direct-image-url)` using the original public image URL, not a webpage URL, search-result thumbnail, local file, or invented URL.';
+    suffix += '\n- Prefer informative visuals over decoration. Do not repeat an image, and omit only when diligent source review finds no safe, relevant public image.';
     suffix += '\n- Include a `## Sources` section at the end listing all URLs consulted.';
     suffix += '\n- The final markdown is treated as the research artifact and will be rendered as a full article on Mercury Cloud.';
     suffix += '\n\nIf the user asks a follow-up in the same thread, treat it as a refinement of this research: reuse the context, gather more if needed, and update or extend the article accordingly. If something is unclear, ask a short clarifying question before spending a long research pass.';
