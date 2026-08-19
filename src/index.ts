@@ -2408,8 +2408,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         if (payload) {
           config.cloud.jwt = payload.jwt;
           config.cloud.refreshToken = payload.refreshToken;
-          config.providers.mercuryCloud.apiKey = payload.jwt;
-          providers.updateApiKey('mercuryCloud', payload.jwt);
+          const llmKey = config.cloud.accessKey || payload.jwt;
+          config.providers.mercuryCloud.apiKey = llmKey;
+          providers.updateApiKey('mercuryCloud', llmKey);
           logger.info('Mercury Cloud token refreshed and saved');
         }
       });

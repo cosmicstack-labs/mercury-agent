@@ -13,6 +13,7 @@ export class MercuryCloudProvider extends BaseProvider {
   private modelInstance: ReturnType<ReturnType<typeof createOpenAI>['languageModel']>;
   private tokenStore: CloudTokenStore | null;
   private removeTokenListener: (() => void) | null = null;
+  private readonly usesAccessKey: boolean;
 
   constructor(config: ProviderConfig, tokenStore: CloudTokenStore | null = null) {
     super(config);
@@ -20,7 +21,8 @@ export class MercuryCloudProvider extends BaseProvider {
     this.model = config.model;
     this.tokenStore = tokenStore;
 
-    const jwt = tokenStore?.getJwt() ?? config.apiKey ?? 'cloud-jwt-placeholder';
+    this.usesAccessKey = config.apiKey?.startsWith('sk-mc-') ?? false;
+    const jwt = this.usesAccessKey ? config.apiKey! : tokenStore?.getJwt() ?? config.apiKey ?? 'cloud-jwt-placeholder';
     this.client = createOpenAI({
       apiKey: jwt,
       baseURL: config.baseUrl?.endsWith('/v1') ? config.baseUrl : `${config.baseUrl}/v1`,
@@ -32,7 +34,7 @@ export class MercuryCloudProvider extends BaseProvider {
     // replaces the old independent 3-minute proactive refresh timer, which
     // raced the WS client for the single-use refresh token and eventually
     // burned it.
-    if (tokenStore) {
+    if (tokenStore && !this.usesAccessKey) {
       this.removeTokenListener = tokenStore.addListener((tokens) => {
         this.rebuildClient(tokens.jwt);
       });
@@ -78,7 +80,7 @@ export class MercuryCloudProvider extends BaseProvider {
         provider: this.name,
       };
     } catch (err: any) {
-      if (this.isRetryableError(err) && this.tokenStore) {
+      if (this.isRetryableError(err) && this.tokenStore && !this.usesAccessKey) {
         logger.warn('Mercury Cloud 401 — refreshing token and retrying...');
         try {
           const rotated = await this.tokenStore.rotate();
@@ -124,7 +126,7 @@ export class MercuryCloudProvider extends BaseProvider {
       // streamText previously had no 401-retry path, which meant a streaming
       // chat would fail where a non-streaming chat would recover. Retry once
       // after a reactive rotation.
-      if (!this.isRetryableError(err) || !this.tokenStore) throw err;
+      if (!this.isRetryableError(err) || !this.tokenStore || this.usesAccessKey) throw err;
       logger.warn('Mercury Cloud stream 401 — refreshing token and retrying...');
       try {
         const rotated = await this.tokenStore.rotate();
@@ -157,7 +159,7 @@ export class MercuryCloudProvider extends BaseProvider {
   }
 
   async ensureFreshToken(): Promise<void> {
-    if (!this.tokenStore) return;
+    if (!this.tokenStore || this.usesAccessKey) return;
     try {
       const jwt = await this.tokenStore.rotateIfExpired();
       this.rebuildClient(jwt);
@@ -172,7 +174,7 @@ export class MercuryCloudProvider extends BaseProvider {
   }
 
   getModelInstance(): any {
-    if (this.tokenStore?.isJwtNearExpiry()) {
+    if (!this.usesAccessKey && this.tokenStore?.isJwtNearExpiry()) {
       this.tokenStore.rotateIfExpired().catch((err) => {
         logger.warn({ err: err.message }, 'Mercury Cloud token refresh failed in getModelInstance');
       });

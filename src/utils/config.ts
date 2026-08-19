@@ -76,6 +76,7 @@ export interface CloudConfig {
   agentId: string;
   tier: string;
   agentApiKey: string;
+  accessKey?: string;
 }
 
 export interface MercuryConfig {
@@ -241,6 +242,7 @@ export function getDefaultConfig(): MercuryConfig {
       agentId: getEnv('MERCURY_CLOUD_AGENT_ID', ''),
       tier: getEnv('MERCURY_CLOUD_TIER', 'free'),
       agentApiKey: getEnv('MERCURY_CLOUD_AGENT_API_KEY', ''),
+      accessKey: getEnv('MERCURY_CLOUD_ACCESS_KEY', ''),
     },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
@@ -461,7 +463,9 @@ export function normalizeCloudConfig(config: MercuryConfig): MercuryConfig {
   }
   if (!config.cloud.wsUrl) config.cloud.wsUrl = deriveCloudWsUrl(config.cloud.apiUrl);
   config.providers.mercuryCloud.baseUrl = config.cloud.apiUrl;
-  if (config.cloud.jwt && !config.providers.mercuryCloud.apiKey) {
+  if (config.cloud.accessKey) {
+    config.providers.mercuryCloud.apiKey = config.cloud.accessKey;
+  } else if (config.cloud.jwt && !config.providers.mercuryCloud.apiKey) {
     config.providers.mercuryCloud.apiKey = config.cloud.jwt;
   }
   return config;

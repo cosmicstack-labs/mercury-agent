@@ -7,6 +7,7 @@ export interface CloudConfig {
   agentId: string;
   tier: string;
   agentApiKey: string;
+  accessKey: string;
 }
 
 export interface PairingResult {
@@ -15,6 +16,7 @@ export interface PairingResult {
   agentId: string;
   tier: string;
   apiKey?: string;
+  accessKey?: string;
 }
 
 export interface TokenRefreshResult {

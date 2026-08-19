@@ -80,13 +80,14 @@ export async function runCloudPairingFlow(
     refreshToken: result.refreshToken,
     agentId: result.agentId,
     tier: result.tier || 'free',
-    agentApiKey: result.apiKey || '',
+    agentApiKey: result.apiKey || (result.agentId === config.cloud.agentId ? config.cloud.agentApiKey : ''),
+    accessKey: result.accessKey || '',
   };
 
   let model = 'mercury-flash';
   try {
     const res = await fetch(`${apiUrl}/v1/models`, {
-      headers: { Authorization: `Bearer ${result.jwt}` },
+      headers: { Authorization: `Bearer ${result.accessKey || result.jwt}` },
     });
     if (res.ok) {
       const data = (await res.json()) as { data?: Array<{ id: string; label: string; discount_percent?: number }> };
@@ -128,6 +129,12 @@ export async function runCloudConnect(): Promise<void> {
     const valid = await validateCloudConnection(config);
 
     if (valid) {
+      if (config.cloud.accessKey && !(await validateCloudAccessKey(config))) {
+        console.log(chalk.yellow('  ⚠ Mercury Cloud API key is no longer valid. Falling back to the current session.'));
+        config.cloud.accessKey = '';
+        config.providers.mercuryCloud.apiKey = config.cloud.jwt;
+        saveConfig(config);
+      }
       console.log(chalk.green('  ✓ Mercury Cloud is already connected.'));
       console.log(chalk.dim(`    Agent ID: ${config.cloud.agentId}`));
       console.log(chalk.dim(`    Tier: ${config.cloud.tier || 'free'}`));
@@ -217,7 +224,7 @@ export async function runCloudConnect(): Promise<void> {
   const previousDefault = config.providers.default;
   const pairedConfig = updateConfig((latest) => {
     latest.cloud = result.cloudConfig;
-    latest.providers.mercuryCloud.apiKey = result.cloudConfig.jwt;
+    latest.providers.mercuryCloud.apiKey = result.cloudConfig.accessKey || result.cloudConfig.jwt;
     latest.providers.mercuryCloud.model = result.model;
     latest.providers.mercuryCloud.enabled = true;
     latest.providers.default = 'mercuryCloud';
@@ -264,6 +271,7 @@ export async function runCloudDisconnect(): Promise<void> {
     || !!config.cloud.refreshToken
     || !!config.cloud.agentId
     || !!config.cloud.agentApiKey
+    || !!config.cloud.accessKey
     || config.providers.mercuryCloud.enabled
     || !!config.providers.mercuryCloud.apiKey;
 
@@ -273,6 +281,7 @@ export async function runCloudDisconnect(): Promise<void> {
     latest.cloud.refreshToken = '';
     latest.cloud.agentId = '';
     latest.cloud.agentApiKey = '';
+    latest.cloud.accessKey = '';
     latest.providers.mercuryCloud.enabled = false;
     latest.providers.mercuryCloud.apiKey = '';
 
@@ -422,6 +431,18 @@ async function validateCloudConnection(config: MercuryConfig): Promise<boolean> 
   try {
     const res = await fetch(`${config.cloud.apiUrl}/v1/agents`, {
       headers: { Authorization: `Bearer ${config.cloud.jwt}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function validateCloudAccessKey(config: MercuryConfig): Promise<boolean> {
+  try {
+    const res = await fetch(`${config.cloud.apiUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${config.cloud.accessKey}` },
       signal: AbortSignal.timeout(10_000),
     });
     return res.ok;

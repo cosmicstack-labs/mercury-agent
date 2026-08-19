@@ -1075,7 +1075,7 @@ export class Agent {
         const catalog = await fetchProviderModelCatalog(provider.name as any, provider.name === 'mercuryCloud'
           ? {
             ...provider,
-            apiKey: this.config.cloud.jwt || provider.apiKey,
+            apiKey: this.config.cloud.accessKey || this.config.cloud.jwt || provider.apiKey,
             baseUrl: this.config.cloud.apiUrl || provider.baseUrl,
           }
           : provider);

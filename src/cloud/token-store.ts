@@ -105,7 +105,7 @@ export class CloudTokenStore {
     if (this.liveConfig) {
       this.liveConfig.cloud.jwt = jwt;
       this.liveConfig.cloud.refreshToken = refreshTokenValue;
-      this.liveConfig.providers.mercuryCloud.apiKey = jwt;
+      this.liveConfig.providers.mercuryCloud.apiKey = this.liveConfig.cloud.accessKey || jwt;
     }
     for (const listener of this.listeners) {
       try { listener({ jwt, refreshToken: refreshTokenValue }); } catch (err) {
@@ -123,7 +123,7 @@ export class CloudTokenStore {
       this.assertActivePersistedIdentity(config);
       config.cloud.jwt = jwt;
       config.cloud.refreshToken = refreshTokenValue;
-      config.providers.mercuryCloud.apiKey = jwt;
+      config.providers.mercuryCloud.apiKey = config.cloud.accessKey || jwt;
     });
     this.setTokens(jwt, refreshTokenValue);
   }

@@ -169,12 +169,13 @@ describe('runCloudPairingFlow', () => {
       refreshToken: 'new-refresh',
       agentId: 'agent-2',
       tier: 'free',
+      accessKey: 'sk-mc-agent-2',
     });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) }));
 
     const result = await runCloudPairingFlow(current);
 
-    expect(result?.cloudConfig).toMatchObject({ agentId: 'agent-2', agentApiKey: '' });
+    expect(result?.cloudConfig).toMatchObject({ agentId: 'agent-2', agentApiKey: '', accessKey: 'sk-mc-agent-2' });
     vi.unstubAllGlobals();
   });
 });
