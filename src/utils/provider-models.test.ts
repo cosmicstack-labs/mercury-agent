@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { buildModelCatalog } from './provider-models.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildModelCatalog, fetchProviderModelCatalog } from './provider-models.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('buildModelCatalog', () => {
   it('prefers the provider recommended OpenAI model when available', () => {
@@ -80,6 +84,18 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('gpt-oss:20b');
   });
 
+  it('prefers the Atlas Cloud fast Qwen model when available', () => {
+    const catalog = buildModelCatalog('atlascloud', [
+      'deepseek-ai/deepseek-v4-pro',
+      'qwen/qwen3.5-flash',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('qwen/qwen3.5-flash');
+    expect(catalog.models).toContain('deepseek-ai/deepseek-v4-pro');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
@@ -108,5 +124,29 @@ describe('buildModelCatalog', () => {
     );
 
     expect(catalog.recommendedModel).toBe('model-a');
+  });
+});
+
+describe('fetchProviderModelCatalog', () => {
+  it('excludes non-text Atlas Cloud models using output modality metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { id: 'qwen/qwen3.5-flash', output_modalities: ['text'] },
+        { id: 'another-chat-model', output_modalities: ['text'] },
+        { id: 'black-forest-labs/flux-kontext-pro', output_modalities: ['image'] },
+      ],
+    }), { status: 200 })));
+
+    const catalog = await fetchProviderModelCatalog('atlascloud', {
+      name: 'atlascloud',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.atlascloud.ai/v1',
+      model: 'qwen/qwen3.5-flash',
+      enabled: true,
+    });
+
+    expect(catalog.recommendedModel).toBe('qwen/qwen3.5-flash');
+    expect(catalog.models).toContain('another-chat-model');
+    expect(catalog.models).not.toContain('black-forest-labs/flux-kontext-pro');
   });
 });

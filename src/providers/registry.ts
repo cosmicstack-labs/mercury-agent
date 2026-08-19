@@ -21,7 +21,7 @@ export async function createProvider(pc: ProviderConfig, tokenStore?: import('..
     // this entirely.
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
-  } else if (pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
+  } else if (pc.name === 'atlascloud' || pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
@@ -61,6 +61,7 @@ export class ProviderRegistry {
       config.providers.openai,
       config.providers.anthropic,
       config.providers.grok,
+      config.providers.atlascloud,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
       config.providers.openaiCompat,

@@ -59,6 +59,7 @@ export type ProviderName =
   | 'anthropic'
   | 'deepseek'
   | 'grok'
+  | 'atlascloud'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'openaiCompat'
@@ -93,6 +94,7 @@ export interface MercuryConfig {
     anthropic: ProviderConfig;
     deepseek: ProviderConfig;
     grok: ProviderConfig;
+    atlascloud: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     openaiCompat: ProviderConfig;
@@ -280,6 +282,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('GROK_BASE_URL', 'https://api.x.ai/v1'),
         model: getEnv('GROK_MODEL', 'grok-4'),
         enabled: getEnvBool('GROK_ENABLED', true),
+      },
+      atlascloud: {
+        name: 'atlascloud',
+        apiKey: getEnv('ATLASCLOUD_API_KEY', ''),
+        baseUrl: getEnv('ATLASCLOUD_BASE_URL', 'https://api.atlascloud.ai/v1'),
+        model: getEnv('ATLASCLOUD_MODEL', 'qwen/qwen3.5-flash'),
+        enabled: getEnvBool('ATLASCLOUD_ENABLED', true),
       },
       ollamaCloud: {
         name: 'ollamaCloud',
@@ -610,6 +619,9 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
   }
   if (provider.name === 'ollamaCloud') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
+  }
+  if (provider.name === 'atlascloud') {
+    return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat') {
     return provider.baseUrl.length > 0 && provider.model.length > 0;

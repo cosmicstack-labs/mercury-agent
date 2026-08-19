@@ -43,6 +43,11 @@ const GROK_PREFERRED_MODELS = [
   'grok-3-latest',
 ] as const;
 
+const ATLASCLOUD_PREFERRED_MODELS = [
+  'qwen/qwen3.5-flash',
+  'deepseek-ai/deepseek-v4-pro',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -116,6 +121,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
+    atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
@@ -129,7 +135,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
 }
 
 interface OpenAIModelResponse {
-  data?: Array<{ id?: string }>;
+  data?: Array<{ id?: string; output_modalities?: string[] }>;
 }
 
 interface AnthropicModelResponse {
@@ -223,6 +229,7 @@ function chooseRecommendedModel(
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
+    atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
@@ -262,6 +269,7 @@ export function buildModelCatalog(
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
+    atlascloud: ATLASCLOUD_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     openaiCompat: OPENAI_COMPAT_PREFERRED_MODELS,
@@ -289,6 +297,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
   let errorMessage: string;
   if (provider === 'grok') {
     errorMessage = 'Mercury could not fetch models for this Grok key. Please re-enter it.';
+  } else if (provider === 'atlascloud') {
+    errorMessage = 'Mercury could not fetch models for this Atlas Cloud key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'openaiCompat') {
@@ -304,16 +314,31 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
   );
 
   const ids = (data.data ?? [])
-    .map((model) => model.id?.trim() ?? '')
-    .filter((id) => {
+    .map((model) => ({
+      id: model.id?.trim() ?? '',
+      outputModalities: model.output_modalities,
+    }))
+    .filter(({ id, outputModalities }) => {
       if (provider === 'deepseek') {
         return id.startsWith('deepseek-');
       }
       if (provider === 'openaiCompat') {
         return id.length > 0;
       }
+      if (provider === 'atlascloud') {
+        const lower = id.toLowerCase();
+        return id.length > 0
+          && (outputModalities == null || outputModalities.includes('text'))
+          && !lower.includes('embedding')
+          && !lower.includes('image')
+          && !lower.includes('video')
+          && !lower.includes('audio')
+          && !lower.includes('tts')
+          && !lower.includes('whisper');
+      }
       return isOpenAIChatModel(id);
-    });
+    })
+    .map(({ id }) => id);
 
   return buildModelCatalog(provider, ids, config.model);
 }

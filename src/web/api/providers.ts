@@ -26,7 +26,7 @@ providers.post('/api/providers/:name', async (c) => {
   const body = await c.req.json();
   const config = loadConfig();
 
-  const validNames: ProviderName[] = ['mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'ollamaCloud', 'ollamaLocal', 'openaiCompat', 'mimo', 'mimoTokenPlan'];
+  const validNames: ProviderName[] = ['mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'atlascloud', 'ollamaCloud', 'ollamaLocal', 'openaiCompat', 'mimo', 'mimoTokenPlan'];
   if (!validNames.includes(providerName)) {
     return c.json({ error: 'Unknown provider' }, 400);
   }

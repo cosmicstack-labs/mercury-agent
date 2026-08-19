@@ -151,6 +151,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'anthropic', label: 'Anthropic' },
   { key: 'githubCopilot', label: 'GitHub Copilot' },
   { key: 'grok', label: 'Grok (xAI)' },
+  { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
@@ -1330,6 +1331,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.grok.apiKey = result.apiKey;
           config.providers.grok.model = result.model;
           config.providers.grok.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'atlascloud') {
+        const mask = isReconfig && config.providers.atlascloud.apiKey ? ` [${maskKey(config.providers.atlascloud.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'atlascloud',
+          'Atlas Cloud',
+          chalk.white(`  Atlas Cloud API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.atlascloud.apiKey = result.apiKey;
+          config.providers.atlascloud.model = result.model;
+          config.providers.atlascloud.enabled = true;
         }
         continue;
       }
