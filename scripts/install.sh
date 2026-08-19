@@ -57,11 +57,10 @@ detect_arch() {
 
 # Fetch a URL to a file path.
 fetch_to() {
-  url=$1; out=$2
   if have curl; then
-    curl -fsSL --output "$out" "$url"
+    curl -fsSL --output "$2" "$1"
   elif have wget; then
-    wget -qO "$out" "$url"
+    wget -qO "$2" "$1"
   else
     die "Need curl or wget to download files."
   fi
