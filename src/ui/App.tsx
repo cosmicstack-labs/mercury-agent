@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text, Spacer, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, Spacer, Static, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
 import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
@@ -8,6 +8,7 @@ import { renderMarkdown } from '../utils/markdown.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
+import { getViewportWindow, normalizeTerminalText } from './terminal-viewport.js';
 
 const MERCURY_LOGO = [
   '    __  _____________  ________  ________  __',
@@ -78,6 +79,7 @@ export interface TuiAppProps {
 
 export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
   const { exit } = useApp();
+  const terminalSize = useTerminalSize();
   const [input, setInput] = React.useState('');
   const [cursorPos, setCursorPos] = React.useState(0);
   const setInputAndCursor = (text: string, pos?: number) => {
@@ -99,12 +101,16 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   const [inputHistory, setInputHistory] = React.useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = React.useState<number>(-1);
   const [historyDraft, setHistoryDraft] = React.useState<string>('');
-  const [workspacePane, setWorkspacePane] = React.useState<'files' | 'details' | 'git'>('files');
-  const [detailCursor, setDetailCursor] = React.useState(0);
   const [gitCursor, setGitCursor] = React.useState(0);
 
   const slashCommands = React.useMemo(() => [
     '/help',
+    '/sessions',
+    '/session new',
+    '/session current',
+    '/session ',
+    '/session archive ',
+    '/session delete ',
     '/status',
     '/progress',
     '/menu',
@@ -117,12 +123,20 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/code agent ',
     '/code off',
     '/code toggle',
+    '/research',
+    '/research on',
+    '/research off',
+    '/research toggle',
+    '/research ',
     '/spotify',
     '/budget',
     '/permissions',
     '/memory',
     '/models',
     '/models use ',
+    '/cloud',
+    '/cloud models',
+    '/cloud use ',
     '/agents',
     '/agents stop ',
     '/agents pause ',
@@ -208,6 +222,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   React.useEffect(() => {
     setSkillSelIdx(0);
   }, [skillSuggestions.length, input]);
+
+  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
 
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
@@ -403,7 +419,8 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           const selected = options[permIdxRef.current] || options[0];
           if (selected) resolvePermissionAndMaybeContinue(selected.value);
         } else if (key.escape) {
-          resolvePermissionAndMaybeContinue(state.permissionPrompt.type === 'mode' ? 'ask-me' : 'no');
+          if (state.permissionPrompt.type === 'mode') resolvePermissionAndMaybeContinue('ask-me');
+          else if (state.permissionPrompt.type !== 'choice') resolvePermissionAndMaybeContinue('no');
         }
         return;
       }
@@ -542,7 +559,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
 
       // Tab cycles focus: explorer → code → right panel (chat or git)
       if (key.tab) {
-        const showRight = (process.stdout.columns || 80) >= 100;
+        const showRight = terminalSize.cols >= 100;
         const rightFocus = rightPanel === 'chat' ? 'chat' : 'git';
         const cycle = showRight ? ['explorer', 'code', rightFocus] : ['explorer', 'code'];
         const nextIdx = (cycle.indexOf(focusArea) + 1) % cycle.length;
@@ -563,12 +580,15 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         }
 
         if (focusArea === 'code') {
-          if (key.upArrow) { onInput('/ws scroll -1'); return; }
-          if (key.downArrow) { onInput('/ws scroll 1'); return; }
-          if (key.pageUp) { onInput('/ws scroll -15'); return; }
-          if (key.pageDown) { onInput('/ws scroll 15'); return; }
-          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws scroll -10'); return; }
-          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws scroll 10'); return; }
+          const viewerLines = Math.max(1, (terminalSize.rows - 11));
+          if (key.upArrow) { onInput(`/ws scroll -1 ${viewerLines}`); return; }
+          if (key.downArrow) { onInput(`/ws scroll 1 ${viewerLines}`); return; }
+          if (key.pageUp) { onInput(`/ws scroll ${-viewerLines} ${viewerLines}`); return; }
+          if (key.pageDown) { onInput(`/ws scroll ${viewerLines} ${viewerLines}`); return; }
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput(`/ws scroll ${-viewerLines} ${viewerLines}`); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput(`/ws scroll ${viewerLines} ${viewerLines}`); return; }
+          if ((key as any).home) { onInput('/ws scroll-home'); return; }
+          if ((key as any).end) { onInput(`/ws scroll-end ${viewerLines}`); return; }
         }
 
         if (focusArea === 'git') {
@@ -582,12 +602,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         }
 
         if (focusArea === 'chat') {
-          if (key.upArrow) { onInput('/ws chat-scroll -1'); return; }
-          if (key.downArrow) { onInput('/ws chat-scroll 1'); return; }
-          if (key.pageUp) { onInput('/ws chat-scroll -10'); return; }
-          if (key.pageDown) { onInput('/ws chat-scroll 10'); return; }
-          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws chat-scroll -8'); return; }
-          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws chat-scroll 8'); return; }
+          if (key.upArrow) { onInput('/ws chat-scroll 1'); return; }
+          if (key.downArrow) { onInput('/ws chat-scroll -1'); return; }
+          if (key.pageUp) { onInput('/ws chat-scroll 10'); return; }
+          if (key.pageDown) { onInput('/ws chat-scroll -10'); return; }
+          if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput('/ws chat-scroll 10'); return; }
+          if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/ws chat-scroll -10'); return; }
+          if ((key as any).home) { onInput('/ws chat-home'); return; }
+          if ((key as any).end) { onInput('/ws chat-end'); return; }
         }
       }
     }
@@ -784,17 +806,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     );
   }
 
-  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
-
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <StatusBarView state={state} />
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
-      {state.mode === 'coding' ? <CodingBody state={state} /> : null}
-      {(state.mode === 'workspace' || state.mode === 'chat') ? (
-        <ChatBody state={state} />
+      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} /> : null}
+      {state.mode === 'workspace' ? (
+        <WorkspaceBody state={state} gitCursor={gitCursor} height={Math.max(8, terminalSize.rows - 6)} cols={terminalSize.cols} onInput={onInput} />
+      ) : null}
+      {state.mode === 'chat' ? (
+        <ChatBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} />
       ) : null}
       {state.permissionPrompt && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
@@ -827,7 +849,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
-      <TokenBarView state={state} />
+      <TokenBarView state={state} cols={terminalSize.cols} />
     </Box>
   );
 }
@@ -847,7 +869,7 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   const more = tasks.length > 3 ? ` +${tasks.length - 3} more` : '';
 
   return (
-    <Box paddingX={1} paddingBottom={0}>
+    <Box paddingX={1} paddingBottom={0} flexShrink={0}>
       <Text color="gray">{'─'.repeat(50)}</Text>
       <Box flexDirection="column" width="100%">
         <Box>
@@ -865,44 +887,16 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   );
 }
 
-function StatusBarView({ state }: { state: TuiState }) {
-  const modeColor = state.programmingMode === 'execute' ? 'green' : state.programmingMode === 'plan' ? 'yellow' : 'gray';
-  const modeLabel = state.programmingMode === 'off' ? '' : ` ${state.programmingMode.toUpperCase()}`;
-  const providerBadge = state.provider ? `⚡ ${state.provider.name} · ${state.provider.model}` : '⚡ No provider';
-  const viewLabel = state.viewMode === 'balanced' ? 'minimal' : 'detailed';
+const HEADER_SENTINEL_ID = '__mercury_header__';
 
-  // Dynamic subtitle based on thinking state
-  const runningStep = [...state.toolSteps].reverse().find((s) => s.status === 'running');
-  const doneSteps = state.toolSteps.filter((s) => s.status === 'done').length;
-  let subtitle: React.ReactNode;
-  if (state.isThinking) {
-    const activity = runningStep ? runningStep.label : 'Processing';
-    const stepCount = doneSteps > 0 ? `step ${doneSteps + 1}` : 'step 1';
-    subtitle = <Text color="green">● {stepCount} · {activity}</Text>;
-  } else {
-    subtitle = <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>;
-  }
-
+function HeaderBanner(): React.ReactNode {
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
         <Text color={BRAND.logo}>☿</Text>
         <Text> </Text>
         <Text bold color={BRAND.title}>MERCURY</Text>
-        {subtitle}
-      </Box>
-      <Box paddingX={1} paddingBottom={0}>
-        <Box flexGrow={1}>
-          <Text bold color="cyan">{state.agentName}</Text>
-          {state.programmingMode !== 'off' && <Text> <Text color={modeColor} bold>{modeLabel}</Text></Text>}
-          {state.saverInfo && state.saverInfo.state !== 'off' && (
-            <Text> <Text color="gray">|</Text> <Text color={state.saverInfo.state === 'auto' ? 'yellow' : 'green'} bold>{`⚡SAVER${state.saverInfo.state === 'auto' ? ' (auto)' : ''}`}</Text></Text>
-          )}
-          {state.projectContext && <Text> <Text color="gray">|</Text> <Text color="blue">{state.projectContext}</Text></Text>}
-          <Text> <Text color="gray">|</Text> <Text color="yellow">View: {viewLabel}</Text></Text>
-          <Text> <Text color="gray">|</Text> <Text color="green">{state.permissionMode === 'allow-all' ? '🔓' : '🔒'}</Text></Text>
-        </Box>
-        <Text color="magenta">{providerBadge}</Text>
+        <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>
       </Box>
       <Box paddingX={1}>
         <Text color="gray">{'─'.repeat(50)}</Text>
@@ -911,91 +905,99 @@ function StatusBarView({ state }: { state: TuiState }) {
   );
 }
 
-function TokenBarView({ state }: { state: TuiState }) {
-  if (!state.tokenInfo && !state.provider) return null;
+function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
+  if (!state.tokenInfo && !state.provider && !state.currentSession) return null;
 
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
-
-  // Color the percentage based on usage thresholds (or saver state if active)
   const pct = state.tokenInfo?.percentage ?? 0;
-  const pctColor = saverActive
-    ? saverColor
-    : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
+  const pctColor = saverActive ? saverColor : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
 
-  // Sub-agent count (running only)
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
-  // Background task count (running only)
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
-
   const isWorkspace = state.mode === 'workspace' && state.workspace;
 
+  // Build colored segments — each has {text, color}. Rendered inline with │.
+  const segments: { text: string; color: string }[] = [];
+
+  // 1. Token bar
+  if (state.tokenInfo) {
+    if (saverActive) segments.push({ text: '⚡', color: saverColor });
+    segments.push({
+      text: `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`,
+      color: pctColor,
+    });
+    if (saverActive && state.saverInfo!.savedToday > 0) {
+      segments.push({ text: `~${formatCompact(state.saverInfo!.savedToday)}`, color: 'green' });
+    }
+  }
+
+  // 2. Provider
+  if (state.provider) {
+    segments.push({ text: `${state.provider.name} · ${state.provider.model}`, color: 'magenta' });
+  }
+
+  // 3. Session
+  if (state.currentSession) {
+    segments.push({ text: `${state.currentSession.alias} [${state.currentSession.shortId}]`, color: 'cyan' });
+  }
+
+  // 4. Workspace
+  if (isWorkspace && state.workspace) {
+    const ws = state.workspace;
+    let wsStr = `⎇ ${ws.branch}`;
+    if (ws.ahead > 0) wsStr += ` ↑${ws.ahead}`;
+    if (ws.behind > 0) wsStr += ` ↓${ws.behind}`;
+    if (ws.stagedCount > 0) wsStr += ` S${ws.stagedCount}`;
+    if (ws.unstagedCount > 0) wsStr += ` M${ws.unstagedCount}`;
+    segments.push({ text: wsStr, color: 'blue' });
+  }
+
+  // 5. Background tasks
+  if (!isWorkspace && runningBg > 0) {
+    segments.push({ text: `⏳ ${runningBg}bg`, color: 'cyan' });
+  }
+
+  // 6. Sub-agents
+  if (!isWorkspace && runningAgents > 0) {
+    segments.push({ text: `🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`, color: 'magenta' });
+  }
+
+  // Calculate total width and drop segments from the right if they don't fit
+  const sepStr = ' │ ';
+  const maxLen = Math.max(20, cols - 2);
+  let totalLen = segments.reduce((sum, s, i) => sum + s.text.length + (i > 0 ? sepStr.length : 0), 0);
+  const visible = [...segments];
+  while (totalLen > maxLen && visible.length > 1) {
+    const removed = visible.pop()!;
+    totalLen -= removed.text.length + sepStr.length;
+  }
+  if (totalLen > maxLen && visible.length > 0) {
+    const last = visible[visible.length - 1];
+    const excess = totalLen - maxLen;
+    last.text = last.text.slice(0, Math.max(1, last.text.length - excess - 1)) + '…';
+  }
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
-        <Text color="gray">{'─'.repeat(50)}</Text>
+        <Text color="gray">{'─'.repeat(Math.max(20, cols - 2))}</Text>
       </Box>
-      <Box paddingX={1} paddingBottom={0}>
-        {state.tokenInfo && (
-          <>
-            {saverActive && (
-              <Text color={saverColor} bold>⚡ </Text>
-            )}
-            <Text color={pctColor}>{pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'} </Text>
-            <Text color={pctColor}>
-              [{'█'.repeat(Math.min(10, Math.round(pct / 10)))}{'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}]
-            </Text>
-            <Text color={pctColor} bold> {pct}%</Text>
-            {saverActive && state.saverInfo!.savedToday > 0 && (
-              <Text color="green"> · saved ~{formatCompact(state.saverInfo!.savedToday)}</Text>
-            )}
-            {saverActive && state.saverInfo!.savedToday === 0 && (
-              <Text color={saverColor}> · SAVER</Text>
-            )}
-          </>
-        )}
-
-        {state.provider && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">{state.provider.model}</Text>
-          </>
-        )}
-
-        {isWorkspace && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="blue">⎇ {state.workspace!.branch}</Text>
-            {(state.workspace!.ahead > 0 || state.workspace!.behind > 0) && (
-              <Text color="yellow">
-                {state.workspace!.ahead > 0 ? ` ↑${state.workspace!.ahead}` : ''}
-                {state.workspace!.behind > 0 ? ` ↓${state.workspace!.behind}` : ''}
-              </Text>
-            )}
-            {(state.workspace!.stagedCount > 0 || state.workspace!.unstagedCount > 0) && (
-              <Text color="gray">
-                {state.workspace!.stagedCount > 0 ? <Text color="green"> S{state.workspace!.stagedCount}</Text> : null}
-                {state.workspace!.unstagedCount > 0 ? <Text color="yellow"> M{state.workspace!.unstagedCount}</Text> : null}
-              </Text>
-            )}
-          </>
-        )}
-
-        {!isWorkspace && runningBg > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="cyan">⏳ {runningBg} bg</Text>
-          </>
-        )}
-        {!isWorkspace && runningAgents > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="magenta">🤖 {runningAgents} agent{runningAgents !== 1 ? 's' : ''}</Text>
-          </>
-        )}
+      <Box paddingX={1} paddingBottom={0} height={1} overflow="hidden">
+        {visible.map((seg, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <Text color="gray">{sepStr}</Text>}
+            <Text color={seg.color} wrap="truncate">{seg.text}</Text>
+          </React.Fragment>
+        ))}
       </Box>
     </Box>
   );
+}
+
+function truncateStr(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, Math.max(1, maxLen - 1)) + '…';
 }
 
 function formatCompact(n: number): string {
@@ -1004,12 +1006,20 @@ function formatCompact(n: number): string {
   return String(n);
 }
 
-function ChatBody({ state }: { state: TuiState }) {
+function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
+  const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
   return (
     <Box flexDirection="row" flexGrow={1}>
       {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
-        <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
+        <Static items={staticItems}>
+          {(item) => typeof item === 'string'
+            ? <HeaderBanner key={item} />
+            : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
+        </Static>
+        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
@@ -1018,7 +1028,7 @@ function ChatBody({ state }: { state: TuiState }) {
   );
 }
 
-function CodingBody({ state }: { state: TuiState }) {
+function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
   const modeLabels: Record<ProgrammingModeState, { label: string; color: string }> = {
     off: { label: 'OFF', color: 'gray' },
     plan: { label: 'PLAN', color: 'yellow' },
@@ -1026,6 +1036,9 @@ function CodingBody({ state }: { state: TuiState }) {
   };
   const modeInfo = modeLabels[state.programmingMode];
   const fileSection = state.sidebarSections.find((s) => s.title === 'Files');
+  const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
 
   return (
     <Box flexDirection="row" flexGrow={1}>
@@ -1048,7 +1061,12 @@ function CodingBody({ state }: { state: TuiState }) {
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        <ChatMessagesView messages={state.chatMessages} agentName={state.agentName} />
+        <Static items={staticItems}>
+          {(item) => typeof item === 'string'
+            ? <HeaderBanner key={item} />
+            : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
+        </Static>
+        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
@@ -1067,7 +1085,12 @@ function useTerminalSize(): { rows: number; cols: number } {
   React.useEffect(() => {
     const onResize = () => setSize({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
     stdout.on('resize', onResize);
-    return () => { stdout.off('resize', onResize); };
+    const fallback = setInterval(onResize, 500);
+    fallback.unref?.();
+    return () => {
+      stdout.off('resize', onResize);
+      clearInterval(fallback);
+    };
   }, [stdout]);
   return size;
 }
@@ -1117,7 +1140,7 @@ function ExplorerPanel({
   panelHeight: number;
   isFocused: boolean;
 }) {
-  const windowSize = Math.max(1, panelHeight - 2); // leave room for header + footer
+  const windowSize = Math.max(1, panelHeight - 3); // border + header
   const explorerStart = Math.max(0, Math.min(ws.selectedIndex - Math.floor(windowSize / 2), Math.max(0, ws.nodes.length - windowSize)));
   const visible = ws.nodes.slice(explorerStart, explorerStart + windowSize);
 
@@ -1167,14 +1190,15 @@ function CodeViewerPanel({
   panelHeight: number;
   isFocused: boolean;
 }) {
-  const viewerLines = Math.max(1, panelHeight - 3); // header + separator + footer
+  const viewerLines = Math.max(1, panelHeight - 4); // border + header + footer
   const preview = ws.openedFilePreview;
-  const offset = ws.codeScrollOffset;
   const totalLines = preview.length;
+  const maxOffset = Math.max(0, totalLines - viewerLines);
+  const offset = Math.max(0, Math.min(maxOffset, ws.codeScrollOffset));
   const visibleLines = preview.slice(offset, offset + viewerLines);
   const lineNumWidth = Math.max(3, String(offset + viewerLines).length);
   const fileName = ws.openedFilePath
-    ? ws.openedFilePath.replace(ws.rootPath + '/', '')
+    ? ws.openedFilePath.slice(ws.rootPath.length).replace(/^[/\\]+/, '') || ws.openedFilePath
     : '';
 
   return (
@@ -1241,7 +1265,7 @@ function GitPanel({
   isFocused: boolean;
   gitCursor: number;
 }) {
-  const listHeight = Math.max(1, panelHeight - 6); // header + branch + staged/unstaged labels + footer + border
+  const listHeight = Math.max(1, panelHeight - 5); // border + header + stats + footer
   const gitStart = Math.max(0, Math.min(gitCursor - Math.floor(listHeight / 2), Math.max(0, ws.gitFiles.length - listHeight)));
   const visible = ws.gitFiles.slice(gitStart, gitStart + listHeight);
 
@@ -1297,13 +1321,15 @@ function AgentOutputPanel({
   panelHeight,
   isFocused,
   scrollOffset,
+  onScrollClamp,
 }: {
   state: TuiState;
   panelHeight: number;
   isFocused: boolean;
   scrollOffset: number;
+  onScrollClamp: (distance: number) => void;
 }) {
-  const viewLines = Math.max(1, panelHeight - 4); // header + thinking + footer + border
+  const viewLines = Math.max(1, panelHeight - 5 - (state.isThinking ? 1 : 0)); // border + header + status + footer
 
   // Build a flat array of rendered lines from messages
   const allLines: Array<{ key: string; node: React.ReactNode }> = [];
@@ -1311,7 +1337,7 @@ function AgentOutputPanel({
   for (const msg of state.chatMessages) {
     const roleColor = msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
     const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'Sys' : state.agentName;
-    const contentLines = msg.content.split('\n');
+    const contentLines = normalizeTerminalText(msg.content).split('\n');
 
     // First line with role prefix
     allLines.push({
@@ -1344,15 +1370,14 @@ function AgentOutputPanel({
     });
   }
 
-  // Auto-scroll to bottom if no manual offset, or use scrollOffset
   const totalLines = allLines.length;
-  const effectiveOffset = scrollOffset === 0
-    ? Math.max(0, totalLines - viewLines) // auto-scroll to bottom
-    : Math.max(0, Math.min(scrollOffset, totalLines - viewLines));
-
-  const visibleLines = allLines.slice(effectiveOffset, effectiveOffset + viewLines);
-  const hiddenAbove = effectiveOffset;
-  const hiddenBelow = Math.max(0, totalLines - effectiveOffset - viewLines);
+  const viewport = getViewportWindow(totalLines, viewLines, scrollOffset);
+  React.useEffect(() => {
+    if (viewport.distanceFromBottom !== scrollOffset) onScrollClamp(viewport.distanceFromBottom);
+  }, [onScrollClamp, scrollOffset, viewport.distanceFromBottom]);
+  const visibleLines = allLines.slice(viewport.start, viewport.end);
+  const hiddenAbove = viewport.start;
+  const hiddenBelow = Math.max(0, totalLines - viewport.end);
 
   return (
     <Box
@@ -1367,9 +1392,6 @@ function AgentOutputPanel({
         <Spacer />
         <Text dimColor>{state.chatMessages.length} msg{state.chatMessages.length !== 1 ? 's' : ''}</Text>
       </Box>
-      {hiddenAbove > 0 && (
-        <Box paddingX={1}><Text dimColor>↑ {hiddenAbove} line{hiddenAbove !== 1 ? 's' : ''} above</Text></Box>
-      )}
       {visibleLines.length === 0 ? (
         <Box flexDirection="column" flexGrow={1} alignItems="center" justifyContent="center">
           <Text dimColor>No messages yet.</Text>
@@ -1381,8 +1403,8 @@ function AgentOutputPanel({
         ))
       )}
       {/* Fill remaining space */}
-      {visibleLines.length > 0 && visibleLines.length < viewLines - (hiddenAbove > 0 ? 1 : 0) && (
-        Array.from({ length: viewLines - visibleLines.length - (hiddenAbove > 0 ? 1 : 0) }, (_, i) => (
+      {visibleLines.length > 0 && visibleLines.length < viewLines && (
+        Array.from({ length: viewLines - visibleLines.length }, (_, i) => (
           <Box key={`apad-${i}`}><Text> </Text></Box>
         ))
       )}
@@ -1397,16 +1419,18 @@ function AgentOutputPanel({
           })()}</Text>
         </Box>
       )}
+      <Box paddingX={1} height={1}>
+        <Text dimColor>↑{hiddenAbove} · {viewport.start + (totalLines > 0 ? 1 : 0)}-{viewport.end}/{totalLines} · ↓{hiddenBelow}</Text>
+      </Box>
       <Box paddingX={1}>
-        <Text dimColor>{isFocused ? '↑↓ scroll · Ctrl+G git · Esc back' : 'Ctrl+J focus'}</Text>
+        <Text dimColor>{isFocused ? '↑↓ · PgUp/PgDn · Home/End · Esc back' : 'Ctrl+J focus'}</Text>
       </Box>
     </Box>
   );
 }
 
-function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { state: TuiState; workspacePane: 'files' | 'details' | 'git'; detailCursor: number; gitCursor: number }) {
+function WorkspaceBody({ state, gitCursor, height, cols, onInput }: { state: TuiState; gitCursor: number; height: number; cols: number; onInput: (text: string) => void }) {
   const ws = state.workspace;
-  const { rows, cols } = useTerminalSize();
 
   if (!ws?.active) {
     return (
@@ -1420,10 +1444,7 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
   const focusArea = ws.focusArea;
   const rightPanel = ws.rightPanel;
 
-  // Layout math: rows budget
-  // statusBar(2) + tabBar(1) + inputBox(3) = 6 fixed rows
-  const fixedOverhead = 6;
-  const idePanelHeight = Math.max(8, rows - fixedOverhead);
+  const idePanelHeight = Math.max(4, height - 1); // tab bar occupies one row
 
   // Column widths — 3 columns: explorer | code | right panel (chat or git)
   let explorerWidth: number;
@@ -1445,9 +1466,9 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
   }
 
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" height={height} overflow="hidden">
       <WorkspaceTabBar ws={ws} focusArea={focusArea} cols={cols} />
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={idePanelHeight} overflow="hidden">
         <Box width={explorerWidth}>
           <ExplorerPanel
             ws={ws}
@@ -1470,6 +1491,7 @@ function WorkspaceBody({ state, workspacePane, detailCursor, gitCursor }: { stat
                 panelHeight={idePanelHeight}
                 isFocused={focusArea === 'chat'}
                 scrollOffset={ws.chatScrollOffset}
+                onScrollClamp={(distance) => onInput(`/ws chat-set ${distance}`)}
               />
             ) : (
               <GitPanel
@@ -1555,80 +1577,99 @@ function SpotifyBody({ activeIdx, nowPlaying, status, volume, albumArtAnsi }: { 
   );
 }
 
-function ChatMessagesView({ messages, agentName }: { messages: ChatMessage[]; agentName: string }) {
+function ChatMessagesView({ messages, agentName, maxLines }: { messages: ChatMessage[]; agentName: string; maxLines?: number }) {
   if (messages.length === 0) return null;
-  const visible = messages.slice(-50);
-  const cache = React.useRef<Map<string, string>>(new Map());
-  const wasStreaming = React.useRef<Set<string>>(new Set());
+
   return (
-    <Box flexDirection="column" flexGrow={1} paddingX={1}>
-      {visible.map((msg) => {
-        const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
-        const roleColor = isCompletion ? 'green' : msg.role === 'user' ? 'yellow' : msg.role === 'system' ? 'gray' : 'cyan';
-        const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
-        if (isCompletion) {
-          const meta = msg.completionMeta;
-          const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-          return (
-            <Box key={msg.id} flexDirection="column" marginBottom={1}>
-              <Text color="green" bold>{msg.content}</Text>
-              {meta && (
-                <Box flexDirection="row" paddingLeft={2}>
-                  <Text color="gray">☿ </Text>
-                  <Text color="white" bold>{meta.model}</Text>
-                  <Text color="gray"> via </Text>
-                  <Text color="cyan">{meta.provider}</Text>
-                  <Text color="gray"> · </Text>
-                  <Text color="yellow">{formatTokens(meta.totalTokens)}</Text>
-                  <Text color="gray"> tokens · Budget </Text>
-                  {(() => {
-                    const pct = Math.round(meta.budgetPercentage);
-                    const barLen = 16;
-                    const filled = Math.round((pct / 100) * barLen);
-                    const barColor = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
-                    return (
-                      <>
-                        <Text color={barColor}>{'█'.repeat(filled)}</Text>
-                        <Text color="gray">{'░'.repeat(barLen - filled)}</Text>
-                        <Text color={barColor}> {pct}%</Text>
-                      </>
-                    );
-                  })()}
-                </Box>
-              )}
-            </Box>
-          );
-        }
-        let rendered: string;
-        if (msg.streaming) {
-          rendered = renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-          wasStreaming.current.add(msg.id);
-        } else if (wasStreaming.current.has(msg.id)) {
-          // Streaming just ended — re-render with final complete content
-          rendered = renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-          wasStreaming.current.delete(msg.id);
-        } else {
-          rendered = cache.current.get(msg.id) ?? renderMarkdown(msg.content);
-          cache.current.set(msg.id, rendered);
-        }
-        return (
-          <Box key={msg.id} flexDirection="column" marginBottom={1}>
-            <Box>
-              <Text bold color={roleColor}>{prefix}:</Text>
-            </Box>
-            <Box marginLeft={2} flexDirection="column">
-              {rendered.split('\n').map((line, idx) => (
-                <Text key={`${msg.id}:${idx}`}>{line.length > 0 ? line : ' '}</Text>
-              ))}
-            </Box>
-          </Box>
-        );
-      })}
+    <Box flexDirection="column" flexGrow={1} flexShrink={0} paddingX={1}>
+      {messages.slice(-50).map((msg) => (
+        <MessageRow key={msg.id} msg={msg} agentName={agentName} maxLines={maxLines} />
+      ))}
     </Box>
   );
 }
+
+/**
+ * Renders a single chat message (user / agent / system completion banner).
+ *
+ * `live` marks the currently-streaming message; it gets `flexShrink={0}` so
+ * Ink's Yoga layout never compresses its rows while deltas are arriving,
+ * which is what previously caused the visible "font shrink" + flicker.
+ */
+const MessageRow = React.memo(function MessageRow({
+  msg,
+  agentName,
+  maxLines,
+}: { msg: ChatMessage; agentName: string; maxLines?: number }) {
+  const isCompletion = msg.role === 'system' && msg.content.startsWith('━━━');
+  const roleColor = isCompletion
+    ? 'green'
+    : msg.role === 'user'
+      ? 'yellow'
+      : msg.role === 'system'
+        ? 'gray'
+        : 'cyan';
+  const prefix = msg.role === 'user' ? 'You' : msg.role === 'system' ? '' : agentName;
+
+  if (isCompletion) {
+    const meta = msg.completionMeta;
+    const formatTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+    return (
+      <Box key={msg.id} flexDirection="column" marginBottom={1} flexShrink={0}>
+        <Text color="green" bold>
+          {msg.content}
+        </Text>
+        {meta && (
+          <Box flexDirection="row" paddingLeft={2} flexShrink={0}>
+            <Text color="gray">☿ </Text>
+            <Text color="white" bold>
+              {meta.model}
+            </Text>
+            <Text color="gray"> via </Text>
+            <Text color="cyan">{meta.provider}</Text>
+            <Text color="gray"> · </Text>
+            <Text color="yellow">{formatTokens(meta.totalTokens)}</Text>
+            <Text color="gray"> tokens · Budget </Text>
+            {(() => {
+              const pct = Math.round(meta.budgetPercentage);
+              const barLen = 16;
+              const filled = Math.round((pct / 100) * barLen);
+              const barColor = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+              return (
+                <>
+                  <Text color={barColor}>{'█'.repeat(filled)}</Text>
+                  <Text color="gray">{'░'.repeat(barLen - filled)}</Text>
+                  <Text color={barColor}> {pct}%</Text>
+                </>
+              );
+            })()}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
+  const renderedLines = renderMarkdown(msg.content).split('\n');
+  const visibleLines = maxLines && renderedLines.length > maxLines
+    ? ['…', ...renderedLines.slice(-(maxLines - 1))]
+    : renderedLines;
+  return (
+    <Box key={msg.id} flexDirection="column" marginBottom={1} flexShrink={0}>
+      <Box flexShrink={0}>
+        <Text bold color={roleColor}>
+          {prefix}:
+        </Text>
+      </Box>
+      <Box marginLeft={2} flexDirection="column" flexShrink={0}>
+        {visibleLines.map((line, idx) => (
+          <Box key={`${msg.id}:${idx}`} flexShrink={0}>
+            <Text>{line.length > 0 ? line : ' '}</Text>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+});
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 

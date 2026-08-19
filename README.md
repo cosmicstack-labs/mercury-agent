@@ -390,9 +390,10 @@ Mercury can be compiled into a single self-contained binary using `bun build --c
 
 ```bash
 npm run build:bin            # host platform only
-npm run build:bin:all        # all 5 targets (macOS arm64/x64, Linux x64/arm64, Windows x64)
+npm run build:bin:all        # clean release: all 5 targets plus web archive and checksums
 npm run build:bin:force      # rebuild (overwrite existing binary for the same version)
-npm run build:bin:all:force  # rebuild all targets
+npm run build:bin:all:force  # replace an existing release directory, then rebuild all targets
+node scripts/verify-standalone-release.cjs  # verify an already-built publishable release
 ```
 
 Output is **versioned** so older builds are never overwritten:
@@ -406,13 +407,15 @@ release/
 │   ├── mercury-linux-x64
 │   ├── mercury-linux-arm64
 │   ├── mercury-win-x64.exe
-│   └── checksums.txt            (SHA-256 for every binary)
+│   ├── web.tar.gz
+│   └── checksums.txt            (SHA-256 for downloadable binaries and web.tar.gz)
+├── smoke/v1.2.0/                (host-only local builds; never publish)
 └── v1.2.0/ …
 ```
 
-The version is read from `package.json` — bump it before building to produce a fresh folder. Re-running for the same version skips already-built targets unless `--force` is passed.
+The version is read from `package.json`. Host-only smoke builds are isolated from publishable releases. `build:bin:all` refuses to reuse a non-empty version directory; use `build:bin:all:force` to delete and recreate it so assets from different revisions cannot be mixed.
 
-**Cross-compilation**: Bun produces binaries for every target from a single host. Native modules (`better-sqlite3`) can't cross-compile, but Mercury gracefully falls back to `sql.js` (pure JS + wasm) so the cross-compiled binaries still work end-to-end.
+**Cross-compilation**: Bun produces the JavaScript binaries for every target from a single host. Native addons such as `better-sqlite3` still require target-compatible packaging. `sql.js` is used by a narrow web API fallback; it is not a general substitute for all `better-sqlite3`-backed features.
 
 **macOS Gatekeeper**: unsigned binaries trigger a warning on first launch. For distribution, sign with `codesign --sign "Developer ID" release/v<version>/mercury-macos-arm64` and notarize.
 

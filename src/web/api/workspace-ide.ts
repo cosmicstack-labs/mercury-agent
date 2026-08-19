@@ -5,6 +5,7 @@ import { join, resolve, relative, extname, basename } from 'node:path';
 import { getMercuryHome, loadConfig } from '../../utils/config.js';
 import { generateText } from 'ai';
 import type { ProviderRegistry } from '../../providers/registry.js';
+import { resolveShell } from '../../utils/platform.js';
 
 let providerRegistry: ProviderRegistry | undefined;
 
@@ -280,7 +281,7 @@ ide.post('/api/terminal/exec', async (c) => {
       encoding: 'utf8',
       timeout: 30000,
       maxBuffer: 2 * 1024 * 1024,
-      shell: '/bin/zsh',
+      shell: resolveShell(),
       env: { ...process.env, TERM: 'xterm-256color' },
     });
 

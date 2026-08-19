@@ -1,48 +1,49 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0a0a14"/>
-      <stop offset="100%" stop-color="#11111e"/>
+      <stop offset="0%" stop-color="#06060a"/>
+      <stop offset="100%" stop-color="#0d0d14"/>
     </linearGradient>
     <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#00d4ff"/>
-      <stop offset="100%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
     </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="40%" r="55%">
-      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.18"/>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.15"/>
       <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
     </radialGradient>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
   </defs>
 
   <rect width="1200" height="630" fill="url(#bg)"/>
   <rect width="1200" height="630" fill="url(#glow)"/>
 
-  <!-- Top eyebrow -->
-  <g transform="translate(80, 92)">
-    <circle cx="18" cy="18" r="18" fill="url(#accent)"/>
-    <text x="18" y="25" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800" fill="#0a0a14" text-anchor="middle">☿</text>
-    <text x="52" y="26" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="#ffffff">Mercury Agent  ·  Soul-driven</text>
+  <!-- Logo mark -->
+  <g transform="translate(80, 80)">
+    {{LOGO_SVG}}
+    <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Agent  ·  v1.2.0</text>
+    <rect x="62" y="38" width="120" height="22" rx="6" fill="rgba(0,212,255,0.12)"/>
+    <text x="122" y="53" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="700" fill="#00d4ff" text-anchor="middle">Cloudy Mercury</text>
   </g>
 
   <!-- Headline -->
-  <text x="80" y="270" font-family="Inter, system-ui, sans-serif" font-size="84" font-weight="900" fill="#ffffff" letter-spacing="-2.5">The AI agent that</text>
-  <text x="80" y="362" font-family="Inter, system-ui, sans-serif" font-size="84" font-weight="900" fill="url(#accent)" letter-spacing="-2.5">thinks, acts, and asks.</text>
+  <text x="80" y="260" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="#ffffff" letter-spacing="-2">Soul-driven AI agent</text>
+  <text x="80" y="352" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="url(#accent)" letter-spacing="-2">with permission-hardened tools.</text>
 
   <!-- Sub -->
-  <text x="80" y="430" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="500" fill="#9ca3af">
-    Second Brain memory  ·  Skill System  ·  Token Saver  ·  40+ permission-hardened tools
-  </text>
-  <text x="80" y="462" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="500" fill="#9ca3af">
-    Runs 24/7 from CLI, Web, or Telegram
+  <text x="80" y="410" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="500" fill="#7a7a8a">
+    Token budgets  ·  Multi-channel access  ·  CLI  ·  Web  ·  Telegram  ·  Discord  ·  Slack  ·  Signal
   </text>
 
-  <!-- Bottom row -->
-  <g transform="translate(80, 540)">
-    <text font-family="JetBrains Mono, ui-monospace, monospace" font-size="20" font-weight="600" fill="#00d4ff">
-      $ npm install -g @cosmicstack/mercury-agent
-    </text>
+  <!-- Install command -->
+  <g transform="translate(80, 520)">
+    <rect width="520" height="44" rx="10" fill="rgba(0,0,0,0.4)" stroke="#1a1a28"/>
+    <text x="18" y="29" font-family="JetBrains Mono, ui-monospace, monospace" font-size="16" font-weight="600" fill="#00d4ff">$ npm install -g @cosmicstack/mercury-agent</text>
   </g>
 
   <!-- URL -->
-  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#6b7280" text-anchor="end">mercuryagent.sh</text>
+  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#4a4a58" text-anchor="end">mercuryagent.sh</text>
 </svg>

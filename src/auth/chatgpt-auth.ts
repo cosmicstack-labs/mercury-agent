@@ -1,5 +1,4 @@
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
+import { openUrl } from '../utils/open-url.js';
 import {
   loadChatGPTSession,
   saveChatGPTSession,
@@ -16,22 +15,6 @@ import {
   CHATGPT_DEVICE_UI_URL,
   type ChatGPTSession,
 } from './chatgpt-session.js';
-
-const execAsync = promisify(exec);
-
-// ---------------------------------------------------------------------------
-// Browser helper
-// ---------------------------------------------------------------------------
-
-function openBrowser(url: string): void {
-  const cmd =
-    process.platform === 'darwin'
-      ? 'open'
-      : process.platform === 'win32'
-        ? 'start'
-        : 'xdg-open';
-  execAsync(`${cmd} "${url}"`).catch(() => {});
-}
 
 // ---------------------------------------------------------------------------
 // Device-flow OAuth
@@ -182,7 +165,7 @@ export async function loginChatGPT(): Promise<ChatGPTSession> {
   console.log();
   console.log('  Waiting for authorization (up to 5 minutes)...');
 
-  openBrowser(CHATGPT_DEVICE_UI_URL);
+  void openUrl(CHATGPT_DEVICE_UI_URL);
 
   // Step 3: Poll
   const { authorizationCode, codeVerifier } = await pollForAuthorization(

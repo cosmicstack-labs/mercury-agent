@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#06060a"/>
+      <stop offset="100%" stop-color="#0d0d14"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- Logo mark + cloud badge -->
+  <g transform="translate(80, 80)">
+    {{LOGO_SVG}}
+    <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Cloud  ·  v1.2.0</text>
+    <rect x="62" y="38" width="120" height="22" rx="6" fill="rgba(0,212,255,0.12)"/>
+    <text x="122" y="53" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="700" fill="#00d4ff" text-anchor="middle">Cloudy Mercury</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="80" y="260" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="#ffffff" letter-spacing="-2">Pair from terminal.</text>
+  <text x="80" y="352" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="url(#accent)" letter-spacing="-2">Stay online forever.</text>
+
+  <!-- Sub -->
+  <text x="80" y="410" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="500" fill="#7a7a8a">
+    No port forwarding. No reverse proxy. No certificates. Just one command.
+  </text>
+  <text x="80" y="442" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="500" fill="#7a7a8a">
+    Auto-rotating JWTs  ·  Cloud WebSocket  ·  Shared memory pool
+  </text>
+
+  <!-- Install command -->
+  <g transform="translate(80, 490)">
+    <rect width="360" height="44" rx="10" fill="rgba(0,0,0,0.4)" stroke="#1a1a28"/>
+    <text x="18" y="29" font-family="JetBrains Mono, ui-monospace, monospace" font-size="16" font-weight="600" fill="#00d4ff">$ mercury cloud connect</text>
+  </g>
+
+  <!-- URL -->
+  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#4a4a58" text-anchor="end">mercuryagent.sh/cloud</text>
+</svg>

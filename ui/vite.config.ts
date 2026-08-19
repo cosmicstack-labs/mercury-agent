@@ -70,7 +70,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: false,
     chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {

@@ -415,18 +415,18 @@ export default function LandingPage(): React.ReactElement {
   return (
     <>
       <Head>
-        <title>Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission</title>
-        <meta name="description" content="Mercury Agent — a soul-driven AI agent with Second Brain memory, permission-hardened tools, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
-        <meta property="og:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta property="og:description" content="A soul-driven AI agent with Second Brain memory, a full Skill System, Token Saver Mode, and standalone binaries on every major OS. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <title>Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools</title>
+        <meta name="description" content="Mercury Agent — a soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta property="og:title" content="Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools" />
+        <meta property="og:description" content="Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
         <meta property="og:url" content="https://mercuryagent.sh" />
         <meta property="og:image" content="https://mercuryagent.sh/img/og/home.png" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:site" content="@mercuryagent" />
-        <meta name="twitter:title" content="Mercury Agent — Soul-driven · Thinks, Acts, and Asks Permission" />
-        <meta name="twitter:description" content="Second Brain memory · Skill System · Token Saver · Standalone binaries · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
+        <meta name="twitter:title" content="Mercury Agent — Soul-driven AI Agent with Permission-Hardened Tools" />
+        <meta name="twitter:description" content="Soul-driven AI agent · Permission-hardened tools · Token budgets · Multi-channel access · 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal." />
         <meta name="twitter:image" content="https://mercuryagent.sh/img/og/home.png" />
         <link rel="canonical" href="https://mercuryagent.sh/" />
       </Head>
@@ -436,9 +436,11 @@ export default function LandingPage(): React.ReactElement {
         <nav className="lp-nav">
           <div className="lp-nav-inner">
             <Link to="/" className="lp-nav-logo">
-              <span className="lp-nav-logo-icon">☿</span> Mercury Agent
+              <img src="/img/logo-dark.png" alt="Mercury Agent" className="lp-nav-logo-img" />
+              Mercury Agent
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
+              <Link to="/cloud" onClick={() => setMobileMenuOpen(false)}>Mercury Cloud</Link>
               <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
               <Link to="/#live-demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
               <Link to="/#channels" onClick={() => setMobileMenuOpen(false)}>Channels</Link>
@@ -466,11 +468,11 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-eyebrow" aria-label="Mercury Agent — Soul-driven">
               <span className="lp-hero-eyebrow-mark">☿</span>
               <span className="lp-hero-eyebrow-text">Mercury Agent · Soul-driven</span>
-              <span className="lp-hero-eyebrow-badge">v1.1.13 · Chatty Mercury</span>
+              <span className="lp-hero-eyebrow-badge">v1.2.0 · Cloudy Mercury</span>
             </div>
             <h1 className="lp-hero-title">
-              The AI agent that<br />
-              <span className="lp-hero-highlight">thinks, acts, and asks.</span>
+              Soul-driven AI agent<br />
+              <span className="lp-hero-highlight">with permission-hardened tools.</span>
             </h1>
             <p className="lp-hero-sub">
               A <strong>soul-driven</strong> agent with Second Brain memory, a full Skill System, Token Saver Mode,
@@ -478,11 +480,65 @@ export default function LandingPage(): React.ReactElement {
               Runs 24/7 from your terminal, browser, Telegram, Discord, Slack, or Signal.
             </p>
             <div className="lp-hero-actions">
-              <Link href="#live-demo" className="lp-btn lp-btn-primary">See It Work</Link>
-              <Link to="/docs" className="lp-btn lp-btn-secondary">Get Started</Link>
-              <Link to="/docs/releases/1.1.13" className="lp-btn lp-btn-ghost">What's new in 1.1.13 →</Link>
+              <Link to="/cloud" className="lp-btn lp-btn-primary">Try Mercury Cloud</Link>
+              <Link href="#live-demo" className="lp-btn lp-btn-secondary">See It Work</Link>
+              <Link to="/docs/releases/1.2.0" className="lp-btn lp-btn-ghost">What's new in 1.2.0 →</Link>
             </div>
             <HeroInstall />
+          </div>
+        </section>
+
+        {/* Mercury Cloud Hero Banner */}
+        <section id="cloud" className="lp-section lp-section-cloud">
+          <div className="lp-container">
+            <div className="lp-cloud-banner lp-reveal">
+              <div className="lp-cloud-banner-left">
+                <div className="lp-cloud-badge">☁ New in 1.2.0</div>
+                <h2 className="lp-cloud-title">Mercury Cloud</h2>
+                <p className="lp-cloud-lead">
+                  Pair from the terminal. Stay online forever. Mercury Cloud is a hosted backend that
+                  keeps your agent reachable over a persistent WebSocket — no port forwarding, no
+                  reverse proxy, no certificates. Auto-rotating JWTs, long-lived agent API keys for
+                  headless self-recovery, and a shared memory pool across all your agents.
+                </p>
+                <div className="lp-cloud-actions">
+                  <Link to="/cloud" className="lp-btn lp-btn-primary">Explore Mercury Cloud →</Link>
+                  <Link to="/docs/releases/1.2.0" className="lp-btn lp-btn-ghost">Release notes</Link>
+                </div>
+              </div>
+              <div className="lp-cloud-banner-right">
+                <div className="lp-cloud-features">
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">⚡</span>
+                    <div>
+                      <h4>Plug-and-play setup</h4>
+                      <p>One command pairs your agent. No servers, no ports, no DNS.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🔒</span>
+                    <div>
+                      <h4>Self-healing auth</h4>
+                      <p>JWT + refresh + agent API key. Stays online even after token death.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🧠</span>
+                    <div>
+                      <h4>Shared memory pool</h4>
+                      <p>Search across all your agents' memories from the cloud.</p>
+                    </div>
+                  </div>
+                  <div className="lp-cloud-feature">
+                    <span className="lp-cloud-feature-icon">🎛️</span>
+                    <div>
+                      <h4>Remote dashboard</h4>
+                      <p>Manage agents, install skills, and monitor from the browser.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -490,7 +546,7 @@ export default function LandingPage(): React.ReactElement {
         <section id="pillars" className="lp-section">
           <div className="lp-container">
             <h2 className="lp-section-title">Built Different</h2>
-            <p className="lp-section-sub">Three principles that define Mercury.</p>
+            <p className="lp-section-sub">The AI agent that <strong>thinks, acts, and asks.</strong> Three principles that define Mercury.</p>
             <div className="lp-pillars">
               <div className="lp-pillar lp-reveal">
                 <div className="lp-pillar-icon">
@@ -869,6 +925,7 @@ export default function LandingPage(): React.ReactElement {
             <p className="lp-section-sub">Configure one or stack them all. Mercury falls back automatically and tracks which provider last succeeded.</p>
             <div className="lp-provider-grid lp-reveal">
               {[
+                { name: 'Mercury Cloud', desc: 'Hosted backend with plug-and-play pairing. Auto-rotating JWTs, shared memory pool, remote dashboard.', badge: 'NEW' },
                 { name: 'ChatGPT Web', desc: 'Use your ChatGPT Plus/Pro subscription. OAuth login, no API key.', badge: 'NEW' },
                 { name: 'GitHub Copilot', desc: 'Your Copilot subscription — access OpenAI, Anthropic, and Google models.', badge: 'NEW' },
                 { name: 'DeepSeek', desc: 'Cost-effective with strong reasoning. Default provider.' },
@@ -902,6 +959,7 @@ export default function LandingPage(): React.ReactElement {
                 </thead>
                 <tbody>
                   {[
+                    ['Mercury Cloud', 'Terminal pairing + WebSocket + shared memory', '—', '—'],
                     ['Multi-Agent Orchestration', 'Parallel workers + file locks', '—', '—'],
                     ['Loop Detection (Autopilot)', 'Diversity + success analysis', '—', '—'],
                     ['Real-Time Progress', 'Single edited status card + pin', '—', '—'],
@@ -972,6 +1030,7 @@ export default function LandingPage(): React.ReactElement {
             </div>
             <p className="lp-cta-sub">60 seconds to your own AI agent.</p>
             <div className="lp-cta-links">
+              <Link to="/cloud">Mercury Cloud</Link>
               <Link to="/docs">Documentation</Link>
               <a href="https://github.com/cosmicstack-labs/mercury-agent" target="_blank" rel="noopener">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues" target="_blank" rel="noopener">Report an Issue</a>
@@ -983,10 +1042,11 @@ export default function LandingPage(): React.ReactElement {
         <footer className="lp-footer">
           <div className="lp-container lp-footer-inner">
             <div>
-              <span className="lp-footer-logo">☿ Mercury</span>
+              <img src="/img/logo-full-dark.png" alt="Mercury" className="lp-footer-logo-img" />
               <span className="lp-footer-tagline">by Cosmic Stack</span>
             </div>
             <div className="lp-footer-links">
+              <Link to="/cloud">Mercury Cloud</Link>
               <Link to="/docs">Docs</Link>
               <a href="https://github.com/cosmicstack-labs/mercury-agent">GitHub</a>
               <a href="https://github.com/cosmicstack-labs/mercury-agent/issues">Issues</a>

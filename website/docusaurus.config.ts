@@ -4,8 +4,8 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Mercury Agent — Soul-driven',
-  tagline: 'Soul-driven AI agent with Second Brain memory, permission-hardened tools, and a Skill System. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal.',
-  favicon: 'img/favicon.svg',
+  tagline: 'Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access. Runs 24/7 from CLI, Web, Telegram, Discord, Slack, or Signal.',
+  favicon: 'img/logo-light.png',
 
   future: {
     v4: true,
@@ -86,12 +86,13 @@ const config: Config = {
       title: '☿ Mercury Agent',
       logo: {
         alt: 'Mercury Agent — Soul-driven',
-        src: 'img/favicon.svg',
-        srcDark: 'img/favicon.svg',
+        src: 'img/logo-light.png',
+        srcDark: 'img/logo-dark.png',
       },
       items: [
         {to: '/docs', label: 'Docs', position: 'left'},
-        {to: '/docs/releases/1.1.13', label: 'Releases', position: 'left'},
+        {to: '/cloud', label: 'Mercury Cloud', position: 'left'},
+        {to: '/docs/releases/1.2.0', label: 'Releases', position: 'left'},
         {
           href: 'https://github.com/cosmicstack-labs/mercury-agent',
           label: 'GitHub',
@@ -106,6 +107,7 @@ const config: Config = {
           title: 'Docs',
           items: [
             {label: 'Getting Started', to: '/docs'},
+            {label: 'Mercury Cloud', to: '/cloud'},
           ],
         },
         {

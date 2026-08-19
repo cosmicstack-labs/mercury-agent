@@ -41,6 +41,16 @@ function Resolve-LatestVersion {
     Die "Could not determine the latest Mercury version from $final"
 }
 
+function Get-RequiredChecksum ([string]$Checksums, [string]$Asset) {
+    $matches = @($Checksums -split "`r?`n" |
+        Where-Object { $_ -match "^[a-fA-F0-9]{64}\s+$([regex]::Escape($Asset))\s*$" } |
+        ForEach-Object { ($_ -split '\s+')[0] })
+    if ($matches.Count -ne 1) {
+        Die "checksums.txt must contain exactly one checksum for $Asset"
+    }
+    return $matches[0].ToLower()
+}
+
 function Update-UserPath ([string]$BinDir) {
     if ($env:MERCURY_NO_PATH -eq '1') { return $false }
 
@@ -94,63 +104,72 @@ if ([string]::IsNullOrEmpty($prefix)) { $prefix = Join-Path $HOME '.mercury' }
 $binDir  = Join-Path $prefix 'bin'
 $binPath = Join-Path $binDir 'mercury.exe'
 
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+$tmpDir = Join-Path $env:TEMP ("mercury-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+$binaryTmp = Join-Path $tmpDir $asset
+$webTmp = Join-Path $tmpDir 'web.tar.gz'
+$stageDir = Join-Path $tmpDir 'stage'
 
-$tmp = Join-Path $env:TEMP ("mercury-" + [guid]::NewGuid().ToString('N') + '.exe')
-
-Write-Info "Downloading $asset ..."
 try {
-    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
-}
-catch {
-    Die @"
+    $checksumsUrl = "$GhDl/v$version/checksums.txt"
+    Write-Info 'Downloading checksums.txt ...'
+    try {
+        $checksums = (Invoke-WebRequest -Uri $checksumsUrl -UseBasicParsing).Content
+    } catch {
+        Die "Failed to download required checksums from $checksumsUrl"
+    }
+    $expectedBinary = Get-RequiredChecksum -Checksums $checksums -Asset $asset
+    $expectedWeb = Get-RequiredChecksum -Checksums $checksums -Asset 'web.tar.gz'
+
+    Write-Info "Downloading $asset ..."
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $binaryTmp -UseBasicParsing
+    } catch {
+        Die @"
 Failed to download $url
    The binary for v$version on win-x64 may not have been published yet.
    Browse releases: https://github.com/$Repo/releases
 "@
-}
-
-# Optional sha256 verification against the release's checksums.txt.
-try {
-    $checksumsUrl = "$GhDl/v$version/checksums.txt"
-    $checksums    = (Invoke-WebRequest -Uri $checksumsUrl -UseBasicParsing).Content
-    $expected = ($checksums -split "`n" |
-                 Where-Object { $_ -match "\s+$([regex]::Escape($asset))\s*$" } |
-                 ForEach-Object { ($_ -split '\s+')[0] } |
-                 Select-Object -First 1)
-    if ($expected) {
-        $actual = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLower()
-        if ($actual -ne $expected.ToLower()) {
-            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-            Die "Checksum mismatch for $asset`n   expected: $expected`n   actual:   $actual"
-        }
-        Write-Info 'Checksum verified (sha256)'
     }
-}
-catch {
-    # checksums.txt is optional — fall through silently.
-}
 
-# Replace any existing install (Windows can't overwrite a running .exe — let
-# Move-Item surface that error if it happens, so the user knows to stop it).
-if (Test-Path $binPath) { Remove-Item $binPath -Force }
-Move-Item -Path $tmp -Destination $binPath -Force
-
-# Download web dashboard assets (required for the web UI).
-$webTarUrl = "$GhDl/v$version/web.tar.gz"
-$webTmp = Join-Path $env:TEMP ("mercury-web-" + [guid]::NewGuid().ToString('N') + '.tar.gz')
-try {
+    $webTarUrl = "$GhDl/v$version/web.tar.gz"
+    Write-Info 'Downloading web.tar.gz ...'
     Invoke-WebRequest -Uri $webTarUrl -OutFile $webTmp -UseBasicParsing
+
+    $actualBinary = (Get-FileHash -Algorithm SHA256 -Path $binaryTmp).Hash.ToLower()
+    if ($actualBinary -ne $expectedBinary) {
+        Die "Checksum mismatch for $asset`n   expected: $expectedBinary`n   actual:   $actualBinary"
+    }
+    $actualWeb = (Get-FileHash -Algorithm SHA256 -Path $webTmp).Hash.ToLower()
+    if ($actualWeb -ne $expectedWeb) {
+        Die "Checksum mismatch for web.tar.gz`n   expected: $expectedWeb`n   actual:   $actualWeb"
+    }
+    Write-Info 'Checksums verified (sha256)'
+
+    $archiveEntries = @(tar -tzf $webTmp)
+    if ($LASTEXITCODE -ne 0) { Die 'Failed to inspect web.tar.gz' }
+    foreach ($entry in $archiveEntries) {
+        if ($entry -notmatch '^web(/|$)' -or $entry -match '(^|/)\.\.(/|$)') {
+            Die "web.tar.gz contains an unsafe path: $entry"
+        }
+    }
+    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    tar -xzf $webTmp -C $stageDir
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $stageDir 'web') -PathType Container)) {
+        Die 'Failed to extract the required web directory from web.tar.gz'
+    }
+
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    # Windows cannot overwrite a running executable; surface that error.
+    if (Test-Path $binPath) { Remove-Item $binPath -Force }
+    Move-Item -Path $binaryTmp -Destination $binPath -Force
     $webDir = Join-Path $binDir 'web'
-    New-Item -ItemType Directory -Force -Path $webDir | Out-Null
-    tar -xzf $webTmp -C $binDir 2>$null
+    if (Test-Path $webDir) { Remove-Item $webDir -Recurse -Force }
+    Move-Item -Path (Join-Path $stageDir 'web') -Destination $webDir
     Write-Info 'Web dashboard assets installed'
 }
-catch {
-    Write-Warn2 'Web dashboard assets not found for v'"$version — web UI will not work"
-}
 finally {
-    Remove-Item $webTmp -Force -ErrorAction SilentlyContinue
+    Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Info "Installed to $binPath"

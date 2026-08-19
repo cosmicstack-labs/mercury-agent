@@ -112,6 +112,34 @@ export class TokenBudget {
     }
 
     this.persist();
+    this.syncToCloud(logEntry).catch((err) => {
+      logger.warn({ err }, 'Failed to sync token usage to Mercury Cloud');
+    });
+  }
+
+  private async syncToCloud(entry: TokenLogEntry): Promise<void> {
+    if (!this.config.cloud.enabled || !this.config.cloud.jwt || !this.config.cloud.agentId || !this.config.cloud.apiUrl) return;
+    if (entry.provider === 'mercuryCloud' || entry.provider === 'Mercury Cloud') return;
+    if (entry.totalTokens <= 0) return;
+
+    const res = await fetch(`${this.config.cloud.apiUrl}/v1/agents/${this.config.cloud.agentId}/usage/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.config.cloud.jwt}`,
+      },
+      body: JSON.stringify({
+        model: `${entry.provider}:${entry.model}`,
+        tokensIn: entry.inputTokens,
+        tokensOut: entry.outputTokens,
+        costCredits: 0,
+        timestamp: new Date(entry.timestamp).toISOString(),
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`usage sync failed: ${res.status}`);
+    }
   }
 
   getUsageByAgent(agentId: string): { used: number; percentage: number } {

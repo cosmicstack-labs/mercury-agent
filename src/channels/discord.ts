@@ -105,9 +105,7 @@ export class DiscordChannel extends BaseChannel {
 
   popDeferredResponse(targetId?: string): string | undefined {
     const key = targetId || 'notification';
-    const text = this.deferredResponses.get(key);
-    this.deferredResponses.delete(key);
-    return text;
+    return this.deferredResponses.get(key);
   }
 
   setOnPermissionMode(handler: (mode: PermissionMode, channelId: string) => void): void {
@@ -439,8 +437,7 @@ export class DiscordChannel extends BaseChannel {
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
     const channel = await this.resolveTargetChannel(targetId);
     if (!channel || !this.client) {
-      logger.warn({ targetId }, 'Discord send: no valid channel');
-      return;
+      throw new Error(`Discord send failed: no valid channel for ${targetId || 'notification'}`);
     }
 
     const key = targetId || 'notification';
@@ -478,7 +475,11 @@ export class DiscordChannel extends BaseChannel {
         await channel.send({ content: chunk, allowedMentions: { parse: [] } });
       } catch (err: any) {
         logger.error({ err: err.message, channelId: channel.id }, 'Discord send failed');
+        throw err;
       }
+    }
+    if (this.deferredResponses.get(key) === content) {
+      this.deferredResponses.delete(key);
     }
   }
 
@@ -537,6 +538,7 @@ export class DiscordChannel extends BaseChannel {
           await channel.send({ content: chunk, allowedMentions: { parse: [] } });
         } catch (err: any) {
           logger.error({ err: err.message }, 'Discord stream send failed');
+          throw err;
         }
       }
       return full;
@@ -1228,7 +1230,8 @@ export class DiscordChannel extends BaseChannel {
     this.endTask(targetId);
     await this.deleteStatusMessageFromDiscord(targetId);
 
-    const deferred = this.popDeferredResponse(targetId);
+    const key = targetId || 'notification';
+    const deferred = this.deferredResponses.get(key);
     if (deferred?.trim()) {
       await this.send(deferred, targetId);
     }

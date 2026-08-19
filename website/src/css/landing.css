@@ -44,9 +44,10 @@
 /* ---- Navigation ---- */
 .lp-nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; background: rgba(6, 6, 10, 0.8); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-bottom: 1px solid var(--border); }
 .lp-nav-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 60px; }
-.lp-nav-logo { font-family: var(--font); font-weight: 700; color: var(--cyan); font-size: 1.15em; text-decoration: none !important; display: flex; align-items: center; gap: 4px; }
+.lp-nav-logo { font-family: var(--font); font-weight: 700; color: var(--cyan); font-size: 1.15em; text-decoration: none !important; display: flex; align-items: center; gap: 8px; }
 .lp-nav-logo:hover { text-decoration: none !important; }
 .lp-nav-logo-icon { font-size: 1.2em; }
+.lp-nav-logo-img { width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0; }
 .lp-nav-links { display: flex; gap: 28px; align-items: center; }
 .lp-nav-links a { color: var(--gray); font-size: 0.88em; font-weight: 500; transition: color 0.2s; text-decoration: none !important; letter-spacing: 0.01em; }
 .lp-nav-links a:hover { color: var(--white); text-decoration: none !important; }
@@ -513,6 +514,7 @@
 .lp-footer { border-top: 1px solid var(--border); padding: 36px 0; }
 .lp-footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
 .lp-footer-logo { font-family: var(--font); font-weight: 700; color: var(--cyan); }
+.lp-footer-logo-img { height: 28px; width: auto; vertical-align: middle; }
 .lp-footer-tagline { color: var(--gray-dim); font-size: 0.88em; margin-left: 12px; }
 .lp-footer-links { display: flex; gap: 24px; }
 .lp-footer-links a { color: var(--gray-dim); font-size: 0.88em; }
@@ -554,4 +556,80 @@
   .lp-compare-table { font-size: 0.78em; }
   .lp-footer-inner { flex-direction: column; text-align: center; }
   .lp-section { padding: 72px 0; }
+}
+
+/* ---- Mercury Cloud Banner ---- */
+.lp-section-cloud { padding: 60px 0 20px; }
+.lp-cloud-banner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  align-items: center;
+  background: linear-gradient(135deg, rgba(0,212,255,0.04) 0%, rgba(167,139,250,0.04) 100%);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius);
+  padding: 48px 40px;
+  position: relative;
+  overflow: hidden;
+}
+.lp-cloud-banner::before {
+  content: '';
+  position: absolute;
+  top: -100px; right: -100px;
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, rgba(0,212,255,0.06) 0%, transparent 70%);
+  pointer-events: none;
+}
+.lp-cloud-badge {
+  display: inline-block;
+  padding: 5px 14px;
+  border-radius: 20px;
+  background: rgba(0,212,255,0.12);
+  color: var(--cyan);
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+}
+.lp-cloud-title {
+  font-size: clamp(1.8em, 3.5vw, 2.6em);
+  font-weight: 800;
+  color: var(--white-bright);
+  margin-bottom: 16px;
+  letter-spacing: -0.01em;
+  background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.lp-cloud-lead {
+  color: var(--gray);
+  font-size: 1em;
+  line-height: 1.7;
+  margin-bottom: 28px;
+  max-width: 480px;
+}
+.lp-cloud-actions { display: flex; gap: 14px; flex-wrap: wrap; }
+.lp-cloud-features { display: flex; flex-direction: column; gap: 20px; }
+.lp-cloud-feature {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.lp-cloud-feature-icon {
+  font-size: 1.5em;
+  flex-shrink: 0;
+  width: 40px; height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(0,212,255,0.08);
+  border: 1px solid rgba(0,212,255,0.15);
+}
+.lp-cloud-feature h4 { color: var(--white-bright); font-size: 0.95em; margin-bottom: 4px; font-weight: 600; }
+.lp-cloud-feature p { color: var(--gray); font-size: 0.85em; margin: 0; line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .lp-cloud-banner { grid-template-columns: 1fr; gap: 32px; padding: 36px 28px; }
 }

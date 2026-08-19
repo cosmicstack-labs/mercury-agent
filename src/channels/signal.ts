@@ -69,7 +69,9 @@ export class SignalChannel extends BaseChannel {
   private taskActive = new Map<string, boolean>();
   private deferredResponses = new Map<string, string>();
   private statusNotices = new Map<string, string[]>();
+  private lastProgressSentAt = new Map<string, number>();
   private static readonly MAX_STATUS_NOTICES = 3;
+  private static readonly PROGRESS_INTERVAL_MS = 15_000;
 
   constructor(private config: MercuryConfig) {
     super();
@@ -116,9 +118,7 @@ export class SignalChannel extends BaseChannel {
 
   popDeferredResponse(targetId?: string): string | undefined {
     const key = targetId || 'notification';
-    const text = this.deferredResponses.get(key);
-    this.deferredResponses.delete(key);
-    return text;
+    return this.deferredResponses.get(key);
   }
 
   setOnPermissionMode(handler: (mode: PermissionMode, source: string) => void): void {
@@ -229,9 +229,18 @@ export class SignalChannel extends BaseChannel {
     let effectiveSource = source;
     let effectiveSourceUuid = envelope.sourceUuid;
     let effectiveSourceName = envelope.sourceName;
+    // Sync envelopes carry every message the owner sends from a linked device,
+    // including DMs to third parties — keep the destination so the source
+    // filter below can tell Note to Self apart from conversations with others.
+    let isSyncSentMessage = false;
+    let syncDestination: string | undefined;
+    let syncDestinationNumber: string | undefined;
 
     if (!effectiveDataMessage && envelope.syncMessage?.sentMessage) {
       const sent = envelope.syncMessage.sentMessage;
+      isSyncSentMessage = true;
+      syncDestination = sent.destination;
+      syncDestinationNumber = sent.destinationNumber;
       effectiveDataMessage = {
         timestamp: sent.timestamp,
         message: sent.message,
@@ -246,7 +255,7 @@ export class SignalChannel extends BaseChannel {
       effectiveSource = this.config.channels.signal.phoneNumber || source;
       effectiveSourceUuid = envelope.sourceUuid;
       effectiveSourceName = envelope.sourceName || 'You';
-      logger.info({ source: redactPhone(effectiveSource), message: sent.message }, 'Signal: processing syncMessage.sentMessage as dataMessage');
+      logger.info({ source: redactPhone(effectiveSource), destination: syncDestination ? redactPhone(syncDestination) : (syncDestinationNumber ? redactPhone(syncDestinationNumber) : 'unknown'), message: sent.message }, 'Signal: processing syncMessage.sentMessage as dataMessage');
     }
 
     if (!effectiveDataMessage) {
@@ -265,6 +274,19 @@ export class SignalChannel extends BaseChannel {
     if (this.config.channels.signal.mode === 'private') {
       if (groupId || effectiveSource !== this.config.channels.signal.phoneNumber) {
         return;
+      }
+      // Synced sends (messages the owner sent from a linked device) only
+      // qualify when addressed back to this account — i.e. Note to Self.
+      // Without this check every DM the owner sends passes the filter above,
+      // because the sync conversion forces effectiveSource to the account
+      // itself. Fail closed when the destination is missing or unclear.
+      if (isSyncSentMessage) {
+        const self = this.config.channels.signal.phoneNumber;
+        const isNoteToSelf = syncDestination === self || syncDestinationNumber === self;
+        if (!isNoteToSelf) {
+          logger.debug({ destination: syncDestination ? redactPhone(syncDestination) : 'unknown' }, 'Signal: dropping synced send not addressed to self (not Note to Self)');
+          return;
+        }
       }
     } else {
       if (!groupId) {
@@ -432,8 +454,7 @@ export class SignalChannel extends BaseChannel {
   async send(content: string, targetId?: string, elapsedMs?: number): Promise<void> {
     const target = this.resolveTarget(targetId);
     if (!target || !this.rpc) {
-      logger.warn({ targetId }, 'Signal send: no valid target');
-      return;
+      throw new Error(`Signal send failed: no valid target for ${targetId || 'notification'}`);
     }
 
     const key = targetId || 'notification';
@@ -449,6 +470,7 @@ export class SignalChannel extends BaseChannel {
         const truncated = fullContent.length > 80 ? fullContent.slice(0, 77) + '…' : fullContent;
         notices.push(truncated);
         this.statusNotices.set(key, notices);
+        await this.sendProgress(targetId);
       } else {
         this.deferredResponses.set(key, fullContent);
       }
@@ -463,10 +485,13 @@ export class SignalChannel extends BaseChannel {
     const chunks = this.splitMessage(formatted, MAX_MESSAGE_LENGTH);
 
     for (const chunk of chunks) {
-      await this.sendRaw(chunk, target);
+      if (!await this.sendRaw(chunk, target)) throw new Error('Signal RPC rejected the message');
       if (chunks.length > 1) {
         await this.delay(INTER_MESSAGE_DELAY_MS);
       }
+    }
+    if (this.deferredResponses.get(key) === content) {
+      this.deferredResponses.delete(key);
     }
   }
 
@@ -827,7 +852,7 @@ export class SignalChannel extends BaseChannel {
       ...recentHistory.map(h => `✅ ${h}`),
       `⏳ ${label}…`,
     ];
-    await this.send(lines.join('\n'), targetId);
+    await this.sendProgress(targetId, lines.join('\n'));
   }
 
   async sendStepDone(toolName: string, result: unknown, targetId?: string): Promise<void> {
@@ -847,7 +872,24 @@ export class SignalChannel extends BaseChannel {
       '',
       ...recentHistory.map(h => `✅ ${h}`),
     ];
-    await this.send(lines.join('\n'), targetId);
+    await this.sendProgress(targetId, lines.join('\n'));
+  }
+
+  private async sendProgress(targetId?: string, content?: string): Promise<void> {
+    const key = targetId || 'notification';
+    const now = Date.now();
+    if (now - (this.lastProgressSentAt.get(key) || 0) < SignalChannel.PROGRESS_INTERVAL_MS) return;
+
+    const target = this.resolveTarget(targetId);
+    if (!target || !this.rpc) return;
+    const notices = this.statusNotices.get(key) || [];
+    const message = content || ['⚙️ *Mercury working*', ...notices.slice(-SignalChannel.MAX_STATUS_NOTICES)].join('\n');
+    try {
+      await this.sendRaw(mdToSignal(message), target);
+      this.lastProgressSentAt.set(key, now);
+    } catch (err) {
+      logger.warn({ err }, 'Signal progress update failed');
+    }
   }
 
   resetStepCounter(targetId?: string): void {
@@ -855,6 +897,7 @@ export class SignalChannel extends BaseChannel {
     this.stepCounters.delete(key);
     this.stepHistory.delete(key);
     this.statusNotices.delete(key);
+    this.lastProgressSentAt.delete(key);
     this.endTask(targetId);
   }
 
@@ -891,7 +934,6 @@ export class SignalChannel extends BaseChannel {
 
     const deferred = this.deferredResponses.get(key);
     if (deferred && deferred.trim()) {
-      this.deferredResponses.delete(key);
       await this.send(deferred, targetId);
     }
 
@@ -900,6 +942,7 @@ export class SignalChannel extends BaseChannel {
     this.stepCounters.delete(key);
     this.stepHistory.delete(key);
     this.statusNotices.delete(key);
+    this.lastProgressSentAt.delete(key);
   }
 
   async sendGoodbyeMessage(): Promise<void> {

@@ -99,13 +99,18 @@ jobs:
           export HOME=/home/builder
           export npm_config_cache=/home/builder/project/.npm-cache
           export TERMUX_VERSION=u0
-          # pkg update can hit bad mirrors; retry with a known-good mirror if needed
+          # Pin a known-reliable mirror to avoid transient 520s on community mirrors
+          sed -i 's|^\(deb .*\)|deb https://packages-cf.termux.dev/apt/termux-main stable main|' /data/data/com.termux/files/usr/etc/apt/sources.list 2>/dev/null || true
           pkg update -y || {
-            echo 'pkg update failed, trying specific mirror...'
-            termux-change-repo || true
+            echo 'pkg update failed, retrying...'
             pkg update -y
           }
-          pkg install -y git nodejs-lts python build-essential
+          # Retry package install up to 3 times — Termux mirrors are flaky
+          for attempt in 1 2 3; do
+            pkg install -y git nodejs-lts python build-essential && break
+            echo "pkg install attempt $attempt failed, retrying..."
+            pkg update -y || true
+          done
           cd /home/builder/project
           npm install --no-audit --no-fund
           npm install --no-save --no-audit --no-fund @rollup/wasm-node@4
@@ -115,6 +120,8 @@ jobs:
           export PATH="$PWD/node_modules/.bin:$PATH"
           node node_modules/tsup/dist/cli-default.js
           node scripts/post-build.cjs
+          node -e "try { const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.prepare('select 1').get(); db.close(); console.log('better-sqlite3 OK'); } catch (e) { console.log('better-sqlite3 unavailable (optional on Termux):', e.message); }"
+          node -e "const { spawnSync } = require('node:child_process'); const r = spawnSync(process.execPath, ['dist/index.js', '--help'], { encoding: 'utf8' }); if (r.status !== 0 || !r.stdout.includes('Usage:')) process.exit(1)"
           node node_modules/vitest/vitest.mjs run
           CI_SCRIPT
           chmod +x /tmp/termux-ci.sh

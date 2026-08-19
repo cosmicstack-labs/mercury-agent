@@ -476,7 +476,8 @@ export function ChatPage() {
     // Ensure we have a thread ID — create one if needed
     let threadId = activeThreadId;
     if (!threadId) {
-      threadId = `web:${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const thread = await api.chat.threads.create();
+      threadId = thread.id;
       setActiveThread(threadId);
     }
 
@@ -491,13 +492,9 @@ export function ChatPage() {
     // Immediately show waiting state
     setWaiting(true);
 
-    // Persist user message to backend thread
-    api.chat.threads.addMessage(threadId, "user", content)
-      .then(() => bumpThreadVersion())
-      .catch(() => {});
-
     try {
       await api.chat.send(content, threadId);
+      bumpThreadVersion();
       // Reload threads in background to pick up new thread
       reloadThreads();
     } catch {

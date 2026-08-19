@@ -1,5 +1,4 @@
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
+import { openUrl } from '../utils/open-url.js';
 import {
   loadGitHubSession,
   saveGitHubSession,
@@ -12,22 +11,6 @@ import {
   GITHUB_DEVICE_VERIFY_URL,
   type GitHubSession,
 } from './github-session.js';
-
-const execAsync = promisify(exec);
-
-// ---------------------------------------------------------------------------
-// Browser helper
-// ---------------------------------------------------------------------------
-
-function openBrowser(url: string): void {
-  const cmd =
-    process.platform === 'darwin'
-      ? 'open'
-      : process.platform === 'win32'
-        ? 'start'
-        : 'xdg-open';
-  execAsync(`${cmd} "${url}"`).catch(() => {});
-}
 
 // ---------------------------------------------------------------------------
 // Device flow OAuth
@@ -171,7 +154,7 @@ export async function loginGitHub(): Promise<GitHubSession> {
   console.log();
   console.log('  Waiting for authorization (up to 15 minutes)...');
 
-  openBrowser(device.verification_uri);
+  void openUrl(device.verification_uri);
 
   // Step 3: Poll
   const tokens = await pollForToken(

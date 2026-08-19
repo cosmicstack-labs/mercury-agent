@@ -1,20 +1,23 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
 import type { ShortTermMemory, LongTermMemory, EpisodicMemory } from '../memory/store.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import type { ChannelRegistry } from '../channels/registry.js';
-import type { MercuryConfig } from '../utils/config.js';
+import type { MercuryConfig, ProviderName } from '../utils/config.js';
 import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
-import { ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
+import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
+import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
 import { ProgrammingMode } from './programming-mode.js';
+import { ResearchMode } from './research-mode.js';
 import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
@@ -31,7 +34,9 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import type { SpotifyClient } from '../spotify/client.js';
+import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
+import { getCloudTokenStore } from '../cloud/token-store.js';
 import {
   approveTelegramPendingRequest,
   approveTelegramPendingRequestByPairingCode,
@@ -44,6 +49,7 @@ import {
   rejectTelegramPendingRequest,
   removeTelegramUser,
   saveConfig,
+  loadConfig,
   getActiveProviders,
   getDiscordAccessSummary,
   hasDiscordAdmins,
@@ -62,6 +68,11 @@ import {
   removeSlackUser,
   clearSlackAccess,
 } from '../utils/config.js';
+import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
+import { WorkLedger, type WorkEntry } from './work-ledger.js';
+import { MAX_PROVIDER_ATTEMPT_MS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
+import { requiresFinalSend } from './response-delivery.js';
+import { updateCliProviderStatus } from './provider-status.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -290,36 +301,64 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 25;
+const MAX_STEPS = 75;
 const MAX_RESPONSE_TOKENS = 4096;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
-const MAX_FOREGROUND_WALL_MS = 10 * 60 * 1000;
 const MAX_STALL_MS = 4 * 60 * 1000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
+
+/**
+ * Heuristic: does this message look like a deep-research request that would
+ * benefit from full research mode? Conservative — false negatives just fall
+ * through to a normal answer, so we prefer specificity over recall.
+ */
+function looksResearchy(text: string): boolean {
+  const t = text.toLowerCase();
+  if (t.length < 24) return false; // too short to be a research question
+  if (t.startsWith('/')) return false;
+
+  // Temporal / event research signals
+  const temporal = /\b(happened|occurr?ed|took place|what (did|do) .* (say|report|find)|recent|last (week|month|year|few)|(\d+)\s*(days?|weeks?|months?|years?) (ago|back|earlier)|today'?s news|this week|this month|this year)\b/;
+  // Deep / comparative / explain signals
+  const deep = /\b(research|investigate|deep dive|in[- ]depth|explain in detail|comprehensive (guide|overview|analysis)|compare (and )?contrast|state of|history of|causes? of|impact of|effects? of|timeline of|breakdown of|everything about)\b/;
+  // Factual lookup signals
+  const factual = /\b(latest|current state|what is .* (situation|status)|what are the (options|alternatives|risks|benefits))\b/;
+
+  return temporal.test(t) || deep.test(t) || factual.test(t);
+}
 
 export class Agent {
   readonly lifecycle: Lifecycle;
   readonly scheduler: Scheduler;
   readonly capabilities: CapabilityRegistry;
   private running = false;
-  private messageQueue: ChannelMessage[] = [];
+  private messageQueue: Array<{ message: ChannelMessage; workKey?: string }> = [];
+  private queuedWorkKeys = new Set<string>();
   private processing = false;
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
+  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | 'stopped' | 'halted' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   readonly programmingMode: ProgrammingMode;
+  readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
   private spotifyClient?: SpotifyClient;
   private skillBatcher: SkillBatcher | null = null;
   private skillLoader?: SkillLoader;
   readonly backgroundTasks: BackgroundTaskManager;
+  private titleGenerationInFlight = new Set<string>();
+  private sessionSyncEnabled = false;
+  private readonly workLedger: WorkLedger;
+  private currentWorkKey: string | null = null;
+  private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
+  private replayingOutbox = false;
 
   constructor(
     private config: MercuryConfig,
@@ -333,14 +372,19 @@ export class Agent {
     private tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
+    private sessions: SessionRepository,
+    private generateTitle?: (input: { userMessage: string; assistantMessage: string; providerName: string }) => Promise<string>,
   ) {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
+    this.researchMode = new ResearchMode();
     this.saverMode = new SaverMode(config);
+    this.wireResearchModeToCapabilities();
     this.backgroundTasks = new BackgroundTaskManager();
+    this.workLedger = new WorkLedger();
 
     this.backgroundTasks.onGlobalComplete((task) => {
       this.notifyBackgroundTaskComplete(task);
@@ -364,6 +408,23 @@ export class Agent {
     if (this.supervisor) {
       this.skillBatcher = new SkillBatcher(this.supervisor, this.backgroundTasks);
     }
+  }
+
+  setSessionSyncEnabled(enabled: boolean): void {
+    this.sessionSyncEnabled = enabled;
+  }
+
+  isSessionSyncEnabled(): boolean {
+    return this.sessionSyncEnabled;
+  }
+
+  acknowledgeCloudDelivery(requestId: string): void {
+    const key = `request:${requestId}`;
+    if (this.workLedger.get(key)) this.workLedger.markDelivered(key);
+  }
+
+  private wireResearchModeToCapabilities(): void {
+    this.capabilities.setResearchModeGetter(() => this.researchMode.isActive());
   }
 
   setSupervisor(supervisor: import('../core/supervisor.js').SubAgentSupervisor): void {
@@ -409,7 +470,91 @@ export class Agent {
       return;
     }
 
-    this.messageQueue.push(msg);
+    let workKey: string | undefined;
+    if (!trimmed.startsWith('/')) {
+      msg.metadata = {
+        ...msg.metadata,
+        workCwd: typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd(),
+      };
+      const accepted = this.workLedger.accept(msg);
+      workKey = accepted.entry.key;
+      if (!accepted.accepted) {
+        void this.handleDuplicateWork(accepted.entry);
+        return;
+      }
+    }
+
+    // Research-y message prompt: when research mode is off and the message looks
+    // like a deep-research request, ask whether to run a full research pass.
+    const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
+    if (isUserMessage && !this.researchMode.isActive() && looksResearchy(trimmed)) {
+      this.promptResearchMode(msg, workKey).catch((err) => {
+        logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
+        this.queueMessage(msg, workKey);
+        this.processQueue();
+      });
+      return;
+    }
+
+    this.queueMessage(msg, workKey);
+    this.processQueue();
+  }
+
+  private queueMessage(message: ChannelMessage, workKey?: string): void {
+    if (workKey && this.queuedWorkKeys.has(workKey)) return;
+    this.messageQueue.push({ message, workKey });
+    if (workKey) this.queuedWorkKeys.add(workKey);
+  }
+
+  private async handleDuplicateWork(entry: WorkEntry): Promise<void> {
+    if (entry.status === 'completed' && !entry.delivered && entry.finalResponse) {
+      await this.deliverLedgerEntry(entry);
+      return;
+    }
+    const channel = this.channels.getChannelForMessage(entry.message);
+    if (!channel || entry.message.channelType === 'internal') return;
+    // For the web (Cloud chat) channel, don't send duplicate-status messages
+    // to the user. The Cloud dashboard already handles dedup on its end, and
+    // sending "This request is already running" creates a bad UX — the user
+    // sees a confusing system message instead of silence.
+    if (entry.message.channelType === 'web') return;
+    const status = entry.status === 'completed'
+      ? 'This request already completed and its result was delivered.'
+      : entry.status === 'failed'
+        ? `This request previously failed: ${entry.error || 'unknown error'}`
+        : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
+    await channel.send(status, entry.message.channelId).catch((error) => {
+      logger.warn({ error, workKey: entry.key }, 'Unable to send duplicate work status');
+    });
+  }
+
+  private async promptResearchMode(msg: ChannelMessage, workKey?: string): Promise<void> {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel) {
+      this.queueMessage(msg, workKey);
+      this.processQueue();
+      return;
+    }
+
+    const explanation =
+      'Research mode will search the web, cross-check multiple sources, gather images, and produce a full research article as rich markdown. It runs longer than a quick answer and will not be killed early.';
+
+    const choice = await this.presentChoice(
+      `This looks like a research question. ${explanation}\n\nHow do you want to proceed?`,
+      ['Full research mode (deep, multi-source article)', 'Quick answer (normal conversation)'],
+      msg.channelId,
+      msg.channelType,
+    );
+
+    if (choice.toLowerCase().startsWith('full')) {
+      this.researchMode.setOn(msg.content.trim().slice(0, 120));
+      if (channel instanceof WebChannel) {
+        channel.sendHeartbeat('Research mode: On. Gathering sources and building the article now — this may take a while.', msg.channelId);
+      } else {
+        await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
+      }
+    }
+    this.queueMessage(msg, workKey);
     this.processQueue();
   }
 
@@ -421,6 +566,11 @@ export class Agent {
     const activeAgents = this.supervisor ? this.supervisor.getActiveAgents() : [];
     const hasActiveAgents = activeAgents.length > 0;
     const busyPrefix = hasActiveAgents ? '' : '';
+
+    if (trimmed === '/sessions' || trimmed.startsWith('/session')) {
+      await this.handleSessionCommand(trimmed, msg.channelType, msg.channelId);
+      return;
+    }
 
     if (trimmed === '/agents' || trimmed === '/status') {
       if (this.supervisor) {
@@ -442,12 +592,18 @@ export class Agent {
     }
 
     if (trimmed === '/halt' || trimmed === '/stop') {
+      if (this.currentAbort && !this.currentAbort.signal.aborted) {
+        this.currentAbortReason = trimmed === '/stop' ? 'stopped' : 'halted';
+        this.currentAbort.abort();
+      }
       if (this.supervisor) {
         await this.supervisor.haltAll();
         if (trimmed === '/stop') {
           this.supervisor.clearTaskBoard();
         }
         await channel.send(trimmed === '/halt' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.', msg.channelId);
+      } else {
+        await channel.send(trimmed === '/halt' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.', msg.channelId);
       }
       return;
     }
@@ -474,7 +630,7 @@ export class Agent {
     }
 
     if (trimmed === '/help') {
-      await channel.send('Agent is busy. Available: /agents, /halt, /stop, /progress, /spotify, /code, /memory, /bg', msg.channelId);
+      await channel.send('Agent is busy. Available: /sessions, /session, /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
       return;
     }
 
@@ -501,7 +657,7 @@ export class Agent {
       await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
     }
 
-    this.messageQueue.push(msg);
+    this.queueMessage(msg);
   }
 
   private async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
@@ -562,6 +718,7 @@ export class Agent {
       const sourceChannelType = this.currentMessage.channelType as any;
 
       if (this.currentAbort) {
+        this.currentAbortReason = 'backgrounded';
         this.currentAbort.abort();
       }
 
@@ -708,6 +865,12 @@ export class Agent {
     })();
   }
 
+  private withProviderDeadline<T>(operation: PromiseLike<T>, controller: AbortController, deadlineAt: number): Promise<T> {
+    return withAbortDeadline(operation, controller, deadlineAt - Date.now(), () => {
+      this.currentAbortReason = 'time-limit';
+    });
+  }
+
   private startForegroundHeartbeat(msg: ChannelMessage): () => void {
     if (msg.channelType === 'internal') return () => {};
 
@@ -718,20 +881,23 @@ export class Agent {
     const tick = () => {
       if (!this.processing || !this.currentMessage || this.currentMessage.id !== msg.id) return;
       const channel = this.channels.getChannelForMessage(msg);
-      if (!channel) return;
 
       const elapsedMs = Date.now() - this.currentMessage.timestamp;
       const stallMs = Date.now() - this.lastProgressAt;
       const elapsedSec = Math.round(elapsedMs / 1000);
       const stallSec = Math.round(stallMs / 1000);
 
-      if (stallMs >= MAX_STALL_MS && this.currentAbort && !this.currentAbort.signal.aborted) {
+      if (stallMs >= MAX_STALL_MS * this.researchMode.getStallMsMultiplier() && this.currentAbort && !this.currentAbort.signal.aborted) {
         logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
+        this.currentAbortReason = 'stalled';
         this.currentAbort.abort();
-        void channel.send(
-          `⚠ Task stalled (no progress for ${stallSec}s). Stopped to avoid hanging. You can retry or use /bg current sooner for long tasks.`,
-          msg.channelId,
-        ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        if (channel) {
+          void channel.send(
+            `Mercury detected a stalled provider after ${stallSec}s without progress. Reconnecting and retrying automatically.`,
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        timer = setTimeout(tick, HEARTBEAT_MAX_MS);
         return;
       }
 
@@ -747,10 +913,13 @@ export class Agent {
       const heartbeatText = `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`;
 
       // CLI: update one message in place instead of stacking new ones.
+      // Web/cloud: send a non-terminal heartbeat so the cloud response handler stays alive.
       // Other channels (Telegram): still send as separate messages.
       if (channel instanceof CLIChannel) {
         (channel as CLIChannel).sendHeartbeat(heartbeatText);
-      } else {
+      } else if (channel instanceof WebChannel) {
+        (channel as WebChannel).sendHeartbeat(heartbeatText, msg.channelId);
+      } else if (channel) {
         void channel.send(heartbeatText, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
 
@@ -818,20 +987,154 @@ export class Agent {
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     if (this.messageQueue.length === 0) return;
+    if (!this.running) return;
     if (!this.lifecycle.is('idle')) return;
 
     this.processing = true;
 
-    while (this.messageQueue.length > 0) {
-      const msg = this.messageQueue.shift()!;
-      try {
-        await this.handleMessage(msg);
-      } catch (err) {
-        logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+    try {
+      while (this.messageQueue.length > 0) {
+        const item = this.messageQueue.shift()!;
+        const msg = item.message;
+        if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+        this.currentWorkKey = item.workKey ?? null;
+        try {
+          if (item.workKey) this.workLedger.markRunning(item.workKey);
+          await this.handleMessage(msg);
+          if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
+            this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
+          }
+        } catch (err) {
+          if (item.workKey) {
+            const entry = this.workLedger.get(item.workKey);
+            if (entry?.status === 'completed') this.workLedger.markDeliveryError(item.workKey, err);
+            else this.workLedger.markFailed(item.workKey, err);
+          }
+          logger.error({ err, msg: msg.content.slice(0, 50) }, 'Failed to handle message');
+        } finally {
+          this.currentWorkKey = null;
+          if (!this.lifecycle.is('idle') && this.lifecycle.canTransitionTo('idle')) {
+            this.lifecycle.transition('idle');
+          }
+        }
       }
+    } finally {
+      this.processing = false;
+      if (this.messageQueue.length > 0) void this.processQueue();
+    }
+  }
+
+  private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
+    const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
+    const delayMs = continuation
+      ? Math.min(2_000 * 2 ** Math.min(attempts - 1, 5), 60_000)
+      : Math.min(5_000 * 2 ** Math.min(attempts - 1, 6), 5 * 60_000);
+    this.workLedger.markRetry(workKey, error, Date.now() + delayMs, {
+      continuation,
+      workCwd: this.capabilities.getCwd(),
+      activity: this.currentActivity,
+      summary: formatNarrative(this.stepNarrative, this.currentActivity, 8),
+    });
+    const timer = setTimeout(() => {
+      const entry = this.workLedger.get(workKey);
+      if (!entry || entry.status !== 'queued') return;
+      this.queueMessage(entry.message, workKey);
+      void this.processQueue();
+    }, delayMs);
+    timer.unref?.();
+    return delayMs;
+  }
+
+  private isRetryableProviderError(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return /timeout|timed out|network|socket|connection|temporar|unavailable|overloaded|rate.?limit|\b429\b|\b5\d\d\b|econn|fetch failed|stalled/.test(message);
+  }
+
+  private async sendProgressNotice(msg: ChannelMessage, message: string): Promise<void> {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel || msg.channelType === 'internal') return;
+    if (channel instanceof WebChannel) {
+      channel.sendHeartbeat(message, msg.channelId);
+      return;
+    }
+    if (channel instanceof CLIChannel) {
+      channel.sendHeartbeat(message);
+      return;
+    }
+    await channel.send(message, msg.channelId);
+  }
+
+  private channelProviderOverrides = new Map<string, { providerName: string; modelName: string; provider: BaseProvider }>();
+
+  async listChatModelOptions(): Promise<Array<{ provider: string; label: string; model: string; models: string[]; selected: boolean }>> {
+    const active = getActiveProviders(this.config);
+    const current = this.getCurrentProvider();
+    return Promise.all(active.map(async (provider) => {
+      let models = [provider.model].filter(Boolean);
+      try {
+        const catalog = await fetchProviderModelCatalog(provider.name as any, provider.name === 'mercuryCloud'
+          ? {
+            ...provider,
+            apiKey: this.config.cloud.accessKey || this.config.cloud.jwt || provider.apiKey,
+            baseUrl: this.config.cloud.apiUrl || provider.baseUrl,
+          }
+          : provider);
+        models = [...new Set([provider.model, catalog.recommendedModel, ...catalog.models].filter(Boolean))];
+      } catch (err) {
+        logger.debug({ provider: provider.name, err }, 'Unable to fetch provider model catalog; using configured model');
+        models = [...new Set([provider.model, ...getPreferredModelsForProvider(provider.name as any)].filter(Boolean))];
+      }
+
+      return {
+        provider: provider.name,
+        label: provider.name,
+        model: provider.model,
+        models,
+        selected: provider.name === current.name,
+      };
+    }));
+  }
+
+  async setChannelProviderOverride(
+    channelId: string,
+    providerName: string,
+    modelName?: string,
+    options: { persist?: boolean } = {},
+  ): Promise<{ ok: boolean; message: string; provider?: string; model?: string }> {
+    const active = getActiveProviders(this.config);
+    const config = active.find((provider) => provider.name === providerName);
+    if (!config) {
+      return { ok: false, message: `Provider \`${providerName}\` is not configured for this local agent.` };
     }
 
-    this.processing = false;
+    const provider = await createProvider(
+      { ...config, model: modelName || config.model },
+      providerName === 'mercuryCloud' ? getCloudTokenStore() : undefined,
+    );
+    if (!provider) {
+      return { ok: false, message: `Provider \`${providerName}\` is not available in the running registry.` };
+    }
+
+    const previousOverride = this.channelProviderOverrides.get(channelId)?.provider as (BaseProvider & { destroy?: () => void }) | undefined;
+    if (previousOverride !== provider && this.providers.get(previousOverride?.name) !== previousOverride) {
+      previousOverride?.destroy?.();
+    }
+    this.channelProviderOverrides.set(channelId, { providerName, modelName: provider.getModel(), provider });
+
+    if (options.persist && providerName in this.config.providers) {
+      const providerKey = providerName as ProviderName;
+      const providerConfig = this.config.providers[providerKey];
+      providerConfig.model = provider.getModel();
+      providerConfig.enabled = true;
+      this.config.providers.default = providerName as ProviderName;
+      this.providers.set(providerName, provider);
+      this.providers.setDefault(providerName);
+      saveConfig(this.config);
+      updateCliProviderStatus(this.channels.get('cli'), providerName, provider.getModel());
+    }
+
+    const saved = options.persist ? ' Saved as the default for future sessions.' : '';
+    return { ok: true, message: `This chat will use **${providerName}** · **${provider.getModel()}**.${saved}`, provider: providerName, model: provider.getModel() };
   }
 
   private async switchSessionProvider(providerName: string): Promise<{ ok: boolean; message: string }> {
@@ -841,14 +1144,13 @@ export class Agent {
     }
 
     this.config.providers.default = providerName as any;
-    this.providers = await ProviderRegistryImpl.create(this.config);
+    const previousProviders = this.providers;
+    this.providers = await ProviderRegistryImpl.create(this.config, getCloudTokenStore());
+    previousProviders.destroy();
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
-    const cliChannel = this.channels.get('cli');
-    if (cliChannel && cliChannel instanceof CLIChannel) {
-      cliChannel.setProvider(providerName, model);
-    }
+    updateCliProviderStatus(this.channels.get('cli'), providerName, model);
 
     return { ok: true, message: `Session model switched to **${providerName}** · **${model}**.` };
   }
@@ -882,6 +1184,12 @@ export class Agent {
     await this.channels.startAll();
     this.running = true;
 
+    const recovered = this.workLedger.recoverInterrupted();
+    for (const entry of recovered) this.queueMessage(entry.message, entry.key);
+    await this.replayUndeliveredResponses();
+    this.startOutboxRetry();
+    void this.processQueue();
+
     const activeChannels = this.channels.getActiveChannels();
     const toolNames = this.capabilities.getToolNames();
     logger.info({ channels: activeChannels, tools: toolNames }, 'Mercury is awake');
@@ -889,21 +1197,83 @@ export class Agent {
 
   async sleep(): Promise<void> {
     this.running = false;
+    if (this.outboxRetryTimer) {
+      clearInterval(this.outboxRetryTimer);
+      this.outboxRetryTimer = null;
+    }
     this.scheduler.stopAll();
     await this.channels.stopAll();
     this.lifecycle.transition('sleeping');
     logger.info('Mercury is sleeping');
   }
 
+  private async replayUndeliveredResponses(): Promise<void> {
+    if (this.replayingOutbox) return;
+    this.replayingOutbox = true;
+    try {
+      for (const entry of this.workLedger.getUndeliveredResponses()) {
+        await this.deliverLedgerEntry(entry);
+      }
+    } finally {
+      this.replayingOutbox = false;
+    }
+  }
+
+  private startOutboxRetry(): void {
+    if (this.outboxRetryTimer) return;
+    this.outboxRetryTimer = setInterval(() => {
+      if (this.running) void this.replayUndeliveredResponses();
+    }, 30_000);
+    this.outboxRetryTimer.unref?.();
+  }
+
+  private async deliverLedgerEntry(entry: WorkEntry): Promise<void> {
+    const channel = this.channels.getChannelForMessage(entry.message);
+    if (!channel || !entry.finalResponse) return;
+    const requestId = typeof entry.message.metadata?.requestId === 'string' ? entry.message.metadata.requestId : undefined;
+    const isCloudRequest = channel instanceof WebChannel
+      && typeof entry.message.metadata?.externalConversationId === 'string'
+      && requestId;
+    if (isCloudRequest && !channel.hasCloudEventHandler(requestId)) return;
+    try {
+      if (entry.status === 'failed' && channel instanceof WebChannel) {
+        if (!channel.sendError(entry.finalResponse, entry.message.channelId)) throw new Error('Cloud WebSocket could not accept the terminal error');
+      } else {
+        await channel.send(entry.finalResponse, entry.message.channelId);
+      }
+      if (!isCloudRequest) this.workLedger.markDelivered(entry.key);
+    } catch (error) {
+      this.workLedger.markDeliveryError(entry.key, error);
+      logger.warn({ error, workKey: entry.key }, 'Durable response replay failed');
+    }
+  }
+
+  private finalizeChannelTask(msg: ChannelMessage): void {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (channel instanceof TelegramChannel || channel instanceof SignalChannel || channel instanceof DiscordChannel || channel instanceof SlackChannel) {
+      channel.endTask(msg.channelId);
+      channel.resetStepCounter(msg.channelId);
+    }
+  }
+
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
+    let loopAbortController = new AbortController();
+    this.currentMessage = msg;
+    this.currentAbort = loopAbortController;
+    this.currentAbortReason = null;
+    const durableCwd = typeof msg.metadata?.workCwd === 'string' ? msg.metadata.workCwd : undefined;
+    if (durableCwd && existsSync(durableCwd)) {
+      this.capabilities.setCwd(durableCwd);
+      this.capabilities.permissions.addTempScope(durableCwd, true, true);
+    }
     this.currentActivity = '';
     this.completedStepCount = 0;
     this.stepNarrative = [];
-    const stopHeartbeat = this.startForegroundHeartbeat(msg);
     this.markProgress('Starting...');
-    let wallTimeout: ReturnType<typeof setTimeout> | null = null;
+    const stopHeartbeat = this.startForegroundHeartbeat(msg);
+    let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
       const activeAgents = this.supervisor.getActiveAgents();
@@ -918,8 +1288,7 @@ export class Agent {
     }
 
       const isInternal = msg.channelType === 'internal';
-      const isScheduled = msg.senderId === 'system' && msg.channelType !== 'internal';
-      if (isInternal || isScheduled) {
+      if (isInternal) {
         this.capabilities.permissions.setAutoApproveAll(true);
         this.capabilities.permissions.addTempScope('/', true, true);
       }
@@ -1020,12 +1389,45 @@ export class Agent {
         }
       }
 
-      const systemPrompt = this.buildSystemPrompt();
-      const recentMemory = this.shortTerm.getRecent(msg.channelId, this.saverMode.adjustHistoryWindow(10));
+      let systemPrompt = this.buildSystemPrompt();
+      if (msg.metadata?.workContinuation === true) {
+        const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
+        const reason = typeof msg.metadata.continuationReason === 'string' ? msg.metadata.continuationReason : 'The prior execution was interrupted.';
+        const activity = typeof msg.metadata.continuationActivity === 'string' ? msg.metadata.continuationActivity : 'unknown';
+        const summary = typeof msg.metadata.continuationSummary === 'string' ? msg.metadata.continuationSummary : 'No structured progress summary is available.';
+        const cwd = typeof msg.metadata.workCwd === 'string' ? msg.metadata.workCwd : this.capabilities.getCwd();
+        systemPrompt += `\n\n[SYSTEM: DURABLE CONTINUATION ${attempt}] Do not restart this task. Continue from the artifacts and side effects already present. First inspect the current filesystem and relevant external state, especially ${cwd}. Prior interruption: ${reason}. Last activity: ${activity}. Recorded progress: ${summary}. Do not repeat the failed strategy. If a file or tool payload was too large, use a different bounded approach: inspect what exists, generate smaller components, append or patch in small verified chunks, or generate repetitive content programmatically. Verify each existing artifact before changing it. Keep working until there is a usable final deliverable, then clearly report its location and validation result.`;
+      } else if (msg.metadata?.workRecovered === true) {
+        systemPrompt += '\n\n[SYSTEM: RECOVERED WORK] This request was recovered after the agent restarted or its prior run was interrupted. Inspect the current filesystem, external state, and conversation before acting. Do not repeat side effects that may already have completed. Continue from observed state, and explicitly report any ambiguity you cannot safely resolve.';
+      }
+      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+      const externalConversationId = msg.channelType === 'cli'
+        ? 'current'
+        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
+      canonicalSessionId = canonicalSession.id;
+      const canonicalMessageId = typeof msg.metadata?.canonicalMessageId === 'string' ? msg.metadata.canonicalMessageId : undefined;
+      const requestId = typeof msg.metadata?.requestId === 'string' ? msg.metadata.requestId : undefined;
+      this.sessions.appendMessage(canonicalSession.id, {
+        id: canonicalMessageId,
+        role: 'user',
+        content: msg.content,
+        timestamp: msg.timestamp,
+        externalMessageId: msg.id,
+        metadata: { channelType: msg.channelType, channelId: msg.channelId, ...(requestId ? { requestId } : {}) },
+      });
+      if (msg.channelType === 'cli') {
+        const activeSession = this.sessions.get(canonicalSession.id);
+        const cliChannel = this.channels.get('cli');
+        if (cliChannel instanceof CLIChannel) cliChannel.setCurrentSession(activeSession);
+      }
+      const recentMemory = this.sessions.get(canonicalSession.id).messages
+        .filter((entry) => entry.kind === 'message' && entry.role !== 'tool')
+        .slice(-this.saverMode.adjustHistoryWindow(10));
 
       const messages: any[] = [];
 
-      const recentSteps = this.shortTerm.getRecent(msg.channelId, 6);
+      const recentSteps = recentMemory.slice(-6);
       let loopWarning: string | null = null;
       if (recentSteps.length >= 3) {
         const toolCallPattern = /\[Using: (.+?)\]/g;
@@ -1075,6 +1477,47 @@ export class Agent {
           });
           messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
         }
+
+        // Local-first, then pool: query the cloud SharedMemoryPool for additional
+        // context the second brain didn't surface. Gated by config, fails open
+        // (any error → proceed with local-only context). 5-min cache per query.
+        const ck = this.config.memory.collaborativeKnowledge;
+        const cloud = this.config.cloud;
+        const tokenStore = getCloudTokenStore();
+        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl) {
+          try {
+            const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
+            const localSummaries = memoryContext.records.map((r) => r.summary);
+            const poolHits = await searchPool(
+              cloud.apiUrl,
+              cloud.jwt,
+              cloud.refreshToken,
+              msg.content,
+              { limit: 10 },
+              (newJwt, newRefresh) => {
+                // Route every rotation through the shared store so all
+                // consumers see the new tokens. Fallback to direct config
+                // mutation if the store isn't initialized (older code path).
+                if (tokenStore) {
+                  tokenStore.setTokensAndPersist(newJwt, newRefresh);
+                } else {
+                  cloud.jwt = newJwt;
+                  cloud.refreshToken = newRefresh;
+                  this.config.providers.mercuryCloud.apiKey = newJwt;
+                  saveConfig(this.config);
+                }
+              },
+            );
+            const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+            const poolBlock = formatPoolContextBlock(deduped, 1500);
+            if (poolBlock) {
+              messages.push({ role: 'user', content: poolBlock });
+              messages.push({ role: 'assistant', content: 'Noted. I\'ll use this shared context.' });
+            }
+          } catch (err) {
+            logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
+          }
+        }
       } else {
         const relevantFacts = this.longTerm.search(msg.content, 3);
         if (relevantFacts.length > 0) {
@@ -1089,13 +1532,13 @@ export class Agent {
       if (recentMemory.length > 0) {
         for (const m of recentMemory) {
           messages.push({
-            role: m.role === 'user' ? 'user' : 'assistant',
+            role: m.role,
             content: m.content,
           });
         }
       }
 
-      messages.push({ role: 'user', content: msg.content });
+      if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
 
       // ── Skill Intent Routing & Batch Execution ──
       //
@@ -1231,23 +1674,23 @@ export class Agent {
       this.capabilities.setChannelContext(msg.channelId, msg.channelType);
       this.capabilities.permissions.setCurrentChannelType(msg.channelType);
 
-      const fallbackIterator = this.providers.getFallbackIterator();
+      const providerContextId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.channelId);
+      const channelOverride = this.channelProviderOverrides.get(providerContextId);
+      const fallbackIterator = channelOverride
+        ? [channelOverride.provider, ...this.providers.getFallbackIterator(channelOverride.providerName)]
+          .filter((provider, index, list) => list.findIndex((item) => item.name === provider.name && item.getModel() === provider.getModel()) === index)
+          [Symbol.iterator]()
+        : this.providers.getFallbackIterator();
       let result: any = null;
       let usedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
-      let streamedText = '';
+      let hasCompletedTool = false;
+      let hasStreamedOutput = false;
+      let cliResponseStreamed = false;
+      let requiresContinuationApproval = false;
       const loopDetector = new ToolCallLoopDetector();
-      const loopAbortController = new AbortController();
       let loopWarningSent = false;
       let selfCheckCount = 0;
-
-      this.currentMessage = msg;
-      this.currentAbort = loopAbortController;
-      wallTimeout = setTimeout(() => {
-        if (!loopAbortController.signal.aborted) {
-          loopAbortController.abort();
-        }
-      }, MAX_FOREGROUND_WALL_MS);
 
       const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal' || (msg.channelType === 'discord' && this.config.channels.discord.streaming) || (msg.channelType === 'slack' && this.config.channels.slack.streaming);
 
@@ -1276,19 +1719,29 @@ export class Agent {
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
       const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
-      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS);
+      const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const saverWasActive = this.saverMode.isActive();
 
-      for (const provider of fallbackIterator) {
+      const providersForAttempt = [...fallbackIterator];
+      for (const provider of [...providersForAttempt, ...providersForAttempt]) {
         try {
+          const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
+          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
+          // Ensure Mercury Cloud token is fresh before getting model instance
+          if ('ensureFreshToken' in provider && typeof (provider as any).ensureFreshToken === 'function') {
+            await this.withProviderDeadline((provider as any).ensureFreshToken(), loopAbortController, providerDeadlineAt);
+          }
+
           if (canStream && channel) {
+            let streamError: unknown;
+            let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
               system: systemPrompt,
@@ -1297,6 +1750,12 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              onError: ({ error }) => {
+                streamError = error;
+              },
+              onAbort: () => {
+                streamAborted = true;
+              },
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
@@ -1310,6 +1769,7 @@ export class Agent {
                   this.markProgress('Thinking...');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
+                  if (toolResults.length > 0) hasCompletedTool = true;
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
@@ -1544,37 +2004,40 @@ export class Agent {
               },
             });
 
-            let fullText: string;
-
-            if (msg.channelType === 'telegram') {
-              const tgChannel = this.channels.get('telegram');
-              if (tgChannel && 'sendStreamToChat' in tgChannel) {
-                const chatId = msg.channelId.startsWith('telegram:')
-                  ? Number(msg.channelId.split(':')[1])
-                  : Number(msg.channelId);
-                if (!isNaN(chatId)) {
-                  fullText = await (tgChannel as any).sendStreamToChat(chatId, this.withProgressStream(streamResult.textStream));
-                } else {
-                  fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
-                }
-              } else {
-                fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
+            const trackedStream = this.withProgressStream((async function* () {
+              for await (const chunk of streamResult.textStream) {
+                if (chunk) hasStreamedOutput = true;
+                yield chunk;
               }
-            } else {
-              fullText = await channel.stream(this.withProgressStream(streamResult.textStream), msg.channelId);
+            })());
+            const streamedText = await this.withProviderDeadline(
+              channel.stream(trackedStream, msg.channelId),
+              loopAbortController,
+              providerDeadlineAt,
+            );
+            cliResponseStreamed = channel instanceof CLIChannel;
+
+            const [usage, finishReason, streamReasoning] = await this.withProviderDeadline(
+              Promise.all([
+                streamResult.usage,
+                streamResult.finishReason,
+                streamResult.reasoning,
+              ]),
+              loopAbortController,
+              providerDeadlineAt,
+            );
+            if (streamError) throw streamError;
+            if (streamAborted || finishReason === 'error') {
+              throw new Error(streamAborted ? 'Model stream was aborted before completion' : 'Model stream ended with an error');
             }
-
-            const [usage] = await Promise.all([
-              streamResult.usage,
-            ]);
-
-            const streamReasoning = await streamResult.reasoning;
+            const fullText = finishReason === 'length'
+              ? `${streamedText}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]`
+              : streamedText;
 
             result = { text: fullText, usage, reasoning: streamReasoning };
-            streamedText = fullText;
             loopDetector.recordStepText(fullText);
           } else {
-            result = await generateText({
+            result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
               system: systemPrompt,
               messages,
@@ -1595,6 +2058,7 @@ export class Agent {
                   this.markProgress('Thinking...');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
+                  if (toolResults.length > 0) hasCompletedTool = true;
                   const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
@@ -1827,47 +2291,137 @@ export class Agent {
                   }
                 }
               },
-            });
+            }), loopAbortController, providerDeadlineAt);
+            if (result.finishReason === 'error') throw new Error('Model generation ended with an error');
+            if (result.finishReason === 'length') {
+              result = { ...result, text: `${result.text}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]` };
+            }
+            if (channel instanceof CLIChannel) {
+              await channel.send(result.text, msg.channelId, Date.now() - startTime);
+              cliResponseStreamed = true;
+            }
           }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
           if (channel instanceof WebChannel) {
             (channel as WebChannel).sendProviderInfo(usedProvider.name, usedProvider.model, msg.channelId);
           }
-          this.providers.markSuccess(provider.name);
+          if (!channelOverride) {
+            this.providers.markSuccess(provider.name);
+          }
           break;
         } catch (err: any) {
+          if (this.currentAbortReason === 'time-limit') {
+            lastError = new Error(`${provider.name} exceeded the 10-minute provider-attempt limit`);
+            requiresContinuationApproval = true;
+            this.currentAbortReason = null;
+            logger.warn({ provider: provider.name }, 'Provider attempt reached hard deadline; waiting for user decision');
+            break;
+          }
+          if (this.currentAbortReason === 'stalled' && !hasCompletedTool) {
+            lastError = new Error(`${provider.name} stalled without progress`);
+            this.currentAbortReason = null;
+            loopAbortController = new AbortController();
+            this.currentAbort = loopAbortController;
+            this.markProgress(`Retrying after ${provider.name} stalled...`);
+            logger.warn({ provider: provider.name }, 'Provider stalled; retrying with another healthy attempt');
+            continue;
+          }
+          if (this.currentAbortReason === 'backgrounded') {
+            result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
+            break;
+          }
+          if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
+            result = { text: `This task was ${this.currentAbortReason} by the user.`, usage: undefined };
+            this.currentAbortReason = null;
+            break;
+          }
           if (loopDetector.isHardAborted() || loopAbortController.signal.aborted) {
-            logger.info('Generation aborted due to loop detection — using partial response');
-            if (!result && streamedText) {
-              result = { text: streamedText, usage: undefined };
-            }
-            if (!result) {
-              const elapsedMs = Date.now() - startTime;
-              const timedOut = elapsedMs >= MAX_FOREGROUND_WALL_MS;
-              result = {
-                text: timedOut
-                  ? 'I stopped because this request exceeded the foreground time limit. Please retry with a narrower scope, or move it to background with /bg current sooner.'
-                  : 'I stopped because I detected I was stuck in a loop (repeating the same action without progress). I cannot complete this task as requested. Please let me know if you\'d like me to try a completely different approach, or if there\'s something else I can help with.',
-                usage: undefined,
-              };
-            }
-            if (usedProvider) {
-              this.providers.markSuccess(usedProvider.name);
-            }
+            lastError = new Error(hasCompletedTool
+              ? 'Generation was interrupted after one or more tools completed. Current side effects may be partial; inspect state before retrying.'
+              : 'Generation was aborted by progress or loop safety controls.');
+            logger.info({ hasCompletedTool }, 'Generation aborted; recording an explicit failed state');
             break;
           }
           lastError = err;
-          logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
-          if (channel && msg.channelType !== 'internal') {
-            await channel.send(`  [Provider ${provider.name} failed, trying fallback...]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          if (hasStreamedOutput) {
+            lastError = new Error(`Provider stream was interrupted after partial output; refusing fallback to avoid combining two responses. Original error: ${err?.message || String(err)}`);
+            logger.error({ provider: provider.name, err }, 'Provider stream interrupted after visible output; fallback suppressed');
+            break;
           }
+          if (hasCompletedTool) {
+            lastError = new Error(`Provider failed after a tool completed; refusing fallback to avoid duplicate side effects. Original error: ${err?.message || String(err)}`);
+            logger.error({ provider: provider.name, err }, 'Provider interrupted after tool completion; fallback suppressed');
+            break;
+          }
+          logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
+          await this.sendProgressNotice(msg, `Provider ${provider.name} failed. Trying fallback...`)
+            .catch((e) => logger.warn({ e }, 'channel send failed'));
         }
       }
 
       if (!result) {
-        const errMsg = `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
+        let errMsg = hasCompletedTool
+          ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
+          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
         logger.error({ err: lastError }, errMsg);
+        if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
+          const continuationAttempt = typeof msg.metadata?.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 0;
+          const needsApproval = needsContinuationApproval(continuationAttempt, requiresContinuationApproval);
+          if (needsApproval) {
+            this.markProgress('Waiting for your decision...');
+            const reason = requiresContinuationApproval
+              ? 'The current provider attempt reached its 10-minute hard limit.'
+              : `Mercury has already made ${continuationAttempt} automatic continuation attempts.`;
+            const shouldContinue = channel && msg.channelType !== 'internal'
+              ? await channel.askToContinue(
+                `${reason} Existing files and completed tool work have been preserved. Continue with another inspected attempt?`,
+                msg.channelId,
+              ).catch(() => false)
+              : false;
+            if (!shouldContinue) {
+              errMsg = `${reason} Work is paused with existing artifacts preserved. Send "continue" when you want Mercury to inspect the current state and resume.`;
+            } else {
+              const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
+              await this.sendProgressNotice(
+                msg,
+                `Progress remains checkpointed. Mercury will inspect the existing artifacts and continue in ${Math.round(delayMs / 1000)} seconds.`,
+              ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
+              this.lifecycle.transition('idle');
+              return;
+            }
+          } else {
+            const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError || errMsg, true);
+            await this.sendProgressNotice(
+              msg,
+              `Progress was checkpointed. Mercury will inspect the existing artifacts and continue with a different approach in ${Math.round(delayMs / 1000)} seconds.`,
+            ).catch((error) => logger.warn({ error }, 'Unable to send continuation notice'));
+            this.lifecycle.transition('idle');
+            return;
+          }
+        }
+        if (this.currentWorkKey && !hasCompletedTool && !hasStreamedOutput && this.isRetryableProviderError(lastError)) {
+          const attempts = this.workLedger.get(this.currentWorkKey)?.attempts ?? 1;
+          const shouldContinue = !needsRetryApproval(attempts) || (
+            channel && msg.channelType !== 'internal'
+              ? await channel.askToContinue(
+                `All providers have failed ${attempts} attempts. No tool side effects were recorded. Retry again?`,
+                msg.channelId,
+              ).catch(() => false)
+              : false
+          );
+          if (shouldContinue) {
+            const delayMs = this.scheduleDurableRetry(msg, this.currentWorkKey, lastError);
+            await this.sendProgressNotice(
+              msg,
+              `All providers are temporarily unavailable. This request is safely queued and will retry in ${Math.round(delayMs / 1000)} seconds.`,
+            ).catch((error) => logger.warn({ error }, 'Unable to send durable retry notice'));
+            this.lifecycle.transition('idle');
+            return;
+          }
+          errMsg = `All providers failed ${attempts} attempts. Work is paused. Send "continue" when you want Mercury to try again.`;
+        }
+        if (this.currentWorkKey) this.workLedger.markFailed(this.currentWorkKey, errMsg, errMsg);
         if (channel && msg.channelType !== 'internal') {
           // End task before sending error so it goes through as a normal message
           if (channel instanceof TelegramChannel) {
@@ -1883,13 +2437,19 @@ export class Agent {
             (channel as SlackChannel).endTask(msg.channelId);
             (channel as SlackChannel).resetStepCounter(msg.channelId);
           }
-          await channel.send(errMsg, msg.channelId);
+          const delivered = channel instanceof WebChannel ? channel.sendError(errMsg, msg.channelId) : true;
+          if (!(channel instanceof WebChannel)) await channel.send(errMsg, msg.channelId);
+          const awaitsCloudAck = msg.channelType === 'web'
+            && typeof msg.metadata?.externalConversationId === 'string'
+            && typeof msg.metadata?.requestId === 'string';
+          if (this.currentWorkKey && delivered && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+          if (this.currentWorkKey && !delivered) this.workLedger.markDeliveryError(this.currentWorkKey, 'Terminal error delivery was not accepted');
         }
         this.lifecycle.transition('idle');
         return;
       }
 
-      const finalText = (streamedText || result.text || '').trim() || '(no text response)';
+      const finalText = (result.text || '').trim() || '(no text response)';
       this.markProgress('Finalizing response...');
 
       // Store plan output when in plan mode for later execution
@@ -1905,6 +2465,7 @@ export class Agent {
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: msg.channelType,
+        agentId: this.config.cloud.agentId || undefined,
       });
       this.syncTokenInfoToCli();
 
@@ -1924,21 +2485,34 @@ export class Agent {
         }
       }
 
-      this.shortTerm.add(msg.channelId, {
-        id: msg.id,
-        timestamp: msg.timestamp,
-        role: 'user',
-        content: msg.content,
-      });
-
-      this.shortTerm.add(msg.channelId, {
-        id: Date.now().toString(36),
-        timestamp: Date.now(),
-        role: 'assistant',
-        content: finalText,
-        tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-        reasoning: result.reasoning || undefined,
-      });
+      if (canonicalSessionId) {
+        this.sessions.appendMessage(canonicalSessionId, {
+          role: 'assistant',
+          content: finalText,
+          externalMessageId: `${msg.id}:assistant`,
+          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          reasoning: typeof result.reasoning === 'string'
+            ? result.reasoning
+            : result.reasoning
+              ? JSON.stringify(result.reasoning)
+              : undefined,
+          metadata: {
+            channelType: msg.channelType,
+            channelId: msg.channelId,
+            ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
+            ...(usedProvider ? { provider: usedProvider.name, model: usedProvider.model } : {}),
+          },
+        });
+        if (msg.channelType !== 'internal' && msg.senderId !== 'system' && usedProvider) {
+          this.scheduleSessionTitleGeneration(canonicalSessionId, usedProvider.name);
+        }
+      } else {
+        this.shortTerm.add(msg.channelId, { id: msg.id, timestamp: msg.timestamp, role: 'user', content: msg.content });
+        this.shortTerm.add(msg.channelId, {
+          id: Date.now().toString(36), timestamp: Date.now(), role: 'assistant', content: finalText,
+          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0), reasoning: result.reasoning || undefined,
+        });
+      }
 
       this.episodic.record({
         type: 'message',
@@ -1952,6 +2526,8 @@ export class Agent {
         });
       }
 
+      if (this.currentWorkKey) this.workLedger.markCompleted(this.currentWorkKey, finalText);
+
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
@@ -1960,7 +2536,12 @@ export class Agent {
         // Simple responses (greetings, quick answers) don't need a banner
         const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
         if (isSubstantialTask && channel instanceof TelegramChannel) {
-          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup
+          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup.
+          // Always queue the final answer explicitly; streaming normally already
+          // defers it, but non-streamed/fallback responses must not be dropped.
+          if (finalText && finalText.trim()) {
+            (channel as TelegramChannel).deferResponse(msg.channelId, finalText);
+          }
           const completionMeta = {
             provider: usedProvider?.name ?? 'unknown',
             model: usedProvider?.model ?? 'unknown',
@@ -1971,17 +2552,13 @@ export class Agent {
             budgetTotal: this.tokenBudget.getBudget(),
             budgetPercentage: this.tokenBudget.getUsagePercentage(),
           };
-          // If there's a non-streamed response that wasn't deferred, defer it now
-          if (!streamedText && finalText && finalText.trim()) {
-            // send() during active task already deferred it — nothing to do
-          }
           await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
         } else if (channel instanceof TelegramChannel) {
           // For non-substantial Telegram tasks: end task, flush deferred, clean up
           (channel as TelegramChannel).endTask(msg.channelId);
           // Flush deferred response
           const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || (!streamedText && finalText ? finalText : null);
+          const responseText = deferred || finalText;
           if (responseText && responseText.trim()) {
             await channel.send(responseText, msg.channelId, elapsed);
           }
@@ -1994,6 +2571,7 @@ export class Agent {
           // For Signal tasks: end task, flush deferred, send completion banner for substantial tasks
           const sigCh = channel as SignalChannel;
           if (isSubstantialTask) {
+            await sigCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2008,7 +2586,7 @@ export class Agent {
           } else {
             sigCh.endTask(msg.channelId);
             const deferred = sigCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2018,6 +2596,7 @@ export class Agent {
         } else if (channel instanceof DiscordChannel) {
           const dcCh = channel as DiscordChannel;
           if (isSubstantialTask) {
+            await dcCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2032,7 +2611,7 @@ export class Agent {
           } else {
             dcCh.endTask(msg.channelId);
             const deferred = dcCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2042,6 +2621,7 @@ export class Agent {
         } else if (channel instanceof SlackChannel) {
           const slCh = channel as SlackChannel;
           if (isSubstantialTask) {
+            await slCh.stream((async function* () { yield finalText; })(), msg.channelId);
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2056,7 +2636,7 @@ export class Agent {
           } else {
             slCh.endTask(msg.channelId);
             const deferred = slCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || (!streamedText && finalText ? finalText : null);
+            const responseText = deferred || finalText;
             if (responseText && responseText.trim()) {
               await channel.send(responseText, msg.channelId, elapsed);
             }
@@ -2065,17 +2645,11 @@ export class Agent {
           }
         } else {
           // CLI or other channels — original flow
-          if (streamedText && streamedText.trim()) {
-            logger.info({ channelType: msg.channelType, elapsed }, 'Streamed response completed');
-            // Web channel needs text_done after streaming to reset frontend state
-            if (channel instanceof WebChannel) {
-              await channel.send(streamedText, msg.channelId, elapsed);
-            }
-          } else {
-            logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending response');
+          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending durable response');
+          if (requiresFinalSend(msg.channelType, cliResponseStreamed)) {
             await channel.send(finalText, msg.channelId, elapsed);
-            this.markProgress();
           }
+          this.markProgress();
           if (isSubstantialTask && channel instanceof CLIChannel) {
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
@@ -2094,18 +2668,48 @@ export class Agent {
         logger.debug('Internal prompt processed, no channel response needed');
       }
 
+      const awaitsCloudAck = msg.channelType === 'web'
+        && typeof msg.metadata?.externalConversationId === 'string'
+        && typeof msg.metadata?.requestId === 'string';
+      if (this.currentWorkKey && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+
       this.lifecycle.transition('idle');
     } catch (err) {
       logger.error({ err }, 'Error handling message');
+      const ledgerEntry = this.currentWorkKey ? this.workLedger.get(this.currentWorkKey) : undefined;
+      if (this.currentWorkKey) {
+        if (ledgerEntry?.status === 'completed') this.workLedger.markDeliveryError(this.currentWorkKey, err);
+        else if (ledgerEntry?.status !== 'failed') {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.workLedger.markFailed(
+            this.currentWorkKey,
+            err,
+            `I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`,
+          );
+        }
+      }
+      if (ledgerEntry?.status === 'completed') {
+        logger.warn({ err, workKey: this.currentWorkKey }, 'Final response persisted but delivery did not complete; retaining for replay');
+        return;
+      }
       // Always notify the user — they should never have to re-prompt
       // to find out their task died.
       const catchChannel = this.channels.getChannelForMessage(msg);
       if (catchChannel && msg.channelType !== 'internal') {
         const errMsg = err instanceof Error ? err.message : String(err);
-        void catchChannel.send(
-          `⚠ I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`,
-          msg.channelId,
-        ).catch((sendErr: any) => logger.warn({ sendErr }, 'Failed to notify user of handler error'));
+        try {
+          const finalError = `I encountered an unexpected error and couldn't finish: ${errMsg.slice(0, 200)}`;
+          const delivered = catchChannel instanceof WebChannel ? catchChannel.sendError(finalError, msg.channelId) : true;
+          if (!(catchChannel instanceof WebChannel)) await catchChannel.send(finalError, msg.channelId);
+          const awaitsCloudAck = msg.channelType === 'web'
+            && typeof msg.metadata?.externalConversationId === 'string'
+            && typeof msg.metadata?.requestId === 'string';
+          if (this.currentWorkKey && delivered && !awaitsCloudAck) this.workLedger.markDelivered(this.currentWorkKey);
+          if (this.currentWorkKey && !delivered) this.workLedger.markDeliveryError(this.currentWorkKey, 'Terminal error delivery was not accepted');
+        } catch (sendErr) {
+          if (this.currentWorkKey) this.workLedger.markDeliveryError(this.currentWorkKey, sendErr);
+          logger.warn({ sendErr }, 'Failed to notify user of handler error');
+        }
       }
       // Write crash flag so next startup also reports the failure.
       try {
@@ -2120,14 +2724,15 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
-      if (wallTimeout) clearTimeout(wallTimeout);
       stopHeartbeat();
+      this.finalizeChannelTask(msg);
       this.currentMessage = null;
       this.currentAbort = null;
+      this.currentAbortReason = null;
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];
-      if (isInternal || isScheduled) {
+      if (isInternal) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
       this.capabilities.permissions.clearElevation();
@@ -2143,6 +2748,10 @@ export class Agent {
     const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
     if (programmingSuffix) {
       prompt += programmingSuffix;
+    }
+    const researchSuffix = this.researchMode.getSystemPromptSuffix();
+    if (researchSuffix) {
+      prompt += researchSuffix;
     }
     const budgetStatus = this.tokenBudget.getStatusText();
     prompt += '\n\n' + budgetStatus;
@@ -2341,7 +2950,7 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
         model: provider.getModelInstance(),
         system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
 
-Each candidate: { type, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
+Each candidate: { type, categories, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
 
 TYPE DEFINITIONS (pick the single most specific one):
 - identity: who the user IS — their name, role, job title, self-description
@@ -2354,6 +2963,18 @@ TYPE DEFINITIONS (pick the single most specific one):
 - constraint: limitations, rules they follow, things they avoid
 - episode: notable one-time events worth remembering
 
+CATEGORIES (pick 1-3 domain buckets that best fit this memory):
+- personal: the user's private life, non-work
+- health: medical, physical, mental wellbeing
+- family: family members, family relationships
+- work: job, professional, career
+- finance: money, spending, investments
+- technical: programming, tools, engineering
+- education: learning, study, courses
+- social: friends, social life, community
+- travel: trips, places, geography
+- general: anything that doesn't fit the above
+
 RULES:
 - Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
 - If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
@@ -2361,6 +2982,7 @@ RULES:
 - For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
 - Only extract specific, durable, user-specific information.
 - Do NOT extract trivial observations, greetings, or assistant behavior.
+- "categories" must be an array of 1-3 lowercase strings from the list above. If none fit, suggest a new single-word lowercase category.
 - Output pure JSON array, no markdown fences.`,
         messages: [
           { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
@@ -2375,6 +2997,7 @@ RULES:
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
         channelType: 'internal',
+        agentId: this.config.cloud.agentId || undefined,
       });
       this.syncTokenInfoToCli();
 
@@ -2383,6 +3006,7 @@ RULES:
 
       let candidates: Array<{
         type: string;
+        categories?: string[];
         summary: string;
         detail?: string;
         evidenceKind?: string;
@@ -2404,6 +3028,7 @@ RULES:
           .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
         candidates = facts.slice(0, 3).map(f => ({
           type: 'preference',
+          categories: ['general'],
           summary: f,
           confidence: 0.75,
           importance: 0.7,
@@ -2416,15 +3041,27 @@ RULES:
       const typed = candidates
         .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
         .filter(c => validTypes.includes(c.type))
-        .map(c => ({
-          type: c.type as any,
-          summary: c.summary,
-          detail: c.detail,
-          evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-          confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-          importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-          durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-        }));
+        .map(c => {
+          // Normalise categories: must be array of strings, 1-3, lowercase, trimmed.
+          let cats: string[] = ['general'];
+          if (Array.isArray(c.categories) && c.categories.length > 0) {
+            const cleaned = c.categories
+              .map((cat: unknown) => String(cat).trim().toLowerCase())
+              .filter((cat: string) => cat.length > 0)
+              .slice(0, 3);
+            if (cleaned.length > 0) cats = cleaned;
+          }
+          return {
+            type: c.type as any,
+            categories: cats,
+            summary: c.summary,
+            detail: c.detail,
+            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
+            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
+            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
+            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
+          };
+        });
 
       if (typed.length > 0) {
         const remembered = this.userMemory.remember(typed, 'conversation');
@@ -2442,6 +3079,7 @@ RULES:
       await this.supervisor.haltAll();
     }
     this.backgroundTasks.destroy();
+    this.providers.destroy();
     await this.sleep();
     logger.info('Mercury has shut down');
   }
@@ -2543,50 +3181,26 @@ Is this productive iteration or a stuck loop?`,
       return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
 
+    if (channelType === 'web' && channel instanceof WebChannel) {
+      const options = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
+
+      const selected = await channel.presentChoicePrompt(question, options, channelId);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
+    }
+
     if (channelType === 'telegram' && channel instanceof TelegramChannel) {
-      const { InlineKeyboard } = await import('grammy');
-      const kb = new InlineKeyboard();
-      for (let i = 0; i < choices.length; i++) {
-        const callbackData = `choice_${Date.now()}_${i}`;
-        kb.text(choices[i].slice(0, 60), callbackData);
-        if (i < choices.length - 1 && (i + 1) % 2 === 0) {
-          kb.row();
-        }
-      }
+      const options = choices.map((label, i) => ({
+        value: String(i),
+        label,
+      }));
 
-      return new Promise<string>((resolve) => {
-        const timeout = setTimeout(() => {
-          (channel as any).pendingApprovals?.delete(`choice_timeout_${question}`);
-          resolve(choices[0]);
-        }, 120000);
-
-        channel.send(question, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-
-        const tgBot = (channel as any).bot;
-        if (tgBot) {
-          const chatId = channelId.startsWith('telegram:')
-            ? Number(channelId.split(':')[1])
-            : Number(channelId);
-
-          tgBot.api.sendMessage(chatId, question, { reply_markup: kb }).catch((e: any) => logger.warn({ e }, 'channel send failed'));
-
-          const handler = async (ctx: any) => {
-            const data = ctx.callbackQuery?.data;
-            if (!data || !data.startsWith('choice_')) return;
-            const parts = data.split('_');
-            if (parts.length < 3) return;
-            const index = parseInt(parts[2], 10);
-            if (isNaN(index)) return;
-            clearTimeout(timeout);
-            try { await ctx.answerCallbackQuery(); } catch {}
-            resolve(choices[index]);
-          };
-
-          if ((channel as any).pendingCallbacks) {
-            (channel as any).pendingCallbacks.push(handler);
-          }
-        }
-      });
+      const selected = await channel.presentChoicePrompt(question, options, channelId);
+      const index = parseInt(selected, 10);
+      return isNaN(index) ? choices[0] : (choices[index] ?? choices[0]);
     }
 
     await channel?.send(`${question}\n${choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -2974,6 +3588,11 @@ Is this productive iteration or a stuck loop?`,
     const ctx = this.capabilities.getChatCommandContext();
     if (!ctx) return false;
 
+    if (cmd === '/sessions' || cmd.startsWith('/session')) {
+      await this.handleSessionCommand(trimmed, channelType as ChannelType, channelId);
+      return true;
+    }
+
     if (cmd === '/help') {
       const helpText = channelType === 'telegram' ? getTelegramHelp() : channelType === 'discord' ? getDiscordHelp() : channelType === 'slack' ? getSlackHelp() : ctx.manual();
       await channel.send(helpText, channelId);
@@ -3111,6 +3730,146 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    if (cmd === '/cloud' || cmd.startsWith('/cloud ')) {
+      const cfg = ctx.config();
+      if (!cfg.cloud.enabled || !cfg.cloud.jwt) {
+        await channel.send('Mercury Cloud is not connected. Run `mercury cloud connect` to set it up.', channelId);
+        return true;
+      }
+
+      const sub = trimmed.slice('/cloud'.length).trim();
+
+      const ensureFreshToken = async (): Promise<string> => {
+        try {
+          const store = getCloudTokenStore();
+          if (store) {
+            return await store.rotateIfExpired();
+          }
+          const parts = cfg.cloud.jwt.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+            const exp = payload.exp * 1000;
+            if (Date.now() > exp - 60_000 && cfg.cloud.refreshToken) {
+              const { refreshToken } = await import('../cloud/pairing.js');
+              const result = await refreshToken(cfg.cloud.apiUrl, cfg.cloud.refreshToken);
+              cfg.cloud.jwt = result.jwt;
+              cfg.cloud.refreshToken = result.refreshToken;
+              cfg.providers.mercuryCloud.apiKey = result.jwt;
+              const { saveConfig } = await import('../utils/config.js');
+              saveConfig(cfg);
+              this.config = cfg;
+              return result.jwt;
+            }
+          }
+        } catch {}
+        return cfg.cloud.jwt;
+      };
+
+      if (!sub || sub === 'models' || sub === 'model') {
+        try {
+          const jwt = await ensureFreshToken();
+          const res = await fetch(`${cfg.cloud.apiUrl}/v1/models`, {
+            headers: { Authorization: `Bearer ${jwt}` },
+          });
+          if (!res.ok) {
+            await channel.send(`Failed to fetch cloud models (HTTP ${res.status}). Your token may have expired — run \`mercury cloud login\`.`, channelId);
+            return true;
+          }
+          const data = await res.json() as { data: Array<{ id: string; label: string; tier_required: string; context_window: number; available: boolean; is_branded?: boolean; discount_percent?: number }> };
+          const models = data.data || [];
+          if (models.length === 0) {
+            await channel.send('No models available.', channelId);
+            return true;
+          }
+
+          const currentModel = cfg.providers.mercuryCloud?.model || '—';
+          const branded = models.filter((m) => m.is_branded);
+          const raw = models.filter((m) => !m.is_branded);
+
+          const formatModel = (m: typeof models[0]) => {
+            const marker = m.id === currentModel ? ' ← current' : '';
+            const lock = m.available ? '' : ' 🔒';
+            const discount = m.discount_percent && m.discount_percent > 0 ? ` (${m.discount_percent}% off input)` : '';
+            return `• ${m.id} · ${m.label} (${m.tier_required})${discount}${lock}${marker}`;
+          };
+
+          const lines = [
+            '**Mercury Cloud Models**',
+            '',
+            '**Mercury Branded**',
+            ...branded.map(formatModel),
+            '',
+            '**Direct Models**',
+            ...raw.map(formatModel),
+            '',
+            'Use `/cloud use <model-id>` to switch.',
+          ];
+          await channel.send(lines.join('\n'), channelId);
+
+          if (channelType === 'cli' && channel instanceof CLIChannel) {
+            const availableModels = models.filter((m) => m.available);
+            const choices = [
+              ...availableModels.map((m) => `${m.id} · ${m.label}${m.id === currentModel ? ' (current)' : ''}`),
+              'Keep current model',
+            ];
+            if (availableModels.length <= 1) {
+              await channel.send('Only one model available for your tier. Upgrade to unlock more.', channelId);
+              return true;
+            }
+            const picked = await this.presentChoice('Switch cloud model?', choices, channelId, channelType);
+            if (picked === 'Keep current model') return true;
+            const modelId = picked.split(' · ')[0].trim();
+            if (modelId) {
+              cfg.providers.mercuryCloud.model = modelId;
+              cfg.providers.mercuryCloud.enabled = true;
+              cfg.providers.default = 'mercuryCloud';
+              const { saveConfig } = await import('../utils/config.js');
+              saveConfig(cfg);
+              this.config = cfg;
+              const provider = await createProvider(cfg.providers.mercuryCloud, getCloudTokenStore());
+              this.providers.set('mercuryCloud', provider);
+              this.providers.setDefault('mercuryCloud');
+              updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
+              await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
+            }
+          }
+        } catch (err) {
+          await channel.send(`Error fetching cloud models: ${(err as Error).message}`, channelId);
+        }
+        return true;
+      }
+
+      if (sub.startsWith('use ')) {
+        const modelId = sub.slice(4).trim();
+        if (!modelId) {
+          await channel.send('Usage: `/cloud use <model-id>`', channelId);
+          return true;
+        }
+        await ensureFreshToken();
+        try {
+          cfg.providers.mercuryCloud.model = modelId;
+          cfg.providers.mercuryCloud.enabled = true;
+          if (cfg.providers.default !== 'mercuryCloud') {
+            cfg.providers.default = 'mercuryCloud';
+          }
+          const { saveConfig } = await import('../utils/config.js');
+          saveConfig(cfg);
+          this.config = cfg;
+          const provider = await createProvider(cfg.providers.mercuryCloud, getCloudTokenStore());
+          this.providers.set('mercuryCloud', provider);
+          this.providers.setDefault('mercuryCloud');
+          updateCliProviderStatus(this.channels.get('cli'), 'mercuryCloud', modelId);
+          await channel.send(`✓ Switched to **${modelId}**. Saved to config.`, channelId);
+        } catch (err) {
+          await channel.send(`Error switching model: ${(err as Error).message}`, channelId);
+        }
+        return true;
+      }
+
+      await channel.send('Usage: `/cloud models` to list, `/cloud use <model-id>` to switch', channelId);
+      return true;
+    }
+
     if (cmd === '/memory') {
       if (!this.userMemory) {
         const cfg = ctx.config();
@@ -3124,6 +3883,12 @@ Is this productive iteration or a stuck loop?`,
 
       if (channelType === 'cli' && channel instanceof CLIChannel) {
         await this.openCliMemoryMenu(channel, channelId);
+        return true;
+      }
+
+      const choiceChannel = channel as typeof channel & { presentChoicePrompt?: (question: string, options: ArrowSelectOption[], targetId?: string) => Promise<string> };
+      if (typeof choiceChannel.presentChoicePrompt === 'function') {
+        await this.openMemoryChoiceMenu(choiceChannel, channelId);
         return true;
       }
 
@@ -3757,6 +4522,61 @@ Is this productive iteration or a stuck loop?`,
       return true;
     }
 
+    if (cmd.startsWith('/research')) {
+      const rawArgs = trimmed.slice('/research'.length).trim();
+
+      if (!rawArgs || rawArgs.toLowerCase() === 'status') {
+        await channel.send(this.researchMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'on') {
+        this.researchMode.setOn();
+        await channel.send(
+          'Research mode: **On**\nI will perform deep, multi-source web research and produce a full markdown research article. Long tasks are expected. Use `/research off` to exit.',
+          channelId,
+        );
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'off') {
+        this.researchMode.setOff();
+        await channel.send('Research mode: **Off**\nBack to normal conversation mode.', channelId);
+        return true;
+      }
+
+      if (rawArgs.toLowerCase() === 'toggle') {
+        const newState = this.researchMode.toggle();
+        await channel.send(`Research mode: **${newState === 'on' ? 'On' : 'Off'}**`, channelId);
+        return true;
+      }
+
+      // Treat remaining args as a topic + enable research mode
+      this.researchMode.setOn(rawArgs);
+      if (channel instanceof WebChannel) {
+        channel.sendHeartbeat(`Research mode: On. Topic: ${rawArgs}. I will gather live sources and produce a full research article.`, channelId);
+      } else {
+        await channel.send(
+          `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
+          channelId,
+        );
+      }
+      // Enqueue the topic as a real user message so the agent immediately
+      // begins researching it, rather than only setting mode + topic and
+      // waiting for the user to repeat themselves.
+      const researchTopicMsg: ChannelMessage = {
+        id: `research-${Date.now().toString(36)}`,
+        channelId,
+        channelType: channelType as ChannelType,
+        senderId: 'user',
+        senderName: 'You',
+        content: rawArgs,
+        timestamp: Date.now(),
+      };
+      this.enqueueMessage(researchTopicMsg);
+      return true;
+    }
+
     if (cmd.startsWith('/ws') || cmd.startsWith('/workspace')) {
       const cliChannel = channelType === 'cli' && channel instanceof CLIChannel ? channel : null;
       if (!cliChannel) {
@@ -4216,6 +5036,122 @@ Is this productive iteration or a stuck loop?`,
     return false;
   }
 
+  private async handleSessionCommand(content: string, channelType: ChannelType, channelId: string): Promise<void> {
+    const channel = this.channels.get(channelType);
+    if (!channel) return;
+    const bindingId = channelType === 'cli' ? 'current' : channelId;
+    const format = (session: { alias: string; shortId: string; title: string }) => `${session.alias}  [${session.shortId}]  ${session.title}`;
+    const transcript = (session: ReturnType<SessionRepository['get']>) => {
+      const recent = session.messages
+        .filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'))
+        .slice(-8);
+      if (recent.length === 0) return 'No messages yet.';
+      return recent.map((message) => {
+        const label = message.role === 'user' ? 'You' : 'Mercury';
+        const text = message.content.replace(/\s+/g, ' ').trim();
+        return `${label}: ${text.length > 280 ? `${text.slice(0, 277)}...` : text}`;
+      }).join('\n');
+    };
+    const syncCliSession = (session: ReturnType<SessionRepository['get']>) => {
+      if (channelType === 'cli' && channel instanceof CLIChannel) channel.setCurrentSession(session);
+    };
+    try {
+      if (content.trim().toLowerCase() === '/sessions') {
+        const current = this.sessions.getByBinding(channelType, bindingId);
+        const sessions = this.sessions.list();
+        await channel.send(sessions.length
+          ? sessions.map((session) => `${session.id === current?.id ? '*' : ' '} ${format(session)}`).join('\n')
+          : 'No active sessions. Use /session new.', channelId);
+        return;
+      }
+      const argument = content.trim().slice('/session'.length).trim();
+      if (argument.toLowerCase() === 'new') {
+        const session = this.sessions.create();
+        this.sessions.bind(session.id, channelType, bindingId);
+        syncCliSession(session);
+        await channel.send(`New session: ${format(session)}`, channelId);
+        return;
+      }
+      if (!argument || argument.toLowerCase() === 'current') {
+        const current = this.sessions.getByBinding(channelType, bindingId);
+        await channel.send(current ? `Current session: ${format(current)}\n\n${transcript(current)}` : 'No current session. Use /session new.', channelId);
+        return;
+      }
+      if (argument.toLowerCase().startsWith('delete ')) {
+        const session = this.sessions.resolve(argument.slice('delete '.length).trim());
+        const wasCurrent = this.sessions.getByBinding(channelType, bindingId)?.id === session.id;
+        const confirmed = await channel.askToContinue(
+          `Permanently delete ${format(session)} and all ${session.messages.length} messages everywhere? This cannot be undone.`,
+          channelId,
+        );
+        if (!confirmed) {
+          await channel.send('Session deletion cancelled.', channelId);
+          return;
+        }
+        if (this.sessionSyncEnabled) this.sessions.markDeleted(session.id);
+        else this.sessions.deletePermanently(session.id);
+        const replacement = wasCurrent ? this.sessions.create({ binding: { channelType, externalConversationId: bindingId } }) : null;
+        if (replacement) syncCliSession(replacement);
+        await channel.send(
+          `Deleted session ${session.alias} [${session.shortId}].${this.sessionSyncEnabled ? ' Cloud deletion is queued.' : ''}${replacement ? ` New session: ${format(replacement)}` : ''}`,
+          channelId,
+        );
+        return;
+      }
+      if (argument.toLowerCase().startsWith('archive ')) {
+        const session = this.sessions.archive(argument.slice('archive '.length).trim());
+        await channel.send(`Archived: ${format(session)}`, channelId);
+        return;
+      }
+      let session;
+      try {
+        session = this.sessions.resolve(argument);
+      } catch (error) {
+        if (channelType !== 'web' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(argument)) throw error;
+        session = this.sessions.create({ id: argument });
+      }
+      this.sessions.bind(session.id, channelType, bindingId);
+      syncCliSession(session);
+      await channel.send(`Switched session: ${format(session)}\n\n${transcript(session)}`, channelId);
+    } catch (error) {
+      const message = error instanceof SessionResolutionError ? error.message : error instanceof Error ? error.message : String(error);
+      await channel.send(message, channelId);
+    }
+  }
+
+  private scheduleSessionTitleGeneration(sessionId: string, providerName: string): void {
+    if (!this.generateTitle || this.titleGenerationInFlight.has(sessionId)) return;
+    const session = this.sessions.get(sessionId);
+    const exchange = session.messages.filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'));
+    if (session.titleSource !== 'fallback' || exchange.length !== 2 || exchange[0].role !== 'user' || exchange[1].role !== 'assistant') return;
+    this.titleGenerationInFlight.add(sessionId);
+    const timer = setTimeout(() => {
+      void this.generateSessionTitle(sessionId, exchange[0].content, exchange[1].content, providerName).finally(() => {
+        this.titleGenerationInFlight.delete(sessionId);
+      });
+    }, 0);
+    timer.unref?.();
+  }
+
+  private async generateSessionTitle(sessionId: string, userMessage: string, assistantMessage: string, providerName: string): Promise<void> {
+    try {
+      const rawTitle = await this.generateTitle!({ userMessage, assistantMessage, providerName });
+      const title = normalizeGeneratedSessionTitle(rawTitle);
+      if (!title) {
+        logger.debug({ sessionId }, 'Session title generator returned an unusable title');
+        return;
+      }
+      if (this.sessions.get(sessionId).titleSource !== 'fallback') return;
+      const session = this.sessions.updateTitle(sessionId, title, 'generated');
+      const currentCliSession = this.sessions.getByBinding('cli', 'current');
+      const cliChannel = this.channels.get('cli');
+      if (currentCliSession?.id === session.id && cliChannel instanceof CLIChannel) cliChannel.setCurrentSession(session);
+      logger.info({ sessionId, title }, 'Generated canonical session title');
+    } catch (error) {
+      logger.debug({ sessionId, err: error instanceof Error ? error.message : String(error) }, 'Background session title generation failed');
+    }
+  }
+
   private async handleWorkspaceNaturalLanguage(content: string, channelType: string, channelId: string): Promise<boolean> {
     const channel = this.channels.get(channelType as any);
     if (!channel || channelType !== 'cli' || !(channel instanceof CLIChannel)) return false;
@@ -4320,10 +5256,13 @@ Is this productive iteration or a stuck loop?`,
   private async sendMemoryOverview(channel: any, channelId: string): Promise<void> {
     if (!this.userMemory) return;
     const summary = this.userMemory.getSummary();
+    const shareableCount = this.userMemory.countShareable();
+    const shareLearning = this.userMemory.isShareLearning();
     const lines = [
       `**Memory Overview**`,
       `Total memories: ${summary.total}`,
       `Learning: ${summary.learningPaused ? 'PAUSED' : 'ACTIVE'}`,
+      `Shared learning: ${shareLearning ? 'ON' : 'OFF'} (${shareableCount} shareable)`,
     ];
     if (summary.profileSummary) {
       lines.push(`Profile: ${summary.profileSummary}`);
@@ -4348,11 +5287,14 @@ Is this productive iteration or a stuck loop?`,
     const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
       while (true) {
         const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+        const shareLabel = this.userMemory!.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
         const action = await sel('Memory', [
           { value: 'overview', label: 'Overview' },
           { value: 'recent', label: 'Recent Memories' },
+          { value: 'shared', label: 'Shared Memories' },
           { value: 'search', label: 'Search' },
           { value: 'toggle', label: learningLabel },
+          { value: 'share', label: shareLabel },
           { value: 'clear', label: 'Clear All Memories' },
           { value: 'back', label: 'Back' },
         ]);
@@ -4376,6 +5318,23 @@ Is this productive iteration or a stuck loop?`,
             const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
             lines.push(`${scope} [${r.type}] ${r.summary}`);
             lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+          }
+          await channel.send(lines.join('\n'), channelId);
+          continue;
+        }
+
+        if (action === 'shared') {
+          const shared = this.userMemory!.getShareable(20);
+          if (shared.length === 0) {
+            await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
+            continue;
+          }
+          const lines = [`**Shared Memories (${shared.length}):**`, ''];
+          for (const r of shared) {
+            const scope = r.scope === 'active' ? '⏳' : '📌';
+            const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
+            lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
+            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
           }
           await channel.send(lines.join('\n'), channelId);
           continue;
@@ -4406,6 +5365,23 @@ Is this productive iteration or a stuck loop?`,
           continue;
         }
 
+        if (action === 'share') {
+          const currently = this.userMemory!.isShareLearning();
+          this.userMemory!.setShareLearning(!currently);
+          const cfg = loadConfig();
+          if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
+          cfg.memory.collaborativeKnowledge.shareLearning = !currently;
+          saveConfig(cfg);
+          const count = this.userMemory!.countShareable();
+          await channel.send(
+            currently
+              ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
+              : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
+            channelId,
+          );
+          continue;
+        }
+
         if (action === 'clear') {
           const confirm = await sel('Clear all memories?', [
             { value: 'cancel', label: 'Cancel' },
@@ -4424,6 +5400,98 @@ Is this productive iteration or a stuck loop?`,
       await runMenu(select);
     } else {
       await channel.withMenu(runMenu);
+    }
+  }
+
+  private async openMemoryChoiceMenu(channel: any, channelId: string): Promise<void> {
+    if (!this.userMemory) return;
+
+    const learningLabel = this.userMemory.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
+    const shareLabel = this.userMemory.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
+    const action = await channel.presentChoicePrompt('Memory', [
+      { value: 'overview', label: 'Overview' },
+      { value: 'recent', label: 'Recent Memories' },
+      { value: 'shared', label: 'Shared Memories' },
+      { value: 'toggle', label: learningLabel },
+      { value: 'share', label: shareLabel },
+      { value: 'clear', label: 'Clear All Memories' },
+      { value: 'cancel', label: 'Cancel' },
+    ], channelId);
+
+    if (action === 'cancel') return;
+
+    if (action === 'overview') {
+      await this.sendMemoryOverview(channel, channelId);
+      return;
+    }
+
+    if (action === 'recent') {
+      const recent = this.userMemory.getRecent(10);
+      if (recent.length === 0) {
+        await channel.send('No memories yet.', channelId);
+        return;
+      }
+      const lines = ['**Recent Memories:**', ''];
+      for (const r of recent) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
+        lines.push(`${scope} [${r.type}] ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'shared') {
+      const shared = this.userMemory.getShareable(20);
+      if (shared.length === 0) {
+        await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
+        return;
+      }
+      const lines = [`**Shared Memories (${shared.length}):**`, ''];
+      for (const r of shared) {
+        const scope = r.scope === 'active' ? '⏳' : '📌';
+        const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
+        lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
+        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'toggle') {
+      const currentlyPaused = this.userMemory.isLearningPaused();
+      this.userMemory.setLearningPaused(!currentlyPaused);
+      await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
+      return;
+    }
+
+    if (action === 'share') {
+      const currently = this.userMemory.isShareLearning();
+      this.userMemory.setShareLearning(!currently);
+      const cfg = loadConfig();
+      if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
+      cfg.memory.collaborativeKnowledge.shareLearning = !currently;
+      saveConfig(cfg);
+      const count = this.userMemory.countShareable();
+      await channel.send(
+        currently
+          ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
+          : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
+        channelId,
+      );
+      return;
+    }
+
+    if (action === 'clear') {
+      const confirm = await channel.presentChoicePrompt('Clear all memories?', [
+        { value: 'cancel', label: 'Cancel' },
+        { value: 'confirm', label: 'Clear everything' },
+      ], channelId);
+      if (confirm === 'confirm') {
+        const cleared = this.userMemory.clear();
+        await channel.send(`Cleared ${cleared} memories.`, channelId);
+      }
     }
   }
 

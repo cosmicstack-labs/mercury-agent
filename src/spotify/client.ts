@@ -1,12 +1,9 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import { getMercuryHome, saveConfig } from '../utils/config.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
-
-const execAsync = promisify(exec);
+import { openUrl } from '../utils/open-url.js';
 
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize';
 const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
@@ -137,9 +134,8 @@ export class SpotifyClient {
         console.log(`  Opening browser for Spotify login...`);
         console.log(`  If browser doesn't open, visit:\n  ${callbackUrl}\n`);
         console.log(`  ${'─'.repeat(50)}\n`);
-        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-        execAsync(`${cmd} "${callbackUrl}"`).catch(() => {
-          console.log(`  Could not auto-open browser. Visit:\n  ${callbackUrl}\n`);
+        void openUrl(callbackUrl).then((opened) => {
+          if (!opened) console.log(`  Could not auto-open browser. Visit:\n  ${callbackUrl}\n`);
         });
       });
 

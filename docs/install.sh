@@ -55,28 +55,34 @@ detect_arch() {
   esac
 }
 
-# Fetch a URL to stdout. Prefers curl, falls back to wget.
-fetch() {
-  url=$1
+# Fetch a URL to a file path.
+fetch_to() {
   if have curl; then
-    curl -fsSL "$url"
+    curl -fsSL --output "$2" "$1"
   elif have wget; then
-    wget -qO- "$url"
+    wget -qO "$2" "$1"
   else
     die "Need curl or wget to download files."
   fi
 }
 
-# Fetch a URL to a file path.
-fetch_to() {
-  url=$1; out=$2
-  if have curl; then
-    curl -fsSL --output "$out" "$url"
-  elif have wget; then
-    wget -qO "$out" "$url"
+sha256_file() {
+  file=$1
+  if have shasum; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif have sha256sum; then
+    sha256sum "$file" | awk '{print $1}'
   else
-    die "Need curl or wget to download files."
+    die "Need shasum or sha256sum to verify release downloads."
   fi
+}
+
+checksum_for() {
+  checksums_file=$1; asset_name=$2
+  matches=$(awk -v a="$asset_name" '$2 == a { print $1 }' "$checksums_file")
+  count=$(printf '%s\n' "$matches" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$count" = "1" ] || die "checksums.txt must contain exactly one checksum for $asset_name"
+  printf '%s\n' "$matches"
 }
 
 # Resolve "latest" via the GitHub redirect (no API rate limits, no jq needed).
@@ -148,6 +154,15 @@ main() {
   printf '\n%s\n' "$(c_bold '☿ Mercury installer')"
   printf '   Soul-driven AI agent · https://mercuryagent.sh\n\n'
 
+  termux_prefix=0
+  case "${PREFIX:-}" in *com.termux*) termux_prefix=1 ;; esac
+  if [ -n "${TERMUX_VERSION:-}" ] || [ "$termux_prefix" = "1" ]; then
+    die "Standalone Linux binaries use glibc and cannot run on Android/Termux.
+Install the supported Node.js package instead:
+   pkg install nodejs-lts git python build-essential
+   npm install -g @cosmicstack/mercury-agent"
+  fi
+
   os=$(detect_os)
   arch=$(detect_arch)
   info "Detected platform: ${os}-${arch}"
@@ -166,60 +181,53 @@ main() {
   bin_dir="$prefix/bin"
   bin_path="$bin_dir/mercury"
 
-  mkdir -p "$bin_dir"
-  tmp=$(mktemp -t mercury.XXXXXX)
-  # Clean tempfile on any exit path.
-  trap 'rm -f "$tmp"' EXIT INT TERM
+  tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/mercury.XXXXXX")
+  binary_tmp="$tmp_dir/$asset"
+  web_tmp="$tmp_dir/web.tar.gz"
+  checksums_tmp="$tmp_dir/checksums.txt"
+  stage_dir="$tmp_dir/stage"
+  trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+
+  checksum_url="${GITHUB_DL}/v${version}/checksums.txt"
+  info "Downloading checksums.txt ..."
+  fetch_to "$checksum_url" "$checksums_tmp" || die "Failed to download required checksums from $checksum_url"
+  expected_binary=$(checksum_for "$checksums_tmp" "$asset")
+  expected_web=$(checksum_for "$checksums_tmp" "web.tar.gz")
 
   info "Downloading $asset ..."
-  if ! fetch_to "$url" "$tmp"; then
+  if ! fetch_to "$url" "$binary_tmp"; then
     die "Failed to download $url
    The binary for v${version} on ${os}-${arch} may not have been published yet.
    Browse releases: https://github.com/${REPO}/releases"
   fi
 
-  # Optional checksum verification.
-  checksum_url="${GITHUB_DL}/v${version}/checksums.txt"
-  if checksums=$(fetch "$checksum_url" 2>/dev/null); then
-    expected=$(printf '%s\n' "$checksums" | awk -v a="$asset" '$2 == a { print $1 }')
-    if [ -n "$expected" ]; then
-      if have shasum; then
-        actual=$(shasum -a 256 "$tmp" | awk '{print $1}')
-      elif have sha256sum; then
-        actual=$(sha256sum "$tmp" | awk '{print $1}')
-      else
-        actual=""
-      fi
-      if [ -n "$actual" ]; then
-        if [ "$actual" = "$expected" ]; then
-          info "Checksum verified (sha256)"
-        else
-          die "Checksum mismatch for $asset
-   expected: $expected
-   actual:   $actual"
-        fi
-      fi
-    fi
-  fi
-
-  mv "$tmp" "$bin_path"
-  trap - EXIT INT TERM
-  chmod +x "$bin_path"
-
-  # Download web dashboard assets (required for the web UI).
   web_tar_url="${GITHUB_DL}/v${version}/web.tar.gz"
-  web_tmp=$(mktemp -t mercury-web.XXXXXX.tar.gz)
-  if fetch_to "$web_tar_url" "$web_tmp" 2>/dev/null; then
-    mkdir -p "$bin_dir/web"
-    if tar -xzf "$web_tmp" -C "$bin_dir" 2>/dev/null; then
-      info "Web dashboard assets installed"
-    else
-      warn "Failed to extract web dashboard assets"
-    fi
-  else
-    warn "Web dashboard assets not found for v${version} — web UI will not work"
-  fi
-  rm -f "$web_tmp"
+  info "Downloading web.tar.gz ..."
+  fetch_to "$web_tar_url" "$web_tmp" || die "Failed to download required web dashboard assets from $web_tar_url"
+
+  actual_binary=$(sha256_file "$binary_tmp")
+  [ "$actual_binary" = "$expected_binary" ] || die "Checksum mismatch for $asset
+   expected: $expected_binary
+   actual:   $actual_binary"
+  actual_web=$(sha256_file "$web_tmp")
+  [ "$actual_web" = "$expected_web" ] || die "Checksum mismatch for web.tar.gz
+   expected: $expected_web
+   actual:   $actual_web"
+  info "Checksums verified (sha256)"
+
+  tar -tzf "$web_tmp" > "$tmp_dir/web-files.txt" || die "Failed to inspect web.tar.gz"
+  awk '$0 !~ /^web(\/|$)/ || $0 ~ /(^|\/)\.\.(\/|$)/ { bad=1 } END { exit bad }' \
+    "$tmp_dir/web-files.txt" || die "web.tar.gz contains an unsafe path"
+  mkdir -p "$stage_dir"
+  tar -xzf "$web_tmp" -C "$stage_dir" || die "Failed to extract web dashboard assets"
+  [ -d "$stage_dir/web" ] || die "web.tar.gz does not contain the required web directory"
+
+  mkdir -p "$bin_dir"
+  mv "$binary_tmp" "$bin_path"
+  chmod +x "$bin_path"
+  rm -rf "$bin_dir/web"
+  mv "$stage_dir/web" "$bin_dir/web"
+  info "Web dashboard assets installed"
 
   # macOS: strip the quarantine attribute so Gatekeeper doesn't bark on
   # unsigned binaries downloaded via curl.
@@ -228,6 +236,9 @@ main() {
   fi
 
   info "Installed to $bin_path"
+
+  rm -rf "$tmp_dir"
+  trap - EXIT INT TERM
 
   PATH_UPDATED=0
   maybe_update_path "$bin_dir"

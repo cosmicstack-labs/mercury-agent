@@ -5,16 +5,16 @@
  * print human-readable, chalk-colored output by default and structured JSON
  * when `--json` is passed.
  */
-import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { homedir, platform } from 'node:os';
+import { homedir } from 'node:os';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { RegistryClient, RegistryError, searchFeed, type RegistrySkillSummary, type ScoredSkill } from './registry.js';
 import { SkillStore, isValidSkillId } from './store.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { getMercuryHome } from '../utils/config.js';
+import { openUrl } from '../utils/open-url.js';
 
 interface GlobalSkillFlags {
   json?: boolean;
@@ -373,9 +373,7 @@ async function loadBodyFromSource(source: string): Promise<string> {
 }
 
 async function openInBrowser(url: string): Promise<void> {
-  const cmd = platform() === 'darwin' ? 'open' : platform() === 'win32' ? 'start' : 'xdg-open';
-  const args = platform() === 'win32' ? ['', url] : [url];
-  spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+  await openUrl(url);
 }
 
 // ---------- public registration ----------

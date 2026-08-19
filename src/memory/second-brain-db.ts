@@ -42,6 +42,8 @@ export interface MemoryRow {
   id: string;
   user_key: string;
   type: string;
+  categories: string;
+  shareable: number;
   summary: string;
   detail: string | null;
   scope: string;
@@ -113,6 +115,8 @@ export class SecondBrainDB {
         id TEXT PRIMARY KEY,
         user_key TEXT NOT NULL,
         type TEXT NOT NULL,
+        categories TEXT NOT NULL DEFAULT '[]',
+        shareable INTEGER NOT NULL DEFAULT 0,
         summary TEXT NOT NULL,
         detail TEXT,
         scope TEXT NOT NULL DEFAULT 'durable',
@@ -221,18 +225,35 @@ export class SecondBrainDB {
     `);
 
     this.db.pragma('foreign_keys = ON');
+
+    // ── Migrations for existing DBs ──────────────────────────────────────────
+    // Add `categories` and `shareable` columns if the table predates them.
+    // Existing memories get categories='[]' and shareable=0 (private).
+    const columns = this.db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+    if (!columns.some((c) => c.name === 'categories')) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN categories TEXT NOT NULL DEFAULT '[]'");
+      logger.info('Added categories column to memories table');
+    }
+    if (!columns.some((c) => c.name === 'shareable')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN shareable INTEGER NOT NULL DEFAULT 0');
+      logger.info('Added shareable column to memories table');
+    }
+
+    // Index for incremental fetch (shareable + updated_at — the cloud pull query).
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_memories_shareable_updated ON memories(shareable, updated_at)');
+
     logger.info('Second brain database initialized');
   }
 
   insert(row: Omit<MemoryRow, 'rowid'> & { rowid?: never }): void {
     const stmt = this.db.prepare(`
       INSERT INTO memories (
-        id, user_key, type, summary, detail, scope, evidence_kind, source,
+        id, user_key, type, categories, shareable, summary, detail, scope, evidence_kind, source,
         confidence, importance, durability, evidence_count, provenance,
         dismissed, superseded_by, created_at, updated_at,
         last_seen_at, last_used_at, last_used_query
       ) VALUES (
-        @id, @user_key, @type, @summary, @detail, @scope, @evidence_kind, @source,
+        @id, @user_key, @type, @categories, @shareable, @summary, @detail, @scope, @evidence_kind, @source,
         @confidence, @importance, @durability, @evidence_count, @provenance,
         @dismissed, @superseded_by, @created_at, @updated_at,
         @last_seen_at, @last_used_at, @last_used_query
@@ -242,6 +263,8 @@ export class SecondBrainDB {
       id: row.id,
       user_key: row.user_key,
       type: row.type,
+      categories: row.categories ?? '[]',
+      shareable: row.shareable ?? 0,
       summary: row.summary,
       detail: row.detail ?? null,
       scope: row.scope ?? 'durable',
@@ -271,6 +294,7 @@ export class SecondBrainDB {
       'confidence', 'importance', 'durability', 'evidence_count',
       'provenance', 'dismissed', 'superseded_by',
       'updated_at', 'last_seen_at', 'last_used_at', 'last_used_query',
+      'categories', 'shareable',
     ] as const;
 
     for (const field of allowedFields) {
@@ -294,6 +318,42 @@ export class SecondBrainDB {
   getById(id: string): MemoryRow | undefined {
     const stmt = this.db.prepare('SELECT * FROM memories WHERE id = ?');
     return stmt.get(id) as MemoryRow | undefined;
+  }
+
+  /**
+   * Incremental fetch query — shareable memories newer than the cursor.
+   * Used by the cloud `memory.fetch` handler to pull only memories created or
+   * updated since the last fetch (watermark stored in MemorySyncState).
+   * Excludes dismissed rows. Ordered by `updated_at ASC` so the cloud can
+   * advance its cursor to the max `updated_at` safely.
+   */
+  getShareableSince(userKey: string, since: number, limit: number = 500): MemoryRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM memories
+      WHERE user_key = ? AND shareable = 1 AND dismissed = 0
+      AND updated_at > ?
+      ORDER BY updated_at ASC
+      LIMIT ?
+    `);
+    return stmt.all(userKey, since, limit) as MemoryRow[];
+  }
+
+  /** Count shareable memories (for display / config). */
+  countShareable(userKey: string): number {
+    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM memories WHERE user_key = ? AND shareable = 1 AND dismissed = 0');
+    return (stmt.get(userKey) as { count: number }).count;
+  }
+
+  /** List all shareable memories (for the /memory menu "Shared Memories" view). */
+  getShareable(userKey: string, limit: number = 50): MemoryRow[] {
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND shareable = 1 AND dismissed = 0 ORDER BY updated_at DESC LIMIT ?`);
+    return stmt.all(userKey, limit) as MemoryRow[];
+  }
+
+  /** Toggle a memory's shareable flag on/off. */
+  setShareable(id: string, shareable: boolean): void {
+    const stmt = this.db.prepare('UPDATE memories SET shareable = ?, updated_at = ? WHERE id = ?');
+    stmt.run(shareable ? 1 : 0, Date.now(), id);
   }
 
   getByType(userKey: string, type: string): MemoryRow[] {

@@ -72,6 +72,8 @@ export interface ChatCommandContext {
   memorySetLearningPaused: (paused: boolean) => void;
   memoryClear: () => number;
   memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
+  memoryIsShareLearning: () => boolean;
+  memorySetShareLearning: (enabled: boolean) => void;
 }
 
 export class CapabilityRegistry {
@@ -89,6 +91,7 @@ export class CapabilityRegistry {
   private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
+  private researchModeGetter: (() => boolean) | null = null;
 
   constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
@@ -97,6 +100,14 @@ export class CapabilityRegistry {
     this.tokenBudget = tokenBudget;
     this.supervisor = supervisor;
     this.userMemory = userMemory;
+  }
+
+  setResearchModeGetter(getter: () => boolean): void {
+    this.researchModeGetter = getter;
+  }
+
+  isResearchMode(): boolean {
+    return this.researchModeGetter ? this.researchModeGetter() : false;
   }
 
   setChatCommandContext(ctx: ChatCommandContext): void {
@@ -110,6 +121,7 @@ export class CapabilityRegistry {
   setChannelContext(channelId: string, channelType: string): void {
     this.currentChannelId = channelId;
     this.currentChannelType = channelType;
+    this.permissions.setCurrentContext(channelType, channelId);
   }
 
   getChannelContext(): { channelId: string; channelType: string } {
@@ -199,7 +211,7 @@ export class CapabilityRegistry {
     }
 
     if (this.scheduler) {
-      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, () => this.getChannelContext());
+      this.tools.schedule_task = createScheduleTaskTool(this.scheduler, this.permissions, () => this.getChannelContext());
       this.tools.list_scheduled_tasks = createListTasksTool(this.scheduler);
       this.tools.cancel_scheduled_task = createCancelTaskTool(this.scheduler);
       logger.info('Scheduler tools registered');
@@ -220,8 +232,8 @@ export class CapabilityRegistry {
       this.tools.git_status = createGitStatusTool(() => this.getCwd());
       this.tools.git_diff = createGitDiffTool(() => this.getCwd());
       this.tools.git_log = createGitLogTool(() => this.getCwd());
-      this.tools.git_add = createGitAddTool(() => this.getCwd());
-      this.tools.git_commit = createGitCommitTool(() => this.getCwd());
+      this.tools.git_add = createGitAddTool(this.permissions, () => this.getCwd());
+      this.tools.git_commit = createGitCommitTool(this.permissions, () => this.getCwd());
       this.tools.git_push = createGitPushTool(this.permissions, () => this.getCwd());
       logger.info('Git tools registered');
     }
@@ -235,7 +247,7 @@ export class CapabilityRegistry {
       logger.info('GitHub tools registered');
     }
 
-    this.tools.fetch_url = createFetchUrlTool();
+    this.tools.fetch_url = createFetchUrlTool({ isResearchMode: () => this.isResearchMode() });
     logger.info('Web fetch tool registered');
 
     if (this.supervisor) {

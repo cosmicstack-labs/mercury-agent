@@ -19,6 +19,8 @@ export type UserMemoryType =
 export interface UserMemoryRecord {
   id: string;
   type: UserMemoryType;
+  categories: string[];
+  shareable: boolean;
   summary: string;
   detail?: string | null;
   scope: 'durable' | 'active' | 'subconscious';
@@ -42,6 +44,8 @@ export interface UserMemoryCandidate {
   type: UserMemoryType;
   summary: string;
   detail?: string;
+  categories?: string[];
+  shareable?: boolean;
   evidenceKind?: 'direct' | 'inferred';
   confidence: number;
   importance: number;
@@ -85,13 +89,25 @@ export class UserMemoryStore {
   private userKey: string;
   private consolidateThrottleMs: number;
   private lastConsolidateAt: number = 0;
+  /** When true, new memories are marked shareable for cloud fetch. */
+  private shareLearning: boolean;
 
   constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
     this.consolidateThrottleMs = 5 * 60 * 1000;
+    this.shareLearning = config.memory.collaborativeKnowledge?.shareLearning ?? false;
     const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'second-brain', 'second-brain.db');
     this.db = new SecondBrainDB(resolvedDbPath);
     this.db.init();
+  }
+
+  /** Toggle whether new memories are marked shareable. */
+  setShareLearning(enabled: boolean): void {
+    this.shareLearning = enabled;
+  }
+
+  isShareLearning(): boolean {
+    return this.shareLearning;
   }
 
   getSummary(): UserMemorySummary {
@@ -117,6 +133,32 @@ export class UserMemoryStore {
   getRecent(limit: number = 10): UserMemoryRecord[] {
     const stmt = this.db.getActive(this.userKey).slice(0, limit);
     return stmt.map(row => this.toRecord(row));
+  }
+
+  /**
+   * Incremental fetch — shareable memories newer than the cursor. Used by the
+   * cloud `memory.fetch` WS handler. Returns records ordered by `updatedAt`
+   * ascending so the caller can advance its watermark to the max.
+   */
+  getShareableSince(since: number, limit: number = 500): UserMemoryRecord[] {
+    const rows = this.db.getShareableSince(this.userKey, since, limit);
+    return rows.map(row => this.toRecord(row));
+  }
+
+  /** Count of shareable memories (for display). */
+  countShareable(): number {
+    return this.db.countShareable(this.userKey);
+  }
+
+  /** List shareable memories (for the /memory menu "Shared Memories" view). */
+  getShareable(limit: number = 50): UserMemoryRecord[] {
+    const rows = this.db.getShareable(this.userKey, limit);
+    return rows.map(row => this.toRecord(row));
+  }
+
+  /** Toggle a memory's shareable flag. */
+  setShareable(id: string, shareable: boolean): void {
+    this.db.setShareable(id, shareable);
   }
 
   search(query: string, limit: number = 10): UserMemoryRecord[] {
@@ -248,6 +290,16 @@ export class UserMemoryStore {
     source: UserMemoryRecord['source'] = 'conversation',
   ): UserMemoryRecord[] {
     if (this.isLearningPaused()) return [];
+
+    // Stamp shareable based on the shareLearning toggle. Candidates that
+    // explicitly set shareable (e.g. manual saves via the web API) keep their
+    // value; others inherit the global toggle. Forward-only — existing
+    // memories are never retroactively flipped.
+    for (const candidate of candidates) {
+      if (candidate.shareable === undefined) {
+        candidate.shareable = this.shareLearning;
+      }
+    }
 
     const remembered: UserMemoryRecord[] = [];
 
@@ -384,6 +436,8 @@ export class UserMemoryStore {
       id,
       user_key: this.userKey,
       type: candidate.type,
+      categories: JSON.stringify(candidate.categories ?? []),
+      shareable: candidate.shareable ? 1 : 0,
       summary: candidate.summary.trim(),
       detail: candidate.detail?.trim() ?? null,
       scope,
@@ -415,6 +469,8 @@ export class UserMemoryStore {
       id,
       user_key: this.userKey,
       type: 'reflection',
+      categories: '[]',
+      shareable: 0,
       summary: candidate.summary,
       detail: candidate.detail ?? null,
       scope: 'durable',
@@ -437,6 +493,9 @@ export class UserMemoryStore {
 
   private mergeRecord(existing: MemoryRow, candidate: UserMemoryCandidate): UserMemoryRecord | null {
     const updatedAt = Date.now();
+    // If the incoming candidate is shareable, promote the existing record to
+    // shareable too (forward-only — never demotes a shareable memory).
+    const promoteShareable = candidate.shareable && existing.shareable !== 1;
     this.db.update({
       id: existing.id,
       summary: pickBetterSummary(existing.summary, candidate.summary),
@@ -447,6 +506,7 @@ export class UserMemoryStore {
       importance: clamp(Math.max(existing.importance, candidate.importance), 0, 1),
       durability: clamp(Math.max(existing.durability, candidate.durability), 0, 1),
       evidence_count: existing.evidence_count + 1,
+      shareable: promoteShareable ? 1 : existing.shareable,
       updated_at: updatedAt,
       last_seen_at: updatedAt,
     });
@@ -637,9 +697,16 @@ export class UserMemoryStore {
   }
 
   private toRecord(row: MemoryRow): UserMemoryRecord {
+    let categories: string[] = [];
+    try {
+      const parsed = JSON.parse(row.categories ?? '[]');
+      if (Array.isArray(parsed)) categories = parsed as string[];
+    } catch { /* malformed */ }
     return {
       id: row.id,
       type: row.type as UserMemoryType,
+      categories,
+      shareable: row.shareable === 1,
       summary: row.summary,
       detail: row.detail,
       scope: row.scope as 'durable' | 'active' | 'subconscious',
