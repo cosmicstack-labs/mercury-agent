@@ -51,6 +51,36 @@ function Get-RequiredChecksum ([string]$Checksums, [string]$Asset) {
     return $matches[0].ToLower()
 }
 
+function Save-VerifiedAsset ([string]$Uri, [string]$Path, [string]$ExpectedHash, [string]$Asset) {
+    $actualHash = ''
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $downloadUri = $Uri
+        if ($attempt -gt 1) {
+            $separator = if ($Uri.Contains('?')) { '&' } else { '?' }
+            $downloadUri = "$Uri${separator}cacheBust=$([guid]::NewGuid().ToString('N'))"
+        }
+
+        try {
+            Invoke-WebRequest -Uri $downloadUri -OutFile $Path -UseBasicParsing `
+                -Headers @{ 'Cache-Control' = 'no-cache' }
+        } catch {
+            if ($attempt -eq 2) { Die "Failed to download $Asset from $Uri" }
+            Write-Warn2 "Download failed for $Asset; retrying without cache..."
+            continue
+        }
+
+        $actualHash = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower()
+        if ($actualHash -eq $ExpectedHash) { return }
+
+        Remove-Item $Path -Force -ErrorAction SilentlyContinue
+        if ($attempt -eq 1) {
+            Write-Warn2 "Checksum mismatch for $Asset; retrying without cache..."
+        }
+    }
+
+    Die "Checksum mismatch for $Asset`n   expected: $ExpectedHash`n   actual:   $actualHash"
+}
+
 function Update-UserPath ([string]$BinDir) {
     if ($env:MERCURY_NO_PATH -eq '1') { return $false }
 
@@ -122,28 +152,11 @@ try {
     $expectedWeb = Get-RequiredChecksum -Checksums $checksums -Asset 'web.tar.gz'
 
     Write-Info "Downloading $asset ..."
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $binaryTmp -UseBasicParsing
-    } catch {
-        Die @"
-Failed to download $url
-   The binary for v$version on win-x64 may not have been published yet.
-   Browse releases: https://github.com/$Repo/releases
-"@
-    }
+    Save-VerifiedAsset -Uri $url -Path $binaryTmp -ExpectedHash $expectedBinary -Asset $asset
 
     $webTarUrl = "$GhDl/v$version/web.tar.gz"
     Write-Info 'Downloading web.tar.gz ...'
-    Invoke-WebRequest -Uri $webTarUrl -OutFile $webTmp -UseBasicParsing
-
-    $actualBinary = (Get-FileHash -Algorithm SHA256 -Path $binaryTmp).Hash.ToLower()
-    if ($actualBinary -ne $expectedBinary) {
-        Die "Checksum mismatch for $asset`n   expected: $expectedBinary`n   actual:   $actualBinary"
-    }
-    $actualWeb = (Get-FileHash -Algorithm SHA256 -Path $webTmp).Hash.ToLower()
-    if ($actualWeb -ne $expectedWeb) {
-        Die "Checksum mismatch for web.tar.gz`n   expected: $expectedWeb`n   actual:   $actualWeb"
-    }
+    Save-VerifiedAsset -Uri $webTarUrl -Path $webTmp -ExpectedHash $expectedWeb -Asset 'web.tar.gz'
     Write-Info 'Checksums verified (sha256)'
 
     $archiveEntries = @(tar -tzf $webTmp)

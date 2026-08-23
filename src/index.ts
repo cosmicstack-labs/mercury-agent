@@ -4311,15 +4311,20 @@ serviceCmd
       console.log(chalk.dim('  Standalone binary detected — re-running installer...'));
       console.log('');
 
-      const { execSync } = await import('node:child_process');
+      const { execSync, spawn } = await import('node:child_process');
       const platform = process.platform;
-      const binPath = process.execPath;
 
       if (platform === 'win32') {
-        // Windows: use PowerShell installer
-        const psCmd = `irm https://mercuryagent.sh/install.ps1 | iex`;
+        // Run after this process exits so Windows releases the current executable.
+        const psCmd = 'Start-Sleep -Seconds 1; irm https://mercuryagent.sh/install.ps1 | iex';
         try {
-          execSync(psCmd, { stdio: 'inherit', shell: 'powershell.exe' });
+          const installer = spawn(
+            'powershell.exe',
+            ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCmd],
+            { detached: true, stdio: 'inherit' },
+          );
+          installer.unref();
+          console.log(chalk.green('  ✓ Upgrade installer started. Mercury will exit before installation begins.'));
         } catch {
           console.log(chalk.red('  ✗ Upgrade failed. Try manually:'));
           console.log(chalk.dim('    irm https://mercuryagent.sh/install.ps1 | iex'));
