@@ -2355,7 +2355,7 @@ export class Agent {
             break;
           }
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
-          await this.sendProgressNotice(msg, `Provider ${provider.name} failed. Trying fallback...`)
+          await this.sendProgressNotice(msg, 'A model attempt failed. Trying another option...')
             .catch((e) => logger.warn({ e }, 'channel send failed'));
         }
       }

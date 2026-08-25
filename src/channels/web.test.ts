@@ -46,10 +46,24 @@ describe('WebChannel durable streaming', () => {
       return true;
     });
 
-    channel.sendHeartbeat('Provider mercuryCloud failed. Trying fallback...', 'request-fallback');
+    channel.sendHeartbeat('A model attempt failed. Trying another option...', 'request-fallback');
 
     expect(events).toContainEqual(expect.objectContaining({ type: 'heartbeat' }));
     expect(channel.hasCloudEventHandler('request-fallback')).toBe(true);
+  });
+
+  it('keeps provider diagnostics out of terminal errors', () => {
+    const channel = new WebChannel('Mercury');
+    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+    channel.emitCloudMessage('work', 'request-error', 'session-2', 'conversation-2', undefined, (event) => {
+      events.push(event);
+      return true;
+    });
+
+    channel.sendError('OpenRouter error 401: invalid API key sk-secret', 'request-error');
+
+    expect(events[0]?.data?.message).toContain('Mercury could not connect');
+    expect(JSON.stringify(events)).not.toMatch(/openrouter|sk-secret/i);
   });
 
   it('requires an explicit continuation decision even when permissions are bypassed', async () => {

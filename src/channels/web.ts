@@ -2,6 +2,7 @@ import { BaseChannel } from './base.js';
 import type { ChannelMessage } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
+import { userFacingAiError } from '../utils/redact.js';
 
 type CloudEventHandler = (event: ChatEvent) => boolean;
 
@@ -305,7 +306,7 @@ export class WebChannel extends BaseChannel {
   sendError(message: string, targetId?: string): boolean {
     return this.broadcast({
       type: 'error',
-      data: { message, targetId },
+      data: { message: userFacingAiError(message), targetId },
     });
   }
 
