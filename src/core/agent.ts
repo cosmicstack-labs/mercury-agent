@@ -700,6 +700,31 @@ export class Agent {
       await channel.send(this.programmingMode.getStatusText(), msg.channelId);
       return;
     }
+    if (rawArgs === 'exit' || rawArgs === 'quit') {
+      if (channel instanceof CLIChannel && channel.getTuiState().mercuryCode) {
+        channel.setMercuryCodeExitConfirm(true);
+        return;
+      }
+      this.programmingMode.setOff();
+      await channel.send('Programming mode: **Off**', msg.channelId);
+      return;
+    }
+    if (rawArgs === 'diff') {
+      try {
+        const { execFileSync } = await import('node:child_process');
+        const diff = execFileSync('git', ['--no-pager', 'diff', '--no-color', 'HEAD'], { cwd: this.capabilities.getCwd(), encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+        await channel.send(diff.trim() ? '```\n' + (diff.length > 20000 ? diff.slice(-20000) : diff) + '\n```' : 'Working tree is clean.', msg.channelId);
+      } catch (err: any) {
+        await channel.send(`git diff failed: ${err?.message || String(err)}`, msg.channelId);
+      }
+      return;
+    }
+    if (rawArgs === 'plan') {
+      this.programmingMode.setPlan();
+      if (channel instanceof CLIChannel) channel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+      await channel.send('Programming mode: **Plan**', msg.channelId);
+      return;
+    }
     await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
   }
 
@@ -4412,28 +4437,35 @@ Is this productive iteration or a stuck loop?`,
 
       if (!rawArgs) {
         if (cliChannel) {
-          const choice = await this.presentChoice(
-            'Code mode: open workspace IDE now?',
-            ['Yes, open current workspace', 'No, keep classic coding mode'],
-            channelId,
-            channelType,
-          );
-          if (choice.toLowerCase().startsWith('yes')) {
-            const current = this.capabilities.getCwd();
-            const opened = cliChannel.openWorkspace(current);
-            if (opened.ok) {
-              this.capabilities.permissions.addTempScope(current, true, true);
-              this.programmingMode.setExecute();
-              this.programmingMode.setProjectContext(current);
-              cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
-              await channel.send(`${opened.message}\nWorkspace IDE mode enabled.`, channelId);
-              return true;
+          const cwd = this.capabilities.getCwd();
+          const entered = cliChannel.enterMercuryCode(cwd, cliChannel.getTuiState().version || 'dev');
+          if (entered.ok) {
+            this.programmingMode.setPlan();
+            this.programmingMode.setProjectContext(cwd);
+            cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+            const hb = channel as Partial<CLIChannel>;
+            if (typeof hb.sendHeartbeat === 'function') {
+              hb.sendHeartbeat('Mercury Code active. Describe the change — I will analyze first (PLAN), then execute on your approval with Ctrl+X.');
             }
-            await channel.send(opened.message, channelId);
             return true;
           }
+          await channel.send(entered.message, channelId);
+          return true;
         }
         await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs === 'exit' || rawArgs === 'quit') {
+        if (cliChannel && cliChannel.getTuiState().mercuryCode) {
+          // Arm the inline confirmation; the TUI resolves it (Esc cancels,
+          // Enter/`y` confirms, Ctrl+D force-quits without asking).
+          cliChannel.setMercuryCodeExitConfirm(true);
+          return true;
+        }
+        this.programmingMode.setOff();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
         return true;
       }
 
@@ -4503,9 +4535,12 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
-      if (rawArgs === 'off' || rawArgs === 'exit') {
+      if (rawArgs === 'off') {
         this.programmingMode.setOff();
-        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        if (cliChannel) {
+          if (cliChannel.getTuiState().mercuryCode) cliChannel.exitMercuryCode();
+          cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        }
         await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
         return true;
       }
@@ -4518,7 +4553,39 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
-      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code workspace, /code agent <task>, /code off, /code toggle', channelId);
+      if (rawArgs === 'init') {
+        // Ask the agent itself to write/maintain AGENTS.md for this repo.
+        await channel.send('Scanning the repository and writing AGENTS.md...', channelId);
+        await this.processInternalPrompt(
+          'You are in Mercury Code (/code). Create or refresh the repo-level AGENTS.md in the current working directory. ' +
+          'Read the repo structure: package manifests, build config, CI, test setup, directory layout. ' +
+          'AGENTS.md must contain ONLY durable, verified facts you confirmed by reading files: build/test/lint commands, ' +
+          'project layout, code conventions you actually observed, entry points. Keep it under 40 lines. ' +
+          'If AGENTS.md already exists, merge-preserving accurate human edits and fixing stale commands.',
+          channelId,
+          channelType,
+        );
+        return true;
+      }
+
+      if (rawArgs === 'diff') {
+        const cwd = this.capabilities.getCwd();
+        try {
+          const { execFileSync } = await import('node:child_process');
+          const diff = execFileSync('git', ['--no-pager', 'diff', '--no-color', 'HEAD'], { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+          const trimmedDiff = diff.length > 20000 ? diff.slice(-20000) : diff;
+          if (!trimmedDiff.trim()) {
+            await channel.send('Working tree is clean — no unstaged/staged changes vs HEAD.', channelId);
+          } else {
+            await channel.send('```\n' + trimmedDiff + '\n```', channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`git diff failed: ${err?.message || String(err)}`, channelId);
+        }
+        return true;
+      }
+
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code init, /code diff, /code workspace, /code agent <task>, /code off, /code toggle, /code exit', channelId);
       return true;
     }
 

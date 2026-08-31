@@ -5,10 +5,12 @@ import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptStat
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
+import { highlightCodeBlock } from '../utils/highlight.js';
+import { renderMercuryCodeParts } from './pixel-logo.js';
+import { normalizeTerminalText, getViewportWindow, moveViewport } from './terminal-viewport.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
-import { getViewportWindow, normalizeTerminalText } from './terminal-viewport.js';
 
 const MERCURY_LOGO = [
   '    __  _____________  ________  ________  __',
@@ -119,10 +121,13 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     '/code plan',
     '/code execute',
     '/code build',
+    '/code diff',
+    '/code init',
     '/code workspace',
     '/code agent ',
     '/code off',
     '/code toggle',
+    '/code exit',
     '/research',
     '/research on',
     '/research off',
@@ -223,7 +228,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     setSkillSelIdx(0);
   }, [skillSuggestions.length, input]);
 
-  const showInput = !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
+  const showInput = state.mode !== 'mercury-code' && !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
 
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
@@ -377,6 +382,92 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         onInput('/chat');
         return;
       }
+    }
+
+    // ── Mercury Code full-screen mode ──
+    if (state.mode === 'mercury-code') {
+      const mc = state.mercuryCode;
+      if (!mc) return;
+
+      if (ch === '\u0003') { onExit(); return; }
+
+      // Exit confirmation overlay: Esc cancels, y/Enter confirms, Ctrl+D force-quits.
+      if (mc.exitConfirm) {
+        if (key.escape) { onInput('/mc exit-cancel'); return; }
+        if (isEnter || ch === 'y' || ch === 'Y') { onInput('/mc exit-confirm'); return; }
+        if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/mc exit-force'); return; }
+        if (ch === 'n' || ch === 'N') { onInput('/mc exit-cancel'); return; }
+        return;
+      }
+
+      // Ask agent to exit: arms the confirm overlay.
+      if (key.escape && state.exitEscArmed) {
+        onInput('/mc exit-arm');
+        return;
+      }
+      if (key.escape) { onInput('/mc esc-arm'); return; }
+
+      if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/mc exit-force'); return; }
+
+      // Ctrl+P / Ctrl+X plan/execute shortcuts
+      if (key.ctrl && (ch === 'p' || ch === 'P')) { onInput('/code plan'); return; }
+      if (key.ctrl && (ch === 'x' || ch === 'X')) { onInput('/code execute'); return; }
+      if (key.ctrl && (ch === 'g' || ch === 'G')) { onInput('/code diff'); return; }
+
+      // Ctrl+N newline in input
+      if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
+        setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
+        setCursorPos((p) => p + 1);
+        return;
+      }
+
+      if (isEnter) {
+        const trimmed = input.trim();
+        if (trimmed) {
+          onInput(trimmed);
+          setInputHistory((prev) => {
+            if (prev[prev.length - 1] === trimmed) return prev;
+            return [...prev.slice(-99), trimmed];
+          });
+          setHistoryIndex(-1);
+          setHistoryDraft('');
+          setInputAndCursor('');
+        }
+        return;
+      }
+
+      if (key.tab) return;
+
+      if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
+      if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
+      if (key.upArrow) { onInput('/mc scroll 1'); return; }
+      if (key.downArrow) { onInput('/mc scroll -1'); return; }
+      if (key.pageUp) { onInput('/mc scroll 10'); return; }
+      if (key.pageDown) { onInput('/mc scroll -10'); return; }
+      if (key.backspace || key.delete) {
+        if (cursorPos > 0) {
+          setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
+          setCursorPos((p) => p - 1);
+        }
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+
+      if (ch && ch.length > 0 && !key.escape) {
+        const clean = ch
+          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+          .split('')
+          .filter((c) => {
+            const code = c.charCodeAt(0);
+            return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
+          })
+          .join('');
+        if (clean) {
+          setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
+          setCursorPos((p) => p + clean.length);
+        }
+      }
+      return;
     }
 
     if (state.permissionPrompt) {
@@ -743,9 +834,27 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
     if (key.ctrl || key.meta) return;
 
     if (ch && ch.length > 0 && !key.escape) {
-      // Strip control chars but keep printable content (handles paste)
-      const clean = ch.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-      if (clean) {
+      // Strip control chars and escape-sequence fragments (handles paste).
+      // Mouse scroll in raw mode sends SGR sequences like \x1b[<0;row;colM
+      // — Ink partially consumes \x1b[ but the remaining fragments (<, ;, digits,
+      // M) leak through as individual ch characters. Reject any ch that isn't
+      // a normal printable character (ASCII 0x20-0x7E or Unicode >= 0xA0).
+      const clean = ch
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+        .split('')
+        .filter((c) => {
+          const code = c.charCodeAt(0);
+          return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
+        })
+        .join('');
+      // Also reject if no recognized key was pressed and ch looks like a
+      // mouse fragment (e.g. "<", "M", "m" arriving without any key flag).
+      const isMouseFragment =
+        !key.return && !key.escape && !key.backspace && !key.delete &&
+        !key.upArrow && !key.downArrow && !key.leftArrow && !key.rightArrow &&
+        !key.tab && !key.pageUp && !key.pageDown && !key.ctrl && !key.meta &&
+        /^[<>=;Mm0-9]+$/.test(ch);
+      if (clean && !isMouseFragment) {
         setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
         setCursorPos((p) => p + clean.length);
       }
@@ -809,6 +918,17 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
   return (
     <Box flexDirection="column" flexGrow={1}>
       {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
+      {state.mode === 'mercury-code' ? (
+        <MercuryCodeView
+          state={state}
+          height={Math.max(10, terminalSize.rows)}
+          cols={terminalSize.cols}
+          input={input}
+          cursorPos={cursorPos}
+          onInput={onInput}
+          onScrollClamp={(distance) => onInput(`/mc scroll-set ${distance}`)}
+        />
+      ) : null}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
       {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} /> : null}
@@ -818,10 +938,10 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       {state.mode === 'chat' ? (
         <ChatBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} />
       ) : null}
-      {state.permissionPrompt && (
+      {state.permissionPrompt && state.mode !== 'mercury-code' && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
       )}
-      {showInput && (
+      {showInput && state.mode !== 'mercury-code' && (
         <InputBox
           input={input}
           cursorPos={cursorPos}
@@ -830,7 +950,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           projectContext={state.projectContext}
         />
       )}
-      {showInput && slashSuggestions.length > 0 && (
+      {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
         <Box flexDirection="column" paddingX={1}>
           <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
           {slashSuggestions.map((cmd, idx) => (
@@ -838,7 +958,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
-      {showInput && skillSuggestions.length > 0 && (
+      {showInput && state.mode !== 'mercury-code' && skillSuggestions.length > 0 && (
         <Box flexDirection="column" paddingX={1}>
           <Text dimColor>Skills (↑↓ navigate · Tab/Enter to select):</Text>
           {skillSuggestions.map((s, idx) => (
@@ -849,7 +969,7 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           ))}
         </Box>
       )}
-      <TokenBarView state={state} cols={terminalSize.cols} />
+      {state.mode !== 'mercury-code' && <TokenBarView state={state} cols={terminalSize.cols} />}
     </Box>
   );
 }
@@ -1983,6 +2103,340 @@ function InputBox({
       </Box>
       <Box paddingX={1}>
         <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+// ─── Mercury Code (full-screen /code) ───────────────────────────────────────
+
+/** Markdown render cache for the Mercury Code transcript (bounded). */
+const mercuryFlatCache = new Map<string, { key: string; lines: Array<{ tag: string; text: string }> }>();
+
+const CODE_HINTS: Array<[string, string, string]> = [
+  ['/code plan', 'analyze & propose before coding', 'ctrl+p'],
+  ['/code execute', 'approve & implement the plan', 'ctrl+x'],
+  ['/init', 'scan repo & write AGENTS.md', ''],
+  ['/code diff', 'show working-tree diff', 'ctrl+g'],
+  ['/code exit', 'leave Mercury Code', 'esc esc'],
+];
+
+/**
+ * Vibrant Mercury palette for the wordmark. Background-adaptive: on a dark
+ * terminal the cyan->blue "MERCURY" gradient pops against bright magenta
+ * "CODE"; on a light background the shades deepen instead of washing out.
+ */
+const WORDMARK_LIGHT_BG = (() => {
+  const fgBg = process.env.COLORFGBG;
+  if (!fgBg) return false;
+  const parts = fgBg.split(';');
+  const bgCode = Number(parts[parts.length - 1]);
+  return !Number.isNaN(bgCode) && bgCode >= 10;
+})();
+
+const WORDMARK_COLORS = WORDMARK_LIGHT_BG
+  ? { mercuryRows: ['blue', 'blueBright', 'cyan', 'cyanBright', 'blueBright'], code: 'magentaBright' }
+  : { mercuryRows: ['cyanBright', 'cyan', 'cyanBright', 'blueBright', 'cyan'], code: 'magentaBright' };
+
+/**
+ * Pixel wordmark band. Mirrors the opencode splash layout: centered,
+ * two-tone block glyphs, version right-aligned under the wordmark.
+ * The left column is fixed-width (from renderMercuryCodeParts) so "CODE"
+ * starts at the same pixel column on every row — precise on any device.
+ * Vibrant duotone: cyan-gradient "MERCURY" + bright magenta "CODE".
+ * Collapses to a one-line banner on very short terminals.
+ */
+function MercuryCodeWordmark({ cols, version, terminalRows }: { cols: number; version: string; terminalRows: number }): React.ReactNode {
+  if (terminalRows < 16) {
+    return (
+      <Box paddingX={1} flexShrink={0}>
+        <Text bold color="cyan">☿ MERCURY CODE</Text>
+        <Text dimColor> v{version}</Text>
+      </Box>
+    );
+  }
+  const parts = renderMercuryCodeParts();
+  const maxLen = Math.max(...parts.map((p) => p.left.length + 2 + p.right.length));
+  const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
+  const versionStr = `v${version}`;
+  const versionIndent = Math.max(0, indent + maxLen - versionStr.length - 1);
+  return (
+    <Box flexDirection="column" flexShrink={0} marginBottom={1}>
+      <Box flexDirection="column">
+        {parts.map((part, i) => (
+          <Box key={i} paddingLeft={indent}>
+            <Text bold color={WORDMARK_COLORS.mercuryRows[i] ?? 'cyan'}>{part.left}</Text>
+            {part.right.length > 0 && <Text bold color={WORDMARK_COLORS.code}>{`  ${part.right}`}</Text>}
+          </Box>
+        ))}
+      </Box>
+      <Box paddingLeft={versionIndent}>
+        <Text bold color="cyan">{versionStr}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** Centered three-column hint block (command · description · key), opencode-style. */
+function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
+  const cmdW = Math.max(...CODE_HINTS.map((h) => h[0].length));
+  const descW = Math.max(...CODE_HINTS.map((h) => h[1].length));
+  const rowLen = cmdW + 2 + descW + 2 + 8;
+  const indent = Math.max(0, Math.floor((cols - rowLen) / 2));
+  return (
+    <Box flexDirection="column" alignItems="flex-start" paddingLeft={indent} marginTop={2}>
+      {CODE_HINTS.map(([cmd, desc, key]) => (
+        <Box key={cmd}>
+          <Text bold color="cyan">{cmd.padEnd(cmdW)}</Text>
+          <Text>  </Text>
+          <Text dimColor>{desc.padEnd(descW)}</Text>
+          <Text>  </Text>
+          <Text color="blue">{key}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+/** Single active live-feedback block: spinner + current action + done ticks + swarm. */
+function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const [frame, setFrame] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setFrame((v) => (v + 1) % frames.length), 90);
+    return () => clearInterval(t);
+  }, []);
+  if (state.mode !== 'mercury-code') return null;
+  const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
+  const doneRecently = state.toolSteps.filter((s) => s.status === 'done').slice(-2);
+  const activeAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused');
+  if (!running && !state.isThinking && doneRecently.length === 0 && activeAgents.length === 0) return null;
+
+  const phase = running
+    ? running.label
+    : state.isThinking
+      ? (state.programmingMode === 'plan' ? 'Analyzing' : 'Working')
+      : null;
+
+  return (
+    <Box flexDirection="column" paddingX={2} flexShrink={0}>
+      {phase && (
+        <Box>
+          <Text color="cyan">{frames[frame]}</Text>
+          <Text> </Text>
+          <Text color="cyan" bold>{phase}</Text>
+        </Box>
+      )}
+      {doneRecently.map((step) => (
+        <Box key={step.id} paddingLeft={2}>
+          <Text color="green">✓</Text>
+          <Text dimColor> {step.label}{step.elapsed != null ? ` (${step.elapsed.toFixed(1)}s)` : ''}</Text>
+        </Box>
+      ))}
+      {activeAgents.length > 0 && (
+        <React.Fragment>
+          <Text color="magenta">  ⧖ swarm · {activeAgents.length} in parallel</Text>
+          {activeAgents.slice(0, 4).map((a) => (
+            <Box key={a.id}>
+              <Text color="magenta">  {frames[(frame + a.id.length) % frames.length]}</Text>
+              <Text> </Text>
+              <Text color="magenta" bold>{a.id}</Text>
+              <Text dimColor> {a.task.length > 44 ? a.task.slice(0, 41) + '…' : a.task}</Text>
+            </Box>
+          ))}
+        </React.Fragment>
+      )}
+    </Box>
+  );
+}
+
+/** Bordered input box (opencode-style) with mode-tinted prompt. */
+function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number }) {
+  const color = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan';
+  const lines = input.split('\n');
+  let cursorLine = 0;
+  let cursorCol = cursorPos;
+  let consumed = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (consumed + lines[i].length >= cursorPos || i === lines.length - 1) {
+      cursorLine = i;
+      cursorCol = cursorPos - consumed;
+      break;
+    }
+    consumed += lines[i].length + 1;
+  }
+
+  return (
+    <Box paddingX={2} flexShrink={0}>
+      <Box borderStyle="round" borderColor="gray" flexDirection="column" width={boxWidth} paddingX={1}>
+        {lines.map((line, i) => (
+          <Box key={i}>
+            <Text bold color={color}>{i === 0 ? '> ' : '  '}</Text>
+            {i === cursorLine ? (
+              <>
+                <Text>{line.slice(0, cursorCol)}</Text>
+                <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
+                <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
+              </>
+            ) : (
+              <Text>{line}</Text>
+            )}
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
+function MercuryCodeExitConfirm({ boxWidth }: { boxWidth: number }): React.ReactNode {
+  return (
+    <Box paddingX={2} flexShrink={0}>
+      <Box borderStyle="round" borderColor="yellow" width={boxWidth} paddingX={1}>
+        <Text color="yellow" bold>Exit Mercury Code? </Text>
+        <Text dimColor>Enter/Y exit · Esc/N stay · Ctrl+D force</Text>
+      </Box>
+    </Box>
+  );
+}
+
+export function MercuryCodeView({
+  state,
+  height,
+  cols,
+  onInput,
+  input,
+  cursorPos,
+  onScrollClamp,
+}: {
+  state: TuiState;
+  height: number;
+  cols: number;
+  onInput: (text: string) => void;
+  input?: string | undefined;
+  cursorPos?: number | undefined;
+  onScrollClamp?: (distance: number) => void;
+}): React.ReactNode {
+  const mc = state.mercuryCode;
+  // Flatten messages into role-tagged rendered lines. A module-level cache
+  // keyed by (id, role, content revision) avoids re-running the markdown
+  // parser for unchanged messages during streaming (the transcript can be
+  // long; only the streaming message's cache entry churns).
+  const flatLines = React.useMemo(() => {
+    const out: string[] = [];
+    if (!mc) return out;
+    for (const msg of state.chatMessages) {
+      if (typeof msg.content !== 'string') continue;
+      const cacheKey = `${msg.id}|${msg.role}|${msg.content.length}|${msg.timestamp}|${msg.streaming ? 1 : 0}`;
+      const cached = mercuryFlatCache.get(msg.id);
+      let lines: Array<{ tag: string; text: string }>;
+      if (cached && cached.key === cacheKey) {
+        lines = cached.lines;
+      } else {
+        const body = normalizeTerminalText(msg.content);
+        let tag: string;
+        let rendered: string[];
+        if (msg.role === 'user') {
+          tag = '{u}';
+          rendered = renderMarkdown(body).split('\n');
+        } else if (msg.role === 'agent') {
+          tag = '{a}';
+          rendered = renderMarkdown(body).split('\n');
+        } else {
+          tag = '{s}';
+          rendered = body.split('\n');
+        }
+        lines = rendered.map((l) => ({ tag, text: l }));
+        if (mercuryFlatCache.size > 400) mercuryFlatCache.clear();
+        mercuryFlatCache.set(msg.id, { key: cacheKey, lines });
+      }
+      for (const l of lines) out.push(`${l.tag}${l.text}`);
+    }
+    return out;
+  }, [state.chatMessages, mc]);
+
+  if (!mc) {
+    return (
+      <Box paddingX={1}>
+        <Text color="yellow">Mercury Code is not active. Type /code to enter.</Text>
+      </Box>
+    );
+  }
+
+  // Row budget (mirrors the opencode splash layout):
+  //   [pixel wordmark + version]  7 rows (1 on tiny terminals)
+  //   [scrollback transcript]     remainder
+  //   [live feedback]             0-8 rows, only while active
+  //   [exit confirm]              3 rows, only while armed
+  //   [input box]                 2 + input line count
+  //   [status line]               1 row
+  const wordmarkRows = height < 16 ? 1 : 7;
+  const inputLines = Math.max(1, (input ?? '').split('\n').length);
+  const inputRows = 2 + inputLines;
+  const confirmRows = mc.exitConfirm ? 3 : 0;
+  const liveVisible = state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running');
+  const liveRows = liveVisible
+    ? 1 + Math.min(2, state.toolSteps.filter((s) => s.status === 'done').slice(-2).length) + (state.subAgents.some((a) => a.status === 'running') ? 1 + Math.min(4, state.subAgents.filter((a) => a.status === 'running').length) : 0)
+    : 0;
+  const statusRows = 1;
+  const transcriptHeight = Math.max(3, height - wordmarkRows - inputRows - 1 - liveRows - confirmRows);
+
+  const viewport = getViewportWindow(flatLines.length, transcriptHeight, mc.scrollOffset);
+  React.useEffect(() => {
+    if (onScrollClamp && viewport.distanceFromBottom !== mc.scrollOffset) {
+      onScrollClamp(viewport.distanceFromBottom);
+    }
+  }, [onScrollClamp, mc.scrollOffset, viewport.distanceFromBottom]);
+  const visible = flatLines.slice(viewport.start, viewport.end);
+
+  // Status line (single row): left hint, right context.
+  const mode = state.programmingMode;
+  const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : 'CHAT';
+  const modeColor = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan';
+  const git = mc.git;
+  const gitBits: string[] = [];
+  if (git.branch !== 'no-git') {
+    gitBits.push(`⎇ ${git.branch}`);
+    if (git.ahead > 0) gitBits.push(`↑${git.ahead}`);
+    if (git.behind > 0) gitBits.push(`↓${git.behind}`);
+    gitBits.push(git.dirty > 0 ? `±${git.dirty}` : '✓');
+  }
+  const rightParts = [mc.dirName, ...gitBits, modeLabel];
+  if (state.provider) rightParts.push(`${state.provider.name} ${state.provider.model}`);
+  const rightStr = rightParts.join(' · ');
+
+  return (
+    <Box flexDirection="column" height={height} overflow="hidden">
+      <MercuryCodeWordmark cols={cols} version={state.version} terminalRows={height} />
+      <Box flexDirection="column" height={transcriptHeight} overflow="hidden">
+        {flatLines.length === 0 ? (
+          <MercuryCodeHints cols={cols} />
+        ) : (
+          visible.map((line, i) => {
+            const role = line.slice(0, 3);
+            const content = line.slice(3) || ' ';
+            const color =
+              role === '{u}' ? 'yellow'
+                : role === '{a}' ? 'cyan'
+                  : 'gray';
+            return (
+              <Box key={`${viewport.start + i}`} paddingX={2}>
+                <Text color={color} wrap="truncate-end">{content}</Text>
+              </Box>
+            );
+          })
+        )}
+      </Box>
+      <MercuryLiveFeedback state={state} />
+      {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
+      <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
+      <Box paddingX={3} flexShrink={0}>
+        {mc.scrollOffset > 0 ? (
+          <Text color="yellow">↓ {mc.scrollOffset} line{mc.scrollOffset !== 1 ? 's' : ''} above · ↓ to live</Text>
+        ) : (
+          <Text dimColor>enter send</Text>
+        )}
+        <Spacer />
+        <Text color="blue" wrap="truncate-end">{rightStr}</Text>
       </Box>
     </Box>
   );

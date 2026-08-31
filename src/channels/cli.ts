@@ -3,12 +3,161 @@ import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, execFile } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
+
+/**
+ * Strip mouse-report escape sequences from terminal input before Ink sees
+ * them. Terminals emit SGR mouse sequences (ESC [ < b ; c ; r M/m) or legacy
+ * X10 ones (ESC [ M ...); scrolling a trackpad emits a flood of these, and
+ * Ink's keypress parser only partially consumes them, leaking fragments
+ * ("<0;34;12M") into the input box as garbage text.
+ */
+const MOUSE_SEQ_RE = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[M[\x20-\x2f]*[\x40-\x6f]|\x1b\[\?100[0-7][hl]/g;
+
+/**
+ * Parsed mouse event from an SGR/X10 sequence.
+ * click: press (or release of a press) without motion and without wheel.
+ */
+export interface MouseEvent {
+  button: number;      // 0 left, 1 middle, 2 right, 64/65 wheel up/down
+  col: number;         // 0-based
+  row: number;         // 0-based
+  wheel: 'up' | 'down' | null;
+  click: boolean;
+  release: boolean;
+  motion: boolean;
+}
+
+/** Parse a single SGR or X10 mouse sequence into a MouseEvent. */
+export function parseMouseSequence(seq: string): MouseEvent | null {
+  // SGR: ESC [ < b ; c ; r M/m
+  const sgr = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(seq);
+  if (sgr) {
+    const rawButton = parseInt(sgr[1], 10);
+    const col = parseInt(sgr[2], 10) - 1;
+    const row = parseInt(sgr[3], 10) - 1;
+    const isRelease = sgr[4] === 'm';
+    const motion = (rawButton & 32) !== 0;
+    const wheelBits = (rawButton & 64) !== 0;
+    const wheel: 'up' | 'down' | null = wheelBits ? ((rawButton & 1) === 0 ? 'up' : 'down') : null;
+    return {
+      button: rawButton & 3,
+      col,
+      row,
+      wheel,
+      click: !isRelease && !wheel && !motion,
+      release: isRelease,
+      motion,
+    };
+  }
+  // X10: ESC [ M cb+32 cx+32 cy+32
+  const x10 = /^\x1b\[M([\x20-\x2f])([\x20-\xff])([\x20-\xff])$/.exec(seq);
+  if (x10) {
+    const rawButton = x10[1].charCodeAt(0) - 32;
+    const col = x10[2].charCodeAt(0) - 33;
+    const row = x10[3].charCodeAt(0) - 33;
+    const wheelBits = (rawButton & 64) !== 0;
+    const motion = (rawButton & 32) !== 0;
+    const wheel: 'up' | 'down' | null = wheelBits ? ((rawButton & 1) === 0 ? 'up' : 'down') : null;
+    return {
+      button: rawButton & 3,
+      col,
+      row,
+      wheel,
+      click: !wheel && !motion,
+      release: false,
+      motion,
+    };
+  }
+  return null;
+}
+
+/** DECSET sequences to start (enable=true) or stop mouse reporting. */
+export function mouseTrackingSequences(enable: boolean): string {
+  return enable
+    ? '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
+    : '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
+}
+
+/**
+ * Wrap process.stdin in a filtered PassThrough that Ink can use as its
+ * input stream. Mouse-report sequences are dropped; everything else flows
+ * through. Ink calls setRawMode/ref/unref/setEncoding on the stream it is
+ * given, so those are proxied to the real stdin.
+ *
+ * In addition, when mouse tracking is armed by the Mercury Code view,
+ * complete SGR/X10 mouse sequences are forwarded to the registered
+ * handler (wheel scroll etc.) instead of being discarded.
+ */
+function createFilteredStdin(onMouseEvent?: (ev: MouseEvent) => void): NodeJS.ReadStream {
+  const real = process.stdin as NodeJS.ReadStream;
+  const wrapper = new PassThrough() as unknown as NodeJS.ReadStream & Record<string, unknown>;
+
+  // Proxy the calls Ink makes back to the real stdin.
+  (wrapper as any).setRawMode = (enabled: boolean) => real.setRawMode?.(enabled);
+  (wrapper as any).ref = () => real.ref?.();
+  (wrapper as any).unref = () => real.unref?.();
+  (wrapper as any).setEncoding = (enc: BufferEncoding) => { real.setEncoding(enc); };
+  Object.defineProperty(wrapper, 'isTTY', { value: real.isTTY });
+  Object.defineProperty(wrapper, 'isRaw', {
+    get: () => real.isRaw,
+  });
+
+  let pending = '';
+  real.on('data', (chunk: Buffer | string) => {
+    pending += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let cleaned = '';
+    let i = 0;
+    while (i < pending.length) {
+      const rest = pending.slice(i);
+      if (rest.startsWith('\x1b')) {
+        // Try to match a complete mouse sequence at this position.
+        const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(rest);
+        const x10 = /^\x1b\[M[\x20-\x2f][\x20-\xff][\x20-\xff]/.exec(rest);
+        const dec = /^\x1b\[\?100[0-7][hl]/.exec(rest);
+        const seq = sgr?.[0] ?? x10?.[0] ?? dec?.[0];
+        if (seq) {
+          if (onMouseEvent) {
+            const ev = parseMouseSequence(seq);
+            if (ev) {
+              try { onMouseEvent(ev); } catch { /* handler must never crash input */ }
+            }
+          }
+          i += seq.length;
+          continue;
+        }
+        // Incomplete mouse sequence? Hold it back for the next chunk.
+        if (/^\x1b(\[<\d*;?;?\d*;?;?\d*[Mm]?)?$/.test(rest) || /^\x1b\[M$/.test(rest)) {
+          break;
+        }
+        // Some other escape sequence — let it flow to Ink untouched.
+        cleaned += rest[0];
+        i += 1;
+        continue;
+      }
+      cleaned += pending[i];
+      i += 1;
+    }
+    // Hold back a trailing partial escape sequence so it can be joined
+    // with the next chunk before matching.
+    const dangling = cleaned.match(/\x1b(\[[0-;<]*[%\*A-Za-z]?|\[<[0-9;]*)?$/);
+    if (dangling && dangling[0].length > 0 && dangling.index === cleaned.length - dangling[0].length) {
+      pending = cleaned.slice(dangling.index);
+      if (dangling.index > 0) wrapper.write(cleaned.slice(0, dangling.index));
+    } else {
+      pending = '';
+      if (cleaned) wrapper.write(cleaned);
+    }
+  });
+
+  return wrapper as unknown as NodeJS.ReadStream;
+}
 
 export interface TuiState {
   mode: AppMode;
@@ -36,6 +185,10 @@ export interface TuiState {
   /** Elapsed ms for the last completed task. */
   lastStepLogElapsed: number | null;
   currentSession: CurrentSessionInfo | null;
+  /** Mercury Code (full-screen `/code`) state — null unless active. */
+  mercuryCode: MercuryCodeState | null;
+  /** Double-Esc detection for Mercury Code exit. */
+  exitEscArmed: boolean;
 }
 
 const defaultState: TuiState = {
@@ -62,6 +215,8 @@ const defaultState: TuiState = {
   lastStepLog: null,
   lastStepLogElapsed: null,
   currentSession: null,
+  mercuryCode: null,
+  exitEscArmed: false,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -99,6 +254,10 @@ export class CLIChannel extends BaseChannel {
   private statusPollerBusy = false;
   private rerenderQueued = false;
   private rerenderScheduled = false;
+  private mouseEnabled = false;
+  private pendingMouseSeq: string | null = null;
+  private mouseHandler: ((ev: MouseEvent) => void) | null = null;
+  private exitEscArmed = false;
   private statusProviders: {
     tokens?: () => { used: number; budget: number; percentage: number };
     saver?: () => { state: import('../core/saver-mode.js').SaverModeState; savedToday: number; savedLifetime: number };
@@ -234,11 +393,56 @@ export class CLIChannel extends BaseChannel {
         this.update({ mode: 'chat' });
         return;
       }
+      // `/code` flows to the agent so core ProgrammingMode + view stay in
+      // sync (agent calls back into enterMercuryCode).
+      // Internal Mercury Code view commands (issued by the TUI itself).
+      if (trimmed.startsWith('/mc ')) {
+        const sub = trimmed.slice(4).trim();
+        if (sub === 'scroll' || sub.startsWith('scroll ') || sub.startsWith('scroll-')) {
+          const arg = sub.startsWith('scroll-') ? sub.slice(7) : sub.slice(6).trim();
+          const delta = arg.startsWith('-') ? -parseInt(arg.slice(1), 10) : parseInt(arg, 10);
+          if (Number.isFinite(delta)) this.scrollMercuryCode(delta);
+          return;
+        }
+        if (sub === 'live') { this.scrollMercuryCodeToLive(); return; }
+        if (sub.startsWith('scroll-set ')) {
+          const distance = parseInt(sub.slice(11), 10);
+          if (Number.isFinite(distance)) {
+            const mcRef = this.state.mercuryCode;
+            if (mcRef && distance !== mcRef.scrollOffset) {
+              this.update({ mercuryCode: { ...mcRef, scrollOffset: distance } });
+            }
+          }
+          return;
+        }
+        if (sub === 'esc-arm') {
+          this.exitEscArmed = true;
+          // Auto-disarm after 1.5s so Esc-Esc window is bounded.
+          setTimeout(() => { if (this.exitEscArmed) { this.exitEscArmed = false; this.update({ exitEscArmed: false }); } }, 1500);
+          this.update({ exitEscArmed: true });
+          return;
+        }
+        if (sub === 'exit-arm') { this.exitEscArmed = false; this.update({ exitEscArmed: false }); this.setMercuryCodeExitConfirm(true); return; }
+        if (sub === 'exit-cancel') { this.exitEscArmed = false; this.update({ exitEscArmed: false }); this.setMercuryCodeExitConfirm(false); return; }
+        if (sub === 'exit-confirm' || sub === 'exit-force') {
+          this.exitEscArmed = false;
+          this.update({ exitEscArmed: false });
+          this.exitMercuryCode();
+          return;
+        }
+        if (sub === 'git-refresh') { this.refreshMercuryCodeGit(); return; }
+        return;
+      }
+      if (trimmed === '/mc') {
+        this.update({ exitEscArmed: false });
+        return;
+      }
       if (trimmed === '/coding') {
-        this.update({ mode: 'coding' });
+        this.update({ mode: this.state.mode === 'mercury-code' ? 'mercury-code' : 'coding' });
         return;
       }
       if (trimmed === '/workspace' || trimmed === '/ws') {
+        if (this.state.mode === 'mercury-code') return;
         this.update({ mode: this.state.workspace?.active ? 'workspace' : 'coding' });
         return;
       }
@@ -255,6 +459,7 @@ export class CLIChannel extends BaseChannel {
         return;
       }
       if (trimmed === '/ws exit' || trimmed === '/workspace exit' || trimmed === '/general') {
+        if (this.state.mode === 'mercury-code') return;
         this.exitWorkspaceToChat();
         return;
       }
@@ -314,14 +519,17 @@ export class CLIChannel extends BaseChannel {
         return;
       }
       if (trimmed === '/menu' || trimmed === '/m') {
+        if (this.state.mode === 'mercury-code') return;
         this.update({ mode: 'menu' });
         return;
       }
       if (trimmed === '/spotify' || trimmed === '/s') {
+        if (this.state.mode === 'mercury-code') return;
         this.update({ mode: 'spotify' });
         return;
       }
       if (trimmed === '/splash') {
+        if (this.state.mode === 'mercury-code') return;
         this.update({ mode: 'splash' });
         return;
       }
@@ -378,6 +586,20 @@ export class CLIChannel extends BaseChannel {
       onInput(trimmed);
     };
 
+    // Reset mouse-report modes in case a previous run left the terminal
+    // stuck emitting mouse sequences (1000/1002/1003 + SGR 1006).
+    try {
+      process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+    } catch {
+      // Not a TTY or write failed — nothing to reset.
+    }
+
+    // Pipe stdin through a filter that drops mouse-report escape sequences
+    // so trackpad scrolling never leaks garbage into the input box. When
+    // Mercury Code arms mouse tracking, complete sequences are parsed and
+    // forwarded via dispatchMouseEvent instead.
+    const filteredStdin = process.stdin.isTTY ? createFilteredStdin((ev) => this.dispatchMouseEvent(ev)) : process.stdin;
+
     this.inkInstance = render(
       React.createElement(TuiApp, {
         state: this.state,
@@ -398,7 +620,7 @@ export class CLIChannel extends BaseChannel {
         },
         spotifyClient: this.spotifyClient,
       }),
-      { exitOnCtrlC: false, patchConsole: false },
+      { exitOnCtrlC: false, patchConsole: false, stdin: filteredStdin },
     );
 
     this.startRawModeWatchdog();
@@ -764,6 +986,156 @@ export class CLIChannel extends BaseChannel {
     this.update({ mode });
   }
 
+  /** Read-only snapshot of the current TUI state (for cross-module checks). */
+  getTuiState(): TuiState {
+    return this.state;
+  }
+
+  // ─── Mercury Code (`/code`) full-screen mode ─────────────────────────────
+
+  /**
+   * Enable or disable SGR mouse tracking. When enabled, the filtered stdin
+   * stream forwards parsed mouse events to `handler`; wheel scroll drives
+   * transcript scrollback in Mercury Code.
+   */
+  setMouseEnabled(enabled: boolean, handler?: (ev: MouseEvent) => void): void {
+    this.mouseEnabled = enabled;
+    this.mouseHandler = enabled ? (handler ?? null) : null;
+    try {
+      process.stdout.write(mouseTrackingSequences(enabled));
+      if (enabled) {
+        // Swallow one stray motion/click event right after enabling so the
+        // cursor position that enabled tracking doesn't inject into chat.
+        this.pendingMouseSeq = null;
+      }
+    } catch {
+      // Not a TTY or write failed — mouse stays off.
+      this.mouseEnabled = false;
+      this.mouseHandler = null;
+    }
+    this.update({ mercuryCode: this.state.mercuryCode ? { ...this.state.mercuryCode, mouse: enabled } : null });
+  }
+
+  isMouseEnabled(): boolean {
+    return this.mouseEnabled;
+  }
+
+  /** Internal: called by the filtered stdin stream on a parsed mouse event. */
+  private dispatchMouseEvent(ev: MouseEvent): void {
+    if (!this.mouseEnabled) return;
+    this.mouseHandler?.(ev);
+  }
+
+  /**
+   * Enter Mercury Code: full-screen coding TUI bound to `dir`.
+   * Switches to plan mode by default (analyze-first), and arms mouse
+   * tracking for wheel-based transcript scrollback.
+   */
+  enterMercuryCode(dir: string, version: string): { ok: boolean; message: string } {
+    const target = path.resolve(dir.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    if (!fs.existsSync(target)) return { ok: false, message: `Directory does not exist: ${target}` };
+    if (!fs.statSync(target).isDirectory()) return { ok: false, message: `Not a directory: ${target}` };
+
+    const dirName = path.basename(target) || target;
+    this.exitEscArmed = false;
+    this.update({
+      mode: 'mercury-code',
+      mercuryCode: {
+        cwd: target,
+        dirName,
+        git: this.readGitStateQuick(target),
+        mouse: false,
+        scrollOffset: 0,
+        exitConfirm: false,
+      },
+      projectContext: target,
+      version,
+      programmingMode: 'plan',
+      exitEscArmed: false,
+    });
+    // Arm wheel-driven scrollback: mouse tracking with a handler that scrolls
+    // the transcript (3 lines per wheel notch). Clicks/motions are ignored —
+    // this is deliberate; a stray enable-time click won't inject anything.
+    this.setMouseEnabled(true, (ev) => {
+      if (ev.wheel === 'up') this.scrollMercuryCode(3);
+      else if (ev.wheel === 'down') this.scrollMercuryCode(-3);
+    });
+    try {
+      process.stdout.write('\x1b[2J\x1b[H');
+    } catch { /* ignore */ }
+    return { ok: true, message: `Mercury Code active in ${dirName}` };
+  }
+
+  exitMercuryCode(): void {
+    if (this.state.mercuryCode) {
+      this.setMouseEnabled(false);
+    }
+    this.exitEscArmed = false;
+    this.update({
+      mode: 'chat',
+      mercuryCode: null,
+      programmingMode: 'off',
+      projectContext: null,
+      exitEscArmed: false,
+    });
+    try {
+      process.stdout.write('\x1b[2J\x1b[H');
+    } catch { /* ignore */ }
+  }
+
+  /** Toggle the exit confirmation inline in Mercury Code. */
+  setMercuryCodeExitConfirm(show: boolean): void {
+    if (!this.state.mercuryCode) return;
+    this.update({ mercuryCode: { ...this.state.mercuryCode, exitConfirm: show } });
+  }
+
+  /** Adjust transcript scrollback (distance from bottom, clamped). */
+  scrollMercuryCode(deltaTowardTop: number): void {
+    const mc = this.state.mercuryCode;
+    if (!mc) return;
+    const next = Math.max(0, mc.scrollOffset + deltaTowardTop);
+    if (next !== mc.scrollOffset) {
+      this.update({ mercuryCode: { ...mc, scrollOffset: next } });
+    }
+  }
+
+  /** Snap transcript to live (bottom). */
+  scrollMercuryCodeToLive(): void {
+    const mc = this.state.mercuryCode;
+    if (!mc || mc.scrollOffset === 0) return;
+    this.update({ mercuryCode: { ...mc, scrollOffset: 0 } });
+  }
+
+  /** Refresh cached git header state from disk. */
+  refreshMercuryCodeGit(): void {
+    const mc = this.state.mercuryCode;
+    if (!mc) return;
+    const git = this.readGitStateQuick(mc.cwd);
+    if (
+      git.branch !== mc.git.branch ||
+      git.ahead !== mc.git.ahead ||
+      git.behind !== mc.git.behind ||
+      git.dirty !== mc.git.dirty
+    ) {
+      this.update({ mercuryCode: { ...mc, git } });
+    }
+  }
+
+  private readGitStateQuick(rootPath: string): MercuryCodeGitState {
+    try {
+      const branch = execSync('git -C ' + JSON.stringify(rootPath) + ' branch --show-current', { stdio: 'pipe' }).toString().trim() || 'detached';
+      const out = execSync('git -C ' + JSON.stringify(rootPath) + ' status --porcelain=v1 --branch', { stdio: 'pipe' }).toString();
+      const lines = out.split('\n');
+      const header = lines[0] || '';
+      const ahead = parseInt(header.match(/ahead (\d+)/)?.[1] ?? '0', 10);
+      const behind = parseInt(header.match(/behind (\d+)/)?.[1] ?? '0', 10);
+      const dirty = lines.slice(1).filter((l) => l.trim().length > 0).length;
+      return { branch, ahead, behind, dirty };
+    } catch {
+      return { branch: 'no-git', ahead: 0, behind: 0, dirty: 0 };
+    }
+  }
+
   setProgrammingStatus(mode: import('../core/programming-mode.js').ProgrammingModeState, projectContext: string | null): void {
     this.update({ programmingMode: mode, projectContext });
   }
@@ -886,6 +1258,20 @@ export class CLIChannel extends BaseChannel {
             unstagedCount: fresh.unstagedCount,
             gitFiles: fresh.files,
           };
+        }
+      }
+
+      // 6. Mercury Code header (branch / ahead / behind / dirty count)
+      if (this.state.mode === 'mercury-code' && this.state.mercuryCode) {
+        const mc = this.state.mercuryCode;
+        const fresh = this.readGitStateQuick(mc.cwd);
+        if (
+          fresh.branch !== mc.git.branch ||
+          fresh.ahead !== mc.git.ahead ||
+          fresh.behind !== mc.git.behind ||
+          fresh.dirty !== mc.git.dirty
+        ) {
+          patch.mercuryCode = { ...mc, git: fresh };
         }
       }
 

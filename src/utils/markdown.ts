@@ -1,5 +1,6 @@
 import { Marked } from 'marked';
 import chalk from 'chalk';
+import { highlightCodeBlock } from './highlight.js';
 
 const lexer = new Marked();
 
@@ -111,9 +112,8 @@ function renderInline(tokens: any[] | undefined): string {
 }
 
 function renderCodeBlock(t: any): string {
-  const lines = t.text
-    .split('\n')
-    .map((l: string) => `${chalk.dim('  ')}${chalk.yellow(l)}`)
+  const lines = highlightCodeBlock(t.text ?? '', t.lang)
+    .map((l: string) => `  ${l}`)
     .join('\n');
   const langStr = t.lang ? chalk.dim(` [${t.lang}]`) : '';
   return `\n${langStr}\n${lines}\n\n`;

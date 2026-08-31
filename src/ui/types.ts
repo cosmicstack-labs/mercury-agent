@@ -3,7 +3,24 @@ import type { SaverModeState } from '../core/saver-mode.js';
 import type { SubAgentStatus } from '../types/agent.js';
 import type { PermissionMode } from '../channels/base.js';
 
-export type AppMode = 'splash' | 'chat' | 'coding' | 'workspace' | 'spotify' | 'menu';
+export type AppMode = 'splash' | 'chat' | 'coding' | 'workspace' | 'spotify' | 'menu' | 'mercury-code';
+
+export interface MercuryCodeGitState {
+  branch: string;
+  ahead: number;
+  behind: number;
+  dirty: number;
+}
+
+export interface MercuryCodeState {
+  cwd: string;
+  dirName: string;
+  git: MercuryCodeGitState;
+  mouse: boolean;
+  /** Distance of the viewport from the bottom of the transcript (0 = live). */
+  scrollOffset: number;
+  exitConfirm: boolean;
+}
 
 export interface WorkspaceTreeNode {
   id: string;
