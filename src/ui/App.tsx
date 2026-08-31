@@ -2146,9 +2146,12 @@ const WORDMARK_LIGHT_BG = (() => {
   return !Number.isNaN(bgCode) && bgCode >= 10;
 })();
 
+// One solid color per word: "CODE" keeps its bright magenta; "MERCURY"
+// gets a single contrasting color (background-adaptive) instead of the
+// old per-row gradient, so the whole word reads uniformly.
 const WORDMARK_COLORS = WORDMARK_LIGHT_BG
-  ? { mercuryRows: ['blue', 'blueBright', 'cyan', 'cyanBright', 'blueBright'], code: 'magentaBright' }
-  : { mercuryRows: ['cyanBright', 'cyan', 'cyanBright', 'blueBright', 'cyan'], code: 'magentaBright' };
+  ? { mercury: 'blue', code: 'magentaBright' }
+  : { mercury: 'cyanBright', code: 'magentaBright' };
 
 /**
  * Pixel wordmark band. Mirrors the opencode splash layout: centered,
@@ -2177,7 +2180,7 @@ function MercuryCodeWordmark({ cols, version, terminalRows }: { cols: number; ve
       <Box flexDirection="column">
         {parts.map((part, i) => (
           <Box key={i} paddingLeft={indent}>
-            <Text bold color={WORDMARK_COLORS.mercuryRows[i] ?? 'cyan'}>{part.left}</Text>
+            <Text bold color={WORDMARK_COLORS.mercury}>{part.left}</Text>
             {part.right.length > 0 && <Text bold color={WORDMARK_COLORS.code}>{`  ${part.right}`}</Text>}
           </Box>
         ))}

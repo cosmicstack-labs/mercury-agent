@@ -674,6 +674,18 @@ export class CLIChannel extends BaseChannel {
     this.startRawModeWatchdog();
   }
 
+  /** Hard cap on rendered transcript messages held in TUI state. */
+  private static readonly MAX_CHAT_MESSAGES = 250;
+
+  private trimAndSetMessages(messages: ChatMessage[], extra: Partial<TuiState> = {}): void {
+    // Transcript bound: a minutes-long coding session can generate hundreds
+    // of messages/steps. Dropping oldest keeps renders + heap flat. The
+    // WorkLedger/session stores preserve the full history elsewhere.
+    const MAX = CLIChannel.MAX_CHAT_MESSAGES;
+    const trimmed = messages.length > MAX ? messages.slice(-MAX) : messages;
+    this.update({ chatMessages: trimmed, ...extra });
+  }
+
   async send(content: string, _targetId?: string, _elapsedMs?: number): Promise<void> {
     const msg: ChatMessage = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -682,14 +694,12 @@ export class CLIChannel extends BaseChannel {
       timestamp: Date.now(),
     };
     // Clear any lingering heartbeat message when we send a real response.
+    let chat = this.state.chatMessages;
     if (this.heartbeatMsgId) {
-      this.state.chatMessages = this.state.chatMessages.filter((m) => m.id !== this.heartbeatMsgId);
+      chat = chat.filter((m) => m.id !== this.heartbeatMsgId);
       this.heartbeatMsgId = null;
     }
-    this.update({
-      chatMessages: [...this.state.chatMessages, msg],
-      isThinking: false,
-    });
+    this.trimAndSetMessages([...chat, msg], { isThinking: false });
   }
 
   /**
@@ -706,10 +716,7 @@ export class CLIChannel extends BaseChannel {
       const id = `heartbeat-${Date.now().toString(36)}`;
       this.heartbeatMsgId = id;
       const msg: ChatMessage = { id, role: 'system', content, timestamp: Date.now() };
-      this.update({
-        chatMessages: [...this.state.chatMessages, msg],
-        isThinking: true,
-      });
+      this.trimAndSetMessages([...this.state.chatMessages, msg], { isThinking: true });
     }
   }
 
@@ -718,6 +725,11 @@ export class CLIChannel extends BaseChannel {
     if (this.heartbeatMsgId) {
       this.state.chatMessages = this.state.chatMessages.filter((m) => m.id !== this.heartbeatMsgId);
       this.heartbeatMsgId = null;
+      // The heartbeat is the only thing keeping the spinner alive at this
+      // point — a stale message must not leave "Analyzing/Working" showing
+      // after the task has finished.
+      this.update({ isThinking: false });
+    } else {
       this.rerender();
     }
   }
@@ -786,8 +798,12 @@ export class CLIChannel extends BaseChannel {
     this.stepCount += 1;
     this.stepStartTime = Date.now();
     logger.debug({ tool: toolName, args }, 'voice.tui step start');
+    // Cap the live step list: long coding sessions can run hundreds of
+    // tool calls; an unbounded array both bloats renders and memory.
+    const MAX_LIVE_STEPS = 60;
+    const nextSteps = [...this.state.toolSteps, step].slice(-MAX_LIVE_STEPS);
     this.update({
-      toolSteps: [...this.state.toolSteps, step],
+      toolSteps: nextSteps,
       isThinking: true,
     });
   }
@@ -856,12 +872,12 @@ export class CLIChannel extends BaseChannel {
     }
 
     const finalMessage = { id: msgId, role: 'agent' as const, content: full, timestamp: Date.now(), streaming: false };
-    this.update({
-      chatMessages: started
+    this.trimAndSetMessages(
+      started
         ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
         : [...this.state.chatMessages, finalMessage],
-      isThinking: false,
-    });
+      { isThinking: false },
+    );
 
     return full;
   }
@@ -1102,9 +1118,10 @@ export class CLIChannel extends BaseChannel {
       exitEscArmed: false,
     });
     // Arm wheel-driven scrollback: mouse tracking with a handler that scrolls
-    // the transcript (3 lines per wheel notch). Clicks/motions are ignored —
-    // this is deliberate; a stray enable-time click won't inject anything.
+    // the transcript (3 lines per wheel notch). Terminals emit an event for
+    // press AND release — only count presses to avoid double-scroll churn.
     this.setMouseEnabled(true, (ev) => {
+      if (ev.release || ev.motion) return;
       if (ev.wheel === 'up') this.scrollMercuryCode(3);
       else if (ev.wheel === 'down') this.scrollMercuryCode(-3);
     });
@@ -1309,10 +1326,18 @@ export class CLIChannel extends BaseChannel {
         }
       }
 
-      // 6. Mercury Code header (branch / ahead / behind / dirty count)
+      // 6. Mercury Code header (branch / ahead / behind / dirty count).
+      // Async git read: execSync here blocks the event loop while the TUI
+      // is rendering (and mid-task), which stalls streaming + input.
       if (this.state.mode === 'mercury-code' && this.state.mercuryCode) {
         const mc = this.state.mercuryCode;
-        const fresh = this.readGitStateQuick(mc.cwd);
+        const asyncState = await this.readGitStateAsync(mc.cwd);
+        const fresh = {
+          branch: asyncState.branch,
+          ahead: asyncState.ahead,
+          behind: asyncState.behind,
+          dirty: asyncState.files.length,
+        };
         if (
           fresh.branch !== mc.git.branch ||
           fresh.ahead !== mc.git.ahead ||
@@ -1660,7 +1685,7 @@ export class CLIChannel extends BaseChannel {
       content,
       timestamp: Date.now(),
     };
-    this.update({ chatMessages: [...this.state.chatMessages, userMsg] });
+    this.trimAndSetMessages([...this.state.chatMessages, userMsg]);
     this.emit({
       id: userMsg.id,
       channelId: 'cli',

@@ -522,7 +522,9 @@ export class Agent {
       ? 'This request already completed and its result was delivered.'
       : entry.status === 'failed'
         ? `This request previously failed: ${entry.error || 'unknown error'}`
-        : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
+        : entry.status === 'cancelled'
+          ? 'This request was cancelled earlier and was not resumed. Send it again if you want Mercury to run it.'
+          : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
     await channel.send(status, entry.message.channelId).catch((error) => {
       logger.warn({ error, workKey: entry.key }, 'Unable to send duplicate work status');
     });
@@ -595,6 +597,12 @@ export class Agent {
       if (this.currentAbort && !this.currentAbort.signal.aborted) {
         this.currentAbortReason = trimmed === '/stop' ? 'stopped' : 'halted';
         this.currentAbort.abort();
+      }
+      // The user deliberately killed this work — cancel its ledger entry so
+      // a restart never tries to resume it. (Only real crashes auto-resume.)
+      if (this.currentWorkKey) {
+        const label = trimmed === '/stop' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
+        try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
       }
       if (this.supervisor) {
         await this.supervisor.haltAll();
@@ -963,6 +971,14 @@ export class Agent {
 
     return () => {
       if (timer) clearTimeout(timer);
+      // The task is over — remove any lingering heartbeat message (the
+      // "⏳ Working... Ns elapsed" block with step list / "Streaming
+      // response...") from the TUI so nothing trails a finished task.
+      // Late ticks can fire after the final send already cleared it.
+      try {
+        const ch = this.channels.getChannelForMessage(msg);
+        if (ch instanceof CLIChannel) (ch as CLIChannel).clearHeartbeat();
+      } catch { /* best effort */ }
     };
   }
 
@@ -2357,7 +2373,7 @@ export class Agent {
             break;
           }
           if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
-            result = { text: `This task was ${this.currentAbortReason} by the user.`, usage: undefined };
+            result = { text: `⏹ Task ${this.currentAbortReason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`, usage: undefined };
             this.currentAbortReason = null;
             break;
           }
@@ -2484,8 +2500,8 @@ export class Agent {
       }
 
       this.tokenBudget.recordUsage({
-        provider: usedProvider!.name,
-        model: usedProvider!.model,
+        provider: usedProvider?.name ?? 'unknown',
+        model: usedProvider?.model ?? 'unknown',
         inputTokens: result.usage?.inputTokens ?? 0,
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
@@ -3099,7 +3115,24 @@ RULES:
     }
   }
 
+  /**
+   * Mark all queued/running work as user-cancelled (terminal state).
+   * Used by deliberate-stop paths (TUI Ctrl+C, /exit, SIGTERM) so the
+   * next start does not auto-resume killed tasks. Crash recovery is
+   * unaffected — this is only invoked on intentional exits.
+   */
+  cancelActiveWork(reason = 'Cancelled by the user.'): number {
+    try {
+      return this.workLedger.cancelActive(reason);
+    } catch (error) {
+      logger.warn({ error }, 'Failed to cancel active work');
+      return 0;
+    }
+  }
+
   async shutdown(): Promise<void> {
+    // Deliberate shutdown: never resume this work on restart.
+    try { this.workLedger.cancelActive('Mercury was shut down.'); } catch { /* best effort */ }
     if (this.supervisor) {
       await this.supervisor.haltAll();
     }
@@ -4443,10 +4476,10 @@ Is this productive iteration or a stuck loop?`,
             this.programmingMode.setPlan();
             this.programmingMode.setProjectContext(cwd);
             cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
-            const hb = channel as Partial<CLIChannel>;
-            if (typeof hb.sendHeartbeat === 'function') {
-              hb.sendHeartbeat('Mercury Code active. Describe the change — I will analyze first (PLAN), then execute on your approval with Ctrl+X.');
-            }
+            // Plain message, not a heartbeat: entering /code starts no task,
+            // so the TUI must not flip into a perpetual "Analyzing" spinner.
+            // channel.send() also clears any stale heartbeat + isThinking.
+            await channel.send('Mercury Code active. Describe the change — I will analyze first (PLAN), then execute on your approval with Ctrl+X.', channelId);
             return true;
           }
           await channel.send(entered.message, channelId);

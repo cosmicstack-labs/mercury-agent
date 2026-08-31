@@ -2094,6 +2094,37 @@ function runPlatformDoctor(): void {
 async function runAgent(isDaemon: boolean = false): Promise<void> {
   const runtimeMode = isDaemon ? 'daemon' : 'foreground';
   registerRuntimeProcess(runtimeMode);
+
+  // Crash forensics: V8 fatal errors (heap OOM etc.) print a native stack
+  // that scrolls away with the TUI. Ask V8 to keep a stack trace for the
+  // exception and dump JS reason + recent state to a file we can read
+  // after the abort. Best-effort by design.
+  try {
+    const { writeCrashFlag } = await import('./core/crash-flag.js');
+    const { getMercuryHome } = await import('./utils/config.js');
+    const { appendFileSync } = await import('node:fs');
+    const dumpFile = join(getMercuryHome(), 'crash-report.log');
+    const line = (m: string) => appendFileSync(dumpFile, `[${new Date().toISOString()}] ${m}\n`);
+    Error.stackTraceLimit = 50;
+    if (typeof (process as any).report !== 'undefined') {
+      try { (process as any).report.uncaughtException = true; } catch { /* unsupported */ }
+    }
+    process.on('uncaughtException', (err) => {
+      try { line(`UNCAUGHT: ${err?.stack || err}`); } catch { /* disk full */ }
+      try { writeCrashFlag({ reason: `Uncaught: ${String(err?.message || err)}`.slice(0, 300), timestamp: Date.now() }); } catch {}
+    });
+    process.on('unhandledRejection', (reason) => {
+      try { line(`REJECTION: ${reason instanceof Error ? reason.stack : String(reason)}`); } catch {}
+    });
+    process.on('SIGABRT', () => {
+      try { line('SIGABRT received — V8 fatal error (likely OOM). Heap stats follow.'); } catch {}
+      try {
+        const mu = process.memoryUsage();
+        line(`heapUsed=${(mu.heapUsed / 1048576).toFixed(1)}MB heapTotal=${(mu.heapTotal / 1048576).toFixed(1)}MB rss=${(mu.rss / 1048576).toFixed(1)}MB`);
+      } catch {}
+    });
+  } catch { /* forensics must never block boot */ }
+
   let config = loadConfig();
   config = ensureCreatorField(config);
   const name = config.identity.name;
