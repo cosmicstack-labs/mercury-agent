@@ -2376,6 +2376,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
+        // Deliberate TUI exit (Ctrl+C / onExit): mark any queued or running
+        // work cancelled so the next launch does NOT silently resume a task
+        // the user chose to kill.
+        try { agent.cancelActiveWork('Mercury Code was exited from the TUI.'); } catch { /* best effort */ }
         process.exit(0);
       });
     } else {
@@ -3261,6 +3265,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     shutdownPromise = (async () => {
       cloudClient?.disconnect();
       sessionSynchronizer?.stop();
+      // Always hand the terminal back in a sane state (no mouse tracking,
+      // visible cursor) — even after an abort the shell must be usable.
+      try { channels.getCliChannel()?.restoreTerminal(); } catch { /* best effort */ }
       if (!isDaemon) {
         console.log('');
         console.log(chalk.dim(`  ${name} is shutting down...`));

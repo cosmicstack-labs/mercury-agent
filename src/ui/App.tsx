@@ -854,9 +854,21 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
         !key.upArrow && !key.downArrow && !key.leftArrow && !key.rightArrow &&
         !key.tab && !key.pageUp && !key.pageDown && !key.ctrl && !key.meta &&
         /^[<>=;Mm0-9]+$/.test(ch);
+      // Flood guard: a corrupt stream must never be able to grow the input
+      // box unboundedly (input bloat previously cascaded into render
+      // storms + V8 aborts). Keep typing functional, cap the reservoir.
+      const MAX_INPUT_LEN = 8000;
       if (clean && !isMouseFragment) {
-        setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
-        setCursorPos((p) => p + clean.length);
+        const next = input.slice(0, cursorPos) + clean + input.slice(cursorPos);
+        if (next.length > MAX_INPUT_LEN) {
+          if (input.length >= MAX_INPUT_LEN) return; // already full — drop silently
+          const accepted = MAX_INPUT_LEN - input.length;
+          setInput(next.slice(0, MAX_INPUT_LEN));
+          setCursorPos((p) => p + accepted);
+        } else {
+          setInput(next);
+          setCursorPos((p) => p + clean.length);
+        }
       }
     }
   });

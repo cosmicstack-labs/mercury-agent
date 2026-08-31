@@ -86,14 +86,88 @@ export function mouseTrackingSequences(enable: boolean): string {
 }
 
 /**
- * Wrap process.stdin in a filtered PassThrough that Ink can use as its
- * input stream. Mouse-report sequences are dropped; everything else flows
- * through. Ink calls setRawMode/ref/unref/setEncoding on the stream it is
- * given, so those are proxied to the real stdin.
+ * Stateful mouse-sequence filter for the terminal input stream.
  *
- * In addition, when mouse tracking is armed by the Mercury Code view,
- * complete SGR/X10 mouse sequences are forwarded to the registered
- * handler (wheel scroll etc.) instead of being discarded.
+ * Feeds complete mouse sequences (SGR/X10) to `onEvent`, passes every
+ * other byte through `write`, and HOLDS BACK partial escape prefixes so a
+ * sequence split across two stdin chunks is joined — never dropped,
+ * never leaked as keystrokes. A bounded holdback prevents a corrupt
+ * stream from growing memory without limit.
+ */
+export class MouseSequenceFilter {
+  private buf = '';
+  private static readonly SGR = /^\x1b\[<\d+;\d+;\d+[Mm]/;
+  private static readonly X10 = /^\x1b\[M[\x20-\x2f][\x20-\xff][\x20-\xff]/;
+  private static readonly DEC = /^\x1b\[\?100[0-7][hl]/;
+  private static readonly CSI_COMPLETE = /^\x1b\[[\d;<]*[A-Za-z]/;
+  private static readonly MAX_HOLDBACK = 64;
+
+  constructor(
+    private onEvent: (ev: MouseEvent) => void,
+    private write: (s: string) => void,
+  ) {}
+
+  /** Feed a raw chunk from the terminal; returns nothing, side-effects only. */
+  push(chunk: Buffer | string): void {
+    this.buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let out = '';
+    let i = 0;
+    while (i < this.buf.length) {
+      const rest = this.buf.slice(i);
+      if (rest[0] !== '\x1b') {
+        out += rest[0];
+        i += 1;
+        continue;
+      }
+      const seq = MouseSequenceFilter.SGR.exec(rest)?.[0]
+        ?? MouseSequenceFilter.X10.exec(rest)?.[0]
+        ?? MouseSequenceFilter.DEC.exec(rest)?.[0];
+      if (seq) {
+        const ev = parseMouseSequence(seq);
+        if (ev) {
+          try { this.onEvent(ev); } catch { /* handler must never crash input */ }
+        }
+        i += seq.length;
+        continue;
+      }
+      // X10 mouse in flight (ESC [ M + 0-2 pending payload bytes) — MUST be
+      // tested before the generic CSI pass-through, because 'M' is a valid
+      // CSI final byte and would otherwise leak the prefix downstream.
+      if (/^\x1b\[M[\x20-\xff]{0,2}$/.test(rest)) {
+        break;
+      }
+      // Complete non-mouse CSI (arrow keys etc.) — pass through untouched.
+      const csi = MouseSequenceFilter.CSI_COMPLETE.exec(rest)?.[0];
+      if (csi) {
+        out += csi;
+        i += csi.length;
+        continue;
+      }
+      // Incomplete escape sequence — hold it back and wait for the rest.
+      // Covers CSI starts (ESC [ 3 2 ...) and SGR mouse starts (ESC [ < 6 4 ;).
+      if (/^\x1b(\[[\d;<\?<>]*)?$/.test(rest)) {
+        break;
+      }
+      // Unknown escape byte — pass it through so Ink's parser sees it.
+      out += rest[0];
+      i += 1;
+    }
+    this.buf = i >= this.buf.length ? '' : this.buf.slice(i);
+    // Overflow guard: an unterminated garbage prefix must not grow forever.
+    // Flush it, stripping ESC bytes so terminal/Ink never sees raw ones.
+    if (this.buf.length > MouseSequenceFilter.MAX_HOLDBACK) {
+      this.buf = '';
+    }
+    if (out) this.write(out);
+  }
+}
+
+/**
+ * Wrap process.stdin in a filtered PassThrough that Ink can use as its
+ * input stream. Mouse-report sequences are parsed (and dispatched to the
+ * Mercury Code wheel handler when armed) or dropped; everything else
+ * flows through. Partial escape sequences split across chunks are joined
+ * by the MouseSequenceFilter so their tails never leak into the input box.
  */
 function createFilteredStdin(onMouseEvent?: (ev: MouseEvent) => void): NodeJS.ReadStream {
   const real = process.stdin as NodeJS.ReadStream;
@@ -109,52 +183,11 @@ function createFilteredStdin(onMouseEvent?: (ev: MouseEvent) => void): NodeJS.Re
     get: () => real.isRaw,
   });
 
-  let pending = '';
-  real.on('data', (chunk: Buffer | string) => {
-    pending += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    let cleaned = '';
-    let i = 0;
-    while (i < pending.length) {
-      const rest = pending.slice(i);
-      if (rest.startsWith('\x1b')) {
-        // Try to match a complete mouse sequence at this position.
-        const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(rest);
-        const x10 = /^\x1b\[M[\x20-\x2f][\x20-\xff][\x20-\xff]/.exec(rest);
-        const dec = /^\x1b\[\?100[0-7][hl]/.exec(rest);
-        const seq = sgr?.[0] ?? x10?.[0] ?? dec?.[0];
-        if (seq) {
-          if (onMouseEvent) {
-            const ev = parseMouseSequence(seq);
-            if (ev) {
-              try { onMouseEvent(ev); } catch { /* handler must never crash input */ }
-            }
-          }
-          i += seq.length;
-          continue;
-        }
-        // Incomplete mouse sequence? Hold it back for the next chunk.
-        if (/^\x1b(\[<\d*;?;?\d*;?;?\d*[Mm]?)?$/.test(rest) || /^\x1b\[M$/.test(rest)) {
-          break;
-        }
-        // Some other escape sequence — let it flow to Ink untouched.
-        cleaned += rest[0];
-        i += 1;
-        continue;
-      }
-      cleaned += pending[i];
-      i += 1;
-    }
-    // Hold back a trailing partial escape sequence so it can be joined
-    // with the next chunk before matching.
-    const dangling = cleaned.match(/\x1b(\[[0-;<]*[%\*A-Za-z]?|\[<[0-9;]*)?$/);
-    if (dangling && dangling[0].length > 0 && dangling.index === cleaned.length - dangling[0].length) {
-      pending = cleaned.slice(dangling.index);
-      if (dangling.index > 0) wrapper.write(cleaned.slice(0, dangling.index));
-    } else {
-      pending = '';
-      if (cleaned) wrapper.write(cleaned);
-    }
-  });
+  const filter = new MouseSequenceFilter(
+    (ev) => onMouseEvent?.(ev),
+    (s) => wrapper.write(s),
+  );
+  real.on('data', (chunk: Buffer | string) => filter.push(chunk));
 
   return wrapper as unknown as NodeJS.ReadStream;
 }
@@ -284,9 +317,11 @@ export class CLIChannel extends BaseChannel {
   async stop(): Promise<void> {
     this.stopRawModeWatchdog();
     this.stopStatusPoller();
+    this.setMouseEnabled(false);
     this.inkInstance?.unmount();
     this.inkInstance = null;
     this.releaseRawMode();
+    this.restoreTerminal();
     this.ready = false;
   }
 
@@ -383,7 +418,18 @@ export class CLIChannel extends BaseChannel {
     setImmediate(flush);
   }
 
-  mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: () => void): void {
+  /**
+   * Restore the terminal to a sane, non-mouse state. Called on every exit
+   * path (graceful stop, TUI exit, crash handlers) so a crashed Mercury
+   * never leaves the shell spewing mouse-report garbage.
+   */
+  restoreTerminal(): void {
+    try {
+      process.stdout.write(mouseTrackingSequences(false) + '\x1b[?25h');
+    } catch { /* not a TTY */ }
+  }
+
+  mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: any): void {
     this.spotifyClient = spotifyClient ?? null;
     this.exitHandler = onExit ?? null;
 
@@ -613,9 +659,11 @@ export class CLIChannel extends BaseChannel {
         },
         onExit: () => {
           this.stopRawModeWatchdog();
+          this.setMouseEnabled(false);
           this.inkInstance?.unmount();
           this.inkInstance = null;
           this.releaseRawMode();
+          this.restoreTerminal();
           this.exitHandler?.();
         },
         spotifyClient: this.spotifyClient,
