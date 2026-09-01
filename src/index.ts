@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Command } from 'commander';
@@ -10,6 +10,7 @@ import {
   saveConfig,
   isSetupComplete,
   getMercuryHome,
+  appendToMercuryEnv,
   ensureCreatorField,
   clearTelegramAccess,
   isProviderConfigured,
@@ -566,18 +567,6 @@ async function promptValidatedValue(
 
     console.log(chalk.red(`  ${error}`));
   }
-}
-
-function appendToEnv(key: string, value: string): void {
-  const envPath = join(getMercuryHome(), '.env');
-  let envContent = '';
-  if (existsSync(envPath)) {
-    envContent = readFileSync(envPath, 'utf-8');
-  }
-  const lines = envContent.split('\n').filter((l: string) => !l.startsWith(`${key}=`) && l.trim() !== '');
-  lines.push(`${key}=${value}`);
-  writeFileSync(envPath, lines.join('\n') + '\n', 'utf-8');
-  process.env[key] = value;
 }
 
 function parseGithubRepo(input: string): { owner: string; repo: string } | null {
@@ -1872,7 +1861,7 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     const ghTokenCurrent = process.env.GITHUB_TOKEN ? ` [${maskKey(process.env.GITHUB_TOKEN)}]` : '';
     const ghToken = await ask(chalk.white(`  2. GitHub PAT${ghTokenCurrent}: `));
     if (ghToken) {
-      appendToEnv('GITHUB_TOKEN', ghToken);
+      appendToMercuryEnv('GITHUB_TOKEN', ghToken);
     }
 
     if (config.github.username || process.env.GITHUB_TOKEN) {
@@ -1916,14 +1905,14 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     const spotifyClientId = await ask(chalk.white(`  1. Spotify Client ID${spotifyIdCurrent}: `));
     if (spotifyClientId) {
       config.spotify.clientId = spotifyClientId;
-      appendToEnv('SPOTIFY_CLIENT_ID', spotifyClientId);
+      appendToMercuryEnv('SPOTIFY_CLIENT_ID', spotifyClientId);
     }
 
     const spotifySecretCurrent = isReconfig && config.spotify.clientSecret ? ` [${maskKey(config.spotify.clientSecret)}]` : '';
     const spotifyClientSecret = await ask(chalk.white(`  2. Spotify Client Secret${spotifySecretCurrent}: `));
     if (spotifyClientSecret) {
       config.spotify.clientSecret = spotifyClientSecret;
-      appendToEnv('SPOTIFY_CLIENT_SECRET', spotifyClientSecret);
+      appendToMercuryEnv('SPOTIFY_CLIENT_SECRET', spotifyClientSecret);
     }
 
     if (spotifyClientId || spotifyClientSecret) {
