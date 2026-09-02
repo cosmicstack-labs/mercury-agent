@@ -7,7 +7,8 @@ import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { renderMercuryCodeParts } from './pixel-logo.js';
-import { normalizeTerminalText, getViewportWindow, moveViewport } from './terminal-viewport.js';
+import { anchorViewportDistance, normalizeTerminalText, getViewportWindow, moveViewport } from './terminal-viewport.js';
+import { buildMercuryMessageLines, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
@@ -442,8 +443,14 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
       if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
       if (key.upArrow) { onInput('/mc scroll 1'); return; }
       if (key.downArrow) { onInput('/mc scroll -1'); return; }
-      if (key.pageUp) { onInput('/mc scroll 10'); return; }
-      if (key.pageDown) { onInput('/mc scroll -10'); return; }
+      const transcriptPage = Math.max(5, terminalSize.rows - 12);
+      if (key.pageUp) { onInput(`/mc scroll ${transcriptPage}`); return; }
+      if (key.pageDown) { onInput(`/mc scroll -${transcriptPage}`); return; }
+      if ((key as any).home) { onInput('/mc scroll 1000000000'); return; }
+      if ((key as any).end) { onInput('/mc live'); return; }
+      if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput(`/mc scroll ${transcriptPage}`); return; }
+      if (key.ctrl && (ch === 'a' || ch === 'A')) { onInput('/mc scroll 1000000000'); return; }
+      if (key.ctrl && (ch === 'e' || ch === 'E')) { onInput('/mc live'); return; }
       if (key.backspace || key.delete) {
         if (cursorPos > 0) {
           setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
@@ -847,18 +854,11 @@ export function TuiApp({ state, onInput, onPermissionResolve, onExit, spotifyCli
           return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
         })
         .join('');
-      // Also reject if no recognized key was pressed and ch looks like a
-      // mouse fragment (e.g. "<", "M", "m" arriving without any key flag).
-      const isMouseFragment =
-        !key.return && !key.escape && !key.backspace && !key.delete &&
-        !key.upArrow && !key.downArrow && !key.leftArrow && !key.rightArrow &&
-        !key.tab && !key.pageUp && !key.pageDown && !key.ctrl && !key.meta &&
-        /^[<>=;Mm0-9]+$/.test(ch);
       // Flood guard: a corrupt stream must never be able to grow the input
       // box unboundedly (input bloat previously cascaded into render
       // storms + V8 aborts). Keep typing functional, cap the reservoir.
       const MAX_INPUT_LEN = 8000;
-      if (clean && !isMouseFragment) {
+      if (clean) {
         const next = input.slice(0, cursorPos) + clean + input.slice(cursorPos);
         if (next.length > MAX_INPUT_LEN) {
           if (input.length >= MAX_INPUT_LEN) return; // already full — drop silently
@@ -1140,7 +1140,9 @@ function formatCompact(n: number): string {
 
 function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
   const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
-  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  // ThinkingIndicator owns transient progress; do not duplicate heartbeat
+  // messages in the conversation transcript above it.
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming && !message.id.startsWith('heartbeat-'));
   const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
   return (
     <Box flexDirection="row" flexGrow={1}>
@@ -1169,7 +1171,9 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
   const modeInfo = modeLabels[state.programmingMode];
   const fileSection = state.sidebarSections.find((s) => s.title === 'Files');
   const staticMessages = state.chatMessages.filter((message) => !message.streaming && !message.id.startsWith('heartbeat-'));
-  const dynamicMessages = state.chatMessages.filter((message) => message.streaming || message.id.startsWith('heartbeat-'));
+  // ThinkingIndicator owns transient progress; do not duplicate heartbeat
+  // messages in the conversation transcript above it.
+  const dynamicMessages = state.chatMessages.filter((message) => message.streaming && !message.id.startsWith('heartbeat-'));
   const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
 
   return (
@@ -1215,7 +1219,11 @@ function useTerminalSize(): { rows: number; cols: number } {
   const { stdout } = useStdout();
   const [size, setSize] = React.useState({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
   React.useEffect(() => {
-    const onResize = () => setSize({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
+    const onResize = () => {
+      const rows = stdout.rows || 24;
+      const cols = stdout.columns || 80;
+      setSize((current) => current.rows === rows && current.cols === cols ? current : { rows, cols });
+    };
     stdout.on('resize', onResize);
     const fallback = setInterval(onResize, 500);
     fallback.unref?.();
@@ -2123,7 +2131,28 @@ function InputBox({
 // ─── Mercury Code (full-screen /code) ───────────────────────────────────────
 
 /** Markdown render cache for the Mercury Code transcript (bounded). */
-const mercuryFlatCache = new Map<string, { key: string; lines: Array<{ tag: string; text: string }> }>();
+const mercuryFlatCache = new Map<string, { key: string; lines: MercuryTranscriptLine[] }>();
+/**
+ * Retained rendered lines across all cached messages — hard memory bound.
+ * Sized for full-session scrollback: a long coding session renders ~20-40k
+ * wrapped rows; each row is a tiny object, so 60k lines stays well under a
+ * few MB while letting the user scroll to the very first message.
+ */
+const MERCURY_CACHE_MAX_LINES = 60000;
+let mercuryCacheLineCount = 0;
+
+function mercuryCacheSet(id: string, key: string, lines: MercuryTranscriptLine[]): void {
+  const existing = mercuryFlatCache.get(id);
+  if (existing) mercuryCacheLineCount -= existing.lines.length;
+  mercuryFlatCache.set(id, { key, lines });
+  mercuryCacheLineCount += lines.length;
+  while (mercuryCacheLineCount > MERCURY_CACHE_MAX_LINES && mercuryFlatCache.size > 1) {
+    const oldest = mercuryFlatCache.keys().next().value;
+    if (oldest === undefined) break;
+    mercuryCacheLineCount -= mercuryFlatCache.get(oldest)!.lines.length;
+    mercuryFlatCache.delete(oldest);
+  }
+}
 
 const CODE_HINTS: Array<[string, string, string]> = [
   ['/code plan', 'analyze & propose before coding', 'ctrl+p'],
@@ -2135,8 +2164,8 @@ const CODE_HINTS: Array<[string, string, string]> = [
 
 /**
  * Vibrant Mercury palette for the wordmark. Background-adaptive: on a dark
- * terminal the cyan->blue "MERCURY" gradient pops against bright magenta
- * "CODE"; on a light background the shades deepen instead of washing out.
+ * terminal cyan "MERCURY" contrasts with orange "CODE"; on a light
+ * background the shades deepen instead of washing out.
  */
 const WORDMARK_LIGHT_BG = (() => {
   const fgBg = process.env.COLORFGBG;
@@ -2146,26 +2175,24 @@ const WORDMARK_LIGHT_BG = (() => {
   return !Number.isNaN(bgCode) && bgCode >= 10;
 })();
 
-// One solid color per word: "CODE" keeps its bright magenta; "MERCURY"
-// gets a single contrasting color (background-adaptive) instead of the
-// old per-row gradient, so the whole word reads uniformly.
+// One solid color per word, background-adaptive for reliable contrast.
 const WORDMARK_COLORS = WORDMARK_LIGHT_BG
-  ? { mercury: 'blue', code: 'magentaBright' }
-  : { mercury: 'cyanBright', code: 'magentaBright' };
+  ? { mercury: 'blue', code: '#c75b00' }
+  : { mercury: 'cyanBright', code: '#ff8a00' };
 
 /**
  * Pixel wordmark band. Mirrors the opencode splash layout: centered,
  * two-tone block glyphs, version right-aligned under the wordmark.
  * The left column is fixed-width (from renderMercuryCodeParts) so "CODE"
  * starts at the same pixel column on every row — precise on any device.
- * Vibrant duotone: cyan-gradient "MERCURY" + bright magenta "CODE".
+ * Vibrant duotone: cyan "MERCURY" + orange "CODE".
  * Collapses to a one-line banner on very short terminals.
  */
 function MercuryCodeWordmark({ cols, version, terminalRows }: { cols: number; version: string; terminalRows: number }): React.ReactNode {
   if (terminalRows < 16) {
     return (
       <Box paddingX={1} flexShrink={0}>
-        <Text bold color="cyan">☿ MERCURY CODE</Text>
+        <Text bold color="cyan">☿ MERCURY </Text><Text bold color={WORDMARK_COLORS.code}>CODE</Text>
         <Text dimColor> v{version}</Text>
       </Box>
     );
@@ -2217,15 +2244,19 @@ function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
 function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
-  React.useEffect(() => {
-    const t = setInterval(() => setFrame((v) => (v + 1) % frames.length), 90);
-    return () => clearInterval(t);
-  }, []);
-  if (state.mode !== 'mercury-code') return null;
   const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
   const doneRecently = state.toolSteps.filter((s) => s.status === 'done').slice(-2);
   const activeAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused');
-  if (!running && !state.isThinking && doneRecently.length === 0 && activeAgents.length === 0) return null;
+  const active = Boolean(running || state.isThinking || doneRecently.length > 0 || activeAgents.length > 0);
+  React.useEffect(() => {
+    if (!active || state.mode !== 'mercury-code') return;
+    // Full-screen Ink repaints are expensive; 4fps still reads as motion and
+    // avoids flooding slow terminals with disposable animation frames.
+    const t = setInterval(() => setFrame((v) => (v + 1) % frames.length), 250);
+    return () => clearInterval(t);
+  }, [active, state.mode]);
+  if (state.mode !== 'mercury-code') return null;
+  if (!active) return null;
 
   const phase = running
     ? running.label
@@ -2332,42 +2363,27 @@ export function MercuryCodeView({
   onScrollClamp?: (distance: number) => void;
 }): React.ReactNode {
   const mc = state.mercuryCode;
-  // Flatten messages into role-tagged rendered lines. A module-level cache
-  // keyed by (id, role, content revision) avoids re-running the markdown
-  // parser for unchanged messages during streaming (the transcript can be
-  // long; only the streaming message's cache entry churns).
+  // Build terminal-width-aware message blocks. Every visual row is explicit,
+  // so the viewport can scroll without truncating valuable response text.
   const flatLines = React.useMemo(() => {
-    const out: string[] = [];
+    const out: MercuryTranscriptLine[] = [];
     if (!mc) return out;
     for (const msg of state.chatMessages) {
       if (typeof msg.content !== 'string') continue;
-      const cacheKey = `${msg.id}|${msg.role}|${msg.content.length}|${msg.timestamp}|${msg.streaming ? 1 : 0}`;
+      const contentWidth = Math.max(20, cols - 4);
+      const cacheKey = `${msg.id}|${msg.role}|${msg.content.length}|${msg.timestamp}|${msg.streaming ? 1 : 0}|${contentWidth}`;
       const cached = mercuryFlatCache.get(msg.id);
-      let lines: Array<{ tag: string; text: string }>;
+      let lines: MercuryTranscriptLine[];
       if (cached && cached.key === cacheKey) {
         lines = cached.lines;
       } else {
-        const body = normalizeTerminalText(msg.content);
-        let tag: string;
-        let rendered: string[];
-        if (msg.role === 'user') {
-          tag = '{u}';
-          rendered = renderMarkdown(body).split('\n');
-        } else if (msg.role === 'agent') {
-          tag = '{a}';
-          rendered = renderMarkdown(body).split('\n');
-        } else {
-          tag = '{s}';
-          rendered = body.split('\n');
-        }
-        lines = rendered.map((l) => ({ tag, text: l }));
-        if (mercuryFlatCache.size > 400) mercuryFlatCache.clear();
-        mercuryFlatCache.set(msg.id, { key: cacheKey, lines });
+        lines = buildMercuryMessageLines(msg, contentWidth);
+        mercuryCacheSet(msg.id, cacheKey, lines);
       }
-      for (const l of lines) out.push(`${l.tag}${l.text}`);
+      out.push(...lines);
     }
     return out;
-  }, [state.chatMessages, mc]);
+  }, [state.chatMessages, mc, cols]);
 
   if (!mc) {
     return (
@@ -2395,12 +2411,15 @@ export function MercuryCodeView({
   const statusRows = 1;
   const transcriptHeight = Math.max(3, height - wordmarkRows - inputRows - 1 - liveRows - confirmRows);
 
-  const viewport = getViewportWindow(flatLines.length, transcriptHeight, mc.scrollOffset);
+  const previousLineCount = React.useRef(flatLines.length);
+  const anchoredOffset = anchorViewportDistance(mc.scrollOffset, previousLineCount.current, flatLines.length);
+  const viewport = getViewportWindow(flatLines.length, transcriptHeight, anchoredOffset);
   React.useEffect(() => {
+    previousLineCount.current = flatLines.length;
     if (onScrollClamp && viewport.distanceFromBottom !== mc.scrollOffset) {
       onScrollClamp(viewport.distanceFromBottom);
     }
-  }, [onScrollClamp, mc.scrollOffset, viewport.distanceFromBottom]);
+  }, [flatLines.length, onScrollClamp, mc.scrollOffset, viewport.distanceFromBottom]);
   const visible = flatLines.slice(viewport.start, viewport.end);
 
   // Status line (single row): left hint, right context.
@@ -2426,16 +2445,51 @@ export function MercuryCodeView({
         {flatLines.length === 0 ? (
           <MercuryCodeHints cols={cols} />
         ) : (
-          visible.map((line, i) => {
-            const role = line.slice(0, 3);
-            const content = line.slice(3) || ' ';
-            const color =
-              role === '{u}' ? 'yellow'
-                : role === '{a}' ? 'cyan'
-                  : 'gray';
+          visible.map((line) => {
+            const roleColor = line.role === 'user' ? 'yellow' : line.role === 'agent' ? 'cyan' : 'gray';
+            if (line.kind === 'spacer') {
+              return <Box key={line.key} paddingX={2}><Text> </Text></Box>;
+            }
+            if (line.kind === 'header') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text bold color={roleColor}>● {line.text}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'code-label') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={roleColor}>│ </Text><Text dimColor>┌─ {line.text}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'code') {
+              const highlighted = highlightCodeBlock(line.text, line.lang)[0] ?? line.text;
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={roleColor}>│ </Text><Text>{highlighted || ' '}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'system') {
+              const complete = line.text.startsWith('Task complete');
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={complete ? 'green' : 'gray'} bold={complete}>─ {line.text || ' '}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'file') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color="green">  ↳ </Text><Text>{line.text}</Text>
+                </Box>
+              );
+            }
             return (
-              <Box key={`${viewport.start + i}`} paddingX={2}>
-                <Text color={color} wrap="truncate-end">{content}</Text>
+              <Box key={line.key} paddingX={2}>
+                <Text color={roleColor}>│ </Text><Text>{line.text || ' '}</Text>
               </Box>
             );
           })
@@ -2445,10 +2499,10 @@ export function MercuryCodeView({
       {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
       <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
       <Box paddingX={3} flexShrink={0}>
-        {mc.scrollOffset > 0 ? (
-          <Text color="yellow">↓ {mc.scrollOffset} line{mc.scrollOffset !== 1 ? 's' : ''} above · ↓ to live</Text>
+        {viewport.distanceFromBottom > 0 ? (
+          <Text color="yellow">SCROLLBACK · {viewport.distanceFromBottom} row{viewport.distanceFromBottom !== 1 ? 's' : ''} from live · ↑↓ move · PgUp/PgDn page · Ctrl+E live</Text>
         ) : (
-          <Text dimColor>enter send</Text>
+          <Text dimColor>enter send · ↑/PgUp/Ctrl+U history · Ctrl+A oldest</Text>
         )}
         <Spacer />
         <Text color="blue" wrap="truncate-end">{rightStr}</Text>

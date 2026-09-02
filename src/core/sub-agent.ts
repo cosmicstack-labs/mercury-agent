@@ -169,6 +169,9 @@ export class SubAgent {
             tools: this.capabilities.getTools(),
             stopWhen: stepCountIs(stepsRemaining),
             abortSignal: this.abortController.signal,
+            // Stop the SDK retaining raw HTTP bodies in every step's result
+            // (same O(N²) heap growth as the main agent loop).
+            experimental_include: { requestBody: false, responseBody: false },
             onStepFinish: async ({ toolCalls, toolResults, usage }) => {
               if (this.abortController.signal.aborted) return;
               stepsRemaining--;

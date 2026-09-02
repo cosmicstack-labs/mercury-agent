@@ -1,6 +1,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -73,6 +74,7 @@ import { WorkLedger, type WorkEntry } from './work-ledger.js';
 import { MAX_PROVIDER_ATTEMPT_MS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
+import { isTaskHeapUnsafe, taskHeapAbortThreshold } from './memory-guard.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -340,7 +342,7 @@ export class Agent {
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
-  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | 'stopped' | 'halted' | null = null;
+  private currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
@@ -1314,6 +1316,27 @@ export class Agent {
     this.stepNarrative = [];
     this.markProgress('Starting...');
     const stopHeartbeat = this.startForegroundHeartbeat(msg);
+    const heapAbortThreshold = taskHeapAbortThreshold(
+      getHeapStatistics().heap_size_limit,
+      process.memoryUsage().heapUsed,
+    );
+    const memoryGuard = setInterval(() => {
+      const usage = process.memoryUsage();
+      if (!isTaskHeapUnsafe(usage.heapUsed, heapAbortThreshold) || this.currentAbortReason === 'memory-pressure') return;
+      this.currentAbortReason = 'memory-pressure';
+      const error = new Error(
+        `Task stopped at ${Math.round(usage.heapUsed / 1048576)}MB heap usage before Mercury reached the V8 crash limit`,
+      );
+      logger.error({
+        heapUsed: usage.heapUsed,
+        heapTotal: usage.heapTotal,
+        rss: usage.rss,
+        threshold: heapAbortThreshold,
+        activity: this.currentActivity,
+      }, 'Task memory safety limit reached');
+      loopAbortController.abort(error);
+    }, 1000);
+    memoryGuard.unref?.();
     let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
@@ -1791,6 +1814,12 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              // Memory: the SDK retains a structuredClone of the whole
+              // conversation (plus raw HTTP bodies) in every step of its
+              // `steps` array. With 75 steps × file-size tool outputs that
+              // is O(N²) heap growth → V8 OOM on long coding tasks. We never
+              // read the raw bodies, so exclude them. (SDK default: true.)
+              experimental_include: { requestBody: false },
               onError: ({ error }) => {
                 streamError = error;
               },
@@ -2086,6 +2115,8 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              // Same O(N²) step retention as streamText (see comment above).
+              experimental_include: { requestBody: false, responseBody: false },
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
@@ -2352,6 +2383,15 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          if (this.currentAbortReason === 'memory-pressure') {
+            lastError = loopAbortController.signal.reason instanceof Error
+              ? loopAbortController.signal.reason
+              : new Error('Task stopped by the memory safety limit');
+            requiresContinuationApproval = true;
+            this.currentAbortReason = null;
+            logger.error({ provider: provider.name, err: lastError }, 'Provider attempt stopped before heap exhaustion');
+            break;
+          }
           if (this.currentAbortReason === 'time-limit') {
             lastError = new Error(`${provider.name} exceeded the 10-minute provider-attempt limit`);
             requiresContinuationApproval = true;
@@ -2691,7 +2731,10 @@ export class Agent {
             await channel.send(finalText, msg.channelId, elapsed);
           }
           this.markProgress();
-          if (isSubstantialTask && channel instanceof CLIChannel) {
+          const isMercuryCodeExecution = channel instanceof CLIChannel
+            && channel.getTuiState().mode === 'mercury-code'
+            && channel.getTuiState().programmingMode === 'execute';
+          if ((isSubstantialTask || isMercuryCodeExecution) && channel instanceof CLIChannel) {
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2765,6 +2808,7 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      clearInterval(memoryGuard);
       stopHeartbeat();
       this.finalizeChannelTask(msg);
       this.currentMessage = null;

@@ -77,6 +77,13 @@ export interface ChatMessage {
   timestamp: number;
   streaming?: boolean;
   completionMeta?: CompletionMeta;
+  fileChanges?: FileChangeSummary[];
+}
+
+export interface FileChangeSummary {
+  path: string;
+  added: number | null;
+  removed: number | null;
 }
 
 export interface ToolStep {

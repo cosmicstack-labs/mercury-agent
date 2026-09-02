@@ -2,14 +2,14 @@ import React from 'react';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync, execFile } from 'node:child_process';
-import { PassThrough } from 'node:stream';
+import { execSync, execFile, execFileSync } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
+import { ResilientTuiOutput } from '../ui/resilient-output.js';
 
 /**
  * Strip mouse-report escape sequences from terminal input before Ink sees
@@ -162,36 +162,6 @@ export class MouseSequenceFilter {
   }
 }
 
-/**
- * Wrap process.stdin in a filtered PassThrough that Ink can use as its
- * input stream. Mouse-report sequences are parsed (and dispatched to the
- * Mercury Code wheel handler when armed) or dropped; everything else
- * flows through. Partial escape sequences split across chunks are joined
- * by the MouseSequenceFilter so their tails never leak into the input box.
- */
-function createFilteredStdin(onMouseEvent?: (ev: MouseEvent) => void): NodeJS.ReadStream {
-  const real = process.stdin as NodeJS.ReadStream;
-  const wrapper = new PassThrough() as unknown as NodeJS.ReadStream & Record<string, unknown>;
-
-  // Proxy the calls Ink makes back to the real stdin.
-  (wrapper as any).setRawMode = (enabled: boolean) => real.setRawMode?.(enabled);
-  (wrapper as any).ref = () => real.ref?.();
-  (wrapper as any).unref = () => real.unref?.();
-  (wrapper as any).setEncoding = (enc: BufferEncoding) => { real.setEncoding(enc); };
-  Object.defineProperty(wrapper, 'isTTY', { value: real.isTTY });
-  Object.defineProperty(wrapper, 'isRaw', {
-    get: () => real.isRaw,
-  });
-
-  const filter = new MouseSequenceFilter(
-    (ev) => onMouseEvent?.(ev),
-    (s) => wrapper.write(s),
-  );
-  real.on('data', (chunk: Buffer | string) => filter.push(chunk));
-
-  return wrapper as unknown as NodeJS.ReadStream;
-}
-
 export interface TuiState {
   mode: AppMode;
   viewMode: 'balanced' | 'detailed';
@@ -282,14 +252,13 @@ export class CLIChannel extends BaseChannel {
   private stepStartTime = 0;
   private state: TuiState = { ...defaultState };
   private spotifyClient: any = null;
-  private rawModeWatchdog: NodeJS.Timeout | null = null;
   private statusPoller: NodeJS.Timeout | null = null;
   private statusPollerBusy = false;
   private rerenderQueued = false;
   private rerenderScheduled = false;
   private mouseEnabled = false;
-  private pendingMouseSeq: string | null = null;
   private mouseHandler: ((ev: MouseEvent) => void) | null = null;
+  private tuiOutput: ResilientTuiOutput | null = null;
   private exitEscArmed = false;
   private statusProviders: {
     tokens?: () => { used: number; budget: number; percentage: number };
@@ -315,26 +284,15 @@ export class CLIChannel extends BaseChannel {
   }
 
   async stop(): Promise<void> {
-    this.stopRawModeWatchdog();
     this.stopStatusPoller();
     this.setMouseEnabled(false);
     this.inkInstance?.unmount();
     this.inkInstance = null;
+    this.tuiOutput?.dispose();
+    this.tuiOutput = null;
     this.releaseRawMode();
     this.restoreTerminal();
     this.ready = false;
-  }
-
-  private ensureRawMode(): void {
-    if (!process.stdin.isTTY) return;
-    const stdin = process.stdin as NodeJS.ReadStream;
-    if (typeof stdin.setRawMode !== 'function') return;
-    try {
-      stdin.setRawMode(true);
-      stdin.resume();
-    } catch {
-      // Ignore transient raw mode failures.
-    }
   }
 
   private releaseRawMode(): void {
@@ -348,19 +306,16 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
-  private startRawModeWatchdog(): void {
-    this.stopRawModeWatchdog();
-    this.ensureRawMode();
-    this.rawModeWatchdog = setInterval(() => {
-      if (!this.inkInstance) return;
-      this.ensureRawMode();
-    }, 250);
-  }
-
-  private stopRawModeWatchdog(): void {
-    if (this.rawModeWatchdog) {
-      clearInterval(this.rawModeWatchdog);
-      this.rawModeWatchdog = null;
+  private restoreRawModeAfterMenu(): void {
+    if (!process.stdin.isTTY) return;
+    const stdin = process.stdin as NodeJS.ReadStream;
+    if (stdin.isRaw === true || typeof stdin.setRawMode !== 'function') return;
+    try {
+      // Arrow menus temporarily own stdin and disable raw mode on exit.
+      // Do not call resume(): Ink consumes stdin through a readable listener.
+      stdin.setRawMode(true);
+    } catch {
+      // Ink will surface input failures if the TTY is no longer available.
     }
   }
 
@@ -373,7 +328,7 @@ export class CLIChannel extends BaseChannel {
   private updateMessage(id: string, content: string, extra?: Partial<ChatMessage>): void {
     this.update({
       chatMessages: this.state.chatMessages.map((m) =>
-        m.id === id ? { ...m, content, timestamp: Date.now(), ...extra } : m,
+        m.id === id ? { ...m, content: content.slice(0, CLIChannel.MAX_MESSAGE_CHARS), timestamp: Date.now(), ...extra } : m,
       ),
     });
   }
@@ -386,9 +341,13 @@ export class CLIChannel extends BaseChannel {
     }
     this.rerenderScheduled = true;
     const flush = () => {
-      this.rerenderScheduled = false;
       const inkInstance = this.inkInstance;
-      if (!inkInstance) return;
+      if (!inkInstance) {
+        this.rerenderScheduled = false;
+        this.rerenderQueued = false;
+        return;
+      }
+      this.rerenderQueued = false;
       inkInstance.rerender(
         React.createElement(TuiApp, {
           state: this.state,
@@ -401,18 +360,22 @@ export class CLIChannel extends BaseChannel {
             this.update({ permissionPrompt: null });
           },
           onExit: () => {
-            this.stopRawModeWatchdog();
             this.inkInstance?.unmount();
             this.inkInstance = null;
+            this.tuiOutput?.dispose();
+            this.tuiOutput = null;
             this.releaseRawMode();
             this.exitHandler?.();
           },
           spotifyClient: this.spotifyClient,
         }),
       );
+      this.rerenderScheduled = false;
       if (this.rerenderQueued) {
-        this.rerenderQueued = false;
-        flush();
+        // React effects may update channel state while Ink is rendering.
+        // Yield before flushing that update instead of recursively rendering
+        // inside this same setImmediate callback.
+        this.rerender();
       }
     };
     setImmediate(flush);
@@ -611,7 +574,7 @@ export class CLIChannel extends BaseChannel {
             content: `${header}\n${lines.join('\n')}`,
             timestamp: Date.now(),
           };
-          this.update({ chatMessages: [...this.state.chatMessages, msg] });
+          this.trimAndSetMessages([...this.state.chatMessages, msg]);
         } else {
           const msg: ChatMessage = {
             id: `log-${Date.now().toString(36)}`,
@@ -619,7 +582,7 @@ export class CLIChannel extends BaseChannel {
             content: 'No step history available yet. Run a task first, then press Ctrl+D.',
             timestamp: Date.now(),
           };
-          this.update({ chatMessages: [...this.state.chatMessages, msg] });
+          this.trimAndSetMessages([...this.state.chatMessages, msg]);
         }
         return;
       }
@@ -640,12 +603,8 @@ export class CLIChannel extends BaseChannel {
       // Not a TTY or write failed — nothing to reset.
     }
 
-    // Pipe stdin through a filter that drops mouse-report escape sequences
-    // so trackpad scrolling never leaks garbage into the input box. When
-    // Mercury Code arms mouse tracking, complete sequences are parsed and
-    // forwarded via dispatchMouseEvent instead.
-    const filteredStdin = process.stdin.isTTY ? createFilteredStdin((ev) => this.dispatchMouseEvent(ev)) : process.stdin;
-
+    this.tuiOutput?.dispose();
+    this.tuiOutput = new ResilientTuiOutput(process.stdout, process.stderr);
     this.inkInstance = render(
       React.createElement(TuiApp, {
         state: this.state,
@@ -658,31 +617,58 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
-          this.stopRawModeWatchdog();
           this.setMouseEnabled(false);
           this.inkInstance?.unmount();
           this.inkInstance = null;
+          this.tuiOutput?.dispose();
+          this.tuiOutput = null;
           this.releaseRawMode();
           this.restoreTerminal();
           this.exitHandler?.();
         },
         spotifyClient: this.spotifyClient,
       }),
-      { exitOnCtrlC: false, patchConsole: false, stdin: filteredStdin },
+      { exitOnCtrlC: false, patchConsole: false, stdin: process.stdin, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
     );
-
-    this.startRawModeWatchdog();
   }
 
   /** Hard cap on rendered transcript messages held in TUI state. */
-  private static readonly MAX_CHAT_MESSAGES = 250;
+  private static readonly MAX_CHAT_MESSAGES = 2000;
+  /**
+   * Byte budget for the rendered transcript. Sized to retain a full
+   * Mercury Code session without scrolling history out of reach: even a
+   * 75-step coding task with file echoes stays ~2MB now that per-message
+   * content is capped and the AI SDK no longer clones raw bodies per step.
+   */
+  private static readonly MAX_CHAT_CHARS = 4 * 1024 * 1024;
+  /** Per-message cap: larger payloads are truncated with a notice. */
+  private static readonly MAX_MESSAGE_CHARS = 64 * 1024;
 
   private trimAndSetMessages(messages: ChatMessage[], extra: Partial<TuiState> = {}): void {
-    // Transcript bound: a minutes-long coding session can generate hundreds
-    // of messages/steps. Dropping oldest keeps renders + heap flat. The
-    // WorkLedger/session stores preserve the full history elsewhere.
-    const MAX = CLIChannel.MAX_CHAT_MESSAGES;
-    const trimmed = messages.length > MAX ? messages.slice(-MAX) : messages;
+    // Transcript bounds: cap both message count and total retained chars.
+    // Dropping oldest keeps renders + heap flat while preserving the tail
+    // the user is actively reading. The WorkLedger/session stores preserve
+    // the full history elsewhere.
+    let trimmed = messages.length > CLIChannel.MAX_CHAT_MESSAGES
+      ? messages.slice(-CLIChannel.MAX_CHAT_MESSAGES)
+      : messages;
+    // Per-message display cap: one multi-MB payload (a whole-file echo from
+    // a coding task) must never dominate the transcript heap. Full text is
+    // preserved in the session store; the TUI keeps the head + a notice.
+    trimmed = trimmed.map((msg) => msg.content.length > CLIChannel.MAX_MESSAGE_CHARS
+      ? { ...msg, content: msg.content.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB — full content in session history]` }
+      : msg);
+    let total = 0;
+    for (const msg of trimmed) total += msg.content.length;
+    while (trimmed.length > 1 && total > CLIChannel.MAX_CHAT_CHARS) {
+      total -= trimmed[0].content.length;
+      trimmed = trimmed.slice(1);
+    }
+    if (trimmed.length !== messages.length) {
+      trimmed = trimmed.map((msg, i) => i === 0 && trimmed.length > 0
+        ? { ...msg, content: `[…earlier transcript trimmed to keep Mercury responsive…]\n${msg.content}` }
+        : msg);
+    }
     this.update({ chatMessages: trimmed, ...extra });
   }
 
@@ -746,17 +732,67 @@ export class CLIChannel extends BaseChannel {
     const msg: ChatMessage = {
       id: `done-${Date.now().toString(36)}`,
       role: 'system',
-      content: `━━━ Task complete (${parts}) ━━━`,
+      content: `Task complete · ${parts}`,
       timestamp: Date.now(),
       completionMeta: meta,
+      fileChanges: this.state.mode === 'mercury-code' && this.state.programmingMode === 'execute'
+        ? this.collectMercuryCodeChanges()
+        : undefined,
     };
-    this.update({
-      chatMessages: [...this.state.chatMessages, msg],
+    this.trimAndSetMessages([...this.state.chatMessages, msg], {
       isThinking: false,
       toolSteps: [],
       lastStepLog: this.state.toolSteps.length > 0 ? [...this.state.toolSteps] : (this.state.lastStepLog ?? null),
       lastStepLogElapsed: elapsedMs,
     });
+  }
+
+  private collectMercuryCodeChanges(): FileChangeSummary[] {
+    const cwd = this.state.mercuryCode?.cwd;
+    if (!cwd) return [];
+
+    const changes = new Map<string, FileChangeSummary>();
+    try {
+      let output = '';
+      try {
+        output = execFileSync('git', ['diff', '--numstat', 'HEAD', '--'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        output = execFileSync('git', ['diff', '--numstat', '--'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      }
+      for (const line of output.split('\n')) {
+        if (!line.trim()) continue;
+        const [addedRaw, removedRaw, ...pathParts] = line.split('\t');
+        const filePath = pathParts.join('\t');
+        if (!filePath) continue;
+        changes.set(filePath, {
+          path: filePath,
+          added: addedRaw === '-' ? null : Number.parseInt(addedRaw, 10) || 0,
+          removed: removedRaw === '-' ? null : Number.parseInt(removedRaw, 10) || 0,
+        });
+      }
+    } catch {
+      return [];
+    }
+
+    try {
+      const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const filePath of untracked.split('\n').filter(Boolean)) {
+        if (changes.has(filePath)) continue;
+        try {
+          const data = fs.readFileSync(path.join(cwd, filePath));
+          const binary = data.includes(0);
+          const text = binary ? '' : data.toString('utf8');
+          const added = binary ? null : (text.length === 0 ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
+          changes.set(filePath, { path: filePath, added, removed: binary ? null : 0 });
+        } catch {
+          changes.set(filePath, { path: filePath, added: null, removed: null });
+        }
+      }
+    } catch {
+      // A tracked diff is still useful when untracked-file discovery fails.
+    }
+
+    return [...changes.values()].sort((a, b) => a.path.localeCompare(b.path));
   }
 
   async sendFile(filePath: string, _targetId?: string): Promise<void> {
@@ -781,9 +817,7 @@ export class CLIChannel extends BaseChannel {
       content,
       timestamp: Date.now(),
     };
-    this.update({
-      chatMessages: [...this.state.chatMessages, msg],
-    });
+    this.trimAndSetMessages([...this.state.chatMessages, msg]);
   }
 
   async sendToolFeedback(toolName: string, args: Record<string, any>): Promise<void> {
@@ -841,7 +875,15 @@ export class CLIChannel extends BaseChannel {
         // 60ms is fast enough to feel live while keeping each frame's layout
         // stable.
         if (!started || now - lastRender >= 60) {
-          const streamedMessage = { id: msgId, role: 'agent' as const, content: full, timestamp: now, streaming: true };
+          // Streaming display cap: an unbounded `full` string re-rendered
+          // every 60ms makes each frame allocate a fresh multi-MB message
+          // object; a long code-mode task can then retain gigabytes. The
+          // complete text still reaches the session store via the final
+          // channel.send().
+          const shown = full.length > CLIChannel.MAX_MESSAGE_CHARS
+            ? full.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…stream display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB — full response in transcript]`
+            : full;
+          const streamedMessage = { id: msgId, role: 'agent' as const, content: shown, timestamp: now, streaming: true };
           this.update({
             chatMessages: started
               ? this.state.chatMessages.map((message) => message.id === msgId ? streamedMessage : message)
@@ -871,7 +913,10 @@ export class CLIChannel extends BaseChannel {
       return full;
     }
 
-    const finalMessage = { id: msgId, role: 'agent' as const, content: full, timestamp: Date.now(), streaming: false };
+    const shownFull = full.length > CLIChannel.MAX_MESSAGE_CHARS
+      ? full.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…response display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB]`
+      : full;
+    const finalMessage = { id: msgId, role: 'agent' as const, content: shownFull, timestamp: Date.now(), streaming: false };
     this.trimAndSetMessages(
       started
         ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
@@ -907,7 +952,7 @@ export class CLIChannel extends BaseChannel {
       if (this.menuDepth === 0) {
         this.menuAbortController = null;
       }
-      this.ensureRawMode();
+      this.restoreRawModeAfterMenu();
     }
   }
 
@@ -1067,11 +1112,6 @@ export class CLIChannel extends BaseChannel {
     this.mouseHandler = enabled ? (handler ?? null) : null;
     try {
       process.stdout.write(mouseTrackingSequences(enabled));
-      if (enabled) {
-        // Swallow one stray motion/click event right after enabling so the
-        // cursor position that enabled tracking doesn't inject into chat.
-        this.pendingMouseSeq = null;
-      }
     } catch {
       // Not a TTY or write failed — mouse stays off.
       this.mouseEnabled = false;
@@ -1092,8 +1132,9 @@ export class CLIChannel extends BaseChannel {
 
   /**
    * Enter Mercury Code: full-screen coding TUI bound to `dir`.
-   * Switches to plan mode by default (analyze-first), and arms mouse
-   * tracking for wheel-based transcript scrollback.
+   * Switches to plan mode by default (analyze-first). Transcript scrolling
+   * stays keyboard-only: terminal mouse reporting survives native process
+   * aborts and leaves the user's shell receiving raw mouse escape sequences.
    */
   enterMercuryCode(dir: string, version: string): { ok: boolean; message: string } {
     const target = path.resolve(dir.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
@@ -1117,14 +1158,9 @@ export class CLIChannel extends BaseChannel {
       programmingMode: 'plan',
       exitEscArmed: false,
     });
-    // Arm wheel-driven scrollback: mouse tracking with a handler that scrolls
-    // the transcript (3 lines per wheel notch). Terminals emit an event for
-    // press AND release — only count presses to avoid double-scroll churn.
-    this.setMouseEnabled(true, (ev) => {
-      if (ev.release || ev.motion) return;
-      if (ev.wheel === 'up') this.scrollMercuryCode(3);
-      else if (ev.wheel === 'down') this.scrollMercuryCode(-3);
-    });
+    // Explicitly reset modes left behind by an older/crashed Mercury process.
+    // Never enable them here: cleanup cannot run after a native V8 abort.
+    this.setMouseEnabled(false);
     try {
       process.stdout.write('\x1b[2J\x1b[H');
     } catch { /* ignore */ }
