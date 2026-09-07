@@ -1,7 +1,7 @@
 import React, { useSyncExternalStore } from 'react';
 import { Box, Text, Spacer, Static, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
-import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState } from './types.js';
+import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState, LiveActivityState } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
@@ -1188,7 +1188,7 @@ function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
-        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
+        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
     </Box>
@@ -1238,7 +1238,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
-        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
+        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute (Auto runs by default)</Text>
         </Box>
@@ -1942,7 +1942,7 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
   );
 }
 
-function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; steps: ToolStep[]; mode: AppMode }) {
+function ThinkingIndicator({ agentName, steps, mode, liveActivity }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null }) {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
   const [elapsed, setElapsed] = React.useState(0);
@@ -1962,9 +1962,13 @@ function ThinkingIndicator({ agentName, steps, mode }: { agentName: string; step
   const doneSteps = steps.filter((s) => s.status === 'done');
   const totalSteps = steps.length;
 
+  // Live activity (provider/phase) outranks the generic label — the user
+  // must see WHO the response is being waited on, not just "Composing".
   const currentAction = runningStep
     ? runningStep.label
-    : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
+    : liveActivity?.phase
+      ? `${liveActivity.phase}${liveActivity.detail ? ` — ${liveActivity.detail}` : ''}`
+      : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
   const displayElapsed = runningStep?.startedAt
     ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0)
