@@ -13,6 +13,9 @@ import { TaskBoard } from './task-board.js';
 import { ResourceManager } from './resource-manager.js';
 import { logger } from '../utils/logger.js';
 
+/** Bounded auto-resumes after a step-budget pause before reporting honestly. */
+const MAX_SUBAGENT_STEP_RESUMES = 1;
+
 export type NotifyCallback = (channelType: string, channelId: string, message: string) => Promise<void>;
 export type AgentLifecycleCallback = (event: { type: 'progress' | 'complete'; agentId: string; progress?: string; result?: SubAgentResult }) => void;
 
@@ -40,6 +43,10 @@ export class SubAgentSupervisor {
   private commentCheckCallback?: CommentCheckCallback;
   private postCommentCallback?: PostCommentCallback;
   private pausedAgents: Set<string> = new Set();
+  /** Original configs by agent id — enables step-budget auto-resume. */
+  private agentConfigs: Map<string, SubAgentConfig> = new Map();
+  /** Bounded auto-resume counter for step-budget pauses, per agent. */
+  private stepResumeCounts: Map<string, number> = new Map();
   private pauseResolvers: Map<string, () => void> = new Map();
 
   constructor(
@@ -164,6 +171,7 @@ export class SubAgentSupervisor {
   }
 
   private startAgentInBackground(config: SubAgentConfig): void {
+    this.agentConfigs.set(config.id, config);
     const subAgent = new SubAgent(config, {
       agentConfig: this.agentConfig,
       providers: this.providers,
@@ -249,6 +257,53 @@ export class SubAgentSupervisor {
     });
 
     this.fireLifecycleEvent({ type: 'complete', agentId, result });
+
+    // Completion contract: a step-budget pause is resumable. Auto-resume once
+    // with a fresh budget and a continuation prompt; past the bound, report
+    // honestly instead of looping forever.
+    if (result.status === 'paused') {
+      const config = this.agentConfigs.get(agentId);
+      const resumes = this.stepResumeCounts.get(agentId) ?? 0;
+      if (config && resumes < MAX_SUBAGENT_STEP_RESUMES) {
+        this.stepResumeCounts.set(agentId, resumes + 1);
+        const entry = this.taskBoard.get(agentId);
+        if (entry) {
+          const channelType = entry.sourceChannelType || 'cli';
+          const channelId = entry.sourceChannelId || 'cli';
+          await this.notify(
+            channelType,
+            channelId,
+            `⏳ **Agent ${agentId}** reached its step budget with work pending — resuming with a fresh budget (${resumes + 1}/${MAX_SUBAGENT_STEP_RESUMES})...`,
+          ).catch((e) => logger.warn({ e, agentId }, 'Step-budget resume notify failed'));
+          this.taskBoard.update(agentId, {
+            status: 'running',
+            progress: 'Resuming after step budget',
+            completedAt: undefined,
+          });
+        }
+        // Fresh SubAgent instance re-reads the preserved state from disk; the
+        // continuation preamble points it at the remaining work.
+        const resumedConfig: SubAgentConfig = {
+          ...config,
+          task: `${config.task}\n\n[SYSTEM: STEP-BUDGET RESUME] Your previous attempt reached its step budget. Work completed so far is preserved on disk. Resume the remaining work — inspect current state first, do not redo completed steps, and finish the task.`,
+        };
+        logger.info({ agentId, resumes: resumes + 1 }, 'Auto-resuming sub-agent after step-budget pause');
+        this.startAgentInBackground(resumedConfig);
+        return;
+      }
+      const entry = this.taskBoard.get(agentId);
+      if (entry) {
+        const channelType = entry.sourceChannelType || 'cli';
+        const channelId = entry.sourceChannelId || 'cli';
+        await this.notify(
+          channelType,
+          channelId,
+          `⏸ **Agent ${agentId}** paused: "${entry.task.slice(0, 40)}" — step budget reached past the resume bound. Its partial work is preserved.`,
+        ).catch((e) => logger.warn({ e, agentId }, 'Step-budget bound notify failed'));
+      }
+      await this.processWaitQueue();
+      return;
+    }
 
     const entry = this.taskBoard.get(agentId);
     if (entry) {

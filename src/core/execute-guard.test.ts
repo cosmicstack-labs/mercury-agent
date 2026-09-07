@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_EXECUTE_CONTINUATIONS,
+  MAX_VERIFICATION_CONTINUATIONS,
   executeContinuationPrompt,
   isFailedToolResult,
   shouldForceExecuteContinuation,
+  shouldRequireVerification,
+  verificationPrompt,
 } from './execute-guard.js';
 
 const ok = (names: string[]): Map<string, boolean> => new Map(names.map((n) => [n, true]));
@@ -158,5 +161,86 @@ describe('execute-mode completion guard', () => {
     // successful result (error summary belongs at the head).
     const long = 'ok '.repeat(200) + 'Error: at the very end';
     expect(isFailedToolResult(long)).toBe(false);
+  });
+});
+describe('evidence-based verification gate', () => {
+  it('requires verification when changes landed but nothing verified them', () => {
+    expect(shouldRequireVerification({
+      taskText: 'add the export endpoint',
+      hasApprovedPlan: false,
+      commandsRun: ['ls src'],
+      toolsSucceeded: ok(['edit_file', 'write_file']),
+    })).toBe(true);
+  });
+
+  it('accepts a build/test/typecheck run as evidence', () => {
+    for (const command of [
+      'npm test',
+      'npm run build',
+      'pnpm typecheck',
+      'npx vitest run src/app.test.ts',
+      'cargo test',
+      'go test ./...',
+      'make check',
+      'pytest -q',
+      'tsc --noEmit',
+    ]) {
+      expect(shouldRequireVerification({
+        taskText: 'add the export endpoint',
+        hasApprovedPlan: false,
+        commandsRun: [command],
+        toolsSucceeded: ok(['edit_file']),
+      }), command).toBe(false);
+    }
+  });
+
+  it('never requires verification without a successful mutation', () => {
+    expect(shouldRequireVerification({
+      taskText: 'add the export endpoint',
+      hasApprovedPlan: false,
+      commandsRun: [],
+      toolsSucceeded: ok(['read_file']),
+    })).toBe(false);
+    expect(shouldRequireVerification({
+      taskText: 'add the export endpoint',
+      hasApprovedPlan: false,
+      commandsRun: [],
+      toolsSucceeded: new Map([['edit_file', false]]),
+    })).toBe(false);
+  });
+
+  it('skips conversational and question-style tasks', () => {
+    expect(shouldRequireVerification({
+      taskText: 'thanks!',
+      hasApprovedPlan: false,
+      commandsRun: [],
+      toolsSucceeded: ok(['edit_file']),
+    })).toBe(false);
+    expect(shouldRequireVerification({
+      taskText: 'why is the build failing?',
+      hasApprovedPlan: false,
+      commandsRun: [],
+      toolsSucceeded: ok(['edit_file']),
+    })).toBe(false);
+  });
+
+  it('treats non-verification commands as insufficient even for approved plans', () => {
+    expect(shouldRequireVerification({
+      taskText: 'implement the plan',
+      hasApprovedPlan: true,
+      commandsRun: ['git status', 'ls'],
+      toolsSucceeded: ok(['create_file']),
+    })).toBe(true);
+  });
+
+  it('bounds verification rounds to one', () => {
+    expect(MAX_VERIFICATION_CONTINUATIONS).toBe(1);
+  });
+
+  it('builds a verification nudge', () => {
+    const prompt = verificationPrompt('add the export endpoint');
+    expect(prompt).toContain('EXECUTE-MODE VERIFICATION');
+    expect(prompt).toContain('add the export endpoint');
+    expect(prompt).toContain('build, test, or typecheck');
   });
 });

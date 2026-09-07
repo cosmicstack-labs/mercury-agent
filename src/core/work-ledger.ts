@@ -20,7 +20,7 @@ const channelMessageSchema = z.object({
 const workEntrySchema = z.object({
   key: z.string(),
   message: channelMessageSchema,
-  status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
+  status: z.enum(['queued', 'running', 'paused', 'completed', 'failed', 'cancelled']),
   attempts: z.number().int().nonnegative(),
   acceptedAt: z.number().finite(),
   updatedAt: z.number().finite(),
@@ -38,7 +38,7 @@ const ledgerSchema = z.object({
   entries: z.array(workEntrySchema),
 });
 
-export type WorkStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type WorkStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 export type WorkEntry = z.infer<typeof workEntrySchema>;
 
 export interface WorkLedgerOptions {
@@ -142,6 +142,23 @@ export class WorkLedger {
   }
 
   /**
+   * Pause an in-flight task honestly: the work is NOT done (step budget
+   * exhausted, stall, interruption), so it must never read as completed.
+   * Paused entries carry a resume hint and are recovered on restart like
+   * interrupted work — a "continue" message (or a restart) resumes them.
+   */
+  markPaused(key: string, reason: string): WorkEntry {
+    return this.update(key, (entry) => {
+      if (entry.status === 'cancelled') return;
+      entry.status = 'paused';
+      entry.completedAt = this.now();
+      entry.error = reason;
+      entry.finalResponse = reason;
+      entry.delivered = false;
+    });
+  }
+
+  /**
    * Mark a single entry as cancelled by the user (terminal state).
    * Cancelled entries are NEVER auto-resumed by recoverInterrupted().
    */
@@ -220,8 +237,9 @@ export class WorkLedger {
     const recovered: WorkEntry[] = [];
     for (const entry of this.entries.values()) {
       const recoverableFailure = entry.status === 'failed' && /interrupted\/ambiguous|side effects may be partial|after one or more tools completed|partial output/i.test(entry.error || '');
-      if (entry.status !== 'queued' && entry.status !== 'running' && !recoverableFailure) continue;
-      const interrupted = entry.status === 'running';
+      const isPaused = entry.status === 'paused';
+      if (entry.status !== 'queued' && entry.status !== 'running' && !recoverableFailure && !isPaused) continue;
+      const interrupted = entry.status === 'running' || isPaused;
       entry.status = 'queued';
       entry.updatedAt = this.now();
       entry.completedAt = undefined;
@@ -231,7 +249,7 @@ export class WorkLedger {
         ...entry.message.metadata,
         workRecovered: true,
         workWasInterrupted: interrupted || recoverableFailure,
-        ...(recoverableFailure ? {
+        ...(recoverableFailure || isPaused ? {
           workContinuation: true,
           continuationAttempt: (typeof entry.message.metadata?.continuationAttempt === 'number' ? entry.message.metadata.continuationAttempt : 0) + 1,
           continuationReason: entry.error?.slice(0, 1000),
@@ -243,11 +261,11 @@ export class WorkLedger {
     return recovered;
   }
 
-  /** Cancelled entries carry a resume hint instead of a real response. */
+  /** Cancelled and paused entries carry a resume hint instead of a real response. */
   getUndeliveredResponses(): WorkEntry[] {
     return [...this.entries.values()]
       .filter((entry) => ((entry.status === 'completed' || entry.status === 'failed') && !entry.delivered && typeof entry.finalResponse === 'string')
-        || (entry.status === 'cancelled' && !entry.delivered))
+        || ((entry.status === 'cancelled' || entry.status === 'paused') && !entry.delivered))
       .sort((a, b) => a.acceptedAt - b.acceptedAt)
       .map((entry) => structuredClone(entry));
   }

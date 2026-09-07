@@ -359,6 +359,35 @@ export class SubAgent {
           return this.result;
         }
 
+        // Completion contract: the loop exited because the step budget ran
+        // out while the last round still had tool calls pending. That is a
+        // pause, never a completion — the supervisor resumes with a fresh
+        // budget; reporting 'completed' here shipped half-done work behind a
+        // success status.
+        if (stepsRemaining <= 0 && (result as any)?.finishReason === 'tool-calls') {
+          this.status = 'paused';
+          const duration = Date.now() - this.startTime;
+          this.result = {
+            agentId: this.config.id,
+            task: this.config.task,
+            status: 'paused',
+            output: 'Step budget reached before the task completed — work so far is preserved; resuming with a fresh budget.',
+            filesModified: this.filesModified,
+            duration,
+            tokenUsage: {
+              input: this.totalInputTokens,
+              output: this.totalOutputTokens,
+            },
+          };
+          this.taskBoard.update(this.config.id, {
+            status: 'paused',
+            completedAt: Date.now(),
+            progress: 'Step budget reached — resuming',
+          });
+          logger.info({ agentId: this.config.id, duration }, 'Sub-agent paused at step budget (completion contract)');
+          return this.result;
+        }
+
         const finalText = (result?.text || '').trim() || '(no text response)';
 
         this.tokenBudget.recordUsage({

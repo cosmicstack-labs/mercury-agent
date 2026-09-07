@@ -126,3 +126,68 @@ export function executeContinuationPrompt(taskHint?: string): string {
     'Resume now using your tools: inspect what exists, write/edit the files, run the build/tests, and iterate until it works. Do not re-ask for confirmation. Only if you are truly blocked, state the exact blocker and use ask_user.',
   ].join(' ');
 }
+
+// ── Evidence-based completion gate ──────────────────────────────────────────
+// Regression: a turn that ran one successful edit and then stopped — with a
+// broken build or half the plan unimplemented — still earned the "Task
+// complete" banner. Mutation alone proves change, not correctness. Before an
+// implementation task may complete, at least one verification command must
+// have run (build / test / typecheck) or the model must be forced to run one.
+
+/** Bounded verification rounds per turn (never more than one). */
+export const MAX_VERIFICATION_CONTINUATIONS = 1;
+
+/**
+ * A run_command invocation that counts as completion evidence. Build, test,
+ * typecheck, lint — anything that can objectively fail against the change.
+ */
+export const VERIFICATION_COMMAND_PATTERN: RegExp =
+  /(\bnpm\b|\bpnpm\b|\byarn\b)[^\n]*\b(test|run\s+test|build|typecheck|lint)\b|\b(vitest|jest|pytest|cargo\s+(build|test)|go\s+(build|test)|make|mvn|gradle|tsc|eslint|ruff|mypy)\b/i;
+
+export interface VerificationInput {
+  /** The user's request for this turn. */
+  taskText: string;
+  /** A plan from plan mode was approved and is pending execution. */
+  hasApprovedPlan: boolean;
+  /** Every run_command command string executed this turn. */
+  commandsRun: Iterable<string>;
+  /** Tool name → whether at least one invocation produced a non-error result. */
+  toolsSucceeded?: ReadonlyMap<string, boolean>;
+}
+
+/**
+ * True when the turn may NOT be called complete yet: implementation work
+ * happened (a mutating tool succeeded) but nothing verified the result.
+ * Question-style and conversational tasks never require verification.
+ */
+export function shouldRequireVerification(input: VerificationInput): boolean {
+  // At least one mutating tool must have actually succeeded — otherwise the
+  // narration guard (shouldForceExecuteContinuation) owns the decision.
+  const mutated = [...(input.toolsSucceeded?.entries() ?? [])]
+    .some(([tool, ok]) => EXECUTE_MUTATING_TOOLS.has(tool) && ok === true);
+  if (!mutated) return false;
+  for (const command of input.commandsRun) {
+    if (VERIFICATION_COMMAND_PATTERN.test(command)) return false;
+  }
+  const task = input.taskText.trim();
+  if (task.length < 2) return false;
+  if (PURE_CONVERSATION_PATTERN.test(task)) return false;
+  if (QUESTION_PATTERN.test(task)) return false;
+  if (input.hasApprovedPlan) return true;
+  return IMPLEMENTATION_PATTERN.test(task);
+}
+
+/**
+ * Continuation nudge delivered when implementation ran but nothing verified
+ * the result. One bounded round: the model must produce evidence or state
+ * precisely why it cannot.
+ */
+export function verificationPrompt(taskHint?: string): string {
+  const hint = taskHint?.trim();
+  const task = hint ? `The task: "${hint.slice(0, 200)}".` : '';
+  return [
+    '[SYSTEM: EXECUTE-MODE VERIFICATION] You made changes but never verified them — no build, test, or typecheck command ran this turn.',
+    task,
+    'Before completion, run the relevant verification (build/tests/typecheck) with run_command and confirm the output is clean. If verification fails, fix and re-run. If it genuinely cannot run here (missing toolchain, environment constraint), state exactly why verification is impossible and what you checked instead.',
+  ].join(' ');
+}

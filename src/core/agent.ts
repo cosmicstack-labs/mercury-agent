@@ -71,13 +71,15 @@ import {
 } from '../utils/config.js';
 import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
 import { WorkLedger, type WorkEntry } from './work-ledger.js';
-import { MAX_PROVIDER_ATTEMPT_MS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
+import { MAX_PROVIDER_ATTEMPT_MS, MAX_AUTOMATIC_CONTINUATIONS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt } from './execute-guard.js';
+import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, type LoopEndCause } from './completion-verdict.js';
+import { StallWatchdog } from './stall-watchdog.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -306,7 +308,12 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 75;
+// Test/soak override: MERCURY_MAX_STEPS=3 forces cheap step-budget
+// exhaustion to exercise the completion contract end to end.
+const MAX_STEPS = (() => {
+  const override = Number(process.env.MERCURY_MAX_STEPS);
+  return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
+})();
 const MAX_RESPONSE_TOKENS = 4096;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
@@ -456,6 +463,9 @@ export class Agent {
 
       if (event.type === 'complete' && event.result) {
         const result = event.result;
+        // A step-budget pause is neither complete nor failed — the supervisor
+        // auto-resumes it; the background task stays open meanwhile.
+        if (result.status === 'paused') return;
         const status = result.status === 'completed' ? 'completed' : result.status === 'halted' ? 'cancelled' : 'failed';
         this.backgroundTasks.completeAgentTask(bgTask.id, status === 'completed' ? 0 : 1, status, result.output);
         this.syncBgTasksToTui();
@@ -527,9 +537,11 @@ export class Agent {
       ? 'This request already completed and its result was delivered.'
       : entry.status === 'failed'
         ? `This request previously failed: ${entry.error || 'unknown error'}`
-        : entry.status === 'cancelled'
-          ? 'This request was cancelled earlier and was not resumed. Send it again if you want Mercury to run it.'
-          : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
+        : entry.status === 'paused'
+          ? 'This task was paused before completing. Send "continue" to resume it with the work preserved.'
+          : entry.status === 'cancelled'
+            ? 'This request was cancelled earlier and was not resumed. Send it again if you want Mercury to run it.'
+            : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
     await channel.send(status, entry.message.channelId).catch((error) => {
       logger.warn({ error, workKey: entry.key }, 'Unable to send duplicate work status');
     });
@@ -1100,6 +1112,59 @@ export class Agent {
     }
   }
 
+  /**
+   * One inline continuation round: re-enter generation with the full tool
+   * loop and a fresh step budget, nudged by a system-style user message.
+   * Used by the completion-contract paths (step-budget resume, verification
+   * gate). Throws on provider interruption — the caller decides whether that
+   * is fatal for its path.
+   */
+  private async runInlineContinuationRound(opts: {
+    messages: unknown[];
+    systemPrompt: string;
+    provider: any;
+    maxOutputTokens: number;
+    maxSteps: number;
+    abortController: AbortController;
+    channel: any;
+    channelId: string;
+    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
+  }): Promise<{ text: string; usage: any; reasoning?: any }> {
+    this.markProgress(`Resuming with ${opts.provider.name}...`);
+    const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
+    const stream = streamText({
+      model: opts.provider.getModelInstance(),
+      system: opts.systemPrompt,
+      messages: opts.messages as any,
+      tools: this.capabilities.getTools(),
+      maxOutputTokens: opts.maxOutputTokens,
+      stopWhen: stepCountIs(opts.maxSteps),
+      abortSignal: opts.abortController.signal,
+      experimental_include: { requestBody: false },
+      onStepFinish: async ({ toolCalls, toolResults }) => {
+        await opts.onStep(toolCalls as any[], toolResults as any[]);
+      },
+    });
+    const text = (opts.channel
+      ? await this.withProviderDeadline(
+        opts.channel.stream(stream.textStream, opts.channelId),
+        opts.abortController,
+        deadlineAt,
+      )
+      : '') as string;
+    const finish = await this.withProviderDeadline(
+      stream.finishReason,
+      opts.abortController,
+      deadlineAt,
+    );
+    if (finish === 'error') throw new Error('Continuation stream ended with an error');
+    const completion = classifyStreamCompletion({ finishReason: finish, hasText: text.length > 0 });
+    if (completion === 'interrupted') {
+      throw new Error('Continuation stream was interrupted (no finish signal from provider)');
+    }
+    return { text, usage: await stream.usage, reasoning: stream.reasoning };
+  }
+
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
     const delayMs = continuation
@@ -1421,6 +1486,27 @@ export class Agent {
       })();
     }, 1000);
     memoryGuard.unref?.();
+    // Stall watchdog: the memory guard covers heap growth; this covers time.
+    // A task that emits nothing (no chunks, no tool events, no steps) for
+    // minutes is almost certainly dead — surface it, then abort the attempt
+    // so the continuation/approval machinery can inspect and resume.
+    const stallWatchdog = new StallWatchdog({
+      getHeartbeat: () => this.lastProgressAt,
+      getActivity: () => this.currentActivity,
+      onSoft: (silentMs, activity) => {
+        logger.info({ silentMs, activity }, 'Stall watchdog: soft threshold — surfacing still-working pulse');
+        this.pushLiveActivity(
+          `Still working — ${activity || 'working'} · ${Math.round(silentMs / 1000)}s silent`,
+          'stall watchdog',
+        );
+      },
+      onHard: (silentMs, activity) => {
+        if (loopAbortController.signal.aborted) return;
+        logger.warn({ silentMs, activity }, 'Stall watchdog: no progress past hard threshold — aborting attempt for inspection/resume');
+        loopAbortController.abort(new Error(`Task stalled ${Math.round(silentMs / 60000)} minutes with no progress (was: ${activity || 'unknown'})`));
+      },
+    });
+    stallWatchdog.start();
     let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
@@ -1847,6 +1933,13 @@ export class Agent {
       const executeTurnToolsUsed = new Set<string>();
       const executeToolSucceeded = new Map<string, boolean>();
       let executeGuardRounds = 0;
+      // Completion-contract state: how did the FINAL round end, and what
+      // evidence exists that the work actually finished?
+      const executeCommandsRun: string[] = [];
+      let lastStepHadToolCalls = false;
+      let lastRoundSteps = 0;
+      let stepBudgetContinuations = 0;
+      let verificationContinuations = 0;
 
       const recordExecuteToolResult = (toolName: string, resultText: unknown): void => {
         const text = typeof resultText === 'string' ? resultText : JSON.stringify(resultText ?? '');
@@ -1947,6 +2040,10 @@ export class Agent {
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
+                // Completion-contract tracking: per-round step usage and how
+                // the step ended (tool calls pending = work in progress).
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
                 const cliCh = this.channels.get('cli');
                 if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
                 // Step-level memory checkpoint: deterministic, runs even when
@@ -1982,6 +2079,10 @@ export class Agent {
                   for (let i = 0; i < toolCalls.length; i++) {
                     const tc = toolCalls[i];
                     executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                    }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
@@ -2346,6 +2447,9 @@ export class Agent {
               },
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
+                // Completion-contract tracking (non-streaming path).
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
                 const cliChGen = this.channels.get('cli');
                 if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
                 // Step-level memory checkpoint for the non-streaming path.
@@ -2380,6 +2484,10 @@ export class Agent {
                   for (let i = 0; i < toolCalls.length; i++) {
                     const tc = toolCalls[i];
                     executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                    }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
@@ -2857,6 +2965,9 @@ export class Agent {
             experimental_include: { requestBody: false },
             onStepFinish: async ({ toolCalls, toolResults }) => {
               this.completedStepCount++;
+              // Completion-contract tracking for the guard round.
+              lastRoundSteps++;
+              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
               const cliChGen = this.channels.get('cli');
               if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
@@ -2896,6 +3007,179 @@ export class Agent {
           logger.warn({ err: guardErr?.message || String(guardErr) }, 'Execute-mode guard continuation failed; keeping original response');
           break;
         }
+      }
+
+      // ── Completion contract ──
+      // A turn that ends because the step budget ran out mid-tool-work is a
+      // PAUSE, not a completion. Bounded auto-continuation resumes it with a
+      // fresh budget; past the bound the user is asked — the task is never
+      // wrapped in a "Task complete" banner while work remains.
+      const turnEnd = (): LoopEndCause => classifyTurnEnd({
+        stepsUsed: lastRoundSteps,
+        maxSteps: effectiveMaxSteps,
+        lastStepHasToolCalls: lastStepHadToolCalls,
+        finishReason: (result as any)?.finishReason,
+        aborted: loopAbortController.signal.aborted,
+      });
+
+      while (
+        !loopAbortController.signal.aborted
+        && stepBudgetContinuations < MAX_AUTOMATIC_CONTINUATIONS
+        && turnEnd() === 'steps-exhausted'
+      ) {
+        stepBudgetContinuations++;
+        logger.warn(
+          { rounds: stepBudgetContinuations, steps: lastRoundSteps, budget: effectiveMaxSteps },
+          'Step budget exhausted mid-task — forcing continuation with a fresh budget',
+        );
+        this.markProgress('Step budget reached — continuing...');
+        this.pushLiveActivity('Resuming with a fresh step budget', 'step budget');
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(
+            `☿ Reached the tool-step budget (${effectiveMaxSteps}) with work still pending. Resuming automatically...`,
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        const resumeText = (result.text || '').trim();
+        if (resumeText && resumeText !== '(no text response)') messages.push({ role: 'assistant', content: resumeText });
+        messages.push({ role: 'user', content: stepsExhaustedPrompt(msg.content) });
+        const resumeProvider = usedProvider
+          ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
+          : providersForAttempt[0];
+        if (!resumeProvider) break;
+        lastRoundSteps = 0;
+        try {
+          const round = await this.runInlineContinuationRound({
+            messages,
+            systemPrompt,
+            provider: resumeProvider,
+            maxOutputTokens: effectiveMaxOutputTokens,
+            maxSteps: effectiveMaxSteps,
+            abortController: loopAbortController,
+            channel,
+            channelId: msg.channelId,
+            onStep: async (toolCalls, toolResults) => {
+              this.completedStepCount++;
+              lastRoundSteps++;
+              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+              const cliChResume = this.channels.get('cli');
+              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
+              if (toolCalls && toolResults && toolCalls.length > 0) {
+                hasCompletedTool = true;
+                for (let i = 0; i < toolCalls.length; i++) {
+                  const tc = toolCalls[i];
+                  executeTurnToolsUsed.add(tc.toolName);
+                  if (tc.toolName === 'run_command') {
+                    const cmd = (tc.input as any)?.command;
+                    if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                  }
+                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                }
+              }
+            },
+          });
+          if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+          cliResponseStreamed = channel instanceof CLIChannel;
+        } catch (resumeErr: any) {
+          logger.warn({ err: resumeErr?.message || String(resumeErr) }, 'Step-budget continuation failed; falling through to honest pause');
+          break;
+        }
+      }
+
+      // ── Verification gate ──
+      // Implementation work happened, but nothing objectively verified it
+      // (no build/test/typecheck ran). Force one bounded evidence round.
+      if (
+        !loopAbortController.signal.aborted
+        && turnEnd() === 'text-stop'
+        && this.programmingMode.isExecute()
+        && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
+        && shouldRequireVerification({
+          taskText: msg.content,
+          hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+          commandsRun: executeCommandsRun,
+          toolsSucceeded: executeToolSucceeded,
+        })
+      ) {
+        verificationContinuations++;
+        logger.warn(
+          { commandsRun: executeCommandsRun.slice(-5) },
+          'Verification gate: changes landed but nothing verified them — forcing verification round',
+        );
+        this.markProgress('Verifying changes...');
+        this.pushLiveActivity('Verifying the work', 'verification gate');
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(
+            '☿ Changes landed but nothing verified them. Running verification before calling this done...',
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        const verifyText = (result.text || '').trim();
+        if (verifyText && verifyText !== '(no text response)') messages.push({ role: 'assistant', content: verifyText });
+        messages.push({ role: 'user', content: verificationPrompt(msg.content) });
+        const verifyProvider = usedProvider
+          ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
+          : providersForAttempt[0];
+        if (verifyProvider) {
+          lastRoundSteps = 0;
+          try {
+            const round = await this.runInlineContinuationRound({
+              messages,
+              systemPrompt,
+              provider: verifyProvider,
+              maxOutputTokens: effectiveMaxOutputTokens,
+              maxSteps: effectiveMaxSteps,
+              abortController: loopAbortController,
+              channel,
+              channelId: msg.channelId,
+              onStep: async (toolCalls, toolResults) => {
+                this.completedStepCount++;
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+                const cliChVerify = this.channels.get('cli');
+                if (cliChVerify instanceof CLIChannel) cliChVerify.bumpLiveActivitySteps();
+                if (toolCalls && toolResults && toolCalls.length > 0) {
+                  hasCompletedTool = true;
+                  for (let i = 0; i < toolCalls.length; i++) {
+                    const tc = toolCalls[i];
+                    executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                    }
+                    recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                  }
+                }
+              },
+            });
+            if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+            cliResponseStreamed = channel instanceof CLIChannel;
+          } catch (verifyErr: any) {
+            logger.warn({ err: verifyErr?.message || String(verifyErr) }, 'Verification continuation failed; keeping original response');
+          }
+        }
+      }
+
+      // ── Final verdict: a step-budget stop past the continuation bound is
+      // an honest pause, never a completion banner. ──
+      if (!loopAbortController.signal.aborted && turnEnd() === 'steps-exhausted') {
+        logger.warn({ steps: lastRoundSteps, budget: effectiveMaxSteps }, 'Step budget exhausted past continuation bound — pausing task honestly');
+        this.markProgress('Paused at step budget');
+        this.pushLiveActivity('Paused — step budget reached', 'completion contract');
+        if (this.currentWorkKey) {
+          this.workLedger.markPaused(
+            this.currentWorkKey,
+            'Step budget reached with work pending. Send "continue" to resume with a fresh budget.',
+          );
+        }
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(STEPS_PAUSED_BANNER, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
+        }
+        this.lifecycle.transition('idle');
+        return;
       }
 
       // Recompute AFTER the guard: the continuation's output (not the
@@ -3179,6 +3463,7 @@ export class Agent {
       this.lifecycle.transition('idle');
     } finally {
       clearInterval(memoryGuard);
+      stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);
       this.currentMessage = null;

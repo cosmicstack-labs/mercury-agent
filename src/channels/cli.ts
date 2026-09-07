@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execSync, execFile, execFileSync } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
+import { STEPS_PAUSED_BANNER, NO_CHANGES_BANNER } from '../core/completion-verdict.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState, LiveActivityState } from '../ui/types.js';
@@ -805,7 +806,7 @@ export class CLIChannel extends BaseChannel {
     this.update({ toolSteps });
   }
 
-  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta): void {
+  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta, outcome?: 'complete' | 'steps-paused'): void {
     this.clearHeartbeat();
     this.clearLiveActivity();
     const secs = Math.floor(elapsedMs / 1000);
@@ -815,15 +816,25 @@ export class CLIChannel extends BaseChannel {
     const stepsStr = stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? 's' : ''}` : '';
     const parts = [stepsStr, timeStr].filter(Boolean).join(' · ');
 
+    // Completion contract: a paused task never wears the completion banner,
+    // and execute-mode work that changed nothing cannot claim "complete".
+    let content = outcome === 'steps-paused'
+      ? STEPS_PAUSED_BANNER
+      : `Task complete · ${parts}`;
+    const fileChanges = this.state.mode === 'mercury-code' && this.state.programmingMode === 'execute'
+      ? this.collectMercuryCodeChanges()
+      : undefined;
+    if (content.startsWith('Task complete') && fileChanges && fileChanges.length === 0) {
+      content = NO_CHANGES_BANNER + (parts ? ` · ${parts}` : '');
+    }
+
     const msg: ChatMessage = {
       id: `done-${Date.now().toString(36)}`,
       role: 'system',
-      content: `Task complete · ${parts}`,
+      content,
       timestamp: Date.now(),
       completionMeta: meta,
-      fileChanges: this.state.mode === 'mercury-code' && this.state.programmingMode === 'execute'
-        ? this.collectMercuryCodeChanges()
-        : undefined,
+      fileChanges,
     };
     this.trimAndSetMessages([...this.state.chatMessages, msg], {
       isThinking: false,
