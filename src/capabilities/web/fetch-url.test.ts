@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPrivateAddress } from './fetch-url.js';
+import { isPrivateAddress } from '../../utils/ssrf.js';
 
 describe('SSRF guard — private address classification', () => {
   it('blocks loopback and link-local (cloud metadata)', () => {
