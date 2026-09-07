@@ -2338,7 +2338,8 @@ const CODE_HINTS: Array<[string, string, string]> = [
   ['/code execute', 'approve & implement the plan', 'ctrl+x'],
   ['/init', 'scan repo & write AGENTS.md', ''],
   ['/code diff', 'show working-tree diff', 'ctrl+g'],
-  ['/code exit', 'leave Mercury Code', 'esc esc'],
+  ['/code chat', 'switch back to regular chat', 'esc esc'],
+  ['/code exit', 'leave Mercury Code (confirm)', 'ctrl+d'],
 ];
 
 /** Live streaming tail budget: chars of the stream buffer rendered per frame. */

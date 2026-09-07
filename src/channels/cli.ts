@@ -421,7 +421,18 @@ export class CLIChannel extends BaseChannel {
     this.inputHandler = (text: string) => {
       const trimmed = text.trim();
       if (trimmed === '/chat' || trimmed === '/c') {
-        this.update({ mode: 'chat' });
+        // Returning from Mercury Code must tear down its state (mouse mode,
+        // scroll offset, programming mode) — not just flip the view. A bare
+        // mode switch left mercuryCode set and programmingMode dangling.
+        if (this.state.mode === 'mercury-code') this.exitMercuryCode();
+        else this.update({ mode: 'chat' });
+        return;
+      }
+      // Instant switch back to regular chat — no exit-confirm dance. The
+      // confirm exists to guard the Esc-Esc path against accidental exits
+      // mid-task; an explicit command is deliberate by definition.
+      if (trimmed === '/code chat' || trimmed === '/code back') {
+        if (this.state.mercuryCode) this.exitMercuryCode();
         return;
       }
       // `/code` flows to the agent so core ProgrammingMode + view stay in

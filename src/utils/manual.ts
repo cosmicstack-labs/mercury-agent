@@ -167,6 +167,8 @@ export function getManual(): string {
     ['/code off', 'Exit programming mode (leaves Mercury Code screen)'],
     ['/code toggle', 'Cycle through: off → plan → execute → off'],
     ['/code exit', 'Leave Mercury Code (asks for confirmation)'],
+    ['/code chat', 'Switch back to regular chat instantly (alias: /code back)'],
+    ['/chat', 'Return to chat mode (tears down Mercury Code if active)'],
     ['/code toggle', 'Cycle through: off → plan → execute → off'],
     ['/research', 'Show research mode status'],
     ['/research on', 'Enable deep research mode (web research + rich markdown article)'],
