@@ -2637,6 +2637,12 @@ export function MercuryCodeView({
     gitBits.push(git.dirty > 0 ? `±${git.dirty}` : '✓');
   }
   const rightParts = [mc.dirName, ...gitBits, modeLabel];
+  // Developer status HUD: token budget is otherwise invisible in Mercury
+  // Code (TokenBarView only renders in chat surfaces).
+  if (state.tokenInfo) {
+    const pct = Math.round(state.tokenInfo.percentage);
+    rightParts.push(`⚡ ${pct}%`);
+  }
   if (state.provider) rightParts.push(`${state.provider.name} ${state.provider.model}`);
   const rightStr = rightParts.join(' · ');
 
@@ -2725,9 +2731,9 @@ export function MercuryCodeView({
       <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
       <Box paddingX={3} flexShrink={0}>
         {viewport.distanceFromBottom > 0 ? (
-          <Text color="yellow">SCROLLBACK · {viewport.distanceFromBottom} row{viewport.distanceFromBottom !== 1 ? 's' : ''} from live · ↑↓ move · PgUp/PgDn page · Ctrl+E live</Text>
+          <Text color="yellow">↑↓ scroll · PgUp/PgDn page · Ctrl+E back to live</Text>
         ) : (
-          <Text dimColor>enter send · ↑/PgUp/Ctrl+U history · Ctrl+A oldest</Text>
+          <Text dimColor>↵ send · esc esc exit · ctrl+c quit</Text>
         )}
         <Spacer />
         <Text color="blue" wrap="truncate-end">{rightStr}</Text>
