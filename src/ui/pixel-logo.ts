@@ -7,6 +7,12 @@
  * cells use single-codepoint block characters only (U+2588/U+2593), which
  * every terminal font metrics-treats as exactly one cell wide: the mark is
  * pixel-precise across devices. Color/vibrancy is applied by the caller.
+ *
+ * Shading is applied PER ROW (top→bottom), never per column. A per-column
+ * cycle landed shade cells at different positions on every row — visible
+ * holes inside letters (`█ ▓ █`). Per-row shading gives every letter the
+ * same consistent banding, so a trailing shade reads as a deliberate
+ * vertical gradient instead of random gaps.
  */
 
 const GLYPHS: Record<string, string[]> = {
@@ -137,11 +143,11 @@ const GLYPHS: Record<string, string[]> = {
     '10001',
   ],
   X: [
-    '1001',
-    '0110',
-    '0110',
-    '0110',
-    '1001',
+    '10001',
+    '01010',
+    '00100',
+    '01010',
+    '10001',
   ],
   Y: [
     '1001',
@@ -170,29 +176,23 @@ export const PIXEL_FONT_HEIGHT = 5;
 
 /**
  * Render a word as pixel-font rows.
- * @param shading Cycle of block characters for filled pixels, cycled per
- *   glyph column (e.g. '██▓' = two bright pixels then a shaded one — the
- *   subtle texture banding of the reference mark). Cycle resets per glyph
- *   so every letter shows the same pattern.
+ * @param shading Block characters applied PER ROW, top→bottom (e.g.
+ *   '████▓' = three solid rows then two shaded — a subtle vertical
+ *   gradient shadow under every letter, consistent across the mark).
+ *   Defaults to solid fill. A shaded cell never appears above a solid one
+ *   in the same letter, so shading can never read as a mid-letter hole.
  */
-export function renderPixelWord(word: string, shading: string = '██▓'): string[] {
-  const fills = shading.length > 0 ? shading.split('') : ['▓'];
-  const width = GLYPHS['M']?.length ?? 0; // widest glyph governs nothing; width is per-glyph
-  void width;
+export function renderPixelWord(word: string, shading: string = '█'): string[] {
+  const fills = shading.length > 0 ? shading.split('') : ['█'];
   const rows: string[] = Array.from({ length: PIXEL_FONT_HEIGHT }, () => '');
   for (const ch of word.toUpperCase()) {
     const glyph = GLYPHS[ch] ?? GLYPHS[' '];
     for (let y = 0; y < PIXEL_FONT_HEIGHT; y++) {
       const glyphRow = glyph[y] ?? '';
+      const fill = y < fills.length ? fills[y] : fills[fills.length - 1];
       let rendered = '';
-      let col = 0;
       for (const bit of glyphRow) {
-        if (bit === '1') {
-          rendered += fills[col % fills.length] ?? fills[0];
-        } else {
-          rendered += ' ';
-        }
-        col += 1;
+        rendered += bit === '1' ? fill : ' ';
       }
       rows[y] += rendered + ' ';
     }
@@ -204,11 +204,12 @@ export function renderPixelWord(word: string, shading: string = '██▓'): st
  * Two-tone "MERCURY CODE" as alignment-safe parts for colored rendering.
  * The left block ("MERCURY") is padded to a constant width so the right
  * block ("CODE") starts at the same column on every row — pixel-precise
- * on any terminal. Both use the `██▓` bright-with-shade texture.
+ * on any terminal. Both use a solid mark with a shaded bottom band
+ * (subtle depth, zero mid-letter holes).
  */
 export function renderMercuryCodeParts(): Array<{ left: string; right: string }> {
-  const mercury = renderPixelWord('MERCURY', '██▓');
-  const code = renderPixelWord('CODE', '██▓');
+  const mercury = renderPixelWord('MERCURY', '████▓');
+  const code = renderPixelWord('CODE', '████▓');
   const trimEnd = (s: string) => s.replace(/\s+$/, '');
   const leftTrimmed = mercury.map(trimEnd);
   const leftW = Math.max(...leftTrimmed.map((r) => r.length));
