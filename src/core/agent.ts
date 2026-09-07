@@ -5244,13 +5244,17 @@ Is this productive iteration or a stuck loop?`,
           const cwd = this.capabilities.getCwd();
           const entered = cliChannel.enterMercuryCode(cwd, cliChannel.getTuiState().version || 'dev');
           if (entered.ok) {
-            this.programmingMode.setPlan();
+            // Keep the agent-side ProgrammingMode in sync with the TUI:
+            // AUTO is the default Mercury Code flow (plan and build in one
+            // pass). setProgrammingStatus pushes it to the TUI — the stale
+            // 'plan' here was overriding the TUI's AUTO in the status bar.
+            this.programmingMode.setAuto();
             this.programmingMode.setProjectContext(cwd);
             cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
             // Plain message, not a heartbeat: entering /code starts no task,
             // so the TUI must not flip into a perpetual "Analyzing" spinner.
             // channel.send() also clears any stale heartbeat + isThinking.
-            await channel.send('Mercury Code active. Describe the change — I will analyze first (PLAN), then execute on your approval with Ctrl+X.', channelId);
+            await channel.send('Mercury Code active (AUTO). Describe the change — I will plan and build in one flow, confirming with you only before large or consequential changes.', channelId);
             return true;
           }
           await channel.send(entered.message, channelId);

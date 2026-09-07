@@ -44,6 +44,18 @@ describe('Mercury Code exit paths', () => {
     expect(channel.getTuiState().mode).not.toBe('mercury-code');
   });
 
+  it('/code entry keeps agent-side mode in AUTO (never reverts TUI to plan)', () => {
+    // Regression: after enterMercuryCode set the TUI to AUTO, the agent
+    // pushed its stale 'plan' back via setProgrammingStatus — the status bar
+    // showed PLAN even though AUTO was the default.
+    const agent = readFileSync(join(uiDir, '..', 'core', 'agent.ts'), 'utf8');
+    const entryIdx = agent.indexOf('cliChannel.enterMercuryCode');
+    expect(entryIdx).toBeGreaterThan(-1);
+    const syncBlock = agent.slice(entryIdx, entryIdx + 600);
+    expect(syncBlock).toContain('this.programmingMode.setAuto()');
+    expect(syncBlock).not.toContain('this.programmingMode.setPlan()');
+  });
+
   it('routes /code chat and /code back as instant exits in the TUI input handler', () => {
     // Source guard: the input handler is a mountTUI closure, so assert the
     // routing exists and both aliases tear down via exitMercuryCode (the
