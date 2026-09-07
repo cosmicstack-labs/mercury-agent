@@ -135,8 +135,10 @@ describe('execute-mode completion guard', () => {
   });
 
   it('bounds the continuation rounds', () => {
-    expect(MAX_EXECUTE_CONTINUATIONS).toBeGreaterThanOrEqual(1);
-    expect(MAX_EXECUTE_CONTINUATIONS).toBeLessThanOrEqual(4);
+    // Generous by design — automatic continuation is the norm; the pause is
+    // a runaway backstop, not a checkpoint.
+    expect(MAX_EXECUTE_CONTINUATIONS).toBeGreaterThanOrEqual(3);
+    expect(MAX_EXECUTE_CONTINUATIONS).toBeLessThanOrEqual(8);
   });
 
   it('builds a bounded continuation nudge', () => {

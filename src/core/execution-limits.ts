@@ -1,9 +1,21 @@
 export const MAX_PROVIDER_ATTEMPT_MS = 10 * 60 * 1000;
-export const MAX_AUTOMATIC_CONTINUATIONS = 2;
+/**
+ * Continuations (step-budget resumes, provider-failure resumes) run
+ * AUTOMATICALLY — the user asked for "keep on continuing" instead of a
+ * manual "continue" gate mid-task. The bound is a runaway backstop, not a
+ * checkpoint: long coding sessions routinely need several fresh budgets.
+ */
+export const MAX_AUTOMATIC_CONTINUATIONS = 6;
 export const MAX_AUTOMATIC_RETRIES = 3;
 
-export function needsContinuationApproval(continuationAttempt: number, reachedHardDeadline: boolean): boolean {
-  return reachedHardDeadline || continuationAttempt >= MAX_AUTOMATIC_CONTINUATIONS;
+/**
+ * Approval is only demanded at the runaway backstop. A provider hard
+ * deadline no longer pauses for the user — the failed attempt counts
+ * toward the automatic bound and the loop keeps going.
+ */
+export function needsContinuationApproval(continuationAttempt: number, reachedHardDeadline?: boolean): boolean {
+  void reachedHardDeadline;
+  return continuationAttempt >= MAX_AUTOMATIC_CONTINUATIONS;
 }
 
 export function needsRetryApproval(attempts: number): boolean {

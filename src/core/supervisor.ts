@@ -14,7 +14,7 @@ import { ResourceManager } from './resource-manager.js';
 import { logger } from '../utils/logger.js';
 
 /** Bounded auto-resumes after a step-budget pause before reporting honestly. */
-const MAX_SUBAGENT_STEP_RESUMES = 1;
+const MAX_SUBAGENT_STEP_RESUMES = 3;
 
 export type NotifyCallback = (channelType: string, channelId: string, message: string) => Promise<void>;
 export type AgentLifecycleCallback = (event: { type: 'progress' | 'complete'; agentId: string; progress?: string; result?: SubAgentResult }) => void;

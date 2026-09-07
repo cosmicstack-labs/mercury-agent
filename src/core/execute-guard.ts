@@ -33,8 +33,13 @@ export const EXECUTE_MUTATING_TOOLS: ReadonlySet<string> = new Set([
 /** Deliberate pause: the model asked the user instead of stopping unilaterally. */
 const EXECUTE_PAUSE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
 
-/** Bounded number of forced continuation rounds per turn. */
-export const MAX_EXECUTE_CONTINUATIONS = 2;
+/**
+ * Bounded number of forced continuation rounds per turn. Generous by
+ * design: models routinely need a few nudges to switch from narration to
+ * tool use, and the user asked for automatic continuation — the pause is
+ * a last resort, not a checkpoint.
+ */
+export const MAX_EXECUTE_CONTINUATIONS = 5;
 
 /** Result markers produced by tool executors when a mutation did NOT land. */
 const FAILED_RESULT_MARKERS = [

@@ -2866,9 +2866,7 @@ export class Agent {
           if (needsApproval) {
             this.markProgress('Waiting for your decision...');
             this.pushLiveActivity('Waiting for your decision', 'continuation requires approval');
-            const reason = requiresContinuationApproval
-              ? 'The current provider attempt reached its 10-minute hard limit.'
-              : `Mercury has already made ${continuationAttempt} automatic continuation attempts.`;
+            const reason = `Mercury has already made ${continuationAttempt} automatic continuation attempts without completing the task (the runaway backstop).`;
             const shouldContinue = channel && msg.channelType !== 'internal'
               ? await channel.askToContinue(
                 `${reason} Existing files and completed tool work have been preserved. Continue with another inspected attempt?`,
