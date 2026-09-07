@@ -18,7 +18,7 @@ index 9a25884..a4d515b 100644
  /**
   * `<Static>` component permanently renders its output above everything else.
 diff --git a/node_modules/ink/build/components/Static.js b/node_modules/ink/build/components/Static.js
-index 9c54f14..c7f35de 100644
+index 9c54f14..6274f9a 100644
 --- a/node_modules/ink/build/components/Static.js
 +++ b/node_modules/ink/build/components/Static.js
 @@ -1,4 +1,4 @@
@@ -27,7 +27,7 @@ index 9c54f14..c7f35de 100644
  /**
   * `<Static>` component permanently renders its output above everything else.
   * It's useful for displaying activity like completed tasks or logs - things that
-@@ -10,18 +10,51 @@ import React, { useMemo, useState, useLayoutEffect } from 'react';
+@@ -10,18 +10,61 @@ import React, { useMemo, useState, useLayoutEffect } from 'react';
   * For example, [Tap](https://github.com/tapjs/node-tap) uses `<Static>` to display
   * a list of completed tests. [Gatsby](https://github.com/gatsbyjs/gatsby) uses it
   * to display a list of generated pages, while still displaying a live progress bar.
@@ -47,6 +47,12 @@ index 9c54f14..c7f35de 100644
 +    // Identity of items already written to the terminal in this instance.
 +    // Only used when `itemKey` is provided.
 +    const committedKeys = useRef(null);
++    // Bumped after committing keys so the memo recomputes and the rendered
++    // children are unmounted — the positional path does this via setIndex.
++    // Without it, committed children stay mounted and the renderer keeps
++    // re-printing them into the terminal on EVERY subsequent render (each
++    // pass re-emits `staticOutput` while the nodes are still attached).
++    const [commitTick, setCommitTick] = useState(0);
      const itemsToRender = useMemo(() => {
 +        if (typeof itemKey === 'function') {
 +            if (!committedKeys.current) {
@@ -64,13 +70,17 @@ index 9c54f14..c7f35de 100644
 +        }
          return items.slice(index);
 -    }, [items, index]);
-+    }, [items, index, itemKey]);
++    }, [items, index, itemKey, commitTick]);
      useLayoutEffect(() => {
 +        if (typeof itemKey === 'function') {
-+            if (committedKeys.current) {
++            if (committedKeys.current && itemsToRender.length > 0) {
 +                for (const item of itemsToRender) {
 +                    committedKeys.current.add(itemKey(item));
 +                }
++                // Unmount what was just written: without this, the nodes stay
++                // attached and every later render re-prints them (duplicate
++                // transcript lines accumulating over time).
++                setCommitTick((v) => v + 1);
 +            }
 +            return;
 +        }
