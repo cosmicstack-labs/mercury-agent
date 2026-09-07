@@ -98,4 +98,16 @@ describe('completion contract — source guarantees', () => {
     // The no-changes rewrite guards the literal banner.
     expect(cli).toContain("content.startsWith('Task complete')");
   });
+
+  it('narration-guard exhaustion pauses instead of completing', () => {
+    const agent = src('src/core/agent.ts');
+    // The exhaustion verdict must re-check the guard AFTER the continuation
+    // loop and pause (markPaused) before any completion delivery.
+    expect(agent).toContain('WORK_NOT_STARTED_BANNER');
+    expect(agent).toContain('Narration guard exhausted with zero mutating work');
+    const guardExhaustedIdx = agent.indexOf('Narration guard exhausted with zero mutating work');
+    const deliverIdx = agent.indexOf('sendCompletion(elapsed, stepCount');
+    expect(guardExhaustedIdx).toBeGreaterThan(-1);
+    expect(deliverIdx).toBeGreaterThan(guardExhaustedIdx);
+  });
 });

@@ -78,7 +78,7 @@ import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from 
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt } from './execute-guard.js';
-import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, type LoopEndCause } from './completion-verdict.js';
+import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 
 class ToolCallLoopDetector {
@@ -742,6 +742,12 @@ export class Agent {
       } catch (err: any) {
         await channel.send(`git diff failed: ${err?.message || String(err)}`, msg.channelId);
       }
+      return;
+    }
+    if (rawArgs === 'auto') {
+      this.programmingMode.setAuto();
+      if (channel instanceof CLIChannel) channel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+      await channel.send('Programming mode: **Auto** — Mercury plans and builds in one flow, confirming before large changes only.', msg.channelId);
       return;
     }
     if (rawArgs === 'plan') {
@@ -3164,21 +3170,48 @@ export class Agent {
 
       // ── Final verdict: a step-budget stop past the continuation bound is
       // an honest pause, never a completion banner. ──
-      if (!loopAbortController.signal.aborted && turnEnd() === 'steps-exhausted') {
-        logger.warn({ steps: lastRoundSteps, budget: effectiveMaxSteps }, 'Step budget exhausted past continuation bound — pausing task honestly');
-        this.markProgress('Paused at step budget');
-        this.pushLiveActivity('Paused — step budget reached', 'completion contract');
+      const pauseHonestly = async (banner: string, reason: string): Promise<void> => {
+        logger.warn({ banner, task: msg.content.slice(0, 120) }, 'Completion contract: pausing task honestly');
+        this.markProgress('Task paused');
+        this.pushLiveActivity('Paused', 'completion contract');
         if (this.currentWorkKey) {
-          this.workLedger.markPaused(
-            this.currentWorkKey,
-            'Step budget reached with work pending. Send "continue" to resume with a fresh budget.',
-          );
+          this.workLedger.markPaused(this.currentWorkKey, reason);
         }
         if (channel && msg.channelType !== 'internal') {
-          await channel.send(STEPS_PAUSED_BANNER, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          await channel.send(banner, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
           if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
         }
         this.lifecycle.transition('idle');
+      };
+
+      if (!loopAbortController.signal.aborted && turnEnd() === 'steps-exhausted') {
+        logger.warn({ steps: lastRoundSteps, budget: effectiveMaxSteps }, 'Step budget exhausted past continuation bound — pausing task honestly');
+        await pauseHonestly(
+          STEPS_PAUSED_BANNER,
+          'Step budget reached with work pending. Send "continue" to resume with a fresh budget.',
+        );
+        return;
+      }
+
+      // Narration-guard exhaustion: after all forced continuation rounds the
+      // turn STILL contains zero mutating work (rounds failed on flaky
+      // providers, or the model kept narrating). That must never read as
+      // "Task complete" — pause and let "continue" re-engage.
+      if (
+        !loopAbortController.signal.aborted
+        && this.programmingMode.isExecute()
+        && shouldForceExecuteContinuation({
+          taskText: msg.content,
+          hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+          toolsUsed: executeTurnToolsUsed,
+          toolsSucceeded: executeToolSucceeded,
+        })
+      ) {
+        logger.warn({ task: msg.content.slice(0, 120) }, 'Narration guard exhausted with zero mutating work — pausing instead of completing');
+        await pauseHonestly(
+          WORK_NOT_STARTED_BANNER,
+          'No implementation work was performed. Send "continue" to resume with tools.',
+        );
         return;
       }
 
@@ -5227,10 +5260,17 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
+      if (rawArgs === 'auto') {
+        this.programmingMode.setAuto();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Auto**\nI plan and build in one flow — reading first, implementing immediately, and asking for confirmation only before large or consequential changes. Use `/code off` to exit.', channelId);
+        return true;
+      }
+
       if (rawArgs === 'plan') {
         this.programmingMode.setPlan();
         if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
-        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` to switch to execution.', channelId);
+        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` or `/code auto` to switch to execution.', channelId);
         return true;
       }
 
@@ -5283,7 +5323,7 @@ Is this productive iteration or a stuck loop?`,
 
       if (rawArgs === 'toggle') {
         const newState = this.programmingMode.toggle();
-        const labels: Record<string, string> = { off: 'Off', plan: 'Plan', execute: 'Execute' };
+        const labels: Record<string, string> = { off: 'Off', auto: 'Auto', plan: 'Plan', execute: 'Execute' };
         if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
         await channel.send(`Programming mode: **${labels[newState]}**`, channelId);
         return true;

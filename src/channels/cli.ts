@@ -1290,7 +1290,9 @@ export class CLIChannel extends BaseChannel {
       },
       projectContext: target,
       version,
-      programmingMode: 'plan',
+      // AUTO is the default Mercury Code flow: plan and build in one pass,
+      // confirming with the user only for large/consequential changes.
+      programmingMode: 'auto',
       exitEscArmed: false,
     });
     // Explicitly reset modes left behind by an older/crashed Mercury process.

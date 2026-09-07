@@ -268,9 +268,10 @@ chat.post('/api/code/set', async (c) => {
   }
   const body = await c.req.json<{ state: ProgrammingModeState }>();
   if (body.state === 'off') programmingMode.setOff();
+  else if (body.state === 'auto') programmingMode.setAuto();
   else if (body.state === 'plan') programmingMode.setPlan();
   else if (body.state === 'execute') programmingMode.setExecute();
-  else return c.json({ error: 'Invalid state. Use: off, plan, execute' }, 400);
+  else return c.json({ error: 'Invalid state. Use: off, auto, plan, execute' }, 400);
   return c.json({ state: programmingMode.getState(), active: programmingMode.isActive() });
 });
 

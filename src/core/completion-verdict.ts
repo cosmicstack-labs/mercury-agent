@@ -81,3 +81,7 @@ export const STEPS_PAUSED_BANNER = 'Task paused · step budget reached — send 
 
 /** Banner label when a response was delivered but nothing changed in the world. */
 export const NO_CHANGES_BANNER = 'Response delivered · no file changes';
+
+/** Banner label when the narration guard exhausted and zero work happened. */
+export const WORK_NOT_STARTED_BANNER =
+  'Task paused · no work was performed — send "continue" to resume with tools';

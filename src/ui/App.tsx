@@ -1198,6 +1198,7 @@ function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines
 function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
   const modeLabels: Record<ProgrammingModeState, { label: string; color: string }> = {
     off: { label: 'OFF', color: 'gray' },
+    auto: { label: 'AUTO', color: 'cyan' },
     plan: { label: 'PLAN', color: 'yellow' },
     execute: { label: 'EXECUTE', color: 'green' },
   };
@@ -1239,7 +1240,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} />}
         <Box paddingX={1} marginTop={1}>
-          <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute</Text>
+          <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute (Auto runs by default)</Text>
         </Box>
       </Box>
     </Box>
@@ -2334,6 +2335,7 @@ export function renderMercuryTranscriptRange(
 }
 
 const CODE_HINTS: Array<[string, string, string]> = [
+  ['/code auto', 'plan & build automatically — the default', ''],
   ['/code plan', 'analyze & propose before coding', 'ctrl+p'],
   ['/code execute', 'approve & implement the plan', 'ctrl+x'],
   ['/init', 'scan repo & write AGENTS.md', ''],
@@ -2620,7 +2622,7 @@ export function MercuryCodeView({
 
   // Status line (single row): left hint, right context.
   const mode = state.programmingMode;
-  const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : 'CHAT';
+  const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : mode === 'auto' ? 'AUTO' : 'CHAT';
   const modeColor = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan';
   const git = mc.git;
   const gitBits: string[] = [];

@@ -22,7 +22,8 @@ describe('Mercury Code exit paths', () => {
       expect(entered.ok).toBe(true);
       expect(channel.getTuiState().mode).toBe('mercury-code');
       expect(channel.getTuiState().mercuryCode).not.toBeNull();
-      expect(channel.getTuiState().programmingMode).toBe('plan');
+      // AUTO is the Mercury Code default: plan-and-build in one flow.
+      expect(channel.getTuiState().programmingMode).toBe('auto');
 
       channel.exitMercuryCode();
 
