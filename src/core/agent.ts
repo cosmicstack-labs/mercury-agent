@@ -1201,6 +1201,18 @@ export class Agent {
     } catch { /* preview must never break the tool loop */ }
   }
 
+  /**
+   * Record the model's plan checklist (update_plan tool) into the TUI so the
+   * user sees which step is being implemented. Never throws.
+   */
+  private maybeRecordPlanProgress(channel: any, toolName: string, input: unknown): void {
+    try {
+      if (toolName !== 'update_plan') return;
+      if (!(channel instanceof CLIChannel)) return;
+      channel.setPlanProgress((input as any)?.steps);
+    } catch { /* checklist must never break the tool loop */ }
+  }
+
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
     const delayMs = continuation
@@ -2122,6 +2134,7 @@ export class Agent {
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
                     this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
+                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -2528,6 +2541,7 @@ export class Agent {
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
                     this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
+                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -3017,6 +3031,7 @@ export class Agent {
                   executeTurnToolsUsed.add(tc.toolName);
                   recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3116,6 +3131,7 @@ export class Agent {
                   }
                   recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3192,6 +3208,7 @@ export class Agent {
                     }
                     recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                     loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                   }
                 }

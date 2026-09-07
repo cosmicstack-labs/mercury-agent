@@ -202,3 +202,9 @@ export interface PermissionPromptState {
   options?: Array<{ value: string; label: string }>;
   resolve: (value: string | boolean) => void;
 }
+
+/** One step of the agent's live plan checklist (rendered in Mercury Code). */
+export interface PlanStep {
+  label: string;
+  status: 'pending' | 'active' | 'done';
+}

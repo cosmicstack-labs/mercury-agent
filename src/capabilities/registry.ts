@@ -49,7 +49,7 @@ import {
   createSpotifyTopTracksTool,
   createSpotifyPlaylistsTool,
 } from './spotify/index.js';
-import { createAskUserTool, setAskUserHandler } from './interaction/index.js';
+import { createAskUserTool, createUpdatePlanTool, setAskUserHandler } from './interaction/index.js';
 import { isGitHubConfigured, setGitHubToken } from '../utils/github.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { Scheduler } from '../core/scheduler.js';
@@ -258,6 +258,7 @@ export class CapabilityRegistry {
     }
 
     this.tools.ask_user = createAskUserTool(() => this.getChannelContext());
+    this.tools.update_plan = createUpdatePlanTool();
     logger.info('Interaction tools registered');
   }
 

@@ -1,7 +1,7 @@
 import React, { useSyncExternalStore } from 'react';
 import { Box, Text, Spacer, Static, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
-import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState, LiveActivityState } from './types.js';
+import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState, LiveActivityState, PlanStep } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
@@ -946,6 +946,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
           cursorPos={cursorPos}
           onInput={onInput}
           onScrollClamp={(distance) => onInput(`/mc scroll-set ${distance}`)}
+          permIdx={permIdx}
         />
       ) : null}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
@@ -2348,6 +2349,49 @@ const CODE_HINTS: Array<[string, string, string]> = [
   ['/code exit', 'leave Mercury Code (confirm)', 'ctrl+d'],
 ];
 
+/** Compact live plan checklist: which step is being implemented, what's done. */
+function PlanProgressView({ steps }: { steps: PlanStep[] }): React.ReactNode {
+  const done = steps.filter((s) => s.status === 'done');
+  const active = steps.find((s) => s.status === 'active');
+  const pending = steps.filter((s) => s.status === 'pending');
+  const MAX_ROWS = 6;
+  const rows: React.ReactNode[] = [];
+
+  // Recent done steps (collapsed if many), the active step, then pending.
+  const recentDone = done.slice(-2);
+  const hiddenDone = done.length - recentDone.length;
+  if (hiddenDone > 0) {
+    rows.push(
+      <Box key="done-summary">
+        <Text color="green">☑</Text><Text dimColor> {hiddenDone} earlier step{hiddenDone === 1 ? '' : 's'} completed</Text>
+      </Box>,
+    );
+  }
+  for (const s of recentDone) {
+    rows.push(
+      <Box key={`d:${s.label}`}><Text color="green">☑</Text><Text dimColor> {s.label}</Text></Box>,
+    );
+  }
+  if (active) {
+    rows.push(
+      <Box key="active"><Text color="cyan" bold>▶ </Text><Text color="cyan" bold>{active.label}</Text><Text dimColor>  ← implementing</Text></Box>,
+    );
+  }
+  const pendingRoom = Math.max(0, MAX_ROWS - rows.length);
+  for (const s of pending.slice(0, pendingRoom)) {
+    rows.push(<Box key={`p:${s.label}`}><Text dimColor>☐</Text><Text dimColor> {s.label}</Text></Box>);
+  }
+  if (pending.length > pendingRoom) {
+    rows.push(<Box key="more"><Text dimColor>… {pending.length - pendingRoom} more pending</Text></Box>);
+  }
+
+  return (
+    <Box flexDirection="column" paddingX={2} flexShrink={0}>
+      {rows}
+    </Box>
+  );
+}
+
 /** Live streaming tail budget: chars of the stream buffer rendered per frame. */
 const STREAM_TAIL_CHARS = 8 * 1024;
 /** Live streaming tail budget: max wrapped rows rendered per frame. */
@@ -2527,6 +2571,7 @@ export function MercuryCodeView({
   input,
   cursorPos,
   onScrollClamp,
+  permIdx,
 }: {
   state: TuiState;
   height: number;
@@ -2535,6 +2580,7 @@ export function MercuryCodeView({
   input?: string | undefined;
   cursorPos?: number | undefined;
   onScrollClamp?: (distance: number) => void;
+  permIdx?: number | undefined;
 }): React.ReactNode {
   const mc = state.mercuryCode;
   const contentWidth = Math.max(20, cols - 4);
@@ -2579,7 +2625,14 @@ export function MercuryCodeView({
     ? 1 + Math.min(2, state.toolSteps.filter((s) => s.status === 'done').slice(-2).length) + (state.subAgents.some((a) => a.status === 'running') ? 1 + Math.min(4, state.subAgents.filter((a) => a.status === 'running').length) : 0)
     : 0;
   const statusRows = 1;
-  const transcriptHeight = Math.max(3, height - inputRows - 1 - liveRows - confirmRows);
+  // Plan checklist + interactive prompt rows are part of the fixed chrome.
+  const planRows = state.planProgress && state.planProgress.length > 0
+    ? Math.min(7, state.planProgress.length + 1)
+    : 0;
+  const promptRows = state.permissionPrompt
+    ? 2 + (state.permissionPrompt.options?.length ?? 0)
+    : 0;
+  const transcriptHeight = Math.max(3, height - inputRows - 1 - liveRows - confirmRows - planRows - promptRows);
 
   // Live streaming tail: a bounded, fixed-cost projection of the stream
   // buffer (last STREAM_TAIL_CHARS, no markdown parsing). It participates in
@@ -2726,7 +2779,9 @@ export function MercuryCodeView({
           })
         )}
       </Box>
+      {state.planProgress && state.planProgress.length > 0 && <PlanProgressView steps={state.planProgress} />}
       <MercuryLiveFeedback state={state} />
+      {state.permissionPrompt && <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx ?? 0} />}
       {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
       <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
       <Box paddingX={3} flexShrink={0}>

@@ -8,7 +8,7 @@ import { BaseChannel, type PermissionMode } from './base.js';
 import { STEPS_PAUSED_BANNER, NO_CHANGES_BANNER } from '../core/completion-verdict.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState, LiveActivityState } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState, LiveActivityState, PlanStep } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
 
@@ -168,6 +168,8 @@ export interface TuiState {
   viewMode: 'balanced' | 'detailed';
   chatMessages: ChatMessage[];
   toolSteps: ToolStep[];
+  /** Live plan checklist maintained by the agent via the update_plan tool. */
+  planProgress: PlanStep[] | null;
   isThinking: boolean;
   permissionPrompt: PermissionPromptState | null;
   agentName: string;
@@ -202,6 +204,7 @@ const defaultState: TuiState = {
   viewMode: 'balanced',
   chatMessages: [],
   toolSteps: [],
+  planProgress: null,
   isThinking: false,
   permissionPrompt: null,
   agentName: 'Mercury',
@@ -860,9 +863,31 @@ export class CLIChannel extends BaseChannel {
     this.trimAndSetMessages([...this.state.chatMessages, msg], {
       isThinking: false,
       toolSteps: [],
+      planProgress: null,
       lastStepLog: this.state.toolSteps.length > 0 ? [...this.state.toolSteps] : (this.state.lastStepLog ?? null),
       lastStepLogElapsed: elapsedMs,
     });
+  }
+
+  /**
+   * Replace the live plan checklist (from the update_plan tool). Validates
+   * defensively — malformed model output must never break the TUI.
+   */
+  setPlanProgress(steps: unknown): void {
+    if (!Array.isArray(steps)) return;
+    const normalized: PlanStep[] = [];
+    for (const raw of steps.slice(0, 20)) {
+      const label = typeof (raw as any)?.label === 'string' ? (raw as any).label.trim() : '';
+      const status = (raw as any)?.status;
+      if (!label || (status !== 'pending' && status !== 'active' && status !== 'done')) continue;
+      if (normalized.some((s) => s.label === label)) continue;
+      normalized.push({ label: label.slice(0, 120), status });
+    }
+    if (normalized.length === 0) return;
+    // Guard against two "active" steps from sloppy model updates.
+    const activeIdx = normalized.findIndex((s) => s.status === 'active');
+    normalized.forEach((s, i) => { if (s.status === 'active' && i !== activeIdx) s.status = 'pending'; });
+    this.update({ planProgress: normalized });
   }
 
   private collectMercuryCodeChanges(): FileChangeSummary[] {
@@ -1335,6 +1360,7 @@ export class CLIChannel extends BaseChannel {
       mercuryCode: null,
       programmingMode: 'off',
       projectContext: null,
+      planProgress: null,
       exitEscArmed: false,
     });
     try {
