@@ -4,6 +4,7 @@ import {
   MAX_VERIFICATION_CONTINUATIONS,
   executeContinuationPrompt,
   isFailedToolResult,
+  responseAsksUser,
   shouldForceExecuteContinuation,
   shouldRequireVerification,
   verificationPrompt,
@@ -244,5 +245,19 @@ describe('evidence-based verification gate', () => {
     expect(prompt).toContain('EXECUTE-MODE VERIFICATION');
     expect(prompt).toContain('add the export endpoint');
     expect(prompt).toContain('build, test, or typecheck');
+  });
+});
+
+describe('responseAsksUser — prose questions are legitimate pauses', () => {
+  it('detects a turn that ends by asking the user something', () => {
+    expect(responseAsksUser('Could you remind me what the AI bot was supposed to do?')).toBe(true);
+    expect(responseAsksUser('Which option do you want?\n2. A Telegram bot that creates notes?')).toBe(true);
+    expect(responseAsksUser('Working on it.\n\nShall I proceed?')).toBe(true);
+  });
+
+  it('does not treat statements or mid-text questions as user questions', () => {
+    expect(responseAsksUser('Built the endpoint. What changed: the router now handles POST /notes.')).toBe(false);
+    expect(responseAsksUser('Why did this fail? The answer: missing env var. Fixed now.')).toBe(false);
+    expect(responseAsksUser('')).toBe(false);
   });
 });

@@ -119,6 +119,21 @@ export function shouldForceExecuteContinuation(input: ExecuteGuardInput): boolea
 }
 
 /**
+ * True when the response ends by asking the user something in plain text.
+ * That is a LEGITIMATE pause point — the model is waiting on information
+ * only the user has — and the narration guard must not fight it by forcing
+ * more rounds (which previously looped forever: model asks, guard resumes,
+ * model searches again and asks again).
+ */
+export function responseAsksUser(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  const lines = trimmed.split('\n');
+  const last = (lines[lines.length - 1] ?? '').trim();
+  return last.endsWith('?');
+}
+
+/**
  * Continuation nudge delivered as a user message after a work-free response,
  * so the next round actually uses tools instead of narrating again.
  */
@@ -128,7 +143,7 @@ export function executeContinuationPrompt(taskHint?: string): string {
   return [
     '[SYSTEM: EXECUTE-MODE GUARD] You ended your turn without doing any implementation work — no files were created or edited, no commands were run. Narration and intent statements do not count as progress.',
     task,
-    'Resume now using your tools: inspect what exists, write/edit the files, run the build/tests, and iterate until it works. Do not re-ask for confirmation. Only if you are truly blocked, state the exact blocker and use ask_user.',
+    'Resume now using your tools: inspect what exists, write/edit the files, run the build/tests, and iterate until it works. Do not re-ask for confirmation. If you need information only the user has, call ask_user with concrete options — that is the correct way to pause.',
   ].join(' ');
 }
 

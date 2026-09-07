@@ -77,7 +77,7 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
@@ -2956,6 +2956,10 @@ export class Agent {
         this.programmingMode.isExecute()
         && !loopAbortController.signal.aborted
         && executeGuardRounds < MAX_EXECUTE_CONTINUATIONS
+        // A turn that ends by asking the user something in plain text is a
+        // legitimate pause — forcing rounds here looped the model forever
+        // (it re-searched and re-asked instead of waiting for the answer).
+        && !responseAsksUser(result.text || '')
         && shouldForceExecuteContinuation({
           taskText: msg.content,
           hasApprovedPlan: this.programmingMode.getLastPlan() != null,
@@ -3233,6 +3237,7 @@ export class Agent {
       if (
         !loopAbortController.signal.aborted
         && this.programmingMode.isExecute()
+        && !responseAsksUser(result.text || '')
         && shouldForceExecuteContinuation({
           taskText: msg.content,
           hasApprovedPlan: this.programmingMode.getLastPlan() != null,
@@ -3453,7 +3458,7 @@ export class Agent {
           this.markProgress();
           const isMercuryCodeExecution = channel instanceof CLIChannel
             && channel.getTuiState().mode === 'mercury-code'
-            && channel.getTuiState().programmingMode === 'execute';
+            && (channel.getTuiState().programmingMode === 'execute' || channel.getTuiState().programmingMode === 'auto');
           if ((isSubstantialTask || isMercuryCodeExecution) && channel instanceof CLIChannel) {
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',

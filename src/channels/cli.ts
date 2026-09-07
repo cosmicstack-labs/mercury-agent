@@ -840,7 +840,9 @@ export class CLIChannel extends BaseChannel {
     let content = outcome === 'steps-paused'
       ? STEPS_PAUSED_BANNER
       : `Task complete · ${parts}`;
-    const fileChanges = this.state.mode === 'mercury-code' && this.state.programmingMode === 'execute'
+    // AUTO shares execute-class display semantics (file-change summaries,
+    // the no-changes honesty banner).
+    const fileChanges = this.state.mode === 'mercury-code' && (this.state.programmingMode === 'execute' || this.state.programmingMode === 'auto')
       ? this.collectMercuryCodeChanges()
       : undefined;
     if (content.startsWith('Task complete') && fileChanges && fileChanges.length === 0) {
