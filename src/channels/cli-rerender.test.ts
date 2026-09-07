@@ -5,42 +5,99 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLIChannel } from './cli.js';
 
+/** Notifications flush via setImmediate (check phase) so pending timers —
+ * like the memory guard — always get a chance to run between render batches. */
+const flushRenders = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 describe('CLIChannel render scheduling', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('yields before rendering an update queued during a render', () => {
-    const callbacks: Array<() => void> = [];
-    vi.spyOn(globalThis, 'setImmediate').mockImplementation(((callback: () => void) => {
-      callbacks.push(callback);
-      return {} as NodeJS.Immediate;
-    }) as typeof setImmediate);
-
+  it('never calls inkInstance.rerender — updates flow through store notifications', async () => {
     const channel = new CLIChannel();
-    let renderCount = 0;
-    let depth = 0;
-    let maxDepth = 0;
     (channel as any).inkInstance = {
+      // Any call would be the re-entrant render path that corrupted Yoga.
       rerender: () => {
-        depth += 1;
-        maxDepth = Math.max(maxDepth, depth);
-        renderCount += 1;
-        if (renderCount === 1) channel.setMode('chat');
-        depth -= 1;
+        throw new Error('imperative rerender is forbidden');
       },
+      unmount: () => {},
     };
 
+    let notifications = 0;
+    const unsubscribe = channel.subscribeToTuiState(() => { notifications++; });
+
     channel.setMode('coding');
-    expect(callbacks).toHaveLength(1);
+    channel.setMode('chat');
+    // Notifications are deferred (check phase) and coalesced — two updates in
+    // one tick must produce exactly one notification, breaking any
+    // synchronous re-entrancy cycle with React's commit phase.
+    await flushRenders();
+    expect(notifications).toBe(1);
+    expect(channel.getTuiState().mode).toBe('chat');
 
-    callbacks.shift()?.();
-    expect(renderCount).toBe(1);
-    expect(callbacks).toHaveLength(1);
+    await flushRenders();
+    unsubscribe();
+    channel.setMode('coding');
+    await flushRenders();
+    expect(notifications).toBe(1);
+  });
 
-    callbacks.shift()?.();
-    expect(renderCount).toBe(2);
+  it('does not re-enter synchronously when update() is called from a listener', async () => {
+    const channel = new CLIChannel();
+    let depth = 0;
+    let maxDepth = 0;
+    const unsubscribe = channel.subscribeToTuiState(() => {
+      depth += 1;
+      maxDepth = Math.max(maxDepth, depth);
+      // Simulate a React effect that writes back to the channel (the
+      // scroll-clamp effect does exactly this).
+      if (depth === 1) channel.setMode('chat');
+      depth -= 1;
+    });
+
+    channel.setMode('coding');
+    await flushRenders();
+    await flushRenders();
+    unsubscribe();
+    // The listener-triggered update must have been deferred to a later
+    // event-loop turn, never nested inside the notification loop.
     expect(maxDepth).toBe(1);
+    expect(channel.getTuiState().mode).toBe('chat');
+  });
+
+  it('exposes a useSyncExternalStore-compatible snapshot contract', async () => {
+    const channel = new CLIChannel();
+    // Snapshot must be referentially stable between updates.
+    const first = channel.getTuiStateSnapshot();
+    const second = channel.getTuiStateSnapshot();
+    expect(first).toBe(second);
+
+    let notified = false;
+    const unsubscribe = channel.subscribeToTuiState(() => { notified = true; });
+    channel.setMode('chat');
+    await flushRenders();
+    expect(notified).toBe(true);
+    expect(channel.getTuiStateSnapshot()).not.toBe(first);
+    unsubscribe();
+  });
+
+  it('defers TUI unmount until after the React input callback', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    let unmounts = 0;
+    let exits = 0;
+    (channel as any).inkInstance = { unmount: () => { unmounts++; } };
+    (channel as any).exitHandler = () => { exits++; };
+
+    (channel as any).scheduleTuiExit();
+    (channel as any).scheduleTuiExit();
+    expect(unmounts).toBe(0);
+    expect(exits).toBe(0);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(unmounts).toBe(1);
+    expect(exits).toBe(1);
   });
 });
 

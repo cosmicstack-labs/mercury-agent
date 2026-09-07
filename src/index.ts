@@ -2112,9 +2112,25 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     process.on('uncaughtException', (err) => {
       try { line(`UNCAUGHT: ${err?.stack || err}`); } catch { /* disk full */ }
       try { writeCrashFlag({ reason: `Uncaught: ${String(err?.message || err)}`.slice(0, 300), timestamp: Date.now() }); } catch {}
+      // A TUI-crashed process must not linger headless: it would hold the
+      // runtime pid files and silently block every future launch. Print,
+      // persist, and exit — durable recovery replays any interrupted work.
+      try {
+        process.stderr.write(`\n⚠ Mercury hit an uncaught error: ${String(err?.message || err)}\n  Details: ~/.mercury/crash-report.log\n`);
+      } catch { /* stderr gone */ }
+      process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
       try { line(`REJECTION: ${reason instanceof Error ? reason.stack : String(reason)}`); } catch {}
+      // A rejected boot (e.g. "runtime already running") must fail loudly,
+      // not exit(0) as if nothing happened.
+      const message = String(reason instanceof Error ? reason.message : reason || '');
+      if (/already running|EADDRINUSE|registerRuntimeProcess/i.test(message)) {
+        try {
+          process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Stop the other instance with \`mercury stop\` or \`kill <pid>\`.\n`);
+        } catch { /* stderr gone */ }
+        process.exit(1);
+      }
     });
     process.on('SIGABRT', () => {
       try { line('SIGABRT received — V8 fatal error (likely OOM). Heap stats follow.'); } catch {}

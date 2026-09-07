@@ -1,8 +1,9 @@
 import type { ChatMessage } from './types.js';
 import { normalizeTerminalText } from './terminal-viewport.js';
 import { renderMarkdown } from '../utils/markdown.js';
+import { renderMercuryCodeParts } from './pixel-logo.js';
 
-export type MercuryTranscriptKind = 'header' | 'text' | 'code-label' | 'code' | 'system' | 'file' | 'spacer';
+export type MercuryTranscriptKind = 'header' | 'text' | 'code-label' | 'code' | 'system' | 'file' | 'spacer' | 'brand';
 
 export interface MercuryTranscriptLine {
   key: string;
@@ -10,6 +11,8 @@ export interface MercuryTranscriptLine {
   role: ChatMessage['role'];
   text: string;
   lang?: string;
+  /** Secondary colored segment for brand rows (the "CODE" wordmark part). */
+  accent?: string;
 }
 
 // Chalk output is useful elsewhere, but wrapping must operate on visible text.
@@ -37,6 +40,38 @@ export function wrapMercuryText(text: string, width: number): string[] {
 function renderedTextLines(markdown: string, width: number): string[] {
   const rendered = stripTerminalAnsi(renderMarkdown(markdown));
   return rendered.split('\n').flatMap((line) => wrapMercuryText(line, width));
+}
+
+/**
+ * Brand rows rendered as the transcript's leading rows. Scrolling treats
+ * them like any other content: new messages push them up and away, exactly
+ * like a web page header scrolling out of view. Empty accent = solid row;
+ * non-empty accent splits the row into (text, accent) two-tone rendering.
+ * `indent` centers the block exactly like the original standalone wordmark:
+ * the indent is baked into `text`, so scroll math never has to special-case it.
+ */
+export function buildMercuryBrandLines(version: string, cols: number): MercuryTranscriptLine[] {
+  const parts = renderMercuryCodeParts();
+  const maxLen = Math.max(...parts.map((p) => p.left.length + 2 + p.right.length));
+  const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
+  const versionStr = `v${version}`;
+  const versionIndent = Math.max(0, indent + maxLen - versionStr.length - 1);
+  const rows: MercuryTranscriptLine[] = parts.map((part, i) => ({
+    key: `brand:${i}`,
+    kind: 'brand' as const,
+    role: 'system' as const,
+    text: ' '.repeat(indent) + part.left,
+    accent: part.right.length > 0 ? `  ${part.right}` : '',
+  }));
+  rows.push({
+    key: 'brand:version',
+    kind: 'brand',
+    role: 'system',
+    text: ' '.repeat(versionIndent) + versionStr,
+    accent: '',
+  });
+  rows.push({ key: 'brand:spacer', kind: 'spacer', role: 'system', text: '' });
+  return rows;
 }
 
 export function buildMercuryMessageLines(message: ChatMessage, width: number): MercuryTranscriptLine[] {

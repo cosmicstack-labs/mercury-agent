@@ -1,0 +1,151 @@
+diff --git a/node_modules/ink/build/components/Static.d.ts b/node_modules/ink/build/components/Static.d.ts
+index 9a25884..a4d515b 100644
+--- a/node_modules/ink/build/components/Static.d.ts
++++ b/node_modules/ink/build/components/Static.d.ts
+@@ -15,6 +15,14 @@ export type Props<T> = {
+      * Note that `key` must be assigned to the root component.
+      */
+     readonly children: (item: T, index: number) => ReactNode;
++    /**
++     * Optional identity function used to track which items have already been
++     * rendered. When provided, each item is rendered exactly once per
++     * `<Static>` instance lifetime even if the `items` array is kept bounded
++     * by shifting the window (which the built-in positional index cannot
++     * handle). Keys returning `undefined` are ignored.
++     */
++    readonly itemKey?: (item: T) => string | undefined;
+ };
+ /**
+  * `<Static>` component permanently renders its output above everything else.
+diff --git a/node_modules/ink/build/components/Static.js b/node_modules/ink/build/components/Static.js
+index 9c54f14..c7f35de 100644
+--- a/node_modules/ink/build/components/Static.js
++++ b/node_modules/ink/build/components/Static.js
+@@ -1,4 +1,4 @@
+-import React, { useMemo, useState, useLayoutEffect } from 'react';
++import React, { useMemo, useState, useLayoutEffect, useRef } from 'react';
+ /**
+  * `<Static>` component permanently renders its output above everything else.
+  * It's useful for displaying activity like completed tasks or logs - things that
+@@ -10,18 +10,51 @@ import React, { useMemo, useState, useLayoutEffect } from 'react';
+  * For example, [Tap](https://github.com/tapjs/node-tap) uses `<Static>` to display
+  * a list of completed tests. [Gatsby](https://github.com/gatsbyjs/gatsby) uses it
+  * to display a list of generated pages, while still displaying a live progress bar.
++ *
++ * Patched (Cosmic Stack): supports an optional `itemKey` identity function.
++ * The built-in positional index assumes `items` only ever appends — a caller
++ * that keeps the array bounded by dropping the oldest items (a sliding
++ * window) breaks it: `items.slice(index)` returns nothing, new items are
++ * never rendered, and every commit unmounts the whole subtree. With
++ * `itemKey`, each item is tracked by identity and rendered exactly once per
++ * instance lifetime, so bounded sliding windows are safe.
+  */
+ export default function Static(props) {
+-    const { items, children: render, style: customStyle } = props;
++    const { items, children: render, style: customStyle, itemKey } = props;
+     const [index, setIndex] = useState(0);
++    // Identity of items already written to the terminal in this instance.
++    // Only used when `itemKey` is provided.
++    const committedKeys = useRef(null);
+     const itemsToRender = useMemo(() => {
++        if (typeof itemKey === 'function') {
++            if (!committedKeys.current) {
++                committedKeys.current = new Set();
++            }
++            const committed = committedKeys.current;
++            const out = [];
++            for (const item of items) {
++                const key = itemKey(item);
++                if (key !== undefined && !committed.has(key)) {
++                    out.push(item);
++                }
++            }
++            return out;
++        }
+         return items.slice(index);
+-    }, [items, index]);
++    }, [items, index, itemKey]);
+     useLayoutEffect(() => {
++        if (typeof itemKey === 'function') {
++            if (committedKeys.current) {
++                for (const item of itemsToRender) {
++                    committedKeys.current.add(itemKey(item));
++                }
++            }
++            return;
++        }
+         setIndex(items.length);
+-    }, [items.length]);
++    }, [itemsToRender, itemKey, items.length]);
+     const children = itemsToRender.map((item, itemIndex) => {
+-        return render(item, index + itemIndex);
++        return render(item, itemIndex);
+     });
+     const style = useMemo(() => ({
+         position: 'absolute',
+diff --git a/node_modules/ink/build/reconciler.js b/node_modules/ink/build/reconciler.js
+index 55acec7..035907a 100644
+--- a/node_modules/ink/build/reconciler.js
++++ b/node_modules/ink/build/reconciler.js
+@@ -58,6 +58,42 @@ const cleanupYogaNode = (node) => {
+     node?.unsetMeasureFunc();
+     node?.freeRecursive();
+ };
++// `freeRecursive` releases Yoga's WASM memory but leaves every JavaScript
++// reference pointing at freed memory. The renderer and layout code read those
++// references through optional chaining, so nulling them here turns what was a
++// fatal WASM trap ("RuntimeError: memory access out of bounds" in
++// getComputedWidth) into a clean no-op. Upstream only clears the direct
++// reference (ink >=7); ancestors of <Static> that were freed wholesale left
++// `rootNode.staticNode` dangling. See facebook/yoga#1818 and the equivalent
++// downstream fix in qwen-code#7816.
++const clearYogaRefs = (node) => {
++    node.yogaNode = undefined;
++    // Host elements carry a childNodes array; ink's `#text` nodes do not.
++    if (Array.isArray(node.childNodes)) {
++        for (const child of node.childNodes) {
++            clearYogaRefs(child);
++        }
++    }
++};
++const containsNode = (ancestor, target) => {
++    let current = target;
++    while (current) {
++        if (current === ancestor) return true;
++        current = current.parentNode;
++    }
++    return false;
++};
++const cleanupRemovedNode = (node, removeNode) => {
++    cleanupYogaNode(removeNode.yogaNode);
++    clearYogaRefs(removeNode);
++    // `staticNode` is cached on the root container, but removeChild receives
++    // the direct parent — climb to the root before checking.
++    let rootNode = node;
++    while (rootNode?.parentNode) rootNode = rootNode.parentNode;
++    if (rootNode?.staticNode && containsNode(removeNode, rootNode.staticNode)) {
++        rootNode.staticNode = undefined;
++    }
++};
+ export default createReconciler({
+     getRootHostContext: () => ({
+         isInsideText: false,
+@@ -173,7 +209,7 @@ export default createReconciler({
+     insertInContainerBefore: insertBeforeNode,
+     removeChildFromContainer(node, removeNode) {
+         removeChildNode(node, removeNode);
+-        cleanupYogaNode(removeNode.yogaNode);
++        cleanupRemovedNode(node, removeNode);
+     },
+     prepareUpdate(node, _type, oldProps, newProps, rootNode) {
+         if (node.internal_static) {
+@@ -213,7 +249,7 @@ export default createReconciler({
+     },
+     removeChild(node, removeNode) {
+         removeChildNode(node, removeNode);
+-        cleanupYogaNode(removeNode.yogaNode);
++        cleanupRemovedNode(node, removeNode);
+     },
+ });
+ //# sourceMappingURL=reconciler.js.map
+\ No newline at end of file

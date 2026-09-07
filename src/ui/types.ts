@@ -94,6 +94,20 @@ export interface ToolStep {
   startedAt?: number;
   elapsed?: number;
   result?: string;
+  /** AI SDK toolCallId — lets completion target the exact running step. */
+  callId?: string;
+}
+
+/**
+ * Live activity phase shown in the Mercury Code feedback block. Pushed by the
+ * agent at execution time (provider calls, tool starts, streaming) so the TUI
+ * reflects what is happening RIGHT NOW instead of only post-step results.
+ */
+export interface LiveActivityState {
+  phase: string;
+  detail?: string;
+  stepsDone: number;
+  startedAt: number;
 }
 
 export interface SubAgentInfo {

@@ -1,0 +1,128 @@
+/**
+ * Execute-mode completion guard.
+ *
+ * Regression: in Mercury Code execute mode the model could end its turn with
+ * narration alone — "Building X per its spec. Reading it first." — without a
+ * single mutating tool call, and the agent loop still printed
+ * "Task complete · 2 steps". The repo stayed untouched behind a green banner.
+ *
+ * The guard answers one question: is the agent allowed to finish this turn?
+ * If the request reads as implementation work (or an approved plan is waiting)
+ * and no world-changing tool ran, the turn must NOT count as complete.
+ */
+
+/** Tools that change the world. Anything else is observation or narration. */
+export const EXECUTE_MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  'write_file',
+  'create_file',
+  'edit_file',
+  'delete_file',
+  'run_command',
+  'git_add',
+  'git_commit',
+  'git_push',
+  'create_pr',
+  'create_issue',
+  'github_api',
+  'send_file',
+  'delegate_task',
+  'use_skill',
+  'install_skill',
+]);
+
+/** Deliberate pause: the model asked the user instead of stopping unilaterally. */
+const EXECUTE_PAUSE_TOOLS: ReadonlySet<string> = new Set(['ask_user']);
+
+/** Bounded number of forced continuation rounds per turn. */
+export const MAX_EXECUTE_CONTINUATIONS = 2;
+
+/** Result markers produced by tool executors when a mutation did NOT land. */
+const FAILED_RESULT_MARKERS = [
+  'error:',
+  'permission denied',
+  'command exited with code',
+  'command failed',
+  'command timed out',
+  'exit code 1',
+  'exit code 2',
+];
+
+export function isFailedToolResult(resultText: string): boolean {
+  const head = resultText.slice(0, 300).trimStart().toLowerCase();
+  return FAILED_RESULT_MARKERS.some((marker) => head.includes(marker));
+}
+
+const IMPLEMENTATION_PATTERN = new RegExp(
+  [
+    'build', 'implement', 'creat', 'mak', 'add', 'fix',
+    'repair', 'refactor', 'develop', 'writ', 'generat',
+    'migrat', 'set\\s?up', 'setup', 'install', 'integrat',
+    'deploy', 'cod', 'program', '\\bapp\\b', 'application',
+    'feature', 'function', 'component', 'endpoint', '\\bapi\\b',
+    'script', 'module', 'class', 'website', 'web\\s?page',
+    '\\bpage\\b', '\\bgame\\b', '\\bbot\\b', '\\bcli\\b', 'test',
+    'bug', 'dashboard', 'database', '\\bschema\\b',
+    'rout', 'service', 'scaffold', 'boilerplate',
+    'continu', 'resum', 'keep going', 'go ahead', 'go on',
+    'proceed', 'do it', 'try again', 'retry',
+  ].join('|'),
+  'i',
+);
+
+/** Pure acknowledgments/chat — never an implementation request. */
+const PURE_CONVERSATION_PATTERN = /^(thanks|thank you|thx|ty|cool|nice|great|awesome|perfect|ok|okay|got it|understood|bye|hi|hey|hello|lol|lgtm|sounds good|well done)[\s!,.?]*$/i;
+
+/** Interrogatives: the user wants an answer, not (necessarily) file changes. */
+const QUESTION_PATTERN = /^(what|whats|what's|why|how|when|where|who|which|explain|describe|tell me|walk me through|compare|list)\b/i;
+
+export interface ExecuteGuardInput {
+  /** The user's request for this turn. */
+  taskText: string;
+  /** A plan from plan mode was approved and is pending execution. */
+  hasApprovedPlan: boolean;
+  /** Every tool name invoked during this turn so far. */
+  toolsUsed: Iterable<string>;
+  /**
+   * Tool name → whether at least one invocation of that tool produced a
+   * non-error result. A mutating tool that only ever failed (permission
+   * denial, command exit code) does NOT satisfy the guard.
+   */
+  toolsSucceeded?: ReadonlyMap<string, boolean>;
+}
+
+/**
+ * True when the agent must NOT be allowed to finish yet: the request is
+ * implementation work (or a plan was approved) and nothing world-changing
+ * happened. Conservative — read-only turns on question-style or chit-chat
+ * requests are left alone.
+ */
+export function shouldForceExecuteContinuation(input: ExecuteGuardInput): boolean {
+  for (const toolName of input.toolsUsed) {
+    if (EXECUTE_PAUSE_TOOLS.has(toolName)) return false;
+    if (!EXECUTE_MUTATING_TOOLS.has(toolName)) continue;
+    // A mutating tool ran — but did it actually succeed at least once?
+    if (!input.toolsSucceeded) return false;
+    if (input.toolsSucceeded.get(toolName) !== true) continue;
+    return false;
+  }
+  const task = input.taskText.trim();
+  if (task.length < 2) return false;
+  if (PURE_CONVERSATION_PATTERN.test(task)) return false;
+  if (QUESTION_PATTERN.test(task)) return false;
+  if (input.hasApprovedPlan) return true;
+  return IMPLEMENTATION_PATTERN.test(task);
+}
+
+/**
+ * Continuation nudge delivered as a user message after a work-free response,
+ * so the next round actually uses tools instead of narrating again.
+ */
+export function executeContinuationPrompt(taskHint?: string): string {
+  const hint = taskHint?.trim();
+  const task = hint ? `The task remains: "${hint.slice(0, 200)}".` : 'The task remains unfinished.';
+  return [
+    '[SYSTEM: EXECUTE-MODE GUARD] You ended your turn without doing any implementation work — no files were created or edited, no commands were run. Narration and intent statements do not count as progress.',
+    task,
+    'Resume now using your tools: inspect what exists, write/edit the files, run the build/tests, and iterate until it works. Do not re-ask for confirmation. Only if you are truly blocked, state the exact blocker and use ask_user.',
+  ].join(' ');
+}

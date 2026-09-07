@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTaskHeapUnsafe, taskHeapAbortThreshold } from './memory-guard.js';
+import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 
 const MB = 1024 * 1024;
 
@@ -13,5 +13,10 @@ describe('task memory guard', () => {
   it('allows headroom above a high startup baseline while preserving crash headroom', () => {
     expect(taskHeapAbortThreshold(2560 * MB, 600 * MB)).toBe(856 * MB);
     expect(taskHeapAbortThreshold(1024 * MB, 900 * MB)).toBe(512 * MB);
+  });
+
+  it('sets an emergency exit ceiling 256MB above the abort threshold', () => {
+    expect(taskHeapExitThreshold(2560 * MB, 120 * MB)).toBe(768 * MB);
+    expect(taskHeapExitThreshold(2560 * MB, 600 * MB)).toBe(1112 * MB);
   });
 });

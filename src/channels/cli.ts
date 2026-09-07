@@ -7,7 +7,7 @@ import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
-import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState } from '../ui/types.js';
+import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState, LiveActivityState } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
 
@@ -192,6 +192,8 @@ export interface TuiState {
   mercuryCode: MercuryCodeState | null;
   /** Double-Esc detection for Mercury Code exit. */
   exitEscArmed: boolean;
+  /** Real-time activity phase (what the agent is doing right now), or null when idle. */
+  liveActivity: LiveActivityState | null;
 }
 
 const defaultState: TuiState = {
@@ -220,6 +222,7 @@ const defaultState: TuiState = {
   currentSession: null,
   mercuryCode: null,
   exitEscArmed: false,
+  liveActivity: null,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -254,11 +257,12 @@ export class CLIChannel extends BaseChannel {
   private spotifyClient: any = null;
   private statusPoller: NodeJS.Timeout | null = null;
   private statusPollerBusy = false;
-  private rerenderQueued = false;
-  private rerenderScheduled = false;
   private mouseEnabled = false;
   private mouseHandler: ((ev: MouseEvent) => void) | null = null;
   private tuiOutput: ResilientTuiOutput | null = null;
+  private stateListeners = new Set<() => void>();
+  private rerenderMicrotaskQueued = false;
+  private tuiExitImmediate: NodeJS.Immediate | null = null;
   private exitEscArmed = false;
   private statusProviders: {
     tokens?: () => { used: number; budget: number; percentage: number };
@@ -286,13 +290,38 @@ export class CLIChannel extends BaseChannel {
   async stop(): Promise<void> {
     this.stopStatusPoller();
     this.setMouseEnabled(false);
-    this.inkInstance?.unmount();
+    if (this.tuiExitImmediate) {
+      clearImmediate(this.tuiExitImmediate);
+      this.tuiExitImmediate = null;
+    }
+    this.teardownTui();
+    this.ready = false;
+  }
+
+  private teardownTui(): void {
+    const inkInstance = this.inkInstance;
     this.inkInstance = null;
+    // Unmount may throw on a corrupted Yoga heap; shutdown must still
+    // release the output wrapper and restore the terminal.
+    try { inkInstance?.unmount(); } catch { /* best effort teardown */ }
+    this.stateListeners.clear();
     this.tuiOutput?.dispose();
     this.tuiOutput = null;
     this.releaseRawMode();
     this.restoreTerminal();
-    this.ready = false;
+  }
+
+  private scheduleTuiExit(): void {
+    if (this.tuiExitImmediate) return;
+    this.setMouseEnabled(false);
+    // useInput runs inside React's batchedUpdates. Calling Ink.unmount()
+    // there re-enters the reconciler and can invalidate Yoga nodes while
+    // they are still being laid out. Leave React's callback stack first.
+    this.tuiExitImmediate = setImmediate(() => {
+      this.tuiExitImmediate = null;
+      this.teardownTui();
+      this.exitHandler?.();
+    });
   }
 
   private releaseRawMode(): void {
@@ -324,6 +353,19 @@ export class CLIChannel extends BaseChannel {
     this.rerender();
   }
 
+  /** useSyncExternalStore contract: read the latest immutable state snapshot. */
+  getTuiStateSnapshot = (): TuiState => {
+    return this.state;
+  };
+
+  /** useSyncExternalStore contract: subscribe to state changes. */
+  subscribeToTuiState = (listener: () => void): (() => void) => {
+    this.stateListeners.add(listener);
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  };
+
   /** Update an existing chat message's content in place (by ID). */
   private updateMessage(id: string, content: string, extra?: Partial<ChatMessage>): void {
     this.update({
@@ -334,51 +376,27 @@ export class CLIChannel extends BaseChannel {
   }
 
   private rerender(): void {
-    if (!this.inkInstance) return;
-    if (this.rerenderScheduled) {
-      this.rerenderQueued = true;
-      return;
-    }
-    this.rerenderScheduled = true;
-    const flush = () => {
-      const inkInstance = this.inkInstance;
-      if (!inkInstance) {
-        this.rerenderScheduled = false;
-        this.rerenderQueued = false;
-        return;
-      }
-      this.rerenderQueued = false;
-      inkInstance.rerender(
-        React.createElement(TuiApp, {
-          state: this.state,
-          onInput: (text: string) => { this.inputHandler?.(text); },
-          onPermissionResolve: (value: string | boolean) => {
-            if (this.permissionResolver) {
-              this.permissionResolver(value);
-              this.permissionResolver = null;
-            }
-            this.update({ permissionPrompt: null });
-          },
-          onExit: () => {
-            this.inkInstance?.unmount();
-            this.inkInstance = null;
-            this.tuiOutput?.dispose();
-            this.tuiOutput = null;
-            this.releaseRawMode();
-            this.exitHandler?.();
-          },
-          spotifyClient: this.spotifyClient,
-        }),
-      );
-      this.rerenderScheduled = false;
-      if (this.rerenderQueued) {
-        // React effects may update channel state while Ink is rendering.
-        // Yield before flushing that update instead of recursively rendering
-        // inside this same setImmediate callback.
-        this.rerender();
-      }
-    };
-    setImmediate(flush);
+    // Notify React subscribers instead of calling inkInstance.rerender().
+    // Imperative re-rendering enters the reconciler synchronously from
+    // arbitrary call sites and races React's own renders (spinner/size
+    // timers) — the resulting re-entrant commit corrupted Yoga's WASM heap
+    // ("memory access out of bounds").
+    //
+    // Notifications are deferred to the event loop's check phase and
+    // coalesced: update() is sometimes called from inside React's own
+    // commit phase (e.g. the scroll-clamp effect calls back into channel
+    // state). A synchronous listener call there would re-enter the
+    // reconciler mid-work — React's "Should not already be working." error.
+    // setImmediate (not queueMicrotask) is deliberate: microtasks drain
+    // before timers, so under streaming render pressure a memory-guard
+    // interval could never fire and a runaway task reached a fatal V8 OOM.
+    // The check phase lets pending timers run between render batches.
+    if (this.rerenderMicrotaskQueued) return;
+    this.rerenderMicrotaskQueued = true;
+    setImmediate(() => {
+      this.rerenderMicrotaskQueued = false;
+      this.stateListeners.forEach((listener) => listener());
+    });
   }
 
   /**
@@ -395,6 +413,10 @@ export class CLIChannel extends BaseChannel {
   mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: any): void {
     this.spotifyClient = spotifyClient ?? null;
     this.exitHandler = onExit ?? null;
+    if (this.tuiExitImmediate) {
+      clearImmediate(this.tuiExitImmediate);
+      this.tuiExitImmediate = null;
+    }
 
     this.inputHandler = (text: string) => {
       const trimmed = text.trim();
@@ -605,9 +627,12 @@ export class CLIChannel extends BaseChannel {
 
     this.tuiOutput?.dispose();
     this.tuiOutput = new ResilientTuiOutput(process.stdout, process.stderr);
+    // Single mount. Every later UI update flows through useSyncExternalStore
+    // notifications — never inkInstance.rerender(), whose synchronous
+    // reconciler entry caused re-entrant commits and Yoga WASM corruption.
     this.inkInstance = render(
       React.createElement(TuiApp, {
-        state: this.state,
+        channel: this,
         onInput: (text: string) => { this.inputHandler?.(text); },
         onPermissionResolve: (value: string | boolean) => {
           if (this.permissionResolver) {
@@ -617,14 +642,7 @@ export class CLIChannel extends BaseChannel {
           this.update({ permissionPrompt: null });
         },
         onExit: () => {
-          this.setMouseEnabled(false);
-          this.inkInstance?.unmount();
-          this.inkInstance = null;
-          this.tuiOutput?.dispose();
-          this.tuiOutput = null;
-          this.releaseRawMode();
-          this.restoreTerminal();
-          this.exitHandler?.();
+          this.scheduleTuiExit();
         },
         spotifyClient: this.spotifyClient,
       }),
@@ -685,7 +703,7 @@ export class CLIChannel extends BaseChannel {
       chat = chat.filter((m) => m.id !== this.heartbeatMsgId);
       this.heartbeatMsgId = null;
     }
-    this.trimAndSetMessages([...chat, msg], { isThinking: false });
+    this.trimAndSetMessages([...chat, msg], { isThinking: false, liveActivity: null });
   }
 
   /**
@@ -709,19 +727,76 @@ export class CLIChannel extends BaseChannel {
   /** Clear the heartbeat message (called when processing completes). */
   clearHeartbeat(): void {
     if (this.heartbeatMsgId) {
-      this.state.chatMessages = this.state.chatMessages.filter((m) => m.id !== this.heartbeatMsgId);
+      // All state changes must go through update() — direct mutation here
+      // previously bypassed render notification.
+      const id = this.heartbeatMsgId;
       this.heartbeatMsgId = null;
-      // The heartbeat is the only thing keeping the spinner alive at this
-      // point — a stale message must not leave "Analyzing/Working" showing
-      // after the task has finished.
-      this.update({ isThinking: false });
+      this.update({
+        chatMessages: this.state.chatMessages.filter((m) => m.id !== id),
+        isThinking: false,
+      });
     } else {
       this.rerender();
     }
   }
 
+  /**
+   * Real-time tool event: called at TOOL EXECUTION START (from the AI SDK's
+   * onToolCallStart), not after the LLM step completes. The step shows as
+   * running with a live elapsed timer while the tool actually runs.
+   */
+  sendToolEvent(toolName: string, args: Record<string, any>, callId: string): Promise<void> {
+    const label = formatToolStep(toolName, args);
+    // Reuse an existing running step for the same callId (e.g. duplicate start).
+    const existing = this.state.toolSteps.find((s) => s.callId === callId && s.status === 'running');
+    if (existing) {
+      return this.sendToolFeedback(toolName, args);
+    }
+    const step: ToolStep = {
+      id: `step-${Date.now()}-${this.stepCount}`,
+      toolName,
+      label,
+      status: 'running',
+      startedAt: Date.now(),
+      callId,
+    };
+    this.stepCount += 1;
+    this.stepStartTime = Date.now();
+    // Cap the live step list: long coding sessions can run hundreds of
+    // tool calls; an unbounded array both bloats renders and memory.
+    const MAX_LIVE_STEPS = 60;
+    this.update({
+      toolSteps: [...this.state.toolSteps, step].slice(-MAX_LIVE_STEPS),
+      isThinking: true,
+    });
+    return Promise.resolve();
+  }
+
+  /**
+   * Real-time tool completion: pairs with sendToolEvent via callId so the
+   * exact step that started flips to done — even when several tools ran.
+   */
+  completeToolEvent(toolName: string, result: unknown, isError: boolean, durationMs?: number): void {
+    const summary = formatToolResult(toolName, result);
+    let matched = false;
+    const toolSteps = this.state.toolSteps.map((step) => {
+      if (!matched && step.status === 'running' && step.toolName === toolName) {
+        matched = true;
+        return {
+          ...step,
+          status: (isError ? 'error' : 'done') as 'done' | 'error',
+          elapsed: durationMs != null ? durationMs / 1000 : (step.startedAt ? (Date.now() - step.startedAt) / 1000 : 0),
+          result: summary || undefined,
+        };
+      }
+      return step;
+    });
+    this.update({ toolSteps });
+  }
+
   sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta): void {
     this.clearHeartbeat();
+    this.clearLiveActivity();
     const secs = Math.floor(elapsedMs / 1000);
     const mins = Math.floor(secs / 60);
     const remSecs = secs % 60;
@@ -862,7 +937,7 @@ export class CLIChannel extends BaseChannel {
     let lastRender = 0;
 
     this.clearHeartbeat();
-    this.update({ isThinking: true });
+    this.setLiveActivity('Streaming response', 'generating answer');
 
     try {
       for await (const chunk of content) {
@@ -896,6 +971,7 @@ export class CLIChannel extends BaseChannel {
       }
     } catch (err) {
       logger.warn({ err, partialLen: full.length }, 'CLI stream interrupted, saving partial text');
+      this.clearLiveActivity();
       if (full.length > 0) {
         const interruptedMessage = { id: msgId, role: 'agent' as const, content: full + '\n\n⚠ Stream was interrupted. Partial response shown above.', timestamp: Date.now(), streaming: false };
         this.update({
@@ -916,13 +992,19 @@ export class CLIChannel extends BaseChannel {
     const shownFull = full.length > CLIChannel.MAX_MESSAGE_CHARS
       ? full.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…response display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB]`
       : full;
-    const finalMessage = { id: msgId, role: 'agent' as const, content: shownFull, timestamp: Date.now(), streaming: false };
-    this.trimAndSetMessages(
-      started
-        ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
-        : [...this.state.chatMessages, finalMessage],
-      { isThinking: false },
-    );
+    if (full.length > 0) {
+      const finalMessage = { id: msgId, role: 'agent' as const, content: shownFull, timestamp: Date.now(), streaming: false };
+      this.trimAndSetMessages(
+        started
+          ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
+          : [...this.state.chatMessages, finalMessage],
+        { isThinking: false, liveActivity: null },
+      );
+    } else {
+      // Zero chunks arrived (e.g. the model returned nothing): render no
+      // bubble at all rather than an empty "MERCURY" header.
+      this.update({ isThinking: false, liveActivity: null });
+    }
 
     return full;
   }
@@ -1081,6 +1163,37 @@ export class CLIChannel extends BaseChannel {
 
   setSubAgents(agents: SubAgentInfo[]): void {
     this.update({ subAgents: agents });
+  }
+
+  /**
+   * Push a real-time activity phase to the live feedback block. Called by the
+   * agent at execution time (provider call, tool start, streaming) — the TUI
+   * shows what is happening now, not just post-step results.
+   */
+  setLiveActivity(phase: string, detail?: string): void {
+    const existing = this.state.liveActivity;
+    this.update({
+      liveActivity: {
+        phase,
+        detail,
+        stepsDone: existing?.stepsDone ?? 0,
+        startedAt: existing?.phase === phase && existing?.detail === detail
+          ? existing.startedAt
+          : Date.now(),
+      },
+      isThinking: true,
+    });
+  }
+
+  /** Advance the live step counter (called when an AI SDK step completes). */
+  bumpLiveActivitySteps(): void {
+    const existing = this.state.liveActivity;
+    if (existing) this.update({ liveActivity: { ...existing, stepsDone: existing.stepsDone + 1 } });
+  }
+
+  /** Clear the live activity block (task finished or idle). */
+  clearLiveActivity(): void {
+    if (this.state.liveActivity) this.update({ liveActivity: null });
   }
 
   updateBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
