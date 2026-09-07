@@ -393,7 +393,10 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
     }
 
     // ── Mercury Code full-screen mode ──
-    if (state.mode === 'mercury-code') {
+    // A pending interactive prompt (ask_user choice, permission, continue)
+    // owns the keyboard — its navigation handler below must receive keys,
+    // otherwise the model waits forever on an unanswered picker.
+    if (state.mode === 'mercury-code' && !state.permissionPrompt) {
       const mc = state.mercuryCode;
       if (!mc) return;
 
@@ -525,7 +528,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
           if (selected) resolvePermissionAndMaybeContinue(selected.value);
         } else if (key.escape) {
           if (state.permissionPrompt.type === 'mode') resolvePermissionAndMaybeContinue('ask-me');
-          else if (state.permissionPrompt.type !== 'choice') resolvePermissionAndMaybeContinue('no');
+          else if (state.permissionPrompt.type === 'choice') resolvePermissionAndMaybeContinue('');
+          else resolvePermissionAndMaybeContinue('no');
         }
         return;
       }
