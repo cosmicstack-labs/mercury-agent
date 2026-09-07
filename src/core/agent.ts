@@ -80,6 +80,7 @@ import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPro
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
+import { buildFileChangePreview } from '../utils/file-preview.js';
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -1171,6 +1172,35 @@ export class Agent {
     return { text, usage: await stream.usage, reasoning: stream.reasoning };
   }
 
+  /**
+   * Emit a bounded, syntax-highlighted file-change preview into the coding
+   * TUI transcript when a file tool succeeds ("sometimes, not always" — the
+   * size heuristics live in buildFileChangePreview). Never throws: a preview
+   * failure must not break the tool loop.
+   */
+  private maybeShowFileChange(
+    channel: any,
+    msg: ChannelMessage,
+    toolName: string,
+    input: unknown,
+    result: unknown,
+  ): void {
+    try {
+      if (!(channel instanceof CLIChannel)) return;
+      const tui = channel.getTuiState();
+      if (tui.mode !== 'mercury-code' && tui.mode !== 'coding') return;
+      const tr = result as any;
+      const resultText = typeof tr === 'string' ? tr : JSON.stringify(tr ?? '');
+      const preview = buildFileChangePreview({
+        toolName,
+        args: (input ?? {}) as Record<string, any>,
+        resultText,
+        ok: !isFailedToolResult(resultText || ''),
+      });
+      if (preview) channel.showFileChange(preview);
+    } catch { /* preview must never break the tool loop */ }
+  }
+
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
     const attempts = this.workLedger.get(workKey)?.attempts ?? 1;
     const delayMs = continuation
@@ -2091,6 +2121,7 @@ export class Agent {
                     }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
+                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -2496,6 +2527,7 @@ export class Agent {
                     }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
+                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -2982,6 +3014,7 @@ export class Agent {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
                   recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3080,6 +3113,7 @@ export class Agent {
                     if (typeof cmd === 'string') executeCommandsRun.push(cmd);
                   }
                   recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3155,6 +3189,7 @@ export class Agent {
                       if (typeof cmd === 'string') executeCommandsRun.push(cmd);
                     }
                     recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
                     loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                   }
                 }

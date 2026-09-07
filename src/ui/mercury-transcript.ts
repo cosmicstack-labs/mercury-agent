@@ -84,7 +84,42 @@ export function buildMercuryMessageLines(message: ChatMessage, width: number): M
   };
 
   if (message.role === 'system') {
-    for (const line of renderedTextLines(normalizeTerminalText(message.content), contentWidth)) push('system', line);
+    // System messages can carry fenced blocks (file-change previews with
+    // diff/code excerpts) — parse fences so the TUI renders them with the
+    // same syntax highlighting as agent code, just without a header row.
+    const source = normalizeTerminalText(message.content).split('\n');
+    let inCode = false;
+    let language = '';
+    let prose: string[] = [];
+
+    const flushProse = () => {
+      if (prose.length === 0) return;
+      for (const line of renderedTextLines(prose.join('\n'), contentWidth)) push('system', line);
+      prose = [];
+    };
+
+    for (const sourceLine of source) {
+      const fence = /^```\s*([^\s`]*)/.exec(sourceLine);
+      if (fence) {
+        if (inCode) {
+          inCode = false;
+          language = '';
+        } else {
+          flushProse();
+          inCode = true;
+          language = fence[1] || 'text';
+          push('code-label', language.toUpperCase(), language);
+        }
+        continue;
+      }
+      if (inCode) {
+        const chunks = wrapMercuryText(sourceLine, contentWidth);
+        for (const chunk of chunks) push('code', chunk, language);
+      } else {
+        prose.push(sourceLine);
+      }
+    }
+    flushProse();
   } else {
     push('header', message.role === 'user' ? 'YOU' : 'MERCURY');
     const source = normalizeTerminalText(message.content).split('\n');

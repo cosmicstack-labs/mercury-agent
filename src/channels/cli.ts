@@ -702,6 +702,25 @@ export class CLIChannel extends BaseChannel {
     this.update({ chatMessages: trimmed, ...extra });
   }
 
+  /**
+   * Show a file-change preview in the transcript (Mercury Code / coding
+   * surfaces): a bounded, syntax-highlighted excerpt of what the agent just
+   * wrote or edited. Formatted by utils/file-preview.ts. Skips silently
+   * when the identical preview is already the last message (tool retries).
+   */
+  showFileChange(content: string): void {
+    if (!content) return;
+    const last = this.state.chatMessages[this.state.chatMessages.length - 1];
+    if (last && last.role === 'system' && last.content === content) return;
+    const msg: ChatMessage = {
+      id: `file-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      role: 'system',
+      content,
+      timestamp: Date.now(),
+    };
+    this.trimAndSetMessages([...this.state.chatMessages, msg]);
+  }
+
   async send(content: string, _targetId?: string, _elapsedMs?: number): Promise<void> {
     const msg: ChatMessage = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
