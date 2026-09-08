@@ -1,6 +1,6 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -77,7 +77,7 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
@@ -111,6 +111,15 @@ function stepAwareTextStream(fullStream: AsyncIterable<any>): AsyncIterable<stri
 }
 
 
+
+/**
+ * Tools allowed on a GUARD-FORCED step: action tools plus the two cheapest
+ * inspection tools. With toolChoice 'required' AND this narrowing, the first
+ * step of a guard round can only be real work — the model cannot narrate
+ * (its forced call must be a mutating tool) and cannot disappear into
+ * arbitrary read-only exploration instead of building.
+ */
+const FORCED_ACTION_TOOLS = [...EXECUTE_MUTATING_TOOLS, 'list_dir', 'read_file'];
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -2068,6 +2077,10 @@ export class Agent {
       // limit) — showing only the last error hides the real fix from the
       // user.
       const providerFailures = new Map<string, string>();
+      // Guard-round provider rotation cursor (round 1 = current provider,
+      // then walks the fallback chain — a narration-locked model is not the
+      // only worker the agent has).
+      let guardProviderCursor = 0;
       for (const provider of [...providersForAttempt, ...providersForAttempt]) {
         // Per-attempt latency accounting: the only way to answer "why is
         // coding slow" with data instead of guesses.
@@ -3068,10 +3081,31 @@ export class Agent {
         // alive instead of tearing the task down and re-queueing it.
         const currentText = (result.text || '').trim();
         if (currentText && currentText !== '(no text response)') messages.push({ role: 'assistant', content: currentText });
+        // Harness-level grounding on the FIRST forced round: the agent
+        // executes a deterministic directory listing itself (no LLM), so a
+        // narration-prone model cannot claim it lacks context for where the
+        // work goes.
+        if (executeGuardRounds === 1) {
+          try {
+            const cwd = this.capabilities.getCwd();
+            const entries = readdirSync(cwd, { withFileTypes: true })
+              .slice(0, 30)
+              .map((e: import('node:fs').Dirent) => `${e.isDirectory() ? 'dir' : 'file'}: ${e.name}`)
+              .join('\n');
+            messages.push({
+              role: 'user',
+              content: `[SYSTEM: GROUNDING — agent-executed, not model-generated] Current working directory: ${cwd}\nContents:\n${entries || '(empty)'}\nThis is real, current state. Use it: create/edit files HERE with your tools.`,
+            });
+          } catch { /* grounding is best-effort */ }
+        }
         messages.push({ role: 'user', content: executeContinuationPrompt(msg.content) });
-        const guardProvider = usedProvider
-          ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
-          : providersForAttempt[0];
+        // Provider rotation across guard rounds: a model that repeatedly
+        // narrates without acting should not keep being handed the task —
+        // the agent moves to the next model in the chain. The agent makes
+        // things happen; it does not depend on one LLM's cooperation.
+        if (guardProviderCursor === undefined) guardProviderCursor = 0;
+        const guardProvider = providersForAttempt[guardProviderCursor % providersForAttempt.length];
+        guardProviderCursor++;
         if (!guardProvider) break;
         try {
           this.markProgress(`Resuming with ${guardProvider.name}...`);
@@ -3087,7 +3121,7 @@ export class Agent {
             // this round MUST contain a tool call. Text nudges alone let
             // narration-only models loop for every round; a provider-enforced
             // toolChoice converts "describing the work" into doing it.
-            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {}),
+            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const, activeTools: FORCED_ACTION_TOOLS } : {}),
             abortSignal: loopAbortController.signal,
             experimental_include: { requestBody: false },
             onStepFinish: async ({ toolCalls, toolResults }) => {
