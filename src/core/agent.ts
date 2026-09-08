@@ -75,7 +75,7 @@ import { MAX_PROVIDER_ATTEMPT_MS, MAX_AUTOMATIC_CONTINUATIONS, needsContinuation
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
-import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
+import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
@@ -2044,6 +2044,9 @@ export class Agent {
       // blunt, maximally-constrained retry cycle before reporting honestly.
       let narrationSecondWind = false;
       let lastGuardToolFailure = '';
+      // OpenCode practice: on memory pressure, COMPACT and continue — the
+      // task gets one aggressive compaction chance before any abort.
+      let memoryCompactedForTask = false;
 
       const recordExecuteToolResult = (toolName: string, resultText: unknown): void => {
         const text = typeof resultText === 'string' ? resultText : JSON.stringify(resultText ?? '');
@@ -2173,6 +2176,18 @@ export class Agent {
                   process.exit(0);
                 }
                 if (verdict === 'abort' && !loopAbortController.signal.aborted && this.currentAbortReason !== 'memory-pressure') {
+                  // Compact FIRST, continue (OpenCode's compact-on-overflow
+                  // practice): a long coding task must not die at memory
+                  // pressure when old tool bulk can be summarized away.
+                  if (!memoryCompactedForTask) {
+                    memoryCompactedForTask = true;
+                    try {
+                      const freed = compactConversation(messages);
+                      logger.warn({ freedChars: freed, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: memory pressure — compacted conversation, continuing');
+                      this.pushLiveActivity('Freeing memory — compacting the conversation', 'auto-compact');
+                    } catch { /* compaction is best-effort */ }
+                    return;
+                  }
                   this.currentAbortReason = 'memory-pressure';
                   loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
                   return;
@@ -2591,6 +2606,18 @@ export class Agent {
                   process.exit(0);
                 }
                 if (verdict === 'abort' && !loopAbortController.signal.aborted && this.currentAbortReason !== 'memory-pressure') {
+                  // Compact FIRST, continue (OpenCode's compact-on-overflow
+                  // practice): a long coding task must not die at memory
+                  // pressure when old tool bulk can be summarized away.
+                  if (!memoryCompactedForTask) {
+                    memoryCompactedForTask = true;
+                    try {
+                      const freed = compactConversation(messages);
+                      logger.warn({ freedChars: freed, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: memory pressure — compacted conversation, continuing');
+                      this.pushLiveActivity('Freeing memory — compacting the conversation', 'auto-compact');
+                    } catch { /* compaction is best-effort */ }
+                    return;
+                  }
                   this.currentAbortReason = 'memory-pressure';
                   loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
                   return;
