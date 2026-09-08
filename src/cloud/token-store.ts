@@ -46,7 +46,17 @@ export class CloudTokenStore {
     this.apiUrl = apiUrl;
     this.agentId = agentId;
     this.liveConfig = liveConfig;
-    this.agentApiKey = agentApiKey ?? liveConfig?.cloud.agentApiKey ?? '';
+    // Recovery-key fallback: when no dedicated cloud.agentApiKey was stored,
+    // the LLM gateway's `sk-mc-` access key IS an agent API key and can be
+    // redeemed for a fresh token pair — this is what self-heals a dead
+    // refresh token without a browser re-pair. Redeem validates agent
+    // identity server-side, so a wrong key fails safely into the re-pair
+    // hint.
+    this.agentApiKey = agentApiKey
+      ?? liveConfig?.cloud.agentApiKey
+      ?? (liveConfig?.providers?.mercuryCloud?.apiKey?.startsWith('sk-mc-')
+        ? liveConfig.providers.mercuryCloud.apiKey
+        : '');
   }
 
   getTokens(): TokenPair {
@@ -166,7 +176,9 @@ export class CloudTokenStore {
             logger.warn({ err: (error as Error).message }, 'Refresh token rotation failed; redeeming agent API key');
             return await this.redeemWithAgentKey();
           }
-          throw error;
+          throw new Error(
+            `${(error as Error).message} — no recovery key available. Run "mercury cloud connect" to re-pair.`,
+          );
         }
       } else {
         // No refresh token at all — go straight to the agent API key.
