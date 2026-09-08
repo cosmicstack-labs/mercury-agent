@@ -1165,6 +1165,8 @@ export class Agent {
     abortController: AbortController;
     channel: any;
     channelId: string;
+    /** Mechanically force the first step to contain a tool call. */
+    forceFirstTool?: boolean;
     onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
   }): Promise<{ text: string; usage: any; reasoning?: any }> {
     this.markProgress(`Resuming with ${opts.provider.name}...`);
@@ -1176,6 +1178,11 @@ export class Agent {
       tools: this.capabilities.getTools(),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
+      // forceFirstTool: the first step MUST contain a tool call — narration
+      // rounds are converted into action rounds mechanically.
+      prepareStep: opts.forceFirstTool
+        ? ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {})
+        : undefined,
       abortSignal: opts.abortController.signal,
       experimental_include: { requestBody: false },
       onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -3067,6 +3074,11 @@ export class Agent {
             tools: this.capabilities.getTools(),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
+            // Mechanical enforcement, not a polite nudge: the first step of
+            // this round MUST contain a tool call. Text nudges alone let
+            // narration-only models loop for every round; a provider-enforced
+            // toolChoice converts "describing the work" into doing it.
+            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {}),
             abortSignal: loopAbortController.signal,
             experimental_include: { requestBody: false },
             onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -3243,6 +3255,8 @@ export class Agent {
               abortController: loopAbortController,
               channel,
               channelId: msg.channelId,
+              // Verification must produce evidence, not prose about evidence.
+              forceFirstTool: true,
               onStep: async (toolCalls, toolResults) => {
                 this.completedStepCount++;
                 lastRoundSteps++;

@@ -850,8 +850,14 @@ export class CLIChannel extends BaseChannel {
       ? STEPS_PAUSED_BANNER
       : `Task complete · ${parts}`;
     // AUTO shares execute-class display semantics (file-change summaries,
-    // the no-changes honesty banner).
-    const fileChanges = this.state.mode === 'mercury-code' && (this.state.programmingMode === 'execute' || this.state.programmingMode === 'auto')
+    // the no-changes honesty banner). The no-changes rewrite requires git
+    // evidence — in a non-git directory collectMercuryCodeChanges() always
+    // returns [] and would falsely claim "no file changes" even when files
+    // were created.
+    const canVerifyChanges = this.state.mode === 'mercury-code'
+      && (this.state.programmingMode === 'execute' || this.state.programmingMode === 'auto')
+      && this.state.mercuryCode?.git.branch !== 'no-git';
+    const fileChanges = canVerifyChanges
       ? this.collectMercuryCodeChanges()
       : undefined;
     if (content.startsWith('Task complete') && fileChanges && fileChanges.length === 0) {
