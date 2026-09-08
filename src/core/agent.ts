@@ -82,6 +82,36 @@ import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_ST
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 
+/**
+ * Step-aware text stream for the TUI. The SDK's textStream concatenates
+ * the narration of EVERY agentic step back-to-back with no separator —
+ * on longer /code tasks that produced word salad ("Building it
+ * now.Clean slate.Now scaffolding…Next.js project scaffolded…") as each
+ * tool step narrated and then handed off to the next. This wraps
+ * fullStream and inserts paragraph breaks at step boundaries so each
+ * step's narration reads as its own block.
+ */
+function stepAwareTextStream(fullStream: AsyncIterable<any>): AsyncIterable<string> {
+  return (async function* () {
+    let firstStep = true;
+    let sawTextInStep = false;
+    for await (const part of fullStream) {
+      if (part.type === 'step-start') {
+        if (!firstStep && sawTextInStep) yield '\n\n';
+        firstStep = false;
+        sawTextInStep = false;
+        continue;
+      }
+      if (part.type === 'text-delta' && part.text) {
+        sawTextInStep = true;
+        yield part.text;
+      }
+    }
+  })();
+}
+
+
+
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
   private totalCalls = 0;
@@ -1158,7 +1188,7 @@ export class Agent {
     });
     const text = (opts.channel
       ? await this.withProviderDeadline(
-        opts.channel.stream(stream.textStream, opts.channelId),
+        opts.channel.stream(stepAwareTextStream(stream.fullStream), opts.channelId),
         opts.abortController,
         deadlineAt,
       )
@@ -2388,7 +2418,7 @@ export class Agent {
             });
 
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of streamResult.textStream) {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream))) {
                 if (chunk) hasStreamedOutput = true;
                 yield chunk;
               }
@@ -2465,7 +2495,7 @@ export class Agent {
                   providerDeadlineAt,
                 );
                 const chunk: string[] = [];
-                for await (const c of continueResult.textStream) chunk.push(c);
+                for await (const c of stepAwareTextStream(continueResult.fullStream)) chunk.push(c);
                 const piece = chunk.join('');
                 const cFinish: string = await continueResult.finishReason;
                 if (cFinish === 'error') throw new Error('Continuation stream ended with an error');
@@ -3064,7 +3094,7 @@ export class Agent {
           });
           const guardText = channel
             ? await this.withProviderDeadline(
-              channel.stream(guardStream.textStream, msg.channelId),
+              channel.stream(stepAwareTextStream(guardStream.fullStream), msg.channelId),
               loopAbortController,
               guardDeadlineAt,
             )
