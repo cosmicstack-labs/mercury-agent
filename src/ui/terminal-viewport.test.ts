@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getViewportWindow, moveViewport, normalizeTerminalText } from './terminal-viewport.js';
+import { anchorViewportDistance, getViewportWindow, moveViewport, normalizeTerminalText } from './terminal-viewport.js';
 
 describe('terminal viewport', () => {
   it('follows the bottom at zero distance and reaches both boundaries', () => {
@@ -24,5 +24,16 @@ describe('terminal viewport', () => {
 
   it('normalizes Windows and legacy Mac line endings', () => {
     expect(normalizeTerminalText('one\r\ntwo\rthree')).toBe('one\ntwo\nthree');
+  });
+
+  it('anchors historical rows when content grows while scrolled back', () => {
+    expect(anchorViewportDistance(12, 100, 107)).toBe(19);
+    expect(anchorViewportDistance(0, 100, 107)).toBe(0);
+    expect(anchorViewportDistance(12, 100, 90)).toBe(12);
+
+    const before = getViewportWindow(100, 20, 12);
+    const after = getViewportWindow(107, 20, anchorViewportDistance(12, 100, 107));
+    expect(after.start).toBe(before.start);
+    expect(after.end).toBe(before.end);
   });
 });

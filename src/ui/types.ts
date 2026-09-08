@@ -3,7 +3,24 @@ import type { SaverModeState } from '../core/saver-mode.js';
 import type { SubAgentStatus } from '../types/agent.js';
 import type { PermissionMode } from '../channels/base.js';
 
-export type AppMode = 'splash' | 'chat' | 'coding' | 'workspace' | 'spotify' | 'menu';
+export type AppMode = 'splash' | 'chat' | 'coding' | 'workspace' | 'spotify' | 'menu' | 'mercury-code';
+
+export interface MercuryCodeGitState {
+  branch: string;
+  ahead: number;
+  behind: number;
+  dirty: number;
+}
+
+export interface MercuryCodeState {
+  cwd: string;
+  dirName: string;
+  git: MercuryCodeGitState;
+  mouse: boolean;
+  /** Distance of the viewport from the bottom of the transcript (0 = live). */
+  scrollOffset: number;
+  exitConfirm: boolean;
+}
 
 export interface WorkspaceTreeNode {
   id: string;
@@ -60,6 +77,13 @@ export interface ChatMessage {
   timestamp: number;
   streaming?: boolean;
   completionMeta?: CompletionMeta;
+  fileChanges?: FileChangeSummary[];
+}
+
+export interface FileChangeSummary {
+  path: string;
+  added: number | null;
+  removed: number | null;
 }
 
 export interface ToolStep {
@@ -70,6 +94,20 @@ export interface ToolStep {
   startedAt?: number;
   elapsed?: number;
   result?: string;
+  /** AI SDK toolCallId — lets completion target the exact running step. */
+  callId?: string;
+}
+
+/**
+ * Live activity phase shown in the Mercury Code feedback block. Pushed by the
+ * agent at execution time (provider calls, tool starts, streaming) so the TUI
+ * reflects what is happening RIGHT NOW instead of only post-step results.
+ */
+export interface LiveActivityState {
+  phase: string;
+  detail?: string;
+  stepsDone: number;
+  startedAt: number;
 }
 
 export interface SubAgentInfo {
@@ -163,4 +201,10 @@ export interface PermissionPromptState {
   message: string;
   options?: Array<{ value: string; label: string }>;
   resolve: (value: string | boolean) => void;
+}
+
+/** One step of the agent's live plan checklist (rendered in Mercury Code). */
+export interface PlanStep {
+  label: string;
+  status: 'pending' | 'active' | 'done';
 }

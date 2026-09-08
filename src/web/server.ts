@@ -213,11 +213,21 @@ process.on('uncaughtException', (err) => {
 });
 
 process.on('unhandledRejection', (reason: any) => {
-  logger.warn({ err: reason?.message || reason }, 'Unhandled rejection in web server (non-fatal)');
+  // Never swallow fatal boot errors (e.g. "runtime already running") here —
+  // a silent exit(0) with no user-visible reason is worse than a crash.
+  logger.error({ err: reason?.message || reason }, 'Unhandled rejection');
   try {
     const { writeCrashFlag } = require('../core/crash-flag.js');
     writeCrashFlag({ reason: `Unhandled rejection: ${reason?.message || reason}`.slice(0, 300), timestamp: Date.now() });
   } catch { /* best effort */ }
+  const message = String(reason?.message || reason || '');
+  const fatal = /already running|EADDRINUSE|registerRuntimeProcess/i.test(message);
+  if (fatal) {
+    try {
+      process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Stop the other instance with \`mercury stop\` or \`kill <pid>\`.\n`);
+    } catch { /* stderr gone */ }
+    process.exit(1);
+  }
 });
 
 export function startWebServer(): { port: number; url: string } {

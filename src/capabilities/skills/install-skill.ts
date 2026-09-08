@@ -2,10 +2,13 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { SkillLoader } from '../../skills/loader.js';
 import { parse as parseYaml } from 'yaml';
+import { guardedFetch } from '../../utils/ssrf.js';
+
+const MAX_SKILL_BYTES = 512 * 1024;
 
 export function createInstallSkillTool(skillLoader: SkillLoader) {
   return tool({
-    description: 'Install a new skill by providing SKILL.md markdown content or a URL. The content must have YAML frontmatter (---) with at least name and description fields.',
+    description: 'Install a new skill by providing SKILL.md markdown content or a URL (public http/https only — private/internal addresses are blocked). The content must have YAML frontmatter (---) with at least name and description fields.',
     inputSchema: zodSchema(z.object({
       content: z.string().optional().describe('Raw SKILL.md markdown content with YAML frontmatter'),
       url: z.string().optional().describe('URL to fetch a SKILL.md from'),
@@ -15,15 +18,23 @@ export function createInstallSkillTool(skillLoader: SkillLoader) {
 
       if (url && !content) {
         try {
-          const resp = await fetch(url);
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 30000);
+          const resp = await guardedFetch(url, controller.signal);
           if (!resp.ok) {
             return `Failed to fetch skill from URL: ${resp.status} ${resp.statusText}`;
           }
           skillContent = await resp.text();
+          if (skillContent.length > MAX_SKILL_BYTES) {
+            return `Failed to install skill: content exceeds ${Math.round(MAX_SKILL_BYTES / 1024)}KB — refusing oversized payload.`;
+          }
         } catch (err: any) {
           return `Failed to fetch skill from URL: ${err.message}`;
         }
       } else if (content) {
+        if (content.length > MAX_SKILL_BYTES) {
+          return `Failed to install skill: content exceeds ${Math.round(MAX_SKILL_BYTES / 1024)}KB.`;
+        }
         skillContent = content;
       } else {
         return 'Either content or url must be provided.';

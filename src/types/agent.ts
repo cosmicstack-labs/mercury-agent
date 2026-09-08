@@ -59,7 +59,7 @@ export interface SubAgentConfig {
 export interface SubAgentResult {
   agentId: string;
   task: string;
-  status: 'completed' | 'failed' | 'halted';
+  status: 'completed' | 'failed' | 'halted' | 'paused';
   output: string;
   error?: string;
   filesModified: string[];

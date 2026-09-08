@@ -11,6 +11,9 @@ import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { FileLockManager } from './file-lock.js';
 import type { TaskBoard } from './task-board.js';
 import type { SaverMode } from './saver-mode.js';
+import { getHeapStatistics } from 'node:v8';
+import { memoryGovernorThresholds, memoryGovernorVerdict, CONVERSATION_TOOL_BUDGET_CHARS, TOOL_RESULT_KEEP_RECENT, summarizeToolResult } from './memory-governor.js';
+import { classifyStreamCompletion } from './stream-completion.js';
 import { logger } from '../utils/logger.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
@@ -127,6 +130,32 @@ export class SubAgent {
       const systemPrompt = this.buildSystemPrompt();
       const messages: any[] = [];
 
+      // Conversation budget: compacts old tool results once retained tool
+      // output exceeds the budget. A sub-agent analyzing a whole project
+      // must not hold every file read verbatim for the entire run.
+      const enforceConversationBudget = () => {
+        const toolIdx: number[] = [];
+        let total = 0;
+        for (let i = 0; i < messages.length; i++) {
+          const m = messages[i];
+          if (m.role !== 'tool' || typeof m.content !== 'string') continue;
+          toolIdx.push(i);
+          total += m.content.length;
+        }
+        if (total <= CONVERSATION_TOOL_BUDGET_CHARS) return;
+        const cutoff = toolIdx.slice(0, Math.max(0, toolIdx.length - TOOL_RESULT_KEEP_RECENT));
+        for (const idx of cutoff) {
+          messages[idx] = { ...messages[idx], content: summarizeToolResult(messages[idx].content) };
+        }
+        logger.info({ agentId: this.config.id, compacted: cutoff.length }, 'Sub-agent conversation budget enforced');
+      };
+
+      const governorThresholds = memoryGovernorThresholds({
+        heapSizeLimit: getHeapStatistics().heap_size_limit,
+        baselineHeapUsed: process.memoryUsage().heapUsed,
+        reservedHeapBytes: 384 * 1024 * 1024,
+      });
+
       messages.push({
         role: 'user',
         content: this.config.task,
@@ -162,6 +191,17 @@ export class SubAgent {
         // Execution loop: run generateText, then check for new comments.
         // If new comments found, inject them as user messages and continue.
         while (stepsRemaining > 0 && !this.abortController.signal.aborted) {
+          // Step-level memory checkpoint before each provider round-trip.
+          const verdict = memoryGovernorVerdict(process.memoryUsage().heapUsed, governorThresholds);
+          if (verdict === 'exit') {
+            logger.error({ agentId: this.config.id }, 'Sub-agent: heap beyond exit threshold — exiting to preserve process');
+            process.exit(0);
+          }
+          if (verdict === 'abort') {
+            this.abortController.abort(new Error('Sub-agent stopped: task memory safety limit reached'));
+            break;
+          }
+          enforceConversationBudget();
           const result = await generateText({
             model: provider.getModelInstance(),
             system: systemPrompt,
@@ -169,9 +209,25 @@ export class SubAgent {
             tools: this.capabilities.getTools(),
             stopWhen: stepCountIs(stepsRemaining),
             abortSignal: this.abortController.signal,
+            // Stop the SDK retaining raw HTTP bodies in every step's result
+            // (same O(N²) heap growth as the main agent loop).
+            experimental_include: { requestBody: false, responseBody: false },
             onStepFinish: async ({ toolCalls, toolResults, usage }) => {
               if (this.abortController.signal.aborted) return;
               stepsRemaining--;
+
+              // Mid-loop memory checkpoint: abort generation if the heap
+              // crosses the emergency ceiling (the sub-agent runs on the
+              // shared process, so its blowup kills the whole app).
+              const midVerdict = memoryGovernorVerdict(process.memoryUsage().heapUsed, governorThresholds);
+              if (midVerdict === 'exit') {
+                logger.error({ agentId: this.config.id }, 'Sub-agent: heap beyond exit threshold mid-step — exiting');
+                process.exit(0);
+              }
+              if (midVerdict === 'abort') {
+                this.abortController.abort(new Error('Sub-agent stopped: task memory safety limit reached'));
+                return;
+              }
 
               // Accumulate live token usage
               if (usage) {
@@ -217,6 +273,20 @@ export class SubAgent {
           });
 
           lastResult = result;
+
+          // Stream integrity: generateText can resolve with finishReason
+          // 'other' when the provider dropped the connection mid-generation
+          // (no terminal chunk). Treat as a failure so the sub-agent reports
+          // honestly instead of completing with truncated/empty output.
+          const completion = classifyStreamCompletion({
+            finishReason: (result as any)?.finishReason,
+            hasText: Boolean(result?.text),
+            hasToolCalls: true,
+          });
+          if (completion === 'interrupted') {
+            logger.warn({ agentId: this.config.id, finishReason: (result as any)?.finishReason }, 'Sub-agent generation ended without a provider finish signal');
+            throw new Error('Generation was interrupted before completion (no finish signal from provider)');
+          }
 
           // Append the assistant response to the conversation history
           if (result.text) {
@@ -286,6 +356,35 @@ export class SubAgent {
             result: this.result.output,
           });
 
+          return this.result;
+        }
+
+        // Completion contract: the loop exited because the step budget ran
+        // out while the last round still had tool calls pending. That is a
+        // pause, never a completion — the supervisor resumes with a fresh
+        // budget; reporting 'completed' here shipped half-done work behind a
+        // success status.
+        if (stepsRemaining <= 0 && (result as any)?.finishReason === 'tool-calls') {
+          this.status = 'paused';
+          const duration = Date.now() - this.startTime;
+          this.result = {
+            agentId: this.config.id,
+            task: this.config.task,
+            status: 'paused',
+            output: 'Step budget reached before the task completed — work so far is preserved; resuming with a fresh budget.',
+            filesModified: this.filesModified,
+            duration,
+            tokenUsage: {
+              input: this.totalInputTokens,
+              output: this.totalOutputTokens,
+            },
+          };
+          this.taskBoard.update(this.config.id, {
+            status: 'paused',
+            completedAt: Date.now(),
+            progress: 'Step budget reached — resuming',
+          });
+          logger.info({ agentId: this.config.id, duration }, 'Sub-agent paused at step budget (completion contract)');
           return this.result;
         }
 

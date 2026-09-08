@@ -1,6 +1,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Identity } from '../soul/identity.js';
@@ -70,9 +71,72 @@ import {
 } from '../utils/config.js';
 import { fetchProviderModelCatalog, getPreferredModelsForProvider } from '../utils/provider-models.js';
 import { WorkLedger, type WorkEntry } from './work-ledger.js';
-import { MAX_PROVIDER_ATTEMPT_MS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
+import { MAX_PROVIDER_ATTEMPT_MS, MAX_AUTOMATIC_CONTINUATIONS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
+import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
+import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
+import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
+import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
+import { StallWatchdog } from './stall-watchdog.js';
+import { buildFileChangePreview } from '../utils/file-preview.js';
+
+/**
+ * Step-aware text stream for the TUI. The SDK's textStream concatenates
+ * the narration of EVERY agentic step back-to-back with no separator —
+ * on longer /code tasks that produced word salad ("Building it
+ * now.Clean slate.Now scaffolding…Next.js project scaffolded…") as each
+ * tool step narrated and then handed off to the next. This wraps
+ * fullStream and inserts paragraph breaks at step boundaries so each
+ * step's narration reads as its own block.
+ */
+function stepAwareTextStream(
+  fullStream: AsyncIterable<any>,
+  onReasoning?: (preview: string | null) => void,
+): AsyncIterable<string> {
+  return (async function* () {
+    let firstStep = true;
+    let sawTextInStep = false;
+    let reasoningBuf = '';
+    for await (const part of fullStream) {
+      if (part.type === 'step-start') {
+        if (!firstStep && sawTextInStep) yield '\n\n';
+        firstStep = false;
+        sawTextInStep = false;
+        continue;
+      }
+      if (part.type === 'reasoning-delta' && part.text) {
+        // Live thinking feedback: the model reasoning before speaking is
+        // surfaced as a preview instead of dead air.
+        reasoningBuf = (reasoningBuf + part.text).slice(-400);
+        onReasoning?.(reasoningBuf.slice(-160));
+        continue;
+      }
+      if (part.type === 'text-delta' && part.text) {
+        if (reasoningBuf) {
+          reasoningBuf = '';
+          onReasoning?.(null);
+        }
+        sawTextInStep = true;
+        yield part.text;
+      }
+    }
+    onReasoning?.(null);
+  })();
+}
+
+
+
+/**
+ * Tools allowed on a GUARD-FORCED step: MUTATING tools only. The forced
+ * step must be real work — a narration-prone model satisfied toolChoice
+ * 'required' by calling list_dir/read_file every round (inspection instead
+ * of action), burning all guard rounds and pausing. The grounding message
+ * already gives it the directory listing, so inspection is unnecessary;
+ * if it truly must read, run_command is available (and permission-gated).
+ */
+const FORCED_ACTION_TOOLS = [...EXECUTE_MUTATING_TOOLS];
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -301,8 +365,19 @@ class ToolCallLoopDetector {
   }
 }
 
-const MAX_STEPS = 75;
-const MAX_RESPONSE_TOKENS = 4096;
+// Test/soak override: MERCURY_MAX_STEPS=3 forces cheap step-budget
+// exhaustion to exercise the completion contract end to end.
+const MAX_STEPS = (() => {
+  const override = Number(process.env.MERCURY_MAX_STEPS);
+  return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
+})();
+// No Mercury-imposed size limit: a single-file app write is emitted AS
+// tool-call arguments, so any cap we choose eventually severs a legitimate
+// write mid-argument. The ceiling below is deliberately far above any
+// mainstream model's NATIVE output limit — the model's own limit governs,
+// not ours. If a provider still rejects the value, the adaptive clamp in
+// the attempt loop halves it and retries.
+const MODEL_OUTPUT_TOKEN_LIMIT = 32768;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
@@ -340,7 +415,7 @@ export class Agent {
   private telegramStreaming: boolean;
   private currentMessage: ChannelMessage | null = null;
   private currentAbort: AbortController | null = null;
-  private currentAbortReason: 'stalled' | 'time-limit' | 'backgrounded' | 'stopped' | 'halted' | null = null;
+  private currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
   private lastProgressAt = 0;
   private currentActivity = '';
   private completedStepCount = 0;
@@ -451,6 +526,9 @@ export class Agent {
 
       if (event.type === 'complete' && event.result) {
         const result = event.result;
+        // A step-budget pause is neither complete nor failed — the supervisor
+        // auto-resumes it; the background task stays open meanwhile.
+        if (result.status === 'paused') return;
         const status = result.status === 'completed' ? 'completed' : result.status === 'halted' ? 'cancelled' : 'failed';
         this.backgroundTasks.completeAgentTask(bgTask.id, status === 'completed' ? 0 : 1, status, result.output);
         this.syncBgTasksToTui();
@@ -522,7 +600,11 @@ export class Agent {
       ? 'This request already completed and its result was delivered.'
       : entry.status === 'failed'
         ? `This request previously failed: ${entry.error || 'unknown error'}`
-        : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
+        : entry.status === 'paused'
+          ? 'This task was paused before completing. Send "continue" to resume it with the work preserved.'
+          : entry.status === 'cancelled'
+            ? 'This request was cancelled earlier and was not resumed. Send it again if you want Mercury to run it.'
+            : `This request is already ${entry.status}${entry.attempts > 0 ? ` (attempt ${entry.attempts})` : ''}.`;
     await channel.send(status, entry.message.channelId).catch((error) => {
       logger.warn({ error, workKey: entry.key }, 'Unable to send duplicate work status');
     });
@@ -556,6 +638,32 @@ export class Agent {
     }
     this.queueMessage(msg, workKey);
     this.processQueue();
+  }
+
+  /**
+   * Stop all current work with /stop semantics. Shared by the chat fast-path
+   * command and the Cloud `task.stop` control so a remote stop behaves
+   * exactly like typing /stop locally. Returns the confirmation note.
+   */
+  async stopAllWork(reason: 'stopped' | 'halted'): Promise<string> {
+    if (this.currentAbort && !this.currentAbort.signal.aborted) {
+      this.currentAbortReason = reason;
+      this.currentAbort.abort();
+    }
+    // The user deliberately killed this work — cancel its ledger entry so
+    // a restart never tries to resume it. (Only real crashes auto-resume.)
+    if (this.currentWorkKey) {
+      const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
+      try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
+    }
+    if (this.supervisor) {
+      await this.supervisor.haltAll();
+      if (reason === 'stopped') {
+        this.supervisor.clearTaskBoard();
+      }
+      return reason === 'halted' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.';
+    }
+    return reason === 'halted' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.';
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
@@ -592,19 +700,7 @@ export class Agent {
     }
 
     if (trimmed === '/halt' || trimmed === '/stop') {
-      if (this.currentAbort && !this.currentAbort.signal.aborted) {
-        this.currentAbortReason = trimmed === '/stop' ? 'stopped' : 'halted';
-        this.currentAbort.abort();
-      }
-      if (this.supervisor) {
-        await this.supervisor.haltAll();
-        if (trimmed === '/stop') {
-          this.supervisor.clearTaskBoard();
-        }
-        await channel.send(trimmed === '/halt' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.', msg.channelId);
-      } else {
-        await channel.send(trimmed === '/halt' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.', msg.channelId);
-      }
+      await channel.send(await this.stopAllWork(trimmed === '/stop' ? 'stopped' : 'halted'), msg.channelId);
       return;
     }
 
@@ -698,6 +794,37 @@ export class Agent {
     const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
     if (rawArgs === 'status') {
       await channel.send(this.programmingMode.getStatusText(), msg.channelId);
+      return;
+    }
+    if (rawArgs === 'exit' || rawArgs === 'quit') {
+      if (channel instanceof CLIChannel && channel.getTuiState().mercuryCode) {
+        channel.setMercuryCodeExitConfirm(true);
+        return;
+      }
+      this.programmingMode.setOff();
+      await channel.send('Programming mode: **Off**', msg.channelId);
+      return;
+    }
+    if (rawArgs === 'diff') {
+      try {
+        const { execFileSync } = await import('node:child_process');
+        const diff = execFileSync('git', ['--no-pager', 'diff', '--no-color', 'HEAD'], { cwd: this.capabilities.getCwd(), encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+        await channel.send(diff.trim() ? '```\n' + (diff.length > 20000 ? diff.slice(-20000) : diff) + '\n```' : 'Working tree is clean.', msg.channelId);
+      } catch (err: any) {
+        await channel.send(`git diff failed: ${err?.message || String(err)}`, msg.channelId);
+      }
+      return;
+    }
+    if (rawArgs === 'auto') {
+      this.programmingMode.setAuto();
+      if (channel instanceof CLIChannel) channel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+      await channel.send('Programming mode: **Auto** — Mercury plans and builds in one flow, confirming before large changes only.', msg.channelId);
+      return;
+    }
+    if (rawArgs === 'plan') {
+      this.programmingMode.setPlan();
+      if (channel instanceof CLIChannel) channel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+      await channel.send('Programming mode: **Plan**', msg.channelId);
       return;
     }
     await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
@@ -855,6 +982,36 @@ export class Agent {
     }
   }
 
+  /**
+   * Push a phase change to the CLI live feedback block in real time.
+   * Cheap no-op for non-CLI channels.
+   */
+  private pushLiveActivity(phase: string, detail?: string): void {
+    const ch = this.channels.get('cli');
+    if (ch instanceof CLIChannel) ch.setLiveActivity(phase, detail);
+  }
+
+  /**
+   * Push a tool execution event to the CLI live feedback in real time.
+   * Unlike onStepFinish (which fires after the whole LLM step), this fires at
+   * tool start/finish so the TUI shows running work during long operations.
+   */
+  private pushLiveToolEvent(
+    callId: string,
+    toolName: string,
+    argsOrResult: Record<string, any> | unknown,
+    status: 'running' | 'done' | 'error',
+    durationMs?: number,
+  ): void {
+    const ch = this.channels.get('cli');
+    if (!(ch instanceof CLIChannel)) return;
+    if (status === 'running') {
+      void ch.sendToolEvent(toolName, argsOrResult as Record<string, any>, callId).catch(() => {});
+    } else {
+      ch.completeToolEvent(toolName, argsOrResult, status === 'error', durationMs);
+    }
+  }
+
   private withProgressStream(content: AsyncIterable<string>): AsyncIterable<string> {
     const self = this;
     return (async function* () {
@@ -938,6 +1095,14 @@ export class Agent {
 
     return () => {
       if (timer) clearTimeout(timer);
+      // The task is over — remove any lingering heartbeat message (the
+      // "⏳ Working... Ns elapsed" block with step list / "Streaming
+      // response...") from the TUI so nothing trails a finished task.
+      // Late ticks can fire after the final send already cleared it.
+      try {
+        const ch = this.channels.getChannelForMessage(msg);
+        if (ch instanceof CLIChannel) (ch as CLIChannel).clearHeartbeat();
+      } catch { /* best effort */ }
     };
   }
 
@@ -1022,6 +1187,125 @@ export class Agent {
       this.processing = false;
       if (this.messageQueue.length > 0) void this.processQueue();
     }
+  }
+
+  /**
+   * One inline continuation round: re-enter generation with the full tool
+   * loop and a fresh step budget, nudged by a system-style user message.
+   * Used by the completion-contract paths (step-budget resume, verification
+   * gate). Throws on provider interruption — the caller decides whether that
+   * is fatal for its path.
+   */
+  private async runInlineContinuationRound(opts: {
+    messages: unknown[];
+    systemPrompt: string;
+    provider: any;
+    maxOutputTokens: number;
+    maxSteps: number;
+    abortController: AbortController;
+    channel: any;
+    channelId: string;
+    /** Mechanically force the first step to contain a tool call. */
+    forceFirstTool?: boolean;
+    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
+  }): Promise<{ text: string; usage: any; reasoning?: any }> {
+    this.markProgress(`Resuming with ${opts.provider.name}...`);
+    const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
+    const stream = streamText({
+      model: opts.provider.getModelInstance(),
+      system: opts.systemPrompt,
+      messages: opts.messages as any,
+      tools: this.capabilities.getTools(),
+      maxOutputTokens: opts.maxOutputTokens,
+      stopWhen: stepCountIs(opts.maxSteps),
+      // forceFirstTool: the first step MUST contain a tool call — narration
+      // rounds are converted into action rounds mechanically.
+      prepareStep: opts.forceFirstTool
+        ? ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {})
+        : undefined,
+      // Live tool-step UI during continuation rounds: forced/verification
+      // rounds land file writes, and the user must SEE which file is being
+      // written at the bottom, exactly as in the main loop.
+      experimental_onToolCallStart: ({ toolCall }: any) => {
+        const tc = toolCall as any;
+        this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+        this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+      },
+      experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }: any) => {
+        const tc = toolCall as any;
+        this.pushLiveToolEvent(
+          tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+          tc.toolName,
+          success ? output : error,
+          success ? 'done' : 'error',
+          durationMs,
+        );
+      },
+      abortSignal: opts.abortController.signal,
+      experimental_include: { requestBody: false },
+      onStepFinish: async ({ toolCalls, toolResults }) => {
+        await opts.onStep(toolCalls as any[], toolResults as any[]);
+      },
+    });
+    const text = (opts.channel
+      ? await this.withProviderDeadline(
+        opts.channel.stream(stepAwareTextStream(stream.fullStream), opts.channelId),
+        opts.abortController,
+        deadlineAt,
+      )
+      : '') as string;
+    const finish = await this.withProviderDeadline(
+      stream.finishReason,
+      opts.abortController,
+      deadlineAt,
+    );
+    if (finish === 'error') throw new Error('Continuation stream ended with an error');
+    const completion = classifyStreamCompletion({ finishReason: finish, hasText: text.length > 0 });
+    if (completion === 'interrupted') {
+      throw new Error('Continuation stream was interrupted (no finish signal from provider)');
+    }
+    return { text, usage: await stream.usage, reasoning: stream.reasoning };
+  }
+
+  /**
+   * Emit a bounded, syntax-highlighted file-change preview into the coding
+   * TUI transcript when a file tool succeeds ("sometimes, not always" — the
+   * size heuristics live in buildFileChangePreview). Never throws: a preview
+   * failure must not break the tool loop.
+   */
+  private maybeShowFileChange(
+    channel: any,
+    msg: ChannelMessage,
+    toolName: string,
+    input: unknown,
+    result: unknown,
+  ): void {
+    try {
+      if (!(channel instanceof CLIChannel)) return;
+      const tui = channel.getTuiState();
+      if (tui.mode !== 'mercury-code' && tui.mode !== 'coding') return;
+      const tr = result as any;
+      const resultText = typeof tr === 'string' ? tr : JSON.stringify(tr ?? '');
+      const preview = buildFileChangePreview({
+        toolName,
+        args: (input ?? {}) as Record<string, any>,
+        resultText,
+        ok: !isFailedToolResult(resultText || ''),
+      });
+      if (preview) channel.showFileChange(preview);
+    } catch { /* preview must never break the tool loop */ }
+  }
+
+  /**
+   * Record the model's plan checklist (update_plan tool) into the TUI so the
+   * user sees which step is being implemented. Never throws.
+   */
+  private maybeRecordPlanProgress(channel: any, toolName: string, input: unknown): void {
+    try {
+      if (toolName !== 'update_plan') return;
+      if (!(channel instanceof CLIChannel)) return;
+      channel.setPlanProgress((input as any)?.steps);
+    } catch { /* checklist must never break the tool loop */ }
   }
 
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
@@ -1272,7 +1556,100 @@ export class Agent {
     this.completedStepCount = 0;
     this.stepNarrative = [];
     this.markProgress('Starting...');
+    this.pushLiveActivity('Starting task');
     const stopHeartbeat = this.startForegroundHeartbeat(msg);
+    const heapBaseline = process.memoryUsage().heapUsed;
+    const heapAbortThreshold = taskHeapAbortThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
+    const heapExitThreshold = taskHeapExitThreshold(getHeapStatistics().heap_size_limit, heapBaseline);
+    const governorThresholds = memoryGovernorThresholds({
+      heapSizeLimit: getHeapStatistics().heap_size_limit,
+      baselineHeapUsed: heapBaseline,
+    });
+    const memoryGovernor = (phase: string): 'ok' | 'abort' | 'exit' => {
+      const verdict = memoryGovernorVerdict(process.memoryUsage().heapUsed, governorThresholds);
+      if (verdict === 'abort') {
+        logger.warn({ phase, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: relief threshold exceeded — trimming conversation');
+      }
+      return verdict === 'ok' || verdict === 'relief' ? 'ok' : verdict;
+    };
+    const memoryGuard = setInterval(() => {
+      const usage = process.memoryUsage();
+      // Stage 2 — emergency: abort was attempted but the allocator kept
+      // running outside the abortable path. Exit deliberately while the work
+      // ledger and session store are still writable, so recovery survives.
+      if (isTaskHeapUnsafe(usage.heapUsed, heapExitThreshold)) {
+        logger.error({
+          heapUsed: usage.heapUsed,
+          threshold: heapExitThreshold,
+          activity: this.currentActivity,
+        }, 'Memory continued growing after abort — exiting to preserve work state');
+        try {
+          const { writeCrashFlag } = require('./crash-flag.js');
+          writeCrashFlag({
+            reason: `Memory safety exit at ${Math.round(usage.heapUsed / 1048576)}MB (abort threshold ${Math.round(heapAbortThreshold / 1048576)}MB). Task: ${this.currentActivity?.slice(0, 150) || 'unknown'}`,
+            timestamp: Date.now(),
+            activeTask: this.currentActivity || undefined,
+            channelId: msg.channelId,
+            channelType: msg.channelType,
+          });
+        } catch { /* best effort */ }
+        try {
+          process.stderr.write(
+            `\n⚠ Mercury stopped the current task: memory grew to ${Math.round(usage.heapUsed / 1048576)}MB.\n  Your work is saved and will be recoverable on the next start. Details: ~/.mercury/crash-report.log\n`,
+          );
+        } catch { /* stderr gone */ }
+        process.exit(0);
+      }
+      // Stage 1 — attempt graceful stop of the current generation.
+      if (!isTaskHeapUnsafe(usage.heapUsed, heapAbortThreshold) || this.currentAbortReason === 'memory-pressure') return;
+      this.currentAbortReason = 'memory-pressure';
+      const error = new Error(
+        `Task stopped at ${Math.round(usage.heapUsed / 1048576)}MB heap usage before Mercury reached the V8 crash limit`,
+      );
+      logger.error({
+        heapUsed: usage.heapUsed,
+        heapTotal: usage.heapTotal,
+        rss: usage.rss,
+        threshold: heapAbortThreshold,
+        activity: this.currentActivity,
+      }, 'Task memory safety limit reached');
+      loopAbortController.abort(error);
+      // Forensics: capture a heap snapshot in the background. If growth
+      // continues past the exit threshold, this .heapsnapshot identifies the
+      // exact retainer. Best-effort — never throw from the guard.
+      void (async () => {
+        try {
+          const { writeHeapSnapshot } = await import('node:v8');
+          const { getMercuryHome } = await import('../utils/config.js');
+          const { join } = await import('node:path');
+          const file = join(getMercuryHome(), `heap-task-${Date.now()}.heapsnapshot`);
+          await writeHeapSnapshot(file as any);
+          logger.error({ file }, 'Heap snapshot captured for memory forensics');
+        } catch { /* forensics must never break the guard */ }
+      })();
+    }, 1000);
+    memoryGuard.unref?.();
+    // Stall watchdog: the memory guard covers heap growth; this covers time.
+    // A task that emits nothing (no chunks, no tool events, no steps) for
+    // minutes is almost certainly dead — surface it, then abort the attempt
+    // so the continuation/approval machinery can inspect and resume.
+    const stallWatchdog = new StallWatchdog({
+      getHeartbeat: () => this.lastProgressAt,
+      getActivity: () => this.currentActivity,
+      onSoft: (silentMs, activity) => {
+        logger.info({ silentMs, activity }, 'Stall watchdog: soft threshold — surfacing still-working pulse');
+        this.pushLiveActivity(
+          `Still working — ${activity || 'working'} · ${Math.round(silentMs / 1000)}s silent`,
+          'stall watchdog',
+        );
+      },
+      onHard: (silentMs, activity) => {
+        if (loopAbortController.signal.aborted) return;
+        logger.warn({ silentMs, activity }, 'Stall watchdog: no progress past hard threshold — aborting attempt for inspection/resume');
+        loopAbortController.abort(new Error(`Task stalled ${Math.round(silentMs / 60000)} minutes with no progress (was: ${activity || 'unknown'})`));
+      },
+    });
+    stallWatchdog.start();
     let canonicalSessionId: string | undefined;
 
     if (this.supervisor && msg.channelType !== 'internal') {
@@ -1688,9 +2065,39 @@ export class Agent {
       let hasStreamedOutput = false;
       let cliResponseStreamed = false;
       let requiresContinuationApproval = false;
+      let memoryPressureStop = false;
       const loopDetector = new ToolCallLoopDetector();
       let loopWarningSent = false;
       let selfCheckCount = 0;
+      // Execute-mode completion guard: every tool invoked this turn, so a
+      // narration-only turn cannot be celebrated as "Task complete".
+      // toolsSucceeded records whether each mutating tool produced at least
+      // one non-error result — a failed write is not "work done".
+      const executeTurnToolsUsed = new Set<string>();
+      const executeToolSucceeded = new Map<string, boolean>();
+      let executeGuardRounds = 0;
+      // Completion-contract state: how did the FINAL round end, and what
+      // evidence exists that the work actually finished?
+      const executeCommandsRun: string[] = [];
+      let lastVerificationNote = '';
+      let lastStepHadToolCalls = false;
+      let lastRoundSteps = 0;
+      let stepBudgetContinuations = 0;
+      let verificationContinuations = 0;
+      // Second wind: when the first full set of guard rounds fails to start
+      // the work, the agent does not pause — it wakes the task up with a
+      // blunt, maximally-constrained retry cycle before reporting honestly.
+      let narrationSecondWind = false;
+      let lastGuardToolFailure = '';
+      // OpenCode practice: on memory pressure, COMPACT and continue — the
+      // task gets one aggressive compaction chance before any abort.
+      let memoryCompactedForTask = false;
+
+      const recordExecuteToolResult = (toolName: string, resultText: unknown): void => {
+        const text = typeof resultText === 'string' ? resultText : JSON.stringify(resultText ?? '');
+        const ok = !isFailedToolResult(text);
+        executeToolSucceeded.set(toolName, (executeToolSucceeded.get(toolName) ?? false) || ok);
+      };
 
       const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal' || (msg.channelType === 'discord' && this.config.channels.discord.streaming) || (msg.channelType === 'slack' && this.config.channels.slack.streaming);
 
@@ -1718,15 +2125,28 @@ export class Agent {
 
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
-      const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
+      let effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MODEL_OUTPUT_TOKEN_LIMIT);
       const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const saverWasActive = this.saverMode.isActive();
 
       const providersForAttempt = [...fallbackIterator];
+      // Per-provider failure ledger: when EVERY provider fails, the final
+      // error must show WHY each one failed (dead token, bad key, rate
+      // limit) — showing only the last error hides the real fix from the
+      // user.
+      const providerFailures = new Map<string, string>();
+      // Guard-round provider rotation cursor (round 1 = current provider,
+      // then walks the fallback chain — a narration-locked model is not the
+      // only worker the agent has).
+      let guardProviderCursor = 0;
       for (const provider of [...providersForAttempt, ...providersForAttempt]) {
+        // Per-attempt latency accounting: the only way to answer "why is
+        // coding slow" with data instead of guesses.
+        const attemptStartedAt = Date.now();
         try {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
+          this.pushLiveActivity(`Calling ${provider.name}`, provider.getModel());
           updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
@@ -1750,23 +2170,83 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              // Memory: the SDK retains a structuredClone of the whole
+              // conversation (plus raw HTTP bodies) in every step of its
+              // `steps` array. With 75 steps × file-size tool outputs that
+              // is O(N²) heap growth → V8 OOM on long coding tasks. We never
+              // read the raw bodies, so exclude them. (SDK default: true.)
+              experimental_include: { requestBody: false },
               onError: ({ error }) => {
                 streamError = error;
               },
               onAbort: () => {
                 streamAborted = true;
               },
+              // Real-time feedback: these fire at TOOL EXECUTION time, not
+              // step completion — the TUI live block shows what is actually
+              // running during long tool calls instead of nothing.
+              experimental_onToolCallStart: ({ toolCall }) => {
+                const tc = toolCall as any;
+                const label = formatToolStep(tc.toolName, tc.input as Record<string, any> || {});
+                this.markProgress(label);
+                this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+              },
+              experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
+                const tc = toolCall as any;
+                this.pushLiveToolEvent(
+                  tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+                  tc.toolName,
+                  success ? output : error,
+                  success ? 'done' : 'error',
+                  durationMs,
+                );
+              },
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
+                // Completion-contract tracking: per-round step usage and how
+                // the step ended (tool calls pending = work in progress).
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+                const cliCh = this.channels.get('cli');
+                if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
+                // Step-level memory checkpoint: deterministic, runs even when
+                // the event loop is saturated (unlike the wall-clock guard).
+                const verdict = memoryGovernor(`stream-step-${this.completedStepCount}`);
+                if (verdict === 'exit') {
+                  try {
+                    const { writeCrashFlag } = await import('./crash-flag.js');
+                    writeCrashFlag({ reason: 'Step governor: heap beyond exit threshold mid-step', timestamp: Date.now() });
+                  } catch { /* best effort */ }
+                  process.exit(0);
+                }
+                if (verdict === 'abort' && !loopAbortController.signal.aborted && this.currentAbortReason !== 'memory-pressure') {
+                  // Compact FIRST, continue (OpenCode's compact-on-overflow
+                  // practice): a long coding task must not die at memory
+                  // pressure when old tool bulk can be summarized away.
+                  if (!memoryCompactedForTask) {
+                    memoryCompactedForTask = true;
+                    try {
+                      const freed = compactConversation(messages);
+                      logger.warn({ freedChars: freed, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: memory pressure — compacted conversation, continuing');
+                      this.pushLiveActivity('Freeing memory — compacting the conversation', 'auto-compact');
+                    } catch { /* compaction is best-effort */ }
+                    return;
+                  }
+                  this.currentAbortReason = 'memory-pressure';
+                  loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
+                  return;
+                }
                 if (toolCalls && toolCalls.length > 0) {
                   for (const tc of toolCalls as any[]) {
                     this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
                   }
                   const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
                   this.markProgress(labels.join(' → '));
+                  this.pushLiveActivity(labels[labels.length - 1]);
                 } else {
                   this.markProgress('Thinking...');
+                  this.pushLiveActivity('Thinking', 'model reasoning');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   if (toolResults.length > 0) hasCompletedTool = true;
@@ -1774,7 +2254,23 @@ export class Agent {
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
                     const tc = toolCalls[i];
+                    executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
+                    }
                     const tr = toolResults[i] as any;
+                    recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
+                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
+                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -1960,7 +2456,7 @@ export class Agent {
                     } else if (channel instanceof SlackChannel) {
                       const slCh = channel as SlackChannel;
                       for (const tc of toolCalls) {
-                        slCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
+                        void slCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
@@ -2004,9 +2500,13 @@ export class Agent {
               },
             });
 
+            const cliChThinking = channel instanceof CLIChannel ? channel : null;
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of streamResult.textStream) {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview) => {
+                cliChThinking?.showThinkingPreview(preview);
+              }))) {
                 if (chunk) hasStreamedOutput = true;
+                cliChThinking?.showThinkingPreview(null);
                 yield chunk;
               }
             })());
@@ -2017,6 +2517,16 @@ export class Agent {
             );
             cliResponseStreamed = channel instanceof CLIChannel;
 
+            // Surface the REAL provider error BEFORE awaiting the result
+            // promises: a stream that errored (401, invalid key) records zero
+            // steps, and the SDK's flush then rejects usage/finishReason with
+            // a generic "No output generated" — which would mask the actual
+            // auth failure.
+            if (streamError) throw streamError;
+            if (streamAborted) {
+              throw new Error('Model stream was aborted before completion');
+            }
+
             const [usage, finishReason, streamReasoning] = await this.withProviderDeadline(
               Promise.all([
                 streamResult.usage,
@@ -2026,16 +2536,88 @@ export class Agent {
               loopAbortController,
               providerDeadlineAt,
             );
-            if (streamError) throw streamError;
-            if (streamAborted || finishReason === 'error') {
-              throw new Error(streamAborted ? 'Model stream was aborted before completion' : 'Model stream ended with an error');
+            // Stream integrity: 'other'/missing finish means the provider
+            // dropped the connection mid-generation (no terminal chunk was
+            // emitted). Treating it as success produced silent cut-offs with
+            // "Task complete" banners. Throw so fallback/retry engages.
+            const completion = classifyStreamCompletion({
+              finishReason,
+              hasText: streamedText.length > 0,
+            });
+            if (completion === 'interrupted') {
+              logger.error({ provider: provider.name, finishReason, streamedChars: streamedText.length }, 'Stream ended without a provider finish signal — treating as interrupted');
+              throw new Error(`${provider.name} stream was interrupted before completion (no finish signal from provider)`);
             }
-            const fullText = finishReason === 'length'
+            const truncated = isLengthTruncation(finishReason);
+            const fullText = truncated
               ? `${streamedText}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]`
               : streamedText;
 
             result = { text: fullText, usage, reasoning: streamReasoning };
             loopDetector.recordStepText(fullText);
+
+            // Auto-continuation: a length-truncated response in code mode
+            // means the implementation stopped mid-way. Nudge the model to
+            // resume (bounded attempts), instead of dead-stopping at
+            // "Ask me to continue".
+            if (truncated && this.programmingMode.isExecute() && !loopAbortController.signal.aborted) {
+              let continuationRound = 0;
+              const MAX_STREAM_CONTINUATIONS = 6;
+              let continuationText = streamedText;
+              let stillTruncated = true;
+              while (stillTruncated && continuationRound < MAX_STREAM_CONTINUATIONS && !loopAbortController.signal.aborted) {
+                continuationRound++;
+                this.markProgress('Writing the next section...');
+                this.pushLiveActivity('Finishing the write — continuing past the size limit', 'auto-resume');
+                const continueResult: Awaited<ReturnType<typeof streamText>> = await this.withProviderDeadline(
+                  Promise.resolve(streamText({
+                    model: provider.getModelInstance(),
+                    system: systemPrompt,
+                    messages: [
+                      ...messages,
+                      { role: 'assistant', content: continuationText },
+                      { role: 'user', content: lastStepHadToolCalls
+                        ? toolTruncationContinuationPrompt(msg.content)
+                        : truncationContinuationPrompt(msg.content) },
+                    ],
+                    tools: this.capabilities.getTools(),
+                    maxOutputTokens: effectiveMaxOutputTokens,
+                    // FULL budget: a one-step round can only read files — the
+                    // model could never reach the write, which is exactly the
+                    // 'drops in the middle' loop.
+                    stopWhen: stepCountIs(effectiveMaxSteps),
+                    abortSignal: loopAbortController.signal,
+                    experimental_include: { requestBody: false },
+                  })),
+                  loopAbortController,
+                  providerDeadlineAt,
+                );
+                const chunk: string[] = [];
+                for await (const c of stepAwareTextStream(continueResult.fullStream)) chunk.push(c);
+                const piece = chunk.join('');
+                const cFinish: string = await continueResult.finishReason;
+                if (cFinish === 'error') throw new Error('Continuation stream ended with an error');
+                const cCompletion = classifyStreamCompletion({ finishReason: cFinish, hasText: piece.length > 0 });
+                if (cCompletion === 'interrupted') {
+                  logger.error({ provider: provider.name, finishReason: cFinish }, 'Continuation stream interrupted');
+                  break;
+                }
+                continuationText += piece;
+                result = {
+                  text: continuationText + (cCompletion === 'truncated' ? '\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]' : ''),
+                  usage: await continueResult.usage,
+                  reasoning: streamReasoning,
+                };
+                stillTruncated = cCompletion === 'truncated';
+                if (channel instanceof CLIChannel) {
+                  await channel.stream((async function* () { yield piece; })(), msg.channelId).catch((e) => logger.warn({ e }, 'continuation stream delivery failed'));
+                }
+                loopDetector.recordStepText(piece);
+              }
+              if (stillTruncated && channel && msg.channelType !== 'internal') {
+                await channel.send('⚠ Response reached the output limit again — ask me to continue for the remainder.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+              }
+            }
           } else {
             result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
@@ -2045,17 +2627,68 @@ export class Agent {
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
+              // Same O(N²) step retention as streamText (see comment above).
+              experimental_include: { requestBody: false, responseBody: false },
               ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
+              experimental_onToolCallStart: ({ toolCall }) => {
+                const tc = toolCall as any;
+                const label = formatToolStep(tc.toolName, tc.input as Record<string, any> || {});
+                this.markProgress(label);
+                this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+              },
+              experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
+                const tc = toolCall as any;
+                this.pushLiveToolEvent(
+                  tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+                  tc.toolName,
+                  success ? output : error,
+                  success ? 'done' : 'error',
+                  durationMs,
+                );
+              },
               onStepFinish: async ({ toolCalls, toolResults }) => {
                 this.completedStepCount++;
+                // Completion-contract tracking (non-streaming path).
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+                const cliChGen = this.channels.get('cli');
+                if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
+                // Step-level memory checkpoint for the non-streaming path.
+                const verdict = memoryGovernor(`gen-step-${this.completedStepCount}`);
+                if (verdict === 'exit') {
+                  try {
+                    const { writeCrashFlag } = await import('./crash-flag.js');
+                    writeCrashFlag({ reason: 'Step governor: heap beyond exit threshold mid-step', timestamp: Date.now() });
+                  } catch { /* best effort */ }
+                  process.exit(0);
+                }
+                if (verdict === 'abort' && !loopAbortController.signal.aborted && this.currentAbortReason !== 'memory-pressure') {
+                  // Compact FIRST, continue (OpenCode's compact-on-overflow
+                  // practice): a long coding task must not die at memory
+                  // pressure when old tool bulk can be summarized away.
+                  if (!memoryCompactedForTask) {
+                    memoryCompactedForTask = true;
+                    try {
+                      const freed = compactConversation(messages);
+                      logger.warn({ freedChars: freed, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: memory pressure — compacted conversation, continuing');
+                      this.pushLiveActivity('Freeing memory — compacting the conversation', 'auto-compact');
+                    } catch { /* compaction is best-effort */ }
+                    return;
+                  }
+                  this.currentAbortReason = 'memory-pressure';
+                  loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
+                  return;
+                }
                 if (toolCalls && toolCalls.length > 0) {
                   for (const tc of toolCalls as any[]) {
                     this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
                   }
                   const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
                   this.markProgress(labels.join(' → '));
+                  this.pushLiveActivity(labels[labels.length - 1]);
                 } else {
                   this.markProgress('Thinking...');
+                  this.pushLiveActivity('Thinking', 'model reasoning');
                 }
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   if (toolResults.length > 0) hasCompletedTool = true;
@@ -2063,7 +2696,23 @@ export class Agent {
                   logger.info({ tools: names }, 'Tool call step');
                   for (let i = 0; i < toolCalls.length; i++) {
                     const tc = toolCalls[i];
+                    executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
+                    }
                     const tr = toolResults[i] as any;
+                    recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
+                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
+                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                     const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -2303,6 +2952,7 @@ export class Agent {
           }
 
           usedProvider = { name: provider.name, model: provider.getModel() };
+          logger.info({ provider: provider.name, durationMs: Date.now() - attemptStartedAt, steps: this.completedStepCount }, 'Provider attempt succeeded');
           if (channel instanceof WebChannel) {
             (channel as WebChannel).sendProviderInfo(usedProvider.name, usedProvider.model, msg.channelId);
           }
@@ -2311,6 +2961,19 @@ export class Agent {
           }
           break;
         } catch (err: any) {
+          if (this.currentAbortReason === 'memory-pressure') {
+            lastError = loopAbortController.signal.reason instanceof Error
+              ? loopAbortController.signal.reason
+              : new Error('Task stopped by the memory safety limit');
+            requiresContinuationApproval = true;
+            this.currentAbortReason = null;
+            logger.error({ provider: provider.name, err: lastError }, 'Provider attempt stopped before heap exhaustion');
+            // Memory pressure is not a retryable failure: re-running the same
+            // request would grow the heap again and repeat the OOM. Stop the
+            // whole fallback loop and surface a paused state instead.
+            memoryPressureStop = true;
+            break;
+          }
           if (this.currentAbortReason === 'time-limit') {
             lastError = new Error(`${provider.name} exceeded the 10-minute provider-attempt limit`);
             requiresContinuationApproval = true;
@@ -2324,6 +2987,7 @@ export class Agent {
             loopAbortController = new AbortController();
             this.currentAbort = loopAbortController;
             this.markProgress(`Retrying after ${provider.name} stalled...`);
+            this.pushLiveActivity('Retrying after stall', provider.name);
             logger.warn({ provider: provider.name }, 'Provider stalled; retrying with another healthy attempt');
             continue;
           }
@@ -2332,7 +2996,7 @@ export class Agent {
             break;
           }
           if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
-            result = { text: `This task was ${this.currentAbortReason} by the user.`, usage: undefined };
+            result = { text: `⏹ Task ${this.currentAbortReason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`, usage: undefined };
             this.currentAbortReason = null;
             break;
           }
@@ -2344,8 +3008,24 @@ export class Agent {
             break;
           }
           lastError = err;
+          // Some providers reject a maxOutputTokens above their model's
+          // native limit. Halve and let the next attempt in the chain use
+          // the smaller cap — the task continues instead of dying on a
+          // configuration argument.
+          const limitErr = `${err?.message || ''} ${typeof (err as any)?.responseBody === 'string' ? (err as any).responseBody : ''}`;
+          if (/max[_ -]?tokens|output.?limit|too large|exceed/i.test(limitErr) && effectiveMaxOutputTokens > 4096) {
+            effectiveMaxOutputTokens = Math.max(4096, Math.floor(effectiveMaxOutputTokens / 2));
+            logger.warn({ provider: provider.name, newCap: effectiveMaxOutputTokens }, 'Provider rejected the output cap — clamping for subsequent attempts');
+          }
+          if (!providerFailures.has(provider.name)) {
+            providerFailures.set(provider.name, (err?.message || String(err)).slice(0, 140));
+          }
+          logger.warn({ provider: provider.name, durationMs: Date.now() - attemptStartedAt }, 'Provider attempt failed');
           if (hasStreamedOutput) {
-            lastError = new Error(`Provider stream was interrupted after partial output; refusing fallback to avoid combining two responses. Original error: ${err?.message || String(err)}`);
+            // Partial visible output: silently combining two different
+            // provider responses would be worse than failing loudly. Report
+            // the cut-off honestly instead of emitting "Task complete".
+            lastError = new Error(`Provider stream was interrupted after partial output. Original error: ${err?.message || String(err)}`);
             logger.error({ provider: provider.name, err }, 'Provider stream interrupted after visible output; fallback suppressed');
             break;
           }
@@ -2355,24 +3035,40 @@ export class Agent {
             break;
           }
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
-          await this.sendProgressNotice(msg, 'A model attempt failed. Trying another option...')
+          await this.sendProgressNotice(msg, 'Hit a hiccup with that connection — switching routes and continuing...')
             .catch((e) => logger.warn({ e }, 'channel send failed'));
         }
       }
 
       if (!result) {
+        const failureBlock = providerFailures.size > 0
+          ? `\nPer-provider:\n- ${[...providerFailures.entries()].slice(0, 8).map(([name, reason]) => `${name}: ${reason}`).join('\n- ')}`
+          : '';
         let errMsg = hasCompletedTool
           ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
-          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
+          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}${failureBlock}`;
+        if (memoryPressureStop) {
+          errMsg = `Task stopped before the heap limit: ${lastError?.message || 'memory safety limit'}`;
+          logger.error({ err: lastError }, errMsg);
+          if (this.currentWorkKey) this.workLedger.markFailed(this.currentWorkKey, errMsg, errMsg);
+          if (channel && msg.channelType !== 'internal') {
+            await channel.send(
+              `⚠ I stopped this task early — memory was growing toward the process limit (likely a very large analysis). `
+              + `Nothing was lost: completed tool work is checkpointed. Try narrowing the request to specific files/directories, or split it into smaller steps.`,
+              msg.channelId,
+            ).catch((e) => logger.warn({ e }, 'channel send failed'));
+          }
+          this.lifecycle.transition('idle');
+          return;
+        }
         logger.error({ err: lastError }, errMsg);
         if (this.currentWorkKey && (hasCompletedTool || hasStreamedOutput || requiresContinuationApproval)) {
           const continuationAttempt = typeof msg.metadata?.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 0;
           const needsApproval = needsContinuationApproval(continuationAttempt, requiresContinuationApproval);
           if (needsApproval) {
             this.markProgress('Waiting for your decision...');
-            const reason = requiresContinuationApproval
-              ? 'The current provider attempt reached its 10-minute hard limit.'
-              : `Mercury has already made ${continuationAttempt} automatic continuation attempts.`;
+            this.pushLiveActivity('Waiting for your decision', 'continuation requires approval');
+            const reason = `Mercury has already made ${continuationAttempt} automatic continuation attempts without completing the task (the runaway backstop).`;
             const shouldContinue = channel && msg.channelType !== 'internal'
               ? await channel.askToContinue(
                 `${reason} Existing files and completed tool work have been preserved. Continue with another inspected attempt?`,
@@ -2449,18 +3145,443 @@ export class Agent {
         return;
       }
 
-      const finalText = (result.text || '').trim() || '(no text response)';
+      const preGuardText = (result.text || '').trim() || '(no text response)';
       this.markProgress('Finalizing response...');
+      this.pushLiveActivity('Finalizing response');
+
+      // ── Execute-mode completion guard ──
+      // In Mercury Code execute mode, a narration-only turn ("Building X per
+      // its spec. Reading it first.") with zero mutating tool calls must NOT
+      // be celebrated as "Task complete". Force a bounded number of
+      // continuation rounds that push the model to actually use its tools.
+      while (
+        this.programmingMode.isExecute()
+        && !loopAbortController.signal.aborted
+        && executeGuardRounds < (narrationSecondWind ? MAX_EXECUTE_CONTINUATIONS * 2 : MAX_EXECUTE_CONTINUATIONS)
+        // A turn that ends by asking the user something in plain text is a
+        // legitimate pause — forcing rounds here looped the model forever
+        // (it re-searched and re-asked instead of waiting for the answer).
+        && !responseAsksUser(result.text || '')
+        && shouldForceExecuteContinuation({
+          taskText: msg.content,
+          hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+          toolsUsed: executeTurnToolsUsed,
+          toolsSucceeded: executeToolSucceeded,
+        })
+      ) {
+        executeGuardRounds++;
+        logger.warn(
+          { rounds: executeGuardRounds, toolsUsed: [...executeTurnToolsUsed], task: msg.content.slice(0, 120) },
+          'Execute-mode guard: turn ended without any mutating tool call — forcing continuation',
+        );
+        this.markProgress('Work not started — continuing...');
+        this.pushLiveActivity('Resuming — no file changes yet', 'execute guard');
+        // Deduplicate consecutive guard warnings: back-to-back narration
+        // rounds stacked identical banners in the transcript (visual noise
+        // during exactly the moments the user is watching for action).
+        const cliChGuard = this.channels.get('cli');
+        const lastGuardMsg = cliChGuard instanceof CLIChannel
+          ? cliChGuard.getTuiState().chatMessages[cliChGuard.getTuiState().chatMessages.length - 1]
+          : undefined;
+        const isDuplicateWarning = lastGuardMsg?.role === 'agent'
+          && lastGuardMsg.content.startsWith('Getting started on the real build now');
+        if (channel && msg.channelType !== 'internal' && !isDuplicateWarning) {
+          await channel.send(
+            `Alright — getting started on the real build now (attempt ${executeGuardRounds} of ${MAX_EXECUTE_CONTINUATIONS})...`,
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        // Inject the narration + the guard nudge into the conversation, then
+        // run one more inline generation round with the full tool loop. This
+        // keeps work-ledger/session state intact and the live activity block
+        // alive instead of tearing the task down and re-queueing it.
+        const currentText = (result.text || '').trim();
+        if (currentText && currentText !== '(no text response)') messages.push({ role: 'assistant', content: currentText });
+        // Harness-level grounding on the FIRST forced round: the agent
+        // executes a deterministic directory listing itself (no LLM), so a
+        // narration-prone model cannot claim it lacks context for where the
+        // work goes.
+        if (executeGuardRounds === 1) {
+          try {
+            const cwd = this.capabilities.getCwd();
+            const entries = readdirSync(cwd, { withFileTypes: true })
+              .slice(0, 30)
+              .map((e: import('node:fs').Dirent) => `${e.isDirectory() ? 'dir' : 'file'}: ${e.name}`)
+              .join('\n');
+            messages.push({
+              role: 'user',
+              content: `[SYSTEM: GROUNDING — agent-executed, not model-generated] Current working directory: ${cwd}\nContents:\n${entries || '(empty)'}\nThis is real, current state. Use it: create/edit files HERE with your tools.`,
+            });
+          } catch { /* grounding is best-effort */ }
+        }
+        messages.push({ role: 'user', content: executeContinuationPrompt(msg.content) });
+        // Provider rotation across guard rounds: a model that repeatedly
+        // narrates without acting should not keep being handed the task —
+        // the agent moves to the next model in the chain. The agent makes
+        // things happen; it does not depend on one LLM's cooperation.
+        if (guardProviderCursor === undefined) guardProviderCursor = 0;
+        const guardProvider = providersForAttempt[guardProviderCursor % providersForAttempt.length];
+        guardProviderCursor++;
+        if (!guardProvider) break;
+        try {
+          this.markProgress(`Resuming with ${guardProvider.name}...`);
+          const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
+          const guardStream = streamText({
+            model: guardProvider.getModelInstance(),
+            system: systemPrompt,
+            messages,
+            tools: this.capabilities.getTools(),
+            maxOutputTokens: effectiveMaxOutputTokens,
+            stopWhen: stepCountIs(effectiveMaxSteps),
+            // Mechanical enforcement, not a polite nudge: the first step of
+            // this round MUST contain a tool call. Text nudges alone let
+            // narration-only models loop for every round; a provider-enforced
+            // toolChoice converts "describing the work" into doing it.
+            prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const, activeTools: FORCED_ACTION_TOOLS } : {}),
+            experimental_onToolCallStart: ({ toolCall }) => {
+              const tc = toolCall as any;
+              this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+              this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+            },
+            experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
+              const tc = toolCall as any;
+              this.pushLiveToolEvent(
+                tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+                tc.toolName,
+                success ? output : error,
+                success ? 'done' : 'error',
+                durationMs,
+              );
+            },
+            abortSignal: loopAbortController.signal,
+            experimental_include: { requestBody: false },
+            onStepFinish: async ({ toolCalls, toolResults }) => {
+              this.completedStepCount++;
+              // Completion-contract tracking for the guard round.
+              lastRoundSteps++;
+              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+              const cliChGen = this.channels.get('cli');
+              if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
+              if (toolCalls && toolResults && toolCalls.length > 0) {
+                hasCompletedTool = true;
+                for (let i = 0; i < toolCalls.length; i++) {
+                  const tc = toolCalls[i];
+                  executeTurnToolsUsed.add(tc.toolName);
+                  const guardToolResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                  recordExecuteToolResult(tc.toolName, guardToolResult);
+                  // Remember WHY the work did not land, so an honest pause
+                  // can tell the user what actually blocked it.
+                  const guardResultText = typeof guardToolResult === 'string' ? guardToolResult : JSON.stringify(guardToolResult ?? '');
+                  if (EXECUTE_MUTATING_TOOLS.has(tc.toolName) && isFailedToolResult(guardResultText || '')) {
+                    lastGuardToolFailure = `${tc.toolName}: ${guardResultText.slice(0, 120)}`;
+                  }
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, guardToolResult);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                  loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                }
+              }
+            },
+          });
+          const guardText = channel
+            ? await this.withProviderDeadline(
+              channel.stream(stepAwareTextStream(guardStream.fullStream), msg.channelId),
+              loopAbortController,
+              guardDeadlineAt,
+            )
+            : '';
+          const gFinish = await this.withProviderDeadline(
+            guardStream.finishReason,
+            loopAbortController,
+            guardDeadlineAt,
+          );
+          if (gFinish === 'error') throw new Error('Guard continuation stream ended with an error');
+          const gCompletion = classifyStreamCompletion({ finishReason: gFinish, hasText: guardText.length > 0 });
+          if (gCompletion === 'interrupted') {
+            throw new Error('Guard continuation stream was interrupted (no finish signal from provider)');
+          }
+          if (guardText.trim()) result = { text: guardText, usage: await guardStream.usage, reasoning: guardStream.reasoning };
+          cliResponseStreamed = channel instanceof CLIChannel;
+        } catch (guardErr: any) {
+          // The guard nudge is best-effort: never let it turn a delivered
+          // narration into a hard failure. Log and fall through with the
+          // original result so the user still gets a response.
+          logger.warn({ err: guardErr?.message || String(guardErr) }, 'Execute-mode guard continuation failed; keeping original response');
+          break;
+        }
+        // WAKE-UP CALL: the first full guard cycle failed to start the work.
+        // The agent does not give up — it resets the cycle with a blunt,
+        // maximally-constrained directive before reporting honestly.
+        if (
+          executeGuardRounds >= MAX_EXECUTE_CONTINUATIONS
+          && !narrationSecondWind
+          && !loopAbortController.signal.aborted
+          && shouldForceExecuteContinuation({
+            taskText: msg.content,
+            hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+            toolsUsed: executeTurnToolsUsed,
+            toolsSucceeded: executeToolSucceeded,
+          })
+        ) {
+          narrationSecondWind = true;
+          logger.warn({ rounds: executeGuardRounds }, 'Narration guard: first cycle exhausted — issuing wake-up call');
+          this.pushLiveActivity('Trying a different approach', 'wake-up call');
+          if (channel && msg.channelType !== 'internal') {
+            await channel.send('Taking a completely different run at this — forcing the first move...', msg.channelId)
+              .catch((e) => logger.warn({ e }, 'channel send failed'));
+          }
+          messages.push({ role: 'user', content: wakeUpPrompt(msg.content) });
+          // Fresh grounding for the second cycle too.
+          try {
+            const cwd = this.capabilities.getCwd();
+            const entries2 = readdirSync(cwd, { withFileTypes: true })
+              .slice(0, 30)
+              .map((e: import('node:fs').Dirent) => `${e.isDirectory() ? 'dir' : 'file'}: ${e.name}`)
+              .join('\n');
+            messages.push({ role: 'user', content: `[SYSTEM: GROUNDING] Directory ${cwd}: ${entries2 || '(empty)'}. Your next response MUST begin with a create_file, write_file, edit_file, or run_command tool call.` });
+          } catch { /* best effort */ }
+        }
+      }
+
+      // ── Completion contract ──
+      // A turn that ends because the step budget ran out mid-tool-work is a
+      // PAUSE, not a completion. Bounded auto-continuation resumes it with a
+      // fresh budget; past the bound the user is asked — the task is never
+      // wrapped in a "Task complete" banner while work remains.
+      const turnEnd = (): LoopEndCause => classifyTurnEnd({
+        stepsUsed: lastRoundSteps,
+        maxSteps: effectiveMaxSteps,
+        lastStepHasToolCalls: lastStepHadToolCalls,
+        finishReason: (result as any)?.finishReason,
+        aborted: loopAbortController.signal.aborted,
+      });
+
+      while (
+        !loopAbortController.signal.aborted
+        && stepBudgetContinuations < MAX_AUTOMATIC_CONTINUATIONS
+        && turnEnd() === 'steps-exhausted'
+      ) {
+        stepBudgetContinuations++;
+        logger.warn(
+          { rounds: stepBudgetContinuations, steps: lastRoundSteps, budget: effectiveMaxSteps },
+          'Step budget exhausted mid-task — forcing continuation with a fresh budget',
+        );
+        this.markProgress('Step budget reached — continuing...');
+        this.pushLiveActivity('Resuming with a fresh step budget', 'step budget');
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(
+            `This one's a bigger build than a single pass — picking up right where I left off...`,
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        const resumeText = (result.text || '').trim();
+        if (resumeText && resumeText !== '(no text response)') messages.push({ role: 'assistant', content: resumeText });
+        messages.push({ role: 'user', content: stepsExhaustedPrompt(msg.content) });
+        const resumeProvider = usedProvider
+          ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
+          : providersForAttempt[0];
+        if (!resumeProvider) break;
+        lastRoundSteps = 0;
+        try {
+          const round = await this.runInlineContinuationRound({
+            messages,
+            systemPrompt,
+            provider: resumeProvider,
+            maxOutputTokens: effectiveMaxOutputTokens,
+            maxSteps: effectiveMaxSteps,
+            abortController: loopAbortController,
+            channel,
+            channelId: msg.channelId,
+            onStep: async (toolCalls, toolResults) => {
+              this.completedStepCount++;
+              lastRoundSteps++;
+              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+              const cliChResume = this.channels.get('cli');
+              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
+              if (toolCalls && toolResults && toolCalls.length > 0) {
+                hasCompletedTool = true;
+                for (let i = 0; i < toolCalls.length; i++) {
+                  const tc = toolCalls[i];
+                  executeTurnToolsUsed.add(tc.toolName);
+                  if (tc.toolName === 'run_command') {
+                    const cmd = (tc.input as any)?.command;
+                    if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
+                  }
+                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                  loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                }
+              }
+            },
+          });
+          if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+          cliResponseStreamed = channel instanceof CLIChannel;
+        } catch (resumeErr: any) {
+          logger.warn({ err: resumeErr?.message || String(resumeErr) }, 'Step-budget continuation failed; falling through to honest pause');
+          break;
+        }
+      }
+
+      // ── Verification gate ──
+      // Implementation work happened, but nothing objectively verified it
+      // (no build/test/typecheck ran). Force one bounded evidence round.
+      if (
+        !loopAbortController.signal.aborted
+        && turnEnd() === 'text-stop'
+        && this.programmingMode.isExecute()
+        && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
+        && shouldRequireVerification({
+          taskText: msg.content,
+          hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+          commandsRun: executeCommandsRun,
+          toolsSucceeded: executeToolSucceeded,
+        })
+      ) {
+        verificationContinuations++;
+        logger.warn(
+          { commandsRun: executeCommandsRun.slice(-5) },
+          'Verification gate: changes landed but nothing verified them — forcing verification round',
+        );
+        this.markProgress('Verifying changes...');
+        this.pushLiveActivity('Verifying the work', 'verification gate');
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(
+            'Checking my work before I call it done — running the build/tests now...',
+            msg.channelId,
+          ).catch((e) => logger.warn({ e }, 'channel send failed'));
+        }
+        const verifyText = (result.text || '').trim();
+        if (verifyText && verifyText !== '(no text response)') messages.push({ role: 'assistant', content: verifyText });
+        messages.push({ role: 'user', content: verificationPrompt(msg.content) });
+        const verifyProvider = usedProvider
+          ? (providersForAttempt.find((p) => p.name === usedProvider!.name && p.getModel() === usedProvider!.model) ?? providersForAttempt[0])
+          : providersForAttempt[0];
+        if (verifyProvider) {
+          lastRoundSteps = 0;
+          try {
+            const round = await this.runInlineContinuationRound({
+              messages,
+              systemPrompt,
+              provider: verifyProvider,
+              maxOutputTokens: effectiveMaxOutputTokens,
+              maxSteps: effectiveMaxSteps,
+              abortController: loopAbortController,
+              channel,
+              channelId: msg.channelId,
+              // Verification must produce evidence, not prose about evidence.
+              forceFirstTool: true,
+              onStep: async (toolCalls, toolResults) => {
+                this.completedStepCount++;
+                lastRoundSteps++;
+                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+                const cliChVerify = this.channels.get('cli');
+                if (cliChVerify instanceof CLIChannel) cliChVerify.bumpLiveActivitySteps();
+                if (toolCalls && toolResults && toolCalls.length > 0) {
+                  hasCompletedTool = true;
+                  for (let i = 0; i < toolCalls.length; i++) {
+                    const tc = toolCalls[i];
+                    executeTurnToolsUsed.add(tc.toolName);
+                    if (tc.toolName === 'run_command') {
+                      const cmd = (tc.input as any)?.command;
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
+                    }
+                    recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                  }
+                }
+              },
+            });
+            if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+            cliResponseStreamed = channel instanceof CLIChannel;
+          } catch (verifyErr: any) {
+            logger.warn({ err: verifyErr?.message || String(verifyErr) }, 'Verification continuation failed; keeping original response');
+          }
+        }
+      }
+
+      // ── Final verdict: a step-budget stop past the continuation bound is
+      // an honest pause, never a completion banner. ──
+      const pauseHonestly = async (banner: string, reason: string): Promise<void> => {
+        logger.warn({ banner, task: msg.content.slice(0, 120) }, 'Completion contract: pausing task honestly');
+        this.markProgress('Task paused');
+        this.pushLiveActivity('Paused', 'completion contract');
+        if (this.currentWorkKey) {
+          this.workLedger.markPaused(this.currentWorkKey, reason);
+        }
+        if (channel && msg.channelType !== 'internal') {
+          await channel.send(banner, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
+        }
+        this.lifecycle.transition('idle');
+      };
+
+      if (!loopAbortController.signal.aborted && turnEnd() === 'steps-exhausted') {
+        logger.warn({ steps: lastRoundSteps, budget: effectiveMaxSteps }, 'Step budget exhausted past continuation bound — pausing task honestly');
+        await pauseHonestly(
+          STEPS_PAUSED_BANNER,
+          'Step budget reached with work pending. Send "continue" to resume with a fresh budget.',
+        );
+        return;
+      }
+
+      // Narration-guard exhaustion: after all forced continuation rounds the
+      // turn STILL contains zero mutating work (rounds failed on flaky
+      // providers, or the model kept narrating). That must never read as
+      // "Task complete" — pause and let "continue" re-engage.
+      if (
+        !loopAbortController.signal.aborted
+        && this.programmingMode.isExecute()
+        && !responseAsksUser(result.text || '')
+        && shouldForceExecuteContinuation({
+          taskText: msg.content,
+          hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+          toolsUsed: executeTurnToolsUsed,
+          toolsSucceeded: executeToolSucceeded,
+        })
+      ) {
+        logger.warn({ task: msg.content.slice(0, 120), blocker: lastGuardToolFailure }, 'Narration guard exhausted (both cycles) — pausing instead of completing');
+        const blockerNote = lastGuardToolFailure
+          ? `\n\nWhat blocked it: ${lastGuardToolFailure}`
+          : '';
+        await pauseHonestly(
+          WORK_NOT_STARTED_BANNER + blockerNote,
+          `No implementation work was performed across two guard cycles.${lastGuardToolFailure ? ` Last blocker: ${lastGuardToolFailure}` : ''} Send "continue" to resume with tools.`,
+        );
+        return;
+      }
+
+      // Recompute AFTER the guard: the continuation's output (not the
+      // original narration) must be what reaches the session store, the
+      // work ledger, and the final delivery.
+      const finalText = (result.text || '').trim() || '(no text response)';
 
       // Store plan output when in plan mode for later execution
-      if (this.programmingMode.isPlan() && finalText !== '(no text response)') {
-        this.programmingMode.storePlan(finalText);
-        logger.info({ planLength: finalText.length }, 'Plan captured from plan-mode response');
+      if (this.programmingMode.isPlan() && preGuardText !== '(no text response)') {
+        this.programmingMode.storePlan(preGuardText);
+        logger.info({ planLength: preGuardText.length }, 'Plan captured from plan-mode response');
       }
 
       this.tokenBudget.recordUsage({
-        provider: usedProvider!.name,
-        model: usedProvider!.model,
+        provider: usedProvider?.name ?? 'unknown',
+        model: usedProvider?.model ?? 'unknown',
         inputTokens: result.usage?.inputTokens ?? 0,
         outputTokens: result.usage?.outputTokens ?? 0,
         totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
@@ -2473,8 +3594,8 @@ export class Agent {
       // Rough: (default_cap - actual_output) when capped, plus history-window delta.
       if (saverWasActive) {
         const actualOutput = result.usage?.outputTokens ?? 0;
-        const outputHeadroom = Math.max(0, MAX_RESPONSE_TOKENS - effectiveMaxOutputTokens);
-        const outputSaved = Math.max(0, Math.min(outputHeadroom, MAX_RESPONSE_TOKENS - actualOutput));
+        const outputHeadroom = Math.max(0, MODEL_OUTPUT_TOKEN_LIMIT - effectiveMaxOutputTokens);
+        const outputSaved = Math.max(0, Math.min(outputHeadroom, MODEL_OUTPUT_TOKEN_LIMIT - actualOutput));
         // Rough proxy: each trimmed history message ~120 tokens average.
         const historyTrimMessages = Math.max(0, NORMAL_HISTORY_WINDOW - this.saverMode.adjustHistoryWindow(NORMAL_HISTORY_WINDOW));
         const historySaved = historyTrimMessages * 120;
@@ -2650,7 +3771,10 @@ export class Agent {
             await channel.send(finalText, msg.channelId, elapsed);
           }
           this.markProgress();
-          if (isSubstantialTask && channel instanceof CLIChannel) {
+          const isMercuryCodeExecution = channel instanceof CLIChannel
+            && channel.getTuiState().mode === 'mercury-code'
+            && (channel.getTuiState().programmingMode === 'execute' || channel.getTuiState().programmingMode === 'auto');
+          if ((isSubstantialTask || isMercuryCodeExecution) && channel instanceof CLIChannel) {
             const completionMeta = {
               provider: usedProvider?.name ?? 'unknown',
               model: usedProvider?.model ?? 'unknown',
@@ -2661,7 +3785,7 @@ export class Agent {
               budgetTotal: this.tokenBudget.getBudget(),
               budgetPercentage: this.tokenBudget.getUsagePercentage(),
             };
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta, undefined, lastVerificationNote || undefined);
           }
         }
       } else {
@@ -2724,6 +3848,8 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      clearInterval(memoryGuard);
+      stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);
       this.currentMessage = null;
@@ -2732,6 +3858,10 @@ export class Agent {
       this.currentActivity = '';
       this.completedStepCount = 0;
       this.stepNarrative = [];
+      {
+        const ch = this.channels.get('cli');
+        if (ch instanceof CLIChannel) ch.clearLiveActivity();
+      }
       if (isInternal) {
         this.capabilities.permissions.setAutoApproveAll(false);
       }
@@ -3074,7 +4204,24 @@ RULES:
     }
   }
 
+  /**
+   * Mark all queued/running work as user-cancelled (terminal state).
+   * Used by deliberate-stop paths (TUI Ctrl+C, /exit, SIGTERM) so the
+   * next start does not auto-resume killed tasks. Crash recovery is
+   * unaffected — this is only invoked on intentional exits.
+   */
+  cancelActiveWork(reason = 'Cancelled by the user.'): number {
+    try {
+      return this.workLedger.cancelActive(reason);
+    } catch (error) {
+      logger.warn({ error }, 'Failed to cancel active work');
+      return 0;
+    }
+  }
+
   async shutdown(): Promise<void> {
+    // Deliberate shutdown: never resume this work on restart.
+    try { this.workLedger.cancelActive('Mercury was shut down.'); } catch { /* best effort */ }
     if (this.supervisor) {
       await this.supervisor.haltAll();
     }
@@ -4412,28 +5559,39 @@ Is this productive iteration or a stuck loop?`,
 
       if (!rawArgs) {
         if (cliChannel) {
-          const choice = await this.presentChoice(
-            'Code mode: open workspace IDE now?',
-            ['Yes, open current workspace', 'No, keep classic coding mode'],
-            channelId,
-            channelType,
-          );
-          if (choice.toLowerCase().startsWith('yes')) {
-            const current = this.capabilities.getCwd();
-            const opened = cliChannel.openWorkspace(current);
-            if (opened.ok) {
-              this.capabilities.permissions.addTempScope(current, true, true);
-              this.programmingMode.setExecute();
-              this.programmingMode.setProjectContext(current);
-              cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
-              await channel.send(`${opened.message}\nWorkspace IDE mode enabled.`, channelId);
-              return true;
-            }
-            await channel.send(opened.message, channelId);
+          const cwd = this.capabilities.getCwd();
+          const entered = cliChannel.enterMercuryCode(cwd, cliChannel.getTuiState().version || 'dev');
+          if (entered.ok) {
+            // Keep the agent-side ProgrammingMode in sync with the TUI:
+            // AUTO is the default Mercury Code flow (plan and build in one
+            // pass). setProgrammingStatus pushes it to the TUI — the stale
+            // 'plan' here was overriding the TUI's AUTO in the status bar.
+            this.programmingMode.setAuto();
+            this.programmingMode.setProjectContext(cwd);
+            cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+            // Plain message, not a heartbeat: entering /code starts no task,
+            // so the TUI must not flip into a perpetual "Analyzing" spinner.
+            // channel.send() also clears any stale heartbeat + isThinking.
+            await channel.send('Mercury Code active (AUTO). Describe the change — I will plan and build in one flow, confirming with you only before large or consequential changes.', channelId);
             return true;
           }
+          await channel.send(entered.message, channelId);
+          return true;
         }
         await channel.send(this.programmingMode.getStatusText(), channelId);
+        return true;
+      }
+
+      if (rawArgs === 'exit' || rawArgs === 'quit') {
+        if (cliChannel && cliChannel.getTuiState().mercuryCode) {
+          // Arm the inline confirmation; the TUI resolves it (Esc cancels,
+          // Enter/`y` confirms, Ctrl+D force-quits without asking).
+          cliChannel.setMercuryCodeExitConfirm(true);
+          return true;
+        }
+        this.programmingMode.setOff();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
         return true;
       }
 
@@ -4459,10 +5617,17 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
+      if (rawArgs === 'auto') {
+        this.programmingMode.setAuto();
+        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        await channel.send('Programming mode: **Auto**\nI plan and build in one flow — reading first, implementing immediately, and asking for confirmation only before large or consequential changes. Use `/code off` to exit.', channelId);
+        return true;
+      }
+
       if (rawArgs === 'plan') {
         this.programmingMode.setPlan();
         if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
-        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` to switch to execution.', channelId);
+        await channel.send('Programming mode: **Plan**\nI will explore, analyze, and present a plan before writing any code. Use `/code execute` or `/code auto` to switch to execution.', channelId);
         return true;
       }
 
@@ -4503,22 +5668,57 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
-      if (rawArgs === 'off' || rawArgs === 'exit') {
+      if (rawArgs === 'off') {
         this.programmingMode.setOff();
-        if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        if (cliChannel) {
+          if (cliChannel.getTuiState().mercuryCode) cliChannel.exitMercuryCode();
+          cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
+        }
         await channel.send('Programming mode: **Off**\nBack to normal conversation mode.', channelId);
         return true;
       }
 
       if (rawArgs === 'toggle') {
         const newState = this.programmingMode.toggle();
-        const labels: Record<string, string> = { off: 'Off', plan: 'Plan', execute: 'Execute' };
+        const labels: Record<string, string> = { off: 'Off', auto: 'Auto', plan: 'Plan', execute: 'Execute' };
         if (cliChannel) cliChannel.setProgrammingStatus(this.programmingMode.getState(), this.programmingMode.getProjectContext());
         await channel.send(`Programming mode: **${labels[newState]}**`, channelId);
         return true;
       }
 
-      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code workspace, /code agent <task>, /code off, /code toggle', channelId);
+      if (rawArgs === 'init') {
+        // Ask the agent itself to write/maintain AGENTS.md for this repo.
+        await channel.send('Scanning the repository and writing AGENTS.md...', channelId);
+        await this.processInternalPrompt(
+          'You are in Mercury Code (/code). Create or refresh the repo-level AGENTS.md in the current working directory. ' +
+          'Read the repo structure: package manifests, build config, CI, test setup, directory layout. ' +
+          'AGENTS.md must contain ONLY durable, verified facts you confirmed by reading files: build/test/lint commands, ' +
+          'project layout, code conventions you actually observed, entry points. Keep it under 40 lines. ' +
+          'If AGENTS.md already exists, merge-preserving accurate human edits and fixing stale commands.',
+          channelId,
+          channelType,
+        );
+        return true;
+      }
+
+      if (rawArgs === 'diff') {
+        const cwd = this.capabilities.getCwd();
+        try {
+          const { execFileSync } = await import('node:child_process');
+          const diff = execFileSync('git', ['--no-pager', 'diff', '--no-color', 'HEAD'], { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+          const trimmedDiff = diff.length > 20000 ? diff.slice(-20000) : diff;
+          if (!trimmedDiff.trim()) {
+            await channel.send('Working tree is clean — no unstaged/staged changes vs HEAD.', channelId);
+          } else {
+            await channel.send('```\n' + trimmedDiff + '\n```', channelId);
+          }
+        } catch (err: any) {
+          await channel.send(`git diff failed: ${err?.message || String(err)}`, channelId);
+        }
+        return true;
+      }
+
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code init, /code diff, /code workspace, /code agent <task>, /code off, /code toggle, /code exit', channelId);
       return true;
     }
 
@@ -5053,7 +6253,9 @@ Is this productive iteration or a stuck loop?`,
       }).join('\n');
     };
     const syncCliSession = (session: ReturnType<SessionRepository['get']>) => {
-      if (channelType === 'cli' && channel instanceof CLIChannel) channel.setCurrentSession(session);
+      if (channelType === 'cli' && channel instanceof CLIChannel) {
+        channel.setCurrentSession(session);
+      }
     };
     try {
       if (content.trim().toLowerCase() === '/sessions') {

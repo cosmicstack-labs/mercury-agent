@@ -5,10 +5,13 @@ import { resolve, isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { PermissionManager } from '../permissions.js';
+import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
+/** Bound echoed stdout so per-step conversation clones stay small. */
+const MAX_OUTPUT_CHARS = 64 * 1024;
 const SIGTERM_GRACE_MS = 5_000;
 
 interface ExecResult {
@@ -116,23 +119,36 @@ The optional timeout parameter sets how long (in seconds) the command can run be
           let msg = `⏱ Command timed out after ${timeoutMs / 1000}s.`;
           if (partial) {
             const lines = partial.split('\n');
-            const preview = lines.length > 30 ? lines.slice(-30).join('\n') : partial;
-            msg += `\nPartial output:\n${preview}`;
+            const preview = redactSecrets(lines.length > 30 ? lines.slice(-30).join('\n') : partial);
+            const boundedPreview = preview.length > MAX_OUTPUT_CHARS
+              ? preview.slice(0, MAX_OUTPUT_CHARS) + '\n[Preview truncated]'
+              : preview;
+            msg += `\nPartial output:\n${boundedPreview}`;
           }
           msg += '\n\nTo run long commands in the background, use /bg <command>.';
           return msg;
         }
 
         const trimmedOutput = result.stdout?.trim() || '(no output)';
+        // Bound the tool result echoed into the LLM conversation: the AI SDK
+        // retains per-step conversation clones for every remaining agent
+        // step, so unbounded command output compounds into O(N²) heap.
+        const boundedOutput = trimmedOutput.length > MAX_OUTPUT_CHARS
+          ? trimmedOutput.slice(0, MAX_OUTPUT_CHARS) + `\n\n[Output truncated: showing first ${Math.round(MAX_OUTPUT_CHARS / 1024)}KB of ${Math.round(trimmedOutput.length / 1024)}KB. Re-run with head/tail/grep for specific sections.]`
+          : trimmedOutput;
+        // Command output can contain environment secrets (env, config files,
+        // API responses) — anything echoed into the conversation ends up in
+        // session transcripts and logs. Redact before echoing.
+        const redactedOutput = redactSecrets(boundedOutput);
         if (result.exitCode !== 0 && result.exitCode !== null) {
           let msg = `Command exited with code ${result.exitCode}`;
-          if (trimmedOutput && trimmedOutput !== '(no output)') msg += `\nOutput: ${trimmedOutput}`;
-          if (result.stderr?.trim()) msg += `\nError: ${result.stderr.trim()}`;
+          if (redactedOutput && redactedOutput !== '(no output)') msg += `\nOutput: ${redactedOutput}`;
+          if (result.stderr?.trim()) msg += `\nError: ${redactSecrets(result.stderr.trim().slice(0, MAX_OUTPUT_CHARS))}`;
           return msg;
         }
 
         detectCd(command, cwd, setCwd);
-        return trimmedOutput;
+        return redactedOutput;
       } catch (err: any) {
         let msg = `Command failed: ${err.message || String(err)}`;
         return msg;

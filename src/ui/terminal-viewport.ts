@@ -32,3 +32,9 @@ export function moveViewport(
   const { maxDistanceFromBottom } = getViewportWindow(totalLines, viewportLines, distanceFromBottom);
   return Math.max(0, Math.min(maxDistanceFromBottom, distanceFromBottom + deltaTowardTop));
 }
+
+/** Keep the same historical rows visible while new rows append below them. */
+export function anchorViewportDistance(distanceFromBottom: number, previousTotal: number, nextTotal: number): number {
+  if (distanceFromBottom <= 0 || nextTotal <= previousTotal) return distanceFromBottom;
+  return distanceFromBottom + (nextTotal - previousTotal);
+}

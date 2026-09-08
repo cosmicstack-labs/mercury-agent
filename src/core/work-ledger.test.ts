@@ -164,4 +164,53 @@ describe('WorkLedger', () => {
     expect(ledger.get(second.key)?.status).toBe('completed');
     expect(ledger.get(first.key)).toBeUndefined();
   });
+
+  it('cancelActive marks queued and running work cancelled so restart never resumes it', () => {
+    const { filePath, ledger } = setup();
+    const queued = ledger.accept(message('queued')).entry;
+    const running = ledger.accept(message('running')).entry;
+    ledger.markRunning(running.key);
+    const done = ledger.accept(message('done')).entry;
+    ledger.markCompleted(done.key, 'already done');
+    ledger.markDelivered(done.key);
+
+    const cancelledCount = ledger.cancelActive('Test deliberate stop');
+
+    expect(cancelledCount).toBe(2);
+    expect(ledger.get(queued.key)?.status).toBe('cancelled');
+    expect(ledger.get(running.key)?.status).toBe('cancelled');
+    expect(ledger.get(done.key)?.status).toBe('completed');
+
+    // A restart must NOT resurrect cancelled entries.
+    const recovered = new WorkLedger({ filePath }).recoverInterrupted();
+    expect(recovered).toHaveLength(0);
+    expect(new WorkLedger({ filePath }).get(queued.key)?.status).toBe('cancelled');
+  });
+
+  it('cancelled entries carry a resume hint via the undelivered outbox', () => {
+    const { filePath, ledger } = setup();
+    const entry = ledger.accept(message('killed')).entry;
+    ledger.markRunning(entry.key);
+    ledger.cancelActive('Test stop');
+
+    const outbox = new WorkLedger({ filePath }).getUndeliveredResponses();
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].status).toBe('cancelled');
+    expect(outbox[0].finalResponse).toContain('cancelled');
+  });
+
+  it('cancelled is terminal: markRunning, markCompleted and markFailed cannot resurrect it', () => {
+    const { ledger } = setup();
+    const entry = ledger.accept(message('terminal')).entry;
+    ledger.markCancelled(entry.key);
+
+    ledger.markRunning(entry.key);
+    expect(ledger.get(entry.key)?.status).toBe('cancelled');
+
+    ledger.markCompleted(entry.key, 'late response');
+    expect(ledger.get(entry.key)?.status).toBe('cancelled');
+
+    ledger.markFailed(entry.key, new Error('late failure'));
+    expect(ledger.get(entry.key)?.status).toBe('cancelled');
+  });
 });

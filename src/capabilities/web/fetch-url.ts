@@ -1,5 +1,6 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
+import { guardedFetch } from '../../utils/ssrf.js';
 
 const MAX_CONTENT_LENGTH = 15000;
 
@@ -86,9 +87,9 @@ function stripHtml(html: string, preserveImages = false, pageUrl = ''): string {
 
 export function createFetchUrlTool(opts: { isResearchMode: () => boolean } = { isResearchMode: () => false }) {
   return tool({
-    description: 'Fetch a URL and return its content as markdown. In research mode, images from the page are preserved as ![alt](url) with absolute URLs so they can be embedded in research articles. Useful for reading documentation, news articles, APIs, or web pages.',
+    description: 'Fetch a URL and return its content as markdown. Private/internal network addresses are blocked (SSRF protection). In research mode, images from the page are preserved as ![alt](url) with absolute URLs so they can be embedded in research articles. Useful for reading documentation, news articles, APIs, or web pages.',
     inputSchema: zodSchema(z.object({
-      url: z.string().describe('The URL to fetch'),
+      url: z.string().describe('The URL to fetch (public http/https only)'),
       format: z.enum(['text', 'markdown']).optional().describe('Output format (default: markdown)'),
     })),
     execute: async ({ url, format }) => {
@@ -99,13 +100,7 @@ export function createFetchUrlTool(opts: { isResearchMode: () => boolean } = { i
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30000);
 
-        const resp = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mercury-Agent/0.1.0',
-            'Accept': 'text/html,application/json,text/plain',
-          },
-        });
+        const resp = await guardedFetch(url, controller.signal);
 
         clearTimeout(timeout);
 

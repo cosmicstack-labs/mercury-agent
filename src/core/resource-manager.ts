@@ -3,8 +3,14 @@ import { logger } from '../utils/logger.js';
 import type { ResourceUsage } from '../types/agent.js';
 
 const MB = 1024 * 1024;
-const RAM_PER_AGENT_MB = 2048;
 const MIN_FREE_RAM_MB = 1024;
+/**
+ * Sub-agents run inside the main process, so every concurrent agent multiplies
+ * heap pressure on the SAME V8 isolate (the per-agent RAM figure below is a
+ * scheduling heuristic, not real isolation). A broad analysis task spawning
+ * several concurrent sub-agents was a direct path to a shared-heap OOM.
+ */
+export const MAX_CONCURRENT_SUB_AGENTS = 3;
 
 export class ResourceManager {
   private maxConcurrent: number;
@@ -23,11 +29,14 @@ export class ResourceManager {
     const availableMB = freemem() / MB;
     const totalMB = totalmem() / MB;
 
+    // Shared-heap reality check first: concurrent sub-agents all allocate on
+    // the main process's V8 heap, so no RAM-based formula can justify more
+    // than a small pool.
     const cpuBasedMax = Math.max(1, cpuCount - 1);
-    const ramBasedMax = Math.max(1, Math.floor((availableMB - MIN_FREE_RAM_MB) / RAM_PER_AGENT_MB));
-    const systemMax = Math.max(1, Math.floor((totalMB / 2) / RAM_PER_AGENT_MB));
+    const ramBasedMax = Math.max(1, Math.floor((availableMB - MIN_FREE_RAM_MB) / 512));
+    const systemMax = Math.max(1, Math.floor((totalMB / 2) / 512));
 
-    let max = Math.min(cpuBasedMax, ramBasedMax, systemMax);
+    let max = Math.min(cpuBasedMax, ramBasedMax, systemMax, MAX_CONCURRENT_SUB_AGENTS);
 
     if (max < 1) max = 1;
     if (availableMB < MIN_FREE_RAM_MB * 2) max = 1;

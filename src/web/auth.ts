@@ -1,5 +1,5 @@
 import { compareSync, hashSync, genSaltSync } from 'bcryptjs';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getMercuryHome, loadConfig } from '../utils/config.js';
@@ -14,6 +14,15 @@ interface WebAuth {
 
 function getWebConfigPath(): string {
   return join(getMercuryHome(), 'web-config.json');
+}
+
+/** Credential files hold bcrypt hashes and live session tokens — they must
+ *  never be world-readable. Also repairs files written by older versions. */
+function writeCredentialFile(path: string, contents: string): void {
+  writeFileSync(path, contents, { encoding: 'utf-8', mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch { /* mode repair is best-effort */ }
 }
 
 export function getWebPort(): number {
@@ -32,6 +41,8 @@ export function loadWebAuth(): WebAuth | null {
   const path = getWebConfigPath();
   if (!existsSync(path)) return null;
   try {
+    // Repair permissions on files written by older versions (0o644).
+    try { chmodSync(path, 0o600); } catch { /* best effort */ }
     const raw = readFileSync(path, 'utf-8');
     return JSON.parse(raw) as WebAuth;
   } catch {
@@ -44,24 +55,29 @@ export function saveWebAuth(auth: WebAuth): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(getWebConfigPath(), JSON.stringify(auth, null, 2), 'utf-8');
+  writeCredentialFile(getWebConfigPath(), JSON.stringify(auth, null, 2));
 }
 
-const DEFAULT_PASSWORD = 'Mercury@123';
-
+/**
+ * Initial password is RANDOM per install — a hardcoded default in a public
+ * MIT repo is a known credential the moment the source is published. The
+ * caller must display the generated password once so the user can log in
+ * and change it.
+ */
 export function initWebAuth(): { username: string; password: string } {
   const existing = loadWebAuth();
   if (existing) {
     return { username: existing.username, password: '' };
   }
+  const generated = randomBytes(9).toString('base64url'); // 12 chars, URL-safe
   const salt = genSaltSync(10);
-  const hash = hashSync(DEFAULT_PASSWORD, salt);
+  const hash = hashSync(generated, salt);
   const auth: WebAuth = {
     username: 'mercury',
     password_hash: hash,
   };
   saveWebAuth(auth);
-  return { username: 'mercury', password: '' };
+  return { username: 'mercury', password: generated };
 }
 
 export function isWebAuthInitialized(): boolean {
@@ -129,7 +145,7 @@ function persistSessions(): void {
     const dir = getMercuryHome();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const entries = Object.fromEntries(sessions);
-    writeFileSync(getSessionFilePath(), JSON.stringify(entries, null, 2), 'utf-8');
+    writeCredentialFile(getSessionFilePath(), JSON.stringify(entries, null, 2));
   } catch {}
 }
 

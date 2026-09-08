@@ -19,6 +19,21 @@ function copyDirSync(src, dest) {
   }
 }
 
+// 0. Ensure the bundled ink patch is applied. Newer npm policies can block
+// lifecycle scripts (postinstall), so the build pipeline — which runs on
+// every build — enforces it here instead. Un-patched ink carries the Yoga
+// WASM crash class; a skip is never silent.
+try {
+  const { apply } = require('./apply-ink-patch.cjs');
+  const result = apply();
+  if (result.ok && result.applied) console.log('  ✓ ink patch applied');
+  else if (!result.ok) {
+    console.error('  ⚠ INK PATCH NOT APPLIED — Yoga WASM crash class unpatched. Reason:', result.error);
+  }
+} catch (err) {
+  console.error('  ⚠ ink patch step failed:', err.message);
+}
+
 // 1. Copy src/web/static -> dist/web/static
 const staticSrc = path.join(__dirname, '..', 'src', 'web', 'static');
 const staticDest = path.join(__dirname, '..', 'dist', 'web', 'static');

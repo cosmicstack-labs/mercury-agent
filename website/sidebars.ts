@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'reference/built-in-tools',
+        'reference/completion-architecture',
         'reference/configuration',
         'reference/permissions',
         'reference/second-brain',

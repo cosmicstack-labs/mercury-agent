@@ -468,7 +468,7 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-eyebrow" aria-label="Mercury Agent — Soul-driven">
               <span className="lp-hero-eyebrow-mark">☿</span>
               <span className="lp-hero-eyebrow-text">Mercury Agent · Soul-driven</span>
-              <span className="lp-hero-eyebrow-badge">v1.2.0 · Cloudy Mercury</span>
+              <span className="lp-hero-eyebrow-badge">v1.2.3 · Unstoppable Mercury</span>
             </div>
             <h1 className="lp-hero-title">
               Soul-driven AI agent<br />
@@ -482,9 +482,48 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-actions">
               <Link to="/cloud" className="lp-btn lp-btn-primary">Try Mercury Cloud</Link>
               <Link href="#live-demo" className="lp-btn lp-btn-secondary">See It Work</Link>
-              <Link to="/docs/releases/1.2.0" className="lp-btn lp-btn-ghost">What's new in 1.2.0 →</Link>
+              <Link to="/docs/releases/1.2.3" className="lp-btn lp-btn-ghost">What's new in 1.2.3 →</Link>
             </div>
             <HeroInstall />
+          </div>
+        </section>
+
+        {/* Mercury Code 1.2.3 Release Banner */}
+        <section id="mercury-code-123" className="lp-section">
+          <div className="lp-container">
+            <div className="lp-release-banner lp-reveal">
+              <div className="lp-release-banner-left">
+                <div className="lp-release-badge">☿ NEW RELEASE</div>
+                <h2 className="lp-release-title">Mercury Code 1.2.3 — <em>Unstoppable Mercury</em></h2>
+                <p className="lp-release-lead">
+                  The release where Mercury Code <strong>stops dying and starts telling the truth</strong>.
+                  Every task ends in a verdict — a verified completion with evidence, or an honest pause that
+                  names its blocker and resumes. New AUTO mode plans and builds in one flow, a mechanical
+                  escalation harness forces action when models narrate, and memory pressure now compacts instead
+                  of killing long builds.
+                </p>
+                <div className="lp-release-points">
+                  <span>✓ Completion contract — no fake "Task complete"</span>
+                  <span>✓ Forced-action escalation harness</span>
+                  <span>✓ Live plan checklist + thinking preview</span>
+                  <span>✓ SSRF guard + secret redaction</span>
+                </div>
+                <div className="lp-release-actions">
+                  <Link to="/docs/releases/1.2.3" className="lp-btn lp-btn-primary">Release notes →</Link>
+                  <Link to="/docs/reference/completion-architecture" className="lp-btn lp-btn-ghost">How it works</Link>
+                </div>
+              </div>
+              <div className="lp-release-right">
+                <div className="lp-release-term">
+                  <div className="lp-release-term-line lp-dim">● MERCURY · building the three.js world</div>
+                  <div className="lp-release-term-line">  ✓ ✨ Created index.html <span className="lp-dim">· 209 lines</span></div>
+                  <div className="lp-release-term-line">  ✓ ⎇ orbit controls, bloom pass</div>
+                  <div className="lp-release-term-line">  ✓ ✎ Edited main.js <span className="lp-dim">· +30 −12</span></div>
+                  <div className="lp-release-term-line">  ✓ ⌨ npm test <span className="lp-ok">✓ 12 passed</span></div>
+                  <div className="lp-release-term-line lp-ok">─ Task complete · verified · change summary attached</div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 

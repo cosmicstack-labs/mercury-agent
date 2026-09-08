@@ -1,16 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
+import { MAX_AUTOMATIC_CONTINUATIONS, needsContinuationApproval, needsRetryApproval, withAbortDeadline } from './execution-limits.js';
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe('execution limits', () => {
-  it('requires user approval at the hard deadline or after two automatic continuations', () => {
+  it('continues automatically — approval only at the runaway backstop', () => {
+    // User decision: "keep on continuing" mid-task. A provider hard
+    // deadline no longer pauses for the user; the failed attempt counts
+    // toward the automatic bound instead.
     expect(needsContinuationApproval(0, false)).toBe(false);
-    expect(needsContinuationApproval(1, false)).toBe(false);
-    expect(needsContinuationApproval(2, false)).toBe(true);
-    expect(needsContinuationApproval(0, true)).toBe(true);
+    expect(needsContinuationApproval(3, true)).toBe(false);
+    expect(needsContinuationApproval(MAX_AUTOMATIC_CONTINUATIONS - 1, true)).toBe(false);
+    expect(needsContinuationApproval(MAX_AUTOMATIC_CONTINUATIONS, false)).toBe(true);
     expect(needsRetryApproval(2)).toBe(false);
     expect(needsRetryApproval(3)).toBe(true);
   });

@@ -2094,6 +2094,53 @@ function runPlatformDoctor(): void {
 async function runAgent(isDaemon: boolean = false): Promise<void> {
   const runtimeMode = isDaemon ? 'daemon' : 'foreground';
   registerRuntimeProcess(runtimeMode);
+
+  // Crash forensics: V8 fatal errors (heap OOM etc.) print a native stack
+  // that scrolls away with the TUI. Ask V8 to keep a stack trace for the
+  // exception and dump JS reason + recent state to a file we can read
+  // after the abort. Best-effort by design.
+  try {
+    const { writeCrashFlag } = await import('./core/crash-flag.js');
+    const { getMercuryHome } = await import('./utils/config.js');
+    const { appendFileSync } = await import('node:fs');
+    const dumpFile = join(getMercuryHome(), 'crash-report.log');
+    const line = (m: string) => appendFileSync(dumpFile, `[${new Date().toISOString()}] ${m}\n`);
+    Error.stackTraceLimit = 50;
+    if (typeof (process as any).report !== 'undefined') {
+      try { (process as any).report.uncaughtException = true; } catch { /* unsupported */ }
+    }
+    process.on('uncaughtException', (err) => {
+      try { line(`UNCAUGHT: ${err?.stack || err}`); } catch { /* disk full */ }
+      try { writeCrashFlag({ reason: `Uncaught: ${String(err?.message || err)}`.slice(0, 300), timestamp: Date.now() }); } catch {}
+      // A TUI-crashed process must not linger headless: it would hold the
+      // runtime pid files and silently block every future launch. Print,
+      // persist, and exit — durable recovery replays any interrupted work.
+      try {
+        process.stderr.write(`\n⚠ Mercury hit an uncaught error: ${String(err?.message || err)}\n  Details: ~/.mercury/crash-report.log\n`);
+      } catch { /* stderr gone */ }
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (reason) => {
+      try { line(`REJECTION: ${reason instanceof Error ? reason.stack : String(reason)}`); } catch {}
+      // A rejected boot (e.g. "runtime already running") must fail loudly,
+      // not exit(0) as if nothing happened.
+      const message = String(reason instanceof Error ? reason.message : reason || '');
+      if (/already running|EADDRINUSE|registerRuntimeProcess/i.test(message)) {
+        try {
+          process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Stop the other instance with \`mercury stop\` or \`kill <pid>\`.\n`);
+        } catch { /* stderr gone */ }
+        process.exit(1);
+      }
+    });
+    process.on('SIGABRT', () => {
+      try { line('SIGABRT received — V8 fatal error (likely OOM). Heap stats follow.'); } catch {}
+      try {
+        const mu = process.memoryUsage();
+        line(`heapUsed=${(mu.heapUsed / 1048576).toFixed(1)}MB heapTotal=${(mu.heapTotal / 1048576).toFixed(1)}MB rss=${(mu.rss / 1048576).toFixed(1)}MB`);
+      } catch {}
+    });
+  } catch { /* forensics must never block boot */ }
+
   let config = loadConfig();
   config = ensureCreatorField(config);
   const name = config.identity.name;
@@ -2376,6 +2423,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
+        // Deliberate TUI exit (Ctrl+C / onExit): mark any queued or running
+        // work cancelled so the next launch does NOT silently resume a task
+        // the user chose to kill.
+        try { agent.cancelActiveWork('Mercury Code was exited from the TUI.'); } catch { /* best effort */ }
         process.exit(0);
       });
     } else {
@@ -2682,7 +2733,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
         const allowedControlTypes = new Set([
           'session.create', 'session.delete', 'session.archive', 'permission.resolve', 'choice.resolve',
-          'interaction.cancel', 'permission.mode', 'model.list', 'model.select',
+          'interaction.cancel', 'permission.mode', 'model.list', 'model.select', 'task.stop',
         ]);
         if ((msg.agentId && msg.agentId !== config.cloud.agentId)
           || (controlType && (!allowedControlTypes.has(controlType) || typeof message === 'string'))
@@ -2776,6 +2827,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             requestId,
             event: 'permission_mode_set',
             data: { mode: action },
+          });
+          return;
+        }
+
+        if (controlType === 'task.stop') {
+          if (!suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Stop requires the session the task belongs to.' } });
+            return;
+          }
+          // Same semantics as the local /stop fast-path command: abort the
+          // foreground task, cancel its work-ledger entry, halt sub-agents.
+          const note = await agent.stopAllWork('stopped');
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: 'task_stopped',
+            data: { message: note },
           });
           return;
         }
@@ -3261,6 +3330,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     shutdownPromise = (async () => {
       cloudClient?.disconnect();
       sessionSynchronizer?.stop();
+      // Always hand the terminal back in a sane state (no mouse tracking,
+      // visible cursor) — even after an abort the shell must be usable.
+      try { channels.getCliChannel()?.restoreTerminal(); } catch { /* best effort */ }
       if (!isDaemon) {
         console.log('');
         console.log(chalk.dim(`  ${name} is shutting down...`));
