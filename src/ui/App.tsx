@@ -2792,7 +2792,7 @@ export function MercuryCodeView({
         {viewport.distanceFromBottom > 0 ? (
           <Text color="yellow">↑↓ scroll · PgUp/PgDn page · Ctrl+E back to live</Text>
         ) : (
-          <Text dimColor>↵ send · esc esc exit · ctrl+c quit</Text>
+          <Text dimColor>↵ send · esc esc exit · ⇧drag copy · ctrl+c quit</Text>
         )}
         <Spacer />
         <Text color="blue" wrap="truncate-end">{rightStr}</Text>

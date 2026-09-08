@@ -1199,6 +1199,24 @@ export class Agent {
       prepareStep: opts.forceFirstTool
         ? ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const } : {})
         : undefined,
+      // Live tool-step UI during continuation rounds: forced/verification
+      // rounds land file writes, and the user must SEE which file is being
+      // written at the bottom, exactly as in the main loop.
+      experimental_onToolCallStart: ({ toolCall }: any) => {
+        const tc = toolCall as any;
+        this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+        this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+      },
+      experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }: any) => {
+        const tc = toolCall as any;
+        this.pushLiveToolEvent(
+          tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+          tc.toolName,
+          success ? output : error,
+          success ? 'done' : 'error',
+          durationMs,
+        );
+      },
       abortSignal: opts.abortController.signal,
       experimental_include: { requestBody: false },
       onStepFinish: async ({ toolCalls, toolResults }) => {
@@ -3175,6 +3193,21 @@ export class Agent {
             // narration-only models loop for every round; a provider-enforced
             // toolChoice converts "describing the work" into doing it.
             prepareStep: ({ steps }) => (steps.length === 0 ? { toolChoice: 'required' as const, activeTools: FORCED_ACTION_TOOLS } : {}),
+            experimental_onToolCallStart: ({ toolCall }) => {
+              const tc = toolCall as any;
+              this.markProgress(formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
+              this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+            },
+            experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
+              const tc = toolCall as any;
+              this.pushLiveToolEvent(
+                tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+                tc.toolName,
+                success ? output : error,
+                success ? 'done' : 'error',
+                durationMs,
+              );
+            },
             abortSignal: loopAbortController.signal,
             experimental_include: { requestBody: false },
             onStepFinish: async ({ toolCalls, toolResults }) => {
