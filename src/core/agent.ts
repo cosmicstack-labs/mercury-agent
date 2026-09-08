@@ -355,11 +355,13 @@ const MAX_STEPS = (() => {
   const override = Number(process.env.MERCURY_MAX_STEPS);
   return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
 })();
-// 8192: a single-file app write is emitted AS tool-call arguments — at
-// 4096 the call is severed mid-argument, never executes, and the model
-// retries into the same wall forever (the 'drops in the middle' failure on
-// medium tasks). Small tasks fit under 4096; medium ones never do.
-const MAX_RESPONSE_TOKENS = 8192;
+// No Mercury-imposed size limit: a single-file app write is emitted AS
+// tool-call arguments, so any cap we choose eventually severs a legitimate
+// write mid-argument. The ceiling below is deliberately far above any
+// mainstream model's NATIVE output limit — the model's own limit governs,
+// not ours. If a provider still rejects the value, the adaptive clamp in
+// the attempt loop halves it and retries.
+const MODEL_OUTPUT_TOKEN_LIMIT = 32768;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
@@ -2080,7 +2082,7 @@ export class Agent {
 
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
-      const effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MAX_RESPONSE_TOKENS);
+      let effectiveMaxOutputTokens = this.saverMode.adjustMaxOutputTokens(MODEL_OUTPUT_TOKEN_LIMIT);
       const effectiveMaxSteps = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const saverWasActive = this.saverMode.isActive();
 
@@ -2943,6 +2945,15 @@ export class Agent {
             break;
           }
           lastError = err;
+          // Some providers reject a maxOutputTokens above their model's
+          // native limit. Halve and let the next attempt in the chain use
+          // the smaller cap — the task continues instead of dying on a
+          // configuration argument.
+          const limitErr = `${err?.message || ''} ${typeof (err as any)?.responseBody === 'string' ? (err as any).responseBody : ''}`;
+          if (/max[_ -]?tokens|output.?limit|too large|exceed/i.test(limitErr) && effectiveMaxOutputTokens > 4096) {
+            effectiveMaxOutputTokens = Math.max(4096, Math.floor(effectiveMaxOutputTokens / 2));
+            logger.warn({ provider: provider.name, newCap: effectiveMaxOutputTokens }, 'Provider rejected the output cap — clamping for subsequent attempts');
+          }
           if (!providerFailures.has(provider.name)) {
             providerFailures.set(provider.name, (err?.message || String(err)).slice(0, 140));
           }
@@ -3489,8 +3500,8 @@ export class Agent {
       // Rough: (default_cap - actual_output) when capped, plus history-window delta.
       if (saverWasActive) {
         const actualOutput = result.usage?.outputTokens ?? 0;
-        const outputHeadroom = Math.max(0, MAX_RESPONSE_TOKENS - effectiveMaxOutputTokens);
-        const outputSaved = Math.max(0, Math.min(outputHeadroom, MAX_RESPONSE_TOKENS - actualOutput));
+        const outputHeadroom = Math.max(0, MODEL_OUTPUT_TOKEN_LIMIT - effectiveMaxOutputTokens);
+        const outputSaved = Math.max(0, Math.min(outputHeadroom, MODEL_OUTPUT_TOKEN_LIMIT - actualOutput));
         // Rough proxy: each trimmed history message ~120 tokens average.
         const historyTrimMessages = Math.max(0, NORMAL_HISTORY_WINDOW - this.saverMode.adjustHistoryWindow(NORMAL_HISTORY_WINDOW));
         const historySaved = historyTrimMessages * 120;
