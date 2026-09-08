@@ -1,4 +1,5 @@
 import React from 'react';
+import { EventEmitter } from 'node:events';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,6 +96,62 @@ export function mouseTrackingSequences(enable: boolean): string {
  * never leaked as keystrokes. A bounded holdback prevents a corrupt
  * stream from growing memory without limit.
  */
+/**
+ * Ink-facing stdin: forwards the Ink-required stream surface (setRawMode,
+ * ref/unref, setEncoding, readable/read) to the real terminal stream while
+ * feeding every chunk through the MouseSequenceFilter first. Ink never sees
+ * raw mouse sequences; wheel events become transcript scrolling in Mercury
+ * Code. Non-mouse bytes pass through byte-identical.
+ */
+class TtyStdinProxy extends EventEmitter {
+  private buffer = '';
+  private readonly real: NodeJS.ReadStream;
+  private readonly filter: MouseSequenceFilter;
+
+  readonly isTTY = true;
+
+  constructor(real: NodeJS.ReadStream, filter: MouseSequenceFilter) {
+    super();
+    this.real = real;
+    this.filter = filter;
+    this.real.on('data', (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      this.filter.push(text);
+    });
+    this.real.on('end', () => this.emit('end'));
+    this.real.on('close', () => this.emit('close'));
+  }
+
+  /** Filter output lands here (called by the MouseSequenceFilter). */
+  write(s: string): void {
+    if (s.length === 0) return;
+    this.buffer += s;
+    this.emit('readable');
+  }
+
+  read(): string | null {
+    if (this.buffer.length === 0) return null;
+    const out = this.buffer;
+    this.buffer = '';
+    return out;
+  }
+
+  setEncoding(enc: BufferEncoding): this {
+    this.real.setEncoding(enc);
+    return this;
+  }
+
+  setRawMode(mode: boolean): this {
+    this.real.setRawMode(mode);
+    return this;
+  }
+
+  ref(): this { this.real.ref(); return this; }
+  unref(): this { this.real.unref(); return this; }
+  resume(): this { this.real.resume(); return this; }
+  pause(): this { this.real.pause(); return this; }
+}
+
 export class MouseSequenceFilter {
   private buf = '';
   private static readonly SGR = /^\x1b\[<\d+;\d+;\d+[Mm]/;
@@ -421,6 +478,9 @@ export class CLIChannel extends BaseChannel {
       clearImmediate(this.tuiExitImmediate);
       this.tuiExitImmediate = null;
     }
+    // Ink reads through the filtered proxy: mouse sequences never reach the
+    // input box, and wheel events drive Mercury Code scrolling.
+    this.installStdinProxy();
 
     this.inputHandler = (text: string) => {
       const trimmed = text.trim();
@@ -667,8 +727,22 @@ export class CLIChannel extends BaseChannel {
         },
         spotifyClient: this.spotifyClient,
       }),
-      { exitOnCtrlC: false, patchConsole: false, stdin: process.stdin, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
+      { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
     );
+  }
+
+  private stdinProxy: TtyStdinProxy | null = null;
+
+  /** Install the filtered-stdin proxy: Ink reads clean text; the mouse
+   *  filter (always active) delivers wheel events for transcript scrolling
+   *  and never lets raw sequences leak into the input. */
+  private installStdinProxy(): void {
+    if (this.stdinProxy) return;
+    const proxy = new TtyStdinProxy(process.stdin, new MouseSequenceFilter(
+      (ev) => this.dispatchMouseEvent(ev),
+      (s) => proxy.write(s),
+    ));
+    this.stdinProxy = proxy;
   }
 
   /** Hard cap on rendered transcript messages held in TUI state. */
@@ -1353,9 +1427,14 @@ export class CLIChannel extends BaseChannel {
       programmingMode: 'auto',
       exitEscArmed: false,
     });
-    // Explicitly reset modes left behind by an older/crashed Mercury process.
-    // Never enable them here: cleanup cannot run after a native V8 abort.
-    this.setMouseEnabled(false);
+    // Reset stale mouse state, then enable mouse reporting for THIS
+    // Mercury Code session: wheel scroll drives the transcript scrollback
+    // (full-screen frames keep history OUT of terminal scrollback — the
+    // wheel is the only natural way back up).
+    this.setMouseEnabled(true, (ev) => {
+      if (ev.wheel === 'up') this.scrollMercuryCode(3);
+      else if (ev.wheel === 'down') this.scrollMercuryCode(-3);
+    });
     try {
       process.stdout.write('\x1b[2J\x1b[H');
     } catch { /* ignore */ }
