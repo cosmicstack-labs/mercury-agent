@@ -43,26 +43,75 @@ function renderedTextLines(markdown: string, width: number): string[] {
 }
 
 /**
- * Brand rows rendered as the transcript's leading rows. Scrolling treats
- * them like any other content: new messages push them up and away, exactly
- * like a web page header scrolling out of view. Empty accent = solid row;
- * non-empty accent splits the row into (text, accent) two-tone rendering.
- * `indent` centers the block exactly like the original standalone wordmark:
- * the indent is baked into `text`, so scroll math never has to special-case it.
+ * Brand rows rendered as the transcript's leading rows — a FRAMED SPLASH
+ * PANEL (rounded box around the wordmark, tagline caption beneath). Scrolling
+ * treats them like any other content: new messages push them up and away.
+ * Degrades to the unframed mark on narrow terminals. Empty accent = solid
+ * row; non-empty accent splits the row into (text, accent) two-tone rendering.
  */
 export function buildMercuryBrandLines(version: string, cols: number): MercuryTranscriptLine[] {
   const parts = renderMercuryCodeParts();
   const maxLen = Math.max(...parts.map((p) => p.left.length + 2 + p.right.length));
-  const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
   const versionStr = `v${version}`;
+  const rows: MercuryTranscriptLine[] = [];
+
+  // Framed panel: needs room for the box plus breathing room. On narrow
+  // terminals, degrade to the bare mark.
+  if (cols >= maxLen + 8) {
+    const inner = maxLen + 2; // one space of padding inside each border
+    const pad = (s: string) => s.padEnd(maxLen, ' ');
+    rows.push({
+      key: 'brand:border-top',
+      kind: 'brand',
+      role: 'system',
+      text: '╭' + '─'.repeat(inner + 2) + '╮',
+      accent: '',
+    });
+    for (const part of parts) {
+      // Two-tone layout: left border + MERCURY in text (cyan), CODE + right
+      // border in accent (code color), kept adjacent with exact fill.
+      const fill = maxLen - (part.left.length + 2 + part.right.length);
+      rows.push({
+        key: `brand:mark:${rows.length}`,
+        kind: 'brand',
+        role: 'system',
+        text: `│ ${part.left}`,
+        accent: `  ${part.right}${' '.repeat(Math.max(0, fill + 1))}│`,
+      });
+    }
+    rows.push({
+      key: 'brand:border-bottom',
+      kind: 'brand',
+      role: 'system',
+      text: '╰' + '─'.repeat(inner + 2) + '╯',
+      accent: '',
+    });
+    // Caption beneath the panel: tagline + version, centered as a unit.
+    const tagline = `⌁ interactive coding agent · ${versionStr}`;
+    const indent = Math.max(0, Math.floor((cols - tagline.length) / 2));
+    rows.push({
+      key: 'brand:tagline',
+      kind: 'brand',
+      role: 'system',
+      text: ' '.repeat(indent) + '⌁ interactive coding agent · ',
+      accent: versionStr,
+    });
+    rows.push({ key: 'brand:spacer', kind: 'spacer', role: 'system', text: '' });
+    return rows;
+  }
+
+  // Narrow-terminal fallback: the bare mark (previous behavior).
+  const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
   const versionIndent = Math.max(0, indent + maxLen - versionStr.length - 1);
-  const rows: MercuryTranscriptLine[] = parts.map((part, i) => ({
-    key: `brand:${i}`,
-    kind: 'brand' as const,
-    role: 'system' as const,
-    text: ' '.repeat(indent) + part.left,
-    accent: part.right.length > 0 ? `  ${part.right}` : '',
-  }));
+  for (const part of parts) {
+    rows.push({
+      key: `brand:${rows.length}`,
+      kind: 'brand',
+      role: 'system',
+      text: ' '.repeat(indent) + part.left,
+      accent: part.right.length > 0 ? `  ${part.right}` : '',
+    });
+  }
   rows.push({
     key: 'brand:version',
     kind: 'brand',
