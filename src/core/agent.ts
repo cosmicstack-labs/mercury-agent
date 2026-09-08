@@ -2076,6 +2076,11 @@ export class Agent {
       const saverWasActive = this.saverMode.isActive();
 
       const providersForAttempt = [...fallbackIterator];
+      // Per-provider failure ledger: when EVERY provider fails, the final
+      // error must show WHY each one failed (dead token, bad key, rate
+      // limit) — showing only the last error hides the real fix from the
+      // user.
+      const providerFailures = new Map<string, string>();
       for (const provider of [...providersForAttempt, ...providersForAttempt]) {
         // Per-attempt latency accounting: the only way to answer "why is
         // coding slow" with data instead of guesses.
@@ -2890,6 +2895,9 @@ export class Agent {
             break;
           }
           lastError = err;
+          if (!providerFailures.has(provider.name)) {
+            providerFailures.set(provider.name, (err?.message || String(err)).slice(0, 140));
+          }
           logger.warn({ provider: provider.name, durationMs: Date.now() - attemptStartedAt }, 'Provider attempt failed');
           if (hasStreamedOutput) {
             // Partial visible output: silently combining two different
@@ -2911,9 +2919,12 @@ export class Agent {
       }
 
       if (!result) {
+        const failureBlock = providerFailures.size > 0
+          ? `\nPer-provider:\n- ${[...providerFailures.entries()].slice(0, 8).map(([name, reason]) => `${name}: ${reason}`).join('\n- ')}`
+          : '';
         let errMsg = hasCompletedTool
           ? `Work stopped in an interrupted/ambiguous state to avoid repeating completed tool side effects. ${lastError?.message || ''}`.trim()
-          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}`;
+          : `All LLM providers failed. Last error: ${lastError?.message || 'unknown'}${failureBlock}`;
         if (memoryPressureStop) {
           errMsg = `Task stopped before the heap limit: ${lastError?.message || 'memory safety limit'}`;
           logger.error({ err: lastError }, errMsg);
