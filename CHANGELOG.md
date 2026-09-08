@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.2.3 — Unstoppable Mercury
+
+The release where **Mercury Code stops dying and starts telling the truth.** The completion pipeline was rebuilt around a completion contract: every task ends in a verdict — verified completion, or an honest pause that names its blocker and resumes. Tasks can no longer fake success, die silently, or loop forever.
+
+### New
+
+- **Completion contract** — Every task end is classified (`completion-verdict.ts`): budget exhaustion is a *pause*, never a fake "Task complete". Evidence-gated completion: implementation tasks must run a build/test/typecheck before claiming done. Honest banners: "Response delivered · no file changes" when git shows nothing, "Task paused · send continue" when resumable.
+- **AUTO mode** — Mercury Code's new default: plan and build in one flow, one `ask_user` confirmation only for large changes. No more manual plan/execute switching.
+- **Live plan checklist** — the `update_plan` tool maintains a visible checklist in Mercury Code (pending / ▶ active / ☑ done), so you always see which step is being implemented.
+- **Escalation harness for narration-locked models** — the agent mechanically forces action: harness grounding (deterministic directory listing), provider-enforced `toolChoice: 'required'` on mutating-tools-only steps, provider rotation per guard round, and a wake-up call (doubled bound, blunt directive) before any pause.
+- **Compact-on-pressure** — OpenCode practice adopted: memory pressure now compacts the conversation in place and continues; abort only if pressure persists.
+- **No Mercury-imposed output size limit** — the model's native limit governs (32,768 ceiling); providers that reject it get an adaptive halving. Big single-file writes land in one call.
+- **Write-truncation recovery** — severed file writes get sectioned-write guidance (create first ~80 lines, then `edit_file` appends) with full-budget resume rounds.
+- **Stall watchdog** — 3 min silence → visible pulse; 8 min → abort into resume machinery. `MERCURY_STALL_SOFT_MS` / `MERCURY_STALL_HARD_MS`.
+- **Automatic continuation** — step budgets and provider failures continue automatically (6 fresh budgets, provider hard-deadline counts as one attempt); the manual "continue" gate is a backstop, not a checkpoint.
+- **Interactive choice picker in Mercury Code** — `ask_user` prompts now render in the full-screen TUI (previously invisible → hang) and own the keyboard; Esc cancels safely.
+- **Live thinking preview** — model reasoning streams as a quoted preview in the TUI instead of 52 seconds of dead air.
+- **Trackpad/wheel scrolling in Mercury Code** — full-screen transcripts scroll with the wheel via a filtered stdin proxy (mouse sequences never leak into input).
+- **Change summary at completion** — per-file +/− stats and verification evidence ("✓ Verified: npm test ✓") in the completion banner.
+- **File-change previews** — bounded, syntax-highlighted excerpts of every created/edited file in the transcript.
+- **`/code chat`** — instant exit from Mercury Code to regular chat; `/chat` teardown fixed.
+
+### Security
+
+- **SSRF guard** — `fetch_url` and `install_skill` validate scheme + private ranges (DNS-resolved) on every redirect hop; 512 KB caps. `MERCURY_ALLOW_PRIVATE_FETCH=1` opt-out.
+- **Credential file hardening** — `web-config.json` / `web-sessions.json` written 0600 and repaired on load.
+- **Random initial web password** — no more hardcoded default from a public repo.
+- **Secret redaction** — API keys masked in logs (pino error serializer) and command output echoes.
+- **Shell blocklist** — swapped-flag `rm -fr` variants added to the never-execute tier.
+
+### Fixed
+
+- Yoga WASM "memory access out of bounds" crashes (ink patched: freed-node hygiene + `<Static>` identity dedup) and the duplicate-message render loop.
+- Scroll repair after long-session trims (`/mc scroll-set` was dead code — parsed as a NaN delta).
+- Prose questions no longer fight the guard; AUTO-mode banner gating; `not-a-git-repo` false "no file changes" claim.
+- Mercury Cloud recovery error now says "run `mercury cloud connect`" instead of an opaque 401 loop.
+- Chat-mode thinking indicator surfaces live provider/phase activity.
+
+
 ## 1.1.13 — Chatty Mercury
 
 Mercury gets chatty. Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are, with end-to-end encryption, organization access models, and real-time streaming. Plus long-running loop fixes, CLI heartbeat improvements, and crash recovery.

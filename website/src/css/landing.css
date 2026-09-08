@@ -633,3 +633,43 @@
 @media (max-width: 900px) {
   .lp-cloud-banner { grid-template-columns: 1fr; gap: 32px; padding: 36px 28px; }
 }
+
+/* ── Mercury Code 1.2.3 release banner ─────────────────────────── */
+.lp-release-badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--lp-cyan, #22d3ee);
+  color: var(--lp-cyan, #22d3ee);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-bottom: 14px;
+}
+.lp-release-lead {
+  font-size: 16px;
+  line-height: 1.6;
+  opacity: 0.85;
+  max-width: 560px;
+}
+.lp-release-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 16px 0 20px;
+  font-size: 13px;
+  color: #7ee0f0;
+}
+.lp-release-term {
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 18px 20px;
+  font-family: var(--font-mono, 'SFMono-Regular', Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.lp-release-term-line { white-space: pre-wrap; }
+.lp-release-term-line.lp-dim { opacity: 0.6; }
+.lp-release-term-line .lp-ok { color: #4ade80; }
+.lp-release-right { display: flex; align-items: center; }

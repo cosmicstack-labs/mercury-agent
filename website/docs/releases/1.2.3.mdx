@@ -1,0 +1,109 @@
+title: "v1.2.3 — Unstoppable Mercury"
+sidebar_label: "v1.2.3"
+description: "The release where Mercury Code stops dying and starts telling the truth. Completion contract, AUTO mode, the escalation harness, compact-on-pressure, live plan checklist, and security hardening across the tool surface."
+keywords: [mercury, mercury-agent, unstoppable-mercury, mercury-code, completion-contract, auto-mode, release, 1.2.3]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.2.3 — Unstoppable Mercury" />
+  <meta property="og:description" content="Mercury Code stops dying and starts telling the truth: completion contract, AUTO mode, mechanical escalation, compact-on-pressure, and honest verdicts." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.2.3" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.2.3 — Unstoppable Mercury" />
+  <meta name="twitter:description" content="Completion contract · AUTO mode · Escalation harness · Compact-on-pressure · Honest verdicts." />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.2.3" />
+</Head>
+
+# v1.2.3 — Unstoppable Mercury
+
+> **Mercury Code stops dying and starts telling the truth.**
+
+`1.2.3` rebuilds Mercury Code's completion pipeline around one contract: **every task ends in a verdict** — a verified completion, or an honest pause that names its blocker and resumes. Before this release, step-budget exhaustion produced green "Task complete" banners over half-done work, big file writes were severed mid-argument by the output cap, narration-locked models looped forever, and long builds died at memory pressure. Now every failure mode routes to a named recovery path, and no task can claim success without evidence.
+
+> **Why "Unstoppable Mercury"?** This is the release where the agent stopped being a chat wrapper around an LLM and became an orchestrator with guarantees. When a model narrates instead of building, the agent grounds the work itself, mechanically forces the first tool call, rotates to another model, and issues a wake-up call — ten enforced rounds before it ever pauses. And when it pauses, it tells you exactly what blocked it.
+
+## At a glance
+
+| Area | What changed |
+|---|---|
+| **Completion contract** | Turn-end verdicts (`text-stop` / `steps-exhausted` / `interrupted` / `truncated` / `aborted`) — budget exhaustion is a *pause*, never a fake completion |
+| **AUTO mode** | Mercury Code's new default: plan + build in one flow; one confirmation only for large changes |
+| **Escalation harness** | Grounding → forced mutating tool call → provider rotation → wake-up call; narration is mechanically impossible on forced steps |
+| **Verification gate** | Build/test/typecheck evidence required before "Task complete" in execute/AUTO mode |
+| **Compact-on-pressure** | Memory pressure compacts the conversation in place and continues (OpenCode practice) |
+| **Output size** | No Mercury-imposed cap — the model's native limit governs; adaptive halving for providers that reject it |
+| **Honest verdicts** | Pauses carry the blocker ("write_file: permission denied") and resume via "continue"; work-ledger `paused` state persists across restarts |
+| **Live TUI** | Plan checklist, `ask_user` choice picker (now visible in Mercury Code), thinking preview, wheel scrolling, file-change previews |
+| **Security** | SSRF guard on `fetch_url`/`install_skill`, credential files 0600, random initial web password, secret redaction in logs |
+
+## The completion contract
+
+The heart of the release. Previously, the agent loop had one optimistic pass — and every ending, including half-done work, was celebrated as complete. Now:
+
+1. **Every turn end is classified** — `text-stop`, `steps-exhausted`, `interrupted`, `truncated`, `aborted` (`src/core/completion-verdict.ts`).
+2. **Budget exhaustion is a pause**, never a completion. The task pauses with a resumable work-ledger entry and a message that names the blocker — including the last failed tool result (e.g. `write_file: permission denied`).
+3. **Evidence-gated completion** — implementation tasks must run a build/test/typecheck command before the completion banner is allowed. No evidence → one forced verification round.
+4. **Honest banners** — "Response delivered · no file changes" (git-verified), first-person pause messages, and a change summary with per-file +/− stats and verification evidence at completion.
+
+## AUTO mode — no more mode switching
+
+Mercury Code now starts in **AUTO** by default: read first, plan silently, implement immediately. Small and medium changes proceed without asking; large or consequential changes present a concise plan with a single `ask_user` confirmation (recommended option default-selected), then build without re-asking. Manual `plan`/`execute` modes remain available (`/code plan`, `/code execute`, `/code toggle`), and `/code chat` (new) exits to regular chat instantly.
+
+## The escalation harness — the agent makes things happen
+
+When a model narrates instead of building, Mercury Code escalates mechanically — none of it depends on the model's goodwill:
+
+1. **Grounding** — the agent executes a deterministic directory listing itself (no LLM) and injects it as verified state.
+2. **Forced action** — via `prepareStep`, the first step of a guard round runs with `toolChoice: 'required'` and **mutating tools only**. Narration is impossible on that step.
+3. **Provider rotation** — guard rounds walk the fallback chain; a narration-locked model isn't the only worker.
+4. **Wake-up call** — after a full failed cycle, the bound doubles with a blunt directive ("your next response MUST begin with a mutating tool call, ZERO prose"). Ten mechanical rounds total across providers before any pause.
+
+## Reliability, borrowed and extended
+
+OpenCode's session-pipeline practices were adopted where they make Mercury harder to kill — and extended with guarantees neither OpenCode nor Claude Code expose:
+
+| Practice | OpenCode | Mercury 1.2.3 |
+|---|---|---|
+| Memory/context pressure | Compact and continue | **Compact and continue** (`compactConversation`), abort only if pressure persists |
+| Doom-loop protection | Threshold 3 → intervention | Loop detector → abort attempt → provider fallback |
+| Provider failures | Exponential backoff, retry-after, max 5 | Fallback chain + durable retries + named per-provider failure ledger |
+| Completion guarantees | None documented | **Completion contract**: forced action, wake-up calls, evidence-gated completion |
+
+Plus: a **stall watchdog** (3-min silence → visible pulse, 8-min → abort into resume machinery), **automatic continuation** (six fresh step budgets, provider hard-deadlines count as one attempt), and **write-truncation recovery** (sectioned writes with full-budget resume rounds).
+
+## The live TUI
+
+- **Live plan checklist** — the `update_plan` tool maintains pending / ▶ active / ☑ done steps in the transcript, so you always see which step is being implemented.
+- **`ask_user` choice picker** — now renders inside Mercury Code (previously the tool blocked on a prompt that never rendered — an invisible hang) and owns the keyboard while pending.
+- **Live thinking preview** — model reasoning streams as a quoted preview instead of dead air.
+- **Wheel scrolling** — full-screen transcripts scroll with the trackpad via a filtered stdin proxy; mouse sequences never leak into input.
+- **File-change previews** — bounded, syntax-highlighted excerpts of every created/edited file, with per-file stats at completion.
+- **Developer status line** — repo state, mode, token budget (⚡ %), and only the keys that matter.
+
+## Security hardening
+
+- **SSRF guard**: `fetch_url` and `install_skill` validate scheme and private ranges (DNS-resolved) on every redirect hop; 512 KB payload caps. `MERCURY_ALLOW_PRIVATE_FETCH=1` to opt out for local testing.
+- **Credential files** (`web-config.json`, `web-sessions.json`) written `0600` and repaired on load; the initial web password is now random per install.
+- **Secret redaction**: API keys masked in logs and command-output echoes; shell blocklist gains swapped-flag `rm -fr` variants.
+- **Mercury Cloud**: credential rotation failures now say `run "mercury cloud connect"` instead of an opaque 401 loop.
+
+## Fixed
+
+- Yoga WASM "memory access out of bounds" crashes — ink patched (freed-node reference hygiene + `<Static>` identity dedup), shipped via patch-package.
+- Duplicate-message render loop (~30 s cadence) from still-mounted static children.
+- Scroll repair after long-session trims (`/mc scroll-set` was parsed as a NaN delta — dead code).
+- Prose questions no longer fight the narration guard; `not-a-git-repo` no longer false-claims "no file changes".
+- `/chat` from Mercury Code tears down state properly instead of half-exiting.
+
+## Upgrade
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.2.3
+```
+
+No config changes required. New optional environment variables: `MERCURY_STALL_SOFT_MS`, `MERCURY_STALL_HARD_MS`, `MERCURY_ALLOW_PRIVATE_FETCH`, `MERCURY_MAX_STEPS` (testing). `patch-package` ships as a runtime dependency — the bundled ink patch applies automatically on install.
