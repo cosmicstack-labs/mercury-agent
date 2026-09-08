@@ -1193,7 +1193,7 @@ function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
-        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} />}
+        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
       </Box>
     </Box>
@@ -1243,7 +1243,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
         </Static>
         <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
-        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} />}
+        {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         <Box paddingX={1} marginTop={1}>
           <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute (Auto runs by default)</Text>
         </Box>
@@ -1947,7 +1947,7 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
   );
 }
 
-function ThinkingIndicator({ agentName, steps, mode, liveActivity }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null }) {
+function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPreview }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null; thinkingPreview?: string | null }) {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
   const [elapsed, setElapsed] = React.useState(0);
@@ -1973,7 +1973,9 @@ function ThinkingIndicator({ agentName, steps, mode, liveActivity }: { agentName
     ? runningStep.label
     : liveActivity?.phase
       ? `${liveActivity.phase}${liveActivity.detail ? ` — ${liveActivity.detail}` : ''}`
-      : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
+      : thinkingPreview
+        ? 'Thinking...'
+        : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
   const displayElapsed = runningStep?.startedAt
     ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0)
@@ -1986,6 +1988,7 @@ function ThinkingIndicator({ agentName, steps, mode, liveActivity }: { agentName
 
   // Show at most 2 most recent completed steps (keeps total lines ≤ 3)
   const recentDone = doneSteps.slice(-2);
+  const thinkLine = !runningStep && thinkingPreview ? thinkingPreview.slice(-120) : null;
 
   return (
     <Box marginTop={1} marginLeft={2} flexDirection="column">
@@ -1999,6 +2002,11 @@ function ThinkingIndicator({ agentName, steps, mode, liveActivity }: { agentName
         <Text color={actionTone} bold>{currentAction}</Text>
         {displayElapsed >= 90 && <Text color="red" dimColor> · long op (Ctrl+C cancels, /bg current to background)</Text>}
       </Box>
+      {thinkLine && (
+        <Box marginLeft={4}>
+          <Text dimColor>  “{thinkLine}”</Text>
+        </Box>
+      )}
       {recentDone.length > 0 && (
         <Box flexDirection="column" marginLeft={4} marginTop={0}>
           {recentDone.map((step) => (
@@ -2501,6 +2509,11 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
           <Text dimColor> {step.label}{step.elapsed != null ? ` (${step.elapsed.toFixed(1)}s)` : ''}</Text>
         </Box>
       ))}
+      {!running && state.thinkingPreview && (
+        <Box paddingLeft={2}>
+          <Text dimColor>  “{state.thinkingPreview.slice(-120)}”</Text>
+        </Box>
+      )}
       {activeAgents.length > 0 && (
         <React.Fragment>
           <Text color="magenta">  ⧖ swarm · {activeAgents.length} in parallel</Text>

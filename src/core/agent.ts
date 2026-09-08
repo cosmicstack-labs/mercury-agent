@@ -91,10 +91,14 @@ import { buildFileChangePreview } from '../utils/file-preview.js';
  * fullStream and inserts paragraph breaks at step boundaries so each
  * step's narration reads as its own block.
  */
-function stepAwareTextStream(fullStream: AsyncIterable<any>): AsyncIterable<string> {
+function stepAwareTextStream(
+  fullStream: AsyncIterable<any>,
+  onReasoning?: (preview: string | null) => void,
+): AsyncIterable<string> {
   return (async function* () {
     let firstStep = true;
     let sawTextInStep = false;
+    let reasoningBuf = '';
     for await (const part of fullStream) {
       if (part.type === 'step-start') {
         if (!firstStep && sawTextInStep) yield '\n\n';
@@ -102,11 +106,23 @@ function stepAwareTextStream(fullStream: AsyncIterable<any>): AsyncIterable<stri
         sawTextInStep = false;
         continue;
       }
+      if (part.type === 'reasoning-delta' && part.text) {
+        // Live thinking feedback: the model reasoning before speaking is
+        // surfaced as a preview instead of dead air.
+        reasoningBuf = (reasoningBuf + part.text).slice(-400);
+        onReasoning?.(reasoningBuf.slice(-160));
+        continue;
+      }
       if (part.type === 'text-delta' && part.text) {
+        if (reasoningBuf) {
+          reasoningBuf = '';
+          onReasoning?.(null);
+        }
         sawTextInStep = true;
         yield part.text;
       }
     }
+    onReasoning?.(null);
   })();
 }
 
@@ -2467,9 +2483,13 @@ export class Agent {
               },
             });
 
+            const cliChThinking = channel instanceof CLIChannel ? channel : null;
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of (stepAwareTextStream(streamResult.fullStream))) {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview) => {
+                cliChThinking?.showThinkingPreview(preview);
+              }))) {
                 if (chunk) hasStreamedOutput = true;
+                cliChThinking?.showThinkingPreview(null);
                 yield chunk;
               }
             })());

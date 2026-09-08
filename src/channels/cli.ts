@@ -227,6 +227,8 @@ export interface TuiState {
   toolSteps: ToolStep[];
   /** Live plan checklist maintained by the agent via the update_plan tool. */
   planProgress: PlanStep[] | null;
+  /** Live reasoning preview while the model thinks before speaking. */
+  thinkingPreview: string | null;
   isThinking: boolean;
   permissionPrompt: PermissionPromptState | null;
   agentName: string;
@@ -262,6 +264,7 @@ const defaultState: TuiState = {
   chatMessages: [],
   toolSteps: [],
   planProgress: null,
+  thinkingPreview: null,
   isThinking: false,
   permissionPrompt: null,
   agentName: 'Mercury',
@@ -953,6 +956,16 @@ export class CLIChannel extends BaseChannel {
       lastStepLog: this.state.toolSteps.length > 0 ? [...this.state.toolSteps] : (this.state.lastStepLog ?? null),
       lastStepLogElapsed: elapsedMs,
     });
+  }
+
+  /**
+   * Live "thinking" preview: the tail of the model's reasoning while it
+   * works, so a silent generation phase is never dead air. Pass null to
+   * clear (when text starts streaming or the stream ends).
+   */
+  showThinkingPreview(preview: string | null): void {
+    if (this.state.thinkingPreview === preview) return;
+    this.update({ thinkingPreview: preview });
   }
 
   /**
