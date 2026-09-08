@@ -2495,8 +2495,8 @@ export class Agent {
               let stillTruncated = true;
               while (stillTruncated && continuationRound < MAX_STREAM_CONTINUATIONS && !loopAbortController.signal.aborted) {
                 continuationRound++;
-                this.markProgress('Continuing truncated response...');
-                this.pushLiveActivity('Continuing truncated response', 'auto-resume after output limit');
+                this.markProgress('Writing the next section...');
+                this.pushLiveActivity('Finishing the write — continuing past the size limit', 'auto-resume');
                 const continueResult: Awaited<ReturnType<typeof streamText>> = await this.withProviderDeadline(
                   Promise.resolve(streamText({
                     model: provider.getModelInstance(),
