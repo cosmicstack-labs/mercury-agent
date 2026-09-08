@@ -2733,7 +2733,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
         const allowedControlTypes = new Set([
           'session.create', 'session.delete', 'session.archive', 'permission.resolve', 'choice.resolve',
-          'interaction.cancel', 'permission.mode', 'model.list', 'model.select',
+          'interaction.cancel', 'permission.mode', 'model.list', 'model.select', 'task.stop',
         ]);
         if ((msg.agentId && msg.agentId !== config.cloud.agentId)
           || (controlType && (!allowedControlTypes.has(controlType) || typeof message === 'string'))
@@ -2827,6 +2827,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             requestId,
             event: 'permission_mode_set',
             data: { mode: action },
+          });
+          return;
+        }
+
+        if (controlType === 'task.stop') {
+          if (!suppliedSessionId) {
+            cloudClient!.sendStream({ conversationId, requestId, event: 'error', data: { message: 'Stop requires the session the task belongs to.' } });
+            return;
+          }
+          // Same semantics as the local /stop fast-path command: abort the
+          // foreground task, cancel its work-ledger entry, halt sub-agents.
+          const note = await agent.stopAllWork('stopped');
+          cloudClient!.sendStream({
+            conversationId,
+            sessionId: suppliedSessionId,
+            requestId,
+            event: 'task_stopped',
+            data: { message: note },
           });
           return;
         }

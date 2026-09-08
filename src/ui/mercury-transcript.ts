@@ -56,13 +56,15 @@ export function buildMercuryBrandLines(version: string, cols: number): MercuryTr
   const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
   const versionStr = `v${version}`;
   const versionIndent = Math.max(0, indent + maxLen - versionStr.length - 1);
-  const rows: MercuryTranscriptLine[] = parts.map((part, i) => ({
+  // Top padding: a clean band of air above the mark.
+  const padRow: MercuryTranscriptLine = { key: 'brand:pad-top', kind: 'spacer', role: 'system', text: '' };
+  const rows: MercuryTranscriptLine[] = [padRow, ...parts.map((part, i) => ({
     key: `brand:${i}`,
     kind: 'brand' as const,
     role: 'system' as const,
     text: ' '.repeat(indent) + part.left,
     accent: part.right.length > 0 ? `  ${part.right}` : '',
-  }));
+  }))];
   rows.push({
     key: 'brand:version',
     kind: 'brand',

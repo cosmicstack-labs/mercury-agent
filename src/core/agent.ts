@@ -640,6 +640,32 @@ export class Agent {
     this.processQueue();
   }
 
+  /**
+   * Stop all current work with /stop semantics. Shared by the chat fast-path
+   * command and the Cloud `task.stop` control so a remote stop behaves
+   * exactly like typing /stop locally. Returns the confirmation note.
+   */
+  async stopAllWork(reason: 'stopped' | 'halted'): Promise<string> {
+    if (this.currentAbort && !this.currentAbort.signal.aborted) {
+      this.currentAbortReason = reason;
+      this.currentAbort.abort();
+    }
+    // The user deliberately killed this work — cancel its ledger entry so
+    // a restart never tries to resume it. (Only real crashes auto-resume.)
+    if (this.currentWorkKey) {
+      const label = reason === 'stopped' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
+      try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
+    }
+    if (this.supervisor) {
+      await this.supervisor.haltAll();
+      if (reason === 'stopped') {
+        this.supervisor.clearTaskBoard();
+      }
+      return reason === 'halted' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.';
+    }
+    return reason === 'halted' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.';
+  }
+
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
     const trimmed = msg.content.trim();
     const channel = this.channels.getChannelForMessage(msg);
@@ -674,25 +700,7 @@ export class Agent {
     }
 
     if (trimmed === '/halt' || trimmed === '/stop') {
-      if (this.currentAbort && !this.currentAbort.signal.aborted) {
-        this.currentAbortReason = trimmed === '/stop' ? 'stopped' : 'halted';
-        this.currentAbort.abort();
-      }
-      // The user deliberately killed this work — cancel its ledger entry so
-      // a restart never tries to resume it. (Only real crashes auto-resume.)
-      if (this.currentWorkKey) {
-        const label = trimmed === '/stop' ? 'Stopped by the user (/stop).' : 'Halted by the user (/halt).';
-        try { this.workLedger.markCancelled(this.currentWorkKey, label); } catch { /* entry may not exist */ }
-      }
-      if (this.supervisor) {
-        await this.supervisor.haltAll();
-        if (trimmed === '/stop') {
-          this.supervisor.clearTaskBoard();
-        }
-        await channel.send(trimmed === '/halt' ? 'All sub-agents halted.' : 'All agents stopped, locks released, task board cleared.', msg.channelId);
-      } else {
-        await channel.send(trimmed === '/halt' ? 'Foreground task halted.' : 'Foreground task stopped, locks released, task board cleared.', msg.channelId);
-      }
+      await channel.send(await this.stopAllWork(trimmed === '/stop' ? 'stopped' : 'halted'), msg.channelId);
       return;
     }
 
