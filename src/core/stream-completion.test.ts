@@ -45,3 +45,16 @@ describe('stream completion classification', () => {
     expect(bounded).not.toContain('x'.repeat(250));
   });
 });
+// ── toolTruncationContinuationPrompt ─────────────────────────────────────────
+import { toolTruncationContinuationPrompt } from './stream-completion.js';
+
+describe('toolTruncationContinuationPrompt', () => {
+  it('instructs sectioned writes when a file write was severed', () => {
+    const prompt = toolTruncationContinuationPrompt('build the 3D world');
+    expect(prompt).toContain('WRITE TRUNCATED');
+    expect(prompt).toContain('file was NOT written');
+    expect(prompt).toContain('Do NOT retry the same giant write');
+    expect(prompt).toContain('first 80 lines');
+    expect(prompt).toContain('edit_file');
+  });
+});

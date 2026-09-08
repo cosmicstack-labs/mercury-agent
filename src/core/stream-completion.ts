@@ -66,3 +66,17 @@ export function truncationContinuationPrompt(taskHint: string | undefined): stri
     ? `[SYSTEM] Your previous response hit the output-token limit and was cut off. Continue exactly where you left off for the task: "${hint.slice(0, 200)}". Do not repeat completed work; resume from the cut point and finish the remaining implementation.`
     : '[SYSTEM] Your previous response hit the output-token limit and was cut off. Continue exactly where you left off. Do not repeat completed work; resume from the cut point and finish the remaining implementation.';
 }
+/**
+ * Continuation nudge for a truncation that severed a FILE WRITE mid-tool-call
+ * (finishReason 'length' with tool calls pending). Retrying the same giant
+ * write hits the same wall; the model must switch to sectioned writes.
+ */
+export function toolTruncationContinuationPrompt(taskHint?: string): string {
+  const hint = taskHint?.trim();
+  const task = hint ? `The task: "${hint.slice(0, 200)}".` : '';
+  return [
+    '[SYSTEM: WRITE TRUNCATED] Your file write was cut off by the output-token limit — the file was NOT written. Do NOT retry the same giant write.',
+    task,
+    'Write in sections instead: create_file with roughly the first 80 lines, then edit_file to append the next 80 lines at a time (match existing content at each append point) until the file is complete. Small calls always fit; one giant call never will.',
+  ].join(' ');
+}

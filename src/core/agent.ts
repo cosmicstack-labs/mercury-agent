@@ -76,7 +76,7 @@ import { requiresFinalSend } from './response-delivery.js';
 import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
-import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
+import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -355,7 +355,11 @@ const MAX_STEPS = (() => {
   const override = Number(process.env.MERCURY_MAX_STEPS);
   return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
 })();
-const MAX_RESPONSE_TOKENS = 4096;
+// 8192: a single-file app write is emitted AS tool-call arguments — at
+// 4096 the call is severed mid-argument, never executes, and the model
+// retries into the same wall forever (the 'drops in the middle' failure on
+// medium tasks). Small tasks fit under 4096; medium ones never do.
+const MAX_RESPONSE_TOKENS = 8192;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
@@ -2500,11 +2504,16 @@ export class Agent {
                     messages: [
                       ...messages,
                       { role: 'assistant', content: continuationText },
-                      { role: 'user', content: truncationContinuationPrompt(msg.content) },
+                      { role: 'user', content: lastStepHadToolCalls
+                        ? toolTruncationContinuationPrompt(msg.content)
+                        : truncationContinuationPrompt(msg.content) },
                     ],
                     tools: this.capabilities.getTools(),
                     maxOutputTokens: effectiveMaxOutputTokens,
-                    stopWhen: stepCountIs(1),
+                    // FULL budget: a one-step round can only read files — the
+                    // model could never reach the write, which is exactly the
+                    // 'drops in the middle' loop.
+                    stopWhen: stepCountIs(effectiveMaxSteps),
                     abortSignal: loopAbortController.signal,
                     experimental_include: { requestBody: false },
                   })),
