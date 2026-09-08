@@ -444,13 +444,12 @@ export class CLIChannel extends BaseChannel {
       // Internal Mercury Code view commands (issued by the TUI itself).
       if (trimmed.startsWith('/mc ')) {
         const sub = trimmed.slice(4).trim();
-        if (sub === 'scroll' || sub.startsWith('scroll ') || sub.startsWith('scroll-')) {
-          const arg = sub.startsWith('scroll-') ? sub.slice(7) : sub.slice(6).trim();
-          const delta = arg.startsWith('-') ? -parseInt(arg.slice(1), 10) : parseInt(arg, 10);
-          if (Number.isFinite(delta)) this.scrollMercuryCode(delta);
-          return;
-        }
-        if (sub === 'live') { this.scrollMercuryCodeToLive(); return; }
+        // scroll-set MUST be matched before the generic scroll- prefix — the
+        // generic branch parses 'scroll-set N' as delta 'set N' (NaN) and
+        // returns, which silently killed the scroll-clamp loop: after a
+        // history trim the stored offset could exceed the shrunken
+        // transcript forever, leaving the viewport stuck on the last rows
+        // ("can't scroll, only see the code").
         if (sub.startsWith('scroll-set ')) {
           const distance = parseInt(sub.slice(11), 10);
           if (Number.isFinite(distance)) {
@@ -461,6 +460,13 @@ export class CLIChannel extends BaseChannel {
           }
           return;
         }
+        if (sub === 'scroll' || sub.startsWith('scroll ') || sub.startsWith('scroll-')) {
+          const arg = sub.startsWith('scroll-') ? sub.slice(7) : sub.slice(6).trim();
+          const delta = arg.startsWith('-') ? -parseInt(arg.slice(1), 10) : parseInt(arg, 10);
+          if (Number.isFinite(delta)) this.scrollMercuryCode(delta);
+          return;
+        }
+        if (sub === 'live') { this.scrollMercuryCodeToLive(); return; }
         if (sub === 'esc-arm') {
           this.exitEscArmed = true;
           // Auto-disarm after 1.5s so Esc-Esc window is bounded.

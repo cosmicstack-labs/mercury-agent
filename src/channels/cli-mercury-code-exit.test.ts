@@ -44,6 +44,20 @@ describe('Mercury Code exit paths', () => {
     expect(channel.getTuiState().mode).not.toBe('mercury-code');
   });
 
+  it('/mc scroll-set is matched before the generic scroll- prefix', () => {
+    // Regression: the generic branch parsed 'scroll-set N' as delta 'set N'
+    // (NaN) and returned, silently killing the scroll-clamp loop — after a
+    // history trim the stored offset exceeded the shrunken transcript
+    // forever and the viewport was stuck on the last rows ("can't scroll,
+    // only see the code").
+    const source = readFileSync(join(uiDir, 'cli.ts'), 'utf8');
+    const setIdx = source.indexOf("sub.startsWith('scroll-set ')");
+    const genericIdx = source.indexOf("sub.startsWith('scroll ')");
+    expect(setIdx).toBeGreaterThan(-1);
+    expect(genericIdx).toBeGreaterThan(-1);
+    expect(setIdx, 'scroll-set must be parsed before the generic scroll- branch').toBeLessThan(genericIdx);
+  });
+
   it('/code entry keeps agent-side mode in AUTO (never reverts TUI to plan)', () => {
     // Regression: after enterMercuryCode set the TUI to AUTO, the agent
     // pushed its stale 'plan' back via setProgrammingStatus — the status bar
