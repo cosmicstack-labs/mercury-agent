@@ -2435,6 +2435,16 @@ export class Agent {
             );
             cliResponseStreamed = channel instanceof CLIChannel;
 
+            // Surface the REAL provider error BEFORE awaiting the result
+            // promises: a stream that errored (401, invalid key) records zero
+            // steps, and the SDK's flush then rejects usage/finishReason with
+            // a generic "No output generated" — which would mask the actual
+            // auth failure.
+            if (streamError) throw streamError;
+            if (streamAborted) {
+              throw new Error('Model stream was aborted before completion');
+            }
+
             const [usage, finishReason, streamReasoning] = await this.withProviderDeadline(
               Promise.all([
                 streamResult.usage,
@@ -2444,10 +2454,6 @@ export class Agent {
               loopAbortController,
               providerDeadlineAt,
             );
-            if (streamError) throw streamError;
-            if (streamAborted) {
-              throw new Error('Model stream was aborted before completion');
-            }
             // Stream integrity: 'other'/missing finish means the provider
             // dropped the connection mid-generation (no terminal chunk was
             // emitted). Treating it as success produced silent cut-offs with
