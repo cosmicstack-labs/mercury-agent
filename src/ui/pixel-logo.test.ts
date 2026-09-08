@@ -16,27 +16,18 @@ describe('pixel wordmark', () => {
     expect(parts.every((p) => p.right.length > 0)).toBe(true);
   });
 
-  it('shading is per-row: no shade cell ever sits above a solid one', () => {
-    // Regression: per-column shading scattered ▓ holes inside letters
-    // (`█ ▓ █`). Shading must band horizontally — every filled cell in a
-    // row uses the same fill character.
-    const rows = renderPixelWord('MERCURY CODE', '████▓');
-    for (const row of rows) {
-      const fills = new Set([...row.replace(/ /g, '')]);
-      expect(fills.size, `mixed fills in one row: ${row}`).toBeLessThanOrEqual(1);
-    }
-    // Three solid rows, then the shaded bottom band.
-    expect(rows[0]).not.toContain('▓');
-    expect(rows[2]).not.toContain('▓');
-    expect(rows[4]).not.toContain('█');
-    expect(rows[4]).toContain('▓');
-  });
-
-  it('solid default fill has no shade characters anywhere', () => {
-    const rows = renderPixelWord('CODE');
-    for (const row of rows) {
-      expect(row).not.toContain('▓');
-    }
+  it('the mark is fully solid — no shade characters anywhere', () => {
+    // Regression history: per-column shading punched holes mid-letter, and
+    // even per-row shaded bands read as gaps between blocks in real
+    // terminal fonts. The BRAND MARK (the splash) is now 100% solid bright
+    // blocks; the shading API remains for callers that opt in explicitly.
+    const splash = renderMercuryCodeSplash();
+    expect(splash.join('\n')).not.toContain('▓');
+    expect(splash.join('\n')).not.toContain('▒');
+    // The shading API still bands per-row when explicitly requested.
+    const shaded = renderPixelWord('CODE', '████▓');
+    expect(shaded[0]).not.toContain('▓');
+    expect(shaded[4]).not.toContain('█');
   });
 
   it('unknown characters fall back to space without breaking alignment', () => {

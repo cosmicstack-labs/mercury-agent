@@ -204,12 +204,12 @@ export function renderPixelWord(word: string, shading: string = '█'): string[]
  * Two-tone "MERCURY CODE" as alignment-safe parts for colored rendering.
  * The left block ("MERCURY") is padded to a constant width so the right
  * block ("CODE") starts at the same column on every row — pixel-precise
- * on any terminal. Both use a solid mark with a shaded bottom band
- * (subtle depth, zero mid-letter holes).
+ * on any terminal. Fully SOLID fill: shaded bands read as gaps between
+ * blocks in real terminal fonts, so every filled cell is a bright block.
  */
 export function renderMercuryCodeParts(): Array<{ left: string; right: string }> {
-  const mercury = renderPixelWord('MERCURY', '████▓');
-  const code = renderPixelWord('CODE', '████▓');
+  const mercury = renderPixelWord('MERCURY', '█');
+  const code = renderPixelWord('CODE', '█');
   const trimEnd = (s: string) => s.replace(/\s+$/, '');
   const leftTrimmed = mercury.map(trimEnd);
   const leftW = Math.max(...leftTrimmed.map((r) => r.length));
