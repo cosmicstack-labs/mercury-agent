@@ -2919,7 +2919,7 @@ export class Agent {
             break;
           }
           logger.warn({ provider: provider.name, err: err.message }, 'Provider failed, trying fallback');
-          await this.sendProgressNotice(msg, 'A model attempt failed. Trying another option...')
+          await this.sendProgressNotice(msg, 'Hit a hiccup with that connection — switching routes and continuing...')
             .catch((e) => logger.warn({ e }, 'channel send failed'));
         }
       }
@@ -3068,10 +3068,10 @@ export class Agent {
           ? cliChGuard.getTuiState().chatMessages[cliChGuard.getTuiState().chatMessages.length - 1]
           : undefined;
         const isDuplicateWarning = lastGuardMsg?.role === 'agent'
-          && lastGuardMsg.content.startsWith('⚠ That response described the work');
+          && lastGuardMsg.content.startsWith('Getting started on the real build now');
         if (channel && msg.channelType !== 'internal' && !isDuplicateWarning) {
           await channel.send(
-            `⚠ That response described the work without doing it — resuming with tools (round ${executeGuardRounds}/${MAX_EXECUTE_CONTINUATIONS})...`,
+            `Alright — getting started on the real build now (attempt ${executeGuardRounds} of ${MAX_EXECUTE_CONTINUATIONS})...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }
@@ -3199,7 +3199,7 @@ export class Agent {
         this.pushLiveActivity('Resuming with a fresh step budget', 'step budget');
         if (channel && msg.channelType !== 'internal') {
           await channel.send(
-            `☿ Reached the tool-step budget (${effectiveMaxSteps}) with work still pending. Resuming automatically...`,
+            `This one's a bigger build than a single pass — picking up right where I left off...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }
@@ -3276,7 +3276,7 @@ export class Agent {
         this.pushLiveActivity('Verifying the work', 'verification gate');
         if (channel && msg.channelType !== 'internal') {
           await channel.send(
-            '☿ Changes landed but nothing verified them. Running verification before calling this done...',
+            'Checking my work before I call it done — running the build/tests now...',
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }

@@ -77,11 +77,11 @@ export function stepsExhaustedPrompt(taskHint?: string): string {
 }
 
 /** Banner label for a turn that paused at the step budget. */
-export const STEPS_PAUSED_BANNER = 'Task paused · step budget reached — send "continue" to resume';
+export const STEPS_PAUSED_BANNER = 'I\'ve paused for now — this one needs another pass. Send "continue" and I\'ll pick up right where I left off.';
 
 /** Banner label when a response was delivered but nothing changed in the world. */
 export const NO_CHANGES_BANNER = 'Response delivered · no file changes';
 
 /** Banner label when the narration guard exhausted and zero work happened. */
 export const WORK_NOT_STARTED_BANNER =
-  'Task paused · no work was performed — send "continue" to resume with tools';
+  'I couldn\'t get started on this one yet — send "continue" and I\'ll take another run at it with a different approach.';
