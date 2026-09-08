@@ -345,11 +345,7 @@ const MAX_STEPS = (() => {
   const override = Number(process.env.MERCURY_MAX_STEPS);
   return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
 })();
-// 8192: big code files were truncating at 4096 mid-write, triggering a
-// length-truncation continuation that re-sent the whole conversation — a
-// full extra round trip per large file. The higher cap trades a slightly
-// longer single call for measurably fewer continuation cycles.
-const MAX_RESPONSE_TOKENS = 8192;
+const MAX_RESPONSE_TOKENS = 4096;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
@@ -1175,7 +1171,7 @@ export class Agent {
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
     const stream = streamText({
       model: opts.provider.getModelInstance(),
-      system: this.cachedSystemPrompt(opts.systemPrompt),
+      system: opts.systemPrompt,
       messages: opts.messages as any,
       tools: this.capabilities.getTools(),
       maxOutputTokens: opts.maxOutputTokens,
@@ -1245,22 +1241,6 @@ export class Agent {
       if (!(channel instanceof CLIChannel)) return;
       channel.setPlanProgress((input as any)?.steps);
     } catch { /* checklist must never break the tool loop */ }
-  }
-
-  /**
-   * System prompt with a prompt-cache breakpoint for Anthropic-family
-   * providers. Without it, EVERY agentic step re-processes the full system
-   * prompt (soul + skills + tool guidelines) at full cost — and on long
-   * coding sessions the growing conversation re-processes too. OpenAI-
-   * compatible providers cache server-side automatically; this option is
-   * ignored harmlessly by them.
-   */
-  private cachedSystemPrompt(systemPrompt: string): any {
-    return [{
-      type: 'text' as const,
-      text: systemPrompt,
-      providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
-    }];
   }
 
   private scheduleDurableRetry(msg: ChannelMessage, workKey: string, error: unknown, continuation = false): number {
@@ -2106,7 +2086,7 @@ export class Agent {
             let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
-              system: this.cachedSystemPrompt(systemPrompt),
+              system: systemPrompt,
               messages,
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: effectiveMaxOutputTokens,
@@ -2490,7 +2470,7 @@ export class Agent {
                 const continueResult: Awaited<ReturnType<typeof streamText>> = await this.withProviderDeadline(
                   Promise.resolve(streamText({
                     model: provider.getModelInstance(),
-                    system: this.cachedSystemPrompt(systemPrompt),
+                    system: systemPrompt,
                     messages: [
                       ...messages,
                       { role: 'assistant', content: continuationText },
@@ -2534,7 +2514,7 @@ export class Agent {
           } else {
             result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
-              system: this.cachedSystemPrompt(systemPrompt),
+              system: systemPrompt,
               messages,
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: effectiveMaxOutputTokens,
@@ -3082,7 +3062,7 @@ export class Agent {
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           const guardStream = streamText({
             model: guardProvider.getModelInstance(),
-            system: this.cachedSystemPrompt(systemPrompt),
+            system: systemPrompt,
             messages,
             tools: this.capabilities.getTools(),
             maxOutputTokens: effectiveMaxOutputTokens,
