@@ -104,8 +104,8 @@ describe('completion contract — source guarantees', () => {
     // The exhaustion verdict must re-check the guard AFTER the continuation
     // loop and pause (markPaused) before any completion delivery.
     expect(agent).toContain('WORK_NOT_STARTED_BANNER');
-    expect(agent).toContain('Narration guard exhausted with zero mutating work');
-    const guardExhaustedIdx = agent.indexOf('Narration guard exhausted with zero mutating work');
+    expect(agent).toContain('Narration guard exhausted (both cycles)');
+    const guardExhaustedIdx = agent.indexOf('Narration guard exhausted (both cycles)');
     const deliverIdx = agent.indexOf('sendCompletion(elapsed, stepCount');
     expect(guardExhaustedIdx).toBeGreaterThan(-1);
     expect(deliverIdx).toBeGreaterThan(guardExhaustedIdx);

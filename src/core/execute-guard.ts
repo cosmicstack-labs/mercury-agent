@@ -211,3 +211,18 @@ export function verificationPrompt(taskHint?: string): string {
     'Before completion, run the relevant verification (build/tests/typecheck) with run_command and confirm the output is clean. If verification fails, fix and re-run. If it genuinely cannot run here (missing toolchain, environment constraint), state exactly why verification is impossible and what you checked instead.',
   ].join(' ');
 }
+
+/**
+ * Wake-up call: issued after a FULL guard cycle failed to start the work.
+ * Maximally blunt and constrained — this is the last automatic attempt, and
+ * on the forced step the ONLY tools available are mutating ones.
+ */
+export function wakeUpPrompt(taskHint?: string): string {
+  const hint = taskHint?.trim();
+  const task = hint ? `The task: "${hint.slice(0, 200)}".` : '';
+  return [
+    '[SYSTEM: WAKE-UP CALL] You have failed to start the work across an entire guard cycle. This is the final automatic attempt.',
+    task,
+    'Your very next response MUST begin with a mutating tool call — create_file, write_file, edit_file, or run_command. ZERO prose before the call. Pick the smallest real piece of the task (even scaffolding or a stub) and DO it. Only after the call lands may you write text.',
+  ].join(' ');
+}

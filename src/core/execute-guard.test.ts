@@ -8,6 +8,7 @@ import {
   shouldForceExecuteContinuation,
   shouldRequireVerification,
   verificationPrompt,
+  wakeUpPrompt,
 } from './execute-guard.js';
 
 const ok = (names: string[]): Map<string, boolean> => new Map(names.map((n) => [n, true]));
@@ -259,5 +260,16 @@ describe('responseAsksUser — prose questions are legitimate pauses', () => {
     expect(responseAsksUser('Built the endpoint. What changed: the router now handles POST /notes.')).toBe(false);
     expect(responseAsksUser('Why did this fail? The answer: missing env var. Fixed now.')).toBe(false);
     expect(responseAsksUser('')).toBe(false);
+  });
+});
+
+describe('wakeUpPrompt — the final automatic attempt', () => {
+  it('demands a mutating tool call first, zero prose', () => {
+    const prompt = wakeUpPrompt('build the 3D world');
+    expect(prompt).toContain('WAKE-UP CALL');
+    expect(prompt).toContain('MUST begin with a mutating tool call');
+    expect(prompt).toContain('create_file');
+    expect(prompt).toContain('ZERO prose');
+    expect(prompt).toContain('3D world');
   });
 });

@@ -77,7 +77,7 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
@@ -113,13 +113,14 @@ function stepAwareTextStream(fullStream: AsyncIterable<any>): AsyncIterable<stri
 
 
 /**
- * Tools allowed on a GUARD-FORCED step: action tools plus the two cheapest
- * inspection tools. With toolChoice 'required' AND this narrowing, the first
- * step of a guard round can only be real work — the model cannot narrate
- * (its forced call must be a mutating tool) and cannot disappear into
- * arbitrary read-only exploration instead of building.
+ * Tools allowed on a GUARD-FORCED step: MUTATING tools only. The forced
+ * step must be real work — a narration-prone model satisfied toolChoice
+ * 'required' by calling list_dir/read_file every round (inspection instead
+ * of action), burning all guard rounds and pausing. The grounding message
+ * already gives it the directory listing, so inspection is unnecessary;
+ * if it truly must read, run_command is available (and permission-gated).
  */
-const FORCED_ACTION_TOOLS = [...EXECUTE_MUTATING_TOOLS, 'list_dir', 'read_file'];
+const FORCED_ACTION_TOOLS = [...EXECUTE_MUTATING_TOOLS];
 
 class ToolCallLoopDetector {
   private recentCalls: Array<{ tool: string; params: string; failed: boolean; timestamp: number }> = [];
@@ -2034,6 +2035,11 @@ export class Agent {
       let lastRoundSteps = 0;
       let stepBudgetContinuations = 0;
       let verificationContinuations = 0;
+      // Second wind: when the first full set of guard rounds fails to start
+      // the work, the agent does not pause — it wakes the task up with a
+      // blunt, maximally-constrained retry cycle before reporting honestly.
+      let narrationSecondWind = false;
+      let lastGuardToolFailure = '';
 
       const recordExecuteToolResult = (toolName: string, resultText: unknown): void => {
         const text = typeof resultText === 'string' ? resultText : JSON.stringify(resultText ?? '');
@@ -3041,7 +3047,7 @@ export class Agent {
       while (
         this.programmingMode.isExecute()
         && !loopAbortController.signal.aborted
-        && executeGuardRounds < MAX_EXECUTE_CONTINUATIONS
+        && executeGuardRounds < (narrationSecondWind ? MAX_EXECUTE_CONTINUATIONS * 2 : MAX_EXECUTE_CONTINUATIONS)
         // A turn that ends by asking the user something in plain text is a
         // legitimate pause — forcing rounds here looped the model forever
         // (it re-searched and re-asked instead of waiting for the answer).
@@ -3136,8 +3142,15 @@ export class Agent {
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
-                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  const guardToolResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                  recordExecuteToolResult(tc.toolName, guardToolResult);
+                  // Remember WHY the work did not land, so an honest pause
+                  // can tell the user what actually blocked it.
+                  const guardResultText = typeof guardToolResult === 'string' ? guardToolResult : JSON.stringify(guardToolResult ?? '');
+                  if (EXECUTE_MUTATING_TOOLS.has(tc.toolName) && isFailedToolResult(guardResultText || '')) {
+                    lastGuardToolFailure = `${tc.toolName}: ${guardResultText.slice(0, 120)}`;
+                  }
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, guardToolResult);
                   this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
@@ -3169,6 +3182,38 @@ export class Agent {
           // original result so the user still gets a response.
           logger.warn({ err: guardErr?.message || String(guardErr) }, 'Execute-mode guard continuation failed; keeping original response');
           break;
+        }
+        // WAKE-UP CALL: the first full guard cycle failed to start the work.
+        // The agent does not give up — it resets the cycle with a blunt,
+        // maximally-constrained directive before reporting honestly.
+        if (
+          executeGuardRounds >= MAX_EXECUTE_CONTINUATIONS
+          && !narrationSecondWind
+          && !loopAbortController.signal.aborted
+          && shouldForceExecuteContinuation({
+            taskText: msg.content,
+            hasApprovedPlan: this.programmingMode.getLastPlan() != null,
+            toolsUsed: executeTurnToolsUsed,
+            toolsSucceeded: executeToolSucceeded,
+          })
+        ) {
+          narrationSecondWind = true;
+          logger.warn({ rounds: executeGuardRounds }, 'Narration guard: first cycle exhausted — issuing wake-up call');
+          this.pushLiveActivity('Trying a different approach', 'wake-up call');
+          if (channel && msg.channelType !== 'internal') {
+            await channel.send('Taking a completely different run at this — forcing the first move...', msg.channelId)
+              .catch((e) => logger.warn({ e }, 'channel send failed'));
+          }
+          messages.push({ role: 'user', content: wakeUpPrompt(msg.content) });
+          // Fresh grounding for the second cycle too.
+          try {
+            const cwd = this.capabilities.getCwd();
+            const entries2 = readdirSync(cwd, { withFileTypes: true })
+              .slice(0, 30)
+              .map((e: import('node:fs').Dirent) => `${e.isDirectory() ? 'dir' : 'file'}: ${e.name}`)
+              .join('\n');
+            messages.push({ role: 'user', content: `[SYSTEM: GROUNDING] Directory ${cwd}: ${entries2 || '(empty)'}. Your next response MUST begin with a create_file, write_file, edit_file, or run_command tool call.` });
+          } catch { /* best effort */ }
         }
       }
 
@@ -3371,10 +3416,13 @@ export class Agent {
           toolsSucceeded: executeToolSucceeded,
         })
       ) {
-        logger.warn({ task: msg.content.slice(0, 120) }, 'Narration guard exhausted with zero mutating work — pausing instead of completing');
+        logger.warn({ task: msg.content.slice(0, 120), blocker: lastGuardToolFailure }, 'Narration guard exhausted (both cycles) — pausing instead of completing');
+        const blockerNote = lastGuardToolFailure
+          ? `\n\nWhat blocked it: ${lastGuardToolFailure}`
+          : '';
         await pauseHonestly(
-          WORK_NOT_STARTED_BANNER,
-          'No implementation work was performed. Send "continue" to resume with tools.',
+          WORK_NOT_STARTED_BANNER + blockerNote,
+          `No implementation work was performed across two guard cycles.${lastGuardToolFailure ? ` Last blocker: ${lastGuardToolFailure}` : ''} Send "continue" to resume with tools.`,
         );
         return;
       }
