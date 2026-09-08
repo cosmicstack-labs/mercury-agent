@@ -166,7 +166,11 @@ export class CloudTokenStore {
             logger.warn({ err: (error as Error).message }, 'Refresh token rotation failed; redeeming agent API key');
             return await this.redeemWithAgentKey();
           }
-          throw error;
+          // No recovery key configured — make the fix obvious instead of an
+          // opaque 401 loop.
+          throw new Error(
+            `${(error as Error).message} — no recovery key available. Run "mercury cloud connect" to re-pair.`,
+          );
         }
       } else {
         // No refresh token at all — go straight to the agent API key.
