@@ -3047,9 +3047,18 @@ export class Agent {
         );
         this.markProgress('Work not started — continuing...');
         this.pushLiveActivity('Resuming — no file changes yet', 'execute guard');
-        if (channel && msg.channelType !== 'internal') {
+        // Deduplicate consecutive guard warnings: back-to-back narration
+        // rounds stacked identical banners in the transcript (visual noise
+        // during exactly the moments the user is watching for action).
+        const cliChGuard = this.channels.get('cli');
+        const lastGuardMsg = cliChGuard instanceof CLIChannel
+          ? cliChGuard.getTuiState().chatMessages[cliChGuard.getTuiState().chatMessages.length - 1]
+          : undefined;
+        const isDuplicateWarning = lastGuardMsg?.role === 'agent'
+          && lastGuardMsg.content.startsWith('⚠ That response described the work');
+        if (channel && msg.channelType !== 'internal' && !isDuplicateWarning) {
           await channel.send(
-            '⚠ That response described the work without doing it. Resuming with tools...',
+            `⚠ That response described the work without doing it — resuming with tools (round ${executeGuardRounds}/${MAX_EXECUTE_CONTINUATIONS})...`,
             msg.channelId,
           ).catch((e) => logger.warn({ e }, 'channel send failed'));
         }
