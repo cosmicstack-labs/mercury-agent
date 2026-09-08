@@ -77,7 +77,7 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, wakeUpPrompt } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
@@ -2071,6 +2071,7 @@ export class Agent {
       // Completion-contract state: how did the FINAL round end, and what
       // evidence exists that the work actually finished?
       const executeCommandsRun: string[] = [];
+      let lastVerificationNote = '';
       let lastStepHadToolCalls = false;
       let lastRoundSteps = 0;
       let stepBudgetContinuations = 0;
@@ -2248,7 +2249,15 @@ export class Agent {
                     executeTurnToolsUsed.add(tc.toolName);
                     if (tc.toolName === 'run_command') {
                       const cmd = (tc.input as any)?.command;
-                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
                     }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
@@ -2682,7 +2691,15 @@ export class Agent {
                     executeTurnToolsUsed.add(tc.toolName);
                     if (tc.toolName === 'run_command') {
                       const cmd = (tc.input as any)?.command;
-                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
                     }
                     const tr = toolResults[i] as any;
                     recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
@@ -3379,7 +3396,15 @@ export class Agent {
                   executeTurnToolsUsed.add(tc.toolName);
                   if (tc.toolName === 'run_command') {
                     const cmd = (tc.input as any)?.command;
-                    if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                    if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
                   }
                   recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
@@ -3458,7 +3483,15 @@ export class Agent {
                     executeTurnToolsUsed.add(tc.toolName);
                     if (tc.toolName === 'run_command') {
                       const cmd = (tc.input as any)?.command;
-                      if (typeof cmd === 'string') executeCommandsRun.push(cmd);
+                      if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
+                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                      }
+                    }
                     }
                     recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
@@ -3744,7 +3777,7 @@ export class Agent {
               budgetTotal: this.tokenBudget.getBudget(),
               budgetPercentage: this.tokenBudget.getUsagePercentage(),
             };
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta);
+            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta, undefined, lastVerificationNote || undefined);
           }
         }
       } else {

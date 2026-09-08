@@ -911,7 +911,7 @@ export class CLIChannel extends BaseChannel {
     this.update({ toolSteps });
   }
 
-  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta, outcome?: 'complete' | 'steps-paused'): void {
+  sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta, outcome?: 'complete' | 'steps-paused', verificationNote?: string): void {
     this.clearHeartbeat();
     this.clearLiveActivity();
     const secs = Math.floor(elapsedMs / 1000);
@@ -939,6 +939,18 @@ export class CLIChannel extends BaseChannel {
       : undefined;
     if (content.startsWith('Task complete') && fileChanges && fileChanges.length === 0) {
       content = NO_CHANGES_BANNER + (parts ? ` · ${parts}` : '');
+    }
+    // Change summary: what was done, per file, and the verification that
+    // proves it — the developer reads this instead of diffing manually.
+    if (fileChanges && fileChanges.length > 0) {
+      const lines: string[] = [];
+      for (const f of fileChanges.slice(0, 8)) {
+        const stats = f.added == null || f.removed == null ? 'new' : `+${f.added} −${f.removed}`;
+        lines.push(`  ↳ ${f.path} · ${stats}`);
+      }
+      if (fileChanges.length > 8) lines.push(`  ↳ … ${fileChanges.length - 8} more`);
+      if (verificationNote) lines.push(`  ✓ Verified: ${verificationNote}`);
+      content += `\n\nChanges made:\n${lines.join('\n')}`;
     }
 
     const msg: ChatMessage = {

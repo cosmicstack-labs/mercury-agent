@@ -74,6 +74,9 @@ export function buildMercuryBrandLines(version: string, cols: number): MercuryTr
   return rows;
 }
 
+/** Visible rows per code block before it collapses to a pointer. */
+export const CODE_BLOCK_VISIBLE_ROWS = 40;
+
 export function buildMercuryMessageLines(message: ChatMessage, width: number): MercuryTranscriptLine[] {
   if (message.id.startsWith('heartbeat-')) return [];
   const contentWidth = Math.max(12, width - 4);
@@ -126,6 +129,9 @@ export function buildMercuryMessageLines(message: ChatMessage, width: number): M
     let prose: string[] = [];
     let inCode = false;
     let language = '';
+    // Code-block collapse tracking (per message).
+    let codeRowsEmitted = 0;
+    let codeCollapsed = false;
 
     const flushProse = () => {
       if (prose.length === 0) return;
@@ -148,8 +154,17 @@ export function buildMercuryMessageLines(message: ChatMessage, width: number): M
         continue;
       }
       if (inCode) {
-        const chunks = wrapMercuryText(sourceLine, contentWidth);
-        for (const chunk of chunks) push('code', chunk, language);
+        // Collapse long code blocks: the model quoting a 300-line file must
+        // not push the conversation out of the transcript. The full content
+        // is on disk / in the session store.
+        if (codeRowsEmitted < CODE_BLOCK_VISIBLE_ROWS) {
+          const chunks = wrapMercuryText(sourceLine, contentWidth);
+          for (const chunk of chunks) push('code', chunk, language);
+          codeRowsEmitted += chunks.length;
+        } else if (!codeCollapsed) {
+          codeCollapsed = true;
+          push('system', `… code continues — ${'full content on disk'}`);
+        }
       } else {
         prose.push(sourceLine);
       }
