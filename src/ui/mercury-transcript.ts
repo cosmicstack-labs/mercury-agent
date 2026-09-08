@@ -1,7 +1,7 @@
 import type { ChatMessage } from './types.js';
 import { normalizeTerminalText } from './terminal-viewport.js';
 import { renderMarkdown } from '../utils/markdown.js';
-import { renderMercuryCodeHdParts, renderMercuryCodeParts } from './pixel-logo.js';
+import { renderMercuryCodeParts } from './pixel-logo.js';
 
 export type MercuryTranscriptKind = 'header' | 'text' | 'code-label' | 'code' | 'system' | 'file' | 'spacer' | 'brand';
 
@@ -51,10 +51,7 @@ function renderedTextLines(markdown: string, width: number): string[] {
  * the indent is baked into `text`, so scroll math never has to special-case it.
  */
 export function buildMercuryBrandLines(version: string, cols: number): MercuryTranscriptLine[] {
-  // Double-resolution mark (10 pixel rows via half-blocks) when the terminal
-  // is wide enough; the 5-row solid block mark otherwise.
-  const hdParts = cols >= 80 ? renderMercuryCodeHdParts() : null;
-  const parts = hdParts ?? renderMercuryCodeParts();
+  const parts = renderMercuryCodeParts();
   const maxLen = Math.max(...parts.map((p) => p.left.length + 2 + p.right.length));
   const indent = Math.max(0, Math.floor((cols - maxLen) / 2));
   const versionStr = `v${version}`;
