@@ -21,17 +21,17 @@
   <rect width="1200" height="630" fill="url(#bg)"/>
   <rect width="1200" height="630" fill="url(#glow)"/>
 
+  <!-- Ghost mercury glyph watermark (fills the right side) -->
+  <text x="1230" y="600" font-family="Georgia, 'Times New Roman', serif" font-size="460" font-weight="700" fill="url(#logoGrad)" opacity="0.07" text-anchor="end">&#9791;</text>
+
   <!-- Logo mark + brand -->
   <g transform="translate(80, 80)">
     {{LOGO_SVG}}
     <text x="62" y="30" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="700" fill="#ffffff">Mercury Agent  ·  Docs</text>
   </g>
 
-  <!-- Docs badge -->
-  <g transform="translate(80, 160)">
-    <rect width="90" height="28" rx="8" fill="rgba(0,212,255,0.10)" stroke="rgba(0,212,255,0.20)"/>
-    <text x="45" y="19" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#00d4ff" text-anchor="middle" letter-spacing="1.5">DOCS</text>
-  </g>
+  <!-- Section breadcrumb (dynamically replaced, top-right) -->
+  {{BREADCRUMB}}
 
   <!-- Page title (dynamically replaced) -->
   {{TITLE_SVG}}
@@ -39,6 +39,9 @@
   <!-- Page description (dynamically replaced) -->
   {{DESC_SVG}}
 
-  <!-- URL -->
-  <text x="1120" y="570" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#4a4a58" text-anchor="end">mercuryagent.sh/docs</text>
+  <!-- "In this page" section headings (dynamically replaced) -->
+  {{BULLETS}}
+
+  <!-- Page URL (dynamically replaced) -->
+  <text x="1120" y="588" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#4a4a58" text-anchor="end">{{PAGE_URL}}</text>
 </svg>
