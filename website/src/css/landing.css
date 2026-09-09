@@ -405,6 +405,16 @@
 .lp-agent { color: var(--cyan); font-weight: 700; }
 .lp-stream-text { color: var(--white); }
 .lp-tool { color: var(--gray); }
+
+/* Terminal line icons (inline SVG replacing emoji) */
+.lp-ticon { vertical-align: -2px; display: inline-block; flex-shrink: 0; }
+.lp-ticon-run { color: var(--yellow); }
+.lp-ticon-ok { color: var(--green); }
+.lp-ticon-bot { color: var(--cyan); }
+.lp-ticon-spin { color: var(--cyan); animation: lp-spin 1s linear infinite; transform-origin: center; }
+@keyframes lp-spin { to { transform: rotate(360deg); } }
+.lp-tgap { display: inline-block; width: 7px; }
+.lp-ri { vertical-align: -1px; margin-right: 2px; color: #4ade80; }
 .lp-status { color: var(--yellow); font-weight: 500; }
 .lp-output { color: var(--gray); }
 .lp-autopilot { color: var(--purple); font-weight: 500; }

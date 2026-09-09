@@ -12,15 +12,15 @@ type TerminalLine = {
 const heroLines: TerminalLine[] = [
   { type: 'prompt', text: '> ' },
   { type: 'input', text: 'refactor the auth module to use JWT and add tests' },
-  { type: 'status', text: '  ⚙️ Mercury working (step 1)' },
-  { type: 'tool', text: '  ✅ read_file · src/auth/handler.ts' },
-  { type: 'tool', text: '  ✅ read_file · src/auth/middleware.ts' },
-  { type: 'tool', text: '  ✅ edit_file · src/auth/handler.ts' },
-  { type: 'tool', text: '  ✅ create_file · src/auth/jwt.ts' },
-  { type: 'tool', text: '  ✅ create_file · tests/auth.test.ts' },
-  { type: 'tool', text: '  ✅ run_command · npm test' },
+  { type: 'status', text: '  Mercury working (step 1)' },
+  { type: 'tool', text: '  read_file · src/auth/handler.ts' },
+  { type: 'tool', text: '  read_file · src/auth/middleware.ts' },
+  { type: 'tool', text: '  edit_file · src/auth/handler.ts' },
+  { type: 'tool', text: '  create_file · src/auth/jwt.ts' },
+  { type: 'tool', text: '  create_file · tests/auth.test.ts' },
+  { type: 'tool', text: '  run_command · npm test' },
   { type: 'output', text: '  Tests: 8 passed, 0 failed' },
-  { type: 'completion', text: '  ✅ Task complete (6 steps · 34s) · claude-sonnet · 8.2k tokens' },
+  { type: 'completion', text: '  Task complete (6 steps · 34s) · claude-sonnet · 8.2k tokens' },
   { type: 'agent', text: 'Mercury: ' },
   { type: 'stream', text: 'Done. Replaced session-based auth with JWT. Created jwt.ts with sign/verify helpers and added 8 tests covering token generation, expiry, and middleware validation.' },
 ];
@@ -28,21 +28,43 @@ const heroLines: TerminalLine[] = [
 const multiAgentLines: TerminalLine[] = [
   { type: 'prompt', text: '> ' },
   { type: 'input', text: 'research the best pagination strategies, then implement cursor-based pagination for our API' },
-  { type: 'output', text: '  🤖 Multi-agent mode activated.' },
+  { type: 'output', text: '  Multi-agent mode activated.' },
   { type: 'output', text: '  Agent a1: researching pagination strategies' },
   { type: 'output', text: '  Agent a2: implementing cursor-based pagination' },
-  { type: 'tool', text: '  🔄 a1: fetch_url, fetch_url, read_file' },
-  { type: 'tool', text: '  🔄 a2: read_file, edit_file, create_file' },
-  { type: 'completion', text: '  ✅ a1 completed (12.3s) — 3 strategies compared' },
-  { type: 'completion', text: '  ✅ a2 completed (18.7s) — cursor pagination added to 4 endpoints' },
+  { type: 'tool', text: '  a1: fetch_url, fetch_url, read_file' },
+  { type: 'tool', text: '  a2: read_file, edit_file, create_file' },
+  { type: 'completion', text: '  a1 completed (12.3s) — 3 strategies compared' },
+  { type: 'completion', text: '  a2 completed (18.7s) — cursor pagination added to 4 endpoints' },
   { type: 'agent', text: 'Mercury: ' },
   { type: 'stream', text: 'Both agents are done. a1 found that cursor-based is optimal for our use case (confirmed by a2\'s implementation). Want me to review the changes?' },
 ];
+
+// Spinner lines get a rotating SVG icon via decorate(); keys chosen in typeTerminal.
+const MULTI_AGENT_SPINNERS = new Set(['a1: fetch_url, fetch_url, read_file', 'a2: read_file, edit_file, create_file']);
 
 function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: number) {
   let idx = 0;
   let charIdx = 0;
   let currentSpan: HTMLSpanElement | null = null;
+
+  const ICONS: Record<string, string> = {
+    status: '<svg class="lp-ticon lp-ticon-run" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>',
+    tool: '<svg class="lp-ticon lp-ticon-ok" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>',
+    spinner: '<svg class="lp-ticon lp-ticon-spin" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.2-8.56" /></svg>',
+    bot: '<svg class="lp-ticon lp-ticon-bot" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="12" rx="2" /><path d="M12 8V4" /><circle cx="8.5" cy="13.5" r="1" fill="currentColor" /><circle cx="15.5" cy="13.5" r="1" fill="currentColor" /><path d="M9 17h6" /></svg>',
+    check: '<svg class="lp-ticon lp-ticon-ok" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>',
+  };
+
+  function decorate(span: HTMLSpanElement, line: TerminalLine) {
+    const iconKey =
+      line.type === 'tool' ? 'tool'
+        : line.type === 'status' ? 'status'
+          : line.type === 'completion' ? 'check'
+            : null;
+    const prefix =
+      iconKey && ICONS[iconKey] ? ICONS[iconKey] + '<span class="lp-tgap"> </span>' : '';
+    span.innerHTML = prefix + line.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 
   function nextLine() {
     if (idx >= lines.length) return;
@@ -74,7 +96,11 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
     if (line.type === 'tool') {
       const span = document.createElement('span');
       span.className = 'lp-tool';
-      span.textContent = line.text;
+      if (MULTI_AGENT_SPINNERS.has(line.text.trim())) {
+        span.innerHTML = ICONS.spinner + '<span class="lp-tgap"> </span>' + line.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      } else {
+        decorate(span, line);
+      }
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
@@ -85,7 +111,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
     if (line.type === 'status') {
       const span = document.createElement('span');
       span.className = 'lp-status';
-      span.textContent = line.text;
+      decorate(span, line);
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
@@ -96,7 +122,10 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
     if (line.type === 'output') {
       const span = document.createElement('span');
       span.className = 'lp-output';
-      span.textContent = line.text;
+      decorate(span, line);
+      if (line.text.includes('Multi-agent mode')) {
+        span.innerHTML = ICONS.bot + '<span class="lp-tgap"> </span>' + span.innerHTML;
+      }
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
@@ -118,7 +147,7 @@ function typeTerminal(container: HTMLDivElement, lines: TerminalLine[], speed: n
     if (line.type === 'completion') {
       const span = document.createElement('span');
       span.className = 'lp-completion';
-      span.textContent = line.text;
+      decorate(span, line);
       container.appendChild(span);
       container.appendChild(document.createElement('br'));
       idx++;
@@ -516,10 +545,10 @@ export default function LandingPage(): React.ReactElement {
               <div className="lp-release-right">
                 <div className="lp-release-term">
                   <div className="lp-release-term-line lp-dim">● MERCURY · building the three.js world</div>
-                  <div className="lp-release-term-line">  ✓ ✨ Created index.html <span className="lp-dim">· 209 lines</span></div>
-                  <div className="lp-release-term-line">  ✓ ⎇ orbit controls, bloom pass</div>
-                  <div className="lp-release-term-line">  ✓ ✎ Edited main.js <span className="lp-dim">· +30 −12</span></div>
-                  <div className="lp-release-term-line">  ✓ ⌨ npm test <span className="lp-ok">✓ 12 passed</span></div>
+                  <div className="lp-release-term-line">  ✓ <svg className="lp-ri" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" /><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" /></svg> Created index.html <span className="lp-dim">· 209 lines</span></div>
+                  <div className="lp-release-term-line">  ✓ <svg className="lp-ri" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><line x1="20" y1="4" x2="8.1" y2="15.9" /><line x1="14.5" y1="10.5" x2="20" y2="20" /><line x1="8.5" y1="8.5" x2="3" y2="3" /></svg> orbit controls, bloom pass</div>
+                  <div className="lp-release-term-line">  ✓ <svg className="lp-ri" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></svg> Edited main.js <span className="lp-dim">· +30 −12</span></div>
+                  <div className="lp-release-term-line">  ✓ <svg className="lp-ri" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" /><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10" /></svg> npm test <span className="lp-ok">✓ 12 passed</span></div>
                   <div className="lp-release-term-line lp-ok">─ Task complete · verified · change summary attached</div>
                 </div>
               </div>
@@ -532,7 +561,7 @@ export default function LandingPage(): React.ReactElement {
           <div className="lp-container">
             <div className="lp-cloud-banner lp-reveal">
               <div className="lp-cloud-banner-left">
-                <div className="lp-cloud-badge">☁ New in 1.2.0</div>
+                <div className="lp-cloud-badge"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: '-1px', marginRight: 4 }} aria-hidden="true"><path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.6 1.5A4 4 0 0 0 7 19h10.5z" /></svg> New in 1.2.0</div>
                 <h2 className="lp-cloud-title">Mercury Cloud</h2>
                 <p className="lp-cloud-lead">
                   Pair from the terminal. Stay online forever. Mercury Cloud is a hosted backend that
@@ -548,28 +577,28 @@ export default function LandingPage(): React.ReactElement {
               <div className="lp-cloud-banner-right">
                 <div className="lp-cloud-features">
                   <div className="lp-cloud-feature">
-                    <span className="lp-cloud-feature-icon">⚡</span>
+                    <span className="lp-cloud-feature-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg></span>
                     <div>
                       <h4>Plug-and-play setup</h4>
                       <p>One command pairs your agent. No servers, no ports, no DNS.</p>
                     </div>
                   </div>
                   <div className="lp-cloud-feature">
-                    <span className="lp-cloud-feature-icon">🔒</span>
+                    <span className="lp-cloud-feature-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg></span>
                     <div>
                       <h4>Self-healing auth</h4>
                       <p>JWT + refresh + agent API key. Stays online even after token death.</p>
                     </div>
                   </div>
                   <div className="lp-cloud-feature">
-                    <span className="lp-cloud-feature-icon">🧠</span>
+                    <span className="lp-cloud-feature-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4a4 4 0 0 0-4 4c0 1.1.45 2.1 1.17 2.83A4 4 0 0 0 8 12a4 4 0 0 0 4 4 4 4 0 0 0 4-4c0-.45-.07-.88-.2-1.28A4 4 0 0 0 16 8a4 4 0 0 0-4-4z" /><path d="M12 4v12" /><path d="M9 20h6" /></svg></span>
                     <div>
                       <h4>Shared memory pool</h4>
                       <p>Search across all your agents' memories from the cloud.</p>
                     </div>
                   </div>
                   <div className="lp-cloud-feature">
-                    <span className="lp-cloud-feature-icon">🎛️</span>
+                    <span className="lp-cloud-feature-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 12h10" /><path d="M12 7v10" /></svg></span>
                     <div>
                       <h4>Remote dashboard</h4>
                       <p>Manage agents, install skills, and monitor from the browser.</p>
@@ -708,7 +737,7 @@ export default function LandingPage(): React.ReactElement {
               </div>
               <div className="lp-channel-card">
                 <div className="lp-channel-header">
-                  <span className="lp-channel-icon">✈</span>
+                  <span className="lp-channel-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-16z" /></svg></span>
                   <h3>Telegram</h3>
                 </div>
                 <ul>
@@ -722,7 +751,7 @@ export default function LandingPage(): React.ReactElement {
               </div>
               <div className="lp-channel-card">
                 <div className="lp-channel-header">
-                  <span className="lp-channel-icon">🎮</span>
+                  <span className="lp-channel-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M20.32 4.37a19.8 19.8 0 0 0-4.89-1.52.07.07 0 0 0-.08.04c-.21.37-.44.86-.6 1.25a18.3 18.3 0 0 0-5.5 0 12.6 12.6 0 0 0-.61-1.25.08.08 0 0 0-.08-.04 19.74 19.74 0 0 0-4.88 1.52.07.07 0 0 0-.03.03C.53 9.05-.32 13.58.1 18.06a.08.08 0 0 0 .03.05 19.9 19.9 0 0 0 5.99 3.03.08.08 0 0 0 .08-.03c.46-.63.87-1.3 1.22-2a.08.08 0 0 0-.04-.11 13.1 13.1 0 0 1-1.87-.9.08.08 0 0 1-.01-.13c.13-.09.25-.19.37-.29a.07.07 0 0 1 .08-.01c3.93 1.8 8.18 1.8 12.06 0a.07.07 0 0 1 .08.01c.12.1.25.2.37.29a.08.08 0 0 1-.01.13c-.6.35-1.22.65-1.87.9a.08.08 0 0 0-.04.11c.36.7.77 1.37 1.22 2a.08.08 0 0 0 .08.03 19.84 19.84 0 0 0 6-3.03.08.08 0 0 0 .03-.05c.5-5.18-.84-9.68-3.55-13.66a.06.06 0 0 0-.03-.03zM8.02 15.33c-1.18 0-2.16-1.08-2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.96 2.42-2.16 2.42zm7.97 0c-1.18 0-2.16-1.08-2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.95 2.42-2.16 2.42z" /></svg></span>
                   <h3>Discord</h3>
                 </div>
                 <ul>
@@ -750,7 +779,7 @@ export default function LandingPage(): React.ReactElement {
               </div>
               <div className="lp-channel-card">
                 <div className="lp-channel-header">
-                  <span className="lp-channel-icon">🔒</span>
+                  <span className="lp-channel-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M8.5 10.5a5 5 0 0 1 7 0" /><path d="M10 13a2.5 2.5 0 0 1 4 0" /></svg></span>
                   <h3>Signal</h3>
                 </div>
                 <ul>
@@ -804,7 +833,7 @@ export default function LandingPage(): React.ReactElement {
               </div>
               <div className="lp-channel-card">
                 <div className="lp-channel-header">
-                  <span className="lp-channel-icon">✈</span>
+                  <span className="lp-channel-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-16z" /></svg></span>
                   <h3>From Telegram</h3>
                 </div>
                 <ul>
