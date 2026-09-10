@@ -9,14 +9,20 @@ import type { PermissionPromptState } from './types.js';
 
 /**
  * Ink renders asynchronously — it writes the cursor-hide escape
- * (\x1b[?25l) synchronously but the actual component tree flushes on the
- * next tick via React's reconciler.  On a loaded CI runner the synchronous
- * assertion runs before the flush, so stdout contains only the escape code.
- *
- * flush() waits one event-loop turn so React has committed the tree.
+ * (\x1b[?25l) synchronously but the actual component tree flushes through a
+ * 32ms-throttled onRender. A fixed sleep (20ms) passes on a fast machine and
+ * races on a loaded CI runner, where stdout contains only the escape code
+ * when the assertion runs. Never sleep for a frame: poll for the expected
+ * content, bounded.
  */
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 20));
+async function waitForFrame(stdout: { output: string }, expected: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !stdout.output.includes(expected)) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!stdout.output.includes(expected)) {
+    throw new Error(`frame content never rendered within ${timeoutMs}ms: "${expected}"`);
+  }
 }
 
 class FakeStdout extends EventEmitter {
@@ -52,6 +58,7 @@ const prompt: PermissionPromptState = {
     { value: 'c', label: 'Option C' },
     { value: 'd', label: 'Option D' },
   ],
+  resolve: () => {},
 };
 
 describe('PermPromptView selection marker', () => {
@@ -70,10 +77,9 @@ describe('PermPromptView selection marker', () => {
     );
 
     // Wait for React to commit the initial render.
-    await flush();
+    await waitForFrame(stdout, 'Option A');
 
     // Initial: Option A is selected (● at index 0)
-    expect(stdout.output).toContain('Option A');
     expect(stdout.output).toContain('●');
     expect(stdout.output).toContain('Option D');
 
@@ -83,10 +89,9 @@ describe('PermPromptView selection marker', () => {
     );
 
     // Wait for React to commit the re-render.
-    await flush();
+    await waitForFrame(stdout, 'Option C');
 
     // After: the marker moved — Option C is now the active one
-    expect(stdout.output).toContain('Option C');
     expect(stdout.output).toContain('●');
 
     // The help line should always be present
@@ -109,7 +114,8 @@ describe('PermPromptView selection marker', () => {
       },
     );
 
-    await flush();
+    // Wait for React to commit the initial render.
+    await waitForFrame(stdout, 'Option D');
 
     expect(stdout.output).toContain('How should I proceed?');
     expect(stdout.output).toContain('Option A');
