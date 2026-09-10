@@ -106,7 +106,7 @@ describe('Mercury Code terminal modes', () => {
     vi.restoreAllMocks();
   });
 
-  it('keeps mouse reporting OFF in Mercury Code (native scrollback: wheel scrolls, drag selects)', () => {
+  it('enables mouse wheel scrolling in Mercury Code and disables it on exit', () => {
     const writes: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       writes.push(String(chunk));
@@ -116,14 +116,16 @@ describe('Mercury Code terminal modes', () => {
     const channel = new CLIChannel();
     const result = channel.enterMercuryCode(process.cwd(), 'test');
 
-    // The transcript prints into the terminal's native scrollback, so the
-    // terminal itself handles wheel scrolling and drag selection. Mouse
-    // reporting must stay OFF — it would capture wheel/drag events and
-    // break both.
+    // Wheel scroll is the only natural way back through a full-screen
+    // transcript — mouse reporting must be ON while Mercury Code is active.
     expect(result.ok).toBe(true);
+    expect(channel.isMouseEnabled()).toBe(true);
+    expect(channel.getTuiState().mercuryCode?.mouse).toBe(true);
+    expect(writes.join('')).toContain('\x1b[?1006h');
+
+    channel.exitMercuryCode();
     expect(channel.isMouseEnabled()).toBe(false);
-    expect(channel.getTuiState().mercuryCode?.mouse).toBe(false);
-    expect(writes.join('')).not.toContain('\x1b[?1006h');
+    expect(writes.join('')).toContain('\x1b[?1006l');
   });
 
   it('adds per-file git statistics to execute-mode completion', () => {

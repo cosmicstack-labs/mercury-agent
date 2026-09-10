@@ -159,34 +159,3 @@ index 55acec7..035907a 100644
  });
  //# sourceMappingURL=reconciler.js.map
 \ No newline at end of file
-diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
---- a/node_modules/ink/build/log-update.js
-+++ b/node_modules/ink/build/log-update.js
-@@ -13,9 +13,26 @@
-         if (output === previousOutput) {
-             return;
-         }
-+        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
-+        // from the first changed line onward; identical rows above stay on
-+        // screen untouched. Ink 5's log-update erased and rewrote the ENTIRE
-+        // frame on every render — a prompt-selection change or spinner tick
-+        // repainted the whole live region, which read as a full-UI flash.
-+        // The row bytes are compared verbatim (layout is deterministic), and
-+        // the erase count accounts for the trailing blank line exactly like
-+        // `previousLineCount` does, so `clear()` and cursor arithmetic stay
-+        // in sync with the original accounting.
-+        const previousRows = previousOutput === '' ? [] : previousOutput.slice(0, -1).split('\n');
-+        const nextRows = output.slice(0, -1).split('\n');
-+        const common = Math.min(previousRows.length, nextRows.length);
-+        let firstChange = 0;
-+        while (firstChange < common && previousRows[firstChange] === nextRows[firstChange]) {
-+            firstChange++;
-+        }
-+        const eraseCount = previousLineCount - firstChange;
-         previousOutput = output;
--        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);
-         previousLineCount = output.split('\n').length;
-+        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n');
-     };
-     render.clear = () => {
-         stream.write(ansiEscapes.eraseLines(previousLineCount));

@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <strong>🔖 当前稳定版：v1.1.6</strong>
+  <strong>🔖 当前稳定版：v1.2.3</strong>
 </p>
 
 <p align="center">

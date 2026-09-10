@@ -6,8 +6,8 @@ import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
-import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
-import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, type MercuryTranscriptLine } from './mercury-transcript.js';
+import { anchorViewportDistance, normalizeTerminalText, getViewportWindow, moveViewport } from './terminal-viewport.js';
+import { buildMercuryMessageLines, buildMercuryBrandLines, wrapMercuryText, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
@@ -451,40 +451,16 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
 
       if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
       if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
-      // Transcript scrolling is terminal-native now (the transcript prints
-      // into scrollback via <Static>): ↑/↓ navigate input history instead.
-      if (key.upArrow) {
-        if (inputHistory.length === 0) return;
-        if (historyIndex === -1) {
-          setHistoryDraft(input);
-          const next = inputHistory.length - 1;
-          setHistoryIndex(next);
-          setInputAndCursor(inputHistory[next] ?? '');
-          return;
-        }
-        const next = Math.max(0, historyIndex - 1);
-        setHistoryIndex(next);
-        setInputAndCursor(inputHistory[next] ?? '');
-        return;
-      }
-      if (key.downArrow) {
-        if (historyIndex === -1) return;
-        const next = historyIndex + 1;
-        if (next >= inputHistory.length) {
-          setHistoryIndex(-1);
-          setInputAndCursor(historyDraft);
-          return;
-        }
-        setHistoryIndex(next);
-        setInputAndCursor(inputHistory[next] ?? '');
-        return;
-      }
-      if ((key as any).home) { setCursorPos(0); return; }
-      if ((key as any).end) { setCursorPos(input.length); return; }
-      // Readline-style cursor shortcuts (the old Ctrl+A/Ctrl+E scroll
-      // bindings are gone with the in-app viewport).
-      if (key.ctrl && (ch === 'a' || ch === 'A')) { setCursorPos(0); return; }
-      if (key.ctrl && (ch === 'e' || ch === 'E')) { setCursorPos(input.length); return; }
+      if (key.upArrow) { onInput('/mc scroll 1'); return; }
+      if (key.downArrow) { onInput('/mc scroll -1'); return; }
+      const transcriptPage = Math.max(5, terminalSize.rows - 12);
+      if (key.pageUp) { onInput(`/mc scroll ${transcriptPage}`); return; }
+      if (key.pageDown) { onInput(`/mc scroll -${transcriptPage}`); return; }
+      if ((key as any).home) { onInput('/mc scroll 1000000000'); return; }
+      if ((key as any).end) { onInput('/mc live'); return; }
+      if (key.ctrl && (ch === 'u' || ch === 'U')) { onInput(`/mc scroll ${transcriptPage}`); return; }
+      if (key.ctrl && (ch === 'a' || ch === 'A')) { onInput('/mc scroll 1000000000'); return; }
+      if (key.ctrl && (ch === 'e' || ch === 'E')) { onInput('/mc live'); return; }
       if (key.backspace || key.delete) {
         if (cursorPos > 0) {
           setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
@@ -968,24 +944,23 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       {state.mode === 'mercury-code' ? (
         <MercuryCodeView
           state={state}
+          height={Math.max(10, terminalSize.rows)}
           cols={terminalSize.cols}
           input={input}
           cursorPos={cursorPos}
+          onInput={onInput}
+          onScrollClamp={(distance) => onInput(`/mc scroll-set ${distance}`)}
           permIdx={permIdx}
         />
       ) : null}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
-      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} /> : null}
+      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} /> : null}
       {state.mode === 'workspace' ? (
         <WorkspaceBody state={state} gitCursor={gitCursor} height={Math.max(8, terminalSize.rows - 6)} cols={terminalSize.cols} onInput={onInput} />
       ) : null}
       {state.mode === 'chat' ? (
-        // Live-region cap: only the newest few lines of the streaming message
-        // repaint per frame — finalized content is already in <Static>. A
-        // near-full-screen live region was rewritten every 60ms frame, which
-        // read as a visible "on-off" flicker on long chats.
-        <ChatBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} />
+        <ChatBody state={state} maxDynamicLines={Math.max(3, terminalSize.rows - 14)} />
       ) : null}
       {state.permissionPrompt && state.mode !== 'mercury-code' && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
@@ -2206,6 +2181,176 @@ function InputBox({
 
 // ─── Mercury Code (full-screen /code) ───────────────────────────────────────
 
+/** Per-message transcript index entry: exact row count plus optional lines. */
+interface MercuryCacheEntry {
+  key: string;
+  count: number;
+  lines?: MercuryTranscriptLine[];
+}
+/**
+ * Bounded transcript projection index. Counts are retained for every known
+ * message (tiny numbers) so scroll math stays exact, but rendered lines are
+ * kept only for a small LRU window around the viewport. Formatting work is
+ * amortized: each message is built once per (content, width) revision.
+ */
+const mercuryTranscriptIndex = new Map<string, MercuryCacheEntry>();
+const MERCURY_INDEX_MAX_ENTRIES = 4096;
+const MERCURY_LINES_MAX_ENTRIES = 64;
+const MERCURY_LINES_MAX_LINES = 6000;
+let mercuryLineCacheEntries = 0;
+let mercuryLineCacheLines = 0;
+
+function mercuryCacheKey(msg: ChatMessage, width: number): string {
+  return `${msg.id}|${msg.role}|${msg.content.length}|${msg.timestamp}|${msg.streaming ? 1 : 0}|${width}`;
+}
+
+function evictMercuryLineCache(): void {
+  while ((mercuryLineCacheEntries > MERCURY_LINES_MAX_ENTRIES || mercuryLineCacheLines > MERCURY_LINES_MAX_LINES)) {
+    const oldest = mercuryTranscriptIndex.keys().next().value;
+    if (oldest === undefined) break;
+    const entry = mercuryTranscriptIndex.get(oldest)!;
+    if (entry.lines) {
+      mercuryLineCacheLines -= entry.lines.length;
+      mercuryLineCacheEntries -= 1;
+      entry.lines = undefined;
+      // Move the count-only entry to the end so line eviction progresses.
+      mercuryTranscriptIndex.delete(oldest);
+      mercuryTranscriptIndex.set(oldest, entry);
+      continue;
+    }
+    if (mercuryLineCacheEntries === 0 && mercuryLineCacheLines === 0) break;
+    break;
+  }
+  while (mercuryTranscriptIndex.size > MERCURY_INDEX_MAX_ENTRIES) {
+    const oldest = mercuryTranscriptIndex.keys().next().value;
+    if (oldest === undefined) break;
+    const entry = mercuryTranscriptIndex.get(oldest)!;
+    if (entry.lines) {
+      mercuryLineCacheLines -= entry.lines.length;
+      mercuryLineCacheEntries -= 1;
+    }
+    mercuryTranscriptIndex.delete(oldest);
+  }
+}
+
+function getMercuryEntry(msg: ChatMessage, width: number, wantLines: boolean): MercuryCacheEntry {
+  const key = mercuryCacheKey(msg, width);
+  const existing = mercuryTranscriptIndex.get(msg.id);
+  if (existing && existing.key === key) {
+    if (existing.lines) {
+      // LRU touch: refresh insertion order.
+      mercuryTranscriptIndex.delete(msg.id);
+      mercuryTranscriptIndex.set(msg.id, existing);
+      return existing;
+    }
+    if (wantLines) {
+      const lines = buildMercuryMessageLines(msg, width);
+      existing.lines = lines;
+      mercuryLineCacheEntries += 1;
+      mercuryLineCacheLines += lines.length;
+      evictMercuryLineCache();
+    }
+    return existing;
+  }
+  const lines = buildMercuryMessageLines(msg, width);
+  const entry: MercuryCacheEntry = { key, count: lines.length };
+  if (existing?.lines) {
+    mercuryLineCacheLines -= existing.lines.length;
+    mercuryLineCacheEntries -= 1;
+  }
+  entry.lines = lines;
+  mercuryLineCacheEntries += 1;
+  mercuryLineCacheLines += lines.length;
+  mercuryTranscriptIndex.set(msg.id, entry);
+  evictMercuryLineCache();
+  return entry;
+}
+
+/** A message-count index used for exact scroll math without retaining text. */
+export interface MercuryTranscriptIndex {
+  msgs: ChatMessage[];
+  counts: number[];
+  total: number;
+  /** Brand rows rendered before the first message (scroll away like a header). */
+  brandLines: MercuryTranscriptLine[];
+}
+
+export function buildMercuryTranscriptIndex(
+  messages: ChatMessage[],
+  width: number,
+  brandLines: MercuryTranscriptLine[] = [],
+): MercuryTranscriptIndex {
+  const msgs: ChatMessage[] = [];
+  const counts: number[] = [];
+  let total = brandLines.length;
+  for (const msg of messages) {
+    if (typeof msg.content !== 'string') continue;
+    const entry = getMercuryEntry(msg, width, false);
+    counts.push(entry.count);
+    msgs.push(msg);
+    total += entry.count;
+  }
+  return { msgs, counts, total, brandLines };
+}
+
+/** Format only the transcript rows inside [startRow, endRow). */
+export function renderMercuryTranscriptWindow(
+  index: MercuryTranscriptIndex,
+  startRow: number,
+  endRow: number,
+  width: number,
+): MercuryTranscriptLine[] {
+  const out: MercuryTranscriptLine[] = [];
+  // Brand block occupies the leading rows of the transcript.
+  const brandCount = index.brandLines.length;
+  if (startRow < brandCount && endRow > 0) {
+    out.push(...index.brandLines.slice(startRow, Math.min(brandCount, endRow)));
+  }
+  let offset = brandCount;
+  for (let i = 0; i < index.msgs.length; i++) {
+    const count = index.counts[i];
+    const msgStart = offset;
+    const msgEnd = offset + count;
+    offset = msgEnd;
+    if (msgEnd <= startRow || msgStart >= endRow) continue;
+    const entry = getMercuryEntry(index.msgs[i], width, true);
+    const lines = entry.lines ?? [];
+    const from = Math.max(0, startRow - msgStart);
+    const to = Math.max(0, Math.min(count, endRow - msgStart));
+    if (to > from) out.push(...lines.slice(from, to));
+  }
+  return out;
+}
+
+/**
+ * Format a viewport range across the transcript PLUS the live streaming tail.
+ *
+ * The tail is a virtual block appended after the finalized transcript: it is
+ * part of the scroll math (grand total = index.total + tail.length), so the
+ * viewport slices across both naturally. Appending tail rows after a full
+ * height window instead overflowed the fixed-height transcript box — bottom
+ * rows clipped, scroll distances wrong, top messages seemingly trimmed.
+ */
+export function renderMercuryTranscriptRange(
+  index: MercuryTranscriptIndex,
+  tail: MercuryTranscriptLine[],
+  startRow: number,
+  endRow: number,
+  width: number,
+): MercuryTranscriptLine[] {
+  const finalizedTotal = index.total;
+  const out: MercuryTranscriptLine[] = [];
+  if (startRow < finalizedTotal && endRow > 0) {
+    out.push(...renderMercuryTranscriptWindow(index, startRow, Math.min(endRow, finalizedTotal), width));
+  }
+  if (endRow > finalizedTotal && tail.length > 0) {
+    const from = Math.max(0, startRow - finalizedTotal);
+    const to = Math.min(tail.length, endRow - finalizedTotal);
+    if (to > from) out.push(...tail.slice(from, to));
+  }
+  return out;
+}
+
 const CODE_HINTS: Array<[string, string, string]> = [
   ['/code auto', 'plan & build automatically — the default', ''],
   ['/code plan', 'analyze & propose before coding', 'ctrl+p'],
@@ -2261,10 +2406,8 @@ function PlanProgressView({ steps }: { steps: PlanStep[] }): React.ReactNode {
 
 /** Live streaming tail budget: chars of the stream buffer rendered per frame. */
 const STREAM_TAIL_CHARS = 8 * 1024;
-/** Live streaming tail budget: max wrapped rows rendered per frame. The live
- * region must stay well under one screen so each frame's rewrite is small —
- * a full-screen live region was repainted every streaming frame (flicker). */
-const STREAM_TAIL_MAX_LINES = 12;
+/** Live streaming tail budget: max wrapped rows rendered per frame. */
+const STREAM_TAIL_MAX_LINES = 40;
 
 /**
  * Vibrant Mercury palette for the wordmark. Background-adaptive: on a dark
@@ -2437,138 +2580,48 @@ function MercuryCodeExitConfirm({ boxWidth }: { boxWidth: number }): React.React
   );
 }
 
-/**
- * Static-output item key for the Mercury Code brand block: printed once when
- * Mercury Code mounts, then it lives in terminal scrollback like any other
- * transcript row (native scrollback model — same as ChatBody above).
- */
-const MERCURY_BRAND_ITEM_KEY = '__mercury_code_brand__';
-
-/** One formatted transcript row (shared by the brand block, Static items, and the live stream tail). */
-function MercuryTranscriptRow({ line }: { line: MercuryTranscriptLine }): React.ReactNode {
-  const roleColor = line.role === 'user' ? 'yellow' : line.role === 'agent' ? 'cyan' : 'gray';
-  if (line.kind === 'brand') {
-    // Indent is baked into the text for exact centering.
-    return (
-      <Box>
-        {line.accent && line.accent.length > 0 ? (
-          <>
-            <Text bold color={WORDMARK_COLORS.mercury}>{line.text}</Text>
-            <Text bold color={WORDMARK_COLORS.code}>{line.accent}</Text>
-          </>
-        ) : (
-          <Text bold color="cyan">{line.text}</Text>
-        )}
-      </Box>
-    );
-  }
-  if (line.kind === 'spacer') {
-    return <Box paddingX={2}><Text> </Text></Box>;
-  }
-  if (line.kind === 'header') {
-    return (
-      <Box paddingX={2}>
-        <Text bold color={roleColor}>● {line.text}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'code-label') {
-    return (
-      <Box paddingX={2}>
-        <Text color={roleColor}>│ </Text><Text dimColor>┌─ {line.text}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'code') {
-    const highlighted = highlightCodeBlock(line.text, line.lang)[0] ?? line.text;
-    return (
-      <Box paddingX={2}>
-        <Text color={roleColor}>│ </Text><Text>{highlighted || ' '}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'system') {
-    const complete = line.text.startsWith('Task complete');
-    return (
-      <Box paddingX={2}>
-        <Text color={complete ? 'green' : 'gray'} bold={complete}>─ {line.text || ' '}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'file') {
-    return (
-      <Box paddingX={2}>
-        <Text color="green">  ↳ </Text><Text>{line.text}</Text>
-      </Box>
-    );
-  }
-  return (
-    <Box paddingX={2}>
-      <Text color={roleColor}>│ </Text><Text>{line.text || ' '}</Text>
-    </Box>
-  );
-}
-
-function MercuryBrandBlock({ brandLines }: { brandLines: MercuryTranscriptLine[] }): React.ReactNode {
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      {brandLines.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
-    </Box>
-  );
-}
-
-function MercuryMessageBlock({ message, width }: { message: ChatMessage; width: number }): React.ReactNode {
-  const lines = buildMercuryMessageLines(message, width);
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      {lines.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
-    </Box>
-  );
-}
-
-/**
- * Mercury Code transcript — native scrollback model. Finalized messages print
- * once through <Static> into the terminal's own scrollback, so the ENTIRE
- * transcript (brand wordmark included) scrolls with the terminal's native
- * scrolling and every row is drag-selectable. No sticky header, no in-app
- * viewport: only a small live region (streaming tail, feedback, prompts,
- * input, status) repaints per frame, which also removes the per-stream
- * full-frame repaint flicker.
- */
 export function MercuryCodeView({
   state,
+  height,
   cols,
+  onInput,
   input,
   cursorPos,
+  onScrollClamp,
   permIdx,
 }: {
   state: TuiState;
+  height: number;
   cols: number;
+  onInput: (text: string) => void;
   input?: string | undefined;
   cursorPos?: number | undefined;
+  onScrollClamp?: (distance: number) => void;
   permIdx?: number | undefined;
 }): React.ReactNode {
   const mc = state.mercuryCode;
   const contentWidth = Math.max(20, cols - 4);
+  // Bounded projection: retain exact per-message row counts for scroll math
+  // and format only the rows currently visible. No full-transcript flatten,
+  // no 60k-line render cache. The brand block is the transcript's first rows,
+  // centered across the terminal width, so new content scrolls it up and
+  // away like a web page header.
   const brandLines = React.useMemo(() => buildMercuryBrandLines(state.version, cols), [state.version, cols]);
   // Streaming message exclusion: the streaming message's content grows on
-  // every chunk, so it must stay out of <Static> (its identity key would
-  // print it once at whatever length it had when it first appeared). It
-  // renders in the live tail below and joins <Static> when finalized.
+  // every chunk, so including it in the memoized index would invalidate the
+  // memo and re-run buildMercuryMessageLines (full markdown parse + wrap) on
+  // the entire buffer each 60ms frame — O(frames × chars) churn that caused
+  // multi-GB allocation storms during long streaming responses.
   const finalizedMessages = React.useMemo(
     () => state.chatMessages.filter((m) => !m.streaming && !m.id.startsWith('heartbeat-')),
     [state.chatMessages],
   );
   const streamingMessage = state.chatMessages.find((m) => m.streaming && !m.id.startsWith('heartbeat-'));
-
-  // Live streaming tail: rendered through the same markdown pipeline as
-  // finalized messages, but on the bounded TAIL SLICE (fence-aligned with the
-  // full buffer) so per-frame work stays O(tail) — headers, bullets, and
-  // syntax-highlighted code render live instead of appearing only at the end.
-  const streamTail = React.useMemo(
-    () => streamingMessage ? buildStreamTailLines(streamingMessage, contentWidth, STREAM_TAIL_CHARS, STREAM_TAIL_MAX_LINES) : [] as MercuryTranscriptLine[],
-    [streamingMessage, contentWidth],
+  const transcriptIndex = React.useMemo(
+    () => buildMercuryTranscriptIndex(finalizedMessages, contentWidth, brandLines),
+    [finalizedMessages, contentWidth, brandLines],
   );
+  const totalLines = transcriptIndex.total;
 
   if (!mc) {
     return (
@@ -2578,79 +2631,184 @@ export function MercuryCodeView({
     );
   }
 
-  const staticItems: Array<string | ChatMessage> = [
-    MERCURY_BRAND_ITEM_KEY,
-    ...finalizedMessages.slice(-MAX_STATIC_MESSAGES),
-  ];
+  // Row budget: the transcript owns the full screen height (brand rows are
+  // part of the scrollable content); chrome is input, live feedback, exit
+  // confirm, and the status line.
+  const inputLines = Math.max(1, (input ?? '').split('\n').length);
+  const inputRows = 2 + inputLines;
+  const confirmRows = mc.exitConfirm ? 3 : 0;
+  const liveVisible = state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running');
+  const liveRows = liveVisible
+    ? 1 + Math.min(2, state.toolSteps.filter((s) => s.status === 'done').slice(-2).length) + (state.subAgents.some((a) => a.status === 'running') ? 1 + Math.min(4, state.subAgents.filter((a) => a.status === 'running').length) : 0)
+    : 0;
+  const statusRows = 1;
+  // Plan checklist + interactive prompt rows are part of the fixed chrome.
+  const planRows = state.planProgress && state.planProgress.length > 0
+    ? Math.min(7, state.planProgress.length + 1)
+    : 0;
+  const promptRows = state.permissionPrompt
+    ? 2 + (state.permissionPrompt.options?.length ?? 0)
+    : 0;
+  const transcriptHeight = Math.max(3, height - inputRows - 1 - liveRows - confirmRows - planRows - promptRows);
 
-  // Status bar (single row): a short contextual hint on the left, session
-  // state on the right. Everything that isn't state is dropped — the old bar
-  // listed a wall of key hints ("esc esc exit · wheel scrolls · drag
-  // selects · …") that wrapped onto a second line and pushed the state
-  // segments (model, tokens) out of view. Non-git workspaces show no git
-  // segment at all instead of the meaningless "⎇ not-a-git-repo · ✓".
+  // Live streaming tail: a bounded, fixed-cost projection of the stream
+  // buffer (last STREAM_TAIL_CHARS, no markdown parsing). It participates in
+  // the scroll math as a virtual block after the finalized transcript, so
+  // the viewport slices across both — never appended on top of a full
+  // window (that overflowed the box and clipped bottom rows).
+  const streamTail = React.useMemo(() => {
+    if (!streamingMessage) return [] as MercuryTranscriptLine[];
+    const content = streamingMessage.content;
+    const tail = content.length > STREAM_TAIL_CHARS ? content.slice(-STREAM_TAIL_CHARS) : content;
+    const lines: MercuryTranscriptLine[] = [{ key: `${streamingMessage.id}:hdr`, kind: 'header', role: streamingMessage.role, text: 'MERCURY' }];
+    for (const row of tail.split('\n')) {
+      for (const chunk of wrapMercuryText(row, contentWidth)) {
+        lines.push({ key: `${streamingMessage.id}:${lines.length}`, kind: 'text', role: streamingMessage.role, text: chunk });
+        if (lines.length > STREAM_TAIL_MAX_LINES) {
+          // Bound the block: keep the newest rows (replace header position).
+          lines.splice(1, lines.length - STREAM_TAIL_MAX_LINES);
+        }
+      }
+    }
+    return lines;
+  }, [streamingMessage, contentWidth]);
+  const totalWithTail = totalLines + streamTail.length;
+
+  const previousLineCount = React.useRef(totalWithTail);
+  const anchoredOffset = anchorViewportDistance(mc.scrollOffset, previousLineCount.current, totalWithTail);
+
+  // Sticky compact brand replaces the pixel wordmark once its rows scroll
+  // away — the session header stays visible without consuming scroll space.
+  // Its single row is reserved by shrinking the transcript box (below), and
+  // the viewport height is reduced to match so rows are never clipped.
+  const preliminaryViewport = getViewportWindow(totalWithTail, transcriptHeight, anchoredOffset);
+  const wordmarkOnScreen = preliminaryViewport.start < brandLines.length;
+  const effectiveViewportRows = wordmarkOnScreen ? transcriptHeight : transcriptHeight - 1;
+  const viewport = getViewportWindow(totalWithTail, effectiveViewportRows, anchoredOffset);
+  const adjustedVisible = renderMercuryTranscriptRange(transcriptIndex, streamTail, viewport.start, viewport.end, contentWidth);
+
+  React.useEffect(() => {
+    previousLineCount.current = totalWithTail;
+    if (onScrollClamp && viewport.distanceFromBottom !== mc.scrollOffset) {
+      onScrollClamp(viewport.distanceFromBottom);
+    }
+  }, [totalWithTail, onScrollClamp, mc.scrollOffset, viewport.distanceFromBottom]);
+
+  // Status line (single row): left hint, right context.
   const mode = state.programmingMode;
   const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : mode === 'auto' ? 'AUTO' : 'CHAT';
+  const modeColor = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan';
   const git = mc.git;
-  const hasGit = git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
-  const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: 'cyan' }];
-  if (hasGit) {
-    const gitBits = [`⎇ ${git.branch}`];
+  const gitBits: string[] = [];
+  if (git.branch !== 'no-git') {
+    gitBits.push(`⎇ ${git.branch}`);
     if (git.ahead > 0) gitBits.push(`↑${git.ahead}`);
     if (git.behind > 0) gitBits.push(`↓${git.behind}`);
-    if (git.dirty > 0) gitBits.push(`±${git.dirty}`);
-    rightSegs.push({ text: gitBits.join(' '), color: 'blue' });
+    gitBits.push(git.dirty > 0 ? `±${git.dirty}` : '✓');
   }
-  rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan' });
-  if (state.provider) rightSegs.push({ text: `${state.provider.name} ${state.provider.model}`, color: 'magenta' });
+  const rightParts = [mc.dirName, ...gitBits, modeLabel];
   // Developer status HUD: token budget is otherwise invisible in Mercury
   // Code (TokenBarView only renders in chat surfaces).
-  if (state.tokenInfo) rightSegs.push({ text: `⚡ ${Math.round(state.tokenInfo.percentage)}%`, color: 'green' });
-  // Fit: drop whole segments from the right when the terminal is narrow.
-  const SEP = ' · ';
-  let segWidth = 4; // paddingX on both sides
-  rightSegs.forEach((seg, i) => { segWidth += seg.text.length + (i > 0 ? SEP.length : 0); });
-  while (segWidth > cols - 2 && rightSegs.length > 1) {
-    const removed = rightSegs.pop()!;
-    segWidth -= removed.text.length + SEP.length;
+  if (state.tokenInfo) {
+    const pct = Math.round(state.tokenInfo.percentage);
+    rightParts.push(`⚡ ${pct}%`);
   }
-  const leftHint = mc.exitConfirm || state.permissionPrompt
-    ? '' // the prompt / confirm box already shows its own controls
-    : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
-      ? '' // the live feedback block above is showing progress
-      : '↵ send · /help';
-
-  const showHints = finalizedMessages.length === 0 && streamTail.length === 0;
+  if (state.provider) rightParts.push(`${state.provider.name} ${state.provider.model}`);
+  const rightStr = rightParts.join(' · ');
 
   return (
-    <Box flexDirection="column" flexShrink={0}>
-      <Static items={staticItems} itemKey={staticItemKey}>
-        {(item) => typeof item === 'string'
-          ? <MercuryBrandBlock key={item} brandLines={brandLines} />
-          : <MercuryMessageBlock key={item.id} message={item} width={contentWidth} />}
-      </Static>
-      {streamTail.length > 0 && (
-        <Box flexDirection="column" flexShrink={0}>
-          {streamTail.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
+    <Box flexDirection="column" height={height} overflow="hidden">
+      {!wordmarkOnScreen && (
+        <Box paddingX={1} flexShrink={0}>
+          <Text bold color="cyan">☿ MERCURY </Text>
+          <Text bold color={WORDMARK_COLORS.code}>CODE</Text>
+          <Text dimColor> v{state.version}</Text>
+          <Text dimColor> · </Text>
+          <Text dimColor>{mc.dirName}</Text>
         </Box>
       )}
-      {showHints && <MercuryCodeHints cols={cols} />}
+      <Box flexDirection="column" height={effectiveViewportRows} overflow="hidden">
+        {adjustedVisible.length === 0 && streamTail.length === 0 && totalWithTail === 0 ? (
+          <MercuryCodeHints cols={cols} />
+        ) : (
+          adjustedVisible.map((line) => {
+            const roleColor = line.role === 'user' ? 'yellow' : line.role === 'agent' ? 'cyan' : 'gray';
+            if (line.kind === 'brand') {
+              // Indent is baked into the text for exact centering.
+              return (
+                <Box key={line.key}>
+                  {line.accent && line.accent.length > 0 ? (
+                    <>
+                      <Text bold color={WORDMARK_COLORS.mercury}>{line.text}</Text>
+                      <Text bold color={WORDMARK_COLORS.code}>{line.accent}</Text>
+                    </>
+                  ) : (
+                    <Text bold color="cyan">{line.text}</Text>
+                  )}
+                </Box>
+              );
+            }
+            if (line.kind === 'spacer') {
+              return <Box key={line.key} paddingX={2}><Text> </Text></Box>;
+            }
+            if (line.kind === 'header') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text bold color={roleColor}>● {line.text}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'code-label') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={roleColor}>│ </Text><Text dimColor>┌─ {line.text}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'code') {
+              const highlighted = highlightCodeBlock(line.text, line.lang)[0] ?? line.text;
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={roleColor}>│ </Text><Text>{highlighted || ' '}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'system') {
+              const complete = line.text.startsWith('Task complete');
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color={complete ? 'green' : 'gray'} bold={complete}>─ {line.text || ' '}</Text>
+                </Box>
+              );
+            }
+            if (line.kind === 'file') {
+              return (
+                <Box key={line.key} paddingX={2}>
+                  <Text color="green">  ↳ </Text><Text>{line.text}</Text>
+                </Box>
+              );
+            }
+            return (
+              <Box key={line.key} paddingX={2}>
+                <Text color={roleColor}>│ </Text><Text>{line.text || ' '}</Text>
+              </Box>
+            );
+          })
+        )}
+      </Box>
       {state.planProgress && state.planProgress.length > 0 && <PlanProgressView steps={state.planProgress} />}
       <MercuryLiveFeedback state={state} />
       {state.permissionPrompt && <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx ?? 0} />}
       {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
       <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
-      <Box height={1} overflow="hidden" paddingX={2} flexShrink={0}>
-        <Text dimColor>{leftHint}</Text>
+      <Box paddingX={3} flexShrink={0}>
+        {viewport.distanceFromBottom > 0 ? (
+          <Text color="yellow">↑↓ scroll · PgUp/PgDn page · Ctrl+E back to live</Text>
+        ) : (
+          <Text dimColor>↵ send · esc esc exit · ⇧drag copy · ctrl+c quit</Text>
+        )}
         <Spacer />
-        <Text wrap="truncate-end">
-          {rightSegs.map((seg, i) => (
-            <React.Fragment key={seg.text}>
-              {i > 0 && <Text color="gray">{SEP}</Text>}
-              <Text color={seg.color}>{seg.text}</Text>
-            </React.Fragment>
-          ))}
-        </Text>
+        <Text color="blue" wrap="truncate-end">{rightStr}</Text>
       </Box>
     </Box>
   );

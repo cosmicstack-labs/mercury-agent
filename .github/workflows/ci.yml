@@ -144,29 +144,32 @@ jobs:
               su system /home/builder/termux-ci.sh
             "
 
-  publish:
-    name: Publish to npm
-    needs: [typecheck, test, pack-verify, termux]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
-      - run: npm run build
-      - name: Check if version already published
-        run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if npm view "@cosmicstack/mercury-agent@$PKG_VERSION" version 2>/dev/null; then
-            echo "Version $PKG_VERSION already published — skipping."
-            exit 0
-          fi
-      - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+# TEMPORARILY DISABLED: npm publish fails in CI and marks the whole pipeline red.
+# Code kept for reference — re-enable (uncomment) once publishing is fixed.
+#
+# publish:
+#   name: Publish to npm
+#   needs: [typecheck, test, pack-verify, termux]
+#   runs-on: ubuntu-latest
+#   if: startsWith(github.ref, 'refs/tags/v')
+#   permissions:
+#     contents: read
+#     id-token: write
+#   steps:
+#     - uses: actions/checkout@v4
+#     - uses: actions/setup-node@v4
+#       with:
+#         node-version: 22
+#         registry-url: https://registry.npmjs.org
+#     - run: npm ci
+#     - run: npm run build
+#     - name: Check if version already published
+#       run: |
+#         PKG_VERSION=$(node -p "require('./package.json').version")
+#         if npm view "@cosmicstack/mercury-agent@$PKG_VERSION" version 2>/dev/null; then
+#           echo "Version $PKG_VERSION already published — skipping."
+#           exit 0
+#         fi
+#     - run: npm publish --access public --provenance
+#       env:
+#         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

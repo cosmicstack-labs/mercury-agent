@@ -4,7 +4,6 @@ import {
   MAX_VERIFICATION_CONTINUATIONS,
   executeContinuationPrompt,
   isFailedToolResult,
-  isTextDeliverableRequest,
   responseAsksUser,
   shouldForceExecuteContinuation,
   shouldRequireVerification,
@@ -13,46 +12,6 @@ import {
 } from './execute-guard.js';
 
 const ok = (names: string[]): Map<string, boolean> => new Map(names.map((n) => [n, true]));
-
-describe('chat delivery contract', () => {
-  it('text deliverables are exempt — the reply itself is the work', () => {
-    for (const text of [
-      'write a poem about the sea',
-      'draft an email to the landlord',
-      'give me a catchy slogan for the app',
-      'write a short story about a fox',
-      'write the lyrics for a chorus',
-      'write a haiku about autumn',
-      'brainstorm names for the project',
-      'write a blog post intro',
-    ]) {
-      expect(isTextDeliverableRequest(text), text).toBe(true);
-    }
-  });
-
-  it('repo/code-shaped requests are NOT text deliverables — the guard applies in chat', () => {
-    for (const text of [
-      'fix the login bug',
-      'build a dashboard for the API',
-      'add tests to the auth module',
-      'refactor the session store',
-      'create a component for the settings page',
-      'implement the endpoint',
-      'set up the database schema',
-    ]) {
-      expect(isTextDeliverableRequest(text), text).toBe(false);
-    }
-  });
-
-  it('the narration guard still fires for chat implementation requests with no tools', () => {
-    expect(shouldForceExecuteContinuation({
-      taskText: 'fix the login bug',
-      hasApprovedPlan: false,
-      toolsUsed: [],
-      toolsSucceeded: new Map(),
-    })).toBe(true);
-  });
-});
 
 describe('execute-mode completion guard', () => {
   it('forces continuation when an implementation request ended with no tools', () => {
