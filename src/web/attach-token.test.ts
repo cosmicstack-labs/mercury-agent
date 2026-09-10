@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
 import { writeAttachToken, readAttachToken, createSession } from './auth.js';
 import { authGuard } from './middleware.js';
@@ -31,7 +31,11 @@ describe('attach token', () => {
     const token = readAttachToken();
     expect(token).toBeTruthy();
     // Written at boot with 0600 — same trust level as credentials files.
-    expect(statSync(join(home, 'attach-token')).mode & 0o777).toBe(0o600);
+    // Windows doesn't enforce POSIX modes: stat reports 0666 for any
+    // writable file, so the mode assertion only holds on POSIX systems.
+    if (platform() !== 'win32') {
+      expect(statSync(join(home, 'attach-token')).mode & 0o777).toBe(0o600);
+    }
     // Rotated per boot: each write replaces the token.
     const first = token;
     writeAttachToken();
