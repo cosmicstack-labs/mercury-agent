@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/platforms/linux',
         'getting-started/platforms/windows',
         'getting-started/platforms/termux',
+        'getting-started/platforms/cloud-instance',
       ],
     },
     'getting-started/setup',

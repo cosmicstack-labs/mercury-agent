@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { MercuryConfig } from './config.js';
 import { getMercuryHome, saveConfig } from './config.js';
 import { logger } from './logger.js';
+import { formatNumber } from './format.js';
 
 export interface TokenTracker {
   dailyUsed: number;
@@ -165,7 +166,7 @@ export class TokenBudget {
     const used = this.sanitizeCount(this.dailyUsed);
     const pct = Math.round(this.getUsagePercentage());
     const remaining = this.getRemaining();
-    return `Token budget: ${used.toLocaleString()} / ${this.dailyBudget.toLocaleString()} used (${pct}%), ${remaining.toLocaleString()} remaining`;
+    return `Token budget: ${formatNumber(used)} / ${formatNumber(this.dailyBudget)} used (${pct}%), ${formatNumber(remaining)} remaining`;
   }
 
   /**

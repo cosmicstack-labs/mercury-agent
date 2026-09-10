@@ -2060,7 +2060,7 @@ function SidebarView({ sections }: { sections: SidebarSection[] }) {
   );
 }
 
-function PermPromptView({ prompt, activeIdx }: { prompt: PermissionPromptState; activeIdx: number }) {
+export function PermPromptView({ prompt, activeIdx }: { prompt: PermissionPromptState; activeIdx: number }) {
   const options = prompt.options || [];
 
   if (options.length > 0) {
