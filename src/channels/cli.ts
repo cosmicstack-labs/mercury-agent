@@ -1372,7 +1372,15 @@ export class CLIChannel extends BaseChannel {
 
   /** Clear the live activity block (task finished or idle). */
   clearLiveActivity(): void {
-    if (this.state.liveActivity) this.update({ liveActivity: null });
+    // Turn-end cleanup: clear the phase AND the thinking state together.
+    // In plain chat the final pushLiveActivity ('Finalizing response') sets
+    // isThinking, and no channel.send/sendCompletion follows (the response
+    // was already streamed; no banner for simple turns) — so the spinner
+    // survived the turn and rendered "Processing" forever while the agent
+    // was idle.
+    if (this.state.liveActivity || this.state.isThinking) {
+      this.update({ liveActivity: null, isThinking: false });
+    }
   }
 
   updateBackgroundTasks(tasks: BackgroundTaskInfo[]): void {

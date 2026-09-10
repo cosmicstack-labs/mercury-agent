@@ -67,4 +67,23 @@ describe('CLIChannel live activity feedback', () => {
     expect(channel.getTuiState().liveActivity).toBeNull();
     expect(channel.getTuiState().isThinking).toBe(false);
   });
+
+  it('turn-end cleanup clears isThinking with the phase — plain-chat spinner must not outlive the turn', () => {
+    // Regression: in plain chat the final pushLiveActivity ('Finalizing
+    // response') sets isThinking, then no channel.send/sendCompletion
+    // follows (response already streamed, no banner for simple turns), and
+    // the agent's turn-end finally only called clearLiveActivity() — which
+    // cleared the phase but left isThinking true, so the TUI rendered
+    // "Processing · 1m 30s / Composing response" forever after the turn
+    // was over (agent lifecycle already idle).
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    // What the agent does on the 'Finalizing response' step:
+    channel.setLiveActivity('Finalizing response');
+    expect(channel.getTuiState().isThinking).toBe(true);
+    // What the agent's turn-end finally does:
+    channel.clearLiveActivity();
+    expect(channel.getTuiState().liveActivity).toBeNull();
+    expect(channel.getTuiState().isThinking).toBe(false);
+  });
 });
