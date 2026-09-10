@@ -90,8 +90,8 @@ export interface MercuryConfig {
   cloud: CloudConfig;
   providers: {
     default: ProviderName;
-    mercuryCloud: ProviderConfig;
     aimlapi: ProviderConfig;
+    mercuryCloud: ProviderConfig;
     openai: ProviderConfig;
     anthropic: ProviderConfig;
     deepseek: ProviderConfig;
@@ -250,6 +250,13 @@ export function getDefaultConfig(): MercuryConfig {
     },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
+      aimlapi: {
+        name: 'aimlapi',
+        apiKey: getEnv('AIMLAPI_API_KEY', ''),
+        baseUrl: getEnv('AIMLAPI_BASE_URL', 'https://api.aimlapi.com/v1'),
+        model: getEnv('AIMLAPI_MODEL', 'anthropic/claude-sonnet-4.6'),
+        enabled: getEnvBool('AIMLAPI_ENABLED', true),
+      },
       mercuryCloud: {
         name: 'mercuryCloud',
         apiKey: '',
@@ -270,13 +277,6 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
         model: getEnv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
         enabled: getEnvBool('ANTHROPIC_ENABLED', true),
-      },
-      aimlapi: {
-        name: 'aimlapi',
-        apiKey: getEnv('AIMLAPI_API_KEY', ''),
-        baseUrl: getEnv('AIMLAPI_BASE_URL', 'https://api.aimlapi.com/v1'),
-        model: getEnv('AIMLAPI_MODEL', 'anthropic/claude-sonnet-4.6'),
-        enabled: getEnvBool('AIMLAPI_ENABLED', true),
       },
       deepseek: {
         name: 'deepseek',

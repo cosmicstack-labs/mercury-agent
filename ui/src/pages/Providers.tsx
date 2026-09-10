@@ -254,6 +254,14 @@ export function ProvidersPage() {
                             >
                               {f.enabled ? "Active" : "Disabled"}
                             </Badge>
+                            {provider.recommended && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] px-1.5 py-0 bg-[#0ea5e9]/15 text-[#0ea5e9] border-[#0ea5e9]/30"
+                              >
+                                Recommended
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         <Switch

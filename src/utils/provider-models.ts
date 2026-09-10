@@ -146,8 +146,21 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
 }
 
 interface OpenAIModelResponse {
-  data?: Array<{ id?: string; output_modalities?: string[] }>;
+  data?: Array<{ id?: string; output_modalities?: string[]; type?: string }>;
 }
+
+/**
+ * AI/ML API lists every surface it serves — chat, images, video, speech,
+ * batches — as separate rows, and the same model id appears once per surface.
+ * `type` names the surface, so the chat set is the rows that carry the
+ * OpenAI-compatible one; `uniq` in `buildModelCatalog` collapses the repeats.
+ *
+ * Filtering by id text the way `isOpenAIChatModel` does cannot work here: ids
+ * are namespaced by lab (`anthropic/claude-sonnet-4.6`, `deepseek/...`), so a
+ * `gpt-`/`o<digit>` rule discards all 353 chat models and the catalogue comes
+ * back empty.
+ */
+const AIMLAPI_CHAT_SURFACE = 'openai/chat-completions';
 
 interface AnthropicModelResponse {
   data?: Array<{ id?: string }>;
@@ -314,6 +327,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Atlas Cloud key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
+  } else if (provider === 'aimlapi') {
+    errorMessage = 'Mercury could not fetch models for this AI/ML API key. Please re-enter it.';
   } else if (provider === 'openaiCompat') {
     errorMessage = 'Mercury could not fetch models from this server. Please check the base URL and try again.';
   } else {
@@ -330,8 +345,12 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     .map((model) => ({
       id: model.id?.trim() ?? '',
       outputModalities: model.output_modalities,
+      surface: model.type,
     }))
-    .filter(({ id, outputModalities }) => {
+    .filter(({ id, outputModalities, surface }) => {
+      if (provider === 'aimlapi') {
+        return id.length > 0 && surface === AIMLAPI_CHAT_SURFACE;
+      }
       if (provider === 'deepseek') {
         return id.startsWith('deepseek-');
       }
