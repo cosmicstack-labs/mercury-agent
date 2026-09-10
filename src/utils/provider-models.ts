@@ -10,6 +10,16 @@ export interface ProviderModelCatalog {
 
 const MAX_MODEL_OPTIONS = 50;
 
+// Verified present in the AI/ML API catalogue on 2026-09-10. The ids are
+// namespaced by lab there, so they do not collide with the bare ids other
+// providers in this file use.
+const AIMLAPI_PREFERRED_MODELS = [
+  'anthropic/claude-sonnet-4.6',
+  'openai/gpt-5.2-chat-latest',
+  'deepseek/deepseek-chat',
+  'openai/gpt-4o-mini',
+] as const;
+
 const OPENAI_PREFERRED_MODELS = [
   'gpt-5.2',
   'gpt-5.2-chat-latest',
@@ -117,6 +127,7 @@ export class ProviderModelFetchError extends Error {
 export function getPreferredModelsForProvider(provider: ProviderName): string[] {
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
     mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
+    aimlapi: AIMLAPI_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -225,6 +236,7 @@ function chooseRecommendedModel(
 ): string {
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
     mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
+    aimlapi: AIMLAPI_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,
@@ -265,6 +277,7 @@ export function buildModelCatalog(
   const recommendedModel = chooseRecommendedModel(provider, filtered, currentModel);
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
     mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
+    aimlapi: AIMLAPI_PREFERRED_MODELS,
     deepseek: DEEPSEEK_PREFERRED_MODELS,
     openai: OPENAI_PREFERRED_MODELS,
     anthropic: ANTHROPIC_PREFERRED_MODELS,

@@ -21,6 +21,11 @@ export async function createProvider(pc: ProviderConfig, tokenStore?: import('..
     // this entirely.
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
+  } else if (pc.name === 'aimlapi') {
+    // OpenAI-compatible gateway. Chat Completions rather than Responses: the
+    // catalogue is mostly third-party models reached through that surface.
+    const { OpenAICompatProvider } = await import('./openai-compat.js');
+    return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'atlascloud' || pc.name === 'ollamaCloud' || pc.name === 'openaiCompat') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
@@ -57,6 +62,10 @@ export class ProviderRegistry {
         apiKey: config.providers.mercuryCloud.apiKey || config.cloud.jwt,
         baseUrl: config.cloud.apiUrl || config.providers.mercuryCloud.baseUrl,
       },
+      // Registered after mercuryCloud on purpose. This array is the fallback
+      // order, and moving a first-party hosted provider off the front of it is
+      // a behaviour change for existing installs rather than a listing choice.
+      config.providers.aimlapi,
       config.providers.deepseek,
       config.providers.openai,
       config.providers.anthropic,
