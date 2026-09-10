@@ -70,6 +70,7 @@ import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { getManual } from './utils/manual.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
+import { runAttach } from './cli/attach.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
@@ -78,7 +79,7 @@ import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/prov
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled } from './web/server.js';
-import { isWebAuthInitialized, setWebPassword } from './web/auth.js';
+import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let pkgVersion: string;
@@ -2127,7 +2128,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       const message = String(reason instanceof Error ? reason.message : reason || '');
       if (/already running|EADDRINUSE|registerRuntimeProcess/i.test(message)) {
         try {
-          process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Stop the other instance with \`mercury stop\` or \`kill <pid>\`.\n`);
+          process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Attach to it with \`mercury attach\`, or stop it with \`mercury stop\` / \`kill <pid>\`.\n`);
         } catch { /* stderr gone */ }
         process.exit(1);
       }
@@ -3252,6 +3253,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
     if (config.web.enabled) {
       startWebServer();
+      // Rotate the machine-local attach token for this boot so second
+      // terminals can connect without the web login flow.
+      writeAttachToken();
       updateWebStatus({
         running: true,
         pid: process.pid,
@@ -3307,6 +3311,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     await channels.startAll();
     if (config.web.enabled) {
       startWebServer();
+      writeAttachToken();
       updateWebStatus({
         running: true,
         pid: process.pid,
@@ -3399,6 +3404,13 @@ program
       autoDaemonize();
       return;
     }
+    // A second terminal joins the running runtime instead of fighting it.
+    const foreground = getForegroundRuntimeStatus();
+    if (foreground.running && foreground.pid) {
+      console.log(chalk.cyan(`  ⚿ Mercury is already running (PID: ${foreground.pid}) — attaching.`));
+      await runAttach();
+      return;
+    }
     autoDaemonize();
     await runAgent();
   });
@@ -3423,11 +3435,24 @@ program
     }
 
     if (opts.foreground) {
+      const foreground = getForegroundRuntimeStatus();
+      if (foreground.running && foreground.pid) {
+        console.log(chalk.cyan(`  ⚿ Mercury is already running (PID: ${foreground.pid}) — attaching.`));
+        await runAttach();
+        return;
+      }
       await runAgent();
       return;
     }
 
     startBackground();
+  });
+
+program
+  .command('attach')
+  .description('Attach this terminal to an already-running Mercury runtime (chat + live streaming)')
+  .action(async () => {
+    await runAttach();
   });
 
 program

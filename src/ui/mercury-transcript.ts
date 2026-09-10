@@ -79,6 +79,50 @@ export function buildMercuryBrandLines(version: string, cols: number): MercuryTr
 /** Visible rows per code block before it collapses to a pointer. */
 export const CODE_BLOCK_VISIBLE_ROWS = 40;
 
+/**
+ * Live, rendered tail of a streaming message.
+ *
+ * The full markdown pipeline (renderMarkdown + code highlighting + wrap)
+ * runs on the TAIL SLICE only, so per-frame work stays bounded by the tail
+ * budget — never O(full buffer), which caused multi-GB allocation storms
+ * during long streams.
+ *
+ * The slice is line-aligned and, when the pre-tail region ends inside a code
+ * fence, backed up to the fence opener so the live block always contains a
+ * complete fence (label + code rows) and renders as code — never as broken
+ * prose. The capped row budget keeps the live frame small either way.
+ */
+export function buildStreamTailLines(
+  message: ChatMessage,
+  width: number,
+  tailChars = 8 * 1024,
+  maxLines = 12,
+): MercuryTranscriptLine[] {
+  const content = message.content;
+  if (content.length === 0) return [];
+  const rawStart = Math.max(0, content.length - tailChars);
+  const head = content.slice(0, rawStart);
+  const insideFence = (head.match(/```/g) || []).length % 2 === 1;
+  // Plain line alignment: never start the slice mid-line.
+  let start = rawStart === 0 ? 0 : content.indexOf('\n', rawStart) + 1;
+  if (start === 0 && rawStart > 0) start = rawStart; // no newline (single-line buffer)
+  if (insideFence) {
+    // Back up to the last fence opener at or before the raw start so the
+    // slice contains the complete block. lastIndexOf scans only the boundary
+    // neighborhood; the slice may exceed tailChars for a very long block, and
+    // the row cap below (plus code-block collapse) bounds the render cost.
+    const opener = content.lastIndexOf('```', Math.max(0, start - 1));
+    if (opener >= 0 && opener < start) start = opener;
+  }
+  const tailMessage: ChatMessage = { ...message, content: content.slice(start) };
+  const lines = buildMercuryMessageLines(tailMessage, width);
+  // Keep the header row, then the newest rows below it.
+  if (lines.length > maxLines) {
+    return [lines[0], ...lines.slice(-(maxLines - 1))];
+  }
+  return lines;
+}
+
 export function buildMercuryMessageLines(message: ChatMessage, width: number): MercuryTranscriptLine[] {
   if (message.id.startsWith('heartbeat-')) return [];
   const contentWidth = Math.max(12, width - 4);

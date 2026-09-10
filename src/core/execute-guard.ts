@@ -80,6 +80,20 @@ const PURE_CONVERSATION_PATTERN = /^(thanks|thank you|thx|ty|cool|nice|great|awe
 /** Interrogatives: the user wants an answer, not (necessarily) file changes. */
 const QUESTION_PATTERN = /^(what|whats|what's|why|how|when|where|who|which|explain|describe|tell me|walk me through|compare|list)\b/i;
 
+/**
+ * Text-deliverable writing: in plain chat the response itself IS the
+ * deliverable — a poem, an email, an essay. No tool work is required to
+ * fulfill these, so the narration guard must not force the model through
+ * file tools for them. Repo/code-shaped requests ("fix the login bug",
+ * "build a dashboard") never match this pattern and stay guarded.
+ */
+const TEXT_DELIVERABLE_PATTERN =
+  /\b(poems?|poetry|haiku|stor(y|ies)|essay|essays|lyrics|song|joke|jokes|slogans?|taglines?|e-?mails?|letters?|blog|blogs|articles?|summaries|summari[sz]e|translat\w*|captions?|tweets?|outlines?|brainstorm|names?|titles?|description|descriptions)\b/i;
+
+export function isTextDeliverableRequest(taskText: string): boolean {
+  return TEXT_DELIVERABLE_PATTERN.test(taskText);
+}
+
 export interface ExecuteGuardInput {
   /** The user's request for this turn. */
   taskText: string;

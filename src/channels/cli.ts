@@ -1424,9 +1424,10 @@ export class CLIChannel extends BaseChannel {
 
   /**
    * Enter Mercury Code: full-screen coding TUI bound to `dir`.
-   * Switches to plan mode by default (analyze-first). Transcript scrolling
-   * stays keyboard-only: terminal mouse reporting survives native process
-   * aborts and leaves the user's shell receiving raw mouse escape sequences.
+   * Switches to plan mode by default (analyze-first). The transcript prints
+   * into the terminal's native scrollback (<Static>), so scrolling and
+   * drag-selection are terminal-native: mouse reporting stays OFF — it would
+   * capture wheel/drag events and break both.
    */
   enterMercuryCode(dir: string, version: string): { ok: boolean; message: string } {
     const target = path.resolve(dir.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
@@ -1451,14 +1452,6 @@ export class CLIChannel extends BaseChannel {
       // confirming with the user only for large/consequential changes.
       programmingMode: 'auto',
       exitEscArmed: false,
-    });
-    // Reset stale mouse state, then enable mouse reporting for THIS
-    // Mercury Code session: wheel scroll drives the transcript scrollback
-    // (full-screen frames keep history OUT of terminal scrollback — the
-    // wheel is the only natural way back up).
-    this.setMouseEnabled(true, (ev) => {
-      if (ev.wheel === 'up') this.scrollMercuryCode(3);
-      else if (ev.wheel === 'down') this.scrollMercuryCode(-3);
     });
     try {
       process.stdout.write('\x1b[2J\x1b[H');
