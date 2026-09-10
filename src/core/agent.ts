@@ -77,7 +77,7 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, isTextDeliverableRequest, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
@@ -3149,14 +3149,22 @@ export class Agent {
       this.markProgress('Finalizing response...');
       this.pushLiveActivity('Finalizing response');
 
-      // ── Execute-mode completion guard ──
+      // ── Delivery completion guard ──
       // In Mercury Code execute mode, a narration-only turn ("Building X per
       // its spec. Reading it first.") with zero mutating tool calls must NOT
-      // be celebrated as "Task complete". Force a bounded number of
-      // continuation rounds that push the model to actually use its tools.
+      // be celebrated as "Task complete". The same contract holds in plain
+      // chat on every channel: an implementation-style request must actually
+      // run its tools — narration is not delivery, and the task does not
+      // end without having done anything. Conservative gating: questions,
+      // chit-chat, and text deliverables (poems, emails — the reply itself
+      // is the work) are excluded, so only repo/code-shaped requests are
+      // forced through their tools.
       while (
-        this.programmingMode.isExecute()
-        && !loopAbortController.signal.aborted
+        !loopAbortController.signal.aborted
+        && (this.programmingMode.isExecute()
+          || (this.programmingMode.getState() === 'off'
+            && msg.channelType !== 'internal'
+            && !isTextDeliverableRequest(msg.content)))
         && executeGuardRounds < (narrationSecondWind ? MAX_EXECUTE_CONTINUATIONS * 2 : MAX_EXECUTE_CONTINUATIONS)
         // A turn that ends by asking the user something in plain text is a
         // legitimate pause — forcing rounds here looped the model forever
@@ -3433,10 +3441,13 @@ export class Agent {
       // ── Verification gate ──
       // Implementation work happened, but nothing objectively verified it
       // (no build/test/typecheck ran). Force one bounded evidence round.
+      // Same contract in plain chat: a change that landed but was never
+      // verified is not a delivered change.
       if (
         !loopAbortController.signal.aborted
         && turnEnd() === 'text-stop'
-        && this.programmingMode.isExecute()
+        && (this.programmingMode.isExecute()
+          || (this.programmingMode.getState() === 'off' && msg.channelType !== 'internal'))
         && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
         && shouldRequireVerification({
           taskText: msg.content,
