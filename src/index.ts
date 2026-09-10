@@ -1191,6 +1191,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     }
 
     for (const provider of selectedProviders) {
+      if (provider === 'aimlapi') {
+        const mask = isReconfig && config.providers.aimlapi.apiKey ? ` [${maskKey(config.providers.aimlapi.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'aimlapi',
+          'AI/ML API',
+          chalk.white(`  AI/ML API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.aimlapi.apiKey = result.apiKey;
+          config.providers.aimlapi.model = result.model;
+          config.providers.aimlapi.enabled = true;
+        }
+        continue;
+      }
+
       if (provider === 'deepseek') {
         const mask = isReconfig && config.providers.deepseek.apiKey ? ` [${maskKey(config.providers.deepseek.apiKey)}]` : '';
         const result = await promptApiKeyWithModelSelection(
