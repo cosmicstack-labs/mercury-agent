@@ -1,8 +1,22 @@
 import { Context, Next } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { validateSession, getSessionCookieName } from './auth.js';
+import { validateSession, getSessionCookieName, readAttachToken } from './auth.js';
 
 const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout']);
+
+/**
+ * The attach token is only honored from loopback connections. Defense in
+ * depth: the secret itself is an owner-only file, but a matching token from
+ * a non-loopback peer must not open the API even if a future bug leaks it.
+ */
+function isLoopbackRequest(c: Context): boolean {
+  try {
+    const address: string = (c.env as any)?.incoming?.socket?.remoteAddress || '';
+    return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+  } catch {
+    return false;
+  }
+}
 
 export async function authGuard(c: Context, next: Next) {
   const path = new URL(c.req.url).pathname;
@@ -14,10 +28,15 @@ export async function authGuard(c: Context, next: Next) {
   }
   if (path.startsWith('/api/')) {
     const token = getCookie(c, getSessionCookieName()) || c.req.header('Authorization')?.replace('Bearer ', '');
-    if (!token || !validateSession(token)) {
-      return c.json({ error: 'Unauthorized' }, 401);
+    if (token && validateSession(token)) {
+      return next();
     }
-    return next();
+    // Attach clients (`mercury attach`) authenticate with the machine-local
+    // token instead of the interactive web login.
+    if (token && isLoopbackRequest(c) && token === readAttachToken()) {
+      return next();
+    }
+    return c.json({ error: 'Unauthorized' }, 401);
   }
   const token = getCookie(c, getSessionCookieName());
   if (!token || !validateSession(token)) {

@@ -224,7 +224,7 @@ process.on('unhandledRejection', (reason: any) => {
   const fatal = /already running|EADDRINUSE|registerRuntimeProcess/i.test(message);
   if (fatal) {
     try {
-      process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Stop the other instance with \`mercury stop\` or \`kill <pid>\`.\n`);
+      process.stderr.write(`\n✗ Mercury cannot start: ${message}\n  Attach to it with \`mercury attach\`, or stop it with \`mercury stop\` / \`kill <pid>\`.\n`);
     } catch { /* stderr gone */ }
     process.exit(1);
   }
