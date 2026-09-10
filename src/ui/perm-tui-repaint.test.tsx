@@ -1,4 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// These tests assert on the frames Ink writes to a fake stdout. Ink skips
+// ALL frame writes when it detects CI (`is-in-ci` → process.env.CI), which
+// GitHub Actions sets — on CI the stream only ever received the cursor-hide
+// escape, so every frame assertion failed there while passing locally.
+// Setting CI to '0' (the one value is-in-ci treats as false) BEFORE the ink
+// module loads restores normal rendering. vi.hoisted runs before imports.
+vi.hoisted(() => {
+  process.env.CI = '0';
+});
+
 import React from 'react';
 import { render } from 'ink';
 import { Text, Box } from 'ink';
