@@ -38,6 +38,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   google: "#3b82f6",
   groq: "#ef4444",
   ollama: "#8b5cf6",
+  aimlapi: "#0ea5e9",
   openrouter: "#ec4899",
 };
 

@@ -433,6 +433,7 @@ export interface AppConfig {
 
 export interface ProviderInfo {
   name: string;
+  recommended?: boolean;
   maskedKey: string;
   baseUrl: string;
   model: string;
