@@ -95,8 +95,8 @@ export const CODE_BLOCK_VISIBLE_ROWS = 40;
 export function buildStreamTailLines(
   message: ChatMessage,
   width: number,
-  tailChars = 8 * 1024,
-  maxLines = 12,
+  tailChars = 32 * 1024,
+  maxLines = 48,
 ): MercuryTranscriptLine[] {
   const content = message.content;
   if (content.length === 0) return [];
@@ -108,11 +108,14 @@ export function buildStreamTailLines(
   if (start === 0 && rawStart > 0) start = rawStart; // no newline (single-line buffer)
   if (insideFence) {
     // Back up to the last fence opener at or before the raw start so the
-    // slice contains the complete block. lastIndexOf scans only the boundary
-    // neighborhood; the slice may exceed tailChars for a very long block, and
-    // the row cap below (plus code-block collapse) bounds the render cost.
-    const opener = content.lastIndexOf('```', Math.max(0, start - 1));
-    if (opener >= 0 && opener < start) start = opener;
+    // slice contains the complete block. The scan is WINDOWED (bounded to
+    // the tail budget before the slice start): scanning the whole head with
+    // String.lastIndexOf ran O(head) per recompute on every throttle window.
+    // An opener older than the window is beyond the tail budget anyway —
+    // its block's visible rows are capped out by the row cap below.
+    const windowStart = Math.max(0, start - tailChars);
+    const opener = content.slice(windowStart, start).lastIndexOf('```');
+    if (opener >= 0) start = windowStart + opener;
   }
   const tailMessage: ChatMessage = { ...message, content: content.slice(start) };
   const lines = buildMercuryMessageLines(tailMessage, width);

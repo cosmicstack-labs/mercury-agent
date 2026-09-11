@@ -1,6 +1,7 @@
 import React, { useSyncExternalStore } from 'react';
 import { Box, Text, Spacer, Static, useApp, useInput, useStdout } from 'ink';
 import type { TuiState } from '../channels/cli.js';
+import { TUI_FROZEN_HINT_MARKER } from '../channels/cli.js';
 import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptState, SidebarSection, BackgroundTaskInfo, WorkspaceState, LiveActivityState, PlanStep } from './types.js';
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
@@ -419,6 +420,11 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       if (key.escape) { onInput('/mc esc-arm'); return; }
 
       if (key.ctrl && (ch === 'd' || ch === 'D')) { onInput('/mc exit-force'); return; }
+
+      // Scroll lock (freeze): stop all frame writes so the user can scroll,
+      // read, and copy in native scrollback while a response streams. The
+      // chat continues underneath; Ctrl+S again resumes.
+      if (key.ctrl && (ch === 's' || ch === 'S' || ch === '\x13')) { onInput('/mc freeze-toggle'); return; }
 
       // Ctrl+P / Ctrl+X plan/execute shortcuts
       if (key.ctrl && (ch === 'p' || ch === 'P')) { onInput('/code plan'); return; }
@@ -969,6 +975,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
         <MercuryCodeView
           state={state}
           cols={terminalSize.cols}
+          rows={terminalSize.rows}
           input={input}
           cursorPos={cursorPos}
           permIdx={permIdx}
@@ -1972,7 +1979,7 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
   );
 }
 
-function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPreview }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null; thinkingPreview?: string | null }) {
+function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPreview, frozen }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null; thinkingPreview?: string | null; frozen?: boolean }) {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
   const [elapsed, setElapsed] = React.useState(0);
@@ -1980,12 +1987,14 @@ function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPrevi
 
   React.useEffect(() => {
     startRef.current = Date.now();
+    // Scroll lock: the self-ticker must not repaint while frames are frozen.
+    if (frozen) return;
     const timer = setInterval(() => {
       setFrame((v) => (v + 1) % frames.length);
       setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
     }, 80);
     return () => clearInterval(timer);
-  }, []);
+  }, [frozen]);
 
   const spinner = frames[frame % frames.length];
   const runningStep = [...steps].reverse().find((s) => s.status === 'running');
@@ -2212,6 +2221,7 @@ const CODE_HINTS: Array<[string, string, string]> = [
   ['/code execute', 'approve & implement the plan', 'ctrl+x'],
   ['/init', 'scan repo & write AGENTS.md', ''],
   ['/code diff', 'show working-tree diff', 'ctrl+g'],
+  ['/code freeze', 'freeze frames to scroll/copy freely', 'ctrl+s'],
   ['/code chat', 'switch back to regular chat', 'esc esc'],
   ['/code exit', 'leave Mercury Code (confirm)', 'ctrl+d'],
 ];
@@ -2260,11 +2270,27 @@ function PlanProgressView({ steps }: { steps: PlanStep[] }): React.ReactNode {
 }
 
 /** Live streaming tail budget: chars of the stream buffer rendered per frame. */
-const STREAM_TAIL_CHARS = 8 * 1024;
-/** Live streaming tail budget: max wrapped rows rendered per frame. The live
- * region must stay well under one screen so each frame's rewrite is small —
- * a full-screen live region was repainted every streaming frame (flicker). */
-const STREAM_TAIL_MAX_LINES = 12;
+const STREAM_TAIL_CHARS = 32 * 1024;
+const STREAM_TAIL_MIN_LINES = 6;
+/** Absolute ceiling on live tail rows: bounds per-frame markdown + highlight
+ * work regardless of terminal height. */
+const STREAM_TAIL_MAX_LINES = 48;
+/** Live-region chrome below the tail block: input box (2 borders + lines),
+ * status bar, live-feedback block (≤5), plan checklist (≤6), prompts. Kept in
+ * sync with MercuryCodeView's render tree. */
+const MERCURY_CODE_LIVE_CHROME_ROWS = 14;
+
+/**
+ * Live streaming tail row cap, derived from the terminal height. The cap must
+ * stay well under `rows`: ink clears the whole terminal and rewrites the
+ * static transcript whenever the live region's height reaches `rows`
+ * (ink.js: `outputHeight >= stdout.rows`) — a fixed 48-row tail on a 30-row
+ * terminal would nuke scrollback every frame. Diff-render makes the rewrite
+ * itself cheap (only changed rows are re-emitted), so the cap is generous.
+ */
+export function streamTailRowCap(terminalRows: number): number {
+  return Math.max(STREAM_TAIL_MIN_LINES, Math.min(STREAM_TAIL_MAX_LINES, terminalRows - MERCURY_CODE_LIVE_CHROME_ROWS));
+}
 
 /**
  * Vibrant Mercury palette for the wordmark. Background-adaptive: on a dark
@@ -2318,6 +2344,9 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
   const active = Boolean(running || state.isThinking || doneRecently.length > 0 || activeAgents.length > 0 || activity);
   React.useEffect(() => {
     if (!active || state.mode !== 'mercury-code') return;
+    // Scroll lock: the self-ticker must not repaint while the TUI is frozen
+    // (each tick commits a frame — frame writes are what freezing stops).
+    if (state.tuiFrozen) return;
     // 100ms tick: smooth spinner AND a live seconds counter. The old 250ms
     // tick with no elapsed read as frozen during long tool calls.
     const t = setInterval(() => {
@@ -2325,7 +2354,7 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
       forceTick((v) => v + 1);
     }, 100);
     return () => clearInterval(t);
-  }, [active, state.mode]);
+  }, [active, state.mode, state.tuiFrozen]);
   if (state.mode !== 'mercury-code') return null;
   if (!active) return null;
 
@@ -2538,12 +2567,14 @@ function MercuryMessageBlock({ message, width }: { message: ChatMessage; width: 
 export function MercuryCodeView({
   state,
   cols,
+  rows = 24,
   input,
   cursorPos,
   permIdx,
 }: {
   state: TuiState;
   cols: number;
+  rows?: number;
   input?: string | undefined;
   cursorPos?: number | undefined;
   permIdx?: number | undefined;
@@ -2565,10 +2596,42 @@ export function MercuryCodeView({
   // finalized messages, but on the bounded TAIL SLICE (fence-aligned with the
   // full buffer) so per-frame work stays O(tail) — headers, bullets, and
   // syntax-highlighted code render live instead of appearing only at the end.
-  const streamTail = React.useMemo(
-    () => streamingMessage ? buildStreamTailLines(streamingMessage, contentWidth, STREAM_TAIL_CHARS, STREAM_TAIL_MAX_LINES) : [] as MercuryTranscriptLine[],
-    [streamingMessage, contentWidth],
-  );
+  // Recompute is throttled to ~120ms: the markdown/highlight pipeline is
+  // O(tail) and the diff-render only rewrites changed rows, so a slightly
+  // stale tail for one throttle window is imperceptible, while re-parsing
+  // the full slice on every 60ms chunk was measurable CPU on long streams.
+  // The block is PADDED to the row cap (spacer rows below the text) so the
+  // live region's height is constant for the whole stream — ink's erase
+  // arithmetic (log-update) never changes the region's line count, which is
+  // what made the user's scroll position churn ("takes me back") while a
+  // response streamed. Released when the message finalizes into <Static>.
+  const tailRef = React.useRef<null | { id: string; at: number; contentLength: number; lines: MercuryTranscriptLine[] }>(null);
+  const tailCap = streamTailRowCap(rows);
+  const streamTail = React.useMemo(() => {
+    if (!streamingMessage) {
+      tailRef.current = null;
+      return [] as MercuryTranscriptLine[];
+    }
+    const now = Date.now();
+    const cache = tailRef.current;
+    if (cache && cache.id === streamingMessage.id && now - cache.at < 120 && cache.contentLength <= streamingMessage.content.length) {
+      return cache.lines;
+    }
+    const lines = buildStreamTailLines(streamingMessage, contentWidth, STREAM_TAIL_CHARS, tailCap);
+    tailRef.current = { id: streamingMessage.id, at: now, contentLength: streamingMessage.content.length, lines };
+    return lines;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tailCap derives from rows; cache ref holds state
+  }, [streamingMessage, contentWidth, tailCap]);
+  const paddedStreamTail = React.useMemo(() => {
+    if (streamTail.length === 0) return streamTail;
+    const pad = tailCap - streamTail.length;
+    if (pad <= 0) return streamTail;
+    return [
+      ...streamTail,
+      ...Array.from({ length: pad }, (_, i): MercuryTranscriptLine => ({ key: `tail:pad:${i}`, kind: 'spacer' as const, role: 'system' as const, text: '' })),
+    ];
+  }, [streamTail, tailCap]);
+  const streamTailRows = paddedStreamTail;
 
   if (!mc) {
     return (
@@ -2614,7 +2677,11 @@ export function MercuryCodeView({
     const removed = rightSegs.pop()!;
     segWidth -= removed.text.length + SEP.length;
   }
-  const leftHint = mc.exitConfirm || state.permissionPrompt
+  // Freeze hint lives in the status bar (not a new row) so the live region's
+  // height stays constant — a new row would re-introduce scrollback churn.
+  const leftHint = state.tuiFrozen
+    ? `${TUI_FROZEN_HINT_MARKER} — Ctrl+S to resume · /mc resume`
+    : mc.exitConfirm || state.permissionPrompt
     ? '' // the prompt / confirm box already shows its own controls
     : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
       ? '' // the live feedback block above is showing progress
@@ -2629,9 +2696,9 @@ export function MercuryCodeView({
           ? <MercuryBrandBlock key={item} brandLines={brandLines} />
           : <MercuryMessageBlock key={item.id} message={item} width={contentWidth} />}
       </Static>
-      {streamTail.length > 0 && (
+      {streamTailRows.length > 0 && (
         <Box flexDirection="column" flexShrink={0}>
-          {streamTail.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
+          {streamTailRows.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
         </Box>
       )}
       {showHints && <MercuryCodeHints cols={cols} />}

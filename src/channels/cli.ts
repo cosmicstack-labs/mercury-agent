@@ -220,6 +220,11 @@ export class MouseSequenceFilter {
   }
 }
 
+/** Status-bar hint shown while the TUI is frozen (Ctrl+S scroll lock). The
+ * substring '⏸ frozen' is also the ink freeze-gate marker (the armed window
+ * lets through only the frame that carries it) — keep them in sync. */
+export const TUI_FROZEN_HINT_MARKER = '⏸ frozen';
+
 export interface TuiState {
   mode: AppMode;
   viewMode: 'balanced' | 'detailed';
@@ -256,6 +261,9 @@ export interface TuiState {
   exitEscArmed: boolean;
   /** Real-time activity phase (what the agent is doing right now), or null when idle. */
   liveActivity: LiveActivityState | null;
+  /** TUI frame freeze (scroll lock): all frame writes stop so the user can
+   * scroll/copy freely while the chat continues underneath. Ctrl+S toggles. */
+  tuiFrozen: boolean;
 }
 
 const defaultState: TuiState = {
@@ -287,6 +295,7 @@ const defaultState: TuiState = {
   mercuryCode: null,
   exitEscArmed: false,
   liveActivity: null,
+  tuiFrozen: false,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -363,6 +372,12 @@ export class CLIChannel extends BaseChannel {
   }
 
   private teardownTui(): void {
+    // The gate must never survive teardown: ink's final unmount writes
+    // (log.done(), cursor restore) have to reach the terminal.
+    this.writeGateFrozen = false;
+    this.frozenHintPending = false;
+    this.tuiFrozen = false;
+    this.frameGateSet({ armed: false, frozen: false, marker: '' });
     const inkInstance = this.inkInstance;
     this.inkInstance = null;
     // Unmount may throw on a corrupted Yoga heap; shutdown must still
@@ -412,9 +427,85 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
+  /** Scroll-lock (freeze) bookkeeping. `tuiFrozen` is the user-facing state;
+   * `writeGateFrozen` is the actual frame gate (opens after the hint frame);
+   * `frozenHintPending` lets the one hint frame through the gate. */
+  private tuiFrozen = false;
+  private writeGateFrozen = false;
+  private frozenHintPending = false;
+
   private update(partial: Partial<TuiState>): void {
+    // Blocking interactions must never be invisible: auto-resume BEFORE the
+    // update so the frame that carries the prompt goes out — and the
+    // tuiFrozen flag must clear in the SAME state merge, otherwise the
+    // resumed frame still renders the frozen status bar.
+    if (this.writeGateFrozen && (partial.permissionPrompt || partial.mercuryCode?.exitConfirm)) {
+      this.unfreezeForInteraction();
+      partial = { ...partial, tuiFrozen: false };
+    }
     this.state = { ...this.state, ...partial };
     this.rerender();
+  }
+
+  /**
+   * Freeze/unfreeze the TUI frame stream (scroll lock, Ctrl+S). While frozen
+   * the agent keeps streaming — state keeps merging in this.update — but
+   * rerender() stops notifying React, so ink writes nothing and the user's
+   * terminal is untouched: they can scroll, read, and drag-select freely in
+   * native scrollback while the chat is in progress. Resume emits one fresh
+   * frame (the ink diff-render rewrites only rows that changed since the
+   * freeze frame).
+   *
+   * Freezing shows the status hint FIRST (one frame), then closes the write
+   * gate after ink's 32ms onRender throttle has had its chance — so the user
+   * always sees what happened. Auto-resume on permission prompts / exit
+   * confirms: they own the keyboard and must never be invisible.
+   */
+  setTuiFrozen(frozen: boolean): void {
+    if (frozen === this.tuiFrozen) return;
+    this.tuiFrozen = frozen;
+    if (frozen) {
+      this.frozenHintPending = true;
+      // Pass 1: write the hint frame (gate still open, hint marker armed).
+      this.frameGateSet({ armed: true, frozen: false, marker: TUI_FROZEN_HINT_MARKER });
+      this.update({ tuiFrozen: true });
+      // ink's onRender is throttled to 32ms; 90ms safely covers the flush.
+      const timer = setTimeout(() => {
+        this.frozenHintPending = false;
+        this.writeGateFrozen = true;
+        this.frameGateSet({ armed: false, frozen: true, marker: '' });
+      }, 90);
+      timer.unref?.();
+    } else {
+      this.writeGateFrozen = false;
+      this.frozenHintPending = false;
+      this.frameGateSet({ armed: false, frozen: false, marker: '' });
+      this.update({ tuiFrozen: false });
+    }
+  }
+
+  /** The ink patch's freeze gate (undefined when ink is unpatched — e.g. a
+   * dev checkout where the patch applier hasn't run). */
+  private get frameGate(): { frozen: boolean; armed: boolean; marker: string } | undefined {
+    return (globalThis as any).__mercuryFrameGate;
+  }
+
+  private frameGateSet(gate: { frozen: boolean; armed: boolean; marker: string }): void {
+    const g = this.frameGate;
+    if (g) Object.assign(g, gate);
+  }
+
+  /** Resume rendering: a blocking interaction (prompt/confirm) or explicit
+   * unfreeze arrived. Opens the write gate before the state update so the
+   * frame that carries the interaction is not dropped. Called from inside
+   * update() — the partial itself must carry tuiFrozen: false so the frame
+   * renders the resumed state. */
+  private unfreezeForInteraction(): void {
+    if (!this.tuiFrozen && !this.writeGateFrozen) return;
+    this.writeGateFrozen = false;
+    this.frozenHintPending = false;
+    this.tuiFrozen = false;
+    this.frameGateSet({ armed: false, frozen: false, marker: '' });
   }
 
   /** useSyncExternalStore contract: read the latest immutable state snapshot. */
@@ -440,6 +531,13 @@ export class CLIChannel extends BaseChannel {
   }
 
   private rerender(): void {
+    // Freeze gate: state has already merged (this.update) — only the frame
+    // is suppressed. React never re-renders while frozen, so <Static> never
+    // commits new items (committing without printing would lose finalized
+    // messages — Static marks keys committed at the React level). The one
+    // exception is the armed hint window: the freeze hint frame must go out
+    // so the user sees the frozen state.
+    if (this.writeGateFrozen && !this.frozenHintPending) return;
     // Notify React subscribers instead of calling inkInstance.rerender().
     // Imperative re-rendering enters the reconciler synchronously from
     // arbitrary call sites and races React's own renders (spinner/size
@@ -530,6 +628,10 @@ export class CLIChannel extends BaseChannel {
           return;
         }
         if (sub === 'live') { this.scrollMercuryCodeToLive(); return; }
+        // Scroll lock (freeze): stop all frame writes so the user can scroll
+        // and copy freely in native scrollback while the chat streams on.
+        if (sub === 'freeze' || sub === 'resume' || sub === 'unfreeze') { this.setTuiFrozen(sub === 'freeze'); return; }
+        if (sub === 'freeze-toggle') { this.setTuiFrozen(!this.state.tuiFrozen); return; }
         if (sub === 'esc-arm') {
           this.exitEscArmed = true;
           // Auto-disarm after 1.5s so Esc-Esc window is bounded.

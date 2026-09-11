@@ -54,7 +54,10 @@ describe('agent memory bounds', () => {
   it('bounds Ink Static output and the streaming-tail projection', () => {
     const app = src('../ui/App.tsx');
     expect(app).toContain('MAX_STATIC_MESSAGES = 100');
-    expect(app).toContain('STREAM_TAIL_CHARS = 8 * 1024');
+    // The tail budget is still bounded (32KB slice through the markdown
+    // pipeline, hard 48-row ceiling) — "full preview" never means O(buffer).
+    expect(app).toContain('STREAM_TAIL_CHARS = 32 * 1024');
+    expect(app).toContain('STREAM_TAIL_MAX_LINES = 48');
     expect(app).toContain('!m.streaming &&');
     const channel = src('../channels/cli.ts');
     // Render notifications must leave the timer phase runnable (no microtask

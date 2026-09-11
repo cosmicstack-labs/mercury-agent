@@ -25,19 +25,58 @@ const inkDir = path.join(root, 'node_modules', 'ink', 'build');
 const reconcilerPath = path.join(inkDir, 'reconciler.js');
 const staticJsPath = path.join(inkDir, 'components', 'Static.js');
 const staticDtsPath = path.join(inkDir, 'components', 'Static.d.ts');
+const inkJsPath = path.join(inkDir, 'ink.js');
+const logUpdatePath = path.join(inkDir, 'log-update.js');
 
 function isPatched() {
   try {
     const reconciler = fs.readFileSync(reconcilerPath, 'utf8');
     const staticComponent = fs.readFileSync(staticJsPath, 'utf8');
+    const inkJs = fs.readFileSync(inkJsPath, 'utf8');
+    const logUpdate = fs.readFileSync(logUpdatePath, 'utf8');
     return reconciler.includes('clearYogaRefs')
       && reconciler.includes('Array.isArray(node.childNodes)')
       && reconciler.includes('rootNode.staticNode = undefined')
       && staticComponent.includes('itemKey')
-      && staticComponent.includes('setCommitTick');
+      && staticComponent.includes('setCommitTick')
+      && logUpdate.includes('Diff-render (Cosmic Stack patch)')
+      && inkJs.includes(FRAME_GATE_MARKER);
   } catch {
     return false;
   }
+}
+
+const FRAME_GATE_MARKER = '__mercuryFrameGate';
+
+/** Diff-render log-update + freeze gate. Both live in already-patched
+ * files, so this is an idempotent string-insert on the applied state. */
+function applyInkFrameGate() {
+  let s = fs.readFileSync(inkJsPath, 'utf8');
+  if (s.includes(FRAME_GATE_MARKER)) return true;
+  const noopAnchor = "const noop = () => { };";
+  if (!s.includes(noopAnchor)) return false;
+  s = s.replace(noopAnchor, `${noopAnchor}
+// Freeze gate (Cosmic Stack patch): while frozen, onRender writes NOTHING
+// and must not advance lastOutput / log-update's baseline — the resume frame
+// must diff against the last frame actually on screen. \`armed\` lets exactly
+// one frame through (the "⏸ frozen" hint) if its output contains \`marker\`.
+// Exposed on globalThis so host code can reach it without a type-level
+// import of this internal module.
+export const frameGate = { frozen: false, armed: false, marker: '' };
+globalThis.${FRAME_GATE_MARKER} = frameGate;`);
+  const renderAnchor = "        const { output, outputHeight, staticOutput } = render(this.rootNode);";
+  if (!s.includes(renderAnchor)) return false;
+  s = s.replace(renderAnchor, `${renderAnchor}
+        // Freeze gate (Cosmic Stack patch): drop the frame entirely — no
+        // write, and crucially NO advance of \`lastOutput\` or log-update's
+        // \`previousOutput\`/\`previousLineCount\` baseline, so the frame that
+        // ends the freeze diffs against what is actually on screen.
+        if (frameGate.frozen && !(frameGate.armed && frameGate.marker && output.includes(frameGate.marker))) {
+            return;
+        }
+        if (frameGate.armed) frameGate.armed = false;`);
+  fs.writeFileSync(inkJsPath, s);
+  return true;
 }
 
 function applyReconcilerFix() {
@@ -217,11 +256,15 @@ function apply() {
   try {
     const reconcilerOk = applyReconcilerFix();
     const staticOk = applyStaticFix();
+    const frameGateOk = applyInkFrameGate();
     if (!reconcilerOk) {
       return { ok: false, applied: true, error: 'reconciler.js no longer matches the expected ink 5.2.1 shape — patch anchors not found' };
     }
     if (!staticOk) {
       return { ok: false, applied: true, error: 'Static.js could not be rewritten' };
+    }
+    if (!frameGateOk) {
+      return { ok: false, applied: true, error: 'ink.js frame gate could not be inserted' };
     }
   } catch (err) {
     return { ok: false, applied: true, error: err.message };

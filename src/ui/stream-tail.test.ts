@@ -16,8 +16,8 @@ const src = (p: string) => readFileSync(join(dirname(fileURLToPath(import.meta.u
  * 2.5GB OOM.
  */
 describe('streaming tail projection bounds', () => {
-  const STREAM_TAIL_CHARS = 8 * 1024;
-  const STREAM_TAIL_MAX_LINES = 12;
+  const STREAM_TAIL_CHARS = 32 * 1024;
+  const STREAM_TAIL_MAX_LINES = 48;
   const WIDTH = 80;
 
   function projectTail(content: string): MercuryTranscriptLine[] {
@@ -93,6 +93,32 @@ describe('streaming tail projection bounds', () => {
     expect(kinds).not.toContain('text');
   });
 
+  it('recompute cost is bounded on a full 32KB code-heavy buffer', () => {
+    // The diff-render makes frame WRITES cheap, but the tail recompute (slice
+    // + markdown + highlight) must stay in a few milliseconds — a heavier
+    // recompute per throttle window starves the stream pump.
+    const codeBlock = '```ts\n' + ('const value = 1; // comment here\n').repeat(30) + '```\n\nprose line of explanation here\n\n';
+    let content = '# Long tutorial\n\nintro prose\n\n';
+    while (content.length < 32 * 1024) content += codeBlock;
+    const message: ChatMessage = { id: 'live_2', role: 'agent', content, timestamp: 1, streaming: true };
+    const t0 = performance.now();
+    const lines = buildStreamTailLines(message, WIDTH, STREAM_TAIL_CHARS, STREAM_TAIL_MAX_LINES);
+    const elapsed = performance.now() - t0;
+    expect(lines.length).toBeLessThanOrEqual(STREAM_TAIL_MAX_LINES);
+    // Generous ceiling (CI runners are slow): the real machine measured ~1-3ms.
+    expect(elapsed).toBeLessThan(30);
+  });
+
+  it('windowed fence back-up finds the opener within the bounded neighborhood', () => {
+    // The raw window opens INSIDE an unclosed block whose opener sits >4KB
+    // back (but within the tail budget) → the windowed scan must still align
+    // to it so the block renders as CODE, never as broken prose.
+    const content = 'f\n'.repeat(15000) + '```ts\n' + 'const a = 1;\n'.repeat(4600) + 'tail prose line\n';
+    const projected = projectTail(content);
+    const kinds = projected.map((l) => l.kind);
+    expect(kinds).toContain('code');
+  });
+
   it('never starts the slice mid-line', () => {
     const longLine = 'word '.repeat(2000); // > 8KB, single line
     const content = longLine + '\nheader text\n\nmore prose';
@@ -107,14 +133,18 @@ describe('streaming tail projection bounds', () => {
 });
 
 describe('streaming tail live-region integration', () => {
-  it('Mercury Code prints finalized rows via <Static>; the tail is a small live region', () => {
+  it('Mercury Code prints finalized rows via <Static>; the tail is a height-derived live region', () => {
     const app = src('App.tsx');
     // Finalized transcript prints once into native terminal scrollback.
     expect(app).toContain('<Static items={staticItems} itemKey={staticItemKey}>');
-    // The live tail is capped to a small per-frame budget (no full-screen
-    // live region — a near-full-screen region was rewritten every streaming
-    // frame, which read as flicker).
-    expect(app).toContain('STREAM_TAIL_MAX_LINES = 12');
+    // The tail cap derives from the terminal height (ink clears the whole
+    // terminal and rewrites the static transcript whenever the live region's
+    // height reaches `rows`) and is PADDED to a constant height so the live
+    // region never churns scrollback mid-stream.
+    expect(app).toContain('const STREAM_TAIL_MAX_LINES = 48');
+    expect(app).toContain('export function streamTailRowCap(terminalRows: number)');
+    expect(app).toContain('const tailCap = streamTailRowCap(rows)');
+    expect(app).toContain("kind: 'spacer' as const, role: 'system' as const, text: ''");
     // Live tail renders through the markdown pipeline, on the bounded slice.
     expect(app).toContain('buildStreamTailLines(streamingMessage, contentWidth');
     // Forbidden patterns: the removed in-app viewport machinery.

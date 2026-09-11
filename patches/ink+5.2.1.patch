@@ -93,11 +93,77 @@ index 9c54f14..6274f9a 100644
      });
      const style = useMemo(() => ({
          position: 'absolute',
+diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
+index a9c444f..32e1ae4 100644
+--- a/node_modules/ink/build/ink.js
++++ b/node_modules/ink/build/ink.js
+@@ -14,6 +14,14 @@ import logUpdate from './log-update.js';
+ import instances from './instances.js';
+ import App from './components/App.js';
+ const noop = () => { };
++// Freeze gate (Cosmic Stack patch): while frozen, onRender writes NOTHING
++// and must not advance lastOutput / log-update's baseline — the resume frame
++// must diff against the last frame actually on screen. `armed` lets exactly
++// one frame through (the "⏸ frozen" hint) if its output contains `marker`.
++// Exposed on globalThis so host code can reach it without a type-level
++// import of this internal module.
++export const frameGate = { frozen: false, armed: false, marker: '' };
++globalThis.__mercuryFrameGate = frameGate;
+ export default class Ink {
+     options;
+     log;
+@@ -99,6 +107,14 @@ export default class Ink {
+             return;
+         }
+         const { output, outputHeight, staticOutput } = render(this.rootNode);
++        // Freeze gate (Cosmic Stack patch): drop the frame entirely — no
++        // write, and crucially NO advance of `lastOutput` or log-update's
++        // `previousOutput`/`previousLineCount` baseline, so the frame that
++        // ends the freeze diffs against what is actually on screen.
++        if (frameGate.frozen && !(frameGate.armed && frameGate.marker && output.includes(frameGate.marker))) {
++            return;
++        }
++        if (frameGate.armed) frameGate.armed = false;
+         // If <Static> output isn't empty, it means new children have been added to it
+         const hasStaticOutput = staticOutput && staticOutput !== '\n';
+         if (this.options.debug) {
+diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
+index 547421e..a2bbc9b 100644
+--- a/node_modules/ink/build/log-update.js
++++ b/node_modules/ink/build/log-update.js
+@@ -13,9 +13,26 @@ const create = (stream, { showCursor = false } = {}) => {
+         if (output === previousOutput) {
+             return;
+         }
++        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
++        // from the first changed line onward; identical rows above stay on
++        // screen untouched. Ink 5's log-update erased and rewrote the ENTIRE
++        // frame on every render — a prompt-selection change or spinner tick
++        // repainted the whole live region, which read as a full-UI flash.
++        // The row bytes are compared verbatim (layout is deterministic), and
++        // the erase count accounts for the trailing blank line exactly like
++        // `previousLineCount` does, so `clear()` and cursor arithmetic stay
++        // in sync with the original accounting.
++        const previousRows = previousOutput === '' ? [] : previousOutput.slice(0, -1).split('\n');
++        const nextRows = output.slice(0, -1).split('\n');
++        const common = Math.min(previousRows.length, nextRows.length);
++        let firstChange = 0;
++        while (firstChange < common && previousRows[firstChange] === nextRows[firstChange]) {
++            firstChange++;
++        }
++        const eraseCount = previousLineCount - firstChange;
+         previousOutput = output;
+-        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);
+         previousLineCount = output.split('\n').length;
++        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n');
+     };
+     render.clear = () => {
+         stream.write(ansiEscapes.eraseLines(previousLineCount));
 diff --git a/node_modules/ink/build/reconciler.js b/node_modules/ink/build/reconciler.js
-index 55acec7..035907a 100644
+index 55acec7..f440fa9 100644
 --- a/node_modules/ink/build/reconciler.js
 +++ b/node_modules/ink/build/reconciler.js
-@@ -58,6 +58,42 @@ const cleanupYogaNode = (node) => {
+@@ -58,6 +58,40 @@ const cleanupYogaNode = (node) => {
      node?.unsetMeasureFunc();
      node?.freeRecursive();
  };
@@ -105,10 +171,8 @@ index 55acec7..035907a 100644
 +// reference pointing at freed memory. The renderer and layout code read those
 +// references through optional chaining, so nulling them here turns what was a
 +// fatal WASM trap ("RuntimeError: memory access out of bounds" in
-+// getComputedWidth) into a clean no-op. Upstream only clears the direct
-+// reference (ink >=7); ancestors of <Static> that were freed wholesale left
-+// `rootNode.staticNode` dangling. See facebook/yoga#1818 and the equivalent
-+// downstream fix in qwen-code#7816.
++// getComputedWidth) into a clean no-op. See facebook/yoga#1818 and the
++// equivalent downstream fix in qwen-code#7816. (Cosmic Stack patch.)
 +const clearYogaRefs = (node) => {
 +    node.yogaNode = undefined;
 +    // Host elements carry a childNodes array; ink's `#text` nodes do not.
@@ -140,7 +204,7 @@ index 55acec7..035907a 100644
  export default createReconciler({
      getRootHostContext: () => ({
          isInsideText: false,
-@@ -173,7 +209,7 @@ export default createReconciler({
+@@ -173,7 +207,7 @@ export default createReconciler({
      insertInContainerBefore: insertBeforeNode,
      removeChildFromContainer(node, removeNode) {
          removeChildNode(node, removeNode);
@@ -149,7 +213,7 @@ index 55acec7..035907a 100644
      },
      prepareUpdate(node, _type, oldProps, newProps, rootNode) {
          if (node.internal_static) {
-@@ -213,7 +249,7 @@ export default createReconciler({
+@@ -213,7 +247,7 @@ export default createReconciler({
      },
      removeChild(node, removeNode) {
          removeChildNode(node, removeNode);
@@ -159,34 +223,3 @@ index 55acec7..035907a 100644
  });
  //# sourceMappingURL=reconciler.js.map
 \ No newline at end of file
-diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
---- a/node_modules/ink/build/log-update.js
-+++ b/node_modules/ink/build/log-update.js
-@@ -13,9 +13,26 @@
-         if (output === previousOutput) {
-             return;
-         }
-+        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
-+        // from the first changed line onward; identical rows above stay on
-+        // screen untouched. Ink 5's log-update erased and rewrote the ENTIRE
-+        // frame on every render — a prompt-selection change or spinner tick
-+        // repainted the whole live region, which read as a full-UI flash.
-+        // The row bytes are compared verbatim (layout is deterministic), and
-+        // the erase count accounts for the trailing blank line exactly like
-+        // `previousLineCount` does, so `clear()` and cursor arithmetic stay
-+        // in sync with the original accounting.
-+        const previousRows = previousOutput === '' ? [] : previousOutput.slice(0, -1).split('\n');
-+        const nextRows = output.slice(0, -1).split('\n');
-+        const common = Math.min(previousRows.length, nextRows.length);
-+        let firstChange = 0;
-+        while (firstChange < common && previousRows[firstChange] === nextRows[firstChange]) {
-+            firstChange++;
-+        }
-+        const eraseCount = previousLineCount - firstChange;
-         previousOutput = output;
--        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);
-         previousLineCount = output.split('\n').length;
-+        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n');
-     };
-     render.clear = () => {
-         stream.write(ansiEscapes.eraseLines(previousLineCount));
