@@ -4,6 +4,7 @@ import { BaseProvider } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
+import { aimlapiHeaders } from './aimlapi-attribution.js';
 
 export class OpenAICompatProvider extends BaseProvider {
   readonly name: string;
@@ -19,6 +20,9 @@ export class OpenAICompatProvider extends BaseProvider {
     this.client = createOpenAI({
       apiKey: config.apiKey || 'no-key',
       baseURL: config.baseUrl,
+      // `undefined` for every host but AI/ML API's, so no other provider
+      // reached through this class sends anything extra.
+      headers: aimlapiHeaders(config.baseUrl),
     });
     this.modelInstance = useChatApi
       ? this.client.chat(config.model)

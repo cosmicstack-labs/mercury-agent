@@ -55,6 +55,7 @@ export interface TelegramPendingRequest {
 
 export type ProviderName =
   | 'mercuryCloud'
+  | 'aimlapi'
   | 'openai'
   | 'anthropic'
   | 'deepseek'
@@ -89,6 +90,7 @@ export interface MercuryConfig {
   cloud: CloudConfig;
   providers: {
     default: ProviderName;
+    aimlapi: ProviderConfig;
     mercuryCloud: ProviderConfig;
     openai: ProviderConfig;
     anthropic: ProviderConfig;
@@ -248,6 +250,13 @@ export function getDefaultConfig(): MercuryConfig {
     },
     providers: {
       default: getEnv('DEFAULT_PROVIDER', 'deepseek') as ProviderName,
+      aimlapi: {
+        name: 'aimlapi',
+        apiKey: getEnv('AIMLAPI_API_KEY', ''),
+        baseUrl: getEnv('AIMLAPI_BASE_URL', 'https://api.aimlapi.com/v1'),
+        model: getEnv('AIMLAPI_MODEL', 'anthropic/claude-sonnet-4.6'),
+        enabled: getEnvBool('AIMLAPI_ENABLED', true),
+      },
       mercuryCloud: {
         name: 'mercuryCloud',
         apiKey: '',

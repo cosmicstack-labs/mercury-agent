@@ -6,6 +6,12 @@ function maskApiKey(key: string): string {
   return key.slice(0, 4) + '••••' + key.slice(-4);
 }
 
+/**
+ * Surfaced as a badge in the UI. One name rather than a list, so the claim
+ * stays reviewable and reverting it is a one-line change.
+ */
+const RECOMMENDED_PROVIDER = 'aimlapi';
+
 const providers = new Hono();
 
 providers.get('/api/providers', (c) => {
@@ -17,6 +23,7 @@ providers.get('/api/providers', (c) => {
     baseUrl: p.baseUrl,
     model: p.model,
     enabled: p.enabled,
+    recommended: name === RECOMMENDED_PROVIDER,
   }));
   return c.json(list);
 });
@@ -26,7 +33,7 @@ providers.post('/api/providers/:name', async (c) => {
   const body = await c.req.json();
   const config = loadConfig();
 
-  const validNames: ProviderName[] = ['mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'atlascloud', 'ollamaCloud', 'ollamaLocal', 'openaiCompat', 'mimo', 'mimoTokenPlan'];
+  const validNames: ProviderName[] = ['aimlapi', 'mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'atlascloud', 'ollamaCloud', 'ollamaLocal', 'openaiCompat', 'mimo', 'mimoTokenPlan'];
   if (!validNames.includes(providerName)) {
     return c.json({ error: 'Unknown provider' }, 400);
   }
