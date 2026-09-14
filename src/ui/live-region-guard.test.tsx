@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
 
 // Ink skips ALL frame writes when it detects CI (`is-in-ci` → process.env.CI).
 // Setting CI to '0' (the one value is-in-ci treats as false) BEFORE the ink
@@ -52,7 +53,21 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * survive) and write it through the normal diff path — scrollback is never
  * cleared and the transcript is never re-dumped.
  */
-describe('ink live-region overflow guard', () => {
+// The overflow-guard tests assert PATCHED ink behavior (no clearTerminal /
+// scrollback wipe on an oversized live frame). On an unpatched install —
+// e.g. a container where the appliers couldn't run — stock ink legitimately
+// takes its clearTerminal fallback, so these tests are meaningless there:
+// skip instead of failing the platform job red.
+const inkPatchApplied = (() => {
+  try {
+    return createRequire(import.meta.url)('../../scripts/apply-ink-patch.cjs').isPatched();
+  } catch {
+    return false;
+  }
+})();
+const guard = inkPatchApplied ? describe : describe.skip;
+
+guard('ink live-region overflow guard', () => {
   it('never clears scrollback or re-dumps static output when the live frame exceeds the terminal', async () => {
     const stdout = new FakeStdout() as any;
 

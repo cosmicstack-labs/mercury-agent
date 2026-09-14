@@ -21,25 +21,36 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const inkDir = path.join(root, 'node_modules', 'ink', 'build');
-const reconcilerPath = path.join(inkDir, 'reconciler.js');
-const staticJsPath = path.join(inkDir, 'components', 'Static.js');
-const staticDtsPath = path.join(inkDir, 'components', 'Static.d.ts');
-const inkJsPath = path.join(inkDir, 'ink.js');
-const logUpdatePath = path.join(inkDir, 'log-update.js');
 
-function isPatched() {
+/** File paths for an ink install. `root` is overridable so tests can
+ * exercise the applier against a synthetic ink tree without touching the
+ * real node_modules. */
+function pathsFor(projectRoot) {
+  const inkDir = path.join(projectRoot, 'node_modules', 'ink', 'build');
+  return {
+    reconcilerPath: path.join(inkDir, 'reconciler.js'),
+    staticJsPath: path.join(inkDir, 'components', 'Static.js'),
+    staticDtsPath: path.join(inkDir, 'components', 'Static.d.ts'),
+    inkJsPath: path.join(inkDir, 'ink.js'),
+    logUpdatePath: path.join(inkDir, 'log-update.js'),
+  };
+}
+
+const paths = pathsFor(root);
+
+function isPatched(p = paths) {
   try {
-    const reconciler = fs.readFileSync(reconcilerPath, 'utf8');
-    const staticComponent = fs.readFileSync(staticJsPath, 'utf8');
-    const inkJs = fs.readFileSync(inkJsPath, 'utf8');
-    const logUpdate = fs.readFileSync(logUpdatePath, 'utf8');
+    const reconciler = fs.readFileSync(p.reconcilerPath, 'utf8');
+    const staticComponent = fs.readFileSync(p.staticJsPath, 'utf8');
+    const inkJs = fs.readFileSync(p.inkJsPath, 'utf8');
+    const logUpdate = fs.readFileSync(p.logUpdatePath, 'utf8');
     return reconciler.includes('clearYogaRefs')
       && reconciler.includes('Array.isArray(node.childNodes)')
       && reconciler.includes('rootNode.staticNode = undefined')
       && staticComponent.includes('itemKey')
       && staticComponent.includes('setCommitTick')
       && logUpdate.includes('Diff-render (Cosmic Stack patch)')
+      && inkJs.includes('maxLiveRows')
       && inkJs.includes(FRAME_GATE_MARKER);
   } catch {
     return false;
@@ -50,7 +61,8 @@ const FRAME_GATE_MARKER = '__mercuryFrameGate';
 
 /** Diff-render log-update + freeze gate. Both live in already-patched
  * files, so this is an idempotent string-insert on the applied state. */
-function applyInkFrameGate() {
+function applyInkFrameGate(p = paths) {
+  const { inkJsPath } = p;
   let s = fs.readFileSync(inkJsPath, 'utf8');
   if (s.includes(FRAME_GATE_MARKER)) return true;
   const noopAnchor = "const noop = () => { };";
@@ -79,7 +91,86 @@ globalThis.${FRAME_GATE_MARKER} = frameGate;`);
   return true;
 }
 
-function applyReconcilerFix() {
+/** Live-region guard: a live frame as tall as (or taller than) the terminal
+ * must NEVER go through stock ink's fallback — `clearTerminal + full
+ * static re-dump` — which erases scrollback and re-prints every static byte
+ * on every frame. Bottom-anchored trim keeps the newest rows instead.
+ * Inserts right after the freeze gate (both edits live in ink.js). */
+function applyInkLiveRegionGuard(p = paths) {
+  const { inkJsPath } = p;
+  let s = fs.readFileSync(inkJsPath, 'utf8');
+  if (s.includes('maxLiveRows')) return true;
+  const gateAnchor = '        if (frameGate.armed) frameGate.armed = false;';
+  if (!s.includes(gateAnchor)) return false;
+  s = s.replace(gateAnchor, `${gateAnchor}
+        // Live-region guard (Cosmic Stack patch): a live frame as tall as (or
+        // taller than) the terminal cannot go through log-update's cursor
+        // arithmetic, and stock ink's fallback is \`clearTerminal +
+        // fullStaticOutput + output\` — erasing the ENTIRE scrollback buffer
+        // and re-dumping every static byte ever printed, on EVERY frame. With
+        // a long transcript that is megabytes per frame: the scrollbar jumps
+        // to the top, the UI flickers, and native scrolling becomes
+        // impossible. Instead keep the frame bottom-anchored: trim to what
+        // fits (rows - 1) and let the normal diff path write it. Scrollback
+        // is never cleared, the transcript is never re-dumped, and the newest
+        // rows (live tail, input, status bar) stay visible.
+        const maxLiveRows = Math.max(1, (this.options.stdout.rows || 24) - 1);
+        if (outputHeight >= (this.options.stdout.rows || 24)) {
+            // \`output\` is newline-terminated per row WITHOUT a trailing blank
+            // line (log-update appends its own), so split and re-join verbatim.
+            output = output.split('\\n').slice(-maxLiveRows).join('\\n');
+            outputHeight = maxLiveRows;
+        }`);
+  // The trim reassigns output/outputHeight — the declaration must be `let`.
+  const constLine = 'const { output, outputHeight, staticOutput } = render(this.rootNode);';
+  if (s.includes(constLine)) s = s.replace(constLine, 'let { output, outputHeight, staticOutput } = render(this.rootNode);');
+  fs.writeFileSync(inkJsPath, s);
+  return s.includes('maxLiveRows');
+}
+
+/** Diff-render log-update: erase and rewrite only the rows from the first
+ * changed line onward. Stock ink 5 erased and rewrote the ENTIRE frame on
+ * every render — a prompt-selection toggle or spinner tick repainted the
+ * whole live region (a full-UI flash per keystroke). */
+function applyLogUpdateDiffRender(p = paths) {
+  const { logUpdatePath } = p;
+  let s = fs.readFileSync(logUpdatePath, 'utf8');
+  if (s.includes('Diff-render (Cosmic Stack patch)')) return true;
+  const anchor = [
+    '        previousOutput = output;',
+    '        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);',
+    "        previousLineCount = output.split('\\n').length;",
+  ].join('\n');
+  if (!s.includes(anchor)) return false;
+  const replacement = [
+    '        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows',
+    '        // from the first changed line onward; identical rows above stay on',
+    '        // screen untouched. Ink 5\'s log-update erased and rewrote the ENTIRE',
+    '        // frame on every render — a prompt-selection change or spinner tick',
+    '        // repainted the whole live region, which read as a full-UI flash.',
+    '        // The row bytes are compared verbatim (layout is deterministic), and',
+    '        // the erase count accounts for the trailing blank line exactly like',
+    '        // `previousLineCount` does, so `clear()` and cursor arithmetic stay',
+    '        // in sync with the original accounting.',
+    "        const previousRows = previousOutput === '' ? [] : previousOutput.slice(0, -1).split('\\n');",
+    "        const nextRows = output.slice(0, -1).split('\\n');",
+    '        const common = Math.min(previousRows.length, nextRows.length);',
+    '        let firstChange = 0;',
+    '        while (firstChange < common && previousRows[firstChange] === nextRows[firstChange]) {',
+    '            firstChange++;',
+    '        }',
+    '        const eraseCount = previousLineCount - firstChange;',
+    '        previousOutput = output;',
+    "        previousLineCount = output.split('\\n').length;",
+    "        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\\n') + '\\n');",
+  ].join('\n');
+  s = s.replace(anchor, replacement, 1);
+  fs.writeFileSync(logUpdatePath, s);
+  return s.includes('Diff-render (Cosmic Stack patch)');
+}
+
+function applyReconcilerFix(p = paths) {
+  const { reconcilerPath } = p;
   let s = fs.readFileSync(reconcilerPath, 'utf8');
   if (s.includes('clearYogaRefs')) return true;
 
@@ -228,7 +319,8 @@ const ITEMKEY_DTS = `    /**
     readonly itemKey?: (item: T) => string | undefined;
 };`;
 
-function applyStaticFix() {
+function applyStaticFix(p = paths) {
+  const { staticJsPath, staticDtsPath } = p;
   const staticJs = fs.readFileSync(staticJsPath, 'utf8');
   if (staticJs.includes('itemKey')) {
     // Already (partially) applied — ensure the commitTick variant.
@@ -248,15 +340,18 @@ function applyStaticFix() {
   return true;
 }
 
-function apply() {
-  if (isPatched()) return { ok: true, applied: false };
-  if (!fs.existsSync(reconcilerPath)) {
+function apply(opts = {}) {
+  const p = pathsFor(opts.root ?? root);
+  if (isPatched(p)) return { ok: true, applied: false };
+  if (!fs.existsSync(p.reconcilerPath)) {
     return { ok: false, applied: false, error: 'node_modules/ink not installed' };
   }
   try {
-    const reconcilerOk = applyReconcilerFix();
-    const staticOk = applyStaticFix();
-    const frameGateOk = applyInkFrameGate();
+    const reconcilerOk = applyReconcilerFix(p);
+    const staticOk = applyStaticFix(p);
+    const frameGateOk = applyInkFrameGate(p);
+    const liveRegionOk = applyInkLiveRegionGuard(p);
+    const diffRenderOk = applyLogUpdateDiffRender(p);
     if (!reconcilerOk) {
       return { ok: false, applied: true, error: 'reconciler.js no longer matches the expected ink 5.2.1 shape — patch anchors not found' };
     }
@@ -266,16 +361,22 @@ function apply() {
     if (!frameGateOk) {
       return { ok: false, applied: true, error: 'ink.js frame gate could not be inserted' };
     }
+    if (!liveRegionOk) {
+      return { ok: false, applied: true, error: 'ink.js live-region guard could not be inserted' };
+    }
+    if (!diffRenderOk) {
+      return { ok: false, applied: true, error: 'log-update.js diff-render could not be inserted' };
+    }
   } catch (err) {
     return { ok: false, applied: true, error: err.message };
   }
-  if (!isPatched()) {
+  if (!isPatched(p)) {
     return { ok: false, applied: true, error: 'edits ran but the fix markers are still missing' };
   }
   return { ok: true, applied: true };
 }
 
-module.exports = { isPatched, apply };
+module.exports = { isPatched, apply, pathsFor };
 
 if (require.main === module) {
   const result = apply();
