@@ -103,22 +103,30 @@ export function npmGlobalRoots(): string[] {
   return [...roots];
 }
 
-/** npm installs of the package: global roots and the running local project. */
-export function findNpmInstalls(): { global: string[]; local: string[] } {
+/**
+ * npm installs of the package: global roots and the running local project.
+ * `roots` / `entryScript` are injectable so the discovery logic is testable
+ * on machines with no real install (fresh CI runners) — production always
+ * calls it with no arguments.
+ */
+export function findNpmInstalls(opts: { roots?: string[]; entryScript?: string } = {}): { global: string[]; local: string[] } {
   const global: string[] = [];
   const local: string[] = [];
-  for (const root of npmGlobalRoots()) {
+  for (const root of opts.roots ?? npmGlobalRoots()) {
     const pkg = join(root, '@cosmicstack', 'mercury-agent');
     if (existsSync(pkg)) global.push(pkg);
   }
   // Local install: the running entry script lives inside a project's node_modules.
-  const script = process.argv[1] ?? '';
+  const script = opts.entryScript ?? process.argv[1] ?? '';
   const marker = `${sep}node_modules${sep}@cosmicstack${sep}mercury-agent${sep}`;
   const index = script.lastIndexOf(marker);
   if (index >= 0 && !global.some((g) => script.startsWith(dirname(g) + sep))) {
-    const project = dirname(script.slice(0, index)); // .../project (node_modules stripped)
+    // The marker starts AT "/node_modules", so the slice ends at the project
+    // dir itself — no extra dirname (that stripped the project, leaving
+    // local detection always empty).
+    const project = script.slice(0, index); // .../project
     if (existsSync(join(project, 'package.json'))) {
-      local.push(join(script.slice(0, index), '@cosmicstack', 'mercury-agent'));
+      local.push(join(project, 'node_modules', '@cosmicstack', 'mercury-agent'));
     }
   }
   return { global, local };

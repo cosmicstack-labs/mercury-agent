@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { REPO_ISSUES_URL, FEEDBACK_EMAIL, findNpmInstalls, npmGlobalRoots, shellRcFiles, stripInstallerPathLines } from './uninstall.js';
-import { existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -36,12 +36,54 @@ describe('mercury uninstall', () => {
   });
 
   it('discovers a real global npm install under nvm-managed node versions', () => {
-    // The dev machine has a stale global install (see the running npm daemon) —
-    // the scan must find it so the uninstaller can remove it.
+    // Simulated (was a real-machine assertion): fresh CI runners have no
+    // @cosmicstack/mercury-agent install, so the discovery logic is exercised
+    // against a fabricated nvm-managed root (a global root IS the
+    // node_modules dir, e.g. ~/.nvm/versions/node/v20.20.2/lib/node_modules).
+    const nvm = mkdtempSync(join(tmpdir(), 'mercury-uninstall-'));
+    const root = join(nvm, 'v20.20.2', 'lib', 'node_modules');
+    try {
+      const pkg = join(root, '@cosmicstack', 'mercury-agent');
+      mkdirSync(pkg, { recursive: true });
+      const installs = findNpmInstalls({ roots: [root] });
+      expect(installs.global).toEqual([pkg]);
+      expect(installs.local).toEqual([]);
+    } finally {
+      rmSync(nvm, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers the local project install from the running entry script', () => {
+    const project = mkdtempSync(join(tmpdir(), 'mercury-uninstall-local-'));
+    try {
+      writeFileSync(join(project, 'package.json'), '{}');
+      const pkgDir = join(project, 'node_modules', '@cosmicstack', 'mercury-agent');
+      mkdirSync(pkgDir, { recursive: true });
+      const installs = findNpmInstalls({ roots: [], entryScript: join(pkgDir, 'dist', 'index.js') });
+      expect(installs.local).toEqual([pkgDir]);
+      expect(installs.global).toEqual([]);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it('never reports a global root as a local project — the script lives inside the global root', () => {
+    const nvm = mkdtempSync(join(tmpdir(), 'mercury-uninstall-dedupe-'));
+    const root = join(nvm, 'v22.18.0', 'lib', 'node_modules');
+    try {
+      const pkg = join(root, '@cosmicstack', 'mercury-agent');
+      mkdirSync(join(pkg, 'dist'), { recursive: true });
+      const installs = findNpmInstalls({ roots: [root], entryScript: join(pkg, 'dist', 'index.js') });
+      expect(installs.global).toEqual([pkg]);
+      expect(installs.local).toEqual([]);
+    } finally {
+      rmSync(nvm, { recursive: true, force: true });
+    }
+  });
+
+  it('every install discovered in the real environment exists (CI runners may find none)', () => {
     const installs = findNpmInstalls();
-    const found = [...installs.global, ...installs.local];
-    expect(found.length).toBeGreaterThan(0);
-    for (const path of found) expect(existsSync(path)).toBe(true);
+    for (const path of [...installs.global, ...installs.local]) expect(existsSync(path)).toBe(true);
   });
 
   it('npmGlobalRoots includes the active npm root', () => {
