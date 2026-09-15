@@ -562,12 +562,16 @@ export class Agent {
   /** Wire the Mercury Bots runtime (see bots/bot-manager.ts, BOTS-ARCHITECTURE.md). */
   setBotManager(botManager: import('../bots/bot-manager.js').BotManager): void {
     this.botManager = botManager;
-    botManager['notify'] = async (channelType, channelId, message) => {
+    botManager.setNotify(async (channelType, channelId, message) => {
       const channel = this.channels.get(channelType as any);
       if (channel) {
         await channel.send(message, channelId).catch((e) => logger.warn({ e }, 'bot notify channel send failed'));
       }
-    };
+    });
+    botManager.setAlert(async (message) => {
+      const channel = this.channels.getNotificationChannel();
+      await channel?.send(message).catch((e) => logger.warn({ e }, 'bot alert send failed'));
+    });
   }
 
   getBotManager(): import('../bots/bot-manager.js').BotManager | undefined {
@@ -655,16 +659,21 @@ export class Agent {
       if (!botId || !message) return;
       const channel = this.channels.getChannelForMessage(msg);
       if (!channel) return;
+      // Dispatched from inside that bot's TUI chat → ack and reply land in
+      // the bot's own transcript (targetId `bot:<id>`; cli.ts routes it).
+      const pendingBot = (channel as any).consumePendingBotChatTarget?.() ?? null;
+      const inBotChat = pendingBot === botId;
+      const replyTarget = inBotChat ? `bot:${botId}` : msg.channelId;
       const result = bm.enqueue(botId, {
         trigger: 'chat',
         prompt: message,
-        source: { channelType: msg.channelType, channelId: msg.channelId },
+        source: { channelType: msg.channelType, channelId: replyTarget },
       });
       if (result.accepted) {
-        void channel.send(`🤖 Queued for **${botId}** (job ${result.jobId}) — the reply will arrive in this chat.`, msg.channelId)
+        void channel.send(`🤖 Queued for **${botId}** (job ${result.jobId}) — the reply will arrive in this chat.`, replyTarget)
           .catch((err) => logger.warn({ err }, '/bot ack send failed'));
       } else {
-        void channel.send(`Could not message **${botId}**: [reason: ${result.reasonCode}]`, msg.channelId)
+        void channel.send(`Could not message **${botId}**: [reason: ${result.reasonCode}]`, replyTarget)
           .catch((err) => logger.warn({ err }, '/bot ack send failed'));
       }
       return;
@@ -1118,6 +1127,21 @@ export class Agent {
       return;
     }
 
+    if (action === 'open') {
+      const target = parts[1]?.toLowerCase();
+      const manifest = target ? bm.store.get(target) : null;
+      if (!target || !manifest) {
+        await channel.send(`No bot "${target ?? ''}". See \`/bots\` for the roster.`, channelId);
+        return;
+      }
+      if (typeof (channel as any).enterBotChat === 'function') {
+        (channel as any).enterBotChat(target, manifest.name);
+        return;
+      }
+      await channel.send(`Opening a bot chat is only supported in the TUI — use \`/bots send ${target} <message>\` here.`, channelId);
+      return;
+    }
+
     if (action === 'create' || action === 'onboard') {
       // /bots create <id> "Name" "Description"
       const id = (parts[1] ?? '').toLowerCase();
@@ -1274,7 +1298,9 @@ export class Agent {
     await channel.send(
       '**Bots commands**\n' +
       '`/bots` — roster with live states\n' +
+      '`/bots open <id>` — open a bot chat (transcript swaps to the bot thread)\n' +
       '`/bots create <id> "Name" "Description"` — onboard a bot\n' +
+      '`/bot <id> <message>` — message a bot from any channel\n' +
       '`/bots send <id> <message>` — message a bot\n' +
       '`/bots journal <id>` — recent runs\n' +
       '`/bots inbox <id>` — pending bot-to-bot mail\n' +

@@ -70,10 +70,21 @@ export class BotManager {
   private readonly tokenBudget: TokenBudget;
   private readonly userMemoryFactory?: BotManagerDeps['userMemoryFactory'];
   private notify?: BotManagerDeps['notify'];
+  private alert?: (message: string) => Promise<void>;
 
   /** Deliver turn output to the invoking surface (wired by the Agent). */
   setNotify(cb: NonNullable<BotManagerDeps['notify']>): void {
     this.notify = cb;
+  }
+
+  /** Push needs-you events (permanent failure, budget pause) to the owner. */
+  setAlert(cb: (message: string) => Promise<void>): void {
+    this.alert = cb;
+  }
+
+  private async alertOwner(botId: string, message: string): Promise<void> {
+    if (!this.alert) return;
+    await this.alert(message).catch((e) => logger.warn({ e, botId }, 'Bot alert send failed'));
   }
 
   private queues: Map<string, BotJob[]> = new Map();
@@ -257,6 +268,7 @@ export class BotManager {
     if (cap && next >= cap) {
       this.pausedForBudget.add(botId);
       logger.warn({ botId, used: next, cap }, 'Bot daily token budget reached — pausing until next day');
+      void this.alertOwner(botId, `🟡 **${manifest.name}** paused — daily token budget reached (${next} ≥ ${cap}). Resumes tomorrow; raise the cap in bot.yaml if this is too tight.`);
     }
   }
 
@@ -318,6 +330,7 @@ export class BotManager {
         this.queue.settle(job.id, 'dead', output.reasonCode);
         this.needsYou.add(botId);
         logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
+        await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
       } else if (output.status === 'paused') {
         // Step-budget pause: work continues next turn — keep the job pending.
         this.queue.settle(job.id, 'done');
@@ -327,10 +340,12 @@ export class BotManager {
       }
 
       // Deliver the outcome (guaranteed delivery target: the bot's own chat
-      // minimum — never silently dropped, BOTS-ARCHITECTURE §3.1.5).
+      // minimum — never silently dropped, BOTS-ARCHITECTURE §3.1.5). Jobs
+      // without a source (cron/API) deliver to the bot's own thread, which
+      // the CLI channel routes via the `bot:<id>` targetId.
       if (this.notify && output.status !== 'halted' && job.trigger !== 'mailbox') {
-        const channelType = job.source?.channelType ?? (job.trigger === 'telegram' ? 'telegram' : 'bot');
-        const channelId = job.source?.channelId ?? botId;
+        const channelType = job.source?.channelType ?? 'cli';
+        const channelId = job.source?.channelId ?? `bot:${botId}`;
         const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : '⏸';
         const text = `${icon} **${manifest.name}** (${job.trigger}): ${output.output.slice(0, 800)}`;
         await this.notify(channelType, channelId, text).catch((e) =>

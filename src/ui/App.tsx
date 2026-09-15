@@ -129,6 +129,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
     '/session delete ',
     '/bots',
     '/bots list',
+    '/bots open ',
     '/bots create ',
     '/bots send ',
     '/bots journal ',
@@ -1021,6 +1022,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
           mode={state.mode}
           programmingMode={state.programmingMode}
           projectContext={state.projectContext}
+          botChat={state.botChat}
         />
       )}
       {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
@@ -2168,17 +2170,19 @@ function InputBox({
   mode,
   programmingMode,
   projectContext,
+  botChat,
 }: {
   input: string;
   cursorPos: number;
   mode: AppMode;
   programmingMode: ProgrammingModeState;
   projectContext: string | null;
+  botChat?: { botId: string; botName: string } | null;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
-  const promptColor = inWorkspace ? 'cyan' : inCoding ? 'green' : 'yellow';
-  const label = inWorkspace ? '[IDE CHAT]' : inCoding ? '[CODING]' : '[CHAT]';
+  const promptColor = botChat ? 'magenta' : inWorkspace ? 'cyan' : inCoding ? 'green' : 'yellow';
+  const label = botChat ? `[BOT ${botChat.botId}]` : inWorkspace ? '[IDE CHAT]' : inCoding ? '[CODING]' : '[CHAT]';
   const contextLabel = projectContext && projectContext.length > 52
     ? `...${projectContext.slice(-49)}`
     : (projectContext || 'No project context');

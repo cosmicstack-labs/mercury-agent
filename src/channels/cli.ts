@@ -324,6 +324,8 @@ export interface TuiState {
   /** A newer Mercury version the background check found — shown as a tiny
    * bottom-bar indicator (⬆ vX) in Mercury Code until ignored. */
   updateAvailable: string | null;
+  /** Active Mercury Bot chat — transcript is swapped to the bot's thread. */
+  botChat: { botId: string; botName: string } | null;
 }
 
 const defaultState: TuiState = {
@@ -358,6 +360,7 @@ const defaultState: TuiState = {
   statusVerbs: null,
   tuiFrozen: false,
   updateAvailable: null,
+  botChat: null,
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -386,6 +389,14 @@ export class CLIChannel extends BaseChannel {
   private menuDepth = 0;
   private menuAbortController: AbortController | null = null;
   private heartbeatMsgId: string | null = null;
+  // Mercury Bot chat (mode-scoped transcript swap, §3.3): the bot's thread
+  // replaces the transcript on screen; main-agent traffic parks in
+  // mainTranscript until /chat restores it.
+  private activeBotId: string | null = null;
+  private mainTranscript: ChatMessage[] | null = null;
+  private botTranscripts = new Map<string, ChatMessage[]>();
+  /** Set while the input handler dispatches a bot-chat message downstream. */
+  private pendingBotChatTarget: string | null = null;
 
   // Per-turn file-change attribution: file-tool calls (write/create/edit/
   // delete) with their args path. Committed entries surface in the completion
@@ -588,6 +599,57 @@ export class CLIChannel extends BaseChannel {
   }
 
   /** useSyncExternalStore contract: read the latest immutable state snapshot. */
+  // ---- Mercury Bot chat (per-bot transcripts) ------------------------------
+
+  /** Open a bot's chat: swap the on-screen transcript to the bot's thread. */
+  enterBotChat(botId: string, botName: string): void {
+    if (this.activeBotId === botId) return;
+    if (this.activeBotId) {
+      this.botTranscripts.set(this.activeBotId, [...this.state.chatMessages]);
+    } else {
+      this.mainTranscript = [...this.state.chatMessages];
+    }
+    this.activeBotId = botId;
+    const seed: ChatMessage[] = this.botTranscripts.get(botId) ?? [{
+      id: `bot-open-${Date.now().toString(36)}`,
+      role: 'system',
+      content: `🤖 **${botName}** bot chat — everything you type here goes to the bot (runs outside the main conversation). \`/chat\` returns to the main transcript.`,
+      timestamp: Date.now(),
+    }];
+    this.botTranscripts.set(botId, seed);
+    this.trimAndSetMessages(seed, { botChat: { botId, botName }, isThinking: false, liveActivity: null });
+  }
+
+  /** Leave the bot chat and restore the main transcript. */
+  exitBotChat(): void {
+    if (!this.activeBotId) return;
+    this.botTranscripts.set(this.activeBotId, [...this.state.chatMessages]);
+    const main = this.mainTranscript ?? [];
+    this.activeBotId = null;
+    this.mainTranscript = null;
+    this.trimAndSetMessages(main, { botChat: null, isThinking: false, liveActivity: null });
+  }
+
+  getActiveBotChat(): { botId: string; botName: string } | null {
+    return this.activeBotId ? this.state.botChat : null;
+  }
+
+  /** Agent-side marker: the in-flight input was dispatched from a bot chat. */
+  consumePendingBotChatTarget(): string | null {
+    const target = this.pendingBotChatTarget;
+    this.pendingBotChatTarget = null;
+    return target;
+  }
+
+  private appendBotMessage(botId: string, msg: ChatMessage): void {
+    const existing = this.botTranscripts.get(botId) ?? [];
+    const updated = [...existing, msg];
+    this.botTranscripts.set(botId, updated);
+    if (this.activeBotId === botId) {
+      this.trimAndSetMessages(updated, { isThinking: false, liveActivity: null });
+    }
+  }
+
   getTuiStateSnapshot = (): TuiState => {
     return this.state;
   };
@@ -664,6 +726,25 @@ export class CLIChannel extends BaseChannel {
 
     this.inputHandler = (text: string) => {
       const trimmed = text.trim();
+      // Bot chat: /chat exits back to the main transcript; plain text goes
+      // to the bot as `/bot <id> <text>` (durable enqueue, reply lands here).
+      if (this.activeBotId) {
+        if (trimmed === '/chat' || trimmed === '/c') {
+          this.exitBotChat();
+          this.update({ mode: 'chat' });
+          return;
+        }
+        if (trimmed && !trimmed.startsWith('/')) {
+          const wrapped = `/bot ${this.activeBotId} ${trimmed}`;
+          this.pendingBotChatTarget = this.activeBotId;
+          try {
+            onInput(wrapped);
+          } finally {
+            this.pendingBotChatTarget = null;
+          }
+          return;
+        }
+      }
       if (trimmed === '/chat' || trimmed === '/c') {
         // Returning from Mercury Code must tear down its state (mouse mode,
         // scroll offset, programming mode) — not just flip the view. A bare
@@ -988,18 +1069,30 @@ export class CLIChannel extends BaseChannel {
     this.trimAndSetMessages([...this.state.chatMessages, msg]);
   }
 
-  async send(content: string, _targetId?: string, _elapsedMs?: number): Promise<void> {
+  async send(content: string, targetId?: string, _elapsedMs?: number): Promise<void> {
     const msg: ChatMessage = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       role: 'agent',
       content,
       timestamp: Date.now(),
     };
+    // Bot transcripts (targetId `bot:<id>`, BOTS-ARCHITECTURE §3.3): route to
+    // the bot's own thread — live if it is the one on screen, else stored.
+    if (targetId?.startsWith('bot:')) {
+      this.appendBotMessage(targetId.slice(4), msg);
+      return;
+    }
     // Clear any lingering heartbeat message when we send a real response.
     let chat = this.state.chatMessages;
     if (this.heartbeatMsgId) {
       chat = chat.filter((m) => m.id !== this.heartbeatMsgId);
       this.heartbeatMsgId = null;
+    }
+    // While a bot chat is open, main-agent traffic must not leak into the
+    // bot's thread: non-bot sends land in the parked main transcript.
+    if (this.activeBotId) {
+      this.mainTranscript = [...(this.mainTranscript ?? []), msg];
+      return;
     }
     this.trimAndSetMessages([...chat, msg], { isThinking: false, liveActivity: null });
   }

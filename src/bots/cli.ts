@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { loadSchedules } from '../core/scheduler.js';
 import { BotStore } from './store.js';
 import { BotQueue } from './queue.js';
 import { BotJournal } from './journal.js';
@@ -38,10 +39,15 @@ export function registerBotsCommand(program: Command): void {
       const store = new BotStore();
       const queue = new BotQueue(store.botsRoot, config.bots?.retention?.dlqCap);
       const getJournal = journalFor(store, config);
+      // Registered routine ids come from the persisted schedules manifest so
+      // the doctor can flag bot routines that exist in bot.yaml but never
+      // got registered (the "silently not firing" failure mode).
+      const scheduledRoutineIds = loadSchedules().map(t => t.id);
       const report = runBotDoctor({
         store,
         queue,
         journalFor: getJournal,
+        scheduledRoutineIds,
       });
       console.log(formatDoctorReport(report));
       if (!report.healthy) {
