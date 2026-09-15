@@ -157,6 +157,34 @@ export class BotManager {
         this.queue.settle(job.id, 'dead', 'bot_removed');
       }
     }
+    // Durable mailboxes survive restarts: rehydrate into the in-memory boxes.
+    for (const m of this.store.list()) {
+      const drained = this.queue.drainMail(m.id);
+      if (drained.length > 0) this.mailboxes.set(m.id, drained);
+    }
+    // Periodic due-sweep: retry-backoff jobs re-enter the in-memory queues
+    // when their run_after elapses (also covers crash-restart backoffs).
+    const dueTimer = setInterval(() => this.resumeDueJobs(), 30_000);
+    dueTimer.unref?.();
+  }
+
+  /** Pull due (backoff-elapsed) jobs from the durable queue into memory and run them. */
+  private resumeDueJobs(): void {
+    const due = this.queue.dueJobs();
+    for (const job of due) {
+      if (this.disabled.has(job.botId)) continue;
+      const running = this.running.get(job.botId)?.size ?? 0;
+      const q = this.queues.get(job.botId) ?? [];
+      const alreadyQueued = q.some(j => j.id === job.id);
+      if (!alreadyQueued && running === 0) {
+        q.push({
+          id: job.id, botId: job.botId, trigger: job.trigger, prompt: job.prompt,
+          fromBot: job.fromBot, source: job.source, createdAt: job.createdAt, attempts: job.attempts,
+        });
+        this.queues.set(job.botId, q);
+        this.pump(job.botId);
+      }
+    }
   }
 
   /** Fleet-wide concurrency cap: config override or clamp(2, cpus-1). */
@@ -223,6 +251,9 @@ export class BotManager {
     if (box.length >= MAILBOX_CAPACITY) {
       return { accepted: false, reasonCode: 'queue_full' };
     }
+    // Durable-before-ack for handoffs too: a bot_send that returns "queued"
+    // must survive a crash before the target's next turn drains it.
+    this.queue.enqueueMail({ botId: targetBotId, from: fromBot, content, createdAt: Date.now() });
     box.push({ from: fromBot, content });
     this.mailboxes.set(targetBotId, box);
 
@@ -240,10 +271,11 @@ export class BotManager {
     return { accepted: true, jobId };
   }
 
-  /** Poll-and-drain a bot's mailbox (used by turns and by inbox inspection). */
+  /** Poll-and-drain a bot's mailbox (turns); durable rows removed too. */
   drainMailbox(botId: string): BotTurnMail[] {
     const box = this.mailboxes.get(botId) ?? [];
     this.mailboxes.set(botId, []);
+    this.queue.drainMail(botId);
     return box;
   }
 
@@ -355,12 +387,19 @@ export class BotManager {
 
       // Transient provider failures retry with backoff, bounded; permanent
       // failures go to the capped DLQ and stop (never silently re-queued — §2.6).
+      // Retries requeue the SAME job in place (durable): no settle-then-
+      // reenqueue window where a crash would lose the work.
       if (output.status === 'failed' && output.reasonCode && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS) {
-        this.queue.settle(job.id, 'done'); // the retry re-enqueues a fresh attempt
         const delay = Math.min(15000, 1000 * 2 ** job.attempts);
-        logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying');
+        this.queue.retry(job.id, job.attempts + 1, Date.now() + delay);
+        logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying in place');
         setTimeout(() => {
-          this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, attempts: job.attempts + 1 });
+          const q = this.queues.get(botId) ?? [];
+          if (!q.some(j => j.id === job.id)) {
+            q.push({ ...job, attempts: job.attempts + 1 });
+            this.queues.set(botId, q);
+            this.pump(botId);
+          }
         }, delay).unref?.();
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
@@ -368,28 +407,39 @@ export class BotManager {
         logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
         await this.alertOwner(botId, `❌ **${manifest.name}** failed permanently [reason: ${output.reasonCode}] — replay with \`/bots replay ${botId} ${job.id}\``);
       } else if (output.status === 'paused') {
-        // Step-budget pause: work continues next turn — keep the job pending.
-        this.queue.settle(job.id, 'done');
-        this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, attempts: job.attempts });
+        // Step-budget pause: work continues next turn — same job requeues in
+        // place (durable), no attempts bump.
+        this.queue.retry(job.id, job.attempts, Date.now() + 2000);
+        setTimeout(() => {
+          const q = this.queues.get(botId) ?? [];
+          if (!q.some(j => j.id === job.id)) {
+            q.push({ ...job });
+            this.queues.set(botId, q);
+            this.pump(botId);
+          }
+        }, 2000).unref?.();
       } else {
         this.queue.settle(job.id, 'done');
       }
 
-      // Deliver the outcome (guaranteed delivery target: the bot's own chat
-      // minimum — never silently dropped, BOTS-ARCHITECTURE §3.1.5). Jobs
-      // without a source (cron/API) deliver to the bot's own thread, which
-      // the CLI channel routes via the `bot:<id>` targetId.
-      if (this.notify && output.status !== 'halted' && job.trigger !== 'mailbox') {
+      // Deliver the outcome — including halts (a stopped run must report
+      // that it stopped, never vanish silently, §2.6). Jobs without a source
+      // (cron/API) deliver to the bot's own thread via the `bot:<id>` targetId.
+      if (this.notify && job.trigger !== 'mailbox') {
         const channelType = job.source?.channelType ?? 'cli';
         const channelId = job.source?.channelId ?? `bot:${botId}`;
-        const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : '⏸';
-        const text = `${icon} **${manifest.name}** (${job.trigger}): ${output.output.slice(0, 800)}`;
+        const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : output.status === 'halted' ? '⏹' : '⏸';
+        const text = output.status === 'halted'
+          ? `⏹ **${manifest.name}** run ${job.id} was stopped by you — no further output. It is recorded in \`/bots journal ${botId}\`.`
+          : `${icon} **${manifest.name}** (${job.trigger}): ${output.output.slice(0, 800)}`;
         await this.notify(channelType, channelId, text).catch((e) =>
           logger.warn({ e, botId }, 'Bot completion notify failed'));
       }
     } catch (err: any) {
       logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');
       this.queue.settle(job.id, 'dead', 'unknown_error');
+      this.needsYou.add(botId);
+      void this.alertOwner(botId, `💥 **${botId}** run ${job.id} crashed: ${String(err?.message ?? err).slice(0, 150)} — see journal; replay from DLQ.`);
       this.journalFor(botId).append({
         runId: job.id,
         botId,

@@ -72,11 +72,13 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         expect(backend.rehydratable()).toHaveLength(1);
       });
 
-      it('claim sets a lease; settle done removes the job', () => {
+      it('claim sets a lease (in-flight, not resumable); settle done removes the job', () => {
         const backend = name === 'json' ? new JsonFileQueueBackend(root, 100) : new SqliteQueueBackend(root, 100, require('better-sqlite3'));
         backend.enqueue(job('a1'));
         backend.claim('a1', LEASE_SECONDS);
-        expect(backend.rehydratable()[0].state).toBe('claimed');
+        // Fresh lease = in-flight: not resumable, but visible in counts.
+        expect(backend.rehydratable()).toHaveLength(0);
+        expect(backend.counts().claimed).toBe(1);
         backend.settle('a1', 'done');
         expect(backend.rehydratable()).toHaveLength(0);
         expect(backend.counts()).toEqual({ pending: 0, claimed: 0, dlq: 0 });
@@ -93,7 +95,7 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         expect(dlq[0].attempts).toBe(1);
       });
 
-      it('expired leases requeue to pending; fresh leases survive', () => {
+      it('expired leases requeue to pending; fresh leases survive in-flight', () => {
         const backend = name === 'json' ? new JsonFileQueueBackend(root, 100) : new SqliteQueueBackend(root, 100, require('better-sqlite3'));
         backend.enqueue(job('expired'));
         backend.enqueue(job('alive'));
@@ -101,9 +103,10 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         backend.claim('alive', 3600);
         const requeued = backend.requeueExpiredLeases();
         expect(requeued).toBe(1);
-        const jobs = backend.rehydratable();
-        expect(jobs.find(j => j.id === 'expired')?.state).toBe('pending');
-        expect(jobs.find(j => j.id === 'alive')?.state).toBe('claimed');
+        expect(backend.rehydratable().find(j => j.id === 'expired')?.state).toBe('pending');
+        // 'alive' keeps its fresh lease: in-flight, not resumable
+        expect(backend.rehydratable().find(j => j.id === 'alive')).toBeUndefined();
+        expect(backend.counts().claimed).toBe(1);
       });
 
       it('DLQ is capped with oldest-first eviction', () => {
@@ -148,6 +151,40 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
     const resumed = queue.resumeJobs();
     expect(resumed.map(j => j.id).sort()).toEqual(['r1', 'r2']);
     expect(resumed.every(j => j.state === 'pending')).toBe(true);
+  });
+
+  it('retry requeues the same job in place — no settle-then-reenqueue window', () => {
+    for (const name of ['json', 'sqlite'] as const) {
+      const dir = join(root, `retry-${name}`);
+      const backend = name === 'json' ? new JsonFileQueueBackend(dir, 100) : new SqliteQueueBackend(dir, 100, require('better-sqlite3'));
+      backend.enqueue(job('t1'));
+      backend.claim('t1', LEASE_SECONDS);
+      // Crash-safe retry: attempts bump + backoff, still durably pending.
+      backend.retry('t1', 1, Date.now() + 5000);
+      expect(backend.rehydratable()).toHaveLength(0); // backoff not elapsed
+      expect(backend.dueJobs()).toHaveLength(0);
+      // A restart (fresh instance over the same storage) still sees the job
+      const fresh = name === 'json' ? new JsonFileQueueBackend(dir, 100) : new SqliteQueueBackend(dir, 100, require('better-sqlite3'));
+      expect(fresh.rehydratable().length).toBeGreaterThanOrEqual(0);
+      expect(fresh.counts().pending).toBe(1);
+    }
+  });
+
+  it('durable mail survives a restart and drains once', () => {
+    for (const name of ['json', 'sqlite'] as const) {
+      const dir = join(root, `mail-${name}`);
+      const backend = name === 'json' ? new JsonFileQueueBackend(dir, 100) : new SqliteQueueBackend(dir, 100, require('better-sqlite3'));
+      backend.enqueueMail({ botId: 'publisher', from: 'researcher', content: 'findings here', createdAt: Date.now() });
+      // Restart: the mail is still there
+      const fresh = name === 'json' ? new JsonFileQueueBackend(dir, 100) : new SqliteQueueBackend(dir, 100, require('better-sqlite3'));
+      const drained = fresh.drainMail('publisher');
+      expect(drained).toHaveLength(1);
+      expect(drained[0].from).toBe('researcher');
+      expect(drained[0].content).toBe('findings here');
+      // Draining is destructive — no double delivery
+      expect(fresh.drainMail('publisher')).toHaveLength(0);
+      expect(fresh.drainMail('other-bot')).toHaveLength(0);
+    }
   });
 });
 

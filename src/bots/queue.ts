@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
@@ -47,6 +47,16 @@ export interface DurableBotJob {
   idempotencyKey: string;
   reasonCode?: string;
   settledAt?: number;
+  /** Earliest time the job may run again (transient-retry backoff). */
+  runAfter?: number;
+}
+
+export interface DurableMail {
+  id: string;
+  botId: string;
+  from: string;
+  content: string;
+  createdAt: number;
 }
 
 export interface DlqEntry extends DurableBotJob {
@@ -66,13 +76,24 @@ export interface BotQueueBackend {
   claim(jobId: string, leaseSeconds: number): void;
   /** done → removed; dead → moved to the capped DLQ. */
   settle(jobId: string, outcome: 'done' | 'dead', reasonCode?: string): void;
-  /** Jobs safe to resume: pending, or claimed whose lease has expired. */
+  /**
+   * Durable in-place retry for a claimed job: attempts+1, back to pending,
+   * with an optional run-after timestamp. No settle-then-reenqueue window —
+   * a crash at any point still leaves the job in the queue.
+   */
+  retry(jobId: string, attempts: number, runAfterMs?: number): void;
+  /** Jobs safe to resume: pending (due), or claimed whose lease has expired. */
   rehydratable(): DurableBotJob[];
+  /** Pending jobs whose run-after time has arrived (retry backoff elapsed). */
+  dueJobs(): DurableBotJob[];
   /** Expired-lease claimed jobs → pending. Returns the count requeued. */
   requeueExpiredLeases(): number;
   heartbeatLease(jobId: string, leaseSeconds: number): void;
   listDlq(botId?: string): DlqEntry[];
   removeFromDlq(jobId: string): DurableBotJob | null;
+  /** Durable bot-to-bot mailbox (§2.6: a handoff must survive a crash). */
+  enqueueMail(mail: Omit<DurableMail, 'id'>): string;
+  drainMail(botId: string): DurableMail[];
   counts(): QueueCounts;
 }
 
@@ -138,15 +159,29 @@ export class BotQueue {
     this.backend.settle(jobId, outcome, reasonCode);
   }
 
-  heartbeatLease(jobId: string, leaseSeconds: number = LEASE_SECONDS): void {
-    this.backend.heartbeatLease(jobId, leaseSeconds);
+  /** Durable in-place retry: no settle-then-reenqueue window. */
+  retry(jobId: string, attempts: number, runAfterMs?: number): void {
+    this.backend.retry(jobId, attempts, runAfterMs);
   }
 
-  /** Jobs to resume on startup: pending, plus expired-lease claimed jobs. */
+  /** Jobs to resume on startup: due pending, plus expired-lease claimed jobs. */
   resumeJobs(): DurableBotJob[] {
     const expired = this.backend.requeueExpiredLeases();
     if (expired > 0) logger.info({ expired }, 'Requeued expired bot job leases');
     return this.backend.rehydratable();
+  }
+
+  /** Pending jobs whose retry backoff has elapsed (swept periodically). */
+  dueJobs(): DurableBotJob[] {
+    return this.backend.dueJobs();
+  }
+
+  enqueueMail(mail: Omit<DurableMail, 'id'>): string {
+    return this.backend.enqueueMail(mail);
+  }
+
+  drainMail(botId: string): DurableMail[] {
+    return this.backend.drainMail(botId);
   }
 
   listDlq(botId?: string): DlqEntry[] {
@@ -194,6 +229,14 @@ export class SqliteQueueBackend implements BotQueueBackend {
         settled_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_bot_jobs_state ON bot_jobs (state, created_at);
+      CREATE TABLE IF NOT EXISTS bot_mail (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        from_bot TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bot_mail_bot ON bot_mail (bot_id, created_at);
       CREATE TABLE IF NOT EXISTS bot_dlq (
         id TEXT PRIMARY KEY,
         bot_id TEXT NOT NULL,
@@ -208,6 +251,8 @@ export class SqliteQueueBackend implements BotQueueBackend {
         dead_at INTEGER NOT NULL
       );
     `);
+    // Migration for queues created before run_after / bot_mail existed.
+    try { this.db.exec('ALTER TABLE bot_jobs ADD COLUMN run_after INTEGER'); } catch { /* already present */ }
     this.dlqCap = dlqCap;
   }
 
@@ -271,9 +316,47 @@ export class SqliteQueueBackend implements BotQueueBackend {
     return result.changes as number;
   }
 
+  retry(jobId: string, attempts: number, runAfterMs?: number): void {
+    this.db.prepare(
+      `UPDATE bot_jobs SET state = 'pending', attempts = ?, lease_expires_at = NULL, run_after = ? WHERE id = ?`,
+    ).run(attempts, runAfterMs ?? null, jobId);
+  }
+
   rehydratable(): DurableBotJob[] {
-    const rows = this.db.prepare(`SELECT * FROM bot_jobs WHERE state IN ('pending','claimed') ORDER BY created_at`).all() as any[];
+    // Due pending jobs + expired-lease claimed jobs — jobs still in their
+    // retry backoff (run_after in the future) wait until due.
+    const rows = this.db.prepare(
+      `SELECT * FROM bot_jobs WHERE state = 'pending' AND (run_after IS NULL OR run_after <= ?)
+       UNION ALL SELECT * FROM bot_jobs WHERE state = 'claimed' AND lease_expires_at <= ? ORDER BY created_at`,
+    ).all(Date.now(), Date.now()) as any[];
     return rows.map(normalizeJob);
+  }
+
+  dueJobs(): DurableBotJob[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM bot_jobs WHERE state = 'pending' AND (run_after IS NULL OR run_after <= ?) ORDER BY created_at`,
+    ).all(Date.now()) as any[];
+    return rows.map(normalizeJob);
+  }
+
+  enqueueMail(mail: Omit<DurableMail, 'id'>): string {
+    const id = randomUUID().slice(0, 12);
+    this.db.prepare(
+      `INSERT INTO bot_mail (id, bot_id, from_bot, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(id, mail.botId, mail.from, mail.content, mail.createdAt);
+    return id;
+  }
+
+  drainMail(botId: string): DurableMail[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM bot_mail WHERE bot_id = ? ORDER BY created_at`,
+    ).all(botId) as any[];
+    if (rows.length === 0) return [];
+    this.db.prepare(`DELETE FROM bot_mail WHERE bot_id = ?`).run(botId);
+    return rows.map(r => ({
+      id: String(r.id), botId: String(r.bot_id), from: String(r.from_bot),
+      content: String(r.content), createdAt: Number(r.created_at),
+    }));
   }
 
   listDlq(botId?: string): DlqEntry[] {
@@ -324,6 +407,7 @@ const QUEUE_FILE = 'queue.json';
 interface QueueFile {
   jobs: DurableBotJob[];
   dlq: DlqEntry[];
+  mails: DurableMail[];
 }
 
 export class JsonFileQueueBackend implements BotQueueBackend {
@@ -336,7 +420,7 @@ export class JsonFileQueueBackend implements BotQueueBackend {
     mkdirSync(dir, { recursive: true });
     this.file = join(dir, QUEUE_FILE);
     this.dlqCap = dlqCap;
-    this.data = existsSync(this.file) ? this.read() : { jobs: [], dlq: [] };
+    this.data = existsSync(this.file) ? this.read() : { jobs: [], dlq: [], mails: [] };
   }
 
   private read(): QueueFile {
@@ -345,9 +429,10 @@ export class JsonFileQueueBackend implements BotQueueBackend {
       return {
         jobs: (parsed.jobs ?? []).map(normalizeJob),
         dlq: (parsed.dlq ?? []).map((d: any) => ({ ...normalizeJob(d), state: 'dead' as const, deadAt: d.deadAt ?? Date.now() })),
+        mails: parsed.mails ?? [],
       };
     } catch {
-      return { jobs: [], dlq: [] };
+      return { jobs: [], dlq: [], mails: [] };
     }
   }
 
@@ -412,8 +497,44 @@ export class JsonFileQueueBackend implements BotQueueBackend {
     return n;
   }
 
+  retry(jobId: string, attempts: number, runAfterMs?: number): void {
+    const job = this.data.jobs.find(j => j.id === jobId);
+    if (job) {
+      job.state = 'pending';
+      job.attempts = attempts;
+      job.leaseExpiresAt = undefined;
+      job.runAfter = runAfterMs;
+      this.flush();
+    }
+  }
+
   rehydratable(): DurableBotJob[] {
-    return [...this.data.jobs];
+    // Due pending + expired-lease claimed — future run_after waits.
+    const now = Date.now();
+    return this.data.jobs.filter(j =>
+      (j.state === 'pending' && (j.runAfter === undefined || j.runAfter <= now))
+      || (j.state === 'claimed' && (j.leaseExpiresAt ?? 0) < now));
+  }
+
+  dueJobs(): DurableBotJob[] {
+    const now = Date.now();
+    return this.data.jobs.filter(j => j.state === 'pending' && (j.runAfter === undefined || j.runAfter <= now));
+  }
+
+  enqueueMail(mail: Omit<DurableMail, 'id'>): string {
+    const id = randomUUID().slice(0, 12);
+    this.data.mails.push({ ...mail, id });
+    this.flush();
+    return id;
+  }
+
+  drainMail(botId: string): DurableMail[] {
+    const drained = this.data.mails.filter(m => m.botId === botId);
+    if (drained.length > 0) {
+      this.data.mails = this.data.mails.filter(m => m.botId !== botId);
+      this.flush();
+    }
+    return drained;
   }
 
   listDlq(botId?: string): DlqEntry[] {
