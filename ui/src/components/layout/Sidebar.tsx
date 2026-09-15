@@ -14,6 +14,7 @@ import {
   Share2,
   
   Cpu,
+  Bot,
   Puzzle,
   Shield,
   Clock,
@@ -63,6 +64,7 @@ const NAV_SECTIONS = [
       { to: "/skills", icon: Puzzle, label: "Skills" },
       { to: "/permissions", icon: Shield, label: "Permissions" },
       { to: "/schedules", icon: Clock, label: "Schedules" },
+      { to: "/bots", icon: Bot, label: "Bots" },
       { to: "/usage", icon: BarChart3, label: "Usage" },
     ],
   },

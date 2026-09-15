@@ -13,6 +13,7 @@ import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from '
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
 import { runBotTurn, isTransientFailure, type BotTurnMail } from './bot-turn.js';
+import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
 import { logger } from '../utils/logger.js';
 import type {
   BotLiveState,
@@ -317,6 +318,23 @@ export class BotManager {
       this.needsYou.delete(botId);
       this.recordBotTokens(botId, manifest, output.tokensIn + output.tokensOut);
 
+      // Auto-skill synthesis (P2-3): a completed multi-step run is a
+      // procedure worth keeping. Fire-and-forget, gated by config.
+      if (
+        output.status === 'completed'
+        && output.toolsUsed.length >= MIN_TOOLS_FOR_SYNTHESIS
+        && (this.config.bots as any)?.autoSkill?.enabled
+      ) {
+        void synthesizeSkill({
+          botId,
+          botName: manifest.name,
+          prompt: job.prompt,
+          output: output.output,
+          toolsUsed: output.toolsUsed,
+          provider: resolveProvider(this.providers, manifest),
+        }).catch((err) => logger.warn({ err, botId }, 'Skill synthesis failed'));
+      }
+
       // Transient provider failures retry with backoff, bounded; permanent
       // failures go to the capped DLQ and stop (never silently re-queued — §2.6).
       if (output.status === 'failed' && output.reasonCode && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS) {
@@ -559,6 +577,15 @@ export class BotManager {
 
   getQueuedCount(botId: string): number {
     return (this.queues.get(botId) ?? []).length;
+  }
+
+  /** Resolve a bot by id or case-insensitive name (for @mention routing). */
+  resolveBotId(nameOrId: string): string | null {
+    const needle = nameOrId.toLowerCase();
+    for (const m of this.store.list()) {
+      if (m.id === needle || m.name.toLowerCase() === needle) return m.id;
+    }
+    return null;
   }
 }
 

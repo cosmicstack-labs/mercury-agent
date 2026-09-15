@@ -5,9 +5,15 @@ import type { BotManifest } from '../../bots/types.js';
 const app = new Hono();
 
 let botManager: BotManager | undefined;
+let webhookSecret: string | undefined;
 
 export function setBotManager(bm: BotManager | undefined): void {
   botManager = bm;
+}
+
+/** Shared secret for bot webhook ingress; unset = auth via the web session only. */
+export function setBotsWebhookSecret(secret: string | undefined): void {
+  webhookSecret = secret;
 }
 
 // Fleet roster with live states
@@ -174,5 +180,43 @@ app.delete('/api/bots/:id', (c: any) => {
     return c.json({ error: err?.message }, 400);
   }
 });
+
+// Generic webhook ingress: validate → dedupe → durable enqueue, ack fast
+// (BOTS-ARCHITECTURE §2.3). Callers: external systems pushing events into a
+// bot (e.g. an RSS monitor or CI pipeline waking the researcher bot).
+app.post('/api/bots/:id/hooks/:hook', async (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  // Auth: shared secret header when configured (webhook callers have no
+  // browser session); otherwise the normal authGuard already applied.
+  if (webhookSecret) {
+    const provided = c.req.header('x-mercury-hook-secret');
+    if (provided !== webhookSecret) {
+      return c.json({ error: 'Invalid hook secret' }, 401);
+    }
+  }
+  let text: string;
+  if (contentTypeIsJson(c.req.header('content-type'))) {
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+    text = typeof body.text === 'string' ? body.text : JSON.stringify(body);
+  } else {
+    text = await c.req.text();
+  }
+  if (!text.trim()) return c.json({ error: 'Empty payload' }, 400);
+  // Idempotency: an explicit event id joins the prompt, so the queue's
+  // idempotency key dedupes redeliveries of the same event.
+  const eventId = c.req.header('x-event-id');
+  const prompt = eventId ? `[hook:${c.req.param('hook')}:${eventId}] ${text}` : `[hook:${c.req.param('hook')}] ${text}`;
+  const result = botManager.enqueue(id, { trigger: 'api', prompt });
+  if (!result.accepted) {
+    return c.json({ accepted: false, reasonCode: result.reasonCode }, 409);
+  }
+  return c.json({ accepted: true, jobId: result.jobId, status: 'accepted' }, 202);
+});
+
+function contentTypeIsJson(value: string | undefined): boolean {
+  return (value ?? '').split(';')[0].trim().toLowerCase() === 'application/json';
+}
 
 export default app;

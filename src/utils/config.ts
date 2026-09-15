@@ -200,6 +200,12 @@ export interface MercuryConfig {
     enabled: boolean;
     /** 0 = auto (clamp(2, cpus-1)). Fleet-wide cap on concurrent bot turns. */
     maxConcurrent: number;
+    /** Shared secret for POST /api/bots/:id/hooks/* (unset = session auth only). */
+    webhookSecret?: string;
+    /** Auto-skill synthesis: draft SKILL.md from completed multi-step bot runs. */
+    autoSkill?: {
+      enabled?: boolean;
+    };
     retention: {
       transcriptRuns: number;
       journalRotateBytes: number;
@@ -458,6 +464,10 @@ export function getDefaultConfig(): MercuryConfig {
     bots: {
       enabled: getEnvBool('BOTS_ENABLED', true),
       maxConcurrent: getEnvNum('BOTS_MAX_CONCURRENT', 0),
+      webhookSecret: getEnv('BOTS_WEBHOOK_SECRET') || undefined,
+      autoSkill: {
+        enabled: getEnvBool('BOTS_AUTO_SKILL', false),
+      },
       retention: {
         transcriptRuns: getEnvNum('BOTS_RETENTION_TRANSCRIPT_RUNS', 50),
         journalRotateBytes: getEnvNum('BOTS_JOURNAL_ROTATE_BYTES', 5 * 1024 * 1024),

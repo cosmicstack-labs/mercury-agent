@@ -36,6 +36,8 @@ export interface BotTurnOutput {
   output: string;
   tokensIn: number;
   tokensOut: number;
+  /** Distinct tool names the turn used (drives auto-skill synthesis). */
+  toolsUsed: string[];
   error?: string;
   reasonCode?: string;
 }
@@ -69,6 +71,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   let tokensOut = 0;
   let lastResult: any = null;
   let stepsRemaining = maxSteps;
+  const toolsUsed = new Set<string>();
 
   try {
     while (stepsRemaining > 0 && !abortSignal.aborted) {
@@ -80,12 +83,15 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         stopWhen: stepCountIs(stepsRemaining),
         abortSignal,
         experimental_include: { requestBody: false, responseBody: false },
-        onStepFinish: ({ usage }) => {
+        onStepFinish: ({ usage, toolCalls }) => {
           if (abortSignal.aborted) return;
           stepsRemaining--;
           if (usage) {
             tokensIn += usage.inputTokens ?? 0;
             tokensOut += usage.outputTokens ?? 0;
+          }
+          for (const tc of toolCalls ?? []) {
+            if (tc?.toolName) toolsUsed.add(String(tc.toolName));
           }
         },
       });
@@ -119,7 +125,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
     }
 
     if (abortSignal.aborted) {
-      return { status: 'halted', output: 'Turn was halted.', tokensIn, tokensOut };
+      return { status: 'halted', output: 'Turn was halted.', tokensIn, tokensOut, toolsUsed: [...toolsUsed] };
     }
 
     // Step budget exhausted with tool calls still pending — pause, never
@@ -130,6 +136,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         output: 'Step budget reached before the turn completed — remaining work continues next turn.',
         tokensIn,
         tokensOut,
+        toolsUsed: [...toolsUsed],
         reasonCode: 'step_budget',
       };
     }
@@ -145,16 +152,17 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       channelType: 'bot',
     });
 
-    return { status: 'completed', output, tokensIn, tokensOut };
+    return { status: 'completed', output, tokensIn, tokensOut, toolsUsed: [...toolsUsed] };
   } catch (err: any) {
     if (abortSignal.aborted) {
-      return { status: 'halted', output: 'Turn was halted.', tokensIn, tokensOut };
+      return { status: 'halted', output: 'Turn was halted.', tokensIn, tokensOut, toolsUsed: [...toolsUsed] };
     }
     return {
       status: 'failed',
       output: `Turn failed: ${err?.message ?? String(err)}`,
       tokensIn,
       tokensOut,
+      toolsUsed: [...toolsUsed],
       error: err?.message ?? String(err),
       reasonCode: classifyFailure(err),
     };

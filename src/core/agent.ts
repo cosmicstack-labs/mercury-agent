@@ -650,33 +650,26 @@ export class Agent {
     // Telegram, web). Durable enqueue; the run's output is delivered back
     // to the requesting chat via the job's source (Telegram first).
     if (trimmed.startsWith('/bot ')) {
-      const bm = this.botManager;
-      if (!bm) return; // bots not wired — fall through as a normal message
+      if (!this.botManager) return; // bots not wired — fall through as a normal message
       const rest = trimmed.slice('/bot '.length).trim();
       const spaceIndex = rest.indexOf(' ');
       const botId = (spaceIndex === -1 ? rest : rest.slice(0, spaceIndex)).toLowerCase();
       const message = spaceIndex === -1 ? '' : rest.slice(spaceIndex + 1).trim();
-      if (!botId || !message) return;
-      const channel = this.channels.getChannelForMessage(msg);
-      if (!channel) return;
-      // Dispatched from inside that bot's TUI chat → ack and reply land in
-      // the bot's own transcript (targetId `bot:<id>`; cli.ts routes it).
-      const pendingBot = (channel as any).consumePendingBotChatTarget?.() ?? null;
-      const inBotChat = pendingBot === botId;
-      const replyTarget = inBotChat ? `bot:${botId}` : msg.channelId;
-      const result = bm.enqueue(botId, {
-        trigger: 'chat',
-        prompt: message,
-        source: { channelType: msg.channelType, channelId: replyTarget },
-      });
-      if (result.accepted) {
-        void channel.send(`🤖 Queued for **${botId}** (job ${result.jobId}) — the reply will arrive in this chat.`, replyTarget)
-          .catch((err) => logger.warn({ err }, '/bot ack send failed'));
-      } else {
-        void channel.send(`Could not message **${botId}**: [reason: ${result.reasonCode}]`, replyTarget)
-          .catch((err) => logger.warn({ err }, '/bot ack send failed'));
+      if (botId && message) {
+        void this.dispatchToBot(botId, message, msg);
       }
       return;
+    }
+
+    // @<botId|name> <message> — mention-style routing (Telegram groups, etc.).
+    // Only intercepts when the first token resolves to a configured bot, so
+    // ordinary @-messages are never hijacked.
+    if (trimmed.startsWith('@') && this.botManager) {
+      const mention = this.parseBotMention(trimmed);
+      if (mention) {
+        void this.dispatchToBot(mention.botId, mention.message, msg);
+        return;
+      }
     }
 
     if (this.processing && trimmed.startsWith('/')) {
@@ -1086,6 +1079,46 @@ export class Agent {
       return;
     }
     await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
+  }
+
+  /** Enqueue a bot turn from any channel, with ack + reply-back routing. */
+  private async dispatchToBot(botId: string, message: string, msg: ChannelMessage): Promise<void> {
+    const bm = this.botManager;
+    if (!bm) return;
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!channel) return;
+    // Dispatched from inside that bot's TUI chat → ack and reply land in
+    // the bot's own transcript (targetId `bot:<id>`; cli.ts routes it).
+    const pendingBot = (channel as any).consumePendingBotChatTarget?.() ?? null;
+    const inBotChat = pendingBot === botId;
+    const replyTarget = inBotChat ? `bot:${botId}` : msg.channelId;
+    const result = bm.enqueue(botId, {
+      trigger: 'chat',
+      prompt: message,
+      source: { channelType: msg.channelType, channelId: replyTarget },
+    });
+    if (result.accepted) {
+      await channel.send(`🤖 Queued for **${botId}** (job ${result.jobId}) — the reply will arrive in this chat.`, replyTarget)
+        .catch((err) => logger.warn({ err }, '/bot ack send failed'));
+    } else {
+      await channel.send(`Could not message **${botId}**: [reason: ${result.reasonCode}]`, replyTarget)
+        .catch((err) => logger.warn({ err }, '/bot ack send failed'));
+    }
+  }
+
+  /**
+   * Parse `@<botId|Name> <message>` into a bot routing when the first token
+   * resolves to a configured bot; null for any other @-message.
+   */
+  private parseBotMention(content: string): { botId: string; message: string } | null {
+    const bm = this.botManager;
+    if (!bm) return null;
+    const firstSpace = content.indexOf(' ');
+    const token = (firstSpace === -1 ? content : content.slice(0, firstSpace)).replace(/^@/, '').trim();
+    const message = firstSpace === -1 ? '' : content.slice(firstSpace + 1).trim();
+    if (!token || !message) return null;
+    const botId = bm.resolveBotId(token);
+    return botId ? { botId, message } : null;
   }
 
   /**

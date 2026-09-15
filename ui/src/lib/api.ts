@@ -642,6 +642,52 @@ export interface BgTask {
   completedAt?: string;
 }
 
+// ── Mercury Bots ──
+export interface BotStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  state: "disabled" | "idle" | "queued" | "running" | "paused";
+  activity?: string;
+  lastRunAt?: number;
+  lastRunState?: string;
+  needsYou: boolean;
+}
+
+export interface BotManifest {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  model?: { provider?: string; model?: string };
+  memory?: { scope: string };
+  comms?: { canMessage?: string[] };
+  schedules?: Array<{ name: string; cron: string; prompt: string }>;
+  autonomy?: { maxSteps?: number; dailyTokenBudget?: number };
+}
+
+export interface BotRunRecord {
+  runId: string;
+  botId: string;
+  trigger: string;
+  state: string;
+  startedAt: number;
+  durationMs: number;
+  tokensIn: number;
+  tokensOut: number;
+  summary?: string;
+  reasonCode?: string;
+}
+
+export interface BotDlqEntry {
+  id: string;
+  botId: string;
+  trigger: string;
+  prompt: string;
+  attempts: number;
+  reasonCode?: string;
+}
+
 export interface Skill {
   name: string;
   path: string;
@@ -795,6 +841,23 @@ const api = {
   schedules,
   spotify,
   boards,
+  bots: {
+    list: () => get<{ bots: BotStatus[]; available: boolean }>("/api/bots"),
+    get: (id: string) =>
+      get<{ bot: BotManifest; state: BotStatus | null; journal: BotRunRecord[]; inbox: unknown[] }>(`/api/bots/${id}`),
+    create: (body: { id: string; name: string; description?: string }) =>
+      post<{ bot: BotManifest }>("/api/bots", body),
+    message: (id: string, message: string) =>
+      post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${id}/message`, { message }),
+    patch: (id: string, body: Partial<BotManifest>) => patch<unknown>(`/api/bots/${id}`, body),
+    enable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/enable`),
+    disable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/disable`),
+    stop: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/stop`),
+    dlq: (id: string) => get<{ dlq: BotDlqEntry[] }>(`/api/bots/${id}/dlq`),
+    replay: (id: string, jobId: string) => post<{ accepted: boolean }>(`/api/bots/${id}/replay/${jobId}`),
+    storage: () =>
+      get<{ usage: Array<{ id: string; bytes: number; journalBytes: number }>; queue: { pending: number; claimed: number; dlq: number } }>("/api/bots-storage"),
+  },
 };
 
 export default api;

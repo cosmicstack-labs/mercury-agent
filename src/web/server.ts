@@ -14,7 +14,7 @@ import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
 import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setSessionRepository, setSessionSyncEnabledCallback } from './api/chat.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
-import botsRoutes, { setBotManager } from './api/bots.js';
+import botsRoutes, { setBotManager, setBotsWebhookSecret } from './api/bots.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
 import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders } from './api/kanban.js';
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
@@ -193,7 +193,7 @@ if (spaAvailable) {
   });
 }
 
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager, setBotsWebhookSecret };
 
 let webServer: ReturnType<typeof createAdaptorServer> | null = null;
 

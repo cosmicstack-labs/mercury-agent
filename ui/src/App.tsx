@@ -18,6 +18,7 @@ const ProvidersPage = lazy(() => import("./pages/Providers").then((m) => ({ defa
 const SkillsPage = lazy(() => import("./pages/Skills").then((m) => ({ default: m.SkillsPage })));
 const PermissionsPage = lazy(() => import("./pages/Permissions").then((m) => ({ default: m.PermissionsPage })));
 const SchedulesPage = lazy(() => import("./pages/Schedules").then((m) => ({ default: m.SchedulesPage })));
+const BotsPage = lazy(() => import("./pages/Bots").then((m) => ({ default: m.BotsPage })));
 const UsagePage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.UsagePage })));
 const SettingsPage = lazy(() => import("./pages/Settings").then((m) => ({ default: m.SettingsPage })));
 const WorkspacePage = lazy(() => import("./pages/Workspace").then((m) => ({ default: m.WorkspacePage })));
@@ -79,6 +80,7 @@ function AnimatedRoutes() {
             <Route path="skills" element={<AnimatedPage><SkillsPage /></AnimatedPage>} />
             <Route path="permissions" element={<AnimatedPage><PermissionsPage /></AnimatedPage>} />
             <Route path="schedules" element={<AnimatedPage><SchedulesPage /></AnimatedPage>} />
+            <Route path="bots" element={<AnimatedPage><BotsPage /></AnimatedPage>} />
             <Route path="usage" element={<AnimatedPage><UsagePage /></AnimatedPage>} />
             <Route path="settings" element={<AnimatedPage><SettingsPage /></AnimatedPage>} />
 
