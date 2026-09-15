@@ -290,12 +290,26 @@ export class PermissionManager {
   private currentChannelId: string = 'cli';
   private approvedCommandsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
+  /**
+   * Fail-closed mode (unattended agents, e.g. Mercury Bots): no interactive
+   * approvals exist. Explicitly granted scopes apply without prompting;
+   * everything else denies. Never combined with autoApproveAll.
+   */
+  private failClosed = false;
 
   private tempScopes: FileScope[] = [];
 
   constructor() {
     this.cwd = process.cwd();
     this.manifest = this.load();
+  }
+
+  setFailClosed(value: boolean): void {
+    this.failClosed = value;
+  }
+
+  isFailClosed(): boolean {
+    return this.failClosed;
   }
 
   setCurrentChannelType(type: string): void {
@@ -427,6 +441,15 @@ export class PermissionManager {
     if (mode === 'write' && (this.isGlobalAutoApproveActive() || contextWriteApproved)) {
       if (scope && scope.write) return { allowed: true };
       if (tempScope && tempScope.write) return { allowed: true };
+    }
+
+    // Fail-closed mode (bots): the explicitly granted scope IS the approval.
+    // No prompting in either direction — in-scope writes run, out-of-scope
+    // writes deny, and nothing ever waits for a user who isn't there.
+    if (this.failClosed) {
+      if (scope && scope.write) return { allowed: true };
+      if (tempScope && tempScope.write) return { allowed: true };
+      return { allowed: false, reason: `Fail-closed: no granted write scope covers ${path}` };
     }
 
     // Write access in ask-me mode: ALWAYS prompt the user, even if scope exists

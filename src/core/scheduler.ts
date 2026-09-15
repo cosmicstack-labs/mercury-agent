@@ -24,6 +24,8 @@ export interface ScheduledTaskManifest {
   createdAt: string;
   sourceChannelId?: string;
   sourceChannelType?: string;
+  /** Set for Mercury Bot routines — the run routes to the bot, not the main agent. */
+  botId?: string;
 }
 
 const SCHEDULES_FILE = 'schedules.yaml';

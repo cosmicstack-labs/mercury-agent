@@ -196,6 +196,19 @@ export interface MercuryConfig {
     maxConcurrent: number;
     mode: 'auto' | 'manual';
   };
+  bots: {
+    enabled: boolean;
+    /** 0 = auto (clamp(2, cpus-1)). Fleet-wide cap on concurrent bot turns. */
+    maxConcurrent: number;
+    retention: {
+      transcriptRuns: number;
+      journalRotateBytes: number;
+      journalKeepRotations: number;
+      mailboxTtlHours: number;
+      dlqCap: number;
+      artifactQuotaBytes: number;
+    };
+  };
   spotify: {
     enabled: boolean;
     clientId: string;
@@ -441,6 +454,18 @@ export function getDefaultConfig(): MercuryConfig {
       enabled: getEnvBool('SUBAGENTS_ENABLED', true),
       maxConcurrent: getEnvNum('SUBAGENTS_MAX_CONCURRENT', 0),
       mode: (process.env.SUBAGENTS_MODE as 'auto' | 'manual') || 'auto',
+    },
+    bots: {
+      enabled: getEnvBool('BOTS_ENABLED', true),
+      maxConcurrent: getEnvNum('BOTS_MAX_CONCURRENT', 0),
+      retention: {
+        transcriptRuns: getEnvNum('BOTS_RETENTION_TRANSCRIPT_RUNS', 50),
+        journalRotateBytes: getEnvNum('BOTS_JOURNAL_ROTATE_BYTES', 5 * 1024 * 1024),
+        journalKeepRotations: getEnvNum('BOTS_JOURNAL_KEEP_ROTATIONS', 3),
+        mailboxTtlHours: getEnvNum('BOTS_MAILBOX_TTL_HOURS', 72),
+        dlqCap: getEnvNum('BOTS_DLQ_CAP', 100),
+        artifactQuotaBytes: getEnvNum('BOTS_ARTIFACT_QUOTA_BYTES', 500 * 1024 * 1024),
+      },
     },
     spotify: {
       enabled: getEnvBool('SPOTIFY_ENABLED', false),

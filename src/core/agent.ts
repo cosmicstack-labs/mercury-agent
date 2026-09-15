@@ -489,6 +489,7 @@ export class Agent {
   private completedStepCount = 0;
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
+  private botManager?: import('../bots/bot-manager.js').BotManager;
   readonly programmingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
@@ -558,6 +559,21 @@ export class Agent {
     }
   }
 
+  /** Wire the Mercury Bots runtime (see bots/bot-manager.ts, BOTS-ARCHITECTURE.md). */
+  setBotManager(botManager: import('../bots/bot-manager.js').BotManager): void {
+    this.botManager = botManager;
+    botManager['notify'] = async (channelType, channelId, message) => {
+      const channel = this.channels.get(channelType as any);
+      if (channel) {
+        await channel.send(message, channelId).catch((e) => logger.warn({ e }, 'bot notify channel send failed'));
+      }
+    };
+  }
+
+  getBotManager(): import('../bots/bot-manager.js').BotManager | undefined {
+    return this.botManager;
+  }
+
   setSessionSyncEnabled(enabled: boolean): void {
     this.sessionSyncEnabled = enabled;
   }
@@ -613,6 +629,18 @@ export class Agent {
     logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
 
     const trimmed = msg.content.trim();
+
+    // Mercury Bots never touch the main message queue — /bots is always
+    // fast-path, whether the main loop is busy or idle.
+    if (trimmed.startsWith('/bots')) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel) {
+        this.handleBotsCommand(trimmed, msg, channel).catch((err) => {
+          logger.error({ err: (err as any)?.message ?? err, content: trimmed.slice(0, 50) }, '/bots command failed');
+        });
+      }
+      return;
+    }
 
     if (this.processing && trimmed.startsWith('/')) {
       this.handleFastPathCommand(msg).catch((err) => {
@@ -891,6 +919,12 @@ export class Agent {
       return;
     }
 
+    // Bots run outside the main queue — /bots commands are always fast-path.
+    if (trimmed.startsWith('/bots')) {
+      await this.handleBotsCommand(trimmed, msg, channel);
+      return;
+    }
+
     if (trimmed.startsWith('/bg')) {
       await this.handleBgCommand(trimmed, msg, channel);
       return;
@@ -1015,6 +1049,179 @@ export class Agent {
       return;
     }
     await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
+  }
+
+  /**
+   * /bots — Mercury Bots control surface (BOTS-ARCHITECTURE.md §2.7).
+   * Always fast-path: bots live outside the main message queue, so bot
+   * control stays responsive while the agent is busy.
+   */
+  private async handleBotsCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+    const bm = this.botManager;
+    const channelId = msg.channelId;
+    if (!bm) {
+      await channel.send('Bots are not available (BotManager not wired).', channelId);
+      return;
+    }
+    const rawArgs = trimmed.slice('/bots'.length).trim();
+    const parts = rawArgs.length > 0 ? rawArgs.split(/\s+/) : [];
+    const action = (parts[0] ?? '').toLowerCase();
+
+    const stateIcons: Record<string, string> = { idle: '⚪', queued: '🔵', running: '🟢', paused: '🟡', disabled: '⛔' };
+    const runIcons: Record<string, string> = { completed: '✅', failed: '❌', halted: '⛔', paused: '⏸', denied: '🚫' };
+
+    if (action === '' || action === 'list') {
+      const summaries = bm.getStatusSummaries();
+      if (summaries.length === 0) {
+        await channel.send('No bots configured. Use `/bots create <id> "Name" "Description"` to onboard one.', channelId);
+        return;
+      }
+      const lines = [`**Bots** (${summaries.length})`, ''];
+      for (const s of summaries) {
+        const icon = stateIcons[s.state] ?? '❓';
+        const lastRun = s.lastRunAt ? ` · last ${(s.lastRunState ?? '')} ${formatRelative(s.lastRunAt)}` : '';
+        const activity = s.activity ? `\n   ↳ ${s.activity}` : '';
+        const attention = s.needsYou ? ' · ⚠ needs you' : '';
+        lines.push(`${icon} **${s.name}** (${s.id}) — ${s.state}${attention}${lastRun}${activity}`);
+      }
+      const running = summaries.filter(s => s.state === 'running').length;
+      lines.push('', `Running: ${running} | Queued: ${summaries.reduce((a, s) => a + (s.state === 'queued' ? 1 : 0), 0)}`);
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'create' || action === 'onboard') {
+      // /bots create <id> "Name" "Description"
+      const id = (parts[1] ?? '').toLowerCase();
+      if (!id) {
+        await channel.send('Usage: `/bots create <id> "Name" "Description"` — the bot starts with a fail-closed default profile you can refine via its profile files.', channelId);
+        return;
+      }
+      const rest = trimmed.slice(trimmed.indexOf(id) + id.length).trim();
+      const quoted = [...rest.matchAll(/"([^"]*)"/g)].map(m => m[1]);
+      const name = quoted[0] ?? id.toUpperCase();
+      const description = quoted[1];
+      try {
+        const manifest = bm.store.create({ id, name, description });
+        bm.invalidateRuntime(id);
+        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults (dangerous tools denied, memory scope own, only its own directory writable).\nPersona: \`${bm.store.botDir(id)}/persona.md\` — edit it to shape the bot's character.`, channelId);
+      } catch (err: any) {
+        await channel.send(`Could not create bot "${id}": ${err?.message}`, channelId);
+      }
+      return;
+    }
+
+    if (action === 'send') {
+      const target = parts[1]?.toLowerCase();
+      const message = trimmed.slice(trimmed.indexOf(parts[1] ?? '') + (parts[1]?.length ?? 0)).trim();
+      if (!target || !message) {
+        await channel.send('Usage: `/bots send <id> <message>`', channelId);
+        return;
+      }
+      const result = bm.enqueue(target, { trigger: 'chat', prompt: message, source: { channelType: msg.channelType, channelId } });
+      if (!result.accepted) {
+        await channel.send(`Could not message **${target}**: [reason: ${result.reasonCode}]`, channelId);
+        return;
+      }
+      await channel.send(`🤖 Queued for **${target}** (job ${result.jobId}) — runs outside the main conversation.`, channelId);
+      return;
+    }
+
+    if (action === 'enable' || action === 'disable') {
+      const target = parts[1]?.toLowerCase();
+      if (!target) {
+        await channel.send(`Usage: \`/bots ${action} <id>\``, channelId);
+        return;
+      }
+      try {
+        bm.setEnabled(target, action === 'enable');
+        await channel.send(`${action === 'enable' ? '✅ Enabled' : '⏸ Disabled'} bot **${target}**.`, channelId);
+      } catch (err: any) {
+        await channel.send(`Failed: ${err?.message}`, channelId);
+      }
+      return;
+    }
+
+    if (action === 'stop' || action === 'pause') {
+      const target = parts[1]?.toLowerCase();
+      if (!target) {
+        await channel.send('Usage: `/bots stop <id>`', channelId);
+        return;
+      }
+      const halted = await bm.halt(target);
+      await channel.send(halted ? `⛔ Halt signal sent to **${target}** — it will stop after the current tool step.` : `**${target}** has nothing running.`, channelId);
+      return;
+    }
+
+    if (action === 'journal') {
+      const target = parts[1]?.toLowerCase();
+      if (!target) {
+        await channel.send('Usage: `/bots journal <id>`', channelId);
+        return;
+      }
+      const records = bm.getJournal(target, 10);
+      if (records.length === 0) {
+        await channel.send(`No runs recorded yet for **${target}**.`, channelId);
+        return;
+      }
+      const lines = [`**${target} — recent runs**`, ''];
+      for (const r of [...records].reverse()) {
+        const icon = r.state === 'completed' ? '✅' : r.state === 'failed' ? '❌' : r.state === 'paused' ? '⏸' : '⛔';
+        const reason = r.reasonCode ? ` · [reason: ${r.reasonCode}]` : '';
+        lines.push(`${icon} ${r.runId} · ${r.trigger} · ${r.state} · ${(r.durationMs / 1000).toFixed(1)}s · ${r.tokensIn + r.tokensOut} tok${reason}`);
+        if (r.summary) lines.push(`   ${r.summary.slice(0, 100)}`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'inbox') {
+      const target = parts[1]?.toLowerCase();
+      if (!target) {
+        await channel.send('Usage: `/bots inbox <id>`', channelId);
+        return;
+      }
+      const mail = bm.peekMailbox(target);
+      if (mail.length === 0) {
+        await channel.send(`**${target}** mailbox is empty.`, channelId);
+        return;
+      }
+      const lines = [`**${target} — inbox** (${mail.length})`, ''];
+      for (const m of mail) {
+        lines.push(`🤖 from **${m.from}**: ${m.content.slice(0, 120)}`);
+      }
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'storage') {
+      const usage = bm.getStorage();
+      if (usage.length === 0) {
+        await channel.send('No bot storage in use.', channelId);
+        return;
+      }
+      const lines = ['**Bot storage**', ''];
+      let total = 0;
+      for (const u of usage) {
+        total += u.bytes;
+        lines.push(`**${u.id}**: ${formatBytes(u.bytes)} (journal ${formatBytes(u.journalBytes)})`);
+      }
+      lines.push('', `Total: ${formatBytes(total)} — caps are enforced at write time (transcripts keep last 50 runs; journals rotate at 5 MB).`);
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    await channel.send(
+      '**Bots commands**\n' +
+      '`/bots` — roster with live states\n' +
+      '`/bots create <id> "Name" "Description"` — onboard a bot\n' +
+      '`/bots send <id> <message>` — message a bot\n' +
+      '`/bots journal <id>` — recent runs\n' +
+      '`/bots inbox <id>` — pending bot-to-bot mail\n' +
+      '`/bots storage` — disk usage\n' +
+      '`/bots enable|disable|stop <id>` — control',
+      channelId,
+    );
   }
 
   private async handleBgCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
@@ -4245,6 +4452,23 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
   }
 
   private async handleScheduledTask(manifest: ScheduledTaskManifest): Promise<void> {
+    // Bot routines run on the bot lane, never through the main agent loop
+    // (BOTS-ARCHITECTURE.md §2.3 — cron lane).
+    if (manifest.botId) {
+      if (!this.botManager) {
+        logger.warn({ task: manifest.id, botId: manifest.botId }, 'Bot routine fired but BotManager is not wired');
+        return;
+      }
+      logger.info({ task: manifest.id, botId: manifest.botId }, 'Bot routine firing');
+      const result = this.botManager.enqueue(manifest.botId, {
+        trigger: 'cron',
+        prompt: manifest.prompt || manifest.description,
+      });
+      if (!result.accepted) {
+        logger.warn({ botId: manifest.botId, reasonCode: result.reasonCode }, 'Bot routine could not be enqueued');
+      }
+      return;
+    }
     logger.info({ task: manifest.id, channel: manifest.sourceChannelType }, 'Processing scheduled task');
     try {
       const channel = manifest.sourceChannelType
@@ -7272,4 +7496,23 @@ Is this productive iteration or a stuck loop?`,
       }
     }
   }
+}
+
+/** Relative-time formatter for /bots run stamps (e.g. "3m ago"). */
+function formatRelative(timestamp: number): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Human-readable byte size for /bots storage. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }

@@ -1,0 +1,506 @@
+import { cpus } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import type { Tool } from 'ai';
+import type { MercuryConfig } from '../utils/config.js';
+import type { ProviderRegistry } from '../providers/registry.js';
+import type { TokenBudget } from '../utils/tokens.js';
+import type { CapabilityRegistry } from '../capabilities/registry.js';
+import type { UserMemoryStore } from '../memory/user-memory.js';
+import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
+import { BotStore, BOT_JOURNAL_FILENAME, isValidCronExpression } from './store.js';
+import { BotJournal } from './journal.js';
+import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
+import { createBotSendTool } from './tools/bot-send.js';
+import { runBotTurn, isTransientFailure, type BotTurnMail } from './bot-turn.js';
+import { logger } from '../utils/logger.js';
+import type {
+  BotLiveState,
+  BotManifest,
+  BotRunRecord,
+  BotStatusSummary,
+  BotTrigger,
+} from './types.js';
+
+export interface BotJob {
+  id: string;
+  botId: string;
+  trigger: BotTrigger;
+  prompt: string;
+  /** Mailbox attribution — set for bot-to-bot deliveries. */
+  fromBot?: string;
+  /** Originating surface for completion delivery. */
+  source?: { channelType: string; channelId: string };
+  createdAt: number;
+  attempts: number;
+}
+
+export interface BotSendResult {
+  accepted: boolean;
+  jobId?: string;
+  reasonCode?: 'target_disabled' | 'target_unknown' | 'queue_full' | 'not_linked';
+}
+
+export interface BotManagerDeps {
+  config: MercuryConfig;
+  providers: ProviderRegistry;
+  tokenBudget: TokenBudget;
+  store?: BotStore;
+  /** Per-bot memory factory (P0-5 wires the default: UserMemoryStore with bot:<id> key). */
+  userMemoryFactory?: (botId: string, manifest: BotManifest) => UserMemoryStore | null;
+  /** Deliver turn output to the invoking surface (chat/telegram/api). */
+  notify?: (channelType: string, channelId: string, message: string) => Promise<void>;
+}
+
+const MAX_TRANSIENT_ATTEMPTS = 3;
+const MAILBOX_CAPACITY = 100;
+
+/**
+ * Owns the bot fleet: per-bot job queues, isolated turn runtimes, mailboxes,
+ * run journals, and live statuses. Bots never touch Agent.processQueue —
+ * they run as independent coroutines in this manager (BOTS-ARCHITECTURE.md §2.2).
+ */
+export class BotManager {
+  readonly store: BotStore;
+  private readonly config: MercuryConfig;
+  private readonly providers: ProviderRegistry;
+  private readonly tokenBudget: TokenBudget;
+  private readonly userMemoryFactory?: BotManagerDeps['userMemoryFactory'];
+  private notify?: BotManagerDeps['notify'];
+
+  /** Deliver turn output to the invoking surface (wired by the Agent). */
+  setNotify(cb: NonNullable<BotManagerDeps['notify']>): void {
+    this.notify = cb;
+  }
+
+  private queues: Map<string, BotJob[]> = new Map();
+  private mailboxes: Map<string, BotTurnMail[]> = new Map();
+  private running: Map<string, Set<string>> = new Map(); // botId → running job ids
+  private aborts: Map<string, AbortController> = new Map(); // job key → controller
+  private registries: Map<string, { registry: CapabilityRegistry; tools: Record<string, Tool> }> = new Map();
+  private activity: Map<string, string> = new Map(); // botId → current activity
+  private lastRun: Map<string, { at: number; state: BotRunRecord['state'] }> = new Map();
+  private needsYou: Set<string> = new Set();
+  private journals: Map<string, BotJournal> = new Map();
+  private userMemories: Map<string, UserMemoryStore | null> = new Map();
+  private disabled = new Set<string>();
+  /** Per-bot daily token usage: botId → { day (UTC yyyy-mm-dd), tokens }. */
+  private dailyTokens: Map<string, { day: string; tokens: number }> = new Map();
+  private pausedForBudget = new Set<string>();
+
+  constructor(deps: BotManagerDeps) {
+    this.config = deps.config;
+    this.providers = deps.providers;
+    this.tokenBudget = deps.tokenBudget;
+    this.userMemoryFactory = deps.userMemoryFactory ?? ((botId, manifest) => {
+      // Default: per-bot namespace in the shared second-brain DB.
+      // scope 'none' = stateless bot. SQLite-less devices degrade to a
+      // stateless bot until the sql.js/JSONL fallback lands (P1, §2.11).
+      const scope = manifest.memory?.scope ?? 'own';
+      if (scope === 'none') return null;
+      try {
+        return new UserMemoryStoreImpl(this.config, `bot:${botId}`);
+      } catch (err: any) {
+        logger.warn({ botId, err: err?.message }, 'Bot memory store unavailable (no native SQLite) — running stateless');
+        return null;
+      }
+    });
+    this.notify = deps.notify;
+    this.store = deps.store ?? new BotStore();
+  }
+
+  /** Fleet-wide concurrency cap: config override or clamp(2, cpus-1). */
+  private fleetCap(): number {
+    const configured = this.config.bots?.maxConcurrent ?? 0;
+    if (configured > 0) return configured;
+    return Math.max(2, Math.min(cpus().length - 1, 8));
+  }
+
+  private journalFor(botId: string): BotJournal {
+    let j = this.journals.get(botId);
+    if (!j) {
+      const manifest = this.store.get(botId);
+      const retention = { ...(this.config.bots?.retention ?? {}), ...(manifest?.retention ?? {}) };
+      j = new BotJournal(this.store.botDir(botId), retention.journalRotateBytes, retention.journalKeepRotations);
+      this.journals.set(botId, j);
+    }
+    return j;
+  }
+
+  private getOrCreateJournal(botId: string): BotJournal {
+    return this.journalFor(botId);
+  }
+
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string } }): { jobId: string; accepted: boolean; reasonCode?: string } {
+    const manifest = this.store.get(botId);
+    if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
+    if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
+
+    const queue = this.queues.get(botId) ?? [];
+    this.queues.set(botId, queue);
+    if (queue.length >= MAILBOX_CAPACITY) {
+      return { jobId: '', accepted: false, reasonCode: 'queue_full' };
+    }
+    const id = randomUUID().slice(0, 8);
+    queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: Date.now(), attempts: 0 });
+    this.pump(botId);
+    return { jobId: id, accepted: true };
+  }
+
+  /** Fire-and-forget mailbox delivery from another bot. */
+  sendToBot(targetBotId: string, fromBot: string, content: string): BotSendResult {
+    const manifest = this.store.get(targetBotId);
+    if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
+    if (!manifest.enabled || this.disabled.has(targetBotId)) return { accepted: false, reasonCode: 'target_disabled' };
+
+    const box = this.mailboxes.get(targetBotId) ?? [];
+    if (box.length >= MAILBOX_CAPACITY) {
+      return { accepted: false, reasonCode: 'queue_full' };
+    }
+    box.push({ from: fromBot, content });
+    this.mailboxes.set(targetBotId, box);
+
+    // If the bot is idle (no running turn, empty job queue), wake it with a
+    // mailbox-driven turn so mail is consumed promptly.
+    const queue = this.queues.get(targetBotId) ?? [];
+    const isRunning = (this.running.get(targetBotId)?.size ?? 0) > 0;
+    let jobId: string | undefined;
+    if (queue.length === 0 && !isRunning) {
+      jobId = randomUUID().slice(0, 8);
+      queue.push({ id: jobId, botId: targetBotId, trigger: 'mailbox', prompt: '', createdAt: Date.now(), attempts: 0 });
+      this.queues.set(targetBotId, queue);
+      this.pump(targetBotId);
+    }
+    return { accepted: true, jobId };
+  }
+
+  /** Poll-and-drain a bot's mailbox (used by turns and by inbox inspection). */
+  drainMailbox(botId: string): BotTurnMail[] {
+    const box = this.mailboxes.get(botId) ?? [];
+    this.mailboxes.set(botId, []);
+    return box;
+  }
+
+  peekMailbox(botId: string): BotTurnMail[] {
+    return [...(this.mailboxes.get(botId) ?? [])];
+  }
+
+  /** Kick the queue: start turns while slots (per-bot and fleet-wide) exist. */
+  private pump(botId: string): void {
+    const manifest = this.store.get(botId);
+    if (!manifest?.enabled || this.disabled.has(botId)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const used = this.dailyTokens.get(botId);
+    if (used && used.day !== today) {
+      this.dailyTokens.delete(botId);
+      this.pausedForBudget.delete(botId);
+    }
+    if (this.pausedForBudget.has(botId)) {
+      this.activity.set(botId, 'Paused — daily token budget reached');
+      return;
+    }
+    const queue = this.queues.get(botId) ?? [];
+    const running = this.running.get(botId) ?? new Set();
+    this.running.set(botId, running);
+
+    const perBotCap = manifest.autonomy?.maxConcurrent ?? 1;
+
+    while (queue.length > 0 && running.size < perBotCap && this.fleetRunningCount() < this.fleetCap()) {
+      const job = queue.shift()!;
+      void this.executeTurn(job);
+    }
+  }
+
+  /** Hard daily budget stop: pause (resume next UTC day), never die. */
+  private recordBotTokens(botId: string, manifest: BotManifest, tokens: number): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.dailyTokens.get(botId);
+    const next = entry && entry.day === today ? entry.tokens + tokens : tokens;
+    this.dailyTokens.set(botId, { day: today, tokens: next });
+    const cap = manifest.autonomy?.dailyTokenBudget;
+    if (cap && next >= cap) {
+      this.pausedForBudget.add(botId);
+      logger.warn({ botId, used: next, cap }, 'Bot daily token budget reached — pausing until next day');
+    }
+  }
+
+  private fleetRunningCount(): number {
+    let total = 0;
+    for (const s of this.running.values()) total += s.size;
+    return total;
+  }
+
+  private async executeTurn(job: BotJob): Promise<void> {
+    const { botId } = job;
+    const running = this.running.get(botId) ?? new Set();
+    this.running.set(botId, running);
+    running.add(job.id);
+    const controller = new AbortController();
+    this.aborts.set(`${botId}:${job.id}`, controller);
+    this.activity.set(botId, describeJob(job));
+
+    const manifest = this.store.get(botId);
+    if (!manifest) {
+      running.delete(job.id);
+      return;
+    }
+
+    try {
+      const turn = this.buildTurn(botId, manifest, job, controller.signal);
+      const output = await runBotTurn(turn.input);
+      turn.cleanup();
+
+      const record: BotRunRecord = {
+        runId: job.id,
+        botId,
+        trigger: job.trigger,
+        state: output.status === 'completed' ? 'completed' : output.status,
+        startedAt: job.createdAt,
+        durationMs: Date.now() - job.createdAt,
+        tokensIn: output.tokensIn,
+        tokensOut: output.tokensOut,
+        summary: output.output.slice(0, 300),
+        error: output.error,
+        reasonCode: output.reasonCode,
+      };
+      this.journalFor(botId).append(record);
+      this.lastRun.set(botId, { at: Date.now(), state: record.state });
+      this.needsYou.delete(botId);
+      this.recordBotTokens(botId, manifest, output.tokensIn + output.tokensOut);
+
+      // Transient provider failures retry with backoff, bounded; permanent
+      // failures journal and stop (never re-queued — BOTS-ARCHITECTURE §2.6).
+      if (output.status === 'failed' && output.reasonCode && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS) {
+        const delay = Math.min(15000, 1000 * 2 ** job.attempts);
+        logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying');
+        setTimeout(() => {
+          this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot });
+        }, delay).unref?.();
+      } else if (output.status === 'failed') {
+        this.needsYou.add(botId);
+        logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — see journal/DLQ');
+      }
+
+      // Deliver the outcome (guaranteed delivery target: the bot's own chat
+      // minimum — never silently dropped, BOTS-ARCHITECTURE §3.1.5).
+      if (this.notify && output.status !== 'halted' && job.trigger !== 'mailbox') {
+        const channelType = job.source?.channelType ?? (job.trigger === 'telegram' ? 'telegram' : 'bot');
+        const channelId = job.source?.channelId ?? botId;
+        const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : '⏸';
+        const text = `${icon} **${manifest.name}** (${job.trigger}): ${output.output.slice(0, 800)}`;
+        await this.notify(channelType, channelId, text).catch((e) =>
+          logger.warn({ e, botId }, 'Bot completion notify failed'));
+      }
+    } catch (err: any) {
+      logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');
+      this.journalFor(botId).append({
+        runId: job.id,
+        botId,
+        trigger: job.trigger,
+        state: 'failed',
+        startedAt: job.createdAt,
+        durationMs: Date.now() - job.createdAt,
+        tokensIn: 0,
+        tokensOut: 0,
+        error: err?.message,
+        reasonCode: 'unknown_error',
+      });
+      this.needsYou.add(botId);
+    } finally {
+      running.delete(job.id);
+      this.aborts.delete(`${botId}:${job.id}`);
+      if (running.size === 0) this.activity.delete(botId);
+      this.pump(botId);
+    }
+  }
+
+  private userMemoryFor(botId: string, manifest: BotManifest): UserMemoryStore | null {
+    if (this.userMemories.has(botId)) return this.userMemories.get(botId) ?? null;
+    const factory = this.userMemoryFactory;
+    if (!factory) return null;
+    let store: UserMemoryStore | null = null;
+    try {
+      store = factory(botId, manifest);
+    } catch (err: any) {
+      // Memory is an enhancement, never a hard dependency — a store that
+      // fails to build (e.g. no native SQLite) degrades to a stateless bot.
+      logger.warn({ botId, err: err?.message }, 'Bot memory store build failed — running stateless');
+    }
+    this.userMemories.set(botId, store);
+    return store;
+  }
+
+  private buildTurn(botId: string, manifest: BotManifest, job: BotJob, signal: AbortSignal): { input: Parameters<typeof runBotTurn>[0]; cleanup: () => void } {
+    const { registry, tools } = this.getOrCreateRuntime(botId, manifest);
+    const userMemory = this.userMemoryFor(botId, manifest);
+
+    const mail: BotTurnMail[] = [];
+    // Deliveries from other bots arrive via the mailbox; drain at turn start.
+    const pending = this.drainMailbox(botId);
+    mail.push(...pending);
+
+    return {
+      input: {
+        manifest,
+        trigger: job.trigger,
+        prompt: job.prompt,
+        persona: this.store.readPersona(botId),
+        mail,
+        pollMail: () => this.drainMailbox(botId),
+        capabilities: registry,
+        tools,
+        userMemory,
+        provider: resolveProvider(this.providers, manifest),
+        tokenBudget: this.tokenBudget,
+        abortSignal: signal,
+      },
+      cleanup: () => { /* per-bot registries are persistent, nothing to restore */ },
+    };
+  }
+
+  private getOrCreateRuntime(botId: string, manifest: BotManifest): { registry: CapabilityRegistry; tools: Record<string, Tool> } {
+    const cached = this.registries.get(botId);
+    if (cached) return cached;
+    const registry = createBotCapabilityRegistry({
+      botId,
+      manifest,
+      botDir: this.store.botDir(botId),
+      permissions: this.store.readPermissions(botId),
+      userMemory: this.userMemoryFor(botId, manifest),
+      config: this.config,
+    });
+    const tools: Record<string, Tool> = { ...registry.getTools() };
+    // bot_send is added per bot, scoped to its configured roster.
+    if ((manifest.comms?.canMessage ?? []).length > 0) {
+      tools.bot_send = createBotSendTool(this, botId, manifest.comms?.canMessage ?? []);
+    }
+    const filtered = filterBotTools(tools, manifest);
+    this.registries.set(botId, { registry, tools: filtered });
+    return { registry, tools: filtered };
+  }
+
+  invalidateRuntime(botId: string): void {
+    this.registries.delete(botId);
+  }
+
+  /**
+   * Register every enabled bot's cron routines with the main Scheduler
+   * (manifest id `bot:<botId>:<name>`). Bot runs fire on the cron lane and
+   * route to the bot lane, never through Agent.processQueue. Idempotent:
+   * the Scheduler replaces existing tasks by id.
+   */
+  registerRoutines(scheduler: { addPersistedTask(m: any): void }): void {
+    let count = 0;
+    for (const manifest of this.store.list()) {
+      if (!manifest.enabled) continue;
+      for (const routine of manifest.schedules ?? []) {
+        if (!isValidCronExpression(routine.cron)) {
+          logger.warn({ botId: manifest.id, cron: routine.cron }, 'Invalid cron expression — routine skipped');
+          continue;
+        }
+        scheduler.addPersistedTask({
+          id: `bot:${manifest.id}:${routine.name}`,
+          cron: routine.cron,
+          description: routine.name,
+          prompt: routine.prompt,
+          botId: manifest.id,
+          createdAt: new Date().toISOString(),
+        });
+        count++;
+      }
+    }
+    if (count > 0) {
+      logger.info({ routines: count }, 'Bot routines registered');
+    }
+  }
+
+  // ---- control plane -------------------------------------------------------
+
+  async halt(botId: string, jobId?: string): Promise<boolean> {
+    const running = this.running.get(botId);
+    if (!running || running.size === 0) return false;
+    for (const id of running) {
+      if (jobId && id !== jobId) continue;
+      this.aborts.get(`${botId}:${id}`)?.abort();
+    }
+    this.queues.set(botId, jobId ? (this.queues.get(botId) ?? []).filter(j => j.id !== jobId) : []);
+    return true;
+  }
+
+  async haltAll(): Promise<void> {
+    for (const [botId] of this.running) {
+      await this.halt(botId);
+    }
+  }
+
+  setEnabled(botId: string, enabled: boolean): void {
+    if (enabled) {
+      this.disabled.delete(botId);
+      this.store.setEnabled(botId, true);
+      this.pump(botId);
+    } else {
+      this.disabled.add(botId);
+      void this.halt(botId);
+      this.store.setEnabled(botId, false);
+    }
+    this.invalidateRuntime(botId);
+  }
+
+  // ---- observation ---------------------------------------------------------
+
+  getStatusSummaries(): BotStatusSummary[] {
+    return this.store.list().map((m) => {
+      const running = this.running.get(m.id);
+      const queue = this.queues.get(m.id) ?? [];
+      const last = this.lastRun.get(m.id);
+      let state: BotLiveState = 'idle';
+      if (!m.enabled || this.disabled.has(m.id)) state = 'disabled';
+      else if (this.pausedForBudget.has(m.id)) state = 'paused';
+      else if ((running?.size ?? 0) > 0) state = 'running';
+      else if (queue.length > 0) state = 'queued';
+      return {
+        id: m.id,
+        name: m.name,
+        enabled: m.enabled,
+        state,
+        activity: this.activity.get(m.id),
+        lastRunAt: last?.at,
+        lastRunState: last?.state,
+        needsYou: this.needsYou.has(m.id),
+      };
+    });
+  }
+
+  getJournal(botId: string, limit = 20): BotRunRecord[] {
+    return this.journalFor(botId).read(botId, limit);
+  }
+
+  getStorage(): Array<{ id: string; bytes: number; journalBytes: number }> {
+    return this.store.usage();
+  }
+
+  getQueuedCount(botId: string): number {
+    return (this.queues.get(botId) ?? []).length;
+  }
+}
+
+function resolveProvider(providers: ProviderRegistry, manifest: BotManifest) {
+  const requested = manifest.model?.provider;
+  const provider = requested ? providers.get(requested) : undefined;
+  if (provider) return provider;
+  if (requested) {
+    logger.warn({ botId: manifest.id, requested }, 'Bot provider not registered — falling back to default');
+  }
+  return providers.getDefault();
+}
+
+function describeJob(job: BotJob): string {
+  switch (job.trigger) {
+    case 'chat': return job.prompt ? `Responding: ${job.prompt.slice(0, 60)}` : 'Responding';
+    case 'mailbox': return job.fromBot ? `Handling message from ${job.fromBot}` : 'Handling mailbox';
+    case 'cron': return `Scheduled routine: ${job.prompt.slice(0, 60)}`;
+    default: return `Handling ${job.trigger} request`;
+  }
+}
+
+// Re-exported for the /bots storage view.
+export { BOT_JOURNAL_FILENAME };

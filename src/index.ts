@@ -51,6 +51,7 @@ import { Identity } from './soul/identity.js';
 import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } from './memory/store.js';
 import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
+import { BotManager } from './bots/bot-manager.js';
 import { isBetterSqlite3Available } from './memory/second-brain-db.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
@@ -2468,6 +2469,24 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
+  }
+
+  // Mercury Bots: fleet manager runs outside the main message queue.
+  if (config.bots?.enabled) {
+    const botManager = new BotManager({
+      config,
+      providers,
+      tokenBudget,
+      userMemoryFactory: (_botId, manifest) => {
+        const scope = manifest.memory?.scope ?? 'own';
+        if (scope === 'none') return null;
+        if (!userMemory) return null; // second brain unavailable — bots run stateless
+        // Bots share the second-brain DB but are namespaced per bot.
+        return new UserMemoryStore(config, `bot:${manifest.id}`);
+      },
+    });
+    botManager.registerRoutines(scheduler);
+    agent.setBotManager(botManager);
   }
 
   let spotifyClient: SpotifyClient | undefined;
