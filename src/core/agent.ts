@@ -642,6 +642,34 @@ export class Agent {
       return;
     }
 
+    // /bot <id> <message> — talk to a named bot from ANY channel (TUI,
+    // Telegram, web). Durable enqueue; the run's output is delivered back
+    // to the requesting chat via the job's source (Telegram first).
+    if (trimmed.startsWith('/bot ')) {
+      const bm = this.botManager;
+      if (!bm) return; // bots not wired — fall through as a normal message
+      const rest = trimmed.slice('/bot '.length).trim();
+      const spaceIndex = rest.indexOf(' ');
+      const botId = (spaceIndex === -1 ? rest : rest.slice(0, spaceIndex)).toLowerCase();
+      const message = spaceIndex === -1 ? '' : rest.slice(spaceIndex + 1).trim();
+      if (!botId || !message) return;
+      const channel = this.channels.getChannelForMessage(msg);
+      if (!channel) return;
+      const result = bm.enqueue(botId, {
+        trigger: 'chat',
+        prompt: message,
+        source: { channelType: msg.channelType, channelId: msg.channelId },
+      });
+      if (result.accepted) {
+        void channel.send(`🤖 Queued for **${botId}** (job ${result.jobId}) — the reply will arrive in this chat.`, msg.channelId)
+          .catch((err) => logger.warn({ err }, '/bot ack send failed'));
+      } else {
+        void channel.send(`Could not message **${botId}**: [reason: ${result.reasonCode}]`, msg.channelId)
+          .catch((err) => logger.warn({ err }, '/bot ack send failed'));
+      }
+      return;
+    }
+
     if (this.processing && trimmed.startsWith('/')) {
       this.handleFastPathCommand(msg).catch((err) => {
         logger.error({ err, content: trimmed.slice(0, 50) }, 'Fast-path command failed');
@@ -1194,6 +1222,38 @@ export class Agent {
       return;
     }
 
+    if (action === 'dlq') {
+      const target = parts[1]?.toLowerCase();
+      const entries = target ? bm.getDlq(target) : bm.getDlq();
+      if (entries.length === 0) {
+        await channel.send('Dead-letter queue is empty — nothing failed permanently.', channelId);
+        return;
+      }
+      const lines = ['**Dead-letter queue** (replay: `/bots replay <botId> <jobId>`)', ''];
+      for (const e of entries.slice(0, 10)) {
+        lines.push(`🚫 **${e.botId}** ${e.id} · ${e.trigger} · attempts ${e.attempts} · [reason: ${e.reasonCode ?? 'unknown'}] · ${e.prompt.slice(0, 60)}`);
+      }
+      if (entries.length > 10) lines.push(`…and ${entries.length - 10} more`);
+      await channel.send(lines.join('\n'), channelId);
+      return;
+    }
+
+    if (action === 'replay') {
+      const target = parts[1]?.toLowerCase();
+      const jobId = parts[2];
+      if (!target || !jobId) {
+        await channel.send('Usage: `/bots replay <botId> <jobId>`', channelId);
+        return;
+      }
+      const result = bm.replayDlq(target, jobId);
+      if (!result.accepted) {
+        await channel.send(`Replay failed: [reason: ${result.reasonCode}] — is that job id in the DLQ?`, channelId);
+        return;
+      }
+      await channel.send(`↻ Job ${jobId} re-enqueued for **${target}** (new job ${result.jobId}).`, channelId);
+      return;
+    }
+
     if (action === 'storage') {
       const usage = bm.getStorage();
       if (usage.length === 0) {
@@ -1218,6 +1278,8 @@ export class Agent {
       '`/bots send <id> <message>` — message a bot\n' +
       '`/bots journal <id>` — recent runs\n' +
       '`/bots inbox <id>` — pending bot-to-bot mail\n' +
+      '`/bots dlq` — dead-lettered jobs\n' +
+      '`/bots replay <botId> <jobId>` — re-run a dead-lettered job\n' +
       '`/bots storage` — disk usage\n' +
       '`/bots enable|disable|stop <id>` — control',
       channelId,

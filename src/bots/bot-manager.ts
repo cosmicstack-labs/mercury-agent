@@ -9,6 +9,7 @@ import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
 import { BotStore, BOT_JOURNAL_FILENAME, isValidCronExpression } from './store.js';
 import { BotJournal } from './journal.js';
+import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
 import { runBotTurn, isTransientFailure, type BotTurnMail } from './bot-turn.js';
@@ -45,6 +46,8 @@ export interface BotManagerDeps {
   providers: ProviderRegistry;
   tokenBudget: TokenBudget;
   store?: BotStore;
+  /** Durable job store; defaults to the SQLite→JSON backend at the bots root. */
+  queue?: BotQueue;
   /** Per-bot memory factory (P0-5 wires the default: UserMemoryStore with bot:<id> key). */
   userMemoryFactory?: (botId: string, manifest: BotManifest) => UserMemoryStore | null;
   /** Deliver turn output to the invoking surface (chat/telegram/api). */
@@ -61,6 +64,7 @@ const MAILBOX_CAPACITY = 100;
  */
 export class BotManager {
   readonly store: BotStore;
+  readonly queue: BotQueue;
   private readonly config: MercuryConfig;
   private readonly providers: ProviderRegistry;
   private readonly tokenBudget: TokenBudget;
@@ -106,6 +110,23 @@ export class BotManager {
     });
     this.notify = deps.notify;
     this.store = deps.store ?? new BotStore();
+    this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
+    // Resume work a crashed predecessor left behind: pending jobs (and
+    // expired-lease claimed jobs) re-enter the in-memory queues. Durable
+    // enqueue happens before any ack, so nothing was lost (§2.6).
+    for (const job of this.queue.resumeJobs()) {
+      if (this.store.exists(job.botId)) {
+        const q = this.queues.get(job.botId) ?? [];
+        this.queues.set(job.botId, q);
+        q.push({
+          id: job.id, botId: job.botId, trigger: job.trigger, prompt: job.prompt,
+          fromBot: job.fromBot, source: job.source, createdAt: job.createdAt, attempts: job.attempts,
+        });
+        this.pump(job.botId);
+      } else {
+        this.queue.settle(job.id, 'dead', 'bot_removed');
+      }
+    }
   }
 
   /** Fleet-wide concurrency cap: config override or clamp(2, cpus-1). */
@@ -130,7 +151,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string } }): { jobId: string; accepted: boolean; reasonCode?: string } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number }): { jobId: string; accepted: boolean; reasonCode?: string } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -140,8 +161,24 @@ export class BotManager {
     if (queue.length >= MAILBOX_CAPACITY) {
       return { jobId: '', accepted: false, reasonCode: 'queue_full' };
     }
-    const id = randomUUID().slice(0, 8);
-    queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: Date.now(), attempts: 0 });
+    // Durable-before-ack: the job is persisted (idempotency-deduped) before
+    // the caller hears "accepted" — a crash between ack and run loses nothing.
+    const durable = this.queue.enqueue({
+      id: randomUUID().slice(0, 8),
+      botId,
+      trigger: job.trigger,
+      prompt: job.prompt,
+      fromBot: job.fromBot,
+      source: job.source,
+      attempts: job.attempts ?? 0,
+      createdAt: Date.now(),
+      idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot),
+    });
+    if (durable.duplicated) {
+      return { jobId: durable.job.id, accepted: true };
+    }
+    const id = durable.job.id;
+    queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts });
     this.pump(botId);
     return { jobId: id, accepted: true };
   }
@@ -245,6 +282,7 @@ export class BotManager {
     }
 
     try {
+      this.queue.claim(job.id, LEASE_SECONDS);
       const turn = this.buildTurn(botId, manifest, job, controller.signal);
       const output = await runBotTurn(turn.input);
       turn.cleanup();
@@ -268,16 +306,24 @@ export class BotManager {
       this.recordBotTokens(botId, manifest, output.tokensIn + output.tokensOut);
 
       // Transient provider failures retry with backoff, bounded; permanent
-      // failures journal and stop (never re-queued — BOTS-ARCHITECTURE §2.6).
+      // failures go to the capped DLQ and stop (never silently re-queued — §2.6).
       if (output.status === 'failed' && output.reasonCode && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS) {
+        this.queue.settle(job.id, 'done'); // the retry re-enqueues a fresh attempt
         const delay = Math.min(15000, 1000 * 2 ** job.attempts);
         logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying');
         setTimeout(() => {
-          this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot });
+          this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, attempts: job.attempts + 1 });
         }, delay).unref?.();
       } else if (output.status === 'failed') {
+        this.queue.settle(job.id, 'dead', output.reasonCode);
         this.needsYou.add(botId);
-        logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — see journal/DLQ');
+        logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
+      } else if (output.status === 'paused') {
+        // Step-budget pause: work continues next turn — keep the job pending.
+        this.queue.settle(job.id, 'done');
+        this.enqueue(botId, { trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, attempts: job.attempts });
+      } else {
+        this.queue.settle(job.id, 'done');
       }
 
       // Deliver the outcome (guaranteed delivery target: the bot's own chat
@@ -292,6 +338,7 @@ export class BotManager {
       }
     } catch (err: any) {
       logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');
+      this.queue.settle(job.id, 'dead', 'unknown_error');
       this.journalFor(botId).append({
         runId: job.id,
         botId,
@@ -472,6 +519,23 @@ export class BotManager {
 
   getJournal(botId: string, limit = 20): BotRunRecord[] {
     return this.journalFor(botId).read(botId, limit);
+  }
+
+  getDlq(botId?: string): DurableBotJob[] {
+    return this.queue.listDlq(botId);
+  }
+
+  /** Re-run a dead-lettered job: remove it from the DLQ and re-enqueue fresh. */
+  replayDlq(botId: string, jobId: string): { accepted: boolean; jobId?: string; reasonCode?: string } {
+    const entry = this.queue.removeFromDlq(jobId);
+    if (!entry || entry.botId !== botId) return { accepted: false, reasonCode: 'not_found' };
+    return this.enqueue(botId, {
+      trigger: entry.trigger,
+      prompt: entry.prompt,
+      fromBot: entry.fromBot,
+      source: entry.source,
+      attempts: 0,
+    });
   }
 
   getStorage(): Array<{ id: string; bytes: number; journalBytes: number }> {
