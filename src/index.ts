@@ -2486,6 +2486,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         return new UserMemoryStore(config, `bot:${manifest.id}`);
       },
     });
+    botManager.setScheduler(scheduler);
     botManager.registerRoutines(scheduler);
     agent.setBotManager(botManager);
     setWebBotManager(botManager);

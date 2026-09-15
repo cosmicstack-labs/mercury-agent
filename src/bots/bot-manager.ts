@@ -12,6 +12,7 @@ import { BotJournal } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
+import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.js';
 import { runBotTurn, isTransientFailure, type BotTurnMail } from './bot-turn.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
 import { logger } from '../utils/logger.js';
@@ -58,6 +59,14 @@ export interface BotManagerDeps {
 const MAX_TRANSIENT_ATTEMPTS = 3;
 const MAILBOX_CAPACITY = 100;
 
+/** Structural subset of the main Scheduler the bot runtime needs. */
+type BotSchedulerLike = {
+  addDelayedTask(m: { id: string; description: string; prompt: string; delaySeconds?: number; executeAt?: string; botId?: string; createdAt: string }): void;
+  addPersistedTask(m: { id: string; cron: string; description: string; prompt: string; botId?: string; createdAt: string }): void;
+  persistSchedules(): void;
+  getManifests(): Array<{ id: string; botId?: string }>;
+};
+
 /**
  * Owns the bot fleet: per-bot job queues, isolated turn runtimes, mailboxes,
  * run journals, and live statuses. Bots never touch Agent.processQueue —
@@ -83,12 +92,21 @@ export class BotManager {
     this.alert = cb;
   }
 
+  /** Wire the main Scheduler so bots can self-schedule (bot_schedule tool). */
+  setScheduler(scheduler: BotSchedulerLike): void {
+    this.scheduler = scheduler;
+    // Runtime-created toolsets gain the tool on next invalidation; simplest
+    // is to refresh all bot runtimes so every bot sees the new tool.
+    for (const botId of [...this.registries.keys()]) this.invalidateRuntime(botId);
+  }
+
   private async alertOwner(botId: string, message: string): Promise<void> {
     if (!this.alert) return;
     await this.alert(message).catch((e) => logger.warn({ e, botId }, 'Bot alert send failed'));
   }
 
   private queues: Map<string, BotJob[]> = new Map();
+  private scheduler?: BotSchedulerLike;
   private mailboxes: Map<string, BotTurnMail[]> = new Map();
   private running: Map<string, Set<string>> = new Map(); // botId → running job ids
   private aborts: Map<string, AbortController> = new Map(); // job key → controller
@@ -448,12 +466,18 @@ export class BotManager {
       userMemory: this.userMemoryFor(botId, manifest),
       config: this.config,
     });
-    const tools: Record<string, Tool> = { ...registry.getTools() };
-    // bot_send is added per bot, scoped to its configured roster.
+    // Filter FIRST (strips interactive/global-mutation tools and applies the
+    // manifest allow/deny), THEN add the bot-specific tools — otherwise the
+    // filter would strip them again.
+    const filtered = filterBotTools({ ...registry.getTools() }, manifest) as Record<string, Tool>;
     if ((manifest.comms?.canMessage ?? []).length > 0) {
-      tools.bot_send = createBotSendTool(this, botId, manifest.comms?.canMessage ?? []);
+      filtered.bot_send = createBotSendTool(this, botId, manifest.comms?.canMessage ?? []);
     }
-    const filtered = filterBotTools(tools, manifest);
+    // bot_schedule: bots can schedule their own future runs (durable,
+    // capped) when the main scheduler is wired.
+    if (this.scheduler) {
+      filtered.bot_schedule = createBotScheduleTool(this.scheduler, botId);
+    }
     this.registries.set(botId, { registry, tools: filtered });
     return { registry, tools: filtered };
   }
