@@ -490,6 +490,8 @@ export class Agent {
   private stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   private supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   private botManager?: import('../bots/bot-manager.js').BotManager;
+  /** Bot awaiting a persona from the next message (post-create setup flow). */
+  private pendingPersonaFor: string | null = null;
   readonly programmingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
@@ -1087,6 +1089,29 @@ export class Agent {
     if (!bm) return;
     const channel = this.channels.getChannelForMessage(msg);
     if (!channel) return;
+
+    // Post-create persona setup: the first message typed into the new bot's
+    // chat becomes its persona instead of a task (send /skip to keep the
+    // template). Any dispatch to a different bot cancels the pending setup.
+    if (this.pendingPersonaFor) {
+      if (this.pendingPersonaFor !== botId) {
+        this.pendingPersonaFor = null;
+      } else if (message.trim().toLowerCase() === '/skip') {
+        this.pendingPersonaFor = null;
+        await channel.send('⏭ Keeping the starter persona — edit it anytime with `/persona` here or `/bots persona <id> <text>`.', `bot:${botId}`)
+          .catch(() => {});
+        return;
+      } else {
+        bm.store.writePersona(botId, message.trim() + '\n');
+        bm.invalidateRuntime(botId);
+        this.pendingPersonaFor = null;
+        await channel.send(
+          `✍️ Persona set — **${bm.store.get(botId)?.name ?? botId}** is ready.\nTry: \`/bot ${botId} <task>\`, or just type here and it runs as a bot task.`,
+          `bot:${botId}`,
+        ).catch(() => {});
+        return;
+      }
+    }
     // Dispatched from inside that bot's TUI chat → ack and reply land in
     // the bot's own transcript (targetId `bot:<id>`; cli.ts routes it).
     const pendingBot = (channel as any).consumePendingBotChatTarget?.() ?? null;
@@ -1176,23 +1201,53 @@ export class Agent {
     }
 
     if (action === 'create' || action === 'onboard') {
-      // /bots create <id> "Name" "Description"
+      // /bots create <id> "Name" "Description" ["persona text"]
       const id = (parts[1] ?? '').toLowerCase();
       if (!id) {
-        await channel.send('Usage: `/bots create <id> "Name" "Description"` — the bot starts with a fail-closed default profile you can refine via its profile files.', channelId);
+        await channel.send('Usage: `/bots create <id> "Name" "Description" "persona (optional)"` — the bot starts with a fail-closed default profile you can refine via its profile files.', channelId);
         return;
       }
       const rest = trimmed.slice(trimmed.indexOf(id) + id.length).trim();
       const quoted = [...rest.matchAll(/"([^"]*)"/g)].map(m => m[1]);
       const name = quoted[0] ?? id.toUpperCase();
       const description = quoted[1];
+      const personaText = quoted[2];
       try {
         const manifest = bm.store.create({ id, name, description });
-        bm.invalidateRuntime(id);
-        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults (dangerous tools denied, memory scope own, only its own directory writable).\nPersona: \`${bm.store.botDir(id)}/persona.md\` — edit it to shape the bot's character.`, channelId);
+        if (personaText) {
+          bm.store.writePersona(id, personaText + '\n');
+          bm.invalidateRuntime(id);
+          await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded with your persona — enabled, fail-closed defaults.\nStart using it: \`/bot ${id} <task>\`, \`/bots open ${id}\`, or just \`@${id} <task>\`.`, channelId);
+          return;
+        }
+        // No persona given — open its chat and prompt for one now (TUI only).
+        if (typeof (channel as any).enterBotChat === 'function') {
+          (channel as any).enterBotChat(id, manifest.name);
+          this.pendingPersonaFor = id;
+          await channel.send(
+            `🤖 **${manifest.name}** onboarded (fail-closed defaults).\n\nNow give it its character — your next message here becomes its **persona** (who it is, how it works, how it reports). Send \`/skip\` to keep the starter template, or \`/persona\` later to change it.`,
+            `bot:${id}`,
+          );
+        } else {
+          await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults.\nPersona: \`${bm.store.botDir(id)}/persona.md\` — set it now with \`/bots persona ${id} <text>\`.`, channelId);
+        }
       } catch (err: any) {
         await channel.send(`Could not create bot "${id}": ${err?.message}`, channelId);
       }
+      return;
+    }
+
+    if (action === 'persona') {
+      const target = parts[1]?.toLowerCase();
+      const personaText = trimmed.slice(trimmed.indexOf(target ?? '') + (target?.length ?? 0)).trim();
+      if (!target || !personaText || !bm.store.exists(target)) {
+        await channel.send('Usage: `/bots persona <id> <full persona text in one message>` — or open the bot chat (`/bots open <id>`) and type `/persona <text>`.', channelId);
+        return;
+      }
+      bm.store.writePersona(target, personaText + '\n');
+      bm.invalidateRuntime(target);
+      this.pendingPersonaFor = null;
+      await channel.send(`✍️ Persona updated for **${target}** — the next run uses it.`, channelId);
       return;
     }
 
@@ -4466,6 +4521,12 @@ export class Agent {
     const skillContext = this.capabilities.getSkillContext();
     if (skillContext) {
       prompt += '\n\n' + skillContext;
+    }
+    // Mercury Bots: the main agent must know the fleet exists — what each
+    // bot does, its live state, and how to dispatch to it. Without this the
+    // conversational agent answers bot questions blindly.
+    if (this.botManager) {
+      prompt += this.botManager.getSystemPromptSection();
     }
     const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
     if (programmingSuffix) {

@@ -587,6 +587,34 @@ export class BotManager {
     }
     return null;
   }
+
+  /**
+   * Compact bots section for the MAIN agent's system prompt: without it the
+   * conversational agent is blind to the bot fleet — it cannot answer "what
+   * do my bots do" or hand a task to the right specialist. Kept to a few
+   * lines per bot so the token cost stays trivial.
+   */
+  getSystemPromptSection(): string {
+    const summaries = this.store.list();
+    if (summaries.length === 0) {
+      return '\n\nMercury Bots: no bots configured. The user can create one with `/bots create <id> "Name" "Description"`.';
+    }
+    const lines: string[] = [
+      '\n\nMercury Bots — the user maintains these persistent specialist agents (each has its own persona, model, memory, and permissions; they run OUTSIDE this conversation):',
+    ];
+    for (const m of summaries) {
+      const state = this.running.get(m.id)?.size ? 'running' : ((this.queues.get(m.id)?.length ?? 0) > 0 ? 'queued' : (m.enabled ? 'idle' : 'disabled'));
+      const desc = m.description ? ` — ${m.description}` : '';
+      lines.push(`- **${m.name}** (\`${m.id}\`)${desc} [${state}]`);
+    }
+    lines.push(`Bot control (never route bot work through this main conversation):
+- \`/bot <id> <message>\` or \`@<id> <message>\` — dispatch a task to a bot; its reply arrives in this chat when done.
+- \`/bots open <id>\` — open the bot's own chat; \`/bots\` — roster with live states.
+- \`/bots create <id> "Name" "Description"\` — onboard; \`/bots persona <id> <text>\` — set its character.
+- \`/bots journal <id>\` — recent runs; \`/bots dlq\` — failed jobs (replayable); \`/bots stop|enable|disable <id>\`.
+- The dispatch_bot tool lets you hand a task to a bot mid-conversation and continue talking; the result is delivered when the bot finishes.`);
+    return lines.join('\n');
+  }
 }
 
 function resolveProvider(providers: ProviderRegistry, manifest: BotManifest) {

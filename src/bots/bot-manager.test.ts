@@ -159,6 +159,62 @@ describe('BotManager queue + turn lifecycle', () => {
   });
 });
 
+describe('Main-agent bots awareness (system prompt section)', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-bot-aware-'));
+    store = new BotStore(join(root, 'bots'));
+    manager = makeManager(root);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('lists bots with descriptions and live states so the main chat can answer precisely', () => {
+    store.create({ id: 'researcher', name: 'Research', description: 'Deep research specialist' });
+    store.create({ id: 'publisher', name: 'Publisher', manifest: { enabled: false } });
+    const section = manager.getSystemPromptSection();
+    expect(section).toContain('**Research** (`researcher`) — Deep research specialist');
+    expect(section).toContain('idle');
+    expect(section).toContain('disabled');
+  });
+
+  it('documents the control commands and the dispatch tool', () => {
+    seedBot(store, 'researcher');
+    const section = manager.getSystemPromptSection();
+    expect(section).toContain('/bot <id> <message>');
+    expect(section).toContain('dispatch_bot');
+    expect(section).toContain('/bots open <id>');
+  });
+
+  it('empty fleet section still tells the agent how to onboard', () => {
+    const section = manager.getSystemPromptSection();
+    expect(section).toContain('no bots configured');
+    expect(section).toContain('/bots create');
+  });
+
+  it('dispatch_bot tool routes through the handler with name resolution', async () => {
+    const { createDispatchBotTool } = await import('./tools/dispatch-bot.js');
+    store.create({ id: 'researcher', name: 'Research' });
+    const calls: Array<{ bot: string; message: string }> = [];
+    const tool = createDispatchBotTool((botId, message) => {
+      const resolved = manager.resolveBotId(botId);
+      calls.push({ bot: resolved ?? '', message });
+      if (!resolved) return { accepted: false, reasonCode: 'target_unknown' };
+      return { accepted: true, jobId: 'j1' };
+    }, () => ({ channelType: 'cli', channelId: 'current' })) as any;
+    const ok = await tool.execute({ bot: 'Research', message: 'do the thing' });
+    expect(ok).toContain('Dispatched');
+    expect(calls[0].bot).toBe('researcher');
+    const unknown = await tool.execute({ bot: 'ghost', message: 'x' });
+    expect(unknown).toContain('target_unknown');
+  });
+});
+
 describe('BotManager mailboxes (bot-to-bot comms)', () => {
   let root: string;
   let store: BotStore;

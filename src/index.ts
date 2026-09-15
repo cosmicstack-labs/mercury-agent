@@ -2492,6 +2492,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (config.bots?.webhookSecret) {
       setBotsWebhookSecret(config.bots.webhookSecret);
     }
+    // Main-agent awareness: bots section in the system prompt + dispatch tool.
+    capabilities.setBotDispatchHandler((botIdOrName, message, ctx) => {
+      const botId = botManager.resolveBotId(botIdOrName);
+      if (!botId) return { accepted: false, reasonCode: 'target_unknown' };
+      const result = botManager.enqueue(botId, {
+        trigger: 'chat',
+        prompt: message,
+        source: { channelType: ctx.channelType, channelId: ctx.channelId },
+      });
+      return result.accepted
+        ? { accepted: true, jobId: result.jobId }
+        : { accepted: false, reasonCode: result.reasonCode };
+    }, () => capabilities.getChannelContext());
   }
 
   let spotifyClient: SpotifyClient | undefined;

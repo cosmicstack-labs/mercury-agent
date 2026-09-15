@@ -57,6 +57,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { SubAgentSupervisor } from '../core/supervisor.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
+import { createDispatchBotTool } from '../bots/tools/dispatch-bot.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
 
@@ -92,6 +93,17 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
+
+  /**
+   * Mercury Bots dispatch handler — set once the BotManager exists
+   * (src/index.ts). Registers the dispatch_bot tool so the main agent can
+   * hand tasks to the bot fleet (the bots section in the system prompt comes
+   * from BotManager.getSystemPromptSection via the Agent).
+   */
+  setBotDispatchHandler(handler: (botId: string, message: string, ctx: { channelType: string; channelId: string }) => import('../bots/tools/dispatch-bot.js').BotDispatchResult | null, channelCtx: () => { channelType: string; channelId: string }): void {
+    this.tools.dispatch_bot = createDispatchBotTool(handler, channelCtx);
+    logger.info('Bot dispatch tool registered (dispatch_bot)');
+  }
 
   constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();

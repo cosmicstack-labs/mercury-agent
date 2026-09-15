@@ -744,6 +744,17 @@ export class CLIChannel extends BaseChannel {
           }
           return;
         }
+        // /persona <text> inside a bot chat rewrites to the explicit setter
+        // so the persona flow works without leaving the bot thread.
+        if (trimmed.startsWith('/persona')) {
+          const personaText = trimmed.slice('/persona'.length).trim();
+          if (personaText) {
+            onInput(`/bots persona ${this.activeBotId} ${personaText}`);
+          } else {
+            onInput('/bots');
+          }
+          return;
+        }
       }
       if (trimmed === '/chat' || trimmed === '/c') {
         // Returning from Mercury Code must tear down its state (mouse mode,
