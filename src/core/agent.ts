@@ -24,6 +24,7 @@ import { BackgroundTaskManager } from './background-tasks.js';
 import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
+import { refinePersona } from '../bots/persona-template.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { SignalChannel } from '../channels/signal.js';
@@ -1083,6 +1084,50 @@ export class Agent {
     await channel.send('Agent is busy. Programming mode changes will be available after current task completes.', msg.channelId);
   }
 
+  /**
+   * Persona finalization: before anything is written to persona.md, offer
+   * "Convert to template" (LLM-restructured, restructure-only) vs save
+   * as-is. TUI gets a real choice prompt; other channels default to
+   * template with graceful raw fallback on provider failure.
+   */
+  private async finalizePersona(bm: import('../bots/bot-manager.js').BotManager, botId: string, raw: string, msg: ChannelMessage): Promise<void> {
+    const channel = this.channels.getChannelForMessage(msg);
+    const manifest = bm.store.get(botId);
+    if (!channel || !manifest) return;
+    const channelType = msg.channelType as any;
+
+    let choice = 'template';
+    try {
+      choice = await this.presentChoice(
+        `Persona for **${manifest.name}** — how should it be saved?`,
+        ['Convert to template (recommended — structured, precise)', 'Save as-is'],
+        msg.channelId,
+        channelType,
+      );
+    } catch {
+      choice = 'template';
+    }
+
+    let finalPersona = raw;
+    if (choice.startsWith('Convert')) {
+      const refined = await refinePersona(raw, manifest.name, this.providers.getDefault());
+      if (refined) {
+        finalPersona = refined;
+      } else {
+        await channel.send('⚠ Template conversion unavailable (provider) — saving your text as-is. Edit `persona.md` anytime.', msg.channelId).catch(() => {});
+      }
+    }
+
+    bm.store.writePersona(botId, finalPersona.endsWith('\n') ? finalPersona : finalPersona + '\n');
+    bm.invalidateRuntime(botId);
+    this.pendingPersonaFor = null;
+    const mode = finalPersona === raw ? 'as-is' : 'as a structured template';
+    await channel.send(
+      `✍️ Persona saved ${mode} — **${manifest.name}** is ready.\nTry: \`/bot ${botId} <task>\`, or just type here and it runs as a bot task.`,
+      `bot:${botId}`,
+    ).catch(() => {});
+  }
+
   /** Enqueue a bot turn from any channel, with ack + reply-back routing. */
   private async dispatchToBot(botId: string, message: string, msg: ChannelMessage): Promise<void> {
     const bm = this.botManager;
@@ -1102,13 +1147,8 @@ export class Agent {
           .catch(() => {});
         return;
       } else {
-        bm.store.writePersona(botId, message.trim() + '\n');
-        bm.invalidateRuntime(botId);
-        this.pendingPersonaFor = null;
-        await channel.send(
-          `✍️ Persona set — **${bm.store.get(botId)?.name ?? botId}** is ready.\nTry: \`/bot ${botId} <task>\`, or just type here and it runs as a bot task.`,
-          `bot:${botId}`,
-        ).catch(() => {});
+        // Offer the "convert to template" step before anything hits disk.
+        await this.finalizePersona(bm, botId, message.trim(), msg);
         return;
       }
     }
@@ -1244,10 +1284,7 @@ export class Agent {
         await channel.send('Usage: `/bots persona <id> <full persona text in one message>` — or open the bot chat (`/bots open <id>`) and type `/persona <text>`.', channelId);
         return;
       }
-      bm.store.writePersona(target, personaText + '\n');
-      bm.invalidateRuntime(target);
-      this.pendingPersonaFor = null;
-      await channel.send(`✍️ Persona updated for **${target}** — the next run uses it.`, channelId);
+      await this.finalizePersona(bm, target, personaText, msg);
       return;
     }
 
