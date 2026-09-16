@@ -2561,6 +2561,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           startedAt: 0,
         })) : [],
         bgTasks: () => agent.backgroundTasks.getAllSummaries(),
+        botRoster: () => agent.getBotManager()?.getStatusSummaries().map((b) => ({
+          id: b.id,
+          name: b.name,
+          state: b.state,
+          needsYou: b.needsYou,
+        })) ?? [],
       });
       bootCli.startStatusPoller(2000);
       bootCli.mountTUI((inputText: string) => {

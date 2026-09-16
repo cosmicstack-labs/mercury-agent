@@ -326,6 +326,8 @@ export interface TuiState {
   updateAvailable: string | null;
   /** Active Mercury Bot chat — transcript is swapped to the bot's thread. */
   botChat: { botId: string; botName: string } | null;
+  /** Live bot roster (drives `/bots` argument autocomplete and badges). */
+  botRoster: Array<{ id: string; name: string; state: string; needsYou: boolean }>;
 }
 
 const defaultState: TuiState = {
@@ -361,6 +363,7 @@ const defaultState: TuiState = {
   tuiFrozen: false,
   updateAvailable: null,
   botChat: null,
+  botRoster: [],
 };
 
 function shallowEqualSubAgents(a: SubAgentInfo[], b: SubAgentInfo[]): boolean {
@@ -432,6 +435,7 @@ export class CLIChannel extends BaseChannel {
     saver?: () => { state: import('../core/saver-mode.js').SaverModeState; savedToday: number; savedLifetime: number };
     subAgents?: () => SubAgentInfo[];
     bgTasks?: () => BackgroundTaskInfo[];
+    botRoster?: () => Array<{ id: string; name: string; state: string; needsYou: boolean }>;
   } = {};
 
   constructor(agentName: string = 'Mercury') {
@@ -2030,6 +2034,16 @@ export class CLIChannel extends BaseChannel {
         const tasks = this.statusProviders.bgTasks();
         if (!shallowEqualBgTasks(this.state.backgroundTasks, tasks)) {
           patch.backgroundTasks = tasks;
+        }
+      }
+
+      // 4b. Bot roster — drives /bots argument autocomplete (§3.2)
+      if (this.statusProviders.botRoster) {
+        const roster = this.statusProviders.botRoster();
+        const current = this.state.botRoster;
+        if (current.length !== roster.length || current.some((b, i) =>
+          b.id !== roster[i].id || b.name !== roster[i].name || b.state !== roster[i].state || b.needsYou !== roster[i].needsYou)) {
+          patch.botRoster = roster;
         }
       }
 

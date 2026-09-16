@@ -218,8 +218,22 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
   const slashSuggestions = React.useMemo(() => {
     if (!input.startsWith('/')) return [];
     const q = input.toLowerCase();
+    // Bot-id argument completion: `/bots <action> <partial>` or `/bot <partial>`
+    // suggests existing bots (id or name) — the roster arrives via the 2s poller.
+    const botsArg = /^(\/bots\s+(?:open|send|journal|inbox|budget|edit|delete|enable|disable|stop|persona)\s+)(\S*)$/.exec(input);
+    const botArg = /^(\/bot\s+)(\S*)$/.exec(input);
+    if ((botsArg || botArg) && state.botRoster.length > 0) {
+      const [_, cmdPrefix, typed] = botsArg ?? botArg!;
+      const p = typed.toLowerCase();
+      const botCmds = state.botRoster
+        .filter((b) => b.id.startsWith(p) || b.name.toLowerCase().startsWith(p))
+        .slice(0, 5)
+        .map((b) => `${cmdPrefix}${b.id}`);
+      const base = slashCommands.filter((cmd) => cmd.startsWith(q)).slice(0, 2);
+      return [...botCmds, ...base].slice(0, 5);
+    }
     return slashCommands.filter((cmd) => cmd.startsWith(q)).slice(0, 5);
-  }, [input, slashCommands]);
+  }, [input, slashCommands, state.botRoster]);
 
   const [slashSelIdx, setSlashSelIdx] = React.useState(0);
 

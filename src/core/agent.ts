@@ -659,8 +659,9 @@ export class Agent {
       if (!this.botManager) return; // bots not wired — fall through as a normal message
       const rest = trimmed.slice('/bot '.length).trim();
       const spaceIndex = rest.indexOf(' ');
-      const botId = (spaceIndex === -1 ? rest : rest.slice(0, spaceIndex)).toLowerCase();
+      const rawTarget = (spaceIndex === -1 ? rest : rest.slice(0, spaceIndex)).toLowerCase();
       const message = spaceIndex === -1 ? '' : rest.slice(spaceIndex + 1).trim();
+      const botId = this.botManager.resolveBotId(rawTarget) ?? rawTarget;
       if (botId && message) {
         void this.dispatchToBot(botId, message, msg);
       }
@@ -1257,6 +1258,12 @@ export class Agent {
     const rawArgs = trimmed.slice('/bots'.length).trim();
     const parts = rawArgs.length > 0 ? rawArgs.split(/\s+/) : [];
     const action = (parts[0] ?? '').toLowerCase();
+
+    // All bot-targeting actions accept id OR name — resolve to the id here.
+    if (['open', 'send', 'journal', 'inbox', 'budget', 'edit', 'delete', 'enable', 'disable', 'stop', 'pause'].includes(action) && parts[1]) {
+      const resolved = bm.resolveBotId(parts[1]);
+      if (resolved) parts[1] = resolved;
+    }
 
     const stateIcons: Record<string, string> = { idle: '⚪', queued: '🔵', running: '🟢', paused: '🟡', disabled: '⛔' };
     const runIcons: Record<string, string> = { completed: '✅', failed: '❌', halted: '⛔', paused: '⏸', denied: '🚫' };
