@@ -422,18 +422,37 @@ export class BotManager {
         this.queue.settle(job.id, 'done');
       }
 
-      // Deliver the outcome — including halts (a stopped run must report
-      // that it stopped, never vanish silently, §2.6). Jobs without a source
-      // (cron/API) deliver to the bot's own thread via the `bot:<id>` targetId.
+      // Deliver the outcome — Hermes/OpenClaw model (BOTS-ARCHITECTURE §3.1):
+      // the FULL result always lands in the BOT'S OWN thread; the session
+      // that asked for it gets only a one-line pointer. Remote channels
+      // (Telegram/web) are the exception — the user cannot open bot threads
+      // from there, so the full result is delivered in that chat. Halts
+      // report too (a stopped run must announce it stopped, §2.6).
       if (this.notify && job.trigger !== 'mailbox') {
-        const channelType = job.source?.channelType ?? 'cli';
-        const channelId = job.source?.channelId ?? `bot:${botId}`;
+        const botThread = `bot:${botId}`;
         const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : output.status === 'halted' ? '⏹' : '⏸';
-        const text = output.status === 'halted'
-          ? `⏹ **${manifest.name}** run ${job.id} was stopped by you — no further output. It is recorded in \`/bots journal ${botId}\`.`
-          : `${icon} **${manifest.name}** (${job.trigger}): ${output.output.slice(0, 800)}`;
-        await this.notify(channelType, channelId, text).catch((e) =>
-          logger.warn({ e, botId }, 'Bot completion notify failed'));
+        const fullText = output.status === 'halted'
+          ? `⏹ Run ${job.id} was stopped by you — no further output. It is recorded in \`/bots journal ${botId}\`.`
+          : `${icon} (${job.trigger}): ${output.output.slice(0, 800)}`;
+        // 1. Full result → the bot's own thread, always.
+        await this.notify('cli', botThread, fullText).catch((e) =>
+          logger.warn({ e, botId }, 'Bot result deliver to bot thread failed'));
+        // 2. Requesting surface: pointer line for TUI sessions; full result
+        // for remote channels (their user can't open bot threads).
+        const sourceChannelType = job.source?.channelType ?? 'cli';
+        const sourceChannelId = job.source?.channelId;
+        if (sourceChannelId && sourceChannelId !== botThread) {
+          if (sourceChannelType === 'cli') {
+            const pointer = output.status === 'completed'
+              ? `🤖 **${manifest.name}** finished its task — full result in its chat (\`/bots open ${botId}\`).`
+              : `🤖 **${manifest.name}** run ended (${output.status}) — details in \`/bots open ${botId}\`.`;
+            await this.notify('cli', sourceChannelId, pointer).catch((e) =>
+              logger.warn({ e, botId }, 'Bot pointer notify failed'));
+          } else {
+            await this.notify(sourceChannelType, sourceChannelId, fullText).catch((e) =>
+              logger.warn({ e, botId }, 'Bot remote-channel result notify failed'));
+          }
+        }
       }
     } catch (err: any) {
       logger.error({ botId, jobId: job.id, err: err?.message }, 'Bot turn crashed');

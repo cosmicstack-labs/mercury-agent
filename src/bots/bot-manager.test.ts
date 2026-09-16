@@ -91,10 +91,10 @@ describe('BotManager queue + turn lifecycle', () => {
   it('runs a chat turn to completion, journals it, and notifies', async () => {
     mockedGenerateText.mockResolvedValue({ text: 'done', finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } } as any);
     seedBot(store, 'researcher');
-    const notifications: string[] = [];
-    manager['notify'] = async (_t, _c, message) => { notifications.push(message); };
+    const delivered: Array<{ target: string; message: string }> = [];
+    manager['notify'] = async (_t, target, message) => { delivered.push({ target, message }); };
 
-    const result = manager.enqueue('researcher', { trigger: 'chat', prompt: 'Summarize the market' });
+    const result = manager.enqueue('researcher', { trigger: 'chat', prompt: 'Summarize the market', source: { channelType: 'cli', channelId: 'current' } });
     expect(result.accepted).toBe(true);
     // pump is synchronous-ish; the turn runs as a detached promise — wait for it
     await vi.waitFor(() => {
@@ -102,7 +102,12 @@ describe('BotManager queue + turn lifecycle', () => {
       expect(records.length).toBe(1);
       expect(records[0].state).toBe('completed');
     });
-    expect(notifications.some(n => n.includes('researcher'.toUpperCase()) || n.includes('RESEARCHER'))).toBe(true);
+    // Hermes/OpenClaw contract: the full result lands in the bot's OWN thread;
+    // the requesting session gets at most a one-line pointer.
+    await vi.waitFor(() => {
+      expect(delivered.some(d => d.target === 'bot:researcher' && d.message.includes('done'))).toBe(true);
+      expect(delivered.some(d => d.message.includes('finished its task') && d.message.includes('/bots open researcher'))).toBe(true);
+    });
     const summary = manager.getStatusSummaries().find(s => s.id === 'researcher');
     expect(summary?.state).toBe('idle');
     expect(summary?.lastRunState).toBe('completed');
