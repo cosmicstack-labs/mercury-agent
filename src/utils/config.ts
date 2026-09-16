@@ -206,6 +206,8 @@ export interface MercuryConfig {
     autoSkill?: {
       enabled?: boolean;
     };
+    /** Suggested per-bot daily token budget offered during onboarding. */
+    suggestedDailyTokenBudget?: number;
     retention: {
       transcriptRuns: number;
       journalRotateBytes: number;
@@ -468,6 +470,7 @@ export function getDefaultConfig(): MercuryConfig {
       autoSkill: {
         enabled: getEnvBool('BOTS_AUTO_SKILL', false),
       },
+      suggestedDailyTokenBudget: getEnvNum('BOTS_SUGGESTED_DAILY_TOKEN_BUDGET', 5_000_000),
       retention: {
         transcriptRuns: getEnvNum('BOTS_RETENTION_TRANSCRIPT_RUNS', 50),
         journalRotateBytes: getEnvNum('BOTS_JOURNAL_ROTATE_BYTES', 5 * 1024 * 1024),

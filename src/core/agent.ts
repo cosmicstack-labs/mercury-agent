@@ -25,6 +25,7 @@ import { SkillBatcher } from '../skills/batcher.js';
 import type { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
 import { refinePersona } from '../bots/persona-template.js';
+import { applyBotFieldPatch } from '../bots/edit.js';
 import { CLIChannel } from '../channels/cli.js';
 import { TelegramChannel } from '../channels/telegram.js';
 import { SignalChannel } from '../channels/signal.js';
@@ -493,6 +494,8 @@ export class Agent {
   private botManager?: import('../bots/bot-manager.js').BotManager;
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   private pendingPersonaFor: string | null = null;
+  /** Bot awaiting a daily token budget answer (final onboarding step). */
+  private pendingBudgetFor: string | null = null;
   readonly programmingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
@@ -1122,10 +1125,52 @@ export class Agent {
     bm.invalidateRuntime(botId);
     this.pendingPersonaFor = null;
     const mode = finalPersona === raw ? 'as-is' : 'as a structured template';
+    await channel.send(`✍️ Persona saved ${mode}.`, `bot:${botId}`).catch(() => {});
+
+    // Final onboarding step: the daily token budget — optional and OFF by
+    // default (no cap). "suggest" fills a generous number so heavy bots are
+    // protected from runaway spend without ever being strangled.
+    const suggested = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+    this.pendingBudgetFor = botId;
     await channel.send(
-      `✍️ Persona saved ${mode} — **${manifest.name}** is ready.\nTry: \`/bot ${botId} <task>\`, or just type here and it runs as a bot task.`,
+      `Final setup step — **daily token budget** for **${manifest.name}** (tokens/day):\n` +
+      `• \`suggest\` — recommended, generous: ${suggested.toLocaleString()}/day\n` +
+      `• a number — set your own cap\n` +
+      `• \`none\` (or \`skip\`) — no cap (default)\n` +
+      `Editable anytime: \`/bots budget ${botId} <tokens|suggest|none>\`. Or just type your first task — the budget stays unset.`,
       `bot:${botId}`,
     ).catch(() => {});
+  }
+
+  /** Apply the budget answer typed after the persona step (or a later task). */
+  private async applyBudgetAnswer(bm: import('../bots/bot-manager.js').BotManager, botId: string, message: string, msg: ChannelMessage): Promise<boolean> {
+    const value = message.trim().toLowerCase();
+    const isBudgetCommand = /^\d+$/.test(value) || ['suggest', 'none', 'skip'].includes(value);
+    if (!isBudgetCommand) {
+      // Not a budget answer — treat as the user's first task; budget stays unset.
+      this.pendingBudgetFor = null;
+      return false;
+    }
+    this.pendingBudgetFor = null;
+    const manifest = bm.store.get(botId);
+    const suggested = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+    let applied: string;
+    if (value === 'suggest') {
+      bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: suggested }; });
+      applied = `${suggested.toLocaleString()}/day`;
+    } else if (value === 'none' || value === 'skip') {
+      bm.store.update(botId, m => { if (m.autonomy) delete m.autonomy.dailyTokenBudget; });
+      applied = 'no cap (unlimited)';
+    } else {
+      const n = parseInt(value, 10);
+      bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: n }; });
+      applied = `${n.toLocaleString()}/day`;
+    }
+    bm.invalidateRuntime(botId);
+    const channel = this.channels.getChannelForMessage(msg);
+    await channel?.send(`💰 Budget for **${manifest?.name ?? botId}**: ${applied}. When the cap is hit the bot pauses until the next day — never killed.`, `bot:${botId}`)
+      .catch(() => {});
+    return true;
   }
 
   /** Enqueue a bot turn from any channel, with ack + reply-back routing. */
@@ -1134,6 +1179,17 @@ export class Agent {
     if (!bm) return;
     const channel = this.channels.getChannelForMessage(msg);
     if (!channel) return;
+
+    // Budget step runs after the persona step: the next message answers it
+    // if it looks like one; anything else is the user's first real task.
+    if (this.pendingBudgetFor) {
+      if (this.pendingBudgetFor !== botId) {
+        this.pendingBudgetFor = null;
+      } else {
+        const handled = await this.applyBudgetAnswer(bm, botId, message, msg);
+        if (handled) return;
+      }
+    }
 
     // Post-create persona setup: the first message typed into the new bot's
     // chat becomes its persona instead of a task (send /skip to keep the
@@ -1319,6 +1375,87 @@ export class Agent {
       return;
     }
 
+    if (action === 'budget') {
+      const target = parts[1]?.toLowerCase();
+      const value = (parts[2] ?? '').toLowerCase();
+      if (!target || !value) {
+        const suggested = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+        await channel.send(`Usage: \`/bots budget <id> <tokens|suggest|none>\` — suggest = ${suggested.toLocaleString()}/day, none = no cap (default).`, channelId);
+        return;
+      }
+      try {
+        bm.store.update(target, m => {
+          if (value === 'none') { if (m.autonomy) delete m.autonomy.dailyTokenBudget; }
+          else if (value === 'suggest') { m.autonomy = { ...m.autonomy, dailyTokenBudget: this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000 }; }
+          else {
+            const n = parseInt(value, 10);
+            if (!Number.isFinite(n) || n <= 0) throw new Error('budget must be a positive integer, "suggest", or "none"');
+            m.autonomy = { ...m.autonomy, dailyTokenBudget: n };
+          }
+        });
+        bm.invalidateRuntime(target);
+        const m = bm.store.get(target);
+        const applied = m?.autonomy?.dailyTokenBudget ? `${m.autonomy.dailyTokenBudget.toLocaleString()}/day` : 'none (unlimited)';
+        await channel.send(`💰 Budget for **${target}**: ${applied}. Hit the cap → the bot pauses until the next day, never killed.`, channelId);
+      } catch (err: any) {
+        await channel.send(`Failed: ${err?.message}`, channelId);
+      }
+      return;
+    }
+
+    if (action === 'edit') {
+      const target = parts[1]?.toLowerCase();
+      const path = parts[2];
+      const value = parts.slice(3).join(' ');
+      if (!target || !path || !value) {
+        await channel.send('Usage: `/bots edit <id> <field> <value>`\nEditable fields: name, description, model.provider, model.model, memory.scope, memory.allowCrossBotRecall, comms.canMessage, tools.allow, tools.deny, autonomy.maxConcurrent, autonomy.maxSteps, autonomy.dailyTokenBudget', channelId);
+        return;
+      }
+      try {
+        const manifest = bm.store.get(target);
+        if (!manifest) throw new Error(`Bot "${target}" does not exist`);
+        const result = applyBotFieldPatch(manifest, path, value);
+        if (!result.ok) {
+          await channel.send(`⚠ ${result.error}`, channelId);
+          return;
+        }
+        bm.store.save(manifest);
+        bm.invalidateRuntime(target);
+        await channel.send(`✏️ **${target}**.${path} = ${result.display}`, channelId);
+      } catch (err: any) {
+        await channel.send(`Failed: ${err?.message}`, channelId);
+      }
+      return;
+    }
+
+    if (action === 'delete') {
+      const target = parts[1]?.toLowerCase();
+      const confirmed = parts[2]?.toLowerCase() === 'confirm';
+      if (!target || !bm.store.exists(target)) {
+        await channel.send('Usage: `/bots delete <id> confirm` — removes the profile dir, halts any running turn, and dead-letters pending jobs. This cannot be undone.', channelId);
+        return;
+      }
+      if (!confirmed && typeof (channel as any).askToContinue === 'function') {
+        const proceed = await (channel as any).askToContinue(`Delete bot **${target}** and its profile (persona, memory links, journal)? This cannot be undone.`);
+        if (!proceed) {
+          await channel.send('Deletion cancelled.', channelId);
+          return;
+        }
+      } else if (!confirmed) {
+        await channel.send(`Type \`/bots delete ${target} confirm\` to permanently delete.`, channelId);
+        return;
+      }
+      try {
+        await bm.halt(target);
+        bm.store.delete(target);
+        bm.invalidateRuntime(target);
+        await channel.send(`🗑 Bot **${target}** deleted (running turn halted; its profile directory is gone).`, channelId);
+      } catch (err: any) {
+        await channel.send(`Failed: ${err?.message}`, channelId);
+      }
+      return;
+    }
+
     if (action === 'stop' || action === 'pause') {
       const target = parts[1]?.toLowerCase();
       if (!target) {
@@ -1426,13 +1563,16 @@ export class Agent {
       '`/bots open <id>` — open a bot chat (transcript swaps to the bot thread)\n' +
       '`/bots create <id> "Name" "Description"` — onboard a bot\n' +
       '`/bot <id> <message>` — message a bot from any channel\n' +
-      '`/bots send <id> <message>` — message a bot\n' +
+      '`/bots persona <id> <text>` — set/replace its character (with template conversion)\n' +
+      '`/bots budget <id> <tokens|suggest|none>` — daily token budget (none = no cap, default)\n' +
+      '`/bots edit <id> <field> <value>` — edit any config field anytime\n' +
       '`/bots journal <id>` — recent runs\n' +
       '`/bots inbox <id>` — pending bot-to-bot mail\n' +
       '`/bots dlq` — dead-lettered jobs\n' +
       '`/bots replay <botId> <jobId>` — re-run a dead-lettered job\n' +
       '`/bots storage` — disk usage\n' +
-      '`/bots enable|disable|stop <id>` — control',
+      '`/bots enable|disable|stop <id>` — control (disable = pause, enable = resume)\n' +
+      '`/bots delete <id> confirm` — permanently delete',
       channelId,
     );
   }
