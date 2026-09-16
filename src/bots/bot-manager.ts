@@ -65,6 +65,7 @@ type BotSchedulerLike = {
   addPersistedTask(m: { id: string; cron: string; description: string; prompt: string; botId?: string; createdAt: string }): void;
   persistSchedules(): void;
   getManifests(): Array<{ id: string; botId?: string }>;
+  removeTask(id: string): void;
 };
 
 /**
@@ -556,6 +557,37 @@ export class BotManager {
   }
 
   /**
+   * Full lifecycle delete: halt, purge durable queue state (jobs/mail/DLQ),
+   * remove scheduler routines (zombie cron would fire forever), drop the
+   * profile dir, and clear every in-memory cache — so a re-created bot with
+   * the same id starts clean (no stale mail or resurrected routines).
+   */
+  async delete(botId: string): Promise<void> {
+    await this.halt(botId);
+    // Scheduler routines (bot:<id>:*) — both bot.yaml routines and
+    // bot_schedule self-created ones; they must never fire again.
+    if (this.scheduler) {
+      for (const m of this.scheduler.getManifests()) {
+        if (m.botId === botId) this.scheduler.removeTask(m.id);
+      }
+      this.scheduler.persistSchedules();
+    }
+    this.queue.purgeBot(botId);
+    this.store.delete(botId);
+    this.registries.delete(botId);
+    this.journals.delete(botId);
+    this.userMemories.delete(botId);
+    this.queues.delete(botId);
+    this.mailboxes.delete(botId);
+    this.dailyTokens.delete(botId);
+    this.activity.delete(botId);
+    this.lastRun.delete(botId);
+    this.needsYou.delete(botId);
+    this.pausedForBudget.delete(botId);
+    logger.info({ botId }, 'Bot deleted: queue/mail/DLQ purged, routines removed');
+  }
+
+  /**
    * Register every enabled bot's cron routines with the main Scheduler
    * (manifest id `bot:<botId>:<name>`). Bot runs fire on the cron lane and
    * route to the bot lane, never through Agent.processQueue. Idempotent:
@@ -690,7 +722,9 @@ export class BotManager {
   getSystemPromptSection(): string {
     const summaries = this.store.list();
     if (summaries.length === 0) {
-      return '\n\nMercury Bots: no bots configured. The user can create one with `/bots create <id> "Name" "Description"`.';
+      // Empty fleet: no prompt section at all — zero-bots users must see
+      // zero prompt/token drift (review A1).
+      return '';
     }
     const lines: string[] = [
       '\n\nMercury Bots — the user maintains these persistent specialist agents (each has its own persona, model, memory, and permissions; they run OUTSIDE this conversation):',

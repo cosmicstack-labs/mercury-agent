@@ -647,7 +647,7 @@ export class CLIChannel extends BaseChannel {
 
   private appendBotMessage(botId: string, msg: ChatMessage): void {
     const existing = this.botTranscripts.get(botId) ?? [];
-    const updated = [...existing, msg];
+    const updated = [...existing.slice(-CLIChannel.MAX_CHAT_MESSAGES + 1), msg];
     this.botTranscripts.set(botId, updated);
     if (this.activeBotId === botId) {
       this.trimAndSetMessages(updated, { isThinking: false, liveActivity: null });
@@ -758,6 +758,12 @@ export class CLIChannel extends BaseChannel {
             onInput('/bots');
           }
           return;
+        }
+        // Any other slash command exits the bot chat first (review D2):
+        // command replies route to the main transcript and would otherwise
+        // be invisible from inside the bot thread.
+        if (trimmed.startsWith('/')) {
+          this.exitBotChat();
         }
       }
       if (trimmed === '/chat' || trimmed === '/c') {
@@ -1106,7 +1112,12 @@ export class CLIChannel extends BaseChannel {
     // While a bot chat is open, main-agent traffic must not leak into the
     // bot's thread: non-bot sends land in the parked main transcript.
     if (this.activeBotId) {
-      this.mainTranscript = [...(this.mainTranscript ?? []), msg];
+      // Parked main traffic is bounded by the same transcript cap as the
+      // visible transcript (review I1 — daemon-in-bot-chat memory growth).
+      this.mainTranscript = [
+        ...(this.mainTranscript ?? []).slice(-CLIChannel.MAX_CHAT_MESSAGES + 1),
+        msg,
+      ];
       return;
     }
     this.trimAndSetMessages([...chat, msg], { isThinking: false, liveActivity: null });
@@ -1453,6 +1464,18 @@ export class CLIChannel extends BaseChannel {
   }
 
   async stream(content: AsyncIterable<string>, _targetId?: string): Promise<string> {
+    // While a bot chat is open, main-agent streaming must NEVER render into
+    // the bot's transcript (review D1): consume silently and park the full
+    // reply into the parked main transcript instead.
+    if (this.activeBotId) {
+      let parked = '';
+      for await (const chunk of content) parked += chunk;
+      this.mainTranscript = [
+        ...(this.mainTranscript ?? []).slice(-CLIChannel.MAX_CHAT_MESSAGES + 1),
+        { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), role: 'agent', content: parked, timestamp: Date.now() },
+      ];
+      return parked;
+    }
     const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     let full = '';
     let started = false;

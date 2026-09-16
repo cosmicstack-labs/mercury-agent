@@ -656,7 +656,13 @@ export class Agent {
     // Telegram, web). Durable enqueue; the run's output is delivered back
     // to the requesting chat via the job's source (Telegram first).
     if (trimmed.startsWith('/bot ')) {
-      if (!this.botManager) return; // bots not wired — fall through as a normal message
+      if (!this.botManager) {
+        // Bots disabled: do NOT swallow the message — tell the user and stop.
+        const channel = this.channels.getChannelForMessage(msg);
+        void channel?.send('Bots are not enabled on this instance (set `bots.enabled: true` in mercury.yaml).', msg.channelId)
+          .catch((err) => logger.warn({ err }, 'bots-disabled notice failed'));
+        return;
+      }
       const rest = trimmed.slice('/bot '.length).trim();
       const spaceIndex = rest.indexOf(' ');
       const rawTarget = (spaceIndex === -1 ? rest : rest.slice(0, spaceIndex)).toLowerCase();
@@ -1104,12 +1110,21 @@ export class Agent {
     try {
       choice = await this.presentChoice(
         `Persona for **${manifest.name}** — how should it be saved?`,
-        ['Convert to template (recommended — structured, precise)', 'Save as-is'],
+        ['Convert to template (recommended — structured, precise)', 'Save as-is', 'Cancel — that was a task, not a persona'],
         msg.channelId,
         channelType,
       );
     } catch {
       choice = 'template';
+    }
+
+    if (choice.startsWith('Cancel')) {
+      // Escape hatch (review K1): the text was a real task — dispatch it,
+      // touch nothing on disk, and drop the pending capture.
+      this.pendingPersonaFor = null;
+      this.pendingBudgetFor = null;
+      await this.dispatchToBot(botId, raw, msg);
+      return;
     }
 
     let finalPersona = raw;
@@ -1265,6 +1280,13 @@ export class Agent {
       if (resolved) parts[1] = resolved;
     }
 
+    // Any explicit /bots command cancels pending onboarding capture — the
+    // user has moved on; a later task in the bot chat must never be eaten
+    // by the persona/budget state machine (review K1).
+    if (this.pendingPersonaFor && action !== '') {
+      this.pendingPersonaFor = null;
+    }
+
     const stateIcons: Record<string, string> = { idle: '⚪', queued: '🔵', running: '🟢', paused: '🟡', disabled: '⛔' };
     const runIcons: Record<string, string> = { completed: '✅', failed: '❌', halted: '⛔', paused: '⏸', denied: '🚫' };
 
@@ -1310,7 +1332,7 @@ export class Agent {
         await channel.send('Usage: `/bots create <id> "Name" "Description" "persona (optional)"` — the bot starts with a fail-closed default profile you can refine via its profile files.', channelId);
         return;
       }
-      const rest = trimmed.slice(trimmed.indexOf(id) + id.length).trim();
+      const rest = parts.slice(2).join(' ');
       const quoted = [...rest.matchAll(/"([^"]*)"/g)].map(m => m[1]);
       const name = quoted[0] ?? id.toUpperCase();
       const description = quoted[1];
@@ -1342,7 +1364,7 @@ export class Agent {
 
     if (action === 'persona') {
       const target = parts[1]?.toLowerCase();
-      const personaText = trimmed.slice(trimmed.indexOf(target ?? '') + (target?.length ?? 0)).trim();
+      const personaText = parts.slice(2).join(' ');
       if (!target || !personaText || !bm.store.exists(target)) {
         await channel.send('Usage: `/bots persona <id> <full persona text in one message>` — or open the bot chat (`/bots open <id>`) and type `/persona <text>`.', channelId);
         return;
@@ -1353,7 +1375,7 @@ export class Agent {
 
     if (action === 'send') {
       const target = parts[1]?.toLowerCase();
-      const message = trimmed.slice(trimmed.indexOf(parts[1] ?? '') + (parts[1]?.length ?? 0)).trim();
+      const message = parts.slice(2).join(' ');
       if (!target || !message) {
         await channel.send('Usage: `/bots send <id> <message>`', channelId);
         return;

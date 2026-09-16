@@ -94,6 +94,8 @@ export interface BotQueueBackend {
   /** Durable bot-to-bot mailbox (§2.6: a handoff must survive a crash). */
   enqueueMail(mail: Omit<DurableMail, 'id'>): string;
   drainMail(botId: string): DurableMail[];
+  /** Remove every trace of a bot: jobs, mail, DLQ rows (delete lifecycle). */
+  purgeBot(botId: string): void;
   counts(): QueueCounts;
 }
 
@@ -182,6 +184,10 @@ export class BotQueue {
 
   drainMail(botId: string): DurableMail[] {
     return this.backend.drainMail(botId);
+  }
+
+  purgeBot(botId: string): void {
+    this.backend.purgeBot(botId);
   }
 
   listDlq(botId?: string): DlqEntry[] {
@@ -357,6 +363,12 @@ export class SqliteQueueBackend implements BotQueueBackend {
       id: String(r.id), botId: String(r.bot_id), from: String(r.from_bot),
       content: String(r.content), createdAt: Number(r.created_at),
     }));
+  }
+
+  purgeBot(botId: string): void {
+    this.db.prepare(`DELETE FROM bot_jobs WHERE bot_id = ?`).run(botId);
+    this.db.prepare(`DELETE FROM bot_mail WHERE bot_id = ?`).run(botId);
+    this.db.prepare(`DELETE FROM bot_dlq WHERE bot_id = ?`).run(botId);
   }
 
   listDlq(botId?: string): DlqEntry[] {
@@ -535,6 +547,14 @@ export class JsonFileQueueBackend implements BotQueueBackend {
       this.flush();
     }
     return drained;
+  }
+
+  purgeBot(botId: string): void {
+    const before = this.data.jobs.length + this.data.dlq.length + this.data.mails.length;
+    this.data.jobs = this.data.jobs.filter(j => j.botId !== botId);
+    this.data.dlq = this.data.dlq.filter(j => j.botId !== botId);
+    this.data.mails = this.data.mails.filter(m => m.botId !== botId);
+    if (this.data.jobs.length + this.data.dlq.length + this.data.mails.length !== before) this.flush();
   }
 
   listDlq(botId?: string): DlqEntry[] {

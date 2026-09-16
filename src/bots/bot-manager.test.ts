@@ -196,10 +196,9 @@ describe('Main-agent bots awareness (system prompt section)', () => {
     expect(section).toContain('/bots open <id>');
   });
 
-  it('empty fleet section still tells the agent how to onboard', () => {
+  it('empty fleet produces NO prompt section (zero drift for botless users)', () => {
     const section = manager.getSystemPromptSection();
-    expect(section).toContain('no bots configured');
-    expect(section).toContain('/bots create');
+    expect(section).toBe('');
   });
 
   it('dispatch_bot tool routes through the handler with name resolution', async () => {
