@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PermissionManager, splitShellSegments } from './permissions.js';
 
 describe('splitShellSegments', () => {
@@ -144,5 +147,51 @@ describe('PermissionManager remote safety', () => {
     await expect(permissions.checkShellCommand('find . -maxdepth 1')).resolves.toMatchObject({ allowed: true });
     await expect(permissions.checkShellCommand('du -sh .')).resolves.toMatchObject({ allowed: true });
     expect(ask).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('PermissionManager symlink write confinement', () => {
+  let root: string;
+  let ws: string;
+  let outside: string;
+
+  function makePermissions(): PermissionManager {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.filesystem.enabled = true;
+    manifest.capabilities.filesystem.scopes.push({ path: ws, read: true, write: true });
+    permissions.setAutoApproveAll(true);
+    return permissions;
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-fs-'));
+    ws = join(root, 'ws');
+    outside = join(root, 'outside');
+    mkdirSync(ws);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.txt'), 'x');
+    symlinkSync(join(outside, 'secret.txt'), join(ws, 'alias.txt'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('denies a write that escapes the scope through an in-scope symlink', async () => {
+    const permissions = makePermissions();
+    await expect(permissions.checkFsAccess(join(ws, 'alias.txt'), 'write')).resolves.toMatchObject({ allowed: false });
+  });
+
+  it('still allows a plain write inside the scope', async () => {
+    const permissions = makePermissions();
+    await expect(permissions.checkFsAccess(join(ws, 'new.txt'), 'write')).resolves.toMatchObject({ allowed: true });
+  });
+
+  it('allows a symlink whose target stays inside the scope', async () => {
+    const permissions = makePermissions();
+    writeFileSync(join(ws, 'inner.txt'), 'x');
+    symlinkSync(join(ws, 'inner.txt'), join(ws, 'inner-alias.txt'));
+    await expect(permissions.checkFsAccess(join(ws, 'inner-alias.txt'), 'write')).resolves.toMatchObject({ allowed: true });
   });
 });

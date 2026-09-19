@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
@@ -416,6 +416,19 @@ export class PermissionManager {
     const scope = this.findScope(resolved);
     const tempScope = this.findTempScope(resolved);
 
+    // A path that is lexically inside a scope can still leave it through a
+    // symlink, because Node follows symlinks at the write sink. Reject writes
+    // whose canonicalised target falls outside every writable scope.
+    if (mode === 'write') {
+      const canonical = this.canonicalizePath(resolved);
+      if (canonical !== resolved && !this.isWithinWritableScope(canonical)) {
+        return {
+          allowed: false,
+          reason: `Permission denied: write to ${path} resolves outside the approved scopes (${canonical})`,
+        };
+      }
+    }
+
     // Read access: allow if any scope covers it (reads are safe in any mode)
     if (mode === 'read') {
       if (scope && scope.read) return { allowed: true };
@@ -647,6 +660,35 @@ export class PermissionManager {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Canonicalise a path by resolving symlinks, tolerating paths that do not
+   * exist yet (e.g. create_file): the deepest existing ancestor is resolved
+   * and the remaining tail re-appended.
+   */
+  private canonicalizePath(resolved: string): string {
+    try {
+      return realpathSync(resolved);
+    } catch {
+      const parent = dirname(resolved);
+      if (parent === resolved) return resolved;
+      return join(this.canonicalizePath(parent), basename(resolved));
+    }
+  }
+
+  /** True when a canonical path falls inside one of the writable scopes. */
+  private isWithinWritableScope(canonicalPath: string): boolean {
+    const writable = [...this.manifest.capabilities.filesystem.scopes, ...this.tempScopes].filter(
+      (scope) => scope.write,
+    );
+    for (const scope of writable) {
+      const base = this.canonicalizePath(resolve(scope.path.replace(/^~/, homedir())));
+      if (canonicalPath === base || canonicalPath.startsWith(base + sep)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private matchPattern(command: string, pattern: string): boolean {
