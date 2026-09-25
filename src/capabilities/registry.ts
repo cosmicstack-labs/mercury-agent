@@ -263,7 +263,15 @@ export class CapabilityRegistry {
   }
 
   getTools(): Record<string, Tool> {
-    return this.tools;
+    if (this.permissions.getCurrentSenderRole() !== 'member') return this.tools;
+    // Members on a channel that distinguishes roles (e.g. Telegram) must not be
+    // able to install skills: `install_skill` is the escalation path from chat
+    // access to arbitrary local execution and is documented as admin-only.
+    const filtered: Record<string, Tool> = {};
+    for (const [name, tool] of Object.entries(this.tools)) {
+      if (name !== 'install_skill') filtered[name] = tool;
+    }
+    return filtered;
   }
 
   /** Return tools filtered for plan mode — read-only tools only */

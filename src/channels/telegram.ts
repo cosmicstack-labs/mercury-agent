@@ -227,6 +227,7 @@ export class TelegramChannel extends BaseChannel {
         channelType: 'telegram',
         senderId: ctx.from?.id.toString() ?? 'unknown',
         senderName: ctx.from?.first_name,
+        senderRole: this.isAdminUser(userId) ? 'admin' : 'member',
         content: ctx.message.text,
         timestamp: ctx.message.date * 1000,
         metadata: { chatId, messageId: ctx.message.message_id },
