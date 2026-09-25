@@ -24,6 +24,14 @@ export interface ChannelMessage {
   channelType: ChannelType;
   senderId: string;
   senderName?: string;
+  /**
+   * Role of the sender on the originating channel, when the channel can
+   * distinguish it (e.g. Telegram admins vs approved members). Undefined for
+   * channels that have no notion of roles (CLI, internal). Used to keep
+   * admin-only capabilities (such as installing skills) out of the tool set
+   * exposed to non-admin chat participants.
+   */
+  senderRole?: "admin" | "member";
   content: string;
   timestamp: number;
   /** Canonical local session identity; channelId remains transport-specific. */
