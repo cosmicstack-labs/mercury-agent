@@ -1,8 +1,24 @@
 import React from 'react';
 import { Box, Text, Spacer, Static, useApp, useInput } from 'ink';
-import type { AttachClient, AttachEvent, AttachThread, AttachThreadMessage } from '../cli/attach.js';
+import type { AttachClient, AttachEvent, AttachThread } from '../cli/attach.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { useTerminalSize } from './use-terminal-size.js';
+import {
+  SLASH_COMMANDS,
+  buildSlashSuggestions,
+  buildSkillSuggestions,
+  skillFillText,
+  shouldSubmitSlash,
+  createInputHistoryState,
+  pushHistoryLine,
+  historyPrev,
+  historyNext,
+  insertInputChunk,
+  backspaceAt,
+  SuggestionList,
+  type BotRosterEntry,
+  type SkillEntry,
+} from './input-composer.js';
 
 /**
  * Attach TUI — the terminal face of `mercury attach`. Native scrollback
@@ -14,6 +30,12 @@ import { useTerminalSize } from './use-terminal-size.js';
  * the conversation history comes from the shared session repository, so
  * messages from other surfaces are visible as history (live mirroring of
  * other surfaces is out of scope in v1).
+ *
+ * Input is built on the SHARED input composer (src/ui/input-composer.tsx) —
+ * the same slash/skill/bot suggestions, Enter-fill contract, and input
+ * history as the main TUI's boot path. Previously the attach surface used a
+ * bare character editor: no pickers, no history — the "close & relaunch
+ * feels different, auto-commands don't work" regression.
  */
 
 interface ThreadInfo {
@@ -108,16 +130,51 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
 
   const [input, setInput] = React.useState('');
   const [cursorPos, setCursorPos] = React.useState(0);
+  const [inputHistory, setInputHistory] = React.useState(createInputHistoryState);
 
-  // Same input width as the main TUI's chat/Code input (App.tsx).
-  const terminalSize = useTerminalSize();
-  const inputWidth = Math.max(40, terminalSize.cols - 4);
+  // ── Shared-composer suggestion state (main-TUI parity) ──
+  const [skills, setSkills] = React.useState<SkillEntry[]>([]);
+  const [bots, setBots] = React.useState<BotRosterEntry[]>([]);
 
   React.useEffect(() => {
     client.listThreads()
       .then((list) => { setThreads(list.slice(0, 6)); setThreadsLoaded(true); })
       .catch(() => setThreadsLoaded(true));
   }, [client]);
+
+  // Picker data sources — the same endpoints the web dashboard uses.
+  React.useEffect(() => {
+    let cancelled = false;
+    client.listSkills().then((list) => { if (!cancelled) setSkills(list); }).catch(() => {});
+    client.listBots().then((list) => { if (!cancelled) setBots(list); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [client]);
+
+  // ── Shared-composer suggestion lists ──
+  const slashSuggestions = React.useMemo(
+    () => buildSlashSuggestions(input, SLASH_COMMANDS, bots),
+    [input, bots],
+  );
+  const skillSuggestions = React.useMemo(
+    () => buildSkillSuggestions(input, skills),
+    [input, skills],
+  );
+
+  // Skill rows render as "#name" strings in the shared popup (descriptions
+  // come from the shared SuggestionList's skill mode).
+  const skillSuggestionStrings = React.useMemo(
+    () => skillSuggestions.map((s) => `#${s.name}`),
+    [skillSuggestions],
+  );
+
+  const [slashSelIdx, setSlashSelIdx] = React.useState(0);
+  React.useEffect(() => { setSlashSelIdx(0); }, [slashSuggestions.length, input]);
+  const [skillSelIdx, setSkillSelIdx] = React.useState(0);
+  React.useEffect(() => { setSkillSelIdx(0); }, [skillSuggestions.length, input]);
+
+  // Same input width as the main TUI's chat/Code input (App.tsx).
+  const terminalSize = useTerminalSize();
+  const inputWidth = Math.max(40, terminalSize.cols - 4);
 
   // Live event stream for the attached session.
   React.useEffect(() => {
@@ -264,7 +321,7 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
   }, [client, prompt]);
 
   useInput((ch, key) => {
-    if (ch === '' || (key.ctrl && (key as any).name === 'c')) {
+    if (ch === '\u0003' || (key.ctrl && (key as any).name === 'c')) {
       // Detach only: the runtime keeps running.
       exit();
       return;
@@ -309,36 +366,93 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
 
     if (key.return) {
       const trimmed = input.trim();
-      if (trimmed) {
-        setInput('');
-        setCursorPos(0);
-        void sendInput(trimmed);
+      if (!trimmed) return;
+      // Same Enter-fill contract as the main TUI: when the slash picker is
+      // showing and Enter was pressed with a non-exact input, FILL first.
+      if (!shouldSubmitSlash(slashSuggestions, trimmed, slashSelIdx)) {
+        const next = slashSuggestions[slashSelIdx] ?? trimmed;
+        setInput(next);
+        setCursorPos(next.length);
+        return;
       }
+      // Skill picker: first Enter fills `#name ` (keeps any typed remainder);
+      // second Enter submits.
+      if (skillSuggestions.length > 0) {
+        const picked = skillSuggestions[skillSelIdx];
+        const expected = picked ? `#${picked.name}` : '';
+        if (picked && !trimmed.startsWith(expected + ' ') && trimmed !== expected) {
+          const next = skillFillText(input, picked.name);
+          setInput(next);
+          setCursorPos(next.length);
+          return;
+        }
+      }
+      setInput('');
+      setCursorPos(0);
+      setInputHistory((prev) => pushHistoryLine(prev, trimmed));
+      void sendInput(trimmed);
       return;
     }
     if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
     if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
-    if (key.backspace || key.delete) {
-      if (cursorPos > 0) {
-        setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
-        setCursorPos((p) => p - 1);
+    // ↑/↓ navigate suggestions when a picker is visible, else input history
+    // (shell-style, same helpers as the main TUI).
+    if (key.upArrow) {
+      if (slashSuggestions.length > 0) {
+        setSlashSelIdx((i) => (i > 0 ? i - 1 : slashSuggestions.length - 1));
+        return;
       }
+      if (skillSuggestions.length > 0) {
+        setSkillSelIdx((i) => (i > 0 ? i - 1 : skillSuggestions.length - 1));
+        return;
+      }
+      const h = historyPrev(inputHistory, input);
+      setInputHistory(h.state);
+      setInput(h.input);
+      setCursorPos(h.input.length);
+      return;
+    }
+    if (key.downArrow) {
+      if (slashSuggestions.length > 0) {
+        setSlashSelIdx((i) => (i < slashSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+      if (skillSuggestions.length > 0) {
+        setSkillSelIdx((i) => (i < skillSuggestions.length - 1 ? i + 1 : 0));
+        return;
+      }
+      const h = historyNext(inputHistory);
+      setInputHistory(h.state);
+      setInput(h.input);
+      setCursorPos(h.input.length);
+      return;
+    }
+    if (key.tab) {
+      if (input.startsWith('/') && slashSuggestions.length > 0) {
+        const next = slashSuggestions[slashSelIdx] ?? input;
+        setInput(next);
+        setCursorPos(next.length);
+      } else if (input.startsWith('#') && skillSuggestions.length > 0) {
+        const picked = skillSuggestions[skillSelIdx];
+        if (picked) {
+          const next = skillFillText(input, picked.name);
+          setInput(next);
+          setCursorPos(next.length);
+        }
+      }
+      return;
+    }
+    if (key.backspace || key.delete) {
+      const next = backspaceAt(input, cursorPos);
+      setInput(next.input);
+      setCursorPos(next.cursorPos);
       return;
     }
     if (key.ctrl || key.meta) return;
     if (ch && ch.length > 0 && !key.escape) {
-      const clean = ch
-        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-        .split('')
-        .filter((c) => {
-          const code = c.charCodeAt(0);
-          return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
-        })
-        .join('');
-      if (clean) {
-        setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
-        setCursorPos((p) => p + clean.length);
-      }
+      const next = insertInputChunk(input, cursorPos, ch);
+      setInput(next.input);
+      setCursorPos(next.cursorPos);
     }
   });
 
@@ -410,6 +524,9 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
           <Text color="yellow">{notice}</Text>
         </Box>
       )}
+      {/* Shared-composer pickers — identical behavior and visuals to the main TUI. */}
+      {slashSuggestions.length > 0 && <SuggestionList kind="slash" suggestions={slashSuggestions} selectedIndex={slashSelIdx} />}
+      {skillSuggestions.length > 0 && <SuggestionList kind="skill" suggestions={skillSuggestionStrings} selectedIndex={skillSelIdx} />}
       <Box paddingX={2} flexShrink={0}>
         {/* Explicit width, mirroring the main TUI's input: this box used to
             rely on Yoga cross-stretch, but its wrapper is direction='row'
@@ -425,7 +542,7 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
         </Box>
       </Box>
       <Box paddingX={3} flexShrink={0}>
-        <Text dimColor>↵ send · esc esc exit · ctrl+c detach</Text>
+        <Text dimColor>↵ send · ↑↓ history/suggest · tab complete · ctrl+c detach</Text>
         <Spacer />
         <Text color="blue" wrap="truncate-end">⚿ {thread ? `${thread.alias} [${thread.shortId}]` : ''} · {providerLabel}{pid != null ? ` · PID ${pid}` : ''}</Text>
       </Box>

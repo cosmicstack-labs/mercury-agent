@@ -172,6 +172,35 @@ export class AttachClient {
     }
   }
 
+  /** Active skills for the `#name` picker — the same data the main TUI splash loads. */
+  async listSkills(): Promise<Array<{ name: string; description: string }>> {
+    try {
+      const res = await this.request('/api/skills');
+      if (!res.ok) return [];
+      const body = await res.json() as { skills?: Array<{ name?: string; description?: string; active?: boolean }> };
+      return (body.skills ?? [])
+        .filter((s) => s.active !== false)
+        .map((s) => ({ name: String(s.name ?? ''), description: String(s.description ?? '') }))
+        .filter((s) => s.name.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Live bot roster for `/bot <id>` argument completion (main-TUI parity). */
+  async listBots(): Promise<Array<{ id: string; name: string }>> {
+    try {
+      const res = await this.request('/api/bots');
+      if (!res.ok) return [];
+      const body = await res.json() as { bots?: Array<{ id?: string; name?: string }> };
+      return (body.bots ?? [])
+        .map((b) => ({ id: String(b.id ?? ''), name: String(b.name ?? '') }))
+        .filter((b) => b.id.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
   async send(content: string, sessionId?: string): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
     try {
       const res = await this.request('/api/chat/send', {

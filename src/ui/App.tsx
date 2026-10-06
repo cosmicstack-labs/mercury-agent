@@ -13,6 +13,7 @@ import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
+import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, insertInputChunk, backspaceAt, createInputHistoryState, SuggestionList, type SkillEntry } from './input-composer.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
@@ -113,129 +114,21 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
   const [spotifyArtUrl, setSpotifyArtUrl] = React.useState<string | null>(null);
   const [spotifyArtAnsi, setSpotifyArtAnsi] = React.useState<string>('');
   const albumArtCache = React.useRef<Map<string, string>>(new Map());
-  const [inputHistory, setInputHistory] = React.useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = React.useState<number>(-1);
-  const [historyDraft, setHistoryDraft] = React.useState<string>('');
+  // Shell-style input history — shared composer state (↑/↓ navigation with
+  // draft snapshotting; see input-composer.tsx).
+  const [inputHistory, setInputHistory] = React.useState(createInputHistoryState);
   const [gitCursor, setGitCursor] = React.useState(0);
 
-  const slashCommands = React.useMemo(() => [
-    '/help',
-    '/whatsnew',
-    '/update ignore',
-    '/log',
-    '/sessions',
-    '/session new',
-    '/session current',
-    '/session ',
-    '/session archive ',
-    '/session delete ',
-    '/bots',
-    '/bots list',
-    '/bots open ',
-    '/bots create ',
-    '/bots send ',
-    '/bots persona ',
-    '/bots budget ',
-    '/bots edit ',
-    '/bots delete ',
-    '/bots journal ',
-    '/bots inbox ',
-    '/bots storage',
-    '/bots enable ',
-    '/bots disable ',
-    '/bots stop ',
-    '/status',
-    '/progress',
-    '/menu',
-    '/chat',
-    '/code',
-    '/code plan',
-    '/code execute',
-    '/code build',
-    '/code diff',
-    '/code init',
-    '/code workspace',
-    '/code agent ',
-    '/code off',
-    '/code toggle',
-    '/code exit',
-    '/code chat',
-    '/code back',
-    '/research',
-    '/research on',
-    '/research off',
-    '/research toggle',
-    '/research ',
-    '/spotify',
-    '/budget',
-    '/permissions',
-    '/memory',
-    '/models',
-    '/models use ',
-    '/cloud',
-    '/cloud models',
-    '/cloud use ',
-    '/agents',
-    '/agents stop ',
-    '/agents pause ',
-    '/agents resume ',
-    '/bg',
-    '/bg current',
-    '/bg list',
-    '/bg cancel ',
-    '/bg clear',
-    '/bg killall',
-    '/stop',
-    '/halt',
-    '/reset',
-    '/tools',
-    '/skills',
-    '/skills search ',
-    '/skills view ',
-    '/skills install ',
-    '/skills remove ',
-    '/skills help',
-    '/stream',
-    '/saver',
-    '/saver on',
-    '/saver off',
-    '/saver toggle',
-    '/saver threshold ',
-    '/saver auto on',
-    '/saver auto off',
-    '/saver routing on',
-    '/saver routing off',
-    '/view',
-    '/view balanced',
-    '/view detailed',
-    '/ws',
-    '/ws open ',
-    '/ws exit',
-    '/ws refresh',
-    '/ws stage all',
-    '/ws commit ',
-    '/ws help',
-  ], []);
+  // Canonical command list lives in the shared input composer (single source
+  // of truth for the main TUI AND the attach TUI — see input-composer.tsx).
+  const slashCommands = SLASH_COMMANDS;
 
-  const slashSuggestions = React.useMemo(() => {
-    if (!input.startsWith('/')) return [];
-    const q = input.toLowerCase();
-    // Bot-id argument completion: `/bots <action> <partial>` or `/bot <partial>`
-    // suggests existing bots (id or name) — the roster arrives via the 2s poller.
-    const botsArg = /^(\/bots\s+(?:open|send|journal|inbox|budget|edit|delete|enable|disable|stop|persona)\s+)(\S*)$/.exec(input);
-    const botArg = /^(\/bot\s+)(\S*)$/.exec(input);
-    if ((botsArg || botArg) && state.botRoster.length > 0) {
-      const [_, cmdPrefix, typed] = botsArg ?? botArg!;
-      const p = typed.toLowerCase();
-      const botCmds = state.botRoster
-        .filter((b) => b.id.startsWith(p) || b.name.toLowerCase().startsWith(p))
-        .slice(0, 5)
-        .map((b) => `${cmdPrefix}${b.id}`);
-      const base = slashCommands.filter((cmd) => cmd.startsWith(q)).slice(0, 2);
-      return [...botCmds, ...base].slice(0, 5);
-    }
-    return slashCommands.filter((cmd) => cmd.startsWith(q)).slice(0, 5);
-  }, [input, slashCommands, state.botRoster]);
+  const slashSuggestions = React.useMemo(
+    () => buildSlashSuggestions(input, slashCommands, state.botRoster.length > 0
+      ? state.botRoster.map((b) => ({ id: b.id, name: b.name }))
+      : []),
+    [input, slashCommands, state.botRoster],
+  );
 
   const [slashSelIdx, setSlashSelIdx] = React.useState(0);
 
@@ -249,26 +142,17 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
   // skills by name prefix first, then by name-substring, then by
   // description-substring (case-insensitive). The selected entry inserts as
   // `#skill-name ` so the user can continue typing their request.
-  const skillSuggestions = React.useMemo(() => {
-    if (!input.startsWith('#')) return [] as Array<{ name: string; description: string }>;
-    const q = input.slice(1).split(/\s/)[0].toLowerCase();
-    const skills = state.skills || [];
-    if (!q) {
-      return skills.slice(0, 8).map((s) => ({ name: s.name, description: s.description }));
-    }
-    const prefix: typeof skills = [];
-    const nameSub: typeof skills = [];
-    const descSub: typeof skills = [];
-    for (const s of skills) {
-      const n = s.name.toLowerCase();
-      if (n.startsWith(q)) prefix.push(s);
-      else if (n.includes(q)) nameSub.push(s);
-      else if ((s.description || '').toLowerCase().includes(q)) descSub.push(s);
-    }
-    return [...prefix, ...nameSub, ...descSub]
-      .slice(0, 8)
-      .map((s) => ({ name: s.name, description: s.description }));
-  }, [input, state.skills]);
+  // Matching logic lives in the shared input composer.
+  const skillSuggestions = React.useMemo(
+    () => buildSkillSuggestions(input, (state.skills || []).map((s) => ({ name: s.name, description: s.description || '' }))),
+    [input, state.skills],
+  );
+
+  // Skill rows render as "#name — description" strings in the shared popup.
+  const skillSuggestionStrings = React.useMemo(
+    () => skillSuggestions.map((s) => `#${s.name}`),
+    [skillSuggestions],
+  );
 
   const [skillSelIdx, setSkillSelIdx] = React.useState(0);
   React.useEffect(() => {
@@ -280,10 +164,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
     if (!picked) return false;
-    // If the user already typed something after the hash-token, keep it.
-    const rest = input.slice(1).split(/\s(.*)/s)[1] || '';
-    const next = rest ? `#${picked.name} ${rest}` : `#${picked.name} `;
-    setInputAndCursor(next);
+    // Shared fill helper: keeps any remainder typed after the hash-token.
+    setInputAndCursor(skillFillText(input, picked.name));
     return true;
   }, [skillSuggestions, skillSelIdx, input]);
 
@@ -480,12 +362,9 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
         const trimmed = input.trim();
         if (trimmed) {
           onInput(trimmed);
-          setInputHistory((prev) => {
-            if (prev[prev.length - 1] === trimmed) return prev;
-            return [...prev.slice(-99), trimmed];
-          });
-          setHistoryIndex(-1);
-          setHistoryDraft('');
+          // Shared composer history helper (dedup + cap in one place —
+          // input-composer.tsx is the single source of truth for both TUIs).
+          setInputHistory((prev) => pushHistoryLine(prev, trimmed));
           setInputAndCursor('');
         }
         return;
@@ -497,30 +376,19 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
       // Transcript scrolling is terminal-native now (the transcript prints
       // into scrollback via <Static>): ↑/↓ navigate input history instead.
+      // Shared composer history helpers (same behavior as chat mode).
       if (key.upArrow) {
-        if (inputHistory.length === 0) return;
-        if (historyIndex === -1) {
-          setHistoryDraft(input);
-          const next = inputHistory.length - 1;
-          setHistoryIndex(next);
-          setInputAndCursor(inputHistory[next] ?? '');
-          return;
-        }
-        const next = Math.max(0, historyIndex - 1);
-        setHistoryIndex(next);
-        setInputAndCursor(inputHistory[next] ?? '');
+        if (inputHistory.history.length === 0) return;
+        const h = historyPrev(inputHistory, input);
+        setInputHistory(h.state);
+        setInputAndCursor(h.input);
         return;
       }
       if (key.downArrow) {
-        if (historyIndex === -1) return;
-        const next = historyIndex + 1;
-        if (next >= inputHistory.length) {
-          setHistoryIndex(-1);
-          setInputAndCursor(historyDraft);
-          return;
-        }
-        setHistoryIndex(next);
-        setInputAndCursor(inputHistory[next] ?? '');
+        if (inputHistory.index === -1) return;
+        const h = historyNext(inputHistory);
+        setInputHistory(h.state);
+        setInputAndCursor(h.input);
         return;
       }
       if ((key as any).home) { setCursorPos(0); return; }
@@ -530,27 +398,19 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       if (key.ctrl && (ch === 'a' || ch === 'A')) { setCursorPos(0); return; }
       if (key.ctrl && (ch === 'e' || ch === 'E')) { setCursorPos(input.length); return; }
       if (key.backspace || key.delete) {
-        if (cursorPos > 0) {
-          setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
-          setCursorPos((p) => p - 1);
-        }
+        const del = backspaceAt(input, cursorPos);
+        setInput(del.input);
+        setCursorPos(del.cursorPos);
         return;
       }
       if (key.ctrl || key.meta) return;
 
       if (ch && ch.length > 0 && !key.escape) {
-        const clean = ch
-          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-          .split('')
-          .filter((c) => {
-            const code = c.charCodeAt(0);
-            return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
-          })
-          .join('');
-        if (clean) {
-          setInput((prev) => prev.slice(0, cursorPos) + clean + prev.slice(cursorPos));
-          setCursorPos((p) => p + clean.length);
-        }
+        // Shared composer char-insert (clean + cursor + flood guard in one
+        // place — same pipeline as the attach TUI and chat mode).
+        const next = insertInputChunk(input, cursorPos, ch);
+        setInput(next.input);
+        setCursorPos(next.cursorPos);
       }
       return;
     }
@@ -667,7 +527,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
 
       // If autocomplete popup is showing and input doesn't exactly match the selected suggestion,
       // fill the suggestion into the input instead of submitting
-      if (slashSuggestions.length > 0 && trimmed !== slashSuggestions[slashSelIdx]) {
+      if (!shouldSubmitSlash(slashSuggestions, trimmed, slashSelIdx)) {
         setInputAndCursor(slashSuggestions[slashSelIdx]);
         return;
       }
@@ -685,12 +545,9 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
 
       if (trimmed) {
         onInput(trimmed);
-        setInputHistory((prev) => {
-          if (prev[prev.length - 1] === trimmed) return prev;
-          return [...prev.slice(-99), trimmed];
-        });
-        setHistoryIndex(-1);
-        setHistoryDraft('');
+        // Shared composer history helper (dedup + cap in one place —
+        // input-composer.tsx is the single source of truth for both TUIs).
+        setInputHistory((prev) => pushHistoryLine(prev, trimmed));
         setInputAndCursor('');
         return;
       }
@@ -880,75 +737,38 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       }
     }
 
-    // Up arrow: navigate input history
+    // Up arrow: navigate input history (shared composer helpers)
     if (key.upArrow) {
-      if (inputHistory.length === 0) return;
-      if (historyIndex === -1) {
-        setHistoryDraft(input);
-        const next = inputHistory.length - 1;
-        setHistoryIndex(next);
-        setInputAndCursor(inputHistory[next] ?? '');
-        return;
-      }
-      const next = Math.max(0, historyIndex - 1);
-      setHistoryIndex(next);
-      setInputAndCursor(inputHistory[next] ?? '');
+      if (inputHistory.history.length === 0) return;
+      const h = historyPrev(inputHistory, input);
+      setInputHistory(h.state);
+      setInputAndCursor(h.input);
       return;
     }
 
     if (key.downArrow) {
-      if (historyIndex === -1) return;
-      const next = historyIndex + 1;
-      if (next >= inputHistory.length) {
-        setHistoryIndex(-1);
-        setInputAndCursor(historyDraft);
-        return;
-      }
-      setHistoryIndex(next);
-      setInputAndCursor(inputHistory[next] ?? '');
+      if (inputHistory.index === -1) return;
+      const h = historyNext(inputHistory);
+      setInputHistory(h.state);
+      setInputAndCursor(h.input);
       return;
     }
 
     if (key.backspace || key.delete) {
-      if (cursorPos > 0) {
-        setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
-        setCursorPos((p) => p - 1);
-      }
+      const del = backspaceAt(input, cursorPos);
+      setInput(del.input);
+      setCursorPos(del.cursorPos);
       return;
     }
 
     if (key.ctrl || key.meta) return;
 
     if (ch && ch.length > 0 && !key.escape) {
-      // Strip control chars and escape-sequence fragments (handles paste).
-      // Mouse scroll in raw mode sends SGR sequences like \x1b[<0;row;colM
-      // — Ink partially consumes \x1b[ but the remaining fragments (<, ;, digits,
-      // M) leak through as individual ch characters. Reject any ch that isn't
-      // a normal printable character (ASCII 0x20-0x7E or Unicode >= 0xA0).
-      const clean = ch
-        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-        .split('')
-        .filter((c) => {
-          const code = c.charCodeAt(0);
-          return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
-        })
-        .join('');
-      // Flood guard: a corrupt stream must never be able to grow the input
-      // box unboundedly (input bloat previously cascaded into render
-      // storms + V8 aborts). Keep typing functional, cap the reservoir.
-      const MAX_INPUT_LEN = 8000;
-      if (clean) {
-        const next = input.slice(0, cursorPos) + clean + input.slice(cursorPos);
-        if (next.length > MAX_INPUT_LEN) {
-          if (input.length >= MAX_INPUT_LEN) return; // already full — drop silently
-          const accepted = MAX_INPUT_LEN - input.length;
-          setInput(next.slice(0, MAX_INPUT_LEN));
-          setCursorPos((p) => p + accepted);
-        } else {
-          setInput(next);
-          setCursorPos((p) => p + clean.length);
-        }
-      }
+      // Shared composer char-insert (clean + cursor + flood guard in one
+      // place — same pipeline as the attach TUI and Mercury Code mode).
+      const next = insertInputChunk(input, cursorPos, ch);
+      setInput(next.input);
+      setCursorPos(next.cursorPos);
     }
   });
 
@@ -1047,23 +867,10 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
         />
       )}
       {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
-        <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>Suggestions (↑↓ navigate · Tab/Enter to select):</Text>
-          {slashSuggestions.map((cmd, idx) => (
-            <Text key={cmd} color={idx === slashSelIdx ? 'cyan' : 'gray'}>{idx === slashSelIdx ? '›' : ' '} {cmd}</Text>
-          ))}
-        </Box>
+        <SuggestionList kind="slash" suggestions={slashSuggestions} selectedIndex={slashSelIdx} />
       )}
       {showInput && state.mode !== 'mercury-code' && skillSuggestions.length > 0 && (
-        <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>Skills (↑↓ navigate · Tab/Enter to select):</Text>
-          {skillSuggestions.map((s, idx) => (
-            <Text key={s.name} color={idx === skillSelIdx ? 'magenta' : 'gray'}>
-              {idx === skillSelIdx ? '›' : ' '} #{s.name}
-              {s.description ? <Text dimColor> — {s.description.slice(0, 70)}{s.description.length > 70 ? '…' : ''}</Text> : null}
-            </Text>
-          ))}
-        </Box>
+        <SuggestionList kind="skill" suggestions={skillSuggestionStrings} selectedIndex={skillSelIdx} />
       )}
       {state.mode !== 'mercury-code' && <TokenBarView state={state} cols={terminalSize.cols} />}
     </Box>
