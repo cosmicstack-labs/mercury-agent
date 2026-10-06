@@ -1,67 +1,47 @@
-# Release v1.1.13
+# Release v1.3.0
 
-## ☿ Mercury Agent v1.1.13 — Chatty Mercury
+## ☿ Mercury Agent v1.3.0 — Mercury Bots
 
-Three new channels — Discord, Slack, and Signal — bring Mercury to where you already are. Every new channel has its own access model (pairing codes, admin roles, member approval), streaming responses, and real-time task progress. Signal adds end-to-end encryption for the privacy-first crowd.
-
-Beyond channels, this release fixes the long-running cycle problem — the silent task failures that could make Mercury disappear mid-task. The CLI now updates heartbeats in-place instead of stacking new messages, step logs collapse to 3 lines (Ctrl+D for full history), and a crash flag system means Mercury tells you what happened when it restarts after an ungraceful exit.
+Mercury stops being one agent and becomes **a fleet**. This release introduces **Mercury Bots** — persistent, persona-scoped agents that run *outside your conversation*: each with its own persona, private sandbox workspace, skill library, permission scopes, token budget, and a durable job queue. Onboard a researcher, a writer, a watchtower — chain them into multi-level fleets where a lead bot recruits and manages its own crew. They work 24/7, stream their thinking into their own threads, and escalate only what truly needs you.
 
 ### What's New
 
-- **Discord** — Full bot integration with slash commands, streaming responses, rich embeds, organization access with admin roles and pairing codes, DM + channel support, and rate limiting.
-- **Slack** — Socket Mode bot (no public endpoint needed) with slash commands, streaming edits, organization access with admin/member roles, channel + DM support, and @mention awareness.
-- **Signal** — End-to-end encrypted via signal-cli bridge. Group and private modes. Auto-managed signal-cli binary. Pairing-code access control. Phone number redaction in CLI.
-- **Crash recovery** — Crash flag system writes to `~/.mercury/.crash-flag` on ungraceful exit; next startup reports what happened.
+- **Persistent bot runtime** — Bots are long-lived persona agents, not temp sub-agents: `bot.yaml` manifest + `permissions.yaml`, private sandbox at `~/.mercury/bots/<id>/`, journal-backed thread history that hydrates on reopen. A wake turns them on; they work through a durable job queue that survives restarts.
+- **Fleets — leads + crews** — Promote any bot to **fleet lead**; it recruits, organizes, and manages its own crew (imperative self-organization). Multi-level hierarchies supported; crew results bubble up through the lead. Onboarding tiers: solo → lead auto-build → lead manual.
+- **Durable queue + DLQ** — Jobs survive restarts, lease-heartbeat while running, classify to `timed out` on worker death, and replay non-destructively from the DLQ (`/bots replay`). Nothing dies silently.
+- **Web cockpit** — The local dashboard gained a **Mercury Bots section**: live roster states, per-bot threads, needs-you escalation badges, and a fleet step view that mirrors the TUI.
+- **Sandbox + deliverables** — Per-bot isolated workspace; final artifacts go out via `bot_deliver`; retention janitor caps disk; fleet-shared folder for cross-bot files with implicit grants.
+- **Bundles** — `/bots export` produces a shareable bundle (manifests + personas + permissions + skills; a lead's bundle carries its whole crew). `/bots import` recreates bots — imported bots start **disabled** by design; sandbox, journals, and `.env` never travel.
+- **Permission tiers at onboarding** — `ask` / `allow` per capability, set explicitly. Per-bot shell allow-lists flow from `permissions.yaml autoApproveCommands`; malformed scopes skip + warn, never crash turns.
+- **Bot-facing tools** — `dispatch_bot`, `bot_schedule`, `bot_deliver`, `fleet_status`, `journal_append` + native/per-bot skill libraries with auto-synthesis. Bots can schedule their own future runs.
+- **`mercury bots` CLI** — `doctor` (exit 1 when actionable), `list`, `storage`.
 
 ### Fixed
 
-- **CLI heartbeat updates in place** — No more wall-of-progress messages during long tasks.
-- **All 12 silent task failure paths eliminated** — Every loop condition, tool limit, and stall now sends an explicit error message.
-- **Step log collapse** — Max 3 visible steps during active tasks; Ctrl+D for full history.
-- **Ollama Local routed through OpenAI compat** — Fixes AI SDK v1 specification error.
-- **Daemon graceful shutdown** — SIGTERM → wait → SIGKILL; stale signal-cli cleanup on stop.
-- **Channel send errors logged** — No more silently swallowed send failures.
-
-### Dependencies
-
-- `discord.js` v14.26.4
-- `@slack/bolt` v4.7.3
+- Fleet duplication on reopen; `/bots` stays inside the bot thread it opened.
+- Bot thinking streams live into its thread; fleet speed fixes (single-provider lease wait, batched roster fetches).
+- Bot-thread results no longer sliced at 800 chars; durable retries + durable mailboxes close delivery-contract gaps.
+- Windows hardening: SQLite queue teardown EBUSY, heartbeat-test EBUSY, retention EINVAL, separator-agnostic traversal guard; post-close queue ops degrade to no-ops.
+- JSON backend lease-expiry race closed; doctor flags routines registered in schedules but missing from `bot.yaml` (the silently-never-fires failure).
+- Telegram member installs no longer surface `install_skill`.
 
 ### Upgrade
 
 **npm:**
 ```
-npm install -g @cosmicstack/mercury-agent@1.1.13
+npm install -g @cosmicstack/mercury-agent@1.3.0
 mercury restart
 ```
 
-**Standalone binary:** re-run the one-line installer from [mercuryagent.sh](https://mercuryagent.sh), then:
-```
-mercury restart
-```
+**Standalone binary:** re-run the one-line installer from mercuryagent.sh, then `mercury restart`.
 
-No config migrations needed. All new channels are off by default.
+No config migrations. Bots are opt-in: `/bots create <id> "Name" "Description"` onboards your first bot.
 
-### Files Touched
+### Files Touched (highlights)
 
-- `src/channels/discord.ts` — Discord channel (new)
-- `src/channels/signal.ts` — Signal channel (new)
-- `src/channels/slack.ts` — Slack channel (new)
-- `src/signal/binary.ts` — signal-cli binary management (new)
-- `src/signal/jsonrpc.ts` — JSON-RPC client (new)
-- `src/signal/process.ts` — Process lifecycle (new)
-- `src/signal/setup.ts` — Signal registration (new)
-- `src/core/crash-flag.ts` — Crash flag system (new)
-- `src/core/agent.ts` — Channel registration, heartbeat in-place, silent failure elimination
-- `src/channels/registry.ts` — Discord/Slack/Signal registration
-- `src/channels/cli.ts` — sendHeartbeat method
-- `src/types/channel.ts` — Signal/Discord/Slack access types
-- `src/utils/config.ts` — Config sections and access management for new channels
-- `src/index.ts` — CLI commands for new channels, onboarding flows
-- `src/cli/daemon.ts` — Graceful shutdown, signal-cli cleanup
-- `src/cli/watchdog.ts` — Crash flag on max-restart
-- `src/providers/registry.ts` — ollamaLocal → OpenAI compat
-- `src/ui/App.tsx` — Step collapse, Ctrl+D, Processing indicator
-- `package.json` — v1.1.13, discord.js, @slack/bolt
+- `src/bots/*` — the entire fleet module (new): store, queue (SQLite+JSON), bot-manager, bot-turn, journal, bundle, doctor, persona-template, fleet-*, skill-synthesis, retention, tools/.
+- `src/core/agent.ts`, `src/cli/*`, `src/channels/cli.ts` — /bots chat surface, CLI command group, bot-thread region, thinking streams.
+- `src/web/*` — Mercury Bots cockpit section on the dashboard.
+- PRs: #131–#139, #117 (RevShare).
 
-**Full Changelog**: https://github.com/cosmicstack-labs/mercury-agent/compare/v1.1.12...v1.1.13
+**Full Changelog**: https://github.com/cosmicstack-labs/mercury-agent/compare/v1.2.7...v1.3.0

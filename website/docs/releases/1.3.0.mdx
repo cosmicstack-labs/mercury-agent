@@ -1,0 +1,131 @@
+---
+title: "v1.3.0 — Mercury Bots"
+sidebar_label: "v1.3.0"
+description: "Mercury stops being one agent and becomes a fleet. Persistent persona-scoped bots with private sandboxes, durable queues, multi-level fleets with self-organizing leads, bundles, a web cockpit, and honest observability."
+keywords: [mercury, mercury-agent, mercury-bots, bots, fleet, persona, agent-fleet, release, 1.3.0]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.3.0 — Mercury Bots" />
+  <meta property="og:description" content="Mercury becomes a fleet: persistent persona-scoped bots, durable queues, self-organizing crews, bundles, a web cockpit, and honest observability." />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.3.0" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.3.0 — Mercury Bots" />
+  <meta name="twitter:description" content="Persistent persona bots · Durable queue · Fleets with crews · Bundles · Web cockpit · Sandbox retention." />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.3.0" />
+</Head>
+
+# v1.3.0 — Mercury Bots
+
+> **Mercury stops being one agent and becomes a fleet.**
+
+`1.3.0` is the biggest capability shift since the Second Brain: **Mercury Bots** — persistent, persona-scoped agents that live *outside your conversation*. Each bot has its own persona (`bot.yaml` + `permissions.yaml`), a private sandbox workspace under `~/.mercury/bots/<id>/`, its own skill library and permission scopes, a per-bot token budget, and a journal-backed thread history that survives restarts. Dispatch work and keep talking to Mercury — the bot works in the background and delivers results in **its own thread**, never in the middle of your chat.
+
+And because one bot is never enough: promote a bot to **fleet lead** and it recruits and organizes its own crew — multi-level hierarchies with results bubbling up through the lead. Ship the whole fleet to a teammate as a single bundle. Watch it all live from the web cockpit.
+
+> **Why "Mercury Bots"?** Sub-agents die with their task; channels answer one persona at a time. Bots are neither: they are persistent specialists with identities, workspaces, and queues — the difference between hiring a contractor for the afternoon and employing a small team.
+
+## At a glance
+
+| Area | What changed |
+|---|---|
+| **Persistent runtime** | Persona manifests (`bot.yaml`/`permissions.yaml`), private sandbox per bot, journal-hydrated threads, wakes + durable queue |
+| **Fleet hierarchy** | Fleet leads recruit/manage their own crew (imperative self-organization); multi-level fleets; results bubble up through leads |
+| **Durable queue + DLQ** | Jobs survive restarts; lease-heartbeat; `timed out` classification; non-destructive `/bots replay` |
+| **Web cockpit** | Mercury Bots section on the local dashboard: live roster, per-bot threads, needs-you badges, fleet step view mirroring the TUI |
+| **Sandbox + `bot_deliver`** | Isolated per-bot workspaces; final artifacts via `bot_deliver`; retention janitor caps disk; `_shared` folder for cross-bot files |
+| **Bundles** | `/bots export` / `/bots import` — portable fleets; imported bots start disabled; sandbox/journals/`.env` never travel |
+| **Permissions** | Explicit tiers at onboarding (`ask`/`allow`), per-bot shell allow-lists, malformed scopes warn instead of crashing |
+| **CLI** | `mercury bots doctor` / `list` / `storage` mirroring the in-chat surface |
+
+## The bot model
+
+A bot is **not** a sub-agent and **not** a channel — it's a third way to run intelligence:
+
+| | Sub-agent | Bot |
+|---|---|---|
+| Lifetime | dies with its task | persistent across restarts |
+| Identity | anonymous worker | named persona (name, description, character) |
+| Workspace | inherits your session | private sandbox at `~/.mercury/bots/<id>/` (+ fleet-shared folder) |
+| Results | land in your chat | land in **the bot's own thread** |
+| Continuity | none | journal history hydrates on reopen |
+| Permissions | your session's | its own scopes, declared in the persona |
+
+The wake lifecycle: dispatch a task → the bot's thread shows live state and streamed thinking → it works through the durable queue → results land in its thread → if something genuinely needs you (failed job, blocked permission, stopped bot), a **needs-you alert** reaches your active channel.
+
+## Fleets — leads and crews
+
+Any bot can be promoted to a **fleet lead** (`/bots promote <id>`). Leads are different:
+
+- **Imperative self-organization** — tell the lead *what* to achieve, not how; it recruits crew, delegates, and synthesizes results (multi-level hierarchies supported).
+- **Crew management** — `fleet-delegation`, `fleet-layout`, and `fleet-stop/start` semantics: stopping a lead holds its whole subtree; `/bots start` on the lead resumes it.
+- **Onboarding tiers** — solo bot → **lead auto-build** (lead designs its own crew from your brief) → **lead manual** (you hand-pick every member).
+- **Bundle portability** — exporting a lead ships the whole crew as one bundle.
+
+## Durable queue — honest about failure
+
+The fleet runs on a durable job queue (SQLite-backed with a JSON fallback), hardened through eight Windows/teardown cycles:
+
+- Jobs **survive restarts**; workers take leases with heartbeats.
+- Deaths classify honestly: `timed out` (worker died), `failed` (permanent) — both land in the DLQ, replayable **non-destructively** via `/bots replay <id> <jobId>`.
+- Post-close queue operations degrade to no-ops, never crashes; traversal guards are separator-agnostic.
+- `mercury bots doctor` cross-checks schedules: routines that exist in the scheduler but never got registered (the *silently never fires* failure) are flagged before they bite.
+
+## The web cockpit
+
+The local web dashboard now has a **Mercury Bots section**:
+
+- Live fleet roster with per-bot states (running / waiting / stopped / needs-you).
+- Per-bot **thread view** — chat with any bot from the browser, thinking streamed live.
+- **Fleet step view** mirroring Mercury Code TUI steps — solo, lead auto-build, lead manual tiers all render identically.
+- Needs-you escalation badges surface bots that are blocked and waiting on you.
+
+## Sandbox, retention, deliverables
+
+- Every bot works inside `~/.mercury/bots/<id>/` — its own workspace with per-directory **read/write/execute scopes declared in the persona**.
+- Final artifacts exit through **`bot_deliver`** (platform or download format), so nothing lives only inside a sandbox.
+- The **retention janitor** enforces per-bot disk caps (journal rotation, DLQ cap) — a forgotten fleet can't eat your disk.
+- `~/.mercury/bots/_shared/` is the fleet-shared folder: implicit grants between crew members, explicit grants for leads.
+
+## Bundles — portable fleets
+
+```
+/bots export <id> [path]     # manifest + persona + permissions + skills (+ crew if lead)
+/bots import <path>          # recreate bots — imported bots start disabled
+```
+
+A lead's bundle carries its entire crew. Whole-fleet export is supported. Imported bots start **disabled by design** — you inspect them, then `/bots enable` when you trust them. Sandboxed state, journals, and `.env` secrets never travel.
+
+## Permissions — explicit, not silent
+
+Onboarding walks through capability tiers (`ask` / `allow`) — nothing defaults silently in the dark. Hand-edited `bot.yaml` / `permissions.yaml` apply **live**; malformed scope entries skip with a warning instead of crashing turns. Telegram member installs no longer surface `install_skill`.
+
+## Also in this release
+
+- **Live thinking streams** — bot reasoning streams into its thread as a quoted preview; fleet speedups from a single-provider lease wait and batched roster fetches.
+- **`mercury bots` CLI** — `doctor` (exit 1 = actionable), `list`, `storage` for disk usage.
+- **Windows/teardown hardening** — eight cycles of EBUSY/EINVAL/traversal fixes across the queue, heartbeat tests, and retention backdating.
+- **v1.2.4 → v1.2.7 carried in** — dynamic status verbs, "Did you know?" tips, slash-autocomplete coverage everywhere, smart-conditional completion stats, and the RevShare integration (#117). See the [changelog](https://github.com/cosmicstack-labs/mercury-agent/blob/main/CHANGELOG.md) for the full per-version detail.
+
+## Upgrade
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.3.0
+mercury restart
+```
+
+Standalone-binary users: re-run the one-line installer from [mercuryagent.sh](https://mercuryagent.sh), then `mercury restart`.
+
+No config migrations. Bots are opt-in — nothing changes until you create one:
+
+```
+/bots create researcher "Researcher" "Web research specialist"
+/bots persona researcher "You are a meticulous researcher who cites sources."
+```
+
+**Full Changelog**: https://github.com/cosmicstack-labs/mercury-agent/compare/v1.2.7...v1.3.0

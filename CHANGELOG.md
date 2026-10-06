@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.3.0 — Mercury Bots
+
+Persistent, persona-scoped agents that run **outside your conversation** — each with its own persona, workspace, skills, permissions, and durable queue. Onboard specialists, chain them into multi-level fleets, and let them work 24/7 while you keep talking to Mercury.
+
+### New
+
+- **Persistent bot runtime (P0)** — Bots are long-lived agents with a persistent persona (`bot.yaml` + `permissions.yaml`), their own private sandbox at `~/.mercury/bots/<id>/`, and journals that survive restarts. A wake turns them on; they work through a durable job queue; results land **in the bot's own thread** — never dumped back into the session that dispatched work.
+- **Durable queue + HTTP API (P1)** — Jobs survive restarts and lease-expire when a worker dies (`timed out` classification, non-destructive DLQ replay via `/bots replay`). Fleet health is one command away: `mercury bots doctor` (exit 1 = actionable), `mercury bots list`, `mercury bots storage`. Telegram `/pair`-style ingress: every bot reachable through the channel you already use.
+- **Fleets — lead bots + crews** — Promote a bot to **fleet lead**; it recruits and organizes its own crew (imperative self-organization). Multi-level hierarchies supported. Crew results bubble up through the lead. Fleet onboarding walks tiers: **solo → lead auto-build → lead manual**.
+- **Web cockpit — Mercury Bots section** — The local web dashboard gained a fleet section: roster with live states, per-bot threads, needs-you escalation badges, and a fleet step view that mirrors the TUI.
+- **Persona system** — Two-pass persona builder keeps big personas big; hand-edited `bot.yaml`/`permissions.yaml` apply live. Persona file declares access scopes (read/write/execute per directory), so each bot gets exactly the surface it needs — no more.
+- **Sandbox + `bot_deliver`** — Every bot gets an isolated workspace; final artifacts go out through `bot_deliver`. Sandbox retention janitor caps per-bot disk usage; fleet-shared folder at `~/.mercury/bots/_shared` for cross-bot files with implicit grants.
+- **Bundles** — `/bots export` produces a shareable bundle (manifests + personas + permissions + skills; a lead's bundle carries its whole crew, whole-fleet export supported). `/bots import` recreates them — imported bots start disabled by design. Sandbox, journals, and `.env` never travel.
+- **Bot-facing tools** — `dispatch_bot`, `bot_schedule` (bots schedule their own future runs), `bot_deliver` (finalize artifacts), `fleet_status`, `journal_append`. Skill access for bots: native skill library + per-bot skill libraries with auto-synthesis.
+- **Lifecycle + observability** — Full create/edit/budget/delete lifecycle, stop/start/run with held-queue semantics (stop holds, never kills), needs-you alerts to your active channel, journal hydration restores per-bot threads on open, live activity bus feeds the roster and cockpit, per-bot token budgets, mtime-cached manifests, tail-read journals, `mercury bots storage` for disk usage.
+- **Permission tiers at onboarding** — Bots get `ask` / `allow` tiers per capability, set explicitly — nothing defaults silently. Per-bot shell allow-lists flow from `permissions.yaml autoApproveCommands`; malformed scope entries skip + warn, never crash turns.
+
+### Fixed
+
+- Fleet duplication on reopen; `/bots` stays inside the bot thread it opened.
+- Bot thinking streams into its thread live; fleet speed fixes (single-provider lease wait, batched roster fetches).
+- Web fleet step mirrors the TUI step view exactly (solo / auto-build / manual tiers).
+- Results no longer sliced at 800 chars in bot threads; delivery-contract gaps closed with durable retries + durable mailboxes.
+- Windows hardening: queue teardown EBUSY on SQLite backend, EBUSY on heartbeat test backends, EINVAL on retention backdating, separator-agnostic traversal guard; post-close queue ops degrade to no-ops, not crashes.
+- JSON backend lease-expiry race closed; SQLite queue handle released on teardown; doctor closes its queue.
+- Telegram member installs blocked `install_skill` — tool surfaced only where it's safe.
+- `mercury bots doctor` scheduler linkage: routines registered in schedules but missing from `bot.yaml` are flagged before they silently never fire.
+
+### Internal
+
+- New `src/bots/` module: `store.ts`, `queue.ts` (SQLite + JSON backends), `bot-manager.ts`, `bot-turn.ts`, `journal.ts`, `bundle.ts`, `doctor.ts`, `persona-template.ts`, `fleet-*`, `skill-synthesis.ts`, `retention.ts`, `tools/` (`dispatch-bot`, `bot_schedule`, `bot_deliver`, `fleet_status`, `journal_append`).
+- `mercury bots` — new CLI command group (`doctor` / `list` / `storage`) mirroring the in-chat `/bots` surface.
+- PRs #131–#139 + PR #117's RevShare integration carry this release.
+
+### Migration from 1.2.7
+
+No breaking changes. Bots are **opt-in** — onboard your first bot with `/bots create <id> "Name" "Description"`; the doctor and fleet surface appear as soon as you have a fleet. Existing config, memory, and channels are untouched.
+
+## 1.2.7 — Polished Mercury
+
+UX-polish on the Mercury Code surface: every command in autocomplete, honest completion stats, and status verbs that describe what's happening without an extra model call.
+
+### New
+
+- **50/50 RevShare Integration: Mercury & AIML API** (#117) — revenue-share program integration.
+- **Dynamic status verbs** (#119) — one LLM call per session generates live status verbs ("Compiling", "Sweeping"), chat stays static.
+- **"Did you know?" tips** (#120) — surface-categorized, rare, system-voice tips about features you haven't used.
+
+### Fixed
+
+- Step narrations render as separate blocks in the live tail; the `│` rule stays on settled messages, only the live tail drops it.
+- Slash autocomplete + `/help` cover every recent command, on every surface.
+- File-change stats in the completion banner are smart-conditional (no noise for prose-only turns).
+- CLI uninstall discovery works on machines with no real install.
+
+## 1.2.6 — Command Surface Fixes
+
+Hotfix on 1.2.5: slash autocomplete and `/help` now list every recent command on every surface; the live tail renders step narrations as separate blocks with the `│` rule behavior corrected.
+
+## 1.2.5 — Restore & Republish
+
+Recovery release: restores the Release/1.23 work dropped by a bad merge (40f5aea), rebuilds Pages output without merge-conflict markers, and re-publishes the 1.2.4 line cleanly.
+
+## 1.2.4 — Landing & Cards
+
+Website/branding release: richer per-page OG social-card generator with sections and breadcrumbs, inline SVG icons replace emojis on the landing page, and the v1.2.3 release page fix ships in the built docs bundle.
+
 ## 1.2.3 — Unstoppable Mercury
 
 The release where **Mercury Code stops dying and starts telling the truth.** The completion pipeline was rebuilt around a completion contract: every task ends in a verdict — verified completion, or an honest pause that names its blocker and resumes. Tasks can no longer fake success, die silently, or loop forever.

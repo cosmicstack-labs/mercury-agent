@@ -45,6 +45,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'integrations/web-dashboard',
+        'integrations/mercury-bots',
         'integrations/kanban-boards',
         'integrations/github-companion',
         'integrations/telegram',
@@ -78,6 +79,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'releases/releases',
+        'releases/1.3.0',
         'releases/1.2.3',
         'releases/1.2.0',
         'releases/1.1.13',

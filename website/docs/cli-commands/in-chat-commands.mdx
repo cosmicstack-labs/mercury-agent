@@ -91,6 +91,29 @@ When saver auto-engages, Mercury sends a one-time notification so you know respo
 | `/agents config` | Show sub-agent resource allocation |
 | `/agents set max <n>` | Set max concurrent sub-agents |
 
+## Mercury Bots
+
+Persistent persona-scoped agents that run outside your conversation — each with its own persona, sandbox, skills, and durable queue. See the [Mercury Bots guide](../integrations/mercury-bots) for the full surface.
+
+| Command | Description |
+|---------|-------------|
+| `/bots` | Roster with live fleet states |
+| `/bots create <id> "Name" "Description"` | Onboard a bot |
+| `/bots open <id>` | Open the bot's own thread |
+| `/bot <id> <message>` or `@<id> <message>` | Dispatch a task to a bot (result lands in the bot's thread) |
+| `/bots persona <id> <text>` | Set the bot's character |
+| `/bots edit <id>` | Edit name, description, model, budget |
+| `/bots delete <id>` | Delete the bot |
+| `/bots promote <id>` / `demote <id>` | Fleet lead ↔ solo bot |
+| `/bots stop <id>` / `start <id>` | Stop (holds jobs) / start (resumes subtree for leads) |
+| `/bots enable <id>` / `disable <id>` | Reactivate a disabled (e.g. imported) bot |
+| `/bots run <id> [routine]` | Fire a routine or bare wake now |
+| `/bots journal <id>` | Recent runs for a bot |
+| `/bots dlq` | Failed jobs (replayable) |
+| `/bots replay <id> <jobId>` | Non-destructive DLQ replay |
+| `/bots export <id> [path]` | Export a shareable bundle (leads carry their crew) |
+| `/bots import <path>` | Recreate bots from a bundle (imports start disabled) |
+
 ## Background Tasks
 
 | Command | Description |

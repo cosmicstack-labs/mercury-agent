@@ -1,0 +1,113 @@
+---
+id: mercury-bots
+title: Mercury Bots — The Fleet
+description: "Persistent, persona-scoped agents that run outside your conversation — each with its own persona, sandbox, skills, permission scopes, and durable queue. Build fleets with lead bots and crews."
+keywords: [bots, fleet, persona, mercury bots, fleet lead, crew, dispatch, dlq, bundles]
+---
+
+# Mercury Bots — The Fleet
+
+Mercury Bots are **persistent, persona-scoped agents** that run *outside your conversation*. Unlike sub-agents (which die with their task) or channels (which answer as one persona), bots are long-lived specialists: each has a name, a character, its own private workspace, its own skill library and permission scopes, a per-bot token budget, and a durable job queue. Dispatch work and keep talking — the bot works in the background and delivers results in **its own thread**.
+
+## Concepts
+
+| Concept | What it is |
+|---|---|
+| **Bot** | A persistent persona agent: `bot.yaml` manifest + `permissions.yaml`, sandbox at `~/.mercury/bots/<id>/`, journal-backed history |
+| **Wake** | Turning a bot on for a turn (`/bots run <id> [routine]` or a dispatched task) |
+| **Thread** | The bot's own chat — results, thinking streams, and journal history land here, never in your active chat |
+| **Fleet lead** | A bot promoted to organize its own crew (`/bots promote <id>`) — tell it *what*, it decides *how* and who |
+| **Crew** | The bots under a lead; results bubble up through the lead; multi-level hierarchies supported |
+| **Bundle** | Shareable export of a bot (or whole fleet): manifests + personas + permissions + skills |
+| **DLQ** | Dead-letter queue for failed/timed-out jobs, replayable non-destructively |
+| **Needs-you alert** | Escalation to your active channel when a bot is blocked (failed job, permission wall, stopped bot) |
+
+## Bot vs sub-agent vs channel
+
+| | Sub-agent | Mercury Bot |
+|---|---|---|
+| Lifetime | dies with its task | persists across restarts |
+| Identity | anonymous | named persona with editable character |
+| Workspace | session workspace | private sandbox `~/.mercury/bots/<id>/` + shared folder |
+| Results | your chat | the bot's own thread |
+| Memory | none | journal history hydrates on reopen |
+| Skills | session skills | native library + per-bot libraries |
+| Schedule | — | `bot_schedule` — bots own their routines |
+
+## Quick start
+
+```
+/bots                                              # roster with live states
+/bots create researcher "Researcher" "Web research specialist"
+/bots persona researcher "Meticulous researcher who cites sources."
+/bots promote researcher                           # make it a fleet lead (optional)
+/dispatch_bot bot=researcher task="Compare X vs Y, cite sources"
+/bots open researcher                              # open its thread
+```
+
+The result lands in the researcher's thread — your chat stays clean. Check on it with `/bots` or open its thread and reply directly.
+
+## Commands
+
+Run these inside a conversation with Mercury (CLI, Telegram, Discord, Slack, or Web):
+
+| Command | Description |
+|---------|-------------|
+| `/bots` | Roster with live states |
+| `/bots create <id> "Name" "Description"` | Onboard a bot (walks persona, workspace, budget, permission tiers) |
+| `/bots open <id>` | Open the bot's own thread |
+| `/bot <id> <message>` or `@<id> <message>` | Dispatch a task; the result lands only in the bot's thread |
+| `/bots persona <id> <text>` | Replace the bot's character |
+| `/bots edit <id>` | Change name, description, model, budget |
+| `/bots delete <id>` | Remove the bot and its sandbox |
+| `/bots promote <id>` / `/bots demote <id>` | Make lead / return to solo |
+| `/bots stop <id>` / `/bots start <id>` | Stop holds jobs (resumable); start resumes the whole subtree for leads |
+| `/bots enable <id>` / `/bots disable <id>` | Suspend/reactivate (imported bots start disabled) |
+| `/bots run <id> [routine]` | Fire a routine now, or a bare wake |
+| `/bots journal <id>` | Recent runs |
+| `/bots dlq` | Failed jobs (replayable) |
+| `/bots replay <id> <jobId>` | Re-run a DLQ job non-destructively |
+| `/bots export <id> [path]` | Bundle export (a lead's carries its crew) |
+| `/bots import <path>` | Recreate from a bundle (starts disabled) |
+
+CLI mirrors the read-only surface — `mercury bots doctor` (fleet health check, exit 1 when actionable), `mercury bots list`, `mercury bots storage`.
+
+## Workspaces & file access
+
+- Every bot gets a **private sandbox**: `~/.mercury/bots/<id>/`. Work stays isolated; other bots can't wander into it.
+- The fleet-shared folder `~/.mercury/bots/_shared/` is for cross-bot files — implicit grants for crew members, explicit for leads.
+- Access scopes (**read / write / execute** per directory) are declared in the bot's `permissions.yaml`; hand-edits apply live; malformed entries skip + warn rather than crash.
+- Shell approval follows the bot's own allow-list (`permissions.yaml autoApproveCommands`).
+- Final artifacts must exit via **`bot_deliver`** (platform folder or download) — nothing lives only inside a sandbox.
+- The **retention janitor** enforces per-bot disk caps (journal rotation, DLQ cap), so a forgotten fleet can't fill your disk.
+
+## Scheduling & autonomy
+
+Bots own routines through `bot_schedule` — schedule their own future runs and recurring jobs, visible in `/tasks` and the fleet doctor. Leads additionally self-organize: give a lead a goal and it recruits crew, splits work, and synthesizes results upward.
+
+## Bundles
+
+```
+/bots export <id>            # single bot (or whole crew if lead / whole fleet)
+/bots import <path>          # recreate bots — starts disabled by design
+```
+
+Bundles contain manifests, personas, permissions, and skill libraries so a recreated fleet works identically. What never travels: `~/.mercury/bots/<id>/` sandbox state, journals, and `.env` secrets. Import locally, review, `/bots enable`.
+
+## Web cockpit
+
+The local dashboard ('Mercury Bots' section) shows the live roster, per-bot threads with streamed thinking, needs-you badges, and a fleet step view that mirrors the TUI (solo / lead auto-build / lead manual).
+
+## Observability
+
+- **`/bots` roster** — live per-bot states (running / waiting / stopped / needs-you).
+- **Journals** — per-bot run history, tail-read and mtime-cached for speed.
+- **DLQ + replay** — failures classify honestly (`failed`, `timed out`) and replay non-destructively.
+- **`mercury bots doctor`** — storage health, queue depth, journal rotation, and scheduler linkage (routines registered but never wired are flagged before they silently never fire).
+
+## Security notes
+
+- Bots are persona-scoped: tools, skills, and scopes come from the bot's own manifests, not from your session.
+- Permission tiers (`ask` / `allow`) are chosen explicitly at onboarding — nothing defaults silently.
+- Bots stopped with `/bots stop` hold their queued jobs; nothing sneaks back in via the due-sweep until you `/bots start`.
+- Imported bundles start disabled — inspect before enabling.

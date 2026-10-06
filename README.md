@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>🔖 Current Stable: v1.2.7</strong>
+  <strong>🔖 Current Stable: v1.3.0 — Mercury Bots</strong>
 </p>
 
 <p align="center">
@@ -434,7 +434,7 @@ Output is **versioned** so older builds are never overwritten:
 ```
 release/
 ├── latest                       → symlink to most-recent version
-├── v1.2.7/
+├── v1.3.0/
 │   ├── mercury-macos-arm64
 │   ├── mercury-macos-x64
 │   ├── mercury-linux-x64
