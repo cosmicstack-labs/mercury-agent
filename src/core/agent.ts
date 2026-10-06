@@ -2182,6 +2182,17 @@ export class Agent {
       return;
     }
 
+    // `/bg <command>` is an alternate shell entry point: it must honor the
+    // same approval boundary as the run_command tool, otherwise an
+    // authenticated chat user can bypass Ask-Me approval and run arbitrary
+    // commands. checkShellCommand() also enforces the blocked list and any
+    // cwd/scope containment rules.
+    const check = await this.capabilities.permissions.checkShellCommand(command);
+    if (!check.allowed) {
+      await channel.send(`⛔ Not running in background: ${check.reason ?? 'command requires approval'}\nApprove the command first (or run it without /bg) and try again.`, msg.channelId);
+      return;
+    }
+
     const cwd = this.capabilities.getCwd();
     const bgId = this.backgroundTasks.spawnShell(command, cwd);
     await channel.send(`📋 Background task ${bgId} started: "${command.slice(0, 50)}${command.length > 50 ? '...' : ''}"`, msg.channelId);
