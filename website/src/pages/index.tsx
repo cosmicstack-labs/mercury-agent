@@ -592,7 +592,7 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-eyebrow" aria-label="Mercury Agent — Soul-driven">
               <span className="lp-hero-eyebrow-mark">☿</span>
               <span className="lp-hero-eyebrow-text">Mercury Agent · Soul-driven</span>
-              <span className="lp-hero-eyebrow-badge">v1.2.3 · Unstoppable Mercury</span>
+              <span className="lp-hero-eyebrow-badge">v1.3.0 · Mercury Bots</span>
             </div>
             <h1 className="lp-hero-title">
               Soul-driven AI agent<br />
@@ -606,45 +606,45 @@ export default function LandingPage(): React.ReactElement {
             <div className="lp-hero-actions">
               <Link to="/cloud" className="lp-btn lp-btn-primary">Try Mercury Cloud</Link>
               <a href="#live-demo" className="lp-btn lp-btn-secondary">See It Work</a>
-              <Link to="/docs/releases/1.2.3" className="lp-btn lp-btn-ghost">What's new in 1.2.3 →</Link>
+              <Link to="/docs/releases/1.3.0" className="lp-btn lp-btn-ghost">What's new in 1.3.0 →</Link>
             </div>
             <HeroInstall />
           </div>
         </section>
 
-        {/* Mercury Code 1.2.3 Release Banner */}
-        <section id="mercury-code-123" className="lp-section">
+        {/* Mercury 1.3.0 Release Banner */}
+        <section id="mercury-bots" className="lp-section">
           <div className="lp-container">
             <div className="lp-release-banner lp-reveal">
               <div className="lp-release-banner-left">
                 <div className="lp-release-badge">☿ NEW RELEASE</div>
-                <h2 className="lp-release-title">Mercury Code 1.2.3 — <em>Unstoppable Mercury</em></h2>
+                <h2 className="lp-release-title">Mercury 1.3.0 — <em>Mercury Bots</em></h2>
                 <p className="lp-release-lead">
-                  The release where Mercury Code <strong>stops dying and starts telling the truth</strong>.
-                  Every task ends in a verdict — a verified completion with evidence, or an honest pause that
-                  names its blocker and resumes. New AUTO mode plans and builds in one flow, a mechanical
-                  escalation harness forces action when models narrate, and memory pressure now compacts instead
-                  of killing long builds.
+                  The release where Mercury <strong>stops being one agent and becomes a fleet</strong>.
+                  Mercury Bots are persistent specialist agents — each with its own persona, model, memory,
+                  and permissions — that run <strong>outside the conversation</strong>. Fleet leads carry crews,
+                  jobs flow through a durable queue, output lands in the bot's own cockpit thread, and whole
+                  teams export as shareable bundles.
                 </p>
                 <div className="lp-release-points">
-                  <span>✓ Completion contract — no fake "Task complete"</span>
-                  <span>✓ Forced-action escalation harness</span>
-                  <span>✓ Live plan checklist + thinking preview</span>
-                  <span>✓ SSRF guard + secret redaction</span>
+                  <span>✓ Persistent bots — persona, model, memory, permissions</span>
+                  <span>✓ Fleet leads + crews with a shared workspace</span>
+                  <span>✓ Durable job queue + replayable DLQ</span>
+                  <span>✓ Cockpit threads, journals, and bundle export</span>
                 </div>
                 <div className="lp-release-actions">
-                  <Link to="/docs/releases/1.2.3" className="lp-btn lp-btn-primary">Release notes →</Link>
-                  <Link to="/docs/reference/completion-architecture" className="lp-btn lp-btn-ghost">How it works</Link>
+                  <Link to="/docs/releases/1.3.0" className="lp-btn lp-btn-primary">Release notes →</Link>
+                  <Link to="/docs/integrations/mercury-bots" className="lp-btn lp-btn-ghost">Bots guide</Link>
                 </div>
               </div>
               <div className="lp-release-right">
                 <div className="lp-release-term">
-                  <div className="lp-release-term-line lp-dim">● MERCURY · building the three.js world</div>
-                  <div className="lp-release-term-line">  ✓ ✨ Created index.html <span className="lp-dim">· 209 lines</span></div>
-                  <div className="lp-release-term-line">  ✓ ⎇ orbit controls, bloom pass</div>
-                  <div className="lp-release-term-line">  ✓ ✎ Edited main.js <span className="lp-dim">· +30 −12</span></div>
-                  <div className="lp-release-term-line">  ✓ ⌨ npm test <span className="lp-ok">✓ 12 passed</span></div>
-                  <div className="lp-release-term-line lp-ok">─ Task complete · verified · change summary attached</div>
+                  <div className="lp-release-term-line lp-dim">● MERCURY · dispatching the fleet</div>
+                  <div className="lp-release-term-line">  ✓ ⚡ article-writer drafted notes <span className="lp-dim">· 620 words</span></div>
+                  <div className="lp-release-term-line">  ✓ ⚑ fact-checker verified <span className="lp-ok">14/14 sourced</span></div>
+                  <div className="lp-release-term-line">  ✓ ✒ voice-editor humanized <span className="lp-dim">· AI-flavor 0</span></div>
+                  <div className="lp-release-term-line">  ✓ ☁ dispatch-controller queued <span className="lp-dim">· publish 09:00</span></div>
+                  <div className="lp-release-term-line lp-ok">─ Bots idle · journals clean · fleet verified</div>
                 </div>
               </div>
             </div>
