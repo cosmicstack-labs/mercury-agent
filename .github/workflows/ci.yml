@@ -99,11 +99,22 @@ jobs:
           export HOME=/home/builder
           export npm_config_cache=/home/builder/project/.npm-cache
           export TERMUX_VERSION=u0
-          # Pin a known-reliable mirror to avoid transient 520s on community mirrors
-          sed -i 's|^\(deb .*\)|deb https://packages-cf.termux.dev/apt/termux-main stable main|' /data/data/com.termux/files/usr/etc/apt/sources.list 2>/dev/null || true
-          pkg update -y || {
-            echo 'pkg update failed, retrying...'
-            pkg update -y
+          # Mirror hardening: overwrite sources with the official Cloudflare-backed
+          # mirror (echo, not sed — no fragile pattern matching) and disable the
+          # mirror-group auto-picker, which previously swapped to a mid-sync
+          # community mirror (mirrors.hust.edu.cn, 2026-10-07: stale Packages size).
+          TM=/data/data/com.termux/files/usr
+          mv "$TM/etc/termux/mirrors" "$TM/etc/termux/mirrors.disabled" 2>/dev/null || true
+          echo 'deb https://packages-cf.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
+          pkg_update() { pkg update -y; }
+          pkg_update || {
+            echo 'pkg update failed on primary mirror, switching to backup...'
+            echo 'deb https://packages.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
+            pkg_update || {
+              echo 'pkg update failed on backup too, restoring primary and retrying...'
+              echo 'deb https://packages-cf.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
+              pkg_update
+            }
           }
           # Retry package install up to 3 times — Termux mirrors are flaky
           for attempt in 1 2 3; do
