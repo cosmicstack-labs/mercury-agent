@@ -28,7 +28,7 @@ const JSON_LD = {
       '@id': `${SITE_URL}/#org`,
       name: 'Cosmic Stack',
       url: SITE_URL,
-      logo: `${SITE_URL}/img/icon-512.svg`,
+      logo: `${SITE_URL}/img/logo-light.png`,
       sameAs: [GITHUB_URL, NPM_URL],
     },
     {

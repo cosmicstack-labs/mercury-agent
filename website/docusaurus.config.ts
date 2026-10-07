@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Mercury Agent',
   tagline: 'The open-source AI agent you can leave running. Remembers what matters, asks before it acts, works with any model.',
-  favicon: 'img/favicon.svg',
+  favicon: 'img/logo-light.png',
 
   future: {
     v4: true,
@@ -45,7 +45,7 @@ const config: Config = {
         href: 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap',
       },
     },
-    { tagName: 'link', attributes: { rel: 'apple-touch-icon', href: '/img/icon-192.svg' } },
+    { tagName: 'link', attributes: { rel: 'apple-touch-icon', href: '/img/logo-light.png' } },
   ],
 
   i18n: {
