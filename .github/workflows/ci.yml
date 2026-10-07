@@ -99,28 +99,28 @@ jobs:
           export HOME=/home/builder
           export npm_config_cache=/home/builder/project/.npm-cache
           export TERMUX_VERSION=u0
-          # Mirror hardening: overwrite sources with the official Cloudflare-backed
-          # mirror (echo, not sed — no fragile pattern matching) and disable the
-          # mirror-group auto-picker, which previously swapped to a mid-sync
-          # community mirror (mirrors.hust.edu.cn, 2026-10-07: stale Packages size).
+          # Repo setup: point sources.list at the official Cloudflare-backed mirror.
+          # IMPORTANT: call apt directly, NOT the `pkg` wrapper — its mirror
+          # auto-selection reads etc/termux/mirrors/* groups and exits 1
+          # instantly in this container ("No mirror or mirror group selected",
+          # run 37578325949). Raw apt needs none of that state.
           TM=/data/data/com.termux/files/usr
-          mv "$TM/etc/termux/mirrors" "$TM/etc/termux/mirrors.disabled" 2>/dev/null || true
           echo 'deb https://packages-cf.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
-          pkg_update() { pkg update -y; }
-          pkg_update || {
-            echo 'pkg update failed on primary mirror, switching to backup...'
+          apt_update() { apt-get update -y; }
+          apt_update || {
+            echo 'apt update failed on primary mirror, switching to backup...'
             echo 'deb https://packages.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
-            pkg_update || {
-              echo 'pkg update failed on backup too, restoring primary and retrying...'
+            apt_update || {
+              echo 'apt update failed on backup too, restoring primary and retrying...'
               echo 'deb https://packages-cf.termux.dev/apt/termux-main stable main' > "$TM/etc/apt/sources.list"
-              pkg_update
+              apt_update
             }
           }
           # Retry package install up to 3 times — Termux mirrors are flaky
           for attempt in 1 2 3; do
-            pkg install -y git nodejs-lts python build-essential && break
-            echo "pkg install attempt $attempt failed, retrying..."
-            pkg update -y || true
+            apt-get install -y git nodejs-lts python build-essential && break
+            echo "apt install attempt $attempt failed, retrying..."
+            apt-get update -y || true
           done
           cd /home/builder/project
           npm install --no-audit --no-fund
