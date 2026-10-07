@@ -30,12 +30,12 @@
   </g>
 
   <!-- Headline -->
-  <text x="80" y="260" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="#ffffff" letter-spacing="-2">The AI agent you can</text>
-  <text x="80" y="352" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="url(#accent)" letter-spacing="-2">leave running.</text>
+  <text x="80" y="260" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="#ffffff" letter-spacing="-2">An AI agent with a soul,</text>
+  <text x="80" y="352" font-family="Inter, system-ui, sans-serif" font-size="76" font-weight="900" fill="url(#accent)" letter-spacing="-2">loyal only to you.</text>
 
   <!-- Sub -->
   <text x="80" y="410" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="500" fill="#7a7a8a">
-    Remembers what matters  ·  Asks before it acts  ·  Any model  ·  CLI, Web, Telegram, Discord, Slack, Signal
+    Soul-driven  ·  Remembers what matters  ·  Asks before it acts  ·  Any model  ·  Six channels
   </text>
 
   <!-- Install command -->

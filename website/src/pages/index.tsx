@@ -8,7 +8,7 @@ import Terminal from '@site/src/components/Home/Terminal';
 import InstallCommand from '@site/src/components/Home/InstallCommand';
 import {
   SITE_URL, GITHUB_URL, NPM_URL, SKILLS_URL, RELEASE, SEO, HERO_SCRIPT, CHAPTERS,
-  PRODUCTS, CHANNELS, PROVIDERS, COMPARE, NOT_YET, FAQ,
+  SURFACES, CLOUD, CHANNELS, PROVIDERS, COMPARE, NOT_YET, FAQ,
 } from '@site/src/components/Home/data';
 import '@site/src/css/home.css';
 
@@ -83,13 +83,14 @@ function Hero({ stars }: { stars: string | null }) {
           New in {RELEASE.version}: {RELEASE.name}
           <span aria-hidden="true">→</span>
         </Link>
+        <p className="mx-hero__eyebrow"><span aria-hidden="true">☿</span> Soul-driven AI agent</p>
         <h1 className="mx-hero__title">
-          The AI agent you can <em>leave running.</em>
+          An AI agent with a soul, <em>loyal only to you.</em>
         </h1>
         <p className="mx-hero__sub">
-          Mercury is an open-source agent that lives on your machine, remembers what matters,
-          and asks before it acts. Bring any model. Talk to it from your terminal, browser,
-          Telegram, Discord, Slack, or Signal.
+          Mercury learns how you work, remembers what matters, and gets things done while
+          you’re away. It runs on your machine, asks before it acts, and works with any model,
+          from your terminal, browser, Telegram, Discord, Slack, or Signal.
         </p>
         <InstallCommand className="mx-hero__install" />
         <div className="mx-hero__links">
@@ -161,25 +162,59 @@ function Chapters() {
   );
 }
 
-function Products() {
+function Showcase() {
+  const [active, setActive] = useState(0);
+  const surface = SURFACES[active];
   return (
     <section className="mx-section mx-section--alt" id="products" aria-labelledby="products-title">
       <div className="mx-wrap">
         <div className="mx-head">
-          <p className="mx-kicker">One agent, three ways to scale it</p>
-          <h2 id="products-title" className="mx-h2">From one conversation <em>to a whole crew.</em></h2>
+          <p className="mx-kicker">Three ways to work with it</p>
+          <h2 id="products-title" className="mx-h2">One agent. <em>Code, chat, or a whole crew.</em></h2>
         </div>
-        <div className="mx-products">
-          {PRODUCTS.map((p) => (
-            <Link key={p.name} to={p.to} className="mx-product">
-              <span className="mx-product__tag">{p.tag}</span>
-              <h3 className="mx-product__name">{p.name}</h3>
-              <p className="mx-product__title">{p.title}</p>
-              <p className="mx-product__body">{p.body}</p>
-              <span className="mx-arrow">Learn more →</span>
-            </Link>
+        <div className="mx-surface-tabs" role="tablist" aria-label="Mercury surfaces">
+          {SURFACES.map((sf, i) => (
+            <button
+              key={sf.cmd}
+              type="button"
+              role="tab"
+              id={`surface-tab-${i}`}
+              aria-selected={i === active}
+              aria-controls="surface-panel"
+              className={`mx-surface-tab ${i === active ? 'is-active' : ''}`}
+              onClick={() => setActive(i)}
+            >
+              <span className="mx-surface-tab__cmd">{sf.cmd}</span>
+              <span className="mx-surface-tab__name">{sf.name}</span>
+            </button>
           ))}
         </div>
+        <div className="mx-surface" id="surface-panel" role="tabpanel" aria-labelledby={`surface-tab-${active}`}>
+          <div className="mx-surface__copy">
+            <h3 className="mx-surface__title">{surface.title} <em>{surface.titleEm}</em></h3>
+            <p>{surface.body}</p>
+            <ul className="mx-list">
+              {surface.points.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+            <Link to={surface.link.to} className="mx-arrow">{surface.link.label} →</Link>
+          </div>
+          {/* keyed so the replay restarts on every tab switch */}
+          <Terminal key={surface.cmd} lines={surface.script} title={surface.scriptTitle} />
+        </div>
+        {/* the inactive surfaces stay in the HTML for crawlers and no-JS readers */}
+        <div className="mx-visually-hidden">
+          {SURFACES.filter((_, i) => i !== active).map((sf) => (
+            <section key={sf.cmd}>
+              <h3>{sf.name} ({sf.cmd}): {sf.title} {sf.titleEm}</h3>
+              <p>{sf.body}</p>
+            </section>
+          ))}
+        </div>
+        <Link to={CLOUD.to} className="mx-cloud-row">
+          <span className="mx-cloud-row__name">{CLOUD.title}</span>
+          <span className="mx-cloud-row__body">{CLOUD.body}</span>
+          <span className="mx-arrow" aria-hidden="true">→</span>
+        </Link>
       </div>
     </section>
   );
@@ -330,7 +365,7 @@ export default function Home(): React.ReactElement {
         <meta property="og:image" content={`${SITE_URL}/img/og/home.png`} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
-        <meta property="og:image:alt" content="Mercury Agent: the AI agent you can leave running." />
+        <meta property="og:image:alt" content="Mercury Agent: an AI agent with a soul, loyal only to you." />
         <meta name="twitter:image" content={`${SITE_URL}/img/og/home.png`} />
         <link rel="canonical" href={`${SITE_URL}/`} />
         <script type="application/ld+json">{JSON.stringify(JSON_LD)}</script>
@@ -339,7 +374,7 @@ export default function Home(): React.ReactElement {
         <Hero stars={stars} />
         <TrustStrip />
         <Chapters />
-        <Products />
+        <Showcase />
         <Everywhere />
         <Honest />
         <Faq />

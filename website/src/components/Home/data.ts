@@ -15,9 +15,9 @@ export const SKILLS_URL = 'https://skills.mercuryagent.sh';
 export const RELEASE = { version: '1.3.0', name: 'Mercury Bots', notes: '/docs/releases/1.3.0' };
 
 export const SEO = {
-  title: 'Mercury Agent: the open-source AI agent you can leave running',
+  title: 'Mercury Agent: the soul-driven AI agent, loyal only to you',
   description:
-    'Mercury is an open-source, self-hosted AI agent that runs 24/7 on your machine. It remembers what matters, asks before it acts, and works with any model from your terminal, browser, Telegram, Discord, Slack, or Signal.',
+    'Mercury is an open-source, soul-driven AI agent that runs 24/7 on your machine. It learns how you work, remembers what matters, asks before it acts, and works with any model from your terminal, browser, Telegram, Discord, Slack, or Signal.',
 };
 
 export type TermLine = {
@@ -174,32 +174,108 @@ export const CHAPTERS: Chapter[] = [
   },
 ];
 
-export const PRODUCTS = [
+export type Surface = {
+  cmd: '/code' | '/chat' | '/bots';
+  name: string;
+  title: string;
+  titleEm: string;
+  body: string;
+  points: string[];
+  link: { to: string; label: string };
+  script: TermLine[];
+  scriptTitle: string;
+};
+
+export const SURFACES: Surface[] = [
   {
+    cmd: '/code',
     name: 'Mercury Code',
-    tag: 'mercury code',
-    title: 'A senior engineer inside your repo.',
+    title: 'A senior engineer',
+    titleEm: 'inside your repo.',
     body:
-      'A full-screen, repo-aware coding environment. It plans and builds in one AUTO flow with a live checklist, hands background work to sub-agents, and shows per-file diffs at the end.',
-    to: '/docs/integrations/coding-workspace',
+      'A full-screen, repo-aware coding environment. Mercury plans and builds in one AUTO flow, shows every step on a live checklist, and only calls a task done after a build, typecheck, or test actually ran.',
+    points: [
+      'AUTO mode: plan and build in one flow, one confirmation for big changes',
+      'Live plan checklist, per-file diffs, and a workspace IDE (/ws)',
+      '/code agent hands work to a background sub-agent while you keep chatting',
+      'Stall watchdog, compact-on-pressure, provider fallback mid-task',
+    ],
+    link: { to: '/docs/integrations/coding-workspace', label: 'Explore Mercury Code' },
+    scriptTitle: 'mercury code · auto',
+    script: [
+      { k: 'cmd', t: 'mercury code ~/projects/acme' },
+      { k: 'dim', t: '☿ Mercury Code · AUTO · branch main' },
+      { k: 'gap', t: '' },
+      { k: 'in', t: 'refactor the auth module to JWT and add tests' },
+      { k: 'ok', t: 'read_file src/auth/handler.ts', n: 'plan 1/4' },
+      { k: 'ok', t: 'create_file src/auth/jwt.ts', n: '+64' },
+      { k: 'ok', t: 'edit_file src/auth/handler.ts', n: '+31 −48' },
+      { k: 'ok', t: 'create_file tests/auth.test.ts', n: '+112' },
+      { k: 'ok', t: 'run_command npm test', n: '8 passed' },
+      { k: 'done', t: 'Task complete · 6 steps · 34s', n: 'verified' },
+      { k: 'dim', t: '  3 files changed · /code diff to review · /ws to commit' },
+    ],
   },
   {
+    cmd: '/chat',
+    name: 'Mercury Chat',
+    title: 'Talk to it like',
+    titleEm: 'someone who knows you.',
+    body:
+      'The everyday Mercury: ask, plan, delegate, schedule. It answers from what it remembers about you, works with ~50 built-in tools, and follows you from the terminal to Telegram, Discord, Slack, Signal, or the web.',
+    points: [
+      'Answers shaped by your Second Brain, not a blank context',
+      'Schedules reminders and recurring tasks, then pings you on your channel',
+      'Slash commands that cost no tokens: /status, /budget, /memory, /models',
+      'Personality from soul.md and persona.md, files you own and edit',
+    ],
+    link: { to: '/docs/cli-commands/in-chat-commands', label: 'In-chat commands' },
+    scriptTitle: 'mercury · chat',
+    script: [
+      { k: 'cmd', t: 'mercury' },
+      { k: 'in', t: 'what’s on my plate today?' },
+      { k: 'ok', t: 'search_memory "today"', n: '4 hits' },
+      { k: 'say', t: 'Three things: the billing review with Priya at 2pm, the 1.3.1 changelog, and your 6pm gym slot. Want me to draft the changelog now?' },
+      { k: 'gap', t: '' },
+      { k: 'in', t: 'yes, and remind me at 1:45 for the review' },
+      { k: 'ok', t: 'schedule_task "billing review" 13:45', n: '→ Telegram' },
+      { k: 'say', t: 'Reminder set. Changelog draft coming up, in your usual bullet style.' },
+      { k: 'mem', t: 'Remembered · reminders 15 minutes before meetings' },
+    ],
+  },
+  {
+    cmd: '/bots',
     name: 'Mercury Bots',
-    tag: '/bots',
-    title: 'A small team, not a single chat.',
+    title: 'A small team,',
+    titleEm: 'not a single chat.',
     body:
-      'Persistent bots, each with its own persona, model, memory, and permissions. Promote one to fleet lead and it recruits a crew. Export the whole fleet as a single bundle.',
-    to: '/docs/integrations/mercury-bots',
-  },
-  {
-    name: 'Mercury Cloud',
-    tag: 'mercury cloud connect',
-    title: 'Reachable from anywhere. Optional.',
-    body:
-      'Pair your agent from the terminal and keep it online over a persistent connection. No port forwarding, reverse proxy, or certificates. Everything still works without it.',
-    to: '/cloud',
+      'Persistent bots, each with its own persona, model, memory, and permissions. Send one a job and keep talking to Mercury: the bot works in the background and delivers to its own thread. Promote one to fleet lead and it recruits a crew.',
+    points: [
+      'Onboard from /bots, the web cockpit, or the HTTP API',
+      'Fleet leads recruit and run their own crews',
+      'Durable job queue with a replayable dead-letter queue',
+      'Export a whole fleet as one bundle; imports start disabled',
+    ],
+    link: { to: '/docs/integrations/mercury-bots', label: 'Meet Mercury Bots' },
+    scriptTitle: 'mercury · /bots',
+    script: [
+      { k: 'in', t: '/bots send newsroom "write up the 1.3 launch for the blog"' },
+      { k: 'dim', t: '☿ newsroom · fleet lead · dispatching 4 crew' },
+      { k: 'ok', t: 'article-writer drafted notes', n: '620 words' },
+      { k: 'ok', t: 'fact-checker verified', n: '14/14 sourced' },
+      { k: 'ok', t: 'voice-editor humanized', n: 'AI-flavor 0' },
+      { k: 'ok', t: 'dispatch-controller queued', n: 'publish 09:00' },
+      { k: 'done', t: 'Fleet idle · journals clean · fleet verified' },
+      { k: 'dim', t: '  delivered to the newsroom thread · /bots inbox' },
+    ],
   },
 ];
+
+export const CLOUD = {
+  title: 'Mercury Cloud',
+  body: 'Optional. Pair from the terminal and keep your agent reachable from anywhere, with no port forwarding, reverse proxy, or certificates.',
+  to: '/cloud',
+};
 
 export const CHANNELS = [
   { name: 'Terminal', note: 'Ink TUI, slash commands, workspace IDE' },
