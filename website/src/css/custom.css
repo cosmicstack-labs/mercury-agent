@@ -1,44 +1,43 @@
 :root {
-  --ifm-color-primary: #00d4ff;
-  --ifm-color-primary-dark: #00b8de;
-  --ifm-color-primary-darker: #00a8ce;
-  --ifm-color-primary-darkest: #0088a8;
-  --ifm-color-primary-light: #1ad8ff;
-  --ifm-color-primary-lighter: #33dcff;
-  --ifm-color-primary-lightest: #66e3ff;
-  --ifm-code-font-size: 95%;
-  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
-  --ifm-font-family-monospace: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', monospace;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 212, 255, 0.06);
+  /* Mercury teal: AA contrast on paper. The dark theme uses the brighter cyan. */
+  --ifm-color-primary: #0b7285;
+  --ifm-color-primary-dark: #0a6778;
+  --ifm-color-primary-darker: #096170;
+  --ifm-color-primary-darkest: #08505c;
+  --ifm-color-primary-light: #0c7d92;
+  --ifm-color-primary-lighter: #0d8399;
+  --ifm-color-primary-lightest: #0f94ad;
+  --ifm-background-color: #fbfbf8;
+  --ifm-background-surface-color: #f3f3ee;
+  --ifm-color-content: #3c4347;
+  --ifm-heading-color: #111416;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-base: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ifm-font-family-monospace: 'Geist Mono', 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, monospace;
+  --ifm-navbar-height: 64px;
+  --ifm-navbar-shadow: none;
+  --docusaurus-highlighted-code-line-bg: rgba(11, 114, 133, 0.08);
+  --mx-site-line: rgba(17, 20, 22, 0.10);
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: #00d4ff;
-  --ifm-color-primary-dark: #00b8de;
-  --ifm-color-primary-darker: #00a8ce;
-  --ifm-color-primary-darkest: #0088a8;
-  --ifm-color-primary-light: #1ad8ff;
-  --ifm-color-primary-lighter: #33dcff;
-  --ifm-color-primary-lightest: #66e3ff;
-  --ifm-background-color: #0a0a0a;
-  --ifm-background-surface-color: #111111;
-  --ifm-color-content: #888888;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 212, 255, 0.08);
-}
-
-[data-theme='dark'] .navbar {
-  background: rgba(10, 10, 10, 0.85);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid #222;
-}
-
-[data-theme='dark'] .footer {
-  background: #080808;
-  border-top: 1px solid #222;
+  --ifm-color-primary: #7fd8e8;
+  --ifm-color-primary-dark: #63cfe2;
+  --ifm-color-primary-darker: #55cbdf;
+  --ifm-color-primary-darkest: #2ebdd6;
+  --ifm-color-primary-light: #9be1ee;
+  --ifm-color-primary-lighter: #a9e5f0;
+  --ifm-color-primary-lightest: #d1f2f8;
+  --ifm-background-color: #0a0d10;
+  --ifm-background-surface-color: #0e1216;
+  --ifm-color-content: #c3ccd1;
+  --ifm-heading-color: #f1f5f7;
+  --docusaurus-highlighted-code-line-bg: rgba(127, 216, 232, 0.08);
+  --mx-site-line: rgba(230, 240, 244, 0.09);
 }
 
 [data-theme='dark'] .menu {
-  background: #0a0a0a;
+  background: var(--ifm-background-color);
 }
 
 /* Mobile sidebar - ensure visibility in dark mode */
@@ -84,7 +83,7 @@
 }
 
 [data-theme='dark'] .table-of-contents {
-  border-left: 1px solid #222;
+  border-left: 1px solid var(--mx-site-line);
 }
 
 [data-theme='dark'] code {
@@ -100,13 +99,58 @@
 }
 
 [data-theme='dark'] .theme-doc-sidebar-container {
-  border-right: 1px solid #222;
+  border-right: 1px solid var(--mx-site-line);
 }
 
-.navbar__title {
-  font-family: var(--ifm-font-family-monospace);
-  font-weight: 700;
+/* ---- Navbar: hairline, translucent, same on docs and homepage ---- */
+.navbar {
+  background: color-mix(in srgb, var(--ifm-background-color) 82%, transparent);
+  backdrop-filter: saturate(160%) blur(14px);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  border-bottom: 1px solid var(--mx-site-line);
 }
+.navbar__title { font-weight: 600; letter-spacing: -0.01em; }
+.navbar__logo { height: 26px; }
+.navbar__item.navbar__link { font-size: 0.92rem; font-weight: 500; }
+.navbar-github {
+  width: 36px; height: 36px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+}
+.navbar-github::before {
+  content: ''; width: 20px; height: 20px; background-color: var(--ifm-navbar-link-color);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z'/%3E%3C/svg%3E") no-repeat center / contain;
+}
+.navbar-github:hover::before { background-color: var(--ifm-navbar-link-hover-color); }
+.navbar .navbar-cta {
+  margin-left: 8px; padding: 7px 16px; border-radius: 999px;
+  background: var(--ifm-heading-color); color: var(--ifm-background-color) !important;
+  font-weight: 500; font-size: 0.88rem;
+}
+.navbar .navbar-cta:hover { opacity: 0.88; color: var(--ifm-background-color); }
+.navbar-sidebar .navbar-github::before { margin-right: 8px; }
+
+/* ---- Announcement bar ---- */
+.theme-announcement-bar {
+  /* config colors are inline styles; the bar follows the theme instead */
+  background: var(--ifm-heading-color) !important;
+  color: var(--ifm-background-color) !important;
+  border-bottom: 0;
+  font-size: 0.86rem;
+}
+.theme-announcement-bar a { color: inherit; font-weight: 600; }
+.theme-announcement-bar button { color: inherit; }
+
+/* ---- Footer: quiet, hairline ---- */
+.footer {
+  --ifm-footer-background-color: var(--ifm-background-color);
+  --ifm-footer-title-color: var(--ifm-heading-color);
+  --ifm-footer-link-color: var(--ifm-color-content);
+  border-top: 1px solid var(--mx-site-line);
+  padding: 64px 0 48px;
+}
+.footer__title { font-family: var(--ifm-font-family-monospace); font-size: 0.74rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.7; }
+.footer__item { font-size: 0.92rem; }
+.footer__copyright { font-size: 0.84rem; opacity: 0.7; margin-top: 32px; }
 
 [data-theme='dark'] .pagination-nav__link {
   border-color: #222;
@@ -194,7 +238,7 @@
 }
 
 [data-theme='dark'] table th {
-  border-bottom: 1px solid #222;
+  border-bottom: 1px solid var(--mx-site-line);
   background: #111111;
   color: #00d4ff;
   font-family: var(--ifm-font-family-monospace);
@@ -204,7 +248,7 @@
 }
 
 [data-theme='dark'] table td {
-  border-bottom: 1px solid #222;
+  border-bottom: 1px solid var(--mx-site-line);
   color: #888;
 }
 

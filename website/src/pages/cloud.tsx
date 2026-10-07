@@ -157,8 +157,8 @@ export default function CloudPage(): React.ReactElement {
             </Link>
             <div className={`lp-nav-links ${mobileMenuOpen ? 'lp-nav-links-open' : ''}`}>
               <Link to="/cloud">Mercury Cloud</Link>
-              <Link to="/#pillars" onClick={() => setMobileMenuOpen(false)}>Features</Link>
-              <Link to="/#live-demo" onClick={() => setMobileMenuOpen(false)}>Demo</Link>
+              <Link to="/#trust" onClick={() => setMobileMenuOpen(false)}>Features</Link>
+              <Link to="/#products" onClick={() => setMobileMenuOpen(false)}>Products</Link>
               <Link to="/#channels" onClick={() => setMobileMenuOpen(false)}>Channels</Link>
               <Link to="/#compare" onClick={() => setMobileMenuOpen(false)}>Compare</Link>
               <Link to="/docs" onClick={() => setMobileMenuOpen(false)}>Docs</Link>
