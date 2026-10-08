@@ -2239,7 +2239,7 @@ export class Agent {
     if (status === 'running') {
       void ch.sendToolEvent(toolName, argsOrResult as Record<string, any>, callId).catch(() => {});
     } else {
-      ch.completeToolEvent(toolName, argsOrResult, status === 'error', durationMs);
+      ch.completeToolEvent(toolName, argsOrResult, status === 'error', durationMs, callId);
     }
   }
 
@@ -7085,7 +7085,7 @@ Is this productive iteration or a stuck loop?`,
         return true;
       }
 
-      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code init, /code diff, /code workspace, /code agent <task>, /code off, /code toggle, /code exit', channelId);
+      await channel.send('Unknown /code command. Available: /code, /code plan, /code execute, /code build, /code init, /code diff, /code expand, /code workspace, /code agent <task>, /code off, /code toggle, /code exit', channelId);
       return true;
     }
 

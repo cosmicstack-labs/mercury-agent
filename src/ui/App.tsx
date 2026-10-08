@@ -6,6 +6,7 @@ import type { AppMode, ChatMessage, ToolStep, SubAgentInfo, PermissionPromptStat
 import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
+import { IS_LIGHT_TERMINAL } from '../utils/terminal-theme.js';
 import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
@@ -40,16 +41,7 @@ const MERCURY_MARK = [
   '            │   │',
 ];
 
-const IS_LIGHT_BG = (() => {
-  const fgBg = process.env.COLORFGBG;
-  if (!fgBg) return false;
-  const parts = fgBg.split(';');
-  const bgCode = Number(parts[parts.length - 1]);
-  if (Number.isNaN(bgCode)) return false;
-  return bgCode >= 10;
-})();
-
-const BRAND = IS_LIGHT_BG
+const BRAND = IS_LIGHT_TERMINAL
   ? { logo: 'blue', title: 'blue', subtitle: 'gray', accent: 'magenta' }
   : { logo: 'cyan', title: 'cyan', subtitle: 'gray', accent: 'magenta' };
 
@@ -350,6 +342,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       if (key.ctrl && (ch === 'p' || ch === 'P')) { onInput('/code plan'); return; }
       if (key.ctrl && (ch === 'x' || ch === 'X')) { onInput('/code execute'); return; }
       if (key.ctrl && (ch === 'g' || ch === 'G')) { onInput('/code diff'); return; }
+      if (key.ctrl && (ch === 'o' || ch === 'O' || ch === '\x0f')) { onInput('/mc expand'); return; }
 
       // Ctrl+N newline in input
       if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
@@ -2158,6 +2151,7 @@ const CODE_HINTS: Array<[string, string, string]> = [
   ['/code execute', 'approve & implement the plan', 'ctrl+x'],
   ['/init', 'scan repo & write AGENTS.md', ''],
   ['/code diff', 'show working-tree diff', 'ctrl+g'],
+  ['/code expand', 'show full output of the last tool', 'ctrl+o'],
   ['/code freeze', 'freeze frames to scroll/copy freely', 'ctrl+s'],
   ['/code chat', 'switch back to regular chat', 'esc esc'],
   ['/code exit', 'leave Mercury Code (confirm)', 'ctrl+d'],
@@ -2188,7 +2182,7 @@ function PlanProgressView({ steps }: { steps: PlanStep[] }): React.ReactNode {
   }
   if (active) {
     rows.push(
-      <Box key="active"><Text color="cyan" bold>▶ </Text><Text color="cyan" bold>{active.label}</Text><Text dimColor>  ← implementing</Text></Box>,
+      <Box key="active"><Text color={THEME_ACCENT} bold>▶ </Text><Text color={THEME_ACCENT} bold>{active.label}</Text><Text dimColor>  ← implementing</Text></Box>,
     );
   }
   const pendingRoom = Math.max(0, MAX_ROWS - rows.length);
@@ -2250,19 +2244,15 @@ export function streamTailRowCap(terminalRows: number): number {
  * terminal cyan "MERCURY" contrasts with orange "CODE"; on a light
  * background the shades deepen instead of washing out.
  */
-const WORDMARK_LIGHT_BG = (() => {
-  const fgBg = process.env.COLORFGBG;
-  if (!fgBg) return false;
-  const parts = fgBg.split(';');
-  const bgCode = Number(parts[parts.length - 1]);
-  return !Number.isNaN(bgCode) && bgCode >= 10;
-})();
-
 // One solid color per word, background-adaptive. "CODE" is a whitish gray
-// so the cyan "MERCURY" stays the visual anchor on any background.
-const WORDMARK_COLORS = WORDMARK_LIGHT_BG
-  ? { mercury: 'blue', code: '#c9cdd1' }
+// on dark (a dark gray on light — whitish would vanish on white) so the
+// "MERCURY" accent stays the visual anchor on any background.
+const WORDMARK_COLORS = IS_LIGHT_TERMINAL
+  ? { mercury: 'blue', code: '#5f6368' }
   : { mercury: 'cyanBright', code: '#c9cdd4' };
+
+/** Accent for the Mercury Code transcript: cyan is faint on a light background. */
+const THEME_ACCENT = IS_LIGHT_TERMINAL ? 'blue' : 'cyan';
 
 /** Centered three-column hint block (command · description · key), opencode-style. */
 function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
@@ -2274,7 +2264,7 @@ function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
     <Box flexDirection="column" alignItems="flex-start" paddingLeft={indent} marginTop={2}>
       {CODE_HINTS.map(([cmd, desc, key]) => (
         <Box key={cmd}>
-          <Text bold color="cyan">{cmd.padEnd(cmdW)}</Text>
+          <Text bold color={THEME_ACCENT}>{cmd.padEnd(cmdW)}</Text>
           <Text>  </Text>
           <Text dimColor>{desc.padEnd(descW)}</Text>
           <Text>  </Text>
@@ -2290,11 +2280,12 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const [frame, setFrame] = React.useState(0);
   const [, forceTick] = React.useState(0);
+  // Finished steps are not repeated here: each one is already a block in
+  // the transcript above (tool-block.ts). Only live work shows.
   const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
-  const doneRecently = state.toolSteps.filter((s) => s.status === 'done').slice(-2);
   const activeAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused');
   const activity = state.liveActivity;
-  const active = Boolean(running || state.isThinking || doneRecently.length > 0 || activeAgents.length > 0 || activity);
+  const active = Boolean(running || state.isThinking || activeAgents.length > 0 || activity);
   React.useEffect(() => {
     if (!active || state.mode !== 'mercury-code') return;
     // Scroll lock: the self-ticker must not repaint while the TUI is frozen
@@ -2367,9 +2358,9 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
     <Box flexDirection="column" paddingX={2} flexShrink={0}>
       {phase && (
         <Box>
-          <Text color="cyan">{frames[frame]}</Text>
+          <Text color={THEME_ACCENT}>{frames[frame]}</Text>
           <Text> </Text>
-          <Text color="cyan" bold>{phase}</Text>
+          <Text color={THEME_ACCENT} bold>{phase}</Text>
           {stepsDone > 0 && <Text dimColor> · step {stepsDone}</Text>}
           <Text dimColor> · {timeStr}</Text>
           {detail && <Text dimColor> — {detail}</Text>}
@@ -2384,12 +2375,6 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
           {running.startedAt && <Text dimColor> ({Math.max(0, (Date.now() - running.startedAt) / 1000).toFixed(0)}s)</Text>}
         </Box>
       )}
-      {doneRecently.map((step) => (
-        <Box key={step.id} paddingLeft={2}>
-          <Text color="green">✓</Text>
-          <Text dimColor> {step.label}{step.elapsed != null ? ` (${step.elapsed.toFixed(1)}s)` : ''}</Text>
-        </Box>
-      ))}
       {!running && state.thinkingPreview && (
         <Box paddingLeft={2}>
           <Text dimColor>  “{state.thinkingPreview.slice(-120)}”</Text>
@@ -2419,7 +2404,7 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
 
 /** Bordered input box (opencode-style) with mode-tinted prompt. */
 function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number }) {
-  const color = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan';
+  const color = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT;
   const lines = input.split('\n');
   let cursorLine = 0;
   let cursorCol = cursorPos;
@@ -2474,13 +2459,7 @@ function MercuryCodeExitConfirm({ boxWidth }: { boxWidth: number }): React.React
 const MERCURY_BRAND_ITEM_KEY = '__mercury_code_brand__';
 
 /** One formatted transcript row (shared by the brand block, Static items, and the live stream tail). */
-function MercuryTranscriptRow({ line, streaming }: { line: MercuryTranscriptLine; streaming?: boolean }): React.ReactNode {
-  const roleColor = line.role === 'user' ? 'yellow' : line.role === 'agent' ? 'cyan' : 'gray';
-  // The `│` rule is the settled-transcript look. While a message is still
-  // streaming, its live tail omits the rule — partial markdown re-parses
-  // every frame there, and the rule made those glitches visible. The same
-  // rows gain the rule automatically once they settle into <Static>.
-  const rule = streaming ? null : <Text color={roleColor}>│ </Text>;
+function MercuryTranscriptRow({ line }: { line: MercuryTranscriptLine }): React.ReactNode {
   if (line.kind === 'brand') {
     // Indent is baked into the text for exact centering.
     return (
@@ -2491,35 +2470,13 @@ function MercuryTranscriptRow({ line, streaming }: { line: MercuryTranscriptLine
             <Text bold color={WORDMARK_COLORS.code}>{line.accent}</Text>
           </>
         ) : (
-          <Text bold color="cyan">{line.text}</Text>
+          <Text bold color={THEME_ACCENT}>{line.text}</Text>
         )}
       </Box>
     );
   }
   if (line.kind === 'spacer') {
     return <Box paddingX={2}><Text> </Text></Box>;
-  }
-  if (line.kind === 'header') {
-    return (
-      <Box paddingX={2}>
-        <Text bold color={roleColor}>● {line.text}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'code-label') {
-    return (
-      <Box paddingX={2}>
-        {rule}<Text dimColor>┌─ {line.text}</Text>
-      </Box>
-    );
-  }
-  if (line.kind === 'code') {
-    const highlighted = highlightCodeBlock(line.text, line.lang)[0] ?? line.text;
-    return (
-      <Box paddingX={2}>
-        {rule}<Text>{highlighted || ' '}</Text>
-      </Box>
-    );
   }
   if (line.kind === 'system') {
     const complete = line.text.startsWith('Task complete');
@@ -2536,9 +2493,60 @@ function MercuryTranscriptRow({ line, streaming }: { line: MercuryTranscriptLine
       </Box>
     );
   }
+  if (line.kind === 'tool-head') {
+    return (
+      <Box paddingX={2}>
+        <Text color={line.status === 'error' ? 'red' : 'green'}>● </Text>
+        <Text bold>{line.text}</Text>
+        {line.accent ? <Text>({line.accent})</Text> : null}
+      </Box>
+    );
+  }
+  if (line.kind === 'tool-out') {
+    const body = line.lang === 'plan'
+      ? line.text.startsWith('☒')
+        ? <Text color="green" dimColor>{line.text}</Text>
+        : line.text.startsWith('▶')
+          ? <Text color={THEME_ACCENT} bold>{line.text}</Text>
+          : <Text dimColor>{line.text}</Text>
+      : line.lang
+      ? <Text>{highlightCodeBlock(line.text, line.lang)[0] ?? line.text}</Text>
+      : <Text color={line.elbow && line.status === 'error' ? 'red' : undefined} dimColor={!(line.elbow && line.status === 'error')}>{line.text || ' '}</Text>;
+    return (
+      <Box paddingX={2}>
+        {/* gray, not dimColor: dim and bold share SGR reset 22, and ink's
+            style merging let the indent's dim bleed into a bold row. */}
+        <Text color="gray">{line.elbow ? '  ⎿  ' : '     '}</Text>
+        {body}
+      </Box>
+    );
+  }
+  // Two-column gutter: the role marker on a message's first row, blank
+  // otherwise. It is identical while streaming and once settled, so rows
+  // never shift sideways when they move into scrollback.
+  const gutter = line.lead === 'agent'
+    ? <Text color={THEME_ACCENT}>● </Text>
+    : line.lead === 'user'
+      ? <Text color="gray" bold>{'> '}</Text>
+      : <Text>{'  '}</Text>;
+  if (line.kind === 'code-label') {
+    return (
+      <Box paddingX={2}>
+        {gutter}<Text dimColor>{line.text}</Text>
+      </Box>
+    );
+  }
+  if (line.kind === 'code') {
+    const highlighted = highlightCodeBlock(line.text, line.lang)[0] ?? line.text;
+    return (
+      <Box paddingX={2}>
+        {gutter}<Text>{'  '}{highlighted || ' '}</Text>
+      </Box>
+    );
+  }
   return (
     <Box paddingX={2}>
-      {rule}<Text>{line.text || ' '}</Text>
+      {gutter}<Text color={line.role === 'user' ? 'gray' : undefined}>{line.text || ' '}</Text>
     </Box>
   );
 }
@@ -2648,7 +2656,8 @@ export function MercuryCodeView({
     // have already joined <Static> above); the 32KB fence-aligned slice
     // stays as the safety net for a huge in-progress block.
     const remainderMessage = { ...streamingMessage, content: streamingMessage.content.slice(streamingChunks.remainderStart) };
-    const lines = buildStreamTailLines(remainderMessage, contentWidth, STREAM_TAIL_CHARS, tailCap);
+    // Role marker only while the remainder is still the message's first block.
+    const lines = buildStreamTailLines(remainderMessage, contentWidth, STREAM_TAIL_CHARS, tailCap, { showHeader: streamingChunks.remainderStart === 0 });
     tailRef.current = { id: streamingMessage.id, at: now, contentLength: streamingMessage.content.length, lines };
     return lines;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tailCap derives from rows; cache ref holds state
@@ -2694,7 +2703,7 @@ export function MercuryCodeView({
   const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : mode === 'auto' ? 'AUTO' : 'CHAT';
   const git = mc.git;
   const hasGit = git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
-  const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: 'cyan' }];
+  const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: THEME_ACCENT }];
   if (hasGit) {
     const gitBits = [`⎇ ${git.branch}`];
     if (git.ahead > 0) gitBits.push(`↑${git.ahead}`);
@@ -2702,7 +2711,7 @@ export function MercuryCodeView({
     if (git.dirty > 0) gitBits.push(`±${git.dirty}`);
     rightSegs.push({ text: gitBits.join(' '), color: 'blue' });
   }
-  rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : 'cyan' });
+  rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT });
   if (state.provider) rightSegs.push({ text: `${state.provider.name} ${state.provider.model}`, color: 'magenta' });
   // Developer status HUD: token budget is otherwise invisible in Mercury
   // Code (TokenBarView only renders in chat surfaces).
@@ -2739,7 +2748,7 @@ export function MercuryCodeView({
       </Static>
       {streamTailRows.length > 0 && (
         <Box flexDirection="column" flexShrink={0}>
-          {streamTailRows.map((line) => <MercuryTranscriptRow key={line.key} line={line} streaming />)}
+          {streamTailRows.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
         </Box>
       )}
       {showHints && <MercuryCodeHints cols={cols} />}

@@ -2,6 +2,7 @@ import type { ProgrammingModeState } from '../core/programming-mode.js';
 import type { SaverModeState } from '../core/saver-mode.js';
 import type { SubAgentStatus } from '../types/agent.js';
 import type { PermissionMode } from '../channels/base.js';
+import type { ToolBlock } from './tool-block.js';
 
 export type AppMode = 'splash' | 'chat' | 'coding' | 'workspace' | 'spotify' | 'menu' | 'mercury-code';
 
@@ -78,6 +79,8 @@ export interface ChatMessage {
   streaming?: boolean;
   completionMeta?: CompletionMeta;
   fileChanges?: FileChangeSummary[];
+  /** A finished tool call (Mercury Code transcript block); content holds a plain-text fallback. */
+  tool?: ToolBlock;
 }
 
 export interface FileChangeSummary {

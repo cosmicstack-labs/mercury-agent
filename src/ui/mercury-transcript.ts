@@ -4,8 +4,12 @@ import { normalizeTerminalText } from './terminal-viewport.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { devBuildLabel, isDevBuild } from '../utils/dev-build.js';
 import { renderMercuryCodeParts } from './pixel-logo.js';
+import stringWidth from 'string-width';
 
-export type MercuryTranscriptKind = 'header' | 'text' | 'code-label' | 'code' | 'system' | 'file' | 'spacer' | 'brand';
+export type MercuryTranscriptKind = 'text' | 'code-label' | 'code' | 'system' | 'file' | 'spacer' | 'brand' | 'tool-head' | 'tool-out';
+
+/** Gutter marker on a message's first row: `●` for the agent, `>` for the user. */
+export type MercuryTranscriptLead = 'agent' | 'user';
 
 export interface MercuryTranscriptLine {
   key: string;
@@ -15,6 +19,12 @@ export interface MercuryTranscriptLine {
   lang?: string;
   /** Secondary colored segment for brand rows (the "CODE" wordmark part). */
   accent?: string;
+  /** Set on the first row of a message: the gutter shows the role marker. */
+  lead?: MercuryTranscriptLead;
+  /** Tool rows: outcome color for the head marker and summary. */
+  status?: 'done' | 'error';
+  /** First tool-out row of a block: drawn with the ⎿ elbow. */
+  elbow?: boolean;
 }
 
 // Chalk output is useful elsewhere, but wrapping must operate on visible text.
@@ -39,9 +49,144 @@ export function wrapMercuryText(text: string, width: number): string[] {
   return lines;
 }
 
+// Control characters other than newline/tab. Model output is untrusted: raw
+// escape sequences in it must never reach the terminal — only the styling
+// renderMarkdown adds itself survives.
+const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
+// OSC sequences (titles, hyperlinks, clipboard): ESC ] … terminated by BEL or ST.
+const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
+
+export function sanitizeTerminalText(text: string): string {
+  return stripTerminalAnsi(text.replace(OSC_RE, '')).replace(CONTROL_RE, '');
+}
+
+// Visible prefix that continuation rows of a wrapped line should hang under:
+// list bullets / numbers, blockquote rules, or plain leading indentation.
+const HANGING_PREFIX_RE = /^(\s*(?:[•\-*]|\d+\.|│)\s+|\s+)(?=\S)/;
+const SGR_RE = /\x1b\[([0-9;]*)m/g;
+// SGR open code → the code that closes it (bold and dim share 22).
+const SGR_CLOSERS: Record<string, string> = { 1: '22', 2: '22', 3: '23', 4: '24', 7: '27', 9: '29' };
+
+function sgrCloser(code: string): string | undefined {
+  const n = Number(code.split(';')[0]);
+  if ((n >= 30 && n <= 38) || (n >= 90 && n <= 97)) return '39';
+  if ((n >= 40 && n <= 48) || (n >= 100 && n <= 107)) return '49';
+  return SGR_CLOSERS[code];
+}
+
+/** Replay SGR codes onto the active-style list (open codes, oldest first). */
+function applySgr(active: string[], code: string): void {
+  if (code === '' || code === '0') {
+    active.length = 0;
+    return;
+  }
+  const closesSomething = active.some((open) => sgrCloser(open) === code);
+  if (closesSomething) {
+    for (let i = active.length - 1; i >= 0; i--) if (sgrCloser(active[i]) === code) active.splice(i, 1);
+    return;
+  }
+  active.push(code);
+}
+
+/**
+ * Greedy word-wrap over plain text: row ranges [start, end). Rows after the
+ * first get `width - indent` columns. Pure-ASCII text (the common case) skips
+ * per-character width lookups entirely.
+ */
+function wrapRanges(plain: string, width: number, indent: number): Array<[number, number]> {
+  const n = plain.length;
+  const ascii = !/[^\x20-\x7e]/.test(plain);
+  const widthAt = (i: number): number => {
+    if (ascii) return 1;
+    const code = plain.codePointAt(i)!;
+    return code < 0x300 ? 1 : stringWidth(String.fromCodePoint(code));
+  };
+  const unitAt = (i: number): number => (plain.codePointAt(i)! > 0xffff ? 2 : 1);
+  const ranges: Array<[number, number]> = [];
+  let i = 0;
+  while (i < n) {
+    const limit = ranges.length === 0 ? width : width - indent;
+    let col = 0;
+    let j = i;
+    let lastSpace = -1;
+    while (j < n) {
+      const w = widthAt(j);
+      if (col + w > limit) break;
+      if (plain[j] === ' ') lastSpace = j;
+      col += w;
+      j += unitAt(j);
+    }
+    if (j >= n) {
+      ranges.push([i, n]);
+      break;
+    }
+    // Break at a space when there is one in reach; hard-break long words.
+    let end = plain[j] === ' ' ? j : lastSpace > i ? lastSpace : j;
+    if (end === i) end = i + unitAt(i); // a single glyph wider than the row
+    let trimmed = end;
+    while (trimmed > i && plain[trimmed - 1] === ' ') trimmed--;
+    ranges.push([i, trimmed]);
+    i = end;
+    while (i < n && plain[i] === ' ') i++;
+  }
+  return ranges;
+}
+
+/**
+ * Wrap one styled (SGR) line to `width` visible columns. Breaks are computed
+ * on the plain text and mapped back onto the styled string; each row reopens
+ * the styles active at its start and resets at its end, so every row renders
+ * correctly on its own. Continuation rows hang under the line's bullet/indent
+ * (blockquotes repeat their rule). Hot path: runs per frame on the live tail.
+ */
+export function wrapStyledLine(line: string, width: number): string[] {
+  const limit = Math.max(12, width);
+  // plainPos[k] = index in `line` of plain char k; codes = SGR runs in order.
+  const plainPos: number[] = [];
+  const codes: Array<{ at: number; code: string }> = [];
+  let plain = '';
+  let last = 0;
+  SGR_RE.lastIndex = 0;
+  for (let m = SGR_RE.exec(line); m; m = SGR_RE.exec(line)) {
+    for (let k = last; k < m.index; k++) plainPos.push(k);
+    plain += line.slice(last, m.index);
+    codes.push({ at: m.index, code: m[1] });
+    last = m.index + m[0].length;
+  }
+  for (let k = last; k < line.length; k++) plainPos.push(k);
+  plain += line.slice(last);
+  if (plain.length === 0) return [''];
+
+  const prefixMatch = HANGING_PREFIX_RE.exec(plain);
+  const indent = prefixMatch && prefixMatch[1].length < limit / 2 ? prefixMatch[1].length : 0;
+  const ranges = wrapRanges(plain, limit, indent);
+  if (ranges.length === 1 && codes.length === 0) return [plain.slice(ranges[0][0], ranges[0][1])];
+
+  const active: string[] = [];
+  let codeIdx = 0;
+  const advanceTo = (pos: number) => {
+    while (codeIdx < codes.length && codes[codeIdx].at < pos) applySgr(active, codes[codeIdx++].code);
+  };
+  const reopen = () => active.map((c) => `\x1b[${c}m`).join('');
+  const slice = (a: number, b: number): string => {
+    const from = plainPos[a];
+    const to = b < plain.length ? plainPos[b] : line.length;
+    advanceTo(from);
+    const open = reopen();
+    advanceTo(to);
+    return open + line.slice(from, to) + (active.length > 0 ? '\x1b[0m' : '');
+  };
+  // Blockquotes repeat their styled rule; everything else hangs on spaces.
+  const continuation = plain.trimStart().startsWith('│') ? slice(0, indent) : ' '.repeat(indent);
+  codeIdx = 0;
+  active.length = 0;
+  return ranges.map(([a, b], i) => (i === 0 ? '' : continuation) + slice(a, b));
+}
+
 function renderedTextLines(markdown: string, width: number): string[] {
-  const rendered = stripTerminalAnsi(renderMarkdown(markdown));
-  return rendered.split('\n').flatMap((line) => wrapMercuryText(line, width));
+  const rendered = renderMarkdown(sanitizeTerminalText(markdown));
+  return rendered.split('\n').flatMap((line) => wrapStyledLine(line, width));
 }
 
 /**
@@ -103,6 +248,7 @@ export function buildStreamTailLines(
   width: number,
   tailChars = 32 * 1024,
   maxLines = 48,
+  options?: MessageLinesOptions,
 ): MercuryTranscriptLine[] {
   const content = message.content;
   if (content.length === 0) return [];
@@ -124,16 +270,14 @@ export function buildStreamTailLines(
     if (opener >= 0) start = windowStart + opener;
   }
   const tailMessage: ChatMessage = { ...message, content: content.slice(start) };
-  const lines = buildMercuryMessageLines(tailMessage, width);
-  // Keep the header row, then the newest rows below it.
-  if (lines.length > maxLines) {
-    return [lines[0], ...lines.slice(-(maxLines - 1))];
-  }
-  return lines;
+  // A sliced tail is never the start of the message: no role marker.
+  const lines = buildMercuryMessageLines(tailMessage, width, start > 0 ? { showHeader: false } : options);
+  // Newest rows win when the block outgrows the row cap.
+  return lines.length > maxLines ? lines.slice(-maxLines) : lines;
 }
 
 export interface MessageLinesOptions {
-  /** Render the MERCURY/YOU role header row. False for continuation chunks. */
+  /** Mark the first row with the role marker. False for continuation chunks. */
   showHeader?: boolean;
 }
 
@@ -259,12 +403,50 @@ export function parseChunkIndex(id: string): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
+/** Columns taken by the ⎿ elbow / continuation indent of tool output rows. */
+export const TOOL_OUT_INDENT = 5;
+
+function truncateColumns(text: string, width: number): string {
+  if (stringWidth(text) <= width) return text;
+  let out = '';
+  for (const ch of text) {
+    if (stringWidth(out + ch) > width - 1) break;
+    out += ch;
+  }
+  return `${out}…`;
+}
+
+/** Rows of a finished tool call: `● Title(target)`, the ⎿ summary, then the
+ * excerpt. Output rows are truncated, not wrapped — a block stays compact. */
+function buildToolLines(message: ChatMessage, width: number): MercuryTranscriptLine[] {
+  const tool = message.tool!;
+  const lines: MercuryTranscriptLine[] = [];
+  let index = 0;
+  const push = (line: Omit<MercuryTranscriptLine, 'key' | 'role'>) => {
+    lines.push({ key: `${message.id}:${index++}`, role: message.role, ...line });
+  };
+  const target = sanitizeTerminalText(tool.target);
+  const headWidth = Math.max(12, width - 2 - stringWidth(tool.title) - 2);
+  push({ kind: 'tool-head', text: tool.title, accent: target ? truncateColumns(target, headWidth) : '', status: tool.status });
+  const outWidth = Math.max(12, width - TOOL_OUT_INDENT);
+  push({ kind: 'tool-out', text: truncateColumns(sanitizeTerminalText(tool.summary), outWidth), status: tool.status, elbow: true });
+  for (const row of tool.body?.lines ?? []) {
+    const clean = sanitizeTerminalText(row).replace(/\t/g, '  ');
+    // "… +N lines" markers are prose, not code — never highlight them.
+    const marker = /^… /.test(clean);
+    push({ kind: 'tool-out', text: truncateColumns(clean, outWidth), lang: marker ? undefined : tool.body!.lang || undefined, status: tool.status });
+  }
+  push({ kind: 'spacer', text: '' });
+  return lines;
+}
+
 export function buildMercuryMessageLines(
   message: ChatMessage,
   width: number,
   options?: MessageLinesOptions,
 ): MercuryTranscriptLine[] {
   if (message.id.startsWith('heartbeat-')) return [];
+  if (message.tool) return buildToolLines(message, Math.max(12, width - 4));
   const contentWidth = Math.max(12, width - 4);
   const lines: MercuryTranscriptLine[] = [];
   let index = 0;
@@ -297,12 +479,12 @@ export function buildMercuryMessageLines(
           flushProse();
           inCode = true;
           language = fence[1] || 'text';
-          push('code-label', language.toUpperCase(), language);
+          push('code-label', language, language);
         }
         continue;
       }
       if (inCode) {
-        const chunks = wrapMercuryText(sourceLine, contentWidth);
+        const chunks = wrapMercuryText(sanitizeTerminalText(sourceLine), contentWidth);
         for (const chunk of chunks) push('code', chunk, language);
       } else {
         prose.push(sourceLine);
@@ -310,7 +492,6 @@ export function buildMercuryMessageLines(
     }
     flushProse();
   } else {
-    if (options?.showHeader !== false) push('header', message.role === 'user' ? 'YOU' : 'MERCURY');
     const source = normalizeTerminalText(message.content).split('\n');
     let prose: string[] = [];
     let inCode = false;
@@ -319,23 +500,36 @@ export function buildMercuryMessageLines(
     let codeRowsEmitted = 0;
     let codeCollapsed = false;
 
+    // One blank row between a fenced block and the prose around it.
+    const gap = () => {
+      const last = lines[lines.length - 1];
+      if (last && !(last.kind === 'text' && stripTerminalAnsi(last.text).trim() === '')) push('text', '');
+    };
+
     const flushProse = () => {
       if (prose.length === 0) return;
-      for (const line of renderedTextLines(prose.join('\n'), contentWidth)) push('text', line);
+      const last = lines[lines.length - 1];
+      if (last && last.kind !== 'text') gap();
+      // User input is shown as typed; agent prose renders as markdown.
+      const rows = message.role === 'user'
+        ? prose.flatMap((line) => wrapMercuryText(sanitizeTerminalText(line), contentWidth))
+        : renderedTextLines(prose.join('\n'), contentWidth);
+      for (const line of rows) push('text', line);
       prose = [];
     };
 
     for (const sourceLine of source) {
       const fence = /^```\s*([^\s`]*)/.exec(sourceLine);
-      if (fence) {
+      if (fence && message.role !== 'user') {
         if (inCode) {
           inCode = false;
           language = '';
         } else {
           flushProse();
+          gap();
           inCode = true;
           language = fence[1] || 'text';
-          push('code-label', language.toUpperCase(), language);
+          push('code-label', language, language);
         }
         continue;
       }
@@ -344,7 +538,7 @@ export function buildMercuryMessageLines(
         // not push the conversation out of the transcript. The full content
         // is on disk / in the session store.
         if (codeRowsEmitted < CODE_BLOCK_VISIBLE_ROWS) {
-          const chunks = wrapMercuryText(sourceLine, contentWidth);
+          const chunks = wrapMercuryText(sanitizeTerminalText(sourceLine), contentWidth);
           for (const chunk of chunks) push('code', chunk, language);
           codeRowsEmitted += chunks.length;
         } else if (!codeCollapsed) {
@@ -356,6 +550,10 @@ export function buildMercuryMessageLines(
       }
     }
     flushProse();
+    // Headings render with a blank row above them; at the top of a message
+    // that row would push the role marker off the first visible line.
+    while (lines.length > 0 && lines[0].kind === 'text' && stripTerminalAnsi(lines[0].text).trim() === '') lines.shift();
+    if (options?.showHeader !== false && lines.length > 0) lines[0].lead = message.role === 'user' ? 'user' : 'agent';
   }
 
   if (message.fileChanges?.length) {
