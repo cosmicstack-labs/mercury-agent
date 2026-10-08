@@ -87,12 +87,12 @@ describe('transcript renders previews with highlighting metadata', () => {
       timestamp: 1,
     };
     const lines = buildMercuryMessageLines(msg as any, 80);
-    // No header row for system messages, but the fence IS parsed: a
-    // code-label row for DIFF followed by code rows carrying the lang.
-    expect(lines.some((l) => l.kind === 'code-label' && l.text === 'DIFF')).toBe(true);
+    // No role marker for system messages, but the fence IS parsed: a
+    // code-label row for diff followed by code rows carrying the lang.
+    expect(lines.some((l) => l.kind === 'code-label' && l.text === 'diff')).toBe(true);
     const codeRows = lines.filter((l) => l.kind === 'code' && l.lang === 'diff');
     expect(codeRows.map((r) => r.text)).toEqual(['-const x = 1;', '+const x = 2;']);
-    expect(lines.some((l) => l.kind === 'header')).toBe(false);
+    expect(lines.some((l) => l.lead)).toBe(false);
   });
 
   it('system prose still renders without fences', () => {

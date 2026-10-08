@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { ChatMessage } from './types.js';
+import chalk from 'chalk';
 
 const src = (p: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), p), 'utf8');
 
@@ -58,16 +59,15 @@ describe('streaming tail projection bounds', () => {
     expect(rows.length).toBeLessThanOrEqual(STREAM_TAIL_MAX_LINES);
   });
 
-  it('renders markdown live (header rows, code blocks)', () => {
+  it('renders markdown live (role marker, code blocks)', () => {
     const content = '# Title\n\nsome prose\n\n```ts\nconst x = 1;\n```\n\n- bullet one\n- bullet two\n';
     const lines = projectTail(content);
     const kinds = lines.map((l) => l.kind);
-    // A markdown header renders as its own rendered text rows; the fenced
-    // block gets a code-label + code rows, not plain text.
+    // The fenced block gets a code-label + code rows, not plain text, and
+    // the message's first row carries the agent marker.
     expect(kinds).toContain('code-label');
     expect(kinds).toContain('code');
-    expect(kinds).toContain('header');
-    expect(lines[0].kind).toBe('header');
+    expect(lines[0].lead).toBe('agent');
   });
 
   it('renders a complete code block whose opener sits inside the tail window', () => {
@@ -106,6 +106,31 @@ describe('streaming tail projection bounds', () => {
     const elapsed = performance.now() - t0;
     expect(lines.length).toBeLessThanOrEqual(STREAM_TAIL_MAX_LINES);
     // Generous ceiling (CI runners are slow): the real machine measured ~1-3ms.
+    expect(elapsed).toBeLessThan(30);
+  });
+
+  it('recompute cost is bounded on a full 32KB prose-heavy buffer', () => {
+    // Prose rows keep their markdown styling, so wrapping is SGR-aware —
+    // it must stay as cheap as plain wrapping (a generic ANSI wrapper
+    // measured ~100ms here).
+    const para = 'Some **bold words**, `inline code`, and a [link](https://x.dev) to fill the line. ';
+    let content = '';
+    while (content.length < 32 * 1024) content += `- ${para.repeat(3)}\n${para.repeat(4)}\n`;
+    const message: ChatMessage = { id: 'live_3', role: 'agent', content, timestamp: 1, streaming: true };
+    const level = chalk.level;
+    chalk.level = 1; // no TTY in tests — force the styled path being measured
+    // Steady-state cost (what runs per frame): warm up once, best of 5, so a
+    // loaded parallel test run doesn't fail on JIT warm-up or CPU contention.
+    let lines = buildStreamTailLines(message, WIDTH, STREAM_TAIL_CHARS, STREAM_TAIL_MAX_LINES);
+    let elapsed = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      lines = buildStreamTailLines(message, WIDTH, STREAM_TAIL_CHARS, STREAM_TAIL_MAX_LINES);
+      elapsed = Math.min(elapsed, performance.now() - t0);
+    }
+    chalk.level = level;
+    expect(lines.some((l) => l.text.includes('\x1b['))).toBe(true);
+    expect(lines.length).toBeLessThanOrEqual(STREAM_TAIL_MAX_LINES);
     expect(elapsed).toBeLessThan(30);
   });
 

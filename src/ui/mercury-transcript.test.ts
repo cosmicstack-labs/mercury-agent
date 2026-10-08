@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import chalk from 'chalk';
 import type { ChatMessage } from './types.js';
 import {
   buildMercuryBrandLines,
@@ -7,7 +8,9 @@ import {
   settledChunkEnds,
   splitFinalMessage,
   splitStreamingMessage,
+  stripTerminalAnsi,
   wrapMercuryText,
+  wrapStyledLine,
 } from './mercury-transcript.js';
 
 function message(partial: Partial<ChatMessage> = {}): ChatMessage {
@@ -21,6 +24,9 @@ function message(partial: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('Mercury Code transcript formatting', () => {
+  // Test runs have no TTY, so chalk would emit no styling at all.
+  beforeAll(() => { chalk.level = 1; });
+
   it('wraps long text without dropping any words', () => {
     const source = 'Every part of this response remains visible even on a narrow terminal';
     const wrapped = wrapMercuryText(source, 20);
@@ -30,19 +36,71 @@ describe('Mercury Code transcript formatting', () => {
     expect(wrapped.every((line) => line.length <= 20)).toBe(true);
   });
 
-  it('categorizes user and agent messages with explicit headers', () => {
+  it('marks the first row of user and agent messages with the role', () => {
     const user = buildMercuryMessageLines(message({ role: 'user', content: 'Please update the parser.' }), 60);
     const agent = buildMercuryMessageLines(message({ id: 'msg-2', content: 'I updated the parser.' }), 60);
 
-    expect(user[0]).toMatchObject({ kind: 'header', text: 'YOU', role: 'user' });
-    expect(agent[0]).toMatchObject({ kind: 'header', text: 'MERCURY', role: 'agent' });
+    expect(user[0]).toMatchObject({ kind: 'text', text: 'Please update the parser.', lead: 'user' });
+    expect(agent[0]).toMatchObject({ kind: 'text', text: 'I updated the parser.', lead: 'agent' });
+    expect([...user, ...agent].filter((l) => l.lead)).toHaveLength(2);
+  });
+
+  it('keeps markdown styling on agent rows and leaves user input as typed', () => {
+    const agent = buildMercuryMessageLines(message({ content: 'This is **bold** and `code`.' }), 60);
+    expect(agent[0].text).toMatch(/\x1b\[/);
+    expect(stripTerminalAnsi(agent[0].text)).toBe('This is bold and code.');
+
+    const user = buildMercuryMessageLines(message({ role: 'user', content: 'keep **stars**' }), 60);
+    expect(user[0].text).toBe('keep **stars**');
+  });
+
+  it('strips escape sequences that arrive in model output', () => {
+    const lines = buildMercuryMessageLines(message({ content: 'safe\x1b]0;pwned\x07 \x1b[2Jtext' }), 60);
+    expect(lines.map((l) => stripTerminalAnsi(l.text)).join('')).not.toMatch(/pwned|\x07/);
+    expect(lines.some((l) => l.text.includes('\x1b[2J'))).toBe(false);
+  });
+
+  it('wraps styled rows by visible width with a hanging indent', () => {
+    const rows = wrapStyledLine(`  \x1b[2m•\x1b[22m ${'\x1b[1mword\x1b[22m '.repeat(12)}`, 30);
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) expect(stripTerminalAnsi(row).length).toBeLessThanOrEqual(30);
+    for (const row of rows.slice(1)) expect(stripTerminalAnsi(row).startsWith('    ')).toBe(true);
+  });
+
+  it('reopens styles on every row when a styled span crosses a wrap', () => {
+    const bold = `\x1b[1m${'alpha beta gamma delta epsilon zeta eta theta'}\x1b[22m tail`;
+    const rows = wrapStyledLine(bold, 20);
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows.slice(0, -1)) {
+      expect(row.startsWith('\x1b[1m')).toBe(true);
+      expect(row.endsWith('\x1b[0m')).toBe(true);
+    }
+    expect(rows.map(stripTerminalAnsi).join(' ')).toBe('alpha beta gamma delta epsilon zeta eta theta tail');
+  });
+
+  it('measures wide characters by terminal columns', () => {
+    const rows = wrapStyledLine('漢字'.repeat(20), 20);
+    for (const row of rows) expect(row.length * 2).toBeLessThanOrEqual(20);
+    expect(rows.join('')).toBe('漢字'.repeat(20));
+  });
+
+  it('repeats the blockquote rule on continuation rows', () => {
+    const rows = wrapStyledLine(`\x1b[2m│ \x1b[22m${'quoted words here '.repeat(4).trim()}`, 24);
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) expect(stripTerminalAnsi(row).startsWith('│ ')).toBe(true);
+  });
+
+  it('starts a message at its first visible row even when it opens with a heading', () => {
+    const lines = buildMercuryMessageLines(message({ content: '# Title\n\nbody' }), 60);
+    expect(stripTerminalAnsi(lines[0].text)).toBe('Title');
+    expect(lines[0].lead).toBe('agent');
   });
 
   it('keeps fenced code structured for syntax highlighting', () => {
     const lines = buildMercuryMessageLines(message({ content: 'Use this:\n```ts\nconst answer = 42;\n```' }), 60);
 
     expect(lines).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'code-label', text: 'TS', lang: 'ts' }),
+      expect.objectContaining({ kind: 'code-label', text: 'ts', lang: 'ts' }),
       expect.objectContaining({ kind: 'code', text: 'const answer = 42;', lang: 'ts' }),
     ]));
   });
@@ -156,16 +214,16 @@ describe('settled-chunk splitter (progressive streaming flush)', () => {
     expect(chunks[chunks.length - 1].fileChanges).toEqual(fileChanges);
   });
 
-  it('renders the role header only on chunk 0', () => {
+  it('renders the role marker only on chunk 0', () => {
     const chunks = splitFinalMessage(chunkMessage(FULL));
     expect(chunks.length).toBeGreaterThan(1);
-    expect(buildMercuryMessageLines(chunks[0], 76).some((l) => l.kind === 'header')).toBe(true);
+    expect(buildMercuryMessageLines(chunks[0], 76).some((l) => l.lead === 'agent')).toBe(true);
     for (const chunk of chunks.slice(1)) {
-      expect(buildMercuryMessageLines(chunk, 76, { showHeader: false }).some((l) => l.kind === 'header')).toBe(false);
+      expect(buildMercuryMessageLines(chunk, 76, { showHeader: false }).some((l) => l.lead)).toBe(false);
     }
-    // Whole messages (no #c id) keep the header.
+    // Whole messages (no #c id) keep the marker.
     expect(parseChunkIndex('m1')).toBeNull();
-    expect(buildMercuryMessageLines(chunkMessage('hello'), 76).some((l) => l.kind === 'header')).toBe(true);
+    expect(buildMercuryMessageLines(chunkMessage('hello'), 76).some((l) => l.lead === 'agent')).toBe(true);
   });
 
   it('degenerate inputs: short and empty messages produce exactly one chunk', () => {

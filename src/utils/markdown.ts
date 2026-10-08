@@ -1,5 +1,10 @@
 import { Marked } from 'marked';
 import chalk from 'chalk';
+import stringWidth from 'string-width';
+import { IS_LIGHT_TERMINAL } from './terminal-theme.js';
+
+/** Inline `code` color: yellow is unreadable on a light background. */
+const codespan = (text: string) => (IS_LIGHT_TERMINAL ? chalk.magenta(text) : chalk.yellow(text));
 import { highlightCodeBlock } from './highlight.js';
 
 const lexer = new Marked();
@@ -59,7 +64,7 @@ function renderToken(t: any): string {
     case 'del':
       return chalk.dim.strikethrough(renderInline(t.tokens));
     case 'codespan':
-      return chalk.yellow(t.text);
+      return codespan(t.text);
     case 'code':
       return renderCodeBlock(t);
     case 'list':
@@ -69,7 +74,7 @@ function renderToken(t: any): string {
     case 'hr':
       return chalk.dim('─'.repeat(50)) + '\n\n';
     case 'link':
-      return `${chalk.blue.underline(renderInline(t.tokens))} ${chalk.dim(`(${t.href})`)}`;
+      return renderLink(t);
     case 'image':
       return chalk.blue(`🖼 ${t.title || t.href}`);
     case 'table':
@@ -88,9 +93,17 @@ function renderToken(t: any): string {
 
 function renderHeading(t: any): string {
   const text = renderInline(t.tokens);
-  if (t.depth === 1) return `\n${chalk.bold.cyan(text)}\n\n`;
-  if (t.depth === 2) return `\n${chalk.bold.cyan(`  ■ ${text}`)}\n\n`;
-  return `\n${chalk.bold(`    ■ ${text}`)}\n\n`;
+  // Plain bold headings, flush left — no glyphs or indents, so a heading
+  // reads as a heading instead of as another list level.
+  if (t.depth === 1) return `\n${chalk.bold.underline(text)}\n\n`;
+  return `\n${chalk.bold(text)}\n\n`;
+}
+
+/** Link text, with the URL appended only when it adds information. */
+function renderLink(t: any): string {
+  const text = renderInline(t.tokens);
+  const label = chalk.blue.underline(text);
+  return text === t.href || `mailto:${text}` === t.href ? label : `${label} ${chalk.dim(`(${t.href})`)}`;
 }
 
 function renderInline(tokens: any[] | undefined): string {
@@ -100,8 +113,8 @@ function renderInline(tokens: any[] | undefined): string {
     if (t.type === 'strong') return chalk.bold(renderInline(t.tokens));
     if (t.type === 'em') return chalk.italic(renderInline(t.tokens));
     if (t.type === 'del') return chalk.dim.strikethrough(renderInline(t.tokens));
-    if (t.type === 'codespan') return chalk.yellow(t.text);
-    if (t.type === 'link') return `${chalk.blue.underline(renderInline(t.tokens))} ${chalk.dim(`(${t.href})`)}`;
+    if (t.type === 'codespan') return codespan(t.text);
+    if (t.type === 'link') return renderLink(t);
     if (t.type === 'image') return chalk.blue(`🖼 ${t.title || t.href}`);
     if (t.type === 'text') {
       return t.tokens ? renderInline(t.tokens) : (t.text || '');
@@ -136,8 +149,12 @@ function renderList(t: any): string {
           .map((l: string) => `    ${l}`)
           .join('\n');
         lines.push(subLines);
-      } else if (sub.type === 'text') {
-        lines.push(`    ${chalk.dim('•')} ${renderInline(sub.tokens)}`);
+      } else if (sub.type === 'text' || sub.type === 'paragraph') {
+        // Continuation paragraph of the same item (loose lists): indented
+        // under the item text, not a new bullet.
+        lines.push(`    ${renderInline(sub.tokens)}`);
+      } else if (sub.type === 'code') {
+        lines.push(renderCodeBlock(sub).split('\n').filter(Boolean).map((l: string) => `  ${l}`).join('\n'));
       }
     }
   });
@@ -154,28 +171,24 @@ function renderBlockquote(t: any): string {
   return `\n${lines}\n\n`;
 }
 
+/** Pad to a visible column width — `padEnd` counts ANSI codes and wide chars. */
+function padVisible(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
+}
+
 function renderTable(t: any): string {
-  const headers = (t.header || []).map((h: any) => chalk.bold(renderInline(h.tokens)));
-  const colWidths = (t.header || []).map((h: any, i: number) => {
-    const hLen = (h.text || '').length;
-    const rowLens = (t.rows || []).map((row: any) => {
-      const cell = row[i];
-      return cell?.text?.length ?? 0;
-    });
-    return Math.max(hLen, ...rowLens) + 2;
-  });
+  const headers: string[] = (t.header || []).map((h: any) => chalk.bold(renderInline(h.tokens) || h.text || ''));
+  const rows: string[][] = (t.rows || []).map((row: any) =>
+    row.map((cell: any) => renderInline(cell.tokens) || cell.text || ''));
+  const colWidths = headers.map((h, i) =>
+    Math.max(stringWidth(h), ...rows.map((row) => stringWidth(row[i] ?? ''))));
 
-  const headerLine = headers.map((h: string, i: number) => h.padEnd(colWidths[i])).join(chalk.dim(' │ '));
-  const separator = colWidths.map((w: number) => '─'.repeat(w)).join(chalk.dim('─┼─'));
+  const sep = chalk.dim(' │ ');
+  const headerLine = headers.map((h, i) => padVisible(h, colWidths[i])).join(sep);
+  const separator = chalk.dim(colWidths.map((w) => '─'.repeat(w)).join('─┼─'));
+  const dataLines = rows.map((row) => row.map((cell, i) => padVisible(cell, colWidths[i])).join(sep));
 
-  const dataLines = (t.rows || []).map((row: any) =>
-    row.map((cell: any, i: number) => {
-      const text = renderInline(cell.tokens) || cell.text || '';
-      return text.padEnd(colWidths[i]);
-    }).join(chalk.dim(' │ '))
-  );
-
-  return `\n${headerLine}\n${chalk.dim(separator)}\n${dataLines.join('\n')}\n\n`;
+  return `\n${headerLine}\n${separator}\n${dataLines.join('\n')}\n\n`;
 }
 
 function escapeHtml(text: string): string {

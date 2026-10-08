@@ -10,6 +10,7 @@ import { STEPS_PAUSED_BANNER, NO_CHANGES_BANNER } from '../core/completion-verdi
 import { logger } from '../utils/logger.js';
 import { formatToolStep, formatToolResult } from '../utils/tool-label.js';
 import { FILE_CHANGE_TOOLS } from '../utils/file-preview.js';
+import { buildToolBlockDetail, isTranscriptTool, type ToolBlock } from '../ui/tool-block.js';
 import type { ChatMessage, CompletionMeta, FileChangeSummary, ToolStep, PermissionPromptState, CurrentSessionInfo, SidebarSection, SkillInfo, SubAgentInfo, ProviderInfo, TokenInfo, SaverInfo, AppMode, WorkspaceState, WorkspaceTreeNode, WorkspaceGitFile, BackgroundTaskInfo, MercuryCodeGitState, MercuryCodeState, LiveActivityState, PlanStep } from '../ui/types.js';
 import { TASK_SUMMARY_FILE_LIMIT } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
@@ -414,6 +415,18 @@ export class CLIChannel extends BaseChannel {
   // banner; a general chat turn that touches no files stays clean.
   private pendingTurnFiles = new Map<string, string>();
   private committedTurnFiles = new Set<string>();
+
+  // Mercury Code tool transcript: args of running steps (by step id), kept
+  // until completion builds the step's transcript block.
+  private toolArgs = new Map<string, Record<string, any>>();
+  // The agent message currently being streamed. A tool call starting
+  // mid-stream closes it (cutStreamSegment) so the tool's block lands after
+  // the text that preceded it, and later text opens a fresh message.
+  private streamSegment: { id: string; text: string; started: boolean; lastRender: number } | null = null;
+  // Full excerpts of collapsed tool blocks, newest last, for ctrl+o. Bounded:
+  // only the most recent blocks are expandable.
+  private expandableTools: Array<{ block: ToolBlock; full: { lang: string; lines: string[] } }> = [];
+  private static readonly MAX_EXPANDABLE_TOOLS = 20;
 
   /** update-notice helpers, imported lazily (a static import would pull
    * cli/daemon.js into an import cycle through channels/cli.ts). */
@@ -822,6 +835,11 @@ export class CLIChannel extends BaseChannel {
         else this.update({ mode: 'chat' });
         return;
       }
+      // View-only: handled here, never sent to the agent.
+      if (trimmed === '/code expand') {
+        this.expandLastToolOutput();
+        return;
+      }
       // Instant switch back to regular chat — no exit-confirm dance. The
       // confirm exists to guard the Esc-Esc path against accidental exits
       // mid-task; an explicit command is deliberate by definition.
@@ -861,6 +879,7 @@ export class CLIChannel extends BaseChannel {
         // and copy freely in native scrollback while the chat streams on.
         if (sub === 'freeze' || sub === 'resume' || sub === 'unfreeze') { this.setTuiFrozen(sub === 'freeze'); return; }
         if (sub === 'freeze-toggle') { this.setTuiFrozen(!this.state.tuiFrozen); return; }
+        if (sub === 'expand') { this.expandLastToolOutput(); return; }
         if (sub === 'esc-arm') {
           this.exitEscArmed = true;
           // Auto-disarm after 1.5s so Esc-Esc window is bounded.
@@ -1126,7 +1145,8 @@ export class CLIChannel extends BaseChannel {
    * when the identical preview is already the last message (tool retries).
    */
   showFileChange(content: string): void {
-    if (!content) return;
+    // Mercury Code shows the change inside the tool's own transcript block.
+    if (!content || this.state.mode === 'mercury-code') return;
     const last = this.state.chatMessages[this.state.chatMessages.length - 1];
     if (last && last.role === 'system' && last.content === content) return;
     const msg: ChatMessage = {
@@ -1248,6 +1268,10 @@ export class CLIChannel extends BaseChannel {
     };
     this.stepCount += 1;
     this.stepStartTime = Date.now();
+    if (this.showsToolTranscript(toolName)) {
+      this.toolArgs.set(step.id, args ?? {});
+      this.cutStreamSegment();
+    }
     // Cap the live step list: long coding sessions can run hundreds of
     // tool calls; an unbounded array both bloats renders and memory.
     const MAX_LIVE_STEPS = 60;
@@ -1258,18 +1282,57 @@ export class CLIChannel extends BaseChannel {
     return Promise.resolve();
   }
 
+  /** Mercury Code records finished tool calls as transcript blocks. */
+  private showsToolTranscript(toolName: string): boolean {
+    return this.state.mode === 'mercury-code' && isTranscriptTool(toolName);
+  }
+
+  /**
+   * Close the agent message being streamed at its current text, and start a
+   * new (not yet visible) segment for whatever streams next. Called when a
+   * tool starts: everything the model said so far precedes the tool's block.
+   */
+  private cutStreamSegment(): void {
+    const seg = this.streamSegment;
+    if (!seg) return;
+    if (seg.started) {
+      const content = this.capStreamDisplay(seg.text.trimEnd(), 'response');
+      const closed = { id: seg.id, role: 'agent' as const, content, timestamp: Date.now(), streaming: false };
+      this.update({ chatMessages: this.state.chatMessages.map((m) => (m.id === seg.id ? closed : m)) });
+    }
+    this.streamSegment = { id: CLIChannel.newMessageId(), text: '', started: false, lastRender: 0 };
+  }
+
+  private static newMessageId(): string {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+
+  /** Streaming display cap: the complete text still reaches the session store. */
+  private capStreamDisplay(text: string, what: 'stream' | 'response'): string {
+    if (text.length <= CLIChannel.MAX_MESSAGE_CHARS) return text;
+    const kb = Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024);
+    return text.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + (what === 'stream'
+      ? `\n\n[…stream display truncated at ${kb}KB — full response in transcript]`
+      : `\n\n[…response display truncated at ${kb}KB]`);
+  }
+
   /**
    * Real-time tool completion: pairs with sendToolEvent via callId so the
    * exact step that started flips to done — even when several tools ran.
    */
-  completeToolEvent(toolName: string, result: unknown, isError: boolean, durationMs?: number): void {
+  completeToolEvent(toolName: string, result: unknown, isError: boolean, durationMs?: number, callId?: string): void {
     const summary = formatToolResult(toolName, result);
     let matched = false;
     let matchedCallId: string | undefined;
+    let matchedStepId: string | undefined;
+    // Exact callId match first (parallel calls of the same tool), else the
+    // oldest running step of that tool.
+    const byCallId = callId != null && this.state.toolSteps.some((s) => s.status === 'running' && s.callId === callId);
     const toolSteps = this.state.toolSteps.map((step) => {
-      if (!matched && step.status === 'running' && step.toolName === toolName) {
+      if (!matched && step.status === 'running' && step.toolName === toolName && (!byCallId || step.callId === callId)) {
         matched = true;
         matchedCallId = step.callId;
+        matchedStepId = step.id;
         return {
           ...step,
           status: (isError ? 'error' : 'done') as 'done' | 'error',
@@ -1279,7 +1342,18 @@ export class CLIChannel extends BaseChannel {
       }
       return step;
     });
-    this.update({ toolSteps });
+    const args = matchedStepId ? this.toolArgs.get(matchedStepId) : undefined;
+    if (matchedStepId) this.toolArgs.delete(matchedStepId);
+    if (args && this.showsToolTranscript(toolName)) {
+      const { block, full } = buildToolBlockDetail({ toolName, args, result, isError, cwd: this.state.mercuryCode?.cwd });
+      if (full) {
+        this.expandableTools.push({ block, full });
+        if (this.expandableTools.length > CLIChannel.MAX_EXPANDABLE_TOOLS) this.expandableTools.shift();
+      }
+      this.appendToolBlock(block, { toolSteps });
+    } else {
+      this.update({ toolSteps });
+    }
     // Attribution commit: a file-tool call that finished successfully actually
     // mutated the tree; a failed one did not (errors surface in the step list).
     if (matchedCallId) {
@@ -1287,6 +1361,42 @@ export class CLIChannel extends BaseChannel {
       this.pendingTurnFiles.delete(matchedCallId);
       if (!isError && path) this.committedTurnFiles.add(path);
     }
+  }
+
+  /**
+   * ctrl+o: print the full output of the most recent collapsed tool block.
+   * Scrollback can't be re-rendered, so the expansion is appended as a new
+   * block; pressing again walks back to the previous collapsed block.
+   */
+  expandLastToolOutput(): void {
+    const entry = this.expandableTools.pop();
+    if (!entry) {
+      this.sendSystemNotice('Nothing to expand — no collapsed tool output.');
+      return;
+    }
+    const { block, full } = entry;
+    this.appendToolBlock({
+      ...block,
+      summary: `Full output · ${full.lines.length} line${full.lines.length === 1 ? '' : 's'}`,
+      body: full,
+    }, {});
+  }
+
+  /** Append a finished tool call to the transcript (parked while a bot chat is open). */
+  private appendToolBlock(tool: ToolBlock, extra: Partial<TuiState>): void {
+    const msg: ChatMessage = {
+      id: `tool-${CLIChannel.newMessageId()}`,
+      role: 'system',
+      content: `${tool.title}${tool.target ? `(${tool.target})` : ''} — ${tool.summary}`,
+      timestamp: Date.now(),
+      tool,
+    };
+    if (this.activeBotId) {
+      this.mainTranscript = [...(this.mainTranscript ?? []).slice(-CLIChannel.MAX_CHAT_MESSAGES + 1), msg];
+      this.update(extra);
+      return;
+    }
+    this.trimAndSetMessages([...this.state.chatMessages, msg], extra);
   }
 
   sendCompletion(elapsedMs: number, stepCount: number, meta?: CompletionMeta, outcome?: 'complete' | 'steps-paused', verificationNote?: string): void {
@@ -1524,17 +1634,41 @@ export class CLIChannel extends BaseChannel {
       ];
       return parked;
     }
-    const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    // The reply streams into a SEGMENT: one agent message. In Mercury Code a
+    // tool call starting mid-stream closes the segment (cutStreamSegment) and
+    // later text opens a new one, so text and tool blocks interleave in the
+    // order they happened. `full` stays the whole reply for the caller.
+    const segment = { id: CLIChannel.newMessageId(), text: '', started: false, lastRender: 0 };
+    this.streamSegment = segment;
     let full = '';
-    let started = false;
-    let lastRender = 0;
 
     this.clearHeartbeat();
     this.setLiveActivity('Streaming response', 'generating answer');
 
+    const render = (seg: NonNullable<CLIChannel['streamSegment']>, now: number) => {
+      // Streaming display cap: an unbounded string re-rendered every 60ms
+      // makes each frame allocate a fresh multi-MB message object; a long
+      // code-mode task can then retain gigabytes. The complete text still
+      // reaches the session store via the final channel.send().
+      const streamedMessage = { id: seg.id, role: 'agent' as const, content: this.capStreamDisplay(seg.text, 'stream'), timestamp: now, streaming: true };
+      this.update({
+        chatMessages: seg.started
+          ? this.state.chatMessages.map((message) => message.id === seg.id ? streamedMessage : message)
+          : [...this.state.chatMessages, streamedMessage],
+        isThinking: true,
+      });
+      seg.started = true;
+      seg.lastRender = now;
+    };
+
     try {
       for await (const chunk of content) {
         full += chunk;
+        const seg = this.streamSegment ?? segment;
+        // A segment opens on its first visible text: step separators ("\n\n")
+        // arriving right after a tool call must not open an empty message.
+        seg.text = seg.started ? seg.text + chunk : (seg.text + chunk).replace(/^\s*\n/, '');
+        if (!seg.started && seg.text.trim() === '') continue;
         const now = Date.now();
         // Throttle streaming re-renders to ~60ms. At 16ms the live Yoga
         // tree was being recomputed on nearly every token, which — combined
@@ -1542,60 +1676,43 @@ export class CLIChannel extends BaseChannel {
         // render — caused the visible "vibration"/flicker during generation.
         // 60ms is fast enough to feel live while keeping each frame's layout
         // stable.
-        if (!started || now - lastRender >= 60) {
-          // Streaming display cap: an unbounded `full` string re-rendered
-          // every 60ms makes each frame allocate a fresh multi-MB message
-          // object; a long code-mode task can then retain gigabytes. The
-          // complete text still reaches the session store via the final
-          // channel.send().
-          const shown = full.length > CLIChannel.MAX_MESSAGE_CHARS
-            ? full.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…stream display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB — full response in transcript]`
-            : full;
-          const streamedMessage = { id: msgId, role: 'agent' as const, content: shown, timestamp: now, streaming: true };
-          this.update({
-            chatMessages: started
-              ? this.state.chatMessages.map((message) => message.id === msgId ? streamedMessage : message)
-              : [...this.state.chatMessages, streamedMessage],
-            isThinking: true,
-          });
-          started = true;
-          lastRender = now;
-        }
+        if (!seg.started || now - seg.lastRender >= 60) render(seg, now);
       }
     } catch (err) {
+      const seg = this.streamSegment ?? segment;
+      this.streamSegment = null;
       logger.warn({ err, partialLen: full.length }, 'CLI stream interrupted, saving partial text');
       this.clearLiveActivity();
-      if (full.length > 0) {
-        const interruptedMessage = { id: msgId, role: 'agent' as const, content: full + '\n\n⚠ Stream was interrupted. Partial response shown above.', timestamp: Date.now(), streaming: false };
+      if (seg.text.trim().length > 0) {
+        const interruptedMessage = { id: seg.id, role: 'agent' as const, content: seg.text + '\n\n⚠ Stream was interrupted. Partial response shown above.', timestamp: Date.now(), streaming: false };
         this.update({
-          chatMessages: started
-            ? this.state.chatMessages.map((message) => message.id === msgId ? interruptedMessage : message)
+          chatMessages: seg.started
+            ? this.state.chatMessages.map((message) => message.id === seg.id ? interruptedMessage : message)
             : [...this.state.chatMessages, interruptedMessage],
           isThinking: false,
         });
       } else {
         this.update({
-          chatMessages: [...this.state.chatMessages, { id: msgId, role: 'agent', content: '⚠ Stream was interrupted before any response was generated.', timestamp: Date.now(), streaming: false }],
+          chatMessages: [...this.state.chatMessages, { id: seg.id, role: 'agent', content: full.length > 0 ? '⚠ Stream was interrupted. Partial response shown above.' : '⚠ Stream was interrupted before any response was generated.', timestamp: Date.now(), streaming: false }],
           isThinking: false,
         });
       }
       return full;
     }
 
-    const shownFull = full.length > CLIChannel.MAX_MESSAGE_CHARS
-      ? full.slice(0, CLIChannel.MAX_MESSAGE_CHARS) + `\n\n[…response display truncated at ${Math.round(CLIChannel.MAX_MESSAGE_CHARS / 1024)}KB]`
-      : full;
-    if (full.length > 0) {
-      const finalMessage = { id: msgId, role: 'agent' as const, content: shownFull, timestamp: Date.now(), streaming: false };
+    const seg = this.streamSegment ?? segment;
+    this.streamSegment = null;
+    if (seg.text.trim().length > 0) {
+      const finalMessage = { id: seg.id, role: 'agent' as const, content: this.capStreamDisplay(seg.text, 'response'), timestamp: Date.now(), streaming: false };
       this.trimAndSetMessages(
-        started
-          ? this.state.chatMessages.map((message) => message.id === msgId ? finalMessage : message)
+        seg.started
+          ? this.state.chatMessages.map((message) => message.id === seg.id ? finalMessage : message)
           : [...this.state.chatMessages, finalMessage],
         { isThinking: false, liveActivity: null },
       );
     } else {
-      // Zero chunks arrived (e.g. the model returned nothing): render no
-      // bubble at all rather than an empty "MERCURY" header.
+      // Nothing visible arrived in this segment (the model returned nothing,
+      // or the reply ended on a tool call): render no empty message.
       this.update({ isThinking: false, liveActivity: null });
     }
 

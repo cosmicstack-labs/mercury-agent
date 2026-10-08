@@ -87,3 +87,102 @@ describe('CLIChannel live activity feedback', () => {
     expect(channel.getTuiState().isThinking).toBe(false);
   });
 });
+describe('CLIChannel Mercury Code tool transcript', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function* chunks(parts: Array<string | (() => Promise<void>)>): AsyncIterable<string> {
+    for (const part of parts) {
+      if (typeof part === 'string') yield part;
+      else await part();
+    }
+  }
+
+  it('interleaves streamed text and finished tool blocks in order', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    channel.enterMercuryCode(process.cwd(), 'test');
+    const before = channel.getTuiState().chatMessages.length;
+
+    const full = await channel.stream(chunks([
+      'Let me read the file.',
+      async () => {
+        // The SDK fires tool start/finish between the model's steps.
+        await channel.sendToolEvent('read_file', { path: 'a.ts' }, 'call-1');
+        channel.completeToolEvent('read_file', 'x\ny', false, 10, 'call-1');
+      },
+      '\n\n',
+      'Done reading.',
+    ]));
+
+    const added = channel.getTuiState().chatMessages.slice(before);
+    expect(added.map((m) => m.tool ? `tool:${m.tool.title}` : `${m.role}:${m.content}`)).toEqual([
+      'agent:Let me read the file.',
+      'tool:Read',
+      'agent:Done reading.',
+    ]);
+    expect(added.every((m) => !m.streaming)).toBe(true);
+    // The caller still receives the whole reply for the session store.
+    expect(full).toBe('Let me read the file.\n\nDone reading.');
+  });
+
+  it('completes parallel calls of the same tool by callId', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    channel.enterMercuryCode(process.cwd(), 'test');
+    await channel.sendToolEvent('read_file', { path: 'first.ts' }, 'c1');
+    await channel.sendToolEvent('read_file', { path: 'second.ts' }, 'c2');
+    channel.completeToolEvent('read_file', 'one line', false, 5, 'c2');
+    const blocks = channel.getTuiState().chatMessages.filter((m) => m.tool);
+    expect(blocks.map((m) => m.tool!.target)).toEqual(['second.ts']);
+    expect(channel.getTuiState().toolSteps.find((s) => s.callId === 'c1')?.status).toBe('running');
+  });
+
+  it('does not add tool blocks or split replies outside Mercury Code', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    await channel.stream(chunks([
+      'Before.',
+      async () => {
+        await channel.sendToolEvent('read_file', { path: 'a.ts' }, 'call-1');
+        channel.completeToolEvent('read_file', 'x', false, 10, 'call-1');
+      },
+      ' After.',
+    ]));
+    const messages = channel.getTuiState().chatMessages;
+    expect(messages.some((m) => m.tool)).toBe(false);
+    expect(messages.filter((m) => m.role === 'agent').map((m) => m.content)).toEqual(['Before. After.']);
+  });
+});
+
+describe('CLIChannel tool output expansion', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ctrl+o appends the full output of collapsed blocks, newest first', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    const channel = new CLIChannel();
+    channel.enterMercuryCode(process.cwd(), 'test');
+    const lines = (tag: string) => Array.from({ length: 30 }, (_, i) => `${tag} ${i}`).join('\n');
+    await channel.sendToolEvent('run_command', { command: 'first' }, 'c1');
+    channel.completeToolEvent('run_command', lines('a'), false, 5, 'c1');
+    await channel.sendToolEvent('run_command', { command: 'small' }, 'c2');
+    channel.completeToolEvent('run_command', 'tiny', false, 5, 'c2');
+    await channel.sendToolEvent('run_command', { command: 'second' }, 'c3');
+    channel.completeToolEvent('run_command', lines('b'), false, 5, 'c3');
+
+    const lastTool = () => channel.getTuiState().chatMessages.filter((m) => m.tool).at(-1)!.tool!;
+    channel.expandLastToolOutput();
+    expect(lastTool()).toMatchObject({ target: 'second', summary: 'Full output · 30 lines' });
+    expect(lastTool().body!.lines).toHaveLength(30);
+    channel.expandLastToolOutput();
+    expect(lastTool().target).toBe('first');
+    // Nothing left: a notice, not a block.
+    const toolCount = channel.getTuiState().chatMessages.filter((m) => m.tool).length;
+    channel.expandLastToolOutput();
+    expect(channel.getTuiState().chatMessages.filter((m) => m.tool)).toHaveLength(toolCount);
+    expect(channel.getTuiState().chatMessages.at(-1)?.content).toContain('Nothing to expand');
+  });
+});

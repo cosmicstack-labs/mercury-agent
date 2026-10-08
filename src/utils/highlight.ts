@@ -4,6 +4,13 @@
  */
 
 import chalk from 'chalk';
+import { IS_LIGHT_TERMINAL } from './terminal-theme.js';
+
+// Token palette. Yellow keywords and cyan calls vanish on a white
+// background, so light terminals get magenta/blue/red instead.
+const C = IS_LIGHT_TERMINAL
+  ? { keyword: chalk.magenta, call: chalk.blue, type: chalk.blue, number: chalk.red }
+  : { keyword: chalk.yellow, call: chalk.cyan, type: chalk.blue, number: chalk.magenta };
 
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 
@@ -25,11 +32,11 @@ const C_FAMILY: Rule[] = [
   { re: /^`(?:\\.|[^`\\])*`?/, color: (s) => chalk.green(s) },
   { re: /^'(?:\\.|[^'\\\n])*'?/, color: (s) => chalk.green(s) },
   { re: /^"(?:\\.|[^"\\\n])*"?/, color: (s) => chalk.green(s) },
-  { re: /^-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => chalk.magenta(s) },
-  { re: /^(?:abstract|as|break|case|catch|class|const|continue|default|delete|do|else|enum|export|extends|finally|for|from|function|get|if|implements|import|in|instanceof|interface|is|keyof|let|namespace|new|of|private|protected|public|readonly|return|satisfies|set|static|super|switch|this|throw|try|type|typeof|var|void|while|yield|async|await)\b/, color: (s) => chalk.yellow(s) },
-  { re: /^(?:true|false|null|unique|undefined|NaN|Infinity)\b/, color: (s) => chalk.blue(s) },
-  { re: /^[A-Za-z_$][\w$]*(?=\s*\()/, color: (s) => chalk.cyan(s) },
-  { re: /^[A-Z][\w$]*/, color: (s) => chalk.blue(s) },
+  { re: /^-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => C.number(s) },
+  { re: /^(?:abstract|as|break|case|catch|class|const|continue|default|delete|do|else|enum|export|extends|finally|for|from|function|get|if|implements|import|in|instanceof|interface|is|keyof|let|namespace|new|of|private|protected|public|readonly|return|satisfies|set|static|super|switch|this|throw|try|type|typeof|var|void|while|yield|async|await)\b/, color: (s) => C.keyword(s) },
+  { re: /^(?:true|false|null|unique|undefined|NaN|Infinity)\b/, color: (s) => C.type(s) },
+  { re: /^[A-Za-z_$][\w$]*(?=\s*\()/, color: (s) => C.call(s) },
+  { re: /^[A-Z][\w$]*/, color: (s) => C.type(s) },
 ];
 
 const PY_RULES: Rule[] = [
@@ -38,40 +45,40 @@ const PY_RULES: Rule[] = [
   { re: /^'''[\s\S]*?('''|$)/, color: (s) => chalk.gray(s) },
   { re: /^f?"(?:\\.|[^"\\\n])*"?/, color: (s) => chalk.green(s) },
   { re: /^f?'(?:\\.|[^'\\\n])*'?/, color: (s) => chalk.green(s) },
-  { re: /^\d[\d_]*(?:\.\d+)?/, color: (s) => chalk.magenta(s) },
-  { re: /^(?:def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|lambda|yield|raise|pass|break|continue|global|nonlocal|assert|async|await|not|and|or|in|is|del)\b/, color: (s) => chalk.yellow(s) },
-  { re: /^(?:True|False|None|self|cls)\b/, color: (s) => chalk.blue(s) },
-  { re: /^[A-Za-z_]\w*(?=\s*\()/, color: (s) => chalk.cyan(s) },
-  { re: /^[A-Z][\w]*/, color: (s) => chalk.blue(s) },
+  { re: /^\d[\d_]*(?:\.\d+)?/, color: (s) => C.number(s) },
+  { re: /^(?:def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|lambda|yield|raise|pass|break|continue|global|nonlocal|assert|async|await|not|and|or|in|is|del)\b/, color: (s) => C.keyword(s) },
+  { re: /^(?:True|False|None|self|cls)\b/, color: (s) => C.type(s) },
+  { re: /^[A-Za-z_]\w*(?=\s*\()/, color: (s) => C.call(s) },
+  { re: /^[A-Z][\w]*/, color: (s) => C.type(s) },
   { re: /^@\w[\w.]*/, color: (s) => chalk.green(s) },
 ];
 
 const SHELL_RULES: Rule[] = [
   { re: /^#[^\n]*/, color: (s) => chalk.gray(s) },
-  { re: /^(?:if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|source|set|unset|cd|exit)\b/, color: (s) => chalk.yellow(s) },
-  { re: /^\$\{[^}]*\}?\$?/, color: (s) => chalk.magenta(s) },
-  { re: /^\$\w*/, color: (s) => chalk.magenta(s) },
+  { re: /^(?:if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|source|set|unset|cd|exit)\b/, color: (s) => C.keyword(s) },
+  { re: /^\$\{[^}]*\}?\$?/, color: (s) => C.number(s) },
+  { re: /^\$\w*/, color: (s) => C.number(s) },
   { re: /^"(?:\\.|[^"\\])*"?/, color: (s) => chalk.green(s) },
   { re: /^'(?:[^'\\])*'?/, color: (s) => chalk.green(s) },
-  { re: /^\d+/, color: (s) =>chalk.magenta(s) },
-  { re: /^(?:npm|pnpm|yarn|node|npx|git|curl|wget|python|python3|pip|cargo|go|make|brew|ls|cat|echo|mkdir|rm|mv|cp|cd|chmod|docker|kubectl)\b/, color: (s) => chalk.cyan(s) },
+  { re: /^\d+/, color: (s) =>C.number(s) },
+  { re: /^(?:npm|pnpm|yarn|node|npx|git|curl|wget|python|python3|pip|cargo|go|make|brew|ls|cat|echo|mkdir|rm|mv|cp|cd|chmod|docker|kubectl)\b/, color: (s) => C.call(s) },
 ];
 
 const JSON_RULES: Rule[] = [
-  { re: /^"(?:\\.|[^"\\])*"(?=\s*:)/, color: (s) => chalk.blue(s) },
+  { re: /^"(?:\\.|[^"\\])*"(?=\s*:)/, color: (s) => C.type(s) },
   { re: /^"(?:\\.|[^"\\])*"?/, color: (s) => chalk.green(s) },
-  { re: /^-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => chalk.magenta(s) },
-  { re: /^(?:true|false|null)\b/, color: (s) => chalk.blue(s) },
+  { re: /^-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => C.number(s) },
+  { re: /^(?:true|false|null)\b/, color: (s) => C.type(s) },
 ];
 
 const CSS_RULES: Rule[] = [
   { re: /^\/\*[\s\S]*?\*\//, color: (s) => chalk.gray(s) },
-  { re: /^@[\w-]+/, color: (s) => chalk.yellow(s) },
-  { re: /^[.#]?[\w-]+(?=\s*\{)/, color: (s) => chalk.cyan(s) },
-  { re: /^[\w-]+(?=\s*:)/, color: (s) => chalk.blue(s) },
+  { re: /^@[\w-]+/, color: (s) => C.keyword(s) },
+  { re: /^[.#]?[\w-]+(?=\s*\{)/, color: (s) => C.call(s) },
+  { re: /^[\w-]+(?=\s*:)/, color: (s) => C.type(s) },
   { re: /^"(?:\\.|[^"\\\n])*"?/, color: (s) => chalk.green(s) },
   { re: /^'(?:[^'\\\n])*'?/, color: (s) => chalk.green(s) },
-  { re: /^-?\d[\d.]*(?:px|em|rem|%|vh|vw|s|ms|fr)?/, color: (s) => chalk.magenta(s) },
+  { re: /^-?\d[\d.]*(?:px|em|rem|%|vh|vw|s|ms|fr)?/, color: (s) => C.number(s) },
 ];
 
 const GO_RULES: Rule[] = [
@@ -79,22 +86,22 @@ const GO_RULES: Rule[] = [
   { re: /^\/\*[\s\S]*?\*\//, color: (s) => chalk.gray(s) },
   { re: /^"(?:\\.|[^"\\\n])*"?/, color: (s) => chalk.green(s) },
   { re: /^`(?:\\.|[^`\\])*`?/, color: (s) => chalk.green(s) },
-  { re: /^\d[\d_]*(?:\.\d+)?/, color: (s) => chalk.magenta(s) },
-  { re: /^(?:package|import|func|return|if|else|for|range|switch|case|default|type|struct|interface|map|chan|go|defer|var|const|select|break|continue|fallthrough)\b/, color: (s) => chalk.yellow(s) },
-  { re: /^[A-Za-z_]\w*(?=\s*\()/, color: (s) => chalk.cyan(s) },
-  { re: /^[A-Z][\w]*/, color: (s) => chalk.blue(s) },
+  { re: /^\d[\d_]*(?:\.\d+)?/, color: (s) => C.number(s) },
+  { re: /^(?:package|import|func|return|if|else|for|range|switch|case|default|type|struct|interface|map|chan|go|defer|var|const|select|break|continue|fallthrough)\b/, color: (s) => C.keyword(s) },
+  { re: /^[A-Za-z_]\w*(?=\s*\()/, color: (s) => C.call(s) },
+  { re: /^[A-Z][\w]*/, color: (s) => C.type(s) },
 ];
 
 const RUST_RULES: Rule[] = [
   { re: /^\/\/[^\n]*/, color: (s) => chalk.gray(s) },
   { re: /^\/\*[\s\S]*?\*\//, color: (s) => chalk.gray(s) },
   { re: /^"(?:\\.|[^"\\\n])*"?/, color: (s) => chalk.green(s) },
-  { re: /^\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => chalk.magenta(s) },
-  { re: /^(?:as|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while|async|await)\b/, color: (s) => chalk.yellow(s) },
-  { re: /^&['\u2019]?\w*\b/, color: (s) => chalk.cyan(s) },
-  { re: /^\w+!/, color: (s) => chalk.cyan(s) },
-  { re: /^[A-Za-z_]\w*(?=\s*[<(])/ , color: (s) => chalk.cyan(s) },
-  { re: /^[A-Z][\w]*/, color: (s) => chalk.blue(s) },
+  { re: /^\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, color: (s) => C.number(s) },
+  { re: /^(?:as|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while|async|await)\b/, color: (s) => C.keyword(s) },
+  { re: /^&['\u2019]?\w*\b/, color: (s) => C.call(s) },
+  { re: /^\w+!/, color: (s) => C.call(s) },
+  { re: /^[A-Za-z_]\w*(?=\s*[<(])/ , color: (s) => C.call(s) },
+  { re: /^[A-Z][\w]*/, color: (s) => C.type(s) },
 ];
 
 const RULESETS: Record<string, Rule[]> = {
@@ -162,10 +169,10 @@ export function highlightLine(line: string, lang: string, opts?: HighlightOption
 
 /** Whole-line uniform diff renderer: - red, + green, header gray/blue. */
 export function highlightDiffLine(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return chalk.blue(line);
-  if (line.startsWith('+++') || line.startsWith('---')) return chalk.blue(line);
+  if (line.startsWith('+++') || line.startsWith('---')) return C.type(line);
+  if (line.startsWith('+++') || line.startsWith('---')) return C.type(line);
   if (line.startsWith('diff ')) return chalk.bold.blue(line);
-  if (line.startsWith('@@')) return chalk.cyan(line);
+  if (line.startsWith('@@')) return C.call(line);
   if (line.startsWith('+')) return chalk.green(line);
   if (line.startsWith('-')) return chalk.red(line);
   return line;
