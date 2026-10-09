@@ -5,6 +5,35 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
+import {
+  evaluateArgvPolicy,
+  pinnedBinary,
+  IN_PROCESS_BUILTINS,
+  type BinaryResolver,
+} from './shell/argv-lane.js';
+import {
+  makeContext,
+  withChanges,
+  permissionContextStore,
+  type PermissionContext,
+  type ContextScope,
+} from './permission-context.js';
+
+export type { PermissionContext } from './permission-context.js';
+
+/** Result of a shell permission check. */
+export interface ShellCheckResult {
+  allowed: boolean;
+  reason?: string;
+  needsApproval: boolean;
+  /**
+   * `argv`: auto-approved through the argv lane — the caller must execute
+   * it with execFile (see planArgvExecution), never a shell. `shell`:
+   * approved through the approval lane (prompt, allow-all, elevation, bot
+   * grant) — the exact string the user saw may run through a shell.
+   */
+  lane?: 'argv' | 'shell';
+}
 
 /**
  * Command-pattern glob → anchored, case-insensitive RegExp. `*` matches any
@@ -312,10 +341,16 @@ export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
   private askHandler?: (prompt: string) => Promise<string>;
-  private autoApproveAll = false;
-  private elevatedCommands: Set<string> = new Set();
-  private currentChannelType: string = 'cli';
-  private currentChannelId: string = 'cli';
+  /**
+   * The main agent's (root) context: replaced, never mutated, by the
+   * legacy setters below. Sub-agents never read it while they run — they
+   * carry their own context through AsyncLocalStorage (`withContext`).
+   */
+  private session: PermissionContext = makeContext();
+  /** Grant of the internal turn in progress (agent.ts), layered over `session`. */
+  private turnGrant: { scopes: ContextScope[] } | null = null;
+  private rootCache: PermissionContext | null = null;
+  private binaryResolver: BinaryResolver = pinnedBinary;
   private approvedCommandsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
   /** Hard-linked files the user answered "always" for, per interaction context. */
@@ -326,9 +361,6 @@ export class PermissionManager {
    * everything else denies. Never combined with autoApproveAll.
    */
   private failClosed = false;
-  private currentSenderRole: 'admin' | 'member' | undefined;
-
-  private tempScopes: FileScope[] = [];
 
   /**
    * Bot-scoped shell allow-list (fail-closed runtimes): patterns the bot's
@@ -366,25 +398,108 @@ export class PermissionManager {
     return this.failClosed;
   }
 
+  // ─── Permission context (ADR-016) ─────────────────────────────────────────
+
+  /**
+   * The context of the agent whose code is running: a sub-agent's own
+   * context inside `withContext`, otherwise the main agent's root context
+   * (session plus any internal-turn grant).
+   */
+  currentContext(): PermissionContext {
+    const cell = permissionContextStore.getStore();
+    if (cell && cell.owner === this) return cell.ctx;
+    return this.rootContext();
+  }
+
+  private rootContext(): PermissionContext {
+    if (this.rootCache) return this.rootCache;
+    let ctx = this.session;
+    if (this.turnGrant) {
+      ctx = withChanges(ctx, {
+        autoApprove: true,
+        autoApproveOrigin: ctx.autoApprove ? ctx.autoApproveOrigin : 'turn',
+        scopes: [...ctx.scopes, ...this.turnGrant.scopes],
+      });
+    }
+    this.rootCache = ctx;
+    return ctx;
+  }
+
+  private ctx(): PermissionContext {
+    return this.currentContext();
+  }
+
+  /**
+   * Replace the calling agent's context: its ALS cell when it is a
+   * sub-agent, otherwise the root session. The patch is computed from that
+   * base (never from the merged root, so a turn grant is not baked into
+   * the session).
+   */
+  private updateContext(patch: (base: PermissionContext) => Partial<PermissionContext>): void {
+    const cell = permissionContextStore.getStore();
+    if (cell && cell.owner === this) {
+      cell.ctx = withChanges(cell.ctx, patch(cell.ctx));
+      return;
+    }
+    this.session = withChanges(this.session, patch(this.session));
+    this.rootCache = null;
+  }
+
+  /**
+   * Run `fn` (and everything it awaits or schedules) under `ctx`. Used for
+   * sub-agents; their tools resolve permissions against `ctx` even while
+   * the main agent's root context changes concurrently.
+   */
+  withContext<T>(ctx: PermissionContext, fn: () => T): T {
+    return permissionContextStore.run({ owner: this, ctx: Object.isFrozen(ctx) ? ctx : makeContext(ctx) }, fn);
+  }
+
+  /**
+   * Start the grant of one internal (scheduled/background) turn on the
+   * root context: allow-all plus `scopes`, origin `turn`. Not visible to
+   * sub-agents already running, and not inherited by ones spawned during
+   * the turn. `endTurnGrant()` removes it and leaves the session (e.g. a
+   * user's Allow All) untouched.
+   */
+  beginTurnGrant(grant: { scopes?: Array<{ path: string; read: boolean; write: boolean }> } = {}): void {
+    this.turnGrant = { scopes: (grant.scopes ?? []).map((s) => ({ ...s, path: resolve(s.path) })) };
+    this.rootCache = null;
+  }
+
+  endTurnGrant(): void {
+    this.turnGrant = null;
+    this.rootCache = null;
+  }
+
+  /** Test hook: resolve argv-lane binaries with `resolver` instead of the pinned table. */
+  setBinaryResolver(resolver: BinaryResolver): void {
+    this.binaryResolver = resolver;
+  }
+
+  // ─── Legacy setters (shims over the context) ──────────────────────────────
+
   setCurrentChannelType(type: string): void {
-    this.currentChannelType = type;
+    this.updateContext(() => ({ channelType: type }));
   }
 
   setCurrentContext(type: string, id: string): void {
-    this.currentChannelType = type;
-    this.currentChannelId = id;
+    this.updateContext(() => ({ channelType: type, channelId: id }));
   }
 
   getCurrentChannelType(): string {
-    return this.currentChannelType;
+    return this.ctx().channelType;
+  }
+
+  getCurrentChannelId(): string {
+    return this.ctx().channelId;
   }
 
   setCurrentSenderRole(role: 'admin' | 'member' | undefined): void {
-    this.currentSenderRole = role;
+    this.updateContext(() => ({ senderRole: role }));
   }
 
   getCurrentSenderRole(): 'admin' | 'member' | undefined {
-    return this.currentSenderRole;
+    return this.ctx().senderRole;
   }
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
@@ -392,24 +507,29 @@ export class PermissionManager {
   }
 
   async requestApproval(prompt: string): Promise<boolean> {
-    if (this.currentChannelType === 'internal') return true;
+    const ctx = this.ctx();
+    // No one can answer on the internal channel: only an allow-all context
+    // (the internal turn's own grant) approves; a child of it does not.
+    if (ctx.channelType === 'internal') return ctx.autoApprove;
     if (!this.askHandler) return false;
     const result = await this.askHandler(prompt);
     return result === 'yes' || result === 'always';
   }
 
+  /** Session-level Allow All (user choice). Inside a sub-agent it only changes that sub-agent. */
   setAutoApproveAll(value: boolean): void {
-    this.autoApproveAll = value;
+    this.updateContext(() => ({ autoApprove: value, autoApproveOrigin: value ? 'session' : null }));
   }
 
   isAutoApproveAll(): boolean {
-    return this.autoApproveAll;
+    return this.ctx().autoApprove;
   }
 
   private isGlobalAutoApproveActive(): boolean {
     // Web/Cloud grants are resolved per session by WebChannel; a Local CLI
     // allow-all setting must never silently elevate remote requests.
-    return this.autoApproveAll && this.currentChannelType !== 'web';
+    const ctx = this.ctx();
+    return ctx.autoApprove && ctx.channelType !== 'web';
   }
 
   elevateForSkill(allowedTools: string[]): void {
@@ -422,28 +542,28 @@ export class PermissionManager {
       logger.info({ allowedTools }, 'Skill elevation ignored in fail-closed mode (granted scopes rule)');
       return;
     }
-    if (allowedTools.includes('run_command')) {
-      this.elevatedCommands.add('run_command');
-    }
-    if (allowedTools.includes('read_file') || allowedTools.includes('list_dir')) {
-      this.elevatedCommands.add('fs_read');
-    }
+    const grants: string[] = [];
+    if (allowedTools.includes('run_command')) grants.push('run_command');
+    if (allowedTools.includes('read_file') || allowedTools.includes('list_dir')) grants.push('fs_read');
     if (allowedTools.includes('write_file') || allowedTools.includes('create_file') || allowedTools.includes('delete_file')) {
-      this.elevatedCommands.add('fs_write');
+      grants.push('fs_write');
     }
+    if (grants.length === 0) return;
+    // Elevation lands on the calling agent's own context only.
+    this.updateContext((base) => ({ elevated: [...new Set([...base.elevated, ...grants])] }));
   }
 
   clearElevation(): void {
-    this.elevatedCommands.clear();
+    if (this.ctx().elevated.length === 0) return;
+    this.updateContext(() => ({ elevated: [] }));
   }
 
   isElevated(tool: string): boolean {
-    if (this.elevatedCommands.has(tool)) return true;
-    return false;
+    return this.ctx().elevated.includes(tool);
   }
 
   isShellElevated(): boolean {
-    return this.elevatedCommands.has('run_command');
+    return this.isElevated('run_command');
   }
 
   private load(): PermissionsManifest {
@@ -503,7 +623,7 @@ export class PermissionManager {
     // Skill elevation is an explicit "read anywhere" grant, so neither the
     // scope checks nor the alias prompt apply — but the caller still gets the
     // canonical path and identity so the open is verified like any other.
-    if (this.elevatedCommands.has('fs_read')) {
+    if (this.isElevated('fs_read')) {
       return this.describeRead(canonical).result;
     }
 
@@ -519,7 +639,7 @@ export class PermissionManager {
       // the user for the target when a prompt is possible, otherwise deny —
       // the model is told the canonical path so it can request that scope.
       const reason = `Permission denied: read of ${path} resolves outside the approved scopes (${canonical})`;
-      if (!this.failClosed && !this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
+      if (!this.failClosed && !this.isGlobalAutoApproveActive() && this.askHandler && this.ctx().channelType !== 'internal') {
         const granted = await this.requestScopeExternal(canonical, 'read');
         if (!granted.allowed) return { allowed: false, reason, code: 'symlink-escape', canonical };
       } else {
@@ -563,11 +683,12 @@ export class PermissionManager {
     const nlink = described.nlink;
     if (nlink === undefined || nlink <= 1 || this.isGlobalAutoApproveActive()) return described.result;
 
-    const approvedAliases = this.approvedHardlinkReadsByContext.get(this.currentChannelId);
+    const channelId = this.ctx().channelId;
+    const approvedAliases = this.approvedHardlinkReadsByContext.get(channelId);
     if (approvedAliases?.has(canonical)) return described.result;
 
     const reason = `Permission denied for read access to ${path}: the file has ${nlink} hard links and may alias a file outside the approved scopes`;
-    if (this.failClosed || !this.askHandler || this.currentChannelType === 'internal') {
+    if (this.failClosed || !this.askHandler || this.ctx().channelType === 'internal') {
       return { allowed: false, reason, code: 'hardlink', canonical };
     }
     const response = await this.askHandler(
@@ -576,7 +697,7 @@ export class PermissionManager {
     if (response === 'always') {
       const approved = approvedAliases ?? new Set<string>();
       approved.add(canonical);
-      this.approvedHardlinkReadsByContext.set(this.currentChannelId, approved);
+      this.approvedHardlinkReadsByContext.set(channelId, approved);
       return described.result;
     }
     if (response === 'yes') return described.result;
@@ -598,10 +719,10 @@ export class PermissionManager {
   }
 
   private async checkScopedAccess(path: string, mode: 'read' | 'write'): Promise<FsAccessResult> {
-    if (mode === 'read' && this.elevatedCommands.has('fs_read')) {
+    if (mode === 'read' && this.isElevated('fs_read')) {
       return { allowed: true };
     }
-    if (mode === 'write' && this.elevatedCommands.has('fs_write')) {
+    if (mode === 'write' && this.isElevated('fs_write')) {
       return { allowed: true };
     }
 
@@ -634,7 +755,9 @@ export class PermissionManager {
     }
 
     // Write access: in auto-approve-all mode, allow if scope covers it
-    const contextWriteApproved = this.approvedWritesByContext.get(this.currentChannelId)?.has(resolved) === true;
+    const channelId = this.ctx().channelId;
+    const channelType = this.ctx().channelType;
+    const contextWriteApproved = this.approvedWritesByContext.get(channelId)?.has(resolved) === true;
     if (mode === 'write' && (this.isGlobalAutoApproveActive() || contextWriteApproved)) {
       if (scope && scope.write) return { allowed: true };
       if (tempScope && tempScope.write) return { allowed: true };
@@ -650,16 +773,16 @@ export class PermissionManager {
     }
 
     // Write access in ask-me mode: ALWAYS prompt the user, even if scope exists
-    if (mode === 'write' && !this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
+    if (mode === 'write' && !this.isGlobalAutoApproveActive() && this.askHandler && channelType !== 'internal') {
       const scopeAllows = (scope && scope.write) || (tempScope && tempScope.write);
       if (scopeAllows) {
         // Scope allows it, but user wants to confirm — prompt with file path
         const result = await this.askHandler(`Write to file: ${resolved}`);
         if (result === 'yes') return { allowed: true };
         if (result === 'always') {
-          const approved = this.approvedWritesByContext.get(this.currentChannelId) ?? new Set<string>();
+          const approved = this.approvedWritesByContext.get(channelId) ?? new Set<string>();
           approved.add(resolved);
-          this.approvedWritesByContext.set(this.currentChannelId, approved);
+          this.approvedWritesByContext.set(channelId, approved);
           return { allowed: true };
         }
         return { allowed: false, reason: `User denied write to ${path}` };
@@ -676,37 +799,37 @@ export class PermissionManager {
       return { allowed: false, reason: `Permission denied: ${mode} access to ${path}` };
     }
 
-    if (!this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
+    if (!this.isGlobalAutoApproveActive() && this.askHandler && channelType !== 'internal') {
       return this.requestScopeExternal(path, mode);
     }
 
     return { allowed: false, reason: `Permission denied for ${mode} access to ${path}` };
   }
 
-  // Read-only commands that never need approval even in ask-me mode
-  private static readonly SAFE_READ_COMMANDS = new Set([
-    'ls', 'cat', 'pwd', 'which', 'echo', 'head', 'tail', 'wc', 'find', 'grep', 'rg',
-    'ps', 'df', 'du', 'uname', 'dir', 'type', 'cd', 'where', 'tree', 'findstr',
-    'tasklist', 'systeminfo', 'git',  // git read commands are filtered by pattern below
-  ]);
-
-  private static readonly SAFE_READ_PATTERNS = [
-    'ls *', 'cat *', 'pwd', 'which *', 'echo *', 'head *', 'tail *', 'wc *',
-    'find *', 'grep *', 'rg *', 'ps *', 'df *', 'du *', 'uname *',
-    'dir *', 'type *', 'cd *', 'where *', 'tree *', 'findstr *',
-    'tasklist *', 'systeminfo *',
-    'git status *', 'git diff *', 'git log *', 'git branch *',
-  ];
-
-  async checkShellCommand(command: string): Promise<{ allowed: boolean; reason?: string; needsApproval: boolean }> {
+  /**
+   * Shell permission check. Two lanes (ADR-016):
+   *
+   * - **argv lane** (no prompt): the command tokenises into argv with no
+   *   shell syntax, `argv[0]` is allowlisted, its flags pass the per-command
+   *   policy, and every path argument stays inside the cwd or a readable
+   *   scope. The caller executes it with execFile from the pinned PATH.
+   * - **approval lane**: everything else, including pipelines and chains.
+   *   The user sees the exact string; once approved it may use a shell.
+   *
+   * Hard blocks win over both, and Allow All / skill elevation / an
+   * "always" answer / a bot allow-list grant approve through the approval
+   * lane without prompting.
+   */
+  async checkShellCommand(command: string, options: { cwd?: string } = {}): Promise<ShellCheckResult> {
     const shell = this.manifest.capabilities.shell;
     if (!shell.enabled) {
       return { allowed: false, reason: 'Shell capability is disabled', needsApproval: false };
     }
 
     const trimmed = command.trim();
-    const baseCmd = trimmed.split(/\s+/)[0];
     const segments = splitShellSegments(trimmed);
+    const ctx = this.ctx();
+    const cwd = options.cwd ?? this.cwd;
 
     // Always block dangerous commands — check each segment so an
     // auto-approved base command can't launder a chained destructive one
@@ -721,17 +844,17 @@ export class PermissionManager {
 
     if (this.isGlobalAutoApproveActive()) {
       logger.info({ cmd: trimmed }, 'Shell command auto-approved (Local allow-all mode)');
-      return { allowed: true, needsApproval: false };
+      return { allowed: true, needsApproval: false, lane: 'shell' };
     }
 
     if (this.isShellElevated()) {
       logger.info({ cmd: trimmed }, 'Shell command auto-approved (skill elevation)');
-      return { allowed: true, needsApproval: false };
+      return { allowed: true, needsApproval: false, lane: 'shell' };
     }
 
-    if (this.approvedCommandsByContext.get(this.currentChannelId)?.has(trimmed)) {
+    if (this.approvedCommandsByContext.get(ctx.channelId)?.has(trimmed)) {
       logger.info({ cmd: trimmed }, 'Shell command auto-approved for this interaction context');
-      return { allowed: true, needsApproval: false };
+      return { allowed: true, needsApproval: false, lane: 'shell' };
     }
 
     if (shell.cwdOnly) {
@@ -753,8 +876,8 @@ export class PermissionManager {
     // broad pattern like "cat *" can never launder a path outside granted
     // scopes; needsApproval wins (the same pattern in both lists means
     // deny); a bare "*" is rejected at grant time — allow-all is an
-    // interactive-mode concept, not a bot grant. Safe-read commands stay
-    // fully covered by the allSegmentsSafeRead lane below.
+    // interactive-mode concept, not a bot grant. Read-only commands stay
+    // covered by the argv lane below.
     if (this.failClosed && this.botShellAllowList && this.botShellAllowList.length > 0) {
       const needsApprovalList = shell.needsApproval ?? [];
       const botList = this.botShellAllowList;
@@ -766,19 +889,15 @@ export class PermissionManager {
       );
       if (allSegmentsApproved) {
         logger.info({ cmd: trimmed }, 'Shell command auto-approved (bot allow-list)');
-        return { allowed: true, needsApproval: false };
+        return { allowed: true, needsApproval: false, lane: 'shell' };
       }
     }
 
-    // In ask-me mode: only auto-approve when EVERY segment is a safe read.
-    // Matching the full trimmed string would let `cat foo; rm -rf ~` slip
-    // through because `cat *` matches the entire concatenation.
-    const allSegmentsSafeRead = segments.length > 0 && segments.every((segment) =>
-      this.isSafeReadSegment(segment)
-    );
-    if (allSegmentsSafeRead) {
-      logger.info({ cmd: trimmed, segments: segments.length }, 'Shell command auto-approved (safe read-only)');
-      return { allowed: true, needsApproval: false };
+    // Argv lane: the only path to a prompt-free approval in Ask Me mode.
+    const argvLane = this.classifyArgvLane(trimmed, cwd);
+    if (argvLane.ok) {
+      logger.info({ cmd: trimmed }, 'Shell command auto-approved (argv lane)');
+      return { allowed: true, needsApproval: false, lane: 'argv' };
     }
 
     // Fail-closed execute grants (bots): an explicitly granted execute scope
@@ -790,21 +909,21 @@ export class PermissionManager {
       const pathTokens = segments.flatMap(s => this.extractPathTokens(s));
       if (pathTokens.length > 0 && pathTokens.every(t => this.isExecuteScoped(t))) {
         logger.info({ cmd: trimmed, paths: pathTokens.length }, 'Shell command allowed by execute scope');
-        return { allowed: true, needsApproval: false };
+        return { allowed: true, needsApproval: false, lane: 'shell' };
       }
     }
 
-    // All non-safe commands require user approval in ask-me mode
-    if (this.askHandler && this.currentChannelType !== 'internal') {
+    // Approval lane: the user sees the exact string.
+    if (this.askHandler && ctx.channelType !== 'internal') {
       const result = await this.askHandler(`Run command: ${trimmed}`);
       if (result === 'yes') {
-        return { allowed: true, needsApproval: false };
+        return { allowed: true, needsApproval: false, lane: 'shell' };
       }
       if (result === 'always') {
-        const approved = this.approvedCommandsByContext.get(this.currentChannelId) ?? new Set<string>();
+        const approved = this.approvedCommandsByContext.get(ctx.channelId) ?? new Set<string>();
         approved.add(trimmed);
-        this.approvedCommandsByContext.set(this.currentChannelId, approved);
-        return { allowed: true, needsApproval: false };
+        this.approvedCommandsByContext.set(ctx.channelId, approved);
+        return { allowed: true, needsApproval: false, lane: 'shell' };
       }
       return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
     }
@@ -813,56 +932,40 @@ export class PermissionManager {
   }
 
   /**
-   * Per-command flags that turn a "read-only" command into a write or an
-   * exec. Each entry is matched against the segment's command word, then its
-   * flag pattern against the whole segment. Flags are anchored at a token
-   * start and must end at whitespace, `=` or end-of-segment, so `-fprint0`
-   * and `-fls` cannot hide behind a `\b` that stops at the digit (#71 family).
+   * Argv-lane classification: policy (tokenizer, allowlist, flag policy),
+   * binary availability in the pinned PATH, and a path gate over the
+   * tokenised arguments (after quote removal, so `cat "/etc/passwd"` is
+   * seen as the absolute path it is).
    */
-  private static readonly SIDE_EFFECT_FLAGS: ReadonlyArray<{ command: RegExp; flags: RegExp }> = [
-    // find: -exec/-execdir/-ok/-okdir run commands; -delete deletes;
-    // -fprint/-fprint0/-fprintf/-fls write attacker-chosen files;
-    // -files0-from dereferences a path list the literal-path gate never saw.
-    { command: /^find(?:\s|$)/, flags: /(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprintf|fprint0|fprint|fls|files0-from)(?=\s|=|$)/ },
-    // tree -o FILE / --output FILE writes the listing to a file.
-    { command: /^tree(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*o[A-Za-z]*|--output)(?=\s|=|$)/ },
-    // curl: -o/-O (also inside a cluster such as -sSLo), --output,
-    // --remote-name(-all), -J/--remote-header-name, --output-dir write files.
-    { command: /^curl(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOJ][A-Za-z]*|--output|--output-dir|--remote-name|--remote-name-all|--remote-header-name|--create-dirs)(?=\s|=|$)/ },
-    // wget: -O/--output-document, -o/--output-file, -a/--append-output,
-    // -P/--directory-prefix all choose where it writes.
-    { command: /^wget(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOaP][A-Za-z]*|--output-document|--output-file|--append-output|--directory-prefix)(?=\s|=|$)/ },
-    // git log/diff: --output writes the result to a file; --ext-diff runs the
-    // configured external diff program; --no-index diffs arbitrary paths.
-    { command: /^git\s+(?:log|diff|status|branch)(?:\s|$)/, flags: /(?:^|\s)(?:--output|--ext-diff|--no-index)(?=\s|=|$)/ },
-    // rg --pre CMD pipes every file through an arbitrary preprocessor.
-    { command: /^rg(?:\s|$)/, flags: /(?:^|\s)--pre(?=\s|=|$)/ },
-  ];
-
-  private isSafeReadSegment(segment: string): boolean {
-    // Redirection turns otherwise read-only commands such as cat/echo into writes.
-    if (/\d*(?:>{1,2}|<{1,2})|&>/.test(segment)) return false;
-    // Command-specific write/exec flags (find -exec, curl -o, rg --pre, …).
-    for (const rule of PermissionManager.SIDE_EFFECT_FLAGS) {
-      if (rule.command.test(segment) && rule.flags.test(segment)) return false;
+  classifyArgvLane(command: string, cwd: string = this.cwd): { ok: true; argv: string[] } | { ok: false; reason: string } {
+    const verdict = evaluateArgvPolicy(command);
+    if (!verdict.ok) return verdict;
+    const argv = verdict.argv;
+    if (!IN_PROCESS_BUILTINS.has(argv[0]) && !this.binaryResolver(argv[0])) {
+      return { ok: false, reason: `${argv[0]} is not installed in the pinned system PATH` };
     }
-    // File-list indirection in any safe-read command (wc/du/sort/…): the
-    // paths live inside the referenced file, invisible to the literal-path
-    // gate, so the read can escape the approved scopes.
-    if (/(?:^|\s)--files0-from(?:=|\s|$)/.test(segment)) return false;
-    // Shell expansion runs after this check, so a "safe read" can still
-    // resolve outside the workspace (`head $HOME/secret`, CVE-2026-28463) or
-    // disclose environment values (`echo $TOKEN`). Require approval for any
-    // segment that relies on variable expansion or a home shorthand.
-    // ANSI-C quoting ($'\x2f...') also expands post-check — caught by the same class.
-    if (/\$[{(0-9A-Za-z_']|`/.test(segment)) return false;
-    if (/(?:^|\s)~[A-Za-z0-9_-]*(?:\/|$)/.test(segment)) return false;
-    const branchArgs = segment.match(/^git\s+branch(?:\s+(.*))?$/)?.[1]?.trim();
-    if (branchArgs && (
-      !branchArgs.startsWith('-')
-      || /(?:^|\s)(?:-[dDmMcC]\b|--(?:delete|move|copy|edit-description|set-upstream-to|unset-upstream|track)\b)/.test(branchArgs)
-    )) return false;
-    return PermissionManager.SAFE_READ_PATTERNS.some((pattern) => this.matchPattern(segment, pattern));
+    for (const arg of argv.slice(1)) {
+      for (const candidate of this.argvPathCandidates(arg)) {
+        const resolved = resolve(cwd, candidate.replace(/^~/, homedir()));
+        if (resolved === cwd || resolved.startsWith(cwd.endsWith(sep) ? cwd : cwd + sep)) continue;
+        if (this.isLexicallyReadable(resolved)) continue;
+        return { ok: false, reason: `path ${candidate} is outside the working directory and readable scopes` };
+      }
+    }
+    return { ok: true, argv };
+  }
+
+  /** Path-like parts of one argv element: the element itself and an `--opt=value` value. */
+  private argvPathCandidates(arg: string): string[] {
+    const parts = [arg];
+    const eq = arg.indexOf('=');
+    if (arg.startsWith('-') && eq > 0) parts.push(arg.slice(eq + 1));
+    return parts.filter((p) =>
+      p.startsWith('/')
+      || /^[A-Za-z]:[\\/]/.test(p)
+      || p.startsWith('\\\\')
+      || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p),
+    );
   }
 
   isGitReadAllowed(): boolean {
@@ -929,14 +1032,18 @@ export class PermissionManager {
     return { allowed: false, reason: `Permission denied for ${mode} access to ${path}` };
   }
 
+  /**
+   * Session-only scope on the calling agent's context (the main agent's
+   * session, or a sub-agent's own context — never shared with siblings).
+   */
   addTempScope(path: string, read: boolean, write: boolean): void {
     const resolved = resolve(path);
-    this.tempScopes.push({ path: resolved, read, write });
+    this.updateContext((base) => ({ scopes: [...base.scopes, { path: resolved, read, write }] }));
     logger.info({ path: resolved, read, write }, 'Temp permission scope added (session only)');
   }
 
-  private findTempScope(resolvedPath: string): FileScope | undefined {
-    for (const scope of this.tempScopes) {
+  private findTempScope(resolvedPath: string): ContextScope | undefined {
+    for (const scope of this.ctx().scopes) {
       const scopeResolved = resolve(scope.path.replace(/^~/, homedir()));
       if (resolvedPath === scopeResolved || resolvedPath.startsWith(scopeResolved + sep)) {
         return scope;
@@ -966,7 +1073,7 @@ export class PermissionManager {
    * directory (macOS `/tmp` → `/private/tmp`) still covers its own files.
    */
   private isWithinScope(canonicalPath: string, mode: 'read' | 'write'): boolean {
-    const granting = [...this.manifest.capabilities.filesystem.scopes, ...this.tempScopes].filter(
+    const granting = [...this.manifest.capabilities.filesystem.scopes, ...this.ctx().scopes].filter(
       (scope) => (mode === 'write' ? scope.write : scope.read),
     );
     for (const scope of granting) {

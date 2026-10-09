@@ -143,7 +143,55 @@ describe('delegated sub-agent shell commands go through the parent\'s approval f
     expect(toolResultText(model)).toMatch(/requires approval/);
   });
 
-  it.todo('P2.2: a child\'s tool call that lands inside a concurrent internal-channel turn (setAutoApproveAll window in agent.ts) must still prompt — needs the immutable per-agent permission context');
+  it('#75/#99 residual: a chat child\'s rm -rf that lands inside a concurrent internal allow-all turn still prompts (P2.2)', async () => {
+    // The child's first model call waits until the main agent is inside an
+    // internal turn, then asks for `rm -rf build`.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async (): Promise<LanguageModelV3GenerateResult> => {
+        calls++;
+        if (calls === 1) {
+          await gate;
+          return {
+            content: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'run_command', input: JSON.stringify({ command: 'rm -rf build' }) }],
+            finishReason: { unified: 'tool-calls', raw: 'tool_use' },
+            usage,
+            warnings: [],
+          };
+        }
+        return { content: [{ type: 'text', text: 'done' }], finishReason: { unified: 'stop', raw: 'end_turn' }, usage, warnings: [] };
+      },
+    });
+    const ask = vi.fn().mockResolvedValue('no');
+    const { agent, registry } = makeChild({ model, ask });
+    const permissions = registry.permissions;
+
+    const running = agent.run();
+
+    // Main agent: an internal (scheduled) turn starts while the child runs —
+    // exactly what agent.ts handleMessage does for msg.channelType 'internal'.
+    registry.setChannelContext('internal', 'internal');
+    permissions.beginTurnGrant({ scopes: [{ path: '/', read: true, write: true }] });
+    try {
+      // The window is real for the main agent: it may run the command unprompted…
+      await expect(permissions.checkShellCommand('rm -rf build')).resolves.toMatchObject({ allowed: true });
+      expect(ask).not.toHaveBeenCalled();
+
+      // …but the child's call, landing inside that window, still prompts.
+      release();
+      const result = await running;
+      expect(result.status).toBe('completed');
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledWith('Run command: rm -rf build');
+      expect(toolResultText(model)).toContain('User denied: rm -rf build');
+      // The child never clobbered the main agent's channel.
+      expect(registry.getChannelContext()).toEqual({ channelId: 'internal', channelType: 'internal' });
+    } finally {
+      permissions.endTurnGrant();
+    }
+  });
 });
 
 describe('sub-agent tool surface and prompt (#74)', () => {

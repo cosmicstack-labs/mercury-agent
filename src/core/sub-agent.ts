@@ -16,7 +16,8 @@ import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } fro
 import { getHeapStatistics } from 'node:v8';
 import { memoryGovernorThresholds, memoryGovernorVerdict, CONVERSATION_TOOL_BUDGET_CHARS, TOOL_RESULT_KEEP_RECENT, summarizeToolResult } from './memory-governor.js';
 import { classifyStreamCompletion } from './stream-completion.js';
-import { resolveChildTools, childMayUse } from '../utils/tool-filter.js';
+import { resolveChildTools, childMayUse, filterToolsByAllowlist } from '../utils/tool-filter.js';
+import { deriveChildContext, type PermissionContext } from '../capabilities/permission-context.js';
 import { logger } from '../utils/logger.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
@@ -121,7 +122,46 @@ export class SubAgent {
     this.onPostComment = cb;
   }
 
+  private permissionContext?: PermissionContext;
+
+  /**
+   * This agent's frozen permission context: the one the supervisor derived
+   * at spawn time, or (when constructed directly) one derived now from the
+   * current context. Child ⊆ parent; see permission-context.ts.
+   */
+  getPermissionContext(): PermissionContext | undefined {
+    if (this.permissionContext) return this.permissionContext;
+    if (this.config.permissionContext) {
+      this.permissionContext = this.config.permissionContext;
+    } else {
+      const permissions = this.capabilities.permissions as any;
+      if (typeof permissions?.currentContext !== 'function') return undefined;
+      this.permissionContext = deriveChildContext(permissions.currentContext(), {
+        channelType: this.config.sourceChannelType || 'internal',
+        channelId: this.config.sourceChannelId || 'internal',
+        allowedTools: this.config.allowedTools,
+      });
+    }
+    return this.permissionContext;
+  }
+
+  /**
+   * Run the task under this agent's own permission context. Every tool it
+   * invokes — through any depth of the AI SDK's promise chain — resolves
+   * permissions against that context via AsyncLocalStorage, so a concurrent
+   * change to the main agent's context (an internal turn's allow-all) never
+   * reaches it (#75/#99 residual).
+   */
   async run(): Promise<SubAgentResult> {
+    const ctx = this.getPermissionContext();
+    const permissions = this.capabilities.permissions as any;
+    if (ctx && typeof permissions?.withContext === 'function') {
+      return permissions.withContext(ctx, () => this.runInContext());
+    }
+    return this.runInContext();
+  }
+
+  private async runInContext(): Promise<SubAgentResult> {
     this.status = 'running';
     this.startTime = Date.now();
 
@@ -175,10 +215,8 @@ export class SubAgent {
         this.capabilities.setCwd(this.config.workingDirectory);
       }
 
-      this.capabilities.setChannelContext(
-        this.config.sourceChannelId || 'internal',
-        this.config.sourceChannelType || 'internal',
-      );
+      // Channel routing comes from this agent's permission context (set in
+      // run()); the shared registry's main-agent channel is left alone.
 
       try {
         const provider = this.providers.getDefault();
@@ -502,16 +540,21 @@ export class SubAgent {
    * the shared registry instance carries the main agent's authority (#74).
    */
   private resolveTools() {
-    const tools = resolveChildTools(this.capabilities.getTools(), this.config.allowedTools);
+    let tools = resolveChildTools(this.capabilities.getTools(), this.config.allowedTools);
+    // The context's allowlist is the parent's ∩ this agent's: a grandchild
+    // can never be granted a tool its parent did not have.
+    const ctxTools = this.getPermissionContext()?.allowedTools;
+    if (ctxTools) tools = filterToolsByAllowlist(tools, ctxTools);
+    const ctxAllows = (name: string) => !ctxTools || ctxTools.includes(name);
     if (this.supervisor) {
       const scoped = { callerId: this.config.id };
-      if (childMayUse('delegate_task', this.config.allowedTools)) {
+      if (childMayUse('delegate_task', this.config.allowedTools) && ctxAllows('delegate_task')) {
         tools.delegate_task = createDelegateTaskTool(this.supervisor, this.capabilities, scoped);
       }
-      if (childMayUse('list_agents', this.config.allowedTools)) {
+      if (childMayUse('list_agents', this.config.allowedTools) && ctxAllows('list_agents')) {
         tools.list_agents = createListAgentsTool(this.supervisor, scoped);
       }
-      if (childMayUse('stop_agent', this.config.allowedTools)) {
+      if (childMayUse('stop_agent', this.config.allowedTools) && ctxAllows('stop_agent')) {
         tools.stop_agent = createStopAgentTool(this.supervisor, scoped);
       }
     }
@@ -564,13 +607,14 @@ export class SubAgent {
     const permissions = this.capabilities.permissions;
     const readable: string[] = [];
     const writable: string[] = [];
-    for (const scope of permissions.getManifest().capabilities.filesystem.scopes) {
+    for (const scope of [...permissions.getManifest().capabilities.filesystem.scopes, ...(this.getPermissionContext()?.scopes ?? [])]) {
       if (scope.write) writable.push(scope.path);
       else if (scope.read) readable.push(scope.path);
     }
     const parts: string[] = [];
     parts.push('You run with the same permissions as the agent that delegated you, not more.');
-    if (permissions.isAutoApproveAll()) {
+    const ctx = this.getPermissionContext();
+    if (ctx ? ctx.autoApprove : permissions.isAutoApproveAll()) {
       parts.push('This session is in Allow All mode, so approved-scope actions run without prompts.');
     } else {
       parts.push('File writes and non-read-only shell commands go to the user for approval (reads inside approved scopes do not); a denial is final — do not retry it or work around it.');
