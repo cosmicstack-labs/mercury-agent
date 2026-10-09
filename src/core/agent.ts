@@ -97,6 +97,13 @@ import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-command.js';
 import { handleChatCommand as handleChatCommandImpl } from './commands/chat-command.js';
+import { handleBgCommand as handleBgCommandImpl } from './commands/bg-command.js';
+import { handleSaverCommand as handleSaverCommandImpl } from './commands/saver-command.js';
+import { handleSessionCommand as handleSessionCommandImpl } from './commands/session-command.js';
+import { handleFastPathCommand as handleFastPathCommandImpl } from './commands/fast-path-command.js';
+import { openCliMemoryMenu as openCliMemoryMenuImpl } from './commands/cli-memory-menu.js';
+import { openMemoryChoiceMenu as openMemoryChoiceMenuImpl } from './commands/memory-choice-menu.js';
+import { openCliCommandMenu as openCliCommandMenuImpl } from './commands/cli-command-menu.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -506,8 +513,8 @@ export class Agent {
   processing = false;
   telegramStreaming: boolean;
   currentMessage: ChannelMessage | null = null;
-  private currentAbort: AbortController | null = null;
-  private currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
+  currentAbort: AbortController | null = null;
+  currentAbortReason: 'stalled' | 'time-limit' | 'memory-pressure' | 'backgrounded' | 'stopped' | 'halted' | null = null;
   private lastProgressAt = 0;
   currentActivity = '';
   completedStepCount = 0;
@@ -534,7 +541,7 @@ export class Agent {
   private statusVerbTurnCount = 0;
   private statusVerbsInFlight = false;
   private statusVerbsDisabled = false;
-  private sessionSyncEnabled = false;
+  sessionSyncEnabled = false;
   private readonly workLedger: WorkLedger;
   private currentWorkKey: string | null = null;
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
@@ -552,7 +559,7 @@ export class Agent {
     public tokenBudget: TokenBudget,
     capabilities: CapabilityRegistry,
     scheduler: Scheduler,
-    private sessions: SessionRepository,
+    public sessions: SessionRepository,
     private generateTitle?: (input: { userMessage: string; assistantMessage: string; providerName: string }) => Promise<string>,
   ) {
     this.lifecycle = new Lifecycle();
@@ -880,7 +887,7 @@ export class Agent {
     ]);
   }
 
-  private queueMessage(message: ChannelMessage, workKey?: string): void {
+  queueMessage(message: ChannelMessage, workKey?: string): void {
     if (workKey && this.queuedWorkKeys.has(workKey)) return;
     this.messageQueue.push({ message, workKey });
     if (workKey) this.queuedWorkKeys.add(workKey);
@@ -975,102 +982,10 @@ export class Agent {
   }
 
   private async handleFastPathCommand(msg: ChannelMessage): Promise<void> {
-    const trimmed = msg.content.trim();
-    const channel = this.channels.getChannelForMessage(msg);
-    if (!channel) return;
-
-    const activeAgents = this.supervisor ? this.supervisor.getActiveAgents() : [];
-    const hasActiveAgents = activeAgents.length > 0;
-    const busyPrefix = hasActiveAgents ? '' : '';
-
-    if (trimmed === '/sessions' || trimmed.startsWith('/session')) {
-      await this.handleSessionCommand(trimmed, msg.channelType, msg.channelId);
-      return;
-    }
-
-    if (trimmed === '/agents' || trimmed === '/status') {
-      if (this.supervisor) {
-        const agents = this.supervisor.getActiveAgents();
-        if (agents.length === 0) {
-          await channel.send('No active sub-agents.', msg.channelId);
-        } else {
-          let text = '**Sub-Agents:**\n\n';
-          for (const a of agents) {
-            const icon = a.status === 'running' ? '🔄' : a.status === 'pending' ? '⏳' : a.status === 'completed' ? '✅' : '❌';
-            text += `${icon} **${a.id}**: ${a.task.slice(0, 60)}${a.task.length > 60 ? '...' : ''} — ${a.status}${a.progress ? ` (${a.progress})` : ''}\n`;
-          }
-          await channel.send(text, msg.channelId);
-        }
-      } else {
-        await channel.send('Sub-agents not enabled.', msg.channelId);
-      }
-      return;
-    }
-
-    if (trimmed === '/halt' || trimmed === '/stop') {
-      await channel.send(await this.stopAllWork(trimmed === '/stop' ? 'stopped' : 'halted'), msg.channelId);
-      return;
-    }
-
-    // Bots run outside the main queue — /bots commands are always fast-path.
-    if (trimmed.startsWith('/bots')) {
-      await this.handleBotsCommand(trimmed, msg, channel);
-      return;
-    }
-
-    if (trimmed.startsWith('/bg')) {
-      await this.handleBgCommand(trimmed, msg, channel);
-      return;
-    }
-
-    if (trimmed === '/progress' || trimmed === '/still') {
-      if (!this.processing || !this.currentMessage) {
-        await channel.send('No active foreground task.', msg.channelId);
-        return;
-      }
-      const elapsedSec = Math.round((Date.now() - this.currentMessage.timestamp) / 1000);
-      const stepInfo = this.completedStepCount > 0 ? ` · step ${this.completedStepCount}/${MAX_STEPS}` : '';
-      const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 10);
-      const narrativeBlock = narrative ? `\n${narrative}` : '';
-      await channel.send(
-        `⏳ Task in progress (${elapsedSec}s${stepInfo})${narrativeBlock}\nUse /bg current to move it to background.`,
-        msg.channelId,
-      );
-      return;
-    }
-
-    if (trimmed === '/help') {
-      await channel.send('Agent is busy. Available: /sessions, /session, /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
-      return;
-    }
-
-    if (trimmed.startsWith('/spotify')) {
-      await this.handleFastPathSpotify(trimmed, msg, channel);
-      return;
-    }
-
-    if (trimmed.startsWith('/code')) {
-      await this.handleFastPathCode(trimmed, msg, channel);
-      return;
-    }
-
-    if (trimmed === '/memory') {
-      await channel.send('Agent is busy. Memory management will be available after current task completes.', msg.channelId);
-      return;
-    }
-
-    if (hasActiveAgents) {
-      const agentList = activeAgents.map(a => `**${a.id}**: ${a.task.slice(0, 40)}`).join(', ');
-      await channel.send(`I'm busy working on sub-agent tasks (${agentList}). Your message has been queued — I'll respond once I'm free. Use /agents to check status.`, msg.channelId);
-    } else {
-      const elapsedSec = this.currentMessage ? Math.round((Date.now() - this.currentMessage.timestamp) / 1000) : 0;
-      await channel.send(`I'm busy processing${elapsedSec > 0 ? ` (${elapsedSec}s elapsed)` : ''}. Use /progress for live status or /bg current to move this task to the background.`, msg.channelId);
-    }
-
-    this.queueMessage(msg);
+    return handleFastPathCommandImpl(this, msg);
   }
 
-  private async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+  async handleFastPathSpotify(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
     if (!this.spotifyClient) {
       await channel.send('Spotify is not connected.', msg.channelId);
       return;
@@ -1104,7 +1019,7 @@ export class Agent {
     await channel.send('Agent is busy. Full Spotify controls will be available after current task completes.', msg.channelId);
   }
 
-  private async handleFastPathCode(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+  async handleFastPathCode(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
     const rawArgs = trimmed.slice('/code'.length).trim().toLowerCase();
     if (rawArgs === 'status') {
       await channel.send(this.programmingMode.getStatusText(), msg.channelId);
@@ -1420,157 +1335,12 @@ export class Agent {
    * Always fast-path: bots live outside the main message queue, so bot
    * control stays responsive while the agent is busy.
    */
-  private async handleBotsCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
+  async handleBotsCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
     return handleBotsCommandImpl(this, trimmed, msg, channel);
   }
 
   async handleBgCommand(trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
-    const parts = trimmed.trim().split(/\s+/);
-    const sub = parts.length > 1 ? parts[1] : '';
-    const args = parts.slice(1).join(' ');
-
-    if (sub === 'current') {
-      if (!this.processing || !this.currentMessage) {
-        await channel.send('No active task to background.', msg.channelId);
-        return;
-      }
-      const taskDescription = this.currentMessage.content.trim();
-      const sourceChannelId = this.currentMessage.channelId;
-      const sourceChannelType = this.currentMessage.channelType as any;
-
-      if (this.currentAbort) {
-        this.currentAbortReason = 'backgrounded';
-        this.currentAbort.abort();
-      }
-
-      if (this.supervisor) {
-        const agentId = await this.supervisor.spawn({
-          task: taskDescription,
-          sourceChannelId,
-          sourceChannelType,
-        });
-        const bgId = this.backgroundTasks.spawnAgent(taskDescription, this.capabilities.getCwd(), agentId);
-        await channel.send(`📋 Active task moved to background as ${bgId}. I'll notify you when it completes.`, msg.channelId);
-      } else {
-        await channel.send('Cannot background: sub-agents not available. The active task has been aborted.', msg.channelId);
-      }
-
-      this.syncBgTasksToTui();
-      return;
-    }
-
-    if (sub === 'list' || sub === '' || sub === 'ls') {
-      const tasks = this.backgroundTasks.getAllSummaries();
-      if (tasks.length === 0) {
-        await channel.send('No background tasks.', msg.channelId);
-        return;
-      }
-      const lines = tasks.map((t) => {
-        const icon = t.status === 'running' ? '⏳' : t.status === 'completed' ? '✅' : t.status === 'failed' ? '❌' : t.status === 'timed_out' ? '⏱' : '⛔';
-        const label = t.command || t.task || t.id;
-        const elapsed = t.runningMs ? ` (${Math.round(t.runningMs / 1000)}s)` : t.completedAt ? ` (${((t.completedAt - t.startedAt) / 1000).toFixed(1)}s)` : '';
-        const short = label.length > 60 ? label.slice(0, 57) + '...' : label;
-        return `${icon} ${t.id}: ${short}${elapsed} — ${t.status}`;
-      });
-      await channel.send(`**Background Tasks:**\n${lines.join('\n')}\n\nUse /bg <id> for details, /bg cancel <id> to cancel, /bg clear to prune completed tasks.`, msg.channelId);
-      return;
-    }
-
-    if (sub === 'clear') {
-      const cleared = this.backgroundTasks.clearCompleted();
-      await channel.send(`Cleared ${cleared} completed task(s).`, msg.channelId);
-      this.syncBgTasksToTui();
-      return;
-    }
-
-    if (sub === 'cancel' || sub === 'stop' || sub === 'kill') {
-      const taskId = parts[2];
-      if (!taskId) {
-        await channel.send(`Usage: /bg ${sub} <id>`, msg.channelId);
-        return;
-      }
-      const cancelled = this.backgroundTasks.cancel(taskId);
-      if (cancelled) {
-        await channel.send(`⛔ Stopped background task ${taskId}.`, msg.channelId);
-      } else {
-        await channel.send(`Task "${taskId}" not found or not running.`, msg.channelId);
-      }
-      this.syncBgTasksToTui();
-      return;
-    }
-
-    if (sub === 'killall' || sub === 'stopall') {
-      const count = this.backgroundTasks.cancelAll();
-      if (count === 0) {
-        await channel.send('No running background tasks to stop.', msg.channelId);
-      } else {
-        await channel.send(`⛔ Stopped ${count} background task${count === 1 ? '' : 's'}.`, msg.channelId);
-      }
-      this.syncBgTasksToTui();
-      return;
-    }
-
-    const specificTask = this.backgroundTasks.getSummary(sub);
-    if (specificTask) {
-      const task = this.backgroundTasks.get(sub)!;
-      const label = task.command || task.task || task.id;
-      const elapsed = task.status === 'running'
-        ? `Running for ${Math.round((Date.now() - task.startedAt) / 1000)}s`
-        : task.completedAt
-          ? `Completed in ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
-          : task.status;
-      const output = (task.stdout + '\n' + task.stderr).trim();
-      const preview = output.length > 2000 ? output.slice(-2000) : output;
-      await channel.send(`**${specificTask.id}**: ${label}\nStatus: ${elapsed}\nExit code: ${task.exitCode ?? 'N/A'}\n\n${preview || '(no output)'}`, msg.channelId);
-      return;
-    }
-
-    const colonIdx = trimmed.indexOf(':');
-    if (colonIdx !== -1 && trimmed[colonIdx + 1] === ' ') {
-      const taskDescription = trimmed.slice(colonIdx + 1).trim();
-      if (!taskDescription) {
-        await channel.send('Usage: /bg: <natural language task> or /bg <shell command>', msg.channelId);
-        return;
-      }
-      if (!this.supervisor) {
-        await channel.send('Sub-agents are not available. Use /bg <command> for shell commands.', msg.channelId);
-        return;
-      }
-      const agentId = await this.supervisor.spawn({
-        task: taskDescription,
-        sourceChannelId: msg.channelId,
-        sourceChannelType: msg.channelType as any,
-      });
-      const bgId = this.backgroundTasks.spawnAgent(taskDescription, this.capabilities.getCwd(), agentId);
-      this.backgroundTasks.registerComplete(bgId, (task) => {
-        if (task.status === 'running') return;
-      });
-      await channel.send(`📋 Background agent ${bgId} started: "${taskDescription.slice(0, 50)}${taskDescription.length > 50 ? '...' : ''}"`, msg.channelId);
-      this.syncBgTasksToTui();
-      return;
-    }
-
-    const command = args || '';
-    if (!command) {
-      await channel.send('Usage:\n• /bg <command> — run a shell command in the background\n• /bg: <task> — delegate an LLM task to the background\n• /bg current — move the active task to the background\n• /bg list — show all background tasks\n• /bg <id> — show task details\n• /bg stop <id> — stop a running task\n• /bg killall — stop all running tasks\n• /bg clear — prune completed tasks', msg.channelId);
-      return;
-    }
-
-    // `/bg <command>` is an alternate shell entry point: it must honor the
-    // same approval boundary as the run_command tool, otherwise an
-    // authenticated chat user can bypass Ask-Me approval and run arbitrary
-    // commands. checkShellCommand() also enforces the blocked list and any
-    // cwd/scope containment rules.
-    const check = await this.capabilities.permissions.checkShellCommand(command);
-    if (!check.allowed) {
-      await channel.send(`⛔ Not running in background: ${check.reason ?? 'command requires approval'}\nApprove the command first (or run it without /bg) and try again.`, msg.channelId);
-      return;
-    }
-
-    const cwd = this.capabilities.getCwd();
-    const bgId = this.backgroundTasks.spawnShell(command, cwd);
-    await channel.send(`📋 Background task ${bgId} started: "${command.slice(0, 50)}${command.length > 50 ? '...' : ''}"`, msg.channelId);
-    this.syncBgTasksToTui();
+    return handleBgCommandImpl(this, trimmed, msg, channel);
   }
 
   syncBgTasksToTui(): void {
@@ -4661,118 +4431,11 @@ Is this productive iteration or a stuck loop?`,
    * Subcommands: (empty)|status|on|off|toggle|threshold <n>|auto on|off|routing on|off|stats
    */
   async handleSaverCommand(subcommand: string, channelType: string, channelId: string): Promise<void> {
-    const channel = this.channels.get(channelType as any);
-    if (!channel) return;
-
-    const parts = subcommand.trim().split(/\s+/).filter(Boolean);
-    const action = (parts[0] || '').toLowerCase();
-    const arg = (parts[1] || '').toLowerCase();
-
-    const showStatus = async () => {
-      const text = this.saverMode.getStatusText(
-        this.tokenBudget.getSavedLifetime(),
-        this.tokenBudget.getSavedToday(),
-      );
-      const usagePct = Math.round(this.tokenBudget.getUsagePercentage());
-      await channel.send(`${text}\nCurrent daily usage: ${usagePct}%`, channelId);
-      this.syncSaverToCli();
-    };
-
-    if (!action || action === 'status' || action === 'stats') {
-      await showStatus();
-      return;
-    }
-
-    if (action === 'on' || action === 'enable') {
-      this.saverMode.enable();
-      await channel.send(
-        '⚡ Token Saver Mode enabled. Responses will be terser, step limits lower, and history window shorter to conserve tokens.',
-        channelId,
-      );
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'off' || action === 'disable') {
-      this.saverMode.disable();
-      await channel.send('Token Saver Mode disabled. Normal response settings restored.', channelId);
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'toggle') {
-      const next = this.saverMode.toggle();
-      await channel.send(
-        next === 'on'
-          ? '⚡ Token Saver Mode enabled.'
-          : 'Token Saver Mode disabled.',
-        channelId,
-      );
-      this.syncSaverToCli();
-      return;
-    }
-
-    if (action === 'threshold') {
-      const n = parseInt(parts[1], 10);
-      if (isNaN(n) || n < 0 || n > 100) {
-        await channel.send('Usage: /saver threshold <0-100> — percentage of daily budget at which saver auto-engages. Set 0 to disable.', channelId);
-        return;
-      }
-      this.saverMode.setAutoThreshold(n);
-      await channel.send(
-        n === 0
-          ? 'Saver auto-engage disabled (threshold set to 0).'
-          : `Saver auto-engage threshold set to ${n}% of daily budget.`,
-        channelId,
-      );
-      return;
-    }
-
-    if (action === 'auto') {
-      if (arg === 'on' || arg === 'enable') {
-        this.saverMode.setAutoEnabled(true);
-        await channel.send(`Saver auto-engage enabled (at ${this.saverMode.getAutoThreshold()}% usage).`, channelId);
-      } else if (arg === 'off' || arg === 'disable') {
-        this.saverMode.setAutoEnabled(false);
-        await channel.send('Saver auto-engage disabled. Saver will only activate when you run /saver on.', channelId);
-        this.syncSaverToCli();
-      } else {
-        await channel.send(
-          `Saver auto-engage is currently ${this.saverMode.isAutoEnabled() ? 'ON' : 'OFF'} (threshold: ${this.saverMode.getAutoThreshold()}%).\nUse /saver auto on|off to change.`,
-          channelId,
-        );
-      }
-      return;
-    }
-
-    if (action === 'routing') {
-      if (arg === 'on' || arg === 'enable') {
-        this.saverMode.setRoutingEnabled(true);
-        await channel.send('Saver cheap-provider routing enabled (when saver is active, cheaper providers will be preferred).', channelId);
-      } else if (arg === 'off' || arg === 'disable') {
-        this.saverMode.setRoutingEnabled(false);
-        await channel.send('Saver cheap-provider routing disabled.', channelId);
-      } else {
-        await channel.send(`Saver cheap-provider routing is currently ${this.saverMode.isRoutingEnabled() ? 'ON' : 'OFF'}.\nUse /saver routing on|off to change.`, channelId);
-      }
-      return;
-    }
-
-    await channel.send(
-      'Unknown saver command. Available:\n' +
-      '  /saver — show status and savings\n' +
-      '  /saver on — manually enable\n' +
-      '  /saver off — disable\n' +
-      '  /saver toggle — flip on/off\n' +
-      '  /saver threshold <0-100> — auto-engage threshold (default 75)\n' +
-      '  /saver auto on|off — enable/disable auto-engagement\n' +
-      '  /saver routing on|off — prefer cheap providers while active (opt-in)',
-      channelId,
-    );
+    return handleSaverCommandImpl(this, subcommand, channelType, channelId);
   }
 
   /** Push the current saver state to the CLI status bar if present. */
-  private syncSaverToCli(): void {
+  syncSaverToCli(): void {
     const ch = this.channels.get('cli');
     if (ch && (ch as any).setSaverMode) {
       (ch as any).setSaverMode(
@@ -4988,7 +4651,7 @@ Is this productive iteration or a stuck loop?`,
     }
   }
 
-  private async handleChatCommand(content: string, channelType: string, channelId: string): Promise<boolean> {
+  async handleChatCommand(content: string, channelType: string, channelId: string): Promise<boolean> {
     return handleChatCommandImpl(this, content, channelType, channelId);
   }
 
@@ -5022,88 +4685,7 @@ Is this productive iteration or a stuck loop?`,
   }
 
   async handleSessionCommand(content: string, channelType: ChannelType, channelId: string): Promise<void> {
-    const channel = this.channels.get(channelType);
-    if (!channel) return;
-    const bindingId = channelType === 'cli' ? 'current' : channelId;
-    const format = (session: { alias: string; shortId: string; title: string }) => `${session.alias}  [${session.shortId}]  ${session.title}`;
-    const transcript = (session: ReturnType<SessionRepository['get']>) => {
-      const recent = session.messages
-        .filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'))
-        .slice(-8);
-      if (recent.length === 0) return 'No messages yet.';
-      return recent.map((message) => {
-        const label = message.role === 'user' ? 'You' : 'Mercury';
-        const text = message.content.replace(/\s+/g, ' ').trim();
-        return `${label}: ${text.length > 280 ? `${text.slice(0, 277)}...` : text}`;
-      }).join('\n');
-    };
-    const syncCliSession = (session: ReturnType<SessionRepository['get']>) => {
-      if (channelType === 'cli' && channel instanceof CLIChannel) {
-        channel.setCurrentSession(session);
-      }
-    };
-    try {
-      if (content.trim().toLowerCase() === '/sessions') {
-        const current = this.sessions.getByBinding(channelType, bindingId);
-        const sessions = this.sessions.list();
-        await channel.send(sessions.length
-          ? sessions.map((session) => `${session.id === current?.id ? '*' : ' '} ${format(session)}`).join('\n')
-          : 'No active sessions. Use /session new.', channelId);
-        return;
-      }
-      const argument = content.trim().slice('/session'.length).trim();
-      if (argument.toLowerCase() === 'new') {
-        const session = this.sessions.create();
-        this.sessions.bind(session.id, channelType, bindingId);
-        syncCliSession(session);
-        await channel.send(`New session: ${format(session)}`, channelId);
-        return;
-      }
-      if (!argument || argument.toLowerCase() === 'current') {
-        const current = this.sessions.getByBinding(channelType, bindingId);
-        await channel.send(current ? `Current session: ${format(current)}\n\n${transcript(current)}` : 'No current session. Use /session new.', channelId);
-        return;
-      }
-      if (argument.toLowerCase().startsWith('delete ')) {
-        const session = this.sessions.resolve(argument.slice('delete '.length).trim());
-        const wasCurrent = this.sessions.getByBinding(channelType, bindingId)?.id === session.id;
-        const confirmed = await channel.askToContinue(
-          `Permanently delete ${format(session)} and all ${session.messages.length} messages everywhere? This cannot be undone.`,
-          channelId,
-        );
-        if (!confirmed) {
-          await channel.send('Session deletion cancelled.', channelId);
-          return;
-        }
-        if (this.sessionSyncEnabled) this.sessions.markDeleted(session.id);
-        else this.sessions.deletePermanently(session.id);
-        const replacement = wasCurrent ? this.sessions.create({ binding: { channelType, externalConversationId: bindingId } }) : null;
-        if (replacement) syncCliSession(replacement);
-        await channel.send(
-          `Deleted session ${session.alias} [${session.shortId}].${this.sessionSyncEnabled ? ' Cloud deletion is queued.' : ''}${replacement ? ` New session: ${format(replacement)}` : ''}`,
-          channelId,
-        );
-        return;
-      }
-      if (argument.toLowerCase().startsWith('archive ')) {
-        const session = this.sessions.archive(argument.slice('archive '.length).trim());
-        await channel.send(`Archived: ${format(session)}`, channelId);
-        return;
-      }
-      let session;
-      try {
-        session = this.sessions.resolve(argument);
-      } catch (error) {
-        if (channelType !== 'web' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(argument)) throw error;
-        session = this.sessions.create({ id: argument });
-      }
-      this.sessions.bind(session.id, channelType, bindingId);
-      syncCliSession(session);
-      await channel.send(`Switched session: ${format(session)}\n\n${transcript(session)}`, channelId);
-    } catch (error) {
-      const message = error instanceof SessionResolutionError ? error.message : error instanceof Error ? error.message : String(error);
-      await channel.send(message, channelId);
-    }
+    return handleSessionCommandImpl(this, content, channelType, channelId);
   }
 
   private scheduleSessionTitleGeneration(sessionId: string, providerName: string): void {
@@ -5243,78 +4825,7 @@ Is this productive iteration or a stuck loop?`,
   }
 
   async openCliCommandMenu(channel: CLIChannel, channelId: string): Promise<void> {
-    const ctx = this.capabilities.getChatCommandContext();
-    if (!ctx) return;
-
-    await channel.withMenu(async (select) => {
-      while (true) {
-        const streamLabel = this.telegramStreaming ? 'Disable Telegram Streaming' : 'Enable Telegram Streaming';
-        const permLabel = this.capabilities.permissions.isAutoApproveAll() ? 'Switch to Ask Me' : 'Switch to Allow All';
-        const action = await select('Mercury Commands', [
-          { value: 'status', label: 'Status' },
-          { value: 'memory', label: 'Memory' },
-          { value: 'permissions', label: permLabel },
-          { value: 'telegram', label: 'Telegram' },
-          { value: 'tools', label: 'Tools' },
-          { value: 'skills', label: 'Skills' },
-          { value: 'stream', label: streamLabel },
-          { value: 'help', label: 'Help' },
-          { value: 'exit', label: 'Exit' },
-        ]);
-
-        if (action === 'exit') {
-          return;
-        }
-
-        if (action === 'status') {
-          await this.handleChatCommand('/status', 'cli', channelId);
-          continue;
-        }
-
-        if (action === 'memory') {
-          if (this.userMemory) {
-            await this.openCliMemoryMenu(channel, channelId, select);
-          } else {
-            const cfg = ctx.config();
-            if (cfg.memory.secondBrain?.enabled === false) {
-              await channel.send('Second brain is disabled in configuration.', channelId);
-            } else {
-              await channel.send('Second brain dependency issue: SQLite backend (better-sqlite3) is not available.', channelId);
-            }
-          }
-          continue;
-        }
-
-        if (action === 'permissions') {
-          await this.handleChatCommand('/permissions', 'cli', channelId);
-          continue;
-        }
-
-        if (action === 'telegram') {
-          await this.openCliTelegramMenu(channel, channelId, select);
-          continue;
-        }
-
-        if (action === 'tools') {
-          await this.handleChatCommand('/tools', 'cli', channelId);
-          continue;
-        }
-
-        if (action === 'skills') {
-          await this.handleChatCommand('/skills', 'cli', channelId);
-          continue;
-        }
-
-        if (action === 'stream') {
-          await this.handleChatCommand('/stream', 'cli', channelId);
-          continue;
-        }
-
-        if (action === 'help') {
-          await channel.send(ctx.manual(), channelId);
-        }
-      }
-    });
+    return openCliCommandMenuImpl(this, channel, channelId);
   }
 
   async sendMemoryOverview(channel: any, channelId: string): Promise<void> {
@@ -5346,217 +4857,11 @@ Is this productive iteration or a stuck loop?`,
   }
 
   async openCliMemoryMenu(channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {
-    if (!this.userMemory) return;
-
-    const runMenu = async (sel: (title: string, options: ArrowSelectOption[]) => Promise<string>) => {
-      while (true) {
-        const learningLabel = this.userMemory!.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-        const shareLabel = this.userMemory!.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
-        const action = await sel('Memory', [
-          { value: 'overview', label: 'Overview' },
-          { value: 'recent', label: 'Recent Memories' },
-          { value: 'shared', label: 'Shared Memories' },
-          { value: 'search', label: 'Search' },
-          { value: 'toggle', label: learningLabel },
-          { value: 'share', label: shareLabel },
-          { value: 'clear', label: 'Clear All Memories' },
-          { value: 'back', label: 'Back' },
-        ]);
-
-        if (action === 'back') return;
-
-        if (action === 'overview') {
-          await this.sendMemoryOverview(channel, channelId);
-          continue;
-        }
-
-        if (action === 'recent') {
-          const recent = this.userMemory!.getRecent(10);
-          if (recent.length === 0) {
-            await channel.send('No memories yet.', channelId);
-            continue;
-          }
-          const lines = ['**Recent Memories:**', ''];
-          for (const r of recent) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
-            const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
-            lines.push(`${scope} [${r.type}] ${r.summary}`);
-            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
-          }
-          await channel.send(lines.join('\n'), channelId);
-          continue;
-        }
-
-        if (action === 'shared') {
-          const shared = this.userMemory!.getShareable(20);
-          if (shared.length === 0) {
-            await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
-            continue;
-          }
-          const lines = [`**Shared Memories (${shared.length}):**`, ''];
-          for (const r of shared) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
-            const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
-            lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
-            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
-          }
-          await channel.send(lines.join('\n'), channelId);
-          continue;
-        }
-
-        if (action === 'search') {
-          const query = await channel.prompt('Search memories: ');
-          if (!query) continue;
-          const results = this.userMemory!.search(query, 10);
-          if (results.length === 0) {
-            await channel.send(`No memories found matching "${query}".`, channelId);
-            continue;
-          }
-          const lines = [`**Search results for "${query}":**`, ''];
-          for (const r of results) {
-            const scope = r.scope === 'active' ? '⏳' : '📌';
-            lines.push(`${scope} [${r.type}] ${r.summary}`);
-            lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
-          }
-          await channel.send(lines.join('\n'), channelId);
-          continue;
-        }
-
-        if (action === 'toggle') {
-          const currentlyPaused = this.userMemory!.isLearningPaused();
-          this.userMemory!.setLearningPaused(!currentlyPaused);
-          await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
-          continue;
-        }
-
-        if (action === 'share') {
-          const currently = this.userMemory!.isShareLearning();
-          this.userMemory!.setShareLearning(!currently);
-          const cfg = loadConfig();
-          if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
-          cfg.memory.collaborativeKnowledge.shareLearning = !currently;
-          saveConfig(cfg);
-          const count = this.userMemory!.countShareable();
-          await channel.send(
-            currently
-              ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
-              : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
-            channelId,
-          );
-          continue;
-        }
-
-        if (action === 'clear') {
-          const confirm = await sel('Clear all memories?', [
-            { value: 'cancel', label: 'Cancel' },
-            { value: 'confirm', label: 'Clear everything' },
-          ]);
-          if (confirm === 'confirm') {
-            const cleared = this.userMemory!.clear();
-            await channel.send(`Cleared ${cleared} memories.`, channelId);
-          }
-          continue;
-        }
-      }
-    };
-
-    if (select) {
-      await runMenu(select);
-    } else {
-      await channel.withMenu(runMenu);
-    }
+    return openCliMemoryMenuImpl(this, channel, channelId, select);
   }
 
   async openMemoryChoiceMenu(channel: any, channelId: string): Promise<void> {
-    if (!this.userMemory) return;
-
-    const learningLabel = this.userMemory.isLearningPaused() ? 'Resume Learning' : 'Pause Learning';
-    const shareLabel = this.userMemory.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
-    const action = await channel.presentChoicePrompt('Memory', [
-      { value: 'overview', label: 'Overview' },
-      { value: 'recent', label: 'Recent Memories' },
-      { value: 'shared', label: 'Shared Memories' },
-      { value: 'toggle', label: learningLabel },
-      { value: 'share', label: shareLabel },
-      { value: 'clear', label: 'Clear All Memories' },
-      { value: 'cancel', label: 'Cancel' },
-    ], channelId);
-
-    if (action === 'cancel') return;
-
-    if (action === 'overview') {
-      await this.sendMemoryOverview(channel, channelId);
-      return;
-    }
-
-    if (action === 'recent') {
-      const recent = this.userMemory.getRecent(10);
-      if (recent.length === 0) {
-        await channel.send('No memories yet.', channelId);
-        return;
-      }
-      const lines = ['**Recent Memories:**', ''];
-      for (const r of recent) {
-        const scope = r.scope === 'active' ? '⏳' : '📌';
-        const kind = r.evidenceKind === 'direct' ? 'direct' : r.evidenceKind === 'inferred' ? 'inferred' : r.evidenceKind;
-        lines.push(`${scope} [${r.type}] ${r.summary}`);
-        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${kind} | Seen: ${r.evidenceCount}x`);
-      }
-      await channel.send(lines.join('\n'), channelId);
-      return;
-    }
-
-    if (action === 'shared') {
-      const shared = this.userMemory.getShareable(20);
-      if (shared.length === 0) {
-        await channel.send('No shared memories yet. Enable shared learning to mark new memories as shareable for cloud fetch.', channelId);
-        return;
-      }
-      const lines = [`**Shared Memories (${shared.length}):**`, ''];
-      for (const r of shared) {
-        const scope = r.scope === 'active' ? '⏳' : '📌';
-        const cats = r.categories.length > 0 ? ` {${r.categories.join(', ')}}` : '';
-        lines.push(`${scope} [${r.type}]${cats} ${r.summary}`);
-        lines.push(`   Confidence: ${r.confidence.toFixed(2)} | Evidence: ${r.evidenceKind} | Seen: ${r.evidenceCount}x`);
-      }
-      await channel.send(lines.join('\n'), channelId);
-      return;
-    }
-
-    if (action === 'toggle') {
-      const currentlyPaused = this.userMemory.isLearningPaused();
-      this.userMemory.setLearningPaused(!currentlyPaused);
-      await channel.send(currentlyPaused ? 'Learning resumed. Mercury will remember new things from conversations.' : 'Learning paused. Mercury will not store new memories until resumed.', channelId);
-      return;
-    }
-
-    if (action === 'share') {
-      const currently = this.userMemory.isShareLearning();
-      this.userMemory.setShareLearning(!currently);
-      const cfg = loadConfig();
-      if (!cfg.memory.collaborativeKnowledge) cfg.memory.collaborativeKnowledge = {};
-      cfg.memory.collaborativeKnowledge.shareLearning = !currently;
-      saveConfig(cfg);
-      const count = this.userMemory.countShareable();
-      await channel.send(
-        currently
-          ? `Shared learning disabled. New memories will stay private. (${count} memories already shareable are unchanged.)`
-          : `Shared learning enabled. New memories will be marked shareable for cloud fetch. (${count} memories currently shareable.)`,
-        channelId,
-      );
-      return;
-    }
-
-    if (action === 'clear') {
-      const confirm = await channel.presentChoicePrompt('Clear all memories?', [
-        { value: 'cancel', label: 'Cancel' },
-        { value: 'confirm', label: 'Clear everything' },
-      ], channelId);
-      if (confirm === 'confirm') {
-        const cleared = this.userMemory.clear();
-        await channel.send(`Cleared ${cleared} memories.`, channelId);
-      }
-    }
+    return openMemoryChoiceMenuImpl(this, channel, channelId);
   }
 
   async openCliTelegramMenu(

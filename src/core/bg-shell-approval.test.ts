@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const agentSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'agent.ts'), 'utf8');
+// /bg lives in core/commands/bg-command.ts since the P2.1 split.
+const agentSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'commands', 'bg-command.ts'), 'utf8');
 
 /**
  * `/bg <command>` is an alternate shell entry point. It used to call
