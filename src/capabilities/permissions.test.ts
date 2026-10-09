@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PermissionManager, splitShellSegments } from './permissions.js';
@@ -310,5 +310,164 @@ describe('PermissionManager symlink write confinement', () => {
     writeFileSync(join(ws, 'inner.txt'), 'x');
     symlinkSync(join(ws, 'inner.txt'), join(ws, 'inner-alias.txt'));
     await expect(permissions.checkFsAccess(join(ws, 'inner-alias.txt'), 'write')).resolves.toMatchObject({ allowed: true });
+  });
+});
+
+describe('PermissionManager read-side canonicalisation (symlink reads, #104 hard links)', () => {
+  let root: string;
+  let ws: string;
+  let outside: string;
+
+  function makePermissions(opts: { ask?: (prompt: string) => Promise<string>; context?: [string, string] } = {}): PermissionManager {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.filesystem.enabled = true;
+    manifest.capabilities.filesystem.scopes = [{ path: ws, read: true, write: false }];
+    permissions.setAutoApproveAll(false);
+    permissions.setCurrentContext(...(opts.context ?? ['web', 'cloud-request-1']));
+    if (opts.ask) permissions.onAsk(opts.ask);
+    return permissions;
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-read-'));
+    ws = join(root, 'ws');
+    outside = join(root, 'outside');
+    mkdirSync(ws);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'id_rsa'), 'PRIVATE');
+    writeFileSync(join(ws, 'plain.txt'), 'plain');
+    writeFileSync(join(ws, 'inner.txt'), 'inner');
+    symlinkSync(join(outside, 'id_rsa'), join(ws, 'alias.txt'));
+    symlinkSync(join(ws, 'inner.txt'), join(ws, 'inner-alias.txt'));
+    writeFileSync(join(ws, 'linked.txt'), 'linked');
+    linkSync(join(ws, 'linked.txt'), join(outside, 'linked-alias.txt'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('allows a plain in-scope read and reports the canonical path and file identity', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'plain.txt'), 'read');
+    expect(result.allowed).toBe(true);
+    expect(result.canonical).toBe(realpathSync(join(ws, 'plain.txt')));
+    expect(result.fileId).toMatchObject({ dev: expect.any(Number), ino: expect.any(Number) });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('denies an in-scope symlink whose target is outside every readable scope (no handler)', async () => {
+    const permissions = makePermissions();
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape', canonical: realpathSync(join(outside, 'id_rsa')) });
+    expect(result.reason).toContain('resolves outside the approved scopes');
+  });
+
+  it('asks for the symlink TARGET when a handler exists, and denies on "no"', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0]).toContain(realpathSync(join(outside, 'id_rsa')));
+  });
+
+  it('allows the symlink read once the user approves the target', async () => {
+    const ask = vi.fn().mockResolvedValue('yes');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: true, canonical: realpathSync(join(outside, 'id_rsa')) });
+    expect(result.fileId).toBeDefined();
+  });
+
+  it('never prompts for the symlink target in fail-closed mode', async () => {
+    const ask = vi.fn().mockResolvedValue('yes');
+    const permissions = makePermissions({ ask });
+    permissions.setFailClosed(true);
+    await expect(permissions.checkFsAccess(join(ws, 'alias.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'symlink-escape' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('allows a symlink whose target stays inside the scope', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'inner-alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: true, canonical: realpathSync(join(ws, 'inner.txt')) });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('routes a hard-linked file (nlink > 1) through the approval handler', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const denied = await permissions.checkFsAccess(join(ws, 'linked.txt'), 'read');
+    expect(denied).toMatchObject({ allowed: false, code: 'hardlink' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0]).toMatch(/hard-linked/);
+
+    ask.mockResolvedValue('yes');
+    const allowed = await permissions.checkFsAccess(join(ws, 'linked.txt'), 'read');
+    expect(allowed).toMatchObject({ allowed: true, canonical: realpathSync(join(ws, 'linked.txt')) });
+  });
+
+  it('"always" remembers the hard-linked file for the interaction context', async () => {
+    const ask = vi.fn().mockResolvedValue('always');
+    const permissions = makePermissions({ ask });
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+    // A different context asks again.
+    permissions.setCurrentContext('web', 'cloud-request-2');
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('denies a hard-linked file when nothing can ask (no handler, fail-closed, internal)', async () => {
+    await expect(makePermissions().checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+
+    const ask = vi.fn().mockResolvedValue('yes');
+    const failClosed = makePermissions({ ask });
+    failClosed.setFailClosed(true);
+    await expect(failClosed.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+
+    const internal = makePermissions({ ask, context: ['internal', 'internal'] });
+    await expect(internal.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('skips the hard-link prompt under Local allow-all', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask, context: ['cli', 'cli'] });
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('a directory with many links (subdirectories) is not treated as a hard-link alias', async () => {
+    mkdirSync(join(ws, 'dir', 'a'), { recursive: true });
+    mkdirSync(join(ws, 'dir', 'b'));
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    await expect(permissions.checkFsAccess(join(ws, 'dir'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('a temp scope granted on a directory of symlinks does not reach through them', async () => {
+    // The user approved the directory (session scope); its entries are
+    // symlinks whose targets are still outside every readable scope → denied.
+    mkdirSync(join(root, 'links'));
+    symlinkSync(join(outside, 'id_rsa'), join(root, 'links', 'key'));
+    const permissions = makePermissions();
+    permissions.addTempScope(join(root, 'links'), true, false);
+    const result = await permissions.checkFsAccess(join(root, 'links', 'key'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape', canonical: realpathSync(join(outside, 'id_rsa')) });
+  });
+
+  it('still returns the plain denial for an out-of-scope read without a handler', async () => {
+    const permissions = makePermissions();
+    const result = await permissions.checkFsAccess(join(outside, 'id_rsa'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'denied' });
+    expect(result.reason).toBe(`Permission denied for read access to ${join(outside, 'id_rsa')}`);
   });
 });
