@@ -76,6 +76,7 @@ import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntime
 import { runUninstall } from './cli/uninstall.js';
 import { runAttach } from './cli/attach.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
+import { detectInkPatch, inkPatchFixCommand } from './ui/ink-patch-check.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
@@ -2254,10 +2255,12 @@ function autoDaemonize(): void {
 
   console.log(chalk.dim('  Setting up background mode...'));
 
+  // installService() never exits the process (Termux / unsupported platforms
+  // print a hint and return false) \u2014 the daemon is still started below so
+  // the wizard flow completes on phones too.
+  let serviceInstalled = false;
   try {
-    if (!isServiceInstalled()) {
-      installService();
-    }
+    serviceInstalled = isServiceInstalled() || installService();
   } catch {
     console.log(chalk.dim('  Service install skipped (can run `mercury service install` later).'));
   }
@@ -2266,7 +2269,11 @@ function autoDaemonize(): void {
   if (ok) {
     const status = getDaemonStatus();
     console.log(chalk.green(`  \u2713 Mercury is running in background (PID: ${status.pid})`));
-    console.log(chalk.green('  \u2713 Auto-starts on login. Auto-restarts on crash.'));
+    if (serviceInstalled) {
+      console.log(chalk.green('  \u2713 Auto-starts on login. Auto-restarts on crash.'));
+    } else {
+      console.log(chalk.dim('  No login service on this platform \u2014 run `mercury up` after a reboot.'));
+    }
     console.log(chalk.dim('  Use `mercury stop` to stop. `mercury restart` to restart.'));
   } else {
     console.log(chalk.yellow('  Background mode not available. Run `mercury start` to set it up.'));
@@ -2298,6 +2305,8 @@ function runPlatformDoctor(): void {
   console.log(`  CI environment:     ${ci ? chalk.yellow('yes') : chalk.green('no')}`);
   console.log(`  Daemon:             ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
   console.log(`  Spotify inline art: ${canInlineArt ? chalk.green('supported (iTerm local)') : chalk.dim('disabled/fallback mode')}`);
+  const inkPatch = detectInkPatch();
+  console.log(`  Ink TUI patch:      ${inkPatch.patched ? chalk.green('applied') : chalk.red(`MISSING (${inkPatch.missing.join('; ')})`)}`);
   console.log('');
   console.log(chalk.bold.white('  Keybinding Notes'));
   console.log(`  • View toggle:      ${chalk.white('Ctrl+T')} (fallback: ${chalk.white('/view')})`);
@@ -2308,6 +2317,12 @@ function runPlatformDoctor(): void {
   if (!rawModeSupported) {
     console.log(chalk.yellow('  Warning: Raw mode is unavailable; interactive Ink input may be limited in this terminal.'));
     console.log(chalk.dim('  Try a local terminal session with TTY support for the best experience.'));
+    console.log('');
+  }
+
+  if (!inkPatch.patched) {
+    console.log(chalk.yellow('  Warning: the bundled ink patch is not applied — the TUI stops rendering new messages after ~100 and may crash on long sessions.'));
+    console.log(chalk.dim(`  Fix: ${inkPatchFixCommand()}  (then restart Mercury)`));
     console.log('');
   }
 }

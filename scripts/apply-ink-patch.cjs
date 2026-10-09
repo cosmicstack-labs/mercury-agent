@@ -26,7 +26,18 @@ const root = path.join(__dirname, '..');
  * exercise the applier against a synthetic ink tree without touching the
  * real node_modules. */
 function pathsFor(projectRoot) {
-  const inkDir = path.join(projectRoot, 'node_modules', 'ink', 'build');
+  let inkDir = path.join(projectRoot, 'node_modules', 'ink', 'build');
+  // When Mercury is installed as a dependency (not globally), npm hoists ink
+  // to the consumer's node_modules — `<root>/node_modules/ink` does not
+  // exist. Resolve the ink that Node will actually load from this root;
+  // the plain join above stays as the fallback (synthetic trees in tests
+  // carry no package.json for the resolver to find).
+  try {
+    const resolved = require.resolve('ink', { paths: [projectRoot] });
+    if (fs.existsSync(resolved)) inkDir = path.dirname(resolved);
+  } catch {
+    // not installed / not resolvable — fall back to the conventional path
+  }
   return {
     reconcilerPath: path.join(inkDir, 'reconciler.js'),
     staticJsPath: path.join(inkDir, 'components', 'Static.js'),
@@ -388,5 +399,8 @@ if (require.main === module) {
     console.error('  ⚠ INK FIXES NOT APPLIED — the Yoga WASM crash class is UNPATCHED in this install.');
     console.error(`    Reason: ${result.error}`);
     console.error('    Fix: reinstall dependencies (npm install) and re-run the build.');
+    // Non-zero so a postinstall chain (`patch-package || node scripts/apply-ink-patch.cjs || echo …`)
+    // falls through to the loud warning instead of reporting success.
+    process.exitCode = 1;
   }
 }

@@ -76,12 +76,20 @@ function getServiceLaunchArgs(): string[] {
   return [getNodeBinPath(), getDistPath(), 'start', '--daemon'];
 }
 
-export function installService(): void {
+/**
+ * Install the login/boot service. Returns whether a system service now
+ * exists. Never calls `process.exit`: this runs inside the setup wizard and
+ * `mercury up` (`autoDaemonize`), where a hard exit aborts the flow before
+ * the daemon is even started. Termux (no systemd; `process.platform` is
+ * `'android'` on real devices) and other unsupported platforms print a hint
+ * and return false so the caller can still daemonize for this session.
+ */
+export function installService(): boolean {
   const platform = process.platform;
 
   if (isTermux()) {
     showTermuxServiceHelp('install');
-    return;
+    return false;
   }
 
   if (platform === 'darwin') {
@@ -91,17 +99,19 @@ export function installService(): void {
   } else if (platform === 'win32') {
     installWindows();
   } else {
-    console.log(chalk.red(`  Unsupported platform: ${platform}`));
-    process.exit(1);
+    console.log(chalk.yellow(`  System service is not supported on this platform (${platform}).`));
+    console.log(chalk.dim('  Run `mercury up` manually to start the daemon for this session.'));
+    return false;
   }
+  return true;
 }
 
-export function uninstallService(): void {
+export function uninstallService(): boolean {
   const platform = process.platform;
 
   if (isTermux()) {
     showTermuxServiceHelp('uninstall');
-    return;
+    return false;
   }
 
   if (platform === 'darwin') {
@@ -111,9 +121,10 @@ export function uninstallService(): void {
   } else if (platform === 'win32') {
     uninstallWindows();
   } else {
-    console.log(chalk.red(`  Unsupported platform: ${platform}`));
-    process.exit(1);
+    console.log(chalk.yellow(`  System service is not supported on this platform (${platform}) — nothing to uninstall.`));
+    return false;
   }
+  return true;
 }
 
 /**
@@ -245,11 +256,11 @@ function waitForServiceStop(): boolean {
 
 function showTermuxServiceHelp(action: 'install' | 'uninstall' | 'status'): void {
   console.log('');
-  console.log(chalk.yellow(`  System service ${action} is not available in Termux (systemd is not present).`));
-  console.log(chalk.dim('  Start Mercury with: mercury start'));
-  console.log(chalk.dim('  Check it with:       mercury status'));
-  console.log(chalk.dim('  Stop it with:        mercury stop'));
-  console.log(chalk.dim('  For boot startup, use the Termux:Boot add-on and a ~/.termux/boot script.'));
+  console.log(chalk.yellow(`  System service ${action} is not supported on Termux yet (no systemd on Android).`));
+  console.log(chalk.dim('  Start Mercury manually with: mercury up   (or: mercury start)'));
+  console.log(chalk.dim('  Check it with:               mercury status'));
+  console.log(chalk.dim('  Stop it with:                mercury stop'));
+  console.log(chalk.dim('  For boot startup, install the Termux:Boot add-on and put `mercury up` in ~/.termux/boot/mercury.sh.'));
   console.log('');
 }
 

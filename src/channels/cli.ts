@@ -16,6 +16,7 @@ import { TASK_SUMMARY_FILE_LIMIT } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 import { nextTip } from '../ui/tips.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
+import { detectInkPatch, inkPatchWarning } from '../ui/ink-patch-check.js';
 
 /**
  * Strip mouse-report escape sequences from terminal input before Ink sees
@@ -1061,6 +1062,7 @@ export class CLIChannel extends BaseChannel {
 
     this.tuiOutput?.dispose();
     this.tuiOutput = new ResilientTuiOutput(process.stdout, process.stderr);
+    this.warnIfInkUnpatched();
     // Single mount. Every later UI update flows through useSyncExternalStore
     // notifications — never inkInstance.rerender(), whose synchronous
     // reconciler entry caused re-entrant commits and Yoga WASM corruption.
@@ -1082,6 +1084,32 @@ export class CLIChannel extends BaseChannel {
       }),
       { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
     );
+  }
+
+  private inkPatchWarned = false;
+
+  /**
+   * Stock ink ignores `<Static itemKey>`: the transcript silently stops
+   * rendering new messages after ~100 (and the Yoga crash class is live).
+   * The patch is applied by postinstall, which npm users never see fail —
+   * so say it once, in the transcript, with the one command that fixes it.
+   * Never aborts: a degraded TUI beats no TUI for a hotfix.
+   */
+  private warnIfInkUnpatched(): void {
+    if (this.inkPatchWarned) return;
+    this.inkPatchWarned = true;
+    try {
+      const status = detectInkPatch();
+      if (status.patched) return;
+      const text = inkPatchWarning(status);
+      logger.warn({ missing: status.missing, inkBuildDir: status.inkBuildDir }, 'ink patch not applied');
+      this.trimAndSetMessages([
+        ...this.state.chatMessages,
+        { id: `ink-patch-${Date.now().toString(36)}`, role: 'system', content: text, timestamp: Date.now() },
+      ]);
+    } catch (err) {
+      logger.debug({ err }, 'ink patch detection failed');
+    }
   }
 
   private stdinProxy: TtyStdinProxy | null = null;

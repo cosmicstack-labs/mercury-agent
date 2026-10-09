@@ -60,10 +60,30 @@ check('no dangling script references', () => {
   const devOnlyScripts = ['build', 'build:ui', 'build:bin', 'build:bin:all', 'build:bin:force', 'build:bin:all:force', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly'];
   for (const [key, val] of Object.entries(scripts)) {
     if (devOnlyScripts.includes(key)) continue;
-    if (val.includes('scripts/') || val.includes('bash ')) {
+    if (val.includes('bash ')) {
       throw new Error(`script "${key}" references unpublished path: ${val}`);
     }
+    // A `scripts/<file>` reference is fine only when that file ships in the
+    // tarball (e.g. the postinstall ink-patch fallback).
+    for (const m of val.matchAll(/scripts\/[\w.-]+/g)) {
+      if (!existsSync(join(modDir, m[0]))) {
+        throw new Error(`script "${key}" references unpublished path ${m[0]}: ${val}`);
+      }
+    }
   }
+});
+
+check('scripts/apply-ink-patch.cjs ships in the tarball', () => {
+  if (!existsSync(join(modDir, 'scripts', 'apply-ink-patch.cjs'))) throw new Error('missing scripts/apply-ink-patch.cjs');
+});
+
+check('ink is pinned exactly and the installed copy is patched', () => {
+  const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
+  const ink = pkg.dependencies && pkg.dependencies.ink;
+  if (!ink || !/^\d+\.\d+\.\d+$/.test(ink)) throw new Error(`ink must be pinned exactly (got ${ink})`);
+  const { isPatched, pathsFor } = require(join(modDir, 'scripts', 'apply-ink-patch.cjs'));
+  // ink is hoisted to the install root; pathsFor resolves it from modDir.
+  if (!isPatched(pathsFor(modDir))) throw new Error('installed ink is NOT patched (Static.itemKey / frame gate markers missing) — postinstall fallback failed');
 });
 
 check('better-sqlite3 is optional', () => {
