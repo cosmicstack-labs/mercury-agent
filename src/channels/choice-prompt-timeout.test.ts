@@ -78,7 +78,9 @@ describe('choice prompt timeout / dismissal', () => {
       const messages = channel.getTuiState().chatMessages;
       expect(messages.some(m => m.role === 'agent' && m.content === 'visible reply')).toBe(true);
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
+      // enterMercuryCode kicks off an async `git` read with cwd=tmpDir; on
+      // Windows the directory stays locked until that child exits.
+      rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

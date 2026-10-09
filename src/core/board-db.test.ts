@@ -34,7 +34,7 @@ afterEach(() => {
   if (savedBackend === undefined) delete process.env[SQLITE_BACKEND_ENV];
   else process.env[SQLITE_BACKEND_ENV] = savedBackend;
   resetSqliteDriverForTests();
-  rmSync(home, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('BoardDB', () => {
@@ -63,6 +63,9 @@ describe('BoardDB', () => {
     // A second instance sees the committed state (no in-memory cache).
     const again = createBoardDB();
     expect(again.loadAll().map((b) => b.id)).toEqual(['b2']);
+    // Release the handles: Windows refuses to delete a DB that is still open.
+    db.close();
+    again.close();
   });
 
   it('falls back to JSON files when storage is JSON-only', () => {

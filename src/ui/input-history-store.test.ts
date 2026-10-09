@@ -36,7 +36,8 @@ describe('persistent input history (~/.mercury/history)', () => {
     lines = appendInputHistory(lines, '   ', file);          // blanks are skipped
     expect(lines).toEqual(['first', 'second\nline']);
     expect(loadInputHistory(file)).toEqual(['first', 'second\nline']);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes (stat reports 0666 for any writable file).
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('keeps only the newest HISTORY_LIMIT lines on disk and on load', () => {
@@ -52,7 +53,7 @@ describe('persistent input history (~/.mercury/history)', () => {
     expect(loaded[loaded.length - 1]).toBe(`x${HISTORY_LIMIT + 9}`);
   });
 
-  it('tightens the mode of a pre-existing world-readable file', () => {
+  it.skipIf(process.platform === 'win32')('tightens the mode of a pre-existing world-readable file', () => {
     saveInputHistory(['a'], file);
     writeFileSync(file, 'a\n', { mode: 0o644 });
     // chmod on an existing path: writeFileSync keeps 0o644 unless we fix it

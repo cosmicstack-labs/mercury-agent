@@ -30,6 +30,8 @@ export interface BoardDB {
   saveContext(boardId: string, context: BoardContext): void;
   getContext(boardId: string): BoardContext | undefined;
   flush(): void;
+  /** Release file handles (SQLite) after a final flush. Safe to call twice. */
+  close(): void;
 }
 
 // ── JSON Fallback (optimized with write debouncing) ──────────────
@@ -125,6 +127,10 @@ class JSONBoardDB implements BoardDB {
     }
     writeFileSync(this.contextPath, JSON.stringify(ctxData, null, 2), 'utf-8');
   }
+
+  close(): void {
+    this.flush();
+  }
 }
 
 // ── SQLite Backend (when available) ──────────────────────────────
@@ -200,6 +206,10 @@ class SQLiteBoardDB implements BoardDB {
 
   flush(): void {
     // SQLite is already durable per write
+  }
+
+  close(): void {
+    this.db.close();
   }
 }
 

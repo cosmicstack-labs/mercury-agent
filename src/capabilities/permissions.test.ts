@@ -506,11 +506,13 @@ describe('safe-read classifier: residual side-effect flags (table)', () => {
     ['curl -sSLJO http://example.com', 'curl -J/-O inside a cluster'],
     ['curl --output out.html http://example.com', 'curl --output'],
     ['curl --remote-name http://example.com/x', 'curl --remote-name'],
-    ['curl --output-dir /tmp -O http://example.com/x', 'curl --output-dir'],
+    // Relative paths on purpose: an absolute path outside the cwd is denied
+    // by the cwd gate before the classifier can prompt (macOS /tmp → /private/tmp).
+    ['curl --output-dir downloads -O http://example.com/x', 'curl --output-dir'],
     ['wget -O out.html http://example.com', 'wget -O'],
     ['wget --output-document=out.html http://example.com', 'wget --output-document='],
     ['wget -o log.txt http://example.com', 'wget -o writes a log file'],
-    ['wget -P /tmp http://example.com', 'wget -P chooses the download directory'],
+    ['wget -P downloads http://example.com', 'wget -P chooses the download directory'],
     ['wget -qO- http://example.com', 'wget -O inside a cluster'],
   ];
 
