@@ -39,9 +39,6 @@ jobs:
 
   lint:
     name: Lint (tsc + ESLint ratchet)
-    # Provisional baseline (grep estimate): non-blocking until the first real
-    # run refreshes .lint-baseline.json with `npm run lint:ratchet -- --update`.
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

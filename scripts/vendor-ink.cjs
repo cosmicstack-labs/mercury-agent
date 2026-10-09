@@ -59,7 +59,7 @@ function obtainTarball(explicit, tmp) {
     return explicit;
   }
   console.log(`  fetching ink@${INK_VERSION} with npm pack …`);
-  execFileSync('npm', ['pack', `ink@${INK_VERSION}`, '--pack-destination', tmp], { stdio: ['ignore', 'ignore', 'inherit'] });
+  execFileSync('npm', ['pack', `ink@${INK_VERSION}`, '--pack-destination', tmp], { stdio: ['ignore', 'ignore', 'inherit'], shell: process.platform === 'win32' });
   const found = fs.readdirSync(tmp).find((f) => f.startsWith('ink-') && f.endsWith('.tgz'));
   if (!found) throw new Error('npm pack produced no tarball');
   return path.join(tmp, found);

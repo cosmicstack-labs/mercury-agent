@@ -201,7 +201,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(8);
   });
 
-  it('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
@@ -220,7 +222,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(3);
   });
 
-  it('find -fprint/-fprintf/-files0-from are side-effectful or indirect — require approval', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('find -fprint/-fprintf/-files0-from are side-effectful or indirect — require approval', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
@@ -243,7 +247,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(4);
   });
 
-  it('requires approval for safe-read commands that rely on shell expansion', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('requires approval for safe-read commands that rely on shell expansion', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
