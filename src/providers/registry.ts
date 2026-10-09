@@ -127,11 +127,11 @@ export class ProviderRegistry {
   }
 
   getDefault(): BaseProvider {
-    if (this.lastSuccessful) {
-      const provider = this.providers.get(this.lastSuccessful);
-      if (provider) return provider;
-    }
-
+    // The configured default always leads. markSuccess used to make the
+    // last provider that happened to work sticky, so a single transient
+    // failure silently moved every following turn — often to a weaker
+    // model — until restart. The fallback chain still handles outages per
+    // turn; lastSuccessful is kept for diagnostics only.
     const provider = this.providers.get(this.defaultName);
     if (!provider) {
       const first = this.providers.values().next().value;
@@ -171,6 +171,11 @@ export class ProviderRegistry {
 
   markSuccess(name: string): void {
     this.lastSuccessful = name;
+  }
+
+  /** Name of the provider that completed the most recent turn, if any. */
+  getLastSuccessful(): string | null {
+    return this.lastSuccessful;
   }
 
   listAvailable(): string[] {

@@ -54,6 +54,13 @@ export interface SubAgentConfig {
   priority?: SubAgentPriority;
   sourceChannelId?: string;
   sourceChannelType?: string;
+  /**
+   * Id of the sub-agent that spawned this one via `delegate_task`; absent
+   * when the main agent (or a user command) spawned it. The supervisor uses
+   * it for lineage checks: a sub-agent may only list or stop its own
+   * descendants (#74).
+   */
+  parentId?: string;
 }
 
 export interface SubAgentResult {

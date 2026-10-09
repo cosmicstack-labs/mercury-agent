@@ -166,6 +166,9 @@ export interface BotRunRecord {
   error?: string;
   /** Typed failure code surfaced to senders/channels (e.g. provider_rate_limit). */
   reasonCode?: string;
+  /** Escalation marker: this run needs the owner (DLQ'd failure / crash).
+   * The newest row's flag is the durable "needs you" state across restarts. */
+  needsYou?: boolean;
 }
 
 /** Live bot state surfaced by /bots, the status bar, and the API. */

@@ -213,6 +213,79 @@ describe('BotManager queue + turn lifecycle', () => {
     }
   });
 
+  it('a retried job never runs twice when the due-sweep and the backoff timer both fire (P0.7)', async () => {
+    let calls = 0;
+    let releaseSecond: () => void = () => {};
+    const secondGate = new Promise<void>(r => { releaseSecond = r; });
+    mockedGenerateText.mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new Error('HTTP 429: too many requests');
+      await secondGate; // hold the retry turn so the timer fires while it RUNS
+      return { text: 'recovered', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
+    });
+    seedBot(store, 'racer');
+    // setImmediate stays real: the mocked turn is promise-driven, so a few
+    // real macrotask yields settle it deterministically without waitFor.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
+    try {
+      const { jobId } = manager.enqueue('racer', { trigger: 'chat', prompt: 'go' });
+      await settle();
+      // Attempt 1 failed transiently → durable in-place retry, 1s backoff timer.
+      expect(manager.getJournal('racer').map(r => r.state)).toEqual(['failed']);
+      expect(manager.queue.pendingJobs('racer').map(j => j.id)).toEqual([jobId]);
+
+      // The periodic sweep wins the race: the clock passes run_after WITHOUT
+      // the backoff timer firing, and the sweep moves the job into `running`.
+      vi.setSystemTime(Date.now() + 1000);
+      (manager as any).resumeDueJobs();
+      await settle();
+      expect(calls).toBe(2);
+      expect((manager as any).running.get('racer')?.has(jobId)).toBe(true);
+
+      // Now the backoff timer fires while that retry is still running. The
+      // old timer pushed its own copy (the queue was empty) → a second run.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(manager.getQueuedCount('racer')).toBe(0);
+      expect(calls).toBe(2);
+
+      releaseSecond();
+      await settle();
+      // A later sweep tick finds nothing due either: the job settled 'done'.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await settle();
+      expect(calls).toBe(2);
+      expect(manager.getJournal('racer').map(r => r.state)).toEqual(['failed', 'completed']);
+      expect(manager.queue.counts()).toMatchObject({ pending: 0, claimed: 0, dlq: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('needs-you survives a manager restart (journal row) and clears on the next run (P0.7)', async () => {
+    mockedGenerateText.mockRejectedValue(new Error('permission denied: no permission for that path'));
+    seedBot(store, 'stuck');
+    manager.enqueue('stuck', { trigger: 'chat', prompt: 'go' });
+    await vi.waitFor(() => {
+      expect(manager.getStatusSummaries().find(s => s.id === 'stuck')?.needsYou).toBe(true);
+    });
+    expect(manager.getJournal('stuck')[0]).toMatchObject({ state: 'failed', reasonCode: 'permission_denied', needsYou: true });
+
+    // Restart: a new manager on the same root must still show the escalation.
+    manager.dispose();
+    const restarted = makeManager(root);
+    expect(restarted.getStatusSummaries().find(s => s.id === 'stuck')?.needsYou).toBe(true);
+
+    // The next run clears it — in memory AND durably.
+    mockedGenerateText.mockResolvedValue({ text: 'fine now', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any);
+    restarted.enqueue('stuck', { trigger: 'chat', prompt: 'again' });
+    await vi.waitFor(() => expect(restarted.getJournal('stuck')).toHaveLength(2));
+    expect(restarted.getStatusSummaries().find(s => s.id === 'stuck')?.needsYou).toBe(false);
+    restarted.dispose();
+    const again = makeManager(root);
+    expect(again.getStatusSummaries().find(s => s.id === 'stuck')?.needsYou).toBe(false);
+  });
+
   it('stop holds queued jobs (durable, nothing lost) and start resumes them', async () => {
     let release!: () => void;
     const gate = new Promise<void>(res => { release = res; });
@@ -849,6 +922,38 @@ describe('Bot fleets (lead + crew)', () => {
     await vi.waitFor(() => expect(manager.getJournal('researcher').length).toBe(1));
     await new Promise(r => setTimeout(r, 50)); // let any detached follow-up turns settle
     expect(manager.peekMailbox('ceo')).toHaveLength(0);
+  });
+
+  it('a lead\'s mailbox wake delivers its synthesis to the bot thread; crew task results stay internal (P0.7)', async () => {
+    setupFleet();
+    const delivered: Array<{ target: string; message: string }> = [];
+    manager['notify'] = async (_t, target, message) => { delivered.push({ target, message }); };
+    mockedGenerateText.mockImplementation(async (opts: any) => {
+      const text = JSON.stringify(opts?.messages ?? '');
+      // Lead wake (mailbox trigger) after the crew result landed: synthesize.
+      if (text.includes('Task complete')) {
+        return { text: 'SYNTHESIS: combined market report', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
+      }
+      // Crew task turn (mailbox trigger with a reply target = the lead).
+      if (text.includes('Study the market')) {
+        return { text: 'CREW RESULT: market is up', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
+      }
+      // Lead's first (chat) turn: delegate.
+      manager.dispatchTask('researcher', 'ceo', 'Study the market');
+      return { text: 'dispatched', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
+    });
+
+    manager.enqueue('ceo', { trigger: 'chat', prompt: 'delegate the market work' });
+    // The lead's combined report reaches the lead's own thread, tagged as
+    // the mailbox turn it came from (it used to be journaled only).
+    await vi.waitFor(() => {
+      expect(delivered.some(d => d.target === 'bot:ceo' && d.message.includes('(mailbox): SYNTHESIS'))).toBe(true);
+    });
+    // The crew's task result went to the lead's MAILBOX only — the internal
+    // crew→lead mail is never shown to the user, on any surface.
+    expect(delivered.some(d => d.message.includes('CREW RESULT'))).toBe(false);
+    expect(delivered.some(d => d.message.includes('Task complete (job'))).toBe(false);
+    expect(delivered.some(d => d.target === 'bot:researcher')).toBe(false);
   });
 
   it('leads get fleet tools; bot_spawn/bot_retire manage the crew within the cap', async () => {

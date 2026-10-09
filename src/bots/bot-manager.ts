@@ -1,5 +1,6 @@
 import { refinePersona } from './persona-template.js';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, relative, resolve, join } from 'node:path';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import type { Tool } from 'ai';
@@ -204,9 +205,14 @@ export class BotManager {
       }
     }
     // Durable mailboxes survive restarts: rehydrate into the in-memory boxes.
+    // The needs-you badge too: it lives on the newest journal row (set when a
+    // run is DLQ'd or crashes, cleared by the next run's row), so the
+    // in-memory set is only a cache of that — a restart must not clear an
+    // escalation the owner has not seen.
     for (const m of this.store.list()) {
       const drained = this.queue.drainMail(m.id);
       if (drained.length > 0) this.mailboxes.set(m.id, drained);
+      if (this.journalFor(m.id).read(m.id, 1)[0]?.needsYou) this.needsYou.add(m.id);
     }
     // A profile relocation (re-parent or fleet-layout migration) invalidates
     // the cached journal handle (it is bound to the old dir) and the bot's
@@ -257,23 +263,37 @@ export class BotManager {
     }
   }
 
-  /** Pull due (backoff-elapsed) jobs from the durable queue into memory and run them. */
+  /**
+   * Pull due (backoff-elapsed) jobs from the durable queue into memory and
+   * run them. This is the ONLY re-entry path for a retried/paused job: the
+   * precise backoff timers call it too, instead of pushing a captured copy
+   * of the job themselves. A timer that pushed its own copy raced the 30s
+   * sweep — the sweep moved the job from the queue into `running`, the
+   * timer saw an empty queue and pushed it again, and the job ran twice
+   * (the second settle a silent no-op). Reading durable state here makes
+   * re-entry idempotent: a running job is `claimed` (not due), a finished
+   * one is gone, a queued one is skipped by id.
+   */
   private resumeDueJobs(): void {
     const due = this.queue.dueJobs();
     for (const job of due) {
       if (this.disabled.has(job.botId) || this.held.has(job.botId)) continue;
-      const running = this.running.get(job.botId)?.size ?? 0;
-      const q = this.queues.get(job.botId) ?? [];
-      const alreadyQueued = q.some(j => j.id === job.id);
-      if (!alreadyQueued && running === 0) {
-        q.push({
-          id: job.id, botId: job.botId, trigger: job.trigger, prompt: job.prompt,
-          fromBot: job.fromBot, source: job.source, createdAt: job.createdAt, attempts: job.attempts,
-        });
-        this.queues.set(job.botId, q);
-        this.pump(job.botId);
-      }
+      this.reenterJob(job);
     }
+  }
+
+  /** Re-enter a durable job into its bot's in-memory lane unless that id is
+   * already queued OR running — a job id is never in both, and never twice. */
+  private reenterJob(job: DurableBotJob): boolean {
+    const q = this.queues.get(job.botId) ?? [];
+    if (q.some(j => j.id === job.id) || this.running.get(job.botId)?.has(job.id)) return false;
+    q.push({
+      id: job.id, botId: job.botId, trigger: job.trigger, prompt: job.prompt,
+      fromBot: job.fromBot, source: job.source, createdAt: job.createdAt, attempts: job.attempts,
+    });
+    this.queues.set(job.botId, q);
+    this.pump(job.botId);
+    return true;
   }
 
   /**
@@ -474,6 +494,12 @@ export class BotManager {
       });
       turn.cleanup();
 
+      // Decided up front so the journal row can carry the needs-you flag:
+      // a failure that will retry is not an escalation; one headed for the
+      // DLQ is (the flag is durable via the row — the constructor rehydrates
+      // it from the newest journal row on restart).
+      const willRetry = output.status === 'failed' && !!output.reasonCode
+        && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS;
       const record: BotRunRecord = {
         runId: job.id,
         botId,
@@ -486,6 +512,7 @@ export class BotManager {
         summary: output.output.slice(0, 300),
         error: output.error,
         reasonCode: output.reasonCode,
+        ...(output.status === 'failed' && !willRetry ? { needsYou: true } : {}),
       };
       this.journalFor(botId).append(record);
       this.lastRun.set(botId, { at: Date.now(), state: record.state });
@@ -518,18 +545,14 @@ export class BotManager {
       // failures go to the capped DLQ and stop (never silently re-queued — §2.6).
       // Retries requeue the SAME job in place (durable): no settle-then-
       // reenqueue window where a crash would lose the work.
-      if (output.status === 'failed' && output.reasonCode && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS) {
+      // Re-entry rides the due-sweep (resumeDueJobs) — the timer only makes
+      // it precise; it never pushes a copy of the job itself (duplicate-run
+      // race with the periodic sweep).
+      if (willRetry) {
         const delay = Math.min(15000, 1000 * 2 ** job.attempts);
         this.queue.retry(job.id, job.attempts + 1, Date.now() + delay);
         logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying in place');
-        setTimeout(() => {
-          const q = this.queues.get(botId) ?? [];
-          if (!q.some(j => j.id === job.id)) {
-            q.push({ ...job, attempts: job.attempts + 1 });
-            this.queues.set(botId, q);
-            this.pump(botId);
-          }
-        }, delay).unref?.();
+        setTimeout(() => this.resumeDueJobs(), delay).unref?.();
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
         this.needsYou.add(botId);
@@ -539,14 +562,7 @@ export class BotManager {
         // Step-budget pause: work continues next turn — same job requeues in
         // place (durable), no attempts bump.
         this.queue.retry(job.id, job.attempts, Date.now() + 2000);
-        setTimeout(() => {
-          const q = this.queues.get(botId) ?? [];
-          if (!q.some(j => j.id === job.id)) {
-            q.push({ ...job });
-            this.queues.set(botId, q);
-            this.pump(botId);
-          }
-        }, 2000).unref?.();
+        setTimeout(() => this.resumeDueJobs(), 2000).unref?.();
       } else {
         this.queue.settle(job.id, 'done');
       }
@@ -560,7 +576,15 @@ export class BotManager {
       // channels (Telegram/web) stay the exception: their user cannot open
       // bot threads, so the full result is delivered in that chat. Halts
       // report too (a stopped run must announce it stopped, §2.6).
-      if (this.notify && job.trigger !== 'mailbox') {
+      //
+      // Mailbox turns deliver too UNLESS the result is addressed to another
+      // bot (a delegated task — replyTargetFor routes it to the sender's
+      // mailbox below, and the user must not see the internal crew→lead mail
+      // twice). A lead's wake after crew results IS a mailbox trigger
+      // (sendToBot), and its synthesis is the user-facing outcome of the
+      // whole delegation — skipping every mailbox turn left it journaled
+      // but never shown.
+      if (this.notify && !replyTargetFor(job)) {
         const botThread = `bot:${botId}`;
         const icon = output.status === 'completed' ? '🤖' : output.status === 'failed' ? '❌' : output.status === 'halted' ? '⏹' : '⏸';
         // Full result, matched to the channel's per-message cap (64KB) — the
@@ -618,6 +642,7 @@ export class BotManager {
         tokensOut: 0,
         error: err?.message,
         reasonCode: 'unknown_error',
+        needsYou: true,
       });
       this.needsYou.add(botId);
     } finally {
@@ -1384,7 +1409,7 @@ export class BotManager {
    */
   deliver(botId: string, filePath: string, rename?: string): { accepted: boolean; path?: string; reasonCode?: string } {
     if (!this.store.get(botId)) return { accepted: false, reasonCode: 'target_unknown' };
-    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, process.env.HOME || '~'));
+    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, homedir()));
     const allowedBases = [this.store.sharedSandboxDir(), this.store.sandboxDir(botId)];
     const inside = allowedBases.some((base) => {
       const rel = relative(resolve(base), candidate);

@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
-import readline from 'node:readline';
 import chalk from 'chalk';
 
 import {
@@ -53,7 +52,9 @@ import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } 
 import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { BotManager } from './bots/bot-manager.js';
-import { isBetterSqlite3Available } from './memory/second-brain-db.js';
+import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
+import { isSqliteAvailable } from './utils/sqlite-driver.js';
+import { runStorageDoctor } from './utils/storage-doctor.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -72,17 +73,19 @@ import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { registerBotsCommand } from './bots/cli.js';
 import { getManual } from './utils/manual.js';
+import { ask, InputClosedError } from './cli/ask.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runAttach } from './cli/attach.js';
 import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
+import { detectInkPatch, inkPatchFixCommand } from './ui/ink-patch-check.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -147,16 +150,6 @@ function splashScreen() {
     console.log(chalk.yellow(`  ⚠ ${devBuildLabel(pkgVersion)}`));
   }
   console.log('');
-}
-
-async function ask(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
 }
 
 function maskKey(key: string): string {
@@ -728,7 +721,11 @@ function appendToEnv(key: string, value: string): void {
   }
   const lines = envContent.split('\n').filter((l: string) => !l.startsWith(`${key}=`) && l.trim() !== '');
   lines.push(`${key}=${value}`);
-  writeFileSync(envPath, lines.join('\n') + '\n', 'utf-8');
+  // Holds API keys and bot tokens: owner-only, like config.yaml and the web
+  // credential files. `mode` only applies on create, so chmod repairs a
+  // file an older version wrote with the default umask (0644).
+  writeFileSync(envPath, lines.join('\n') + '\n', { encoding: 'utf-8', mode: 0o600 });
+  try { chmodSync(envPath, 0o600); } catch { /* best effort (Windows ACLs) */ }
   process.env[key] = value;
 }
 
@@ -2254,10 +2251,12 @@ function autoDaemonize(): void {
 
   console.log(chalk.dim('  Setting up background mode...'));
 
+  // installService() never exits the process (Termux / unsupported platforms
+  // print a hint and return false) \u2014 the daemon is still started below so
+  // the wizard flow completes on phones too.
+  let serviceInstalled = false;
   try {
-    if (!isServiceInstalled()) {
-      installService();
-    }
+    serviceInstalled = isServiceInstalled() || installService();
   } catch {
     console.log(chalk.dim('  Service install skipped (can run `mercury service install` later).'));
   }
@@ -2266,7 +2265,11 @@ function autoDaemonize(): void {
   if (ok) {
     const status = getDaemonStatus();
     console.log(chalk.green(`  \u2713 Mercury is running in background (PID: ${status.pid})`));
-    console.log(chalk.green('  \u2713 Auto-starts on login. Auto-restarts on crash.'));
+    if (serviceInstalled) {
+      console.log(chalk.green('  \u2713 Auto-starts on login. Auto-restarts on crash.'));
+    } else {
+      console.log(chalk.dim('  No login service on this platform \u2014 run `mercury up` after a reboot.'));
+    }
     console.log(chalk.dim('  Use `mercury stop` to stop. `mercury restart` to restart.'));
   } else {
     console.log(chalk.yellow('  Background mode not available. Run `mercury start` to set it up.'));
@@ -2298,6 +2301,8 @@ function runPlatformDoctor(): void {
   console.log(`  CI environment:     ${ci ? chalk.yellow('yes') : chalk.green('no')}`);
   console.log(`  Daemon:             ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
   console.log(`  Spotify inline art: ${canInlineArt ? chalk.green('supported (iTerm local)') : chalk.dim('disabled/fallback mode')}`);
+  const inkPatch = detectInkPatch();
+  console.log(`  Ink TUI patch:      ${inkPatch.patched ? chalk.green('applied') : chalk.red(`MISSING (${inkPatch.missing.join('; ')})`)}`);
   console.log('');
   console.log(chalk.bold.white('  Keybinding Notes'));
   console.log(`  • View toggle:      ${chalk.white('Ctrl+T')} (fallback: ${chalk.white('/view')})`);
@@ -2308,6 +2313,12 @@ function runPlatformDoctor(): void {
   if (!rawModeSupported) {
     console.log(chalk.yellow('  Warning: Raw mode is unavailable; interactive Ink input may be limited in this terminal.'));
     console.log(chalk.dim('  Try a local terminal session with TTY support for the best experience.'));
+    console.log('');
+  }
+
+  if (!inkPatch.patched) {
+    console.log(chalk.yellow('  Warning: the bundled ink patch is not applied — the TUI stops rendering new messages after ~100 and may crash on long sessions.'));
+    console.log(chalk.dim(`  Fix: ${inkPatchFixCommand()}  (then restart Mercury)`));
     console.log('');
   }
 }
@@ -2326,6 +2337,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     const { appendFileSync } = await import('node:fs');
     const dumpFile = join(getMercuryHome(), 'crash-report.log');
     const line = (m: string) => appendFileSync(dumpFile, `[${new Date().toISOString()}] ${m}\n`);
+    removeBootCrashHandlers();
     Error.stackTraceLimit = 50;
     if (typeof (process as any).report !== 'undefined') {
       try { (process as any).report.uncaughtException = true; } catch { /* unsupported */ }
@@ -2443,7 +2455,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const episodic = new EpisodicMemory(config);
 
   let userMemory: UserMemoryStore | null = null;
-  if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
+  if (config.memory.secondBrain?.enabled !== false && isSqliteAvailable()) {
     try {
       userMemory = new UserMemoryStore(config);
       setWebUserMemory(userMemory);
@@ -2456,11 +2468,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       logger.warn({ err }, 'Second brain initialization failed, continuing without it');
       userMemory = null;
     }
-  } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
-    logger.warn(
-      'Second brain dependency issue: better-sqlite3 is not available. ' +
-      'Memory/brain features require SQLite via better-sqlite3. Install build tools and reinstall dependencies.'
-    );
+  } else if (config.memory.secondBrain?.enabled !== false && !isSqliteAvailable()) {
+    logger.warn(`Second brain disabled: ${SECOND_BRAIN_UNAVAILABLE_MESSAGE}`);
   }
 
   const channels = new ChannelRegistry(config);
@@ -2701,6 +2710,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         })) ?? [],
       });
       bootCli.startStatusPoller(2000);
+      // Esc during a turn: the same stop routine `/stop` runs.
+      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped'));
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {
@@ -3667,6 +3678,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // `mercury stop` / `restart` / `upgrade` ask over the local web API first
+  // (POST /api/shutdown) — on Windows that is the only way shutdown() runs,
+  // since process.kill there is TerminateProcess.
+  setShutdownHandler(() => { void shutdown(); });
 
   if (!isDaemon && process.platform !== 'win32') {
     process.on('SIGHUP', async () => {
@@ -3692,6 +3707,42 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     });
   }
 }
+
+/**
+ * Boot-time crash handlers (#64). Installed before any command runs — in
+ * particular before the setup wizard — so a failure there is loud and
+ * exits 1. Without them, web/server.ts's import-time `unhandledRejection`
+ * listener disables Node's default throw-on-rejection, and a rejected
+ * `configure()` (e.g. stdin closed mid-wizard) ended the process with
+ * exit code 0 and no message. runAgent() swaps these for its forensics
+ * handlers (crash-report.log) once the runtime boots.
+ */
+function describeBootError(err: unknown): string {
+  if (err instanceof Error) {
+    return process.env.MERCURY_DEBUG && err.stack ? err.stack : err.message;
+  }
+  return String(err);
+}
+function bootUncaughtException(err: unknown): void {
+  try { process.stderr.write(`\n✗ Mercury hit an unexpected error: ${describeBootError(err)}\n`); } catch { /* stderr gone */ }
+  process.exit(1);
+}
+function bootUnhandledRejection(reason: unknown): void {
+  if (reason instanceof InputClosedError) {
+    try { process.stderr.write(`\n✗ ${reason.message}\n`); } catch { /* stderr gone */ }
+    process.exit(1);
+  }
+  bootUncaughtException(reason);
+}
+function installBootCrashHandlers(): void {
+  process.on('uncaughtException', bootUncaughtException);
+  process.on('unhandledRejection', bootUnhandledRejection);
+}
+function removeBootCrashHandlers(): void {
+  process.off('uncaughtException', bootUncaughtException);
+  process.off('unhandledRejection', bootUnhandledRejection);
+}
+installBootCrashHandlers();
 
 const program = new Command();
 
@@ -3852,9 +3903,14 @@ program
   .command('doctor')
   .description('Reconfigure Mercury setup (name, providers, channels, permissions defaults)')
   .option('--platform', 'Show platform compatibility diagnostics')
+  .option('--storage', 'Show SQLite backend, database files and row counts')
   .action(async (opts) => {
     if (opts.platform) {
       runPlatformDoctor();
+      return;
+    }
+    if (opts.storage) {
+      runStorageDoctor();
       return;
     }
     if (isSetupComplete()) {
@@ -4744,8 +4800,10 @@ serviceCmd
       const platform = process.platform;
 
       if (platform === 'win32') {
-        // Run after this process exits so Windows releases the current executable.
-        const psCmd = `Start-Sleep -Seconds 1; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
+        // Run after this process exits so Windows releases the current
+        // executable: wait on our pid (not a fixed sleep), and hand the pid
+        // to the installer so it can wait again before replacing the binary.
+        const psCmd = `$env:MERCURY_WAIT_PID='${process.pid}'; Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
         try {
           const installer2 = spawn(
             'powershell.exe',

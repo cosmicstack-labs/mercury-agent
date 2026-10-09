@@ -241,9 +241,9 @@ export class CapabilityRegistry {
     }
 
     if (manifest.capabilities.git?.enabled) {
-      this.tools.git_status = createGitStatusTool(() => this.getCwd());
-      this.tools.git_diff = createGitDiffTool(() => this.getCwd());
-      this.tools.git_log = createGitLogTool(() => this.getCwd());
+      this.tools.git_status = createGitStatusTool(this.permissions, () => this.getCwd());
+      this.tools.git_diff = createGitDiffTool(this.permissions, () => this.getCwd());
+      this.tools.git_log = createGitLogTool(this.permissions, () => this.getCwd());
       this.tools.git_add = createGitAddTool(this.permissions, () => this.getCwd());
       this.tools.git_commit = createGitCommitTool(this.permissions, () => this.getCwd());
       this.tools.git_push = createGitPushTool(this.permissions, () => this.getCwd());

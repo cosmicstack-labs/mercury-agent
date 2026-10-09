@@ -1,9 +1,25 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { BLOCKED_COMMANDS } from './shell/blocklist.js';
+
+/**
+ * Command-pattern glob → anchored, case-insensitive RegExp. `*` matches any
+ * text, `?` one character; everything else is literal. Regex metacharacters
+ * are escaped so `C:\\*` means "C:\ then anything" (not "C: + any char"),
+ * `curl * | sh` is one pattern (not an alternation), and `rm -rf .` matches
+ * only a literal dot.
+ */
+export function globToRegExp(pattern: string): RegExp {
+  const source = pattern
+    .split(/([*?])/)
+    .map((part) => (part === '*' ? '.*' : part === '?' ? '.' : part.replace(/[.+^${}()|[\]\\\/]/g, '\\$&')))
+    .join('');
+  return new RegExp(`^${source}$`, 'i');
+}
 
 export interface FileScope {
   path: string;
@@ -45,6 +61,35 @@ export interface PermissionsManifest {
   };
 }
 
+/** Device/inode pair identifying the file a read was authorised against. */
+export interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+export interface FsAccessResult {
+  allowed: boolean;
+  reason?: string;
+  /**
+   * Why a read was refused: `symlink-escape` (the canonical target lies
+   * outside every readable scope), `hardlink` (nlink > 1 and no approval),
+   * or `denied` (ordinary scope/user denial).
+   */
+  code?: 'symlink-escape' | 'hardlink' | 'denied';
+  /**
+   * Reads only: the canonical (realpath) target the check was made against.
+   * Tools must open THIS path, never the lexical one, so a symlink swapped in
+   * after the check cannot redirect the read.
+   */
+  canonical?: string;
+  /**
+   * Reads of existing files only: lstat identity of `canonical` at check
+   * time. Tools compare it with `fstat` on the opened descriptor to defeat a
+   * swap between check and open (TOCTOU).
+   */
+  fileId?: FileIdentity;
+}
+
 const DEFAULT_MANIFEST: PermissionsManifest = {
   capabilities: {
     filesystem: {
@@ -55,33 +100,9 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
     },
     shell: {
       enabled: true,
-      blocked: [
-        'sudo *',
-        'rm -rf /',
-        'rm -rf ~',
-        'rm -rf /*',
-        'mkfs *',
-        'dd if=*',
-        'chmod 777 /',
-        'chown * /',
-        ':(){ :|:& };:',
-        'shutdown *',
-        'reboot *',
-        'halt *',
-        'init 0',
-        'init 6',
-        'kill -9 1',
-        '> /dev/sda',
-        'mv /* /dev/null',
-        'del /s /q C:\\*',
-        'rmdir /s /q C:\\*',
-        'format *',
-        'icacls * C:\\* /grant',
-        'net user *',
-        'netsh *',
-        'reg delete *',
-        'cmd /c rd /s /q *',
-      ],
+      // Single source of truth: shell/blocklist.ts (also carries the
+      // PowerShell forms — Set-ExecutionPolicy, Remove-Item -Recurse roots).
+      blocked: [...BLOCKED_COMMANDS],
       autoApproved: [
         'ls *',
         'cat *',
@@ -297,6 +318,8 @@ export class PermissionManager {
   private currentChannelId: string = 'cli';
   private approvedCommandsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
+  /** Hard-linked files the user answered "always" for, per interaction context. */
+  private approvedHardlinkReadsByContext = new Map<string, Set<string>>();
   /**
    * Fail-closed mode (unattended agents, e.g. Mercury Bots): no interactive
    * approvals exist. Explicitly granted scopes apply without prompting;
@@ -461,7 +484,120 @@ export class PermissionManager {
     }
   }
 
-  async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<{ allowed: boolean; reason?: string }> {
+  /**
+   * Authorise a filesystem access. Writes: the lexical path must sit in a
+   * writable scope and its canonical target must not escape (#105). Reads:
+   * the same two conditions against readable scopes (an in-scope symlink to
+   * `~/.ssh/id_rsa` is denied), plus a hard-link alias prompt (#104) and a
+   * `canonical` + `fileId` the caller must verify at open time.
+   *
+   * Cost per read: one `realpath` and one `lstat`; nothing is cached across
+   * calls, because the file system can change between them.
+   */
+  async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<FsAccessResult> {
+    if (mode === 'write') return this.checkScopedAccess(path, mode);
+
+    const resolved = resolve(path);
+    const canonical = this.canonicalizePath(resolved);
+
+    // Skill elevation is an explicit "read anywhere" grant, so neither the
+    // scope checks nor the alias prompt apply — but the caller still gets the
+    // canonical path and identity so the open is verified like any other.
+    if (this.elevatedCommands.has('fs_read')) {
+      return this.describeRead(canonical).result;
+    }
+
+    const fs = this.manifest.capabilities.filesystem;
+    if (!fs.enabled) {
+      return { allowed: false, reason: 'Filesystem capability is disabled', code: 'denied' };
+    }
+
+    const lexicallyReadable = this.isLexicallyReadable(resolved);
+    if (lexicallyReadable && canonical !== resolved && !this.isWithinScope(canonical, 'read')) {
+      // The lexical path is approved but it is a symlink (or sits under one)
+      // whose target is not. Treat it exactly like a read of the target: ask
+      // the user for the target when a prompt is possible, otherwise deny —
+      // the model is told the canonical path so it can request that scope.
+      const reason = `Permission denied: read of ${path} resolves outside the approved scopes (${canonical})`;
+      if (!this.failClosed && !this.isGlobalAutoApproveActive() && this.askHandler && this.currentChannelType !== 'internal') {
+        const granted = await this.requestScopeExternal(canonical, 'read');
+        if (!granted.allowed) return { allowed: false, reason, code: 'symlink-escape', canonical };
+      } else {
+        return { allowed: false, reason, code: 'symlink-escape', canonical };
+      }
+    } else if (!lexicallyReadable) {
+      const scoped = await this.checkScopedAccess(path, mode);
+      if (!scoped.allowed) return { ...scoped, code: 'denied', canonical };
+      // A freshly approved scope covers the lexical path; the canonical
+      // target must be covered too (an approval for a directory of symlinks
+      // must not reach through them).
+      if (canonical !== resolved && !this.isWithinScope(canonical, 'read')) {
+        return {
+          allowed: false,
+          reason: `Permission denied: read of ${path} resolves outside the approved scopes (${canonical})`,
+          code: 'symlink-escape',
+          canonical,
+        };
+      }
+    }
+
+    return this.finishRead(path, canonical);
+  }
+
+  /** Lexical read check against the manifest and temp scopes. */
+  private isLexicallyReadable(resolved: string): boolean {
+    const scope = this.findScope(resolved);
+    if (scope && scope.read) return true;
+    const tempScope = this.findTempScope(resolved);
+    return tempScope?.read === true;
+  }
+
+  /**
+   * Post-scope read checks on the canonical target: a regular file with more
+   * than one hard link may be an alias of a file outside every scope (the
+   * inode carries no path, so the scope check cannot tell), so it goes
+   * through the approval handler and is denied when nothing can ask (#104).
+   */
+  private async finishRead(path: string, canonical: string): Promise<FsAccessResult> {
+    const described = this.describeRead(canonical);
+    const nlink = described.nlink;
+    if (nlink === undefined || nlink <= 1 || this.isGlobalAutoApproveActive()) return described.result;
+
+    const approvedAliases = this.approvedHardlinkReadsByContext.get(this.currentChannelId);
+    if (approvedAliases?.has(canonical)) return described.result;
+
+    const reason = `Permission denied for read access to ${path}: the file has ${nlink} hard links and may alias a file outside the approved scopes`;
+    if (this.failClosed || !this.askHandler || this.currentChannelType === 'internal') {
+      return { allowed: false, reason, code: 'hardlink', canonical };
+    }
+    const response = await this.askHandler(
+      `Read hard-linked file: ${canonical}\n(${nlink} links — it may be an alias of a file outside the approved scopes)`,
+    );
+    if (response === 'always') {
+      const approved = approvedAliases ?? new Set<string>();
+      approved.add(canonical);
+      this.approvedHardlinkReadsByContext.set(this.currentChannelId, approved);
+      return described.result;
+    }
+    if (response === 'yes') return described.result;
+    return { allowed: false, reason: `User denied read of hard-linked file ${path}`, code: 'hardlink', canonical };
+  }
+
+  /** One lstat on the canonical target: identity for the open-time check plus the link count. */
+  private describeRead(canonical: string): { result: FsAccessResult; nlink?: number } {
+    try {
+      const st = lstatSync(canonical);
+      return {
+        result: { allowed: true, canonical, fileId: { dev: st.dev, ino: st.ino } },
+        nlink: st.isFile() ? st.nlink : undefined,
+      };
+    } catch {
+      // Missing file: the tool reports "not found" itself.
+      return { result: { allowed: true, canonical } };
+    }
+  }
+
+  private async checkScopedAccess(path: string, mode: 'read' | 'write'): Promise<FsAccessResult> {
     if (mode === 'read' && this.elevatedCommands.has('fs_read')) {
       return { allowed: true };
     }
@@ -483,7 +619,7 @@ export class PermissionManager {
     // whose canonicalised target falls outside every writable scope.
     if (mode === 'write') {
       const canonical = this.canonicalizePath(resolved);
-      if (canonical !== resolved && !this.isWithinWritableScope(canonical)) {
+      if (canonical !== resolved && !this.isWithinScope(canonical, 'write')) {
         return {
           allowed: false,
           reason: `Permission denied: write to ${path} resolves outside the approved scopes (${canonical})`,
@@ -676,14 +812,40 @@ export class PermissionManager {
     return { allowed: false, reason: 'Command not in auto-approve list — requires approval', needsApproval: true };
   }
 
+  /**
+   * Per-command flags that turn a "read-only" command into a write or an
+   * exec. Each entry is matched against the segment's command word, then its
+   * flag pattern against the whole segment. Flags are anchored at a token
+   * start and must end at whitespace, `=` or end-of-segment, so `-fprint0`
+   * and `-fls` cannot hide behind a `\b` that stops at the digit (#71 family).
+   */
+  private static readonly SIDE_EFFECT_FLAGS: ReadonlyArray<{ command: RegExp; flags: RegExp }> = [
+    // find: -exec/-execdir/-ok/-okdir run commands; -delete deletes;
+    // -fprint/-fprint0/-fprintf/-fls write attacker-chosen files;
+    // -files0-from dereferences a path list the literal-path gate never saw.
+    { command: /^find(?:\s|$)/, flags: /(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprintf|fprint0|fprint|fls|files0-from)(?=\s|=|$)/ },
+    // tree -o FILE / --output FILE writes the listing to a file.
+    { command: /^tree(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*o[A-Za-z]*|--output)(?=\s|=|$)/ },
+    // curl: -o/-O (also inside a cluster such as -sSLo), --output,
+    // --remote-name(-all), -J/--remote-header-name, --output-dir write files.
+    { command: /^curl(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOJ][A-Za-z]*|--output|--output-dir|--remote-name|--remote-name-all|--remote-header-name|--create-dirs)(?=\s|=|$)/ },
+    // wget: -O/--output-document, -o/--output-file, -a/--append-output,
+    // -P/--directory-prefix all choose where it writes.
+    { command: /^wget(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOaP][A-Za-z]*|--output-document|--output-file|--append-output|--directory-prefix)(?=\s|=|$)/ },
+    // git log/diff: --output writes the result to a file; --ext-diff runs the
+    // configured external diff program; --no-index diffs arbitrary paths.
+    { command: /^git\s+(?:log|diff|status|branch)(?:\s|$)/, flags: /(?:^|\s)(?:--output|--ext-diff|--no-index)(?=\s|=|$)/ },
+    // rg --pre CMD pipes every file through an arbitrary preprocessor.
+    { command: /^rg(?:\s|$)/, flags: /(?:^|\s)--pre(?=\s|=|$)/ },
+  ];
+
   private isSafeReadSegment(segment: string): boolean {
     // Redirection turns otherwise read-only commands such as cat/echo into writes.
     if (/\d*(?:>{1,2}|<{1,2})|&>/.test(segment)) return false;
-    // find's action flags are side-effectful: -exec/-execdir/-ok/-okdir run
-    // arbitrary commands, -fprint/-fprintf write files, and -files0-from
-    // dereferences a path list at execution time (the literal-path gate never
-    // sees those paths).
-    if (/^find\b.*(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprintf|fprint|files0-from)\b/.test(segment)) return false;
+    // Command-specific write/exec flags (find -exec, curl -o, rg --pre, …).
+    for (const rule of PermissionManager.SIDE_EFFECT_FLAGS) {
+      if (rule.command.test(segment) && rule.flags.test(segment)) return false;
+    }
     // File-list indirection in any safe-read command (wc/du/sort/…): the
     // paths live inside the referenced file, invisible to the literal-path
     // gate, so the read can escape the approved scopes.
@@ -700,7 +862,6 @@ export class PermissionManager {
       !branchArgs.startsWith('-')
       || /(?:^|\s)(?:-[dDmMcC]\b|--(?:delete|move|copy|edit-description|set-upstream-to|unset-upstream|track)\b)/.test(branchArgs)
     )) return false;
-    if (/^git\s+diff\b.*(?:--output(?:=|\s)|--no-index\b)/.test(segment)) return false;
     return PermissionManager.SAFE_READ_PATTERNS.some((pattern) => this.matchPattern(segment, pattern));
   }
 
@@ -799,12 +960,16 @@ export class PermissionManager {
     }
   }
 
-  /** True when a canonical path falls inside one of the writable scopes. */
-  private isWithinWritableScope(canonicalPath: string): boolean {
-    const writable = [...this.manifest.capabilities.filesystem.scopes, ...this.tempScopes].filter(
-      (scope) => scope.write,
+  /**
+   * True when a canonical path falls inside a scope granting `mode`. Scope
+   * bases are canonicalised too so a scope declared through a symlinked
+   * directory (macOS `/tmp` → `/private/tmp`) still covers its own files.
+   */
+  private isWithinScope(canonicalPath: string, mode: 'read' | 'write'): boolean {
+    const granting = [...this.manifest.capabilities.filesystem.scopes, ...this.tempScopes].filter(
+      (scope) => (mode === 'write' ? scope.write : scope.read),
     );
-    for (const scope of writable) {
+    for (const scope of granting) {
       const base = this.canonicalizePath(resolve(scope.path.replace(/^~/, homedir())));
       if (canonicalPath === base || canonicalPath.startsWith(base + sep)) {
         return true;
@@ -814,9 +979,8 @@ export class PermissionManager {
   }
 
   private matchPattern(command: string, pattern: string): boolean {
-    const regexStr = '^' + pattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$';
     try {
-      return new RegExp(regexStr, 'i').test(command);
+      return globToRegExp(pattern).test(command);
     } catch {
       return command.startsWith(pattern.replace(/ \*$/, ''));
     }

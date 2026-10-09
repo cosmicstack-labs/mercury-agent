@@ -205,9 +205,13 @@ export interface BackgroundTaskInfo {
 }
 
 export interface PermissionPromptState {
+  /** Prompt id — the key the channel resolves by. Set on every prompt the
+   * channel creates; optional only for hand-built view fixtures. */
+  id?: string;
   type: 'mode' | 'ask' | 'continue' | 'choice';
   message: string;
   options?: Array<{ value: string; label: string }>;
+  /** Settle THIS prompt (routes to the channel's resolver map). */
   resolve: (value: string | boolean) => void;
 }
 

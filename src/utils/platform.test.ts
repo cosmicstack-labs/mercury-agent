@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTermux, resolveShell } from './platform.js';
+import { isTermux, isTermuxEligiblePlatform, resolveShell } from './platform.js';
 
 describe('isTermux', () => {
   it('detects Termux environment markers on Linux', () => {
@@ -7,9 +7,30 @@ describe('isTermux', () => {
     expect(isTermux({ PREFIX: '/data/data/com.termux/files/usr' }, 'linux')).toBe(true);
   });
 
-  it('does not classify desktop Linux or non-Linux platforms as Termux', () => {
+  it('detects Termux when Node reports process.platform === "android" (real devices)', () => {
+    // Termux's own nodejs package is an Android build: process.platform is
+    // 'android', not 'linux'. Gating on 'linux' alone sent every real phone
+    // down the "Unsupported platform: android" service-install path.
+    expect(isTermux({ PREFIX: '/data/data/com.termux/files/usr' }, 'android')).toBe(true);
+    expect(isTermux({ TERMUX_VERSION: '0.119' }, 'android')).toBe(true);
+    expect(isTermux({ TERMUX_APP_PID: '1234' }, 'android')).toBe(true);
+  });
+
+  it('does not classify plain Linux, plain Android, or non-Linux platforms as Termux', () => {
     expect(isTermux({}, 'linux')).toBe(false);
+    expect(isTermux({ PREFIX: '/usr' }, 'linux')).toBe(false);
+    expect(isTermux({}, 'android')).toBe(false);
     expect(isTermux({ TERMUX_VERSION: '0.119' }, 'darwin')).toBe(false);
+    expect(isTermux({ PREFIX: '/data/data/com.termux/files/usr' }, 'win32')).toBe(false);
+  });
+});
+
+describe('isTermuxEligiblePlatform', () => {
+  it('accepts linux and android only', () => {
+    expect(isTermuxEligiblePlatform('linux')).toBe(true);
+    expect(isTermuxEligiblePlatform('android')).toBe(true);
+    expect(isTermuxEligiblePlatform('darwin')).toBe(false);
+    expect(isTermuxEligiblePlatform('win32')).toBe(false);
   });
 });
 

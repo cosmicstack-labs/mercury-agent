@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import type { PermissionManager } from '../permissions.js';
 import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
+import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
@@ -19,15 +20,26 @@ interface ExecResult {
   stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  /** The agent loop was aborted (user interrupt, watchdog) while the command ran. */
+  aborted: boolean;
 }
 
-function executeCommand(command: string, cwd: string, timeoutMs: number): Promise<ExecResult> {
+interface ExecOptions {
+  /** Abort from the agent loop; the child is terminated when it fires. */
+  signal?: AbortSignal;
+  /** Called on output and periodically while the child is alive. */
+  onActivity?: () => void;
+}
+
+export function executeCommand(command: string, cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let sigkillHandle: ReturnType<typeof setTimeout> | undefined;
+    let pulseHandle: ReturnType<typeof setInterval> | undefined;
+    const { signal, onActivity } = options;
 
     const child = spawn(command, [], {
       cwd,
@@ -35,15 +47,32 @@ function executeCommand(command: string, cwd: string, timeoutMs: number): Promis
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const finish = (exitCode: number | null, timedOut: boolean) => {
+    const onAbort = () => terminate('abort');
+
+    const finish = (exitCode: number | null, timedOut: boolean, aborted = false) => {
       if (settled) return;
       settled = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (sigkillHandle) clearTimeout(sigkillHandle);
-      resolve({ stdout, stderr, exitCode, timedOut });
+      if (pulseHandle) clearInterval(pulseHandle);
+      signal?.removeEventListener('abort', onAbort);
+      resolve({ stdout, stderr, exitCode, timedOut, aborted });
+    };
+
+    // SIGTERM, then SIGKILL after a grace period. Used for both the tool's
+    // own timeout and an abort from the agent loop — previously an aborted
+    // turn left the child running to completion.
+    const terminate = (reason: 'timeout' | 'abort') => {
+      if (settled) return;
+      child.kill('SIGTERM');
+      sigkillHandle = setTimeout(() => {
+        if (!child.killed || child.exitCode === null) child.kill('SIGKILL');
+      }, SIGTERM_GRACE_MS);
+      finish(null, reason === 'timeout', reason === 'abort');
     };
 
     child.stdout.on('data', (chunk: Buffer) => {
+      onActivity?.();
       if (stdout.length < MAX_BUFFER) {
         stdout += chunk.toString();
         if (stdout.length > MAX_BUFFER) {
@@ -53,6 +82,7 @@ function executeCommand(command: string, cwd: string, timeoutMs: number): Promis
     });
 
     child.stderr.on('data', (chunk: Buffer) => {
+      onActivity?.();
       if (stderr.length < MAX_BUFFER) {
         stderr += chunk.toString();
         if (stderr.length > MAX_BUFFER) {
@@ -70,18 +100,23 @@ function executeCommand(command: string, cwd: string, timeoutMs: number): Promis
       finish(code, false);
     });
 
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    // A quiet build (no output for minutes) is still progress as long as the
+    // child is alive and inside its own timeout. Pulse so the stall watchdog
+    // does not abort the turn underneath it.
+    if (onActivity) {
+      pulseHandle = setInterval(onActivity, TOOL_PULSE_INTERVAL_MS);
+    }
+
     if (timeoutMs > 0) {
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          child.kill('SIGTERM');
-          sigkillHandle = setTimeout(() => {
-            if (!settled) {
-              child.kill('SIGKILL');
-            }
-          }, SIGTERM_GRACE_MS);
-          finish(null, true);
-        }
-      }, timeoutMs);
+      timeoutHandle = setTimeout(() => terminate('timeout'), timeoutMs);
     }
   });
 }
@@ -97,7 +132,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
       command: z.string().describe('The shell command to execute'),
       timeout: z.number().min(10).max(600).default(120).optional().describe('Timeout in seconds (default 120, max 600). Increase for long-running commands like builds or test suites.'),
     })),
-    execute: async ({ command, timeout }) => {
+    execute: async ({ command, timeout }, toolOptions?: { abortSignal?: AbortSignal }) => {
       const check = await permissions.checkShellCommand(command);
       if (!check.allowed) {
         return `Error: ${check.reason}`;
@@ -108,10 +143,20 @@ The optional timeout parameter sets how long (in seconds) the command can run be
 
       try {
         logger.info({ cmd: command, cwd, timeoutMs }, 'Executing shell command');
-        const result = await executeCommand(command, cwd, timeoutMs);
+        const result = await executeCommand(command, cwd, timeoutMs, {
+          signal: toolOptions?.abortSignal,
+          onActivity: pulseProgress,
+        });
 
         if (result.stdout || result.stderr) {
           detectCd(command, cwd, setCwd);
+        }
+
+        if (result.aborted) {
+          const partial = result.stdout?.trim();
+          let msg = '⛔ Command stopped: the turn was interrupted before it finished.';
+          if (partial) msg += `\nPartial output:\n${redactSecrets(partial.split('\n').slice(-30).join('\n'))}`;
+          return msg;
         }
 
         if (result.timedOut) {

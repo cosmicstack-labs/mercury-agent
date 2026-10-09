@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "patch-package || echo 'patch-package unavailable — skipping ink patch (dev installs only)'",
+    "postinstall": "patch-package || node scripts/apply-ink-patch.cjs || echo 'WARNING: ink patch not applied — run: node scripts/apply-ink-patch.cjs'",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -59,6 +59,7 @@
   "files": [
     "dist",
     "patches",
+    "scripts/apply-ink-patch.cjs",
     "src/web/static"
   ],
   "dependencies": {
@@ -77,7 +78,7 @@
     "dotenv": "^16.4.7",
     "grammy": "^1.42.0",
     "hono": "^4.12.15",
-    "ink": "^5.2.1",
+    "ink": "5.2.1",
     "marked": "^14.1.4",
     "node-cron": "^3.0.3",
     "ollama-ai-provider": "^1.2.0",

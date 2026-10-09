@@ -3,20 +3,22 @@ import { z } from 'zod';
 import { zodSchema } from 'ai';
 import type { SubAgentSupervisor } from '../../core/supervisor.js';
 import type { CapabilityRegistry } from '../registry.js';
+import type { SubAgentToolOptions } from './stop-agent.js';
 import { logger } from '../../utils/logger.js';
 
-export function createDelegateTaskTool(supervisor: SubAgentSupervisor, capabilities: CapabilityRegistry) {
+export function createDelegateTaskTool(supervisor: SubAgentSupervisor, capabilities: CapabilityRegistry, options: SubAgentToolOptions = {}) {
+  const { callerId } = options;
   return tool({
     description: 'Delegate a task to a sub-agent worker. Use this for complex, multi-step tasks that can run in parallel. The sub-agent works independently — you will be notified when it completes. You can continue handling other messages while sub-agents work.',
     inputSchema: zodSchema(z.object({
       task: z.string().describe('Clear description of the task for the sub-agent to complete'),
       workingDirectory: z.string().optional().describe('Working directory for the sub-agent (defaults to current directory)'),
       priority: z.enum(['low', 'normal', 'high']).optional().describe('Task priority (default: normal)'),
-      allowedTools: z.array(z.string()).optional().describe('Optional list of tool names this sub-agent is allowed to use. If not specified, all tools are available.'),
+      allowedTools: z.array(z.string()).optional().describe('Optional list of tool names this sub-agent is allowed to use. If not specified, every tool except delegate_task, list_agents and stop_agent is available; name those explicitly to grant them.'),
     })),
     execute: async ({ task, workingDirectory, priority, allowedTools }) => {
       try {
-        logger.info({ task: task.slice(0, 50) }, 'Delegating task to sub-agent');
+        logger.info({ task: task.slice(0, 50), parentId: callerId }, 'Delegating task to sub-agent');
 
         const { channelId, channelType } = capabilities.getChannelContext();
 
@@ -27,6 +29,9 @@ export function createDelegateTaskTool(supervisor: SubAgentSupervisor, capabilit
           allowedTools,
           sourceChannelId: channelId,
           sourceChannelType: channelType,
+          // Lineage: a child spawned by a sub-agent records its parent so
+          // list_agents/stop_agent can be confined to that subtree.
+          parentId: callerId,
         });
 
         const resourceInfo = supervisor.getResourceUsage();

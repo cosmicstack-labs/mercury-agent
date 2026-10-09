@@ -31,4 +31,13 @@ export abstract class BaseProvider {
   getModel(): string {
     return this.config.model;
   }
+
+  /**
+   * Largest `maxOutputTokens` this provider/model accepts, or undefined for
+   * "no known ceiling". The agent loop clamps its request to this so a
+   * 32K request is not rejected outright and retried at half size.
+   */
+  getMaxOutputTokens(): number | undefined {
+    return this.config.maxOutputTokens;
+  }
 }

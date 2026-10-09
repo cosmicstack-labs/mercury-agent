@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { CLIChannel } from './cli.js';
@@ -69,16 +68,16 @@ describe('choice prompt timeout / dismissal', () => {
     expect(channel.getActiveBotChat()).not.toBeNull();
     // While a bot chat is open, main-agent sends park into the HIDDEN main
     // transcript. After entering Mercury Code they must land visibly again.
-    const tmpDir = mkdtempSync(join(tmpdir(), 'mercury-code-entry-'));
-    try {
-      const entered = channel.enterMercuryCode(tmpDir, 'test');
-      expect(entered.ok).toBe(true);
-      expect(channel.getActiveBotChat()).toBeNull();
-      await channel.send('visible reply');
-      const messages = channel.getTuiState().chatMessages;
-      expect(messages.some(m => m.role === 'agent' && m.content === 'visible reply')).toBe(true);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
+    // Enter on the repo's own cwd: entering spawns async git reads with the
+    // directory as cwd, and Windows keeps a temp dir locked while they run,
+    // which made the temp-dir teardown flaky on CI. Nothing is written.
+    const entered = channel.enterMercuryCode(process.cwd(), 'test');
+    expect(entered.ok).toBe(true);
+    expect(channel.getActiveBotChat()).toBeNull();
+    await channel.send('visible reply');
+    const messages = channel.getTuiState().chatMessages;
+    expect(messages.some(m => m.role === 'agent' && m.content === 'visible reply')).toBe(true);
+    await channel.refreshMercuryCodeGit();
+    channel.exitMercuryCode();
   });
 });

@@ -251,18 +251,12 @@ export class UserMemoryStore {
       }
     }
 
+    // No relevant memory → no context. The profile summary is already part
+    // of the stable system prompt (Agent.buildSystemPrompt → getSummary), so
+    // re-injecting it here on every zero-hit turn only added tokens and
+    // primed stale facts.
     if (selected.length === 0) {
-      const profile = this.getProfile().trim();
-      if (!profile) {
-        return { records: [], context: '' };
-      }
-      return {
-        records: [],
-        context: [
-          this.getActiveSummary() ? `User active state:\n- ${this.getActiveSummary()}` : '',
-          `User profile summary:\n- ${profile}`,
-        ].filter(Boolean).join('\n\n'),
-      };
+      return { records: [], context: '' };
     }
 
     const contextLines: string[] = [];
@@ -270,12 +264,6 @@ export class UserMemoryStore {
     if (activeSummary) {
       contextLines.push('User active state:');
       contextLines.push(`- ${activeSummary}`);
-      contextLines.push('');
-    }
-    const profileSummary = this.getProfile();
-    if (profileSummary) {
-      contextLines.push('User profile summary:');
-      contextLines.push(`- ${profileSummary}`);
       contextLines.push('');
     }
     contextLines.push('Relevant user memory:');

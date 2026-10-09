@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { execSync, execFile, execFileSync } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
@@ -16,6 +17,8 @@ import { TASK_SUMMARY_FILE_LIMIT } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 import { nextTip } from '../ui/tips.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
+import { PASTE_SENTINEL, FORWARD_DELETE_KEY } from '../ui/input-composer.js';
+import { detectInkPatch, inkPatchWarning } from '../ui/ink-patch-check.js';
 
 /**
  * Strip mouse-report escape sequences from terminal input before Ink sees
@@ -205,11 +208,45 @@ class TtyStdinProxy extends EventEmitter {
 
 export class MouseSequenceFilter {
   private buf = '';
+  /** Inside a bracketed paste (`ESC[200~` seen, `ESC[201~` not yet). */
+  private inPaste = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly SGR = /^\x1b\[<\d+;\d+;\d+[Mm]/;
   private static readonly X10 = /^\x1b\[M[\x20-\x2f][\x20-\xff][\x20-\xff]/;
   private static readonly DEC = /^\x1b\[\?100[0-7][hl]/;
   private static readonly CSI_COMPLETE = /^\x1b\[[\d;<]*[A-Za-z]/;
+  private static readonly PASTE_START = /^\x1b\[200~/;
+  private static readonly PASTE_END = /^\x1b\[201~/;
+  /** Partial `ESC[201~` at the end of a paste chunk — wait for the rest. */
+  private static readonly PASTE_END_PARTIAL = /^\x1b(\[(2(0(1)?)?)?)?$/;
+  /** Any ANSI escape inside pasted text (never meaningful as input). */
+  private static readonly PASTE_ANSI = /\x1b(\[[0-9;?<>=]*[ -\/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])?/g;
   private static readonly MAX_HOLDBACK = 64;
+  /**
+   * A held-back prefix that is not completed within this window is a real
+   * keypress (a lone Esc, Alt+key) and is released as-is. Terminals deliver
+   * a complete sequence in one read or within a millisecond or two; 35 ms
+   * is the conventional ESC-disambiguation delay (vim's ttimeoutlen scale).
+   */
+  static readonly HOLDBACK_FLUSH_MS = 35;
+  /**
+   * Keys Ink either cannot parse or cannot tell apart, rewritten to
+   * sequences the shared composer understands (see input-composer.tsx):
+   *   Shift+Enter / Ctrl+Enter in every common encoding → Ctrl+N (newline)
+   *   the real Delete key (ESC[3~) → FORWARD_DELETE_KEY (Ink folds it into
+   *   `key.delete` together with \x7f, which is Backspace on macOS/Linux)
+   */
+  private static readonly KEY_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
+    [/^\x1b\[13;[25]u/, '\x0e'],       // kitty keyboard protocol
+    [/^\x1b\[27;[25];13~/, '\x0e'],    // xterm modifyOtherKeys
+    [/^\x1b\r/, '\x0e'],               // ESC CR (iTerm2 / Alt+Enter)
+    [/^\x1b\[3~/, FORWARD_DELETE_KEY],
+    // Home / End: Ink names them but hands the composer an empty `input`
+    // with no `key.home`/`key.end` flag, so they were dead keys. Readline
+    // Ctrl+A / Ctrl+E are what the composer binds to line start / end.
+    [/^\x1b(\[(1~|H)|OH)/, '\x01'],
+    [/^\x1b(\[(4~|F)|OF)/, '\x05'],
+  ];
 
   constructor(
     private onEvent: (ev: MouseEvent) => void,
@@ -219,10 +256,44 @@ export class MouseSequenceFilter {
   /** Feed a raw chunk from the terminal; returns nothing, side-effects only. */
   push(chunk: Buffer | string): void {
     this.buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    this.drain();
+  }
+
+  private drain(): void {
     let out = '';
+    let paste = '';
     let i = 0;
+    const flushOut = () => { if (out) { this.write(out); out = ''; } };
+    const flushPaste = () => {
+      if (paste) {
+        this.write(PASTE_SENTINEL + paste.replace(MouseSequenceFilter.PASTE_ANSI, ''));
+        paste = '';
+      }
+    };
     while (i < this.buf.length) {
       const rest = this.buf.slice(i);
+      if (this.inPaste) {
+        if (rest[0] !== '\x1b') {
+          const esc = rest.indexOf('\x1b');
+          const text = esc < 0 ? rest : rest.slice(0, esc);
+          paste += text;
+          i += text.length;
+          continue;
+        }
+        const end = MouseSequenceFilter.PASTE_END.exec(rest)?.[0];
+        if (end) {
+          this.inPaste = false;
+          flushPaste();
+          i += end.length;
+          continue;
+        }
+        if (MouseSequenceFilter.PASTE_END_PARTIAL.test(rest)) break;
+        // An escape inside the paste: keep it in the payload (stripped
+        // from the text later) and move on.
+        paste += rest[0];
+        i += 1;
+        continue;
+      }
       if (rest[0] !== '\x1b') {
         out += rest[0];
         i += 1;
@@ -239,6 +310,29 @@ export class MouseSequenceFilter {
         i += seq.length;
         continue;
       }
+      const pasteStart = MouseSequenceFilter.PASTE_START.exec(rest)?.[0];
+      if (pasteStart) {
+        // Keystrokes typed before the paste must reach Ink before the
+        // paste payload, as their own chunk.
+        flushOut();
+        this.inPaste = true;
+        i += pasteStart.length;
+        continue;
+      }
+      let rewritten = false;
+      for (const [pattern, replacement] of MouseSequenceFilter.KEY_REWRITES) {
+        const m = pattern.exec(rest)?.[0];
+        if (m) {
+          // A rewritten key is a keystroke of its own: Ink parses a chunk
+          // as ONE key, so it must not be glued to surrounding text.
+          flushOut();
+          this.write(replacement);
+          i += m.length;
+          rewritten = true;
+          break;
+        }
+      }
+      if (rewritten) continue;
       // X10 mouse in flight (ESC [ M + 0-2 pending payload bytes) — MUST be
       // tested before the generic CSI pass-through, because 'M' is a valid
       // CSI final byte and would otherwise leak the prefix downstream.
@@ -267,14 +361,54 @@ export class MouseSequenceFilter {
     if (this.buf.length > MouseSequenceFilter.MAX_HOLDBACK) {
       this.buf = '';
     }
-    if (out) this.write(out);
+    if (this.inPaste) flushPaste();
+    flushOut();
+    this.armHoldbackFlush();
   }
+
+  /**
+   * A held-back prefix is either the head of a sequence still in flight or
+   * a real key (a lone Esc, Alt+letter). Release it after a short delay so
+   * Esc reaches Ink on its own instead of fusing with the NEXT keystroke.
+   */
+  private armHoldbackFlush(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.buf.length === 0 || this.inPaste) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      if (this.buf.length === 0 || this.inPaste) return;
+      const held = this.buf;
+      this.buf = '';
+      // A bare ESC is the Escape key; anything longer is an unknown
+      // sequence whose bytes Ink can still interpret (Alt+key etc.).
+      this.write(held);
+    }, MouseSequenceFilter.HOLDBACK_FLUSH_MS);
+    (this.flushTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** Drop timers (tests / teardown). */
+  dispose(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+  }
+}
+
+/** DECSET: bracketed paste on/off. On, the terminal wraps pasted text in
+ * `ESC[200~ … ESC[201~` so the filter can insert it literally. */
+export function bracketedPasteSequences(enable: boolean): string {
+  return enable ? '\x1b[?2004h' : '\x1b[?2004l';
 }
 
 /** Status-bar hint shown while the TUI is frozen (Ctrl+S scroll lock). The
  * substring '⏸ frozen' is also the ink freeze-gate marker (the armed window
  * lets through only the frame that carries it) — keep them in sync. */
 export const TUI_FROZEN_HINT_MARKER = '⏸ frozen';
+
+/** One-line transcript marker written when Esc interrupts a running turn. */
+export const INTERRUPTED_MARKER = '⏹ Interrupted';
 
 export interface TuiState {
   mode: AppMode;
@@ -397,7 +531,20 @@ export class CLIChannel extends BaseChannel {
   private inkInstance: ReturnType<typeof render> | null = null;
   private inputHandler: ((text: string) => void) | null = null;
   private exitHandler: (() => void) | null = null;
-  private permissionResolver: ((value: string | boolean) => void) | null = null;
+  /** Esc-during-a-turn: installed by the boot path with the agent's stop
+   * routine (the same one `/stop` calls). Null until set. */
+  private interruptHandler: (() => unknown) | null = null;
+  /**
+   * Pending interactive prompts, keyed by prompt id. Several callers can
+   * prompt concurrently (the foreground turn, sub-agents, bots): a single
+   * resolver slot was overwritten by the newest prompt and the earlier
+   * promises never settled. Every prompt now keeps its own resolver; the
+   * TUI shows them in arrival order — `state.permissionPrompt` is the one
+   * on screen, `promptQueue` holds the rest.
+   */
+  private promptResolvers = new Map<string, (value: string | boolean) => void>();
+  private promptQueue: PermissionPromptState[] = [];
+  private promptSeq = 0;
   private menuDepth = 0;
   private menuAbortController: AbortController | null = null;
   private heartbeatMsgId: string | null = null;
@@ -747,8 +894,49 @@ export class CLIChannel extends BaseChannel {
    */
   restoreTerminal(): void {
     try {
-      process.stdout.write(mouseTrackingSequences(false) + '\x1b[?25h');
+      process.stdout.write(mouseTrackingSequences(false) + bracketedPasteSequences(false) + '\x1b[?25h');
     } catch { /* not a TTY */ }
+  }
+
+  /**
+   * Install the routine Esc calls to interrupt the running turn. The boot
+   * path wires it to the agent's `stopAllWork('stopped')` — exactly what
+   * typing `/stop` does — so the channel never reaches into the agent.
+   */
+  setInterruptHandler(handler: (() => unknown) | null): void {
+    this.interruptHandler = handler;
+  }
+
+  /** True while the agent is mid-turn (thinking, running a tool, or reporting a live phase). */
+  isTurnRunning(): boolean {
+    return this.state.isThinking
+      || this.state.toolSteps.some((s) => s.status === 'running')
+      || this.state.liveActivity !== null;
+  }
+
+  /**
+   * Interrupt the running turn (Esc). Writes a one-line "Interrupted"
+   * marker into the transcript and invokes the stop routine. Returns false
+   * (and does nothing) when no turn is running or no handler is installed.
+   */
+  interruptTurn(): boolean {
+    if (!this.interruptHandler || !this.isTurnRunning()) return false;
+    const marker: ChatMessage = {
+      id: `interrupt-${Date.now().toString(36)}`,
+      role: 'system',
+      content: INTERRUPTED_MARKER,
+      timestamp: Date.now(),
+    };
+    this.trimAndSetMessages([...this.state.chatMessages, marker], { liveActivity: null, thinkingPreview: null });
+    try {
+      const result = this.interruptHandler();
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        (result as Promise<unknown>).catch((err) => logger.warn({ err }, 'interrupt handler failed'));
+      }
+    } catch (err) {
+      logger.warn({ err }, 'interrupt handler failed');
+    }
+    return true;
   }
 
   mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: any): void {
@@ -895,7 +1083,7 @@ export class CLIChannel extends BaseChannel {
           this.exitMercuryCode();
           return;
         }
-        if (sub === 'git-refresh') { this.refreshMercuryCodeGit(); return; }
+        if (sub === 'git-refresh') { void this.refreshMercuryCodeGit(); return; }
         return;
       }
       if (trimmed === '/mc') {
@@ -1052,15 +1240,20 @@ export class CLIChannel extends BaseChannel {
     };
 
     // Reset mouse-report modes in case a previous run left the terminal
-    // stuck emitting mouse sequences (1000/1002/1003 + SGR 1006).
+    // stuck emitting mouse sequences (1000/1002/1003 + SGR 1006), and turn
+    // on bracketed paste so multi-line pastes arrive as one literal chunk
+    // (the stdin filter strips the ESC[200~/201~ markers; see
+    // MouseSequenceFilter). Turned off again by restoreTerminal() and the
+    // output wrapper's dispose().
     try {
-      process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+      process.stdout.write(mouseTrackingSequences(false) + bracketedPasteSequences(true));
     } catch {
       // Not a TTY or write failed — nothing to reset.
     }
 
     this.tuiOutput?.dispose();
     this.tuiOutput = new ResilientTuiOutput(process.stdout, process.stderr);
+    this.warnIfInkUnpatched();
     // Single mount. Every later UI update flows through useSyncExternalStore
     // notifications — never inkInstance.rerender(), whose synchronous
     // reconciler entry caused re-entrant commits and Yoga WASM corruption.
@@ -1069,19 +1262,46 @@ export class CLIChannel extends BaseChannel {
         channel: this,
         onInput: (text: string) => { this.inputHandler?.(text); },
         onPermissionResolve: (value: string | boolean) => {
-          if (this.permissionResolver) {
-            this.permissionResolver(value);
-            this.permissionResolver = null;
-          }
-          this.update({ permissionPrompt: null });
+          const shown = this.state.permissionPrompt;
+          if (shown?.id && this.resolvePrompt(shown.id, value)) return;
+          // No live resolver for what is on screen (stale state): clear it
+          // and surface whatever is queued next.
+          this.update({ permissionPrompt: this.promptQueue.shift() ?? null });
         },
         onExit: () => {
           this.scheduleTuiExit();
         },
+        onInterrupt: () => { this.interruptTurn(); },
         spotifyClient: this.spotifyClient,
       }),
       { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
     );
+  }
+
+  private inkPatchWarned = false;
+
+  /**
+   * Stock ink ignores `<Static itemKey>`: the transcript silently stops
+   * rendering new messages after ~100 (and the Yoga crash class is live).
+   * The patch is applied by postinstall, which npm users never see fail —
+   * so say it once, in the transcript, with the one command that fixes it.
+   * Never aborts: a degraded TUI beats no TUI for a hotfix.
+   */
+  private warnIfInkUnpatched(): void {
+    if (this.inkPatchWarned) return;
+    this.inkPatchWarned = true;
+    try {
+      const status = detectInkPatch();
+      if (status.patched) return;
+      const text = inkPatchWarning(status);
+      logger.warn({ missing: status.missing, inkBuildDir: status.inkBuildDir }, 'ink patch not applied');
+      this.trimAndSetMessages([
+        ...this.state.chatMessages,
+        { id: `ink-patch-${Date.now().toString(36)}`, role: 'system', content: text, timestamp: Date.now() },
+      ]);
+    } catch (err) {
+      logger.debug({ err }, 'ink patch detection failed');
+    }
   }
 
   private stdinProxy: TtyStdinProxy | null = null;
@@ -1754,105 +1974,136 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
-  async prompt(question: string): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'ask',
-          message: question,
-          resolve: () => {},
-        },
-      });
+  /**
+   * Register a prompt: its resolver lives in the map under a fresh id, and
+   * it is shown now or queued behind the prompt already on screen. The
+   * returned promise settles exactly once, whenever ITS prompt is answered.
+   */
+  private enqueuePrompt<T>(
+    prompt: Omit<PermissionPromptState, 'id' | 'resolve'>,
+    map: (value: string | boolean) => T,
+  ): Promise<T> {
+    return new Promise<T>((resolve) => {
+      const id = `prompt-${++this.promptSeq}`;
+      this.promptResolvers.set(id, (value) => resolve(map(value)));
+      const entry: PermissionPromptState = { ...prompt, id, resolve: (value) => { this.resolvePrompt(id, value); } };
+      if (this.state.permissionPrompt) {
+        this.promptQueue.push(entry);
+      } else {
+        this.update({ permissionPrompt: entry });
+      }
     });
+  }
+
+  /**
+   * Settle the prompt with this id. Returns false when no such prompt is
+   * pending (already answered, or unknown). If it was the one on screen,
+   * the next queued prompt is shown; if it was queued, it is removed.
+   */
+  resolvePrompt(id: string, value: string | boolean): boolean {
+    const resolver = this.promptResolvers.get(id);
+    if (!resolver) return false;
+    this.promptResolvers.delete(id);
+    if (this.state.permissionPrompt?.id === id) {
+      this.update({ permissionPrompt: this.promptQueue.shift() ?? null });
+    } else {
+      this.promptQueue = this.promptQueue.filter((p) => p.id !== id);
+    }
+    resolver(value);
+    return true;
+  }
+
+  /** Ids of every unanswered prompt: the visible one first, then the queue. */
+  pendingPromptIds(): string[] {
+    const shown = this.state.permissionPrompt?.id;
+    const queued = this.promptQueue.map((p) => p.id).filter((id): id is string => typeof id === 'string');
+    return shown ? [shown, ...queued] : queued;
+  }
+
+  async prompt(question: string): Promise<string> {
+    return this.enqueuePrompt({ type: 'ask', message: question }, String);
   }
 
   async askPermissionMode(): Promise<PermissionMode> {
     if (!process.stdout.isTTY) return 'ask-me';
-
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(val as PermissionMode);
-      this.update({
-        permissionPrompt: {
-          type: 'mode',
-          message: 'Choose how Mercury handles risky actions this session.',
-          options: [
-            { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
-            { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
-          ],
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({
+      type: 'mode',
+      message: 'Choose how Mercury handles risky actions this session.',
+      options: [
+        { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
+        { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
+      ],
+    }, (val) => val as PermissionMode);
   }
 
   async askPermission(prompt: string): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'ask',
-          message: prompt,
-          options: [
-            { value: 'yes', label: 'Yes — approve once' },
-            { value: 'always', label: 'Always — remember this permission' },
-            { value: 'no', label: 'No — deny' },
-          ],
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({
+      type: 'ask',
+      message: prompt,
+      options: [
+        { value: 'yes', label: 'Yes — approve once' },
+        { value: 'always', label: 'Always — remember this permission' },
+        { value: 'no', label: 'No — deny' },
+      ],
+    }, String);
   }
 
   async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'choice',
-          message: question,
-          options,
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({ type: 'choice', message: question, options }, String);
   }
 
   /**
    * Resolve a pending choice prompt with a default value (timeout / dismissal).
    * Time-weighted prompts use this so an unanswered question is answered FOR
-   * the user and the box disappears instead of lingering forever.
+   * the user and the box disappears instead of lingering forever. With
+   * `id` the exact prompt is settled; without it, the OLDEST unanswered
+   * choice prompt (the one whose timer fired first) — visible or queued.
    */
-  resolveChoicePromptWithDefault(value: string): void {
-    if (!this.state.permissionPrompt) return;
-    const resolver = this.permissionResolver;
-    this.permissionResolver = null;
-    this.update({ permissionPrompt: null });
-    resolver?.(value);
+  resolveChoicePromptWithDefault(value: string, id?: string): void {
+    if (id) {
+      this.resolvePrompt(id, value);
+      return;
+    }
+    const target = [this.state.permissionPrompt, ...this.promptQueue]
+      .find((p): p is PermissionPromptState => Boolean(p && p.type === 'choice' && p.id && this.promptResolvers.has(p.id)));
+    if (target?.id) this.resolvePrompt(target.id, value);
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => {
-        const normalized = typeof val === 'string' ? val.trim().toLowerCase() : val;
-        resolve(normalized === true || normalized === 'yes' || normalized === 'y');
-      };
-      this.update({
-        permissionPrompt: {
-          type: 'continue',
-          message: question,
-          options: [
-            { value: 'yes', label: 'Yes — continue' },
-            { value: 'no', label: 'No — stop' },
-          ],
-          resolve: () => {},
-        },
-      });
+    return this.enqueuePrompt({
+      type: 'continue',
+      message: question,
+      options: [
+        { value: 'yes', label: 'Yes — continue' },
+        { value: 'no', label: 'No — stop' },
+      ],
+    }, (val) => {
+      const normalized = typeof val === 'string' ? val.trim().toLowerCase() : val;
+      return normalized === true || normalized === 'yes' || normalized === 'y';
     });
   }
 
+  /**
+   * Dismiss every pending prompt. Each promise still settles — with the
+   * prompt's "declined" answer — so no caller hangs on a box that is gone.
+   */
   clearPermissionPrompt(): void {
+    for (const id of this.pendingPromptIds()) {
+      const entry = this.state.permissionPrompt?.id === id ? this.state.permissionPrompt : this.promptQueue.find((p) => p.id === id);
+      this.resolvePrompt(id, CLIChannel.dismissedAnswer(entry));
+    }
+    this.promptQueue = [];
     this.update({ permissionPrompt: null });
+  }
+
+  /** The answer a dismissed prompt reports (mirrors the TUI's Esc handling). */
+  private static dismissedAnswer(prompt: PermissionPromptState | null | undefined): string | boolean {
+    switch (prompt?.type) {
+      case 'mode': return 'ask-me';
+      case 'choice': return '';
+      case 'continue': return false;
+      default: return prompt?.options ? 'no' : '';
+    }
   }
 
   setSkills(skills: SkillInfo[]): void {
@@ -2044,7 +2295,7 @@ export class CLIChannel extends BaseChannel {
    * capture wheel/drag events and break both.
    */
   enterMercuryCode(dir: string, version: string): { ok: boolean; message: string } {
-    const target = path.resolve(dir.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    const target = path.resolve(dir.replace(/^~(?=$|\/|\\)/, homedir()));
     if (!fs.existsSync(target)) return { ok: false, message: `Directory does not exist: ${target}` };
     if (!fs.statSync(target).isDirectory()) return { ok: false, message: `Not a directory: ${target}` };
 
@@ -2062,7 +2313,11 @@ export class CLIChannel extends BaseChannel {
       mercuryCode: {
         cwd: target,
         dirName,
-        git: this.readGitStateQuick(target),
+        // Filled in asynchronously below: a blocking git read here stalled
+        // the first frame. An EMPTY branch means "not read yet" (the status
+        // bar hides the segment); 'no-git' is the settled "not a repo"
+        // answer, which also disables completion-time change stats.
+        git: { branch: '', ahead: 0, behind: 0, dirty: 0 },
         mouse: false,
         scrollOffset: 0,
         exitConfirm: false,
@@ -2082,6 +2337,8 @@ export class CLIChannel extends BaseChannel {
     // throttled background update check. Entirely async and unref'd — a slow
     // npm look-up must never stall the TUI.
     void this.announceVersionNotices(version);
+    // Branch / ahead / behind / dirty for the status bar — off the hot path.
+    void this.refreshMercuryCodeGit();
     return { ok: true, message: `Mercury Code active in ${dirName}` };
   }
 
@@ -2165,34 +2422,44 @@ export class CLIChannel extends BaseChannel {
     this.update({ mercuryCode: { ...mc, scrollOffset: 0 } });
   }
 
-  /** Refresh cached git header state from disk. */
-  refreshMercuryCodeGit(): void {
+  /** A git header refresh in flight (coalesces overlapping requests). */
+  private gitRefreshInFlight: Promise<void> | null = null;
+
+  /**
+   * Refresh the cached git header state from disk — asynchronously. The
+   * old `execSync` pair blocked the event loop for the whole `git status`
+   * (hundreds of ms on a large tree), freezing streaming and input every
+   * time Mercury Code entered or `/mc git-refresh` ran.
+   */
+  refreshMercuryCodeGit(): Promise<void> {
+    if (this.gitRefreshInFlight) return this.gitRefreshInFlight;
     const mc = this.state.mercuryCode;
-    if (!mc) return;
-    const git = this.readGitStateQuick(mc.cwd);
-    if (
-      git.branch !== mc.git.branch ||
-      git.ahead !== mc.git.ahead ||
-      git.behind !== mc.git.behind ||
-      git.dirty !== mc.git.dirty
-    ) {
-      this.update({ mercuryCode: { ...mc, git } });
-    }
+    if (!mc) return Promise.resolve();
+    const cwd = mc.cwd;
+    this.gitRefreshInFlight = this.readGitStateQuick(cwd)
+      .then((git) => {
+        const current = this.state.mercuryCode;
+        // The session may have left Mercury Code (or moved) meanwhile.
+        if (!current || current.cwd !== cwd) return;
+        if (
+          git.branch !== current.git.branch ||
+          git.ahead !== current.git.ahead ||
+          git.behind !== current.git.behind ||
+          git.dirty !== current.git.dirty
+        ) {
+          this.update({ mercuryCode: { ...current, git } });
+        }
+      })
+      .catch((err) => logger.debug({ err }, 'git header refresh failed'))
+      .finally(() => { this.gitRefreshInFlight = null; });
+    return this.gitRefreshInFlight;
   }
 
-  private readGitStateQuick(rootPath: string): MercuryCodeGitState {
-    try {
-      const branch = execSync('git -C ' + JSON.stringify(rootPath) + ' branch --show-current', { stdio: 'pipe' }).toString().trim() || 'detached';
-      const out = execSync('git -C ' + JSON.stringify(rootPath) + ' status --porcelain=v1 --branch', { stdio: 'pipe' }).toString();
-      const lines = out.split('\n');
-      const header = lines[0] || '';
-      const ahead = parseInt(header.match(/ahead (\d+)/)?.[1] ?? '0', 10);
-      const behind = parseInt(header.match(/behind (\d+)/)?.[1] ?? '0', 10);
-      const dirty = lines.slice(1).filter((l) => l.trim().length > 0).length;
-      return { branch, ahead, behind, dirty };
-    } catch {
-      return { branch: 'no-git', ahead: 0, behind: 0, dirty: 0 };
-    }
+  /** Header-sized git state (branch / ahead / behind / dirty count) via async execFile. */
+  private async readGitStateQuick(rootPath: string): Promise<MercuryCodeGitState> {
+    const state = await this.readGitStateAsync(rootPath);
+    if (state.branch === 'not-a-git-repo') return { branch: 'no-git', ahead: 0, behind: 0, dirty: 0 };
+    return { branch: state.branch, ahead: state.ahead, behind: state.behind, dirty: state.files.length };
   }
 
   setProgrammingStatus(mode: import('../core/programming-mode.js').ProgrammingModeState, projectContext: string | null): void {
@@ -2200,7 +2467,7 @@ export class CLIChannel extends BaseChannel {
   }
 
   openWorkspace(rawPath: string): { ok: boolean; message: string } {
-    const target = path.resolve(rawPath.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    const target = path.resolve(rawPath.replace(/^~(?=$|\/|\\)/, homedir()));
     if (!fs.existsSync(target)) return { ok: false, message: `Workspace path does not exist: ${target}` };
     if (!fs.statSync(target).isDirectory()) return { ok: false, message: `Workspace path is not a directory: ${target}` };
 

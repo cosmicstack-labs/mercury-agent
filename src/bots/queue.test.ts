@@ -63,7 +63,7 @@ function job(id: string, overrides: Partial<DurableBotJob> = {}): Omit<DurableBo
 function makeBackends(dir: string) {
   return {
     json: new JsonFileQueueBackend(dir, 100),
-    sqlite: new SqliteQueueBackend(dir, 100, require('better-sqlite3')),
+    sqlite: new SqliteQueueBackend(dir, 100),
   };
 }
 
@@ -74,14 +74,10 @@ const openBackends: Array<{ close(): void }> = [];
 function mkBackend(name: 'json' | 'sqlite', dir: string, dlqCap = 100) {
   const backend = name === 'json'
     ? new JsonFileQueueBackend(dir, dlqCap)
-    : new SqliteQueueBackend(dir, dlqCap, require('better-sqlite3'));
+    : new SqliteQueueBackend(dir, dlqCap);
   openBackends.push(backend);
   return backend;
 }
-
-// `require` equivalent for the test (ESM)
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
 
 describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
   let root: string;

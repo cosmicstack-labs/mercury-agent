@@ -51,6 +51,11 @@ export default defineConfig({
     "yaml",
     "zod",
     "better-sqlite3",
+    // Runtime-provided SQLite engines (src/utils/sqlite-driver.ts): resolved
+    // at run time via createRequire, never bundled. bun:sqlite exists only
+    // inside Bun (the standalone binaries); node:sqlite only on Node >= 22.5.
+    "bun:sqlite",
+    "node:sqlite",
     "@hono/node-server",
     "sql.js",
   ],

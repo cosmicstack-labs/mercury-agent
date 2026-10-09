@@ -90,13 +90,48 @@ export function ignoreUpdateVersion(latestVersion: string): void {
   saveUpdateState(state);
 }
 
-/** Async `npm view` with a hard timeout — must never stall a boot. */
-function fetchLatestNpmVersion(packageName: string, timeoutMs = 8_000): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile('npm', ['view', packageName, 'version'], { timeout: timeoutMs, encoding: 'utf-8' }, (err, stdout) => {
-      resolve(err ? null : String(stdout).trim() || null);
+/**
+ * Latest published version straight from the npm registry over HTTPS —
+ * the preferred route: no npm binary needed, and no `npm.cmd` shell issue
+ * on Windows (`execFile('npm')` without a shell fails there with EINVAL,
+ * which the old code silently swallowed, so Windows never saw updates).
+ */
+export async function fetchLatestFromRegistry(
+  packageName: string,
+  timeoutMs = 8_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchImpl(`https://registry.npmjs.org/${packageName}/latest`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(timeoutMs),
     });
+    if (!res.ok) return null;
+    const data = await res.json() as { version?: unknown };
+    return typeof data?.version === 'string' && data.version.trim() ? data.version.trim() : null;
+  } catch (err) {
+    logger.debug({ err }, 'update-notice: registry lookup failed');
+    return null;
+  }
+}
+
+/** Async `npm view` with a hard timeout — fallback when the registry is unreachable. */
+function fetchLatestViaNpm(packageName: string, timeoutMs = 8_000): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'npm',
+      ['view', packageName, 'version'],
+      // npm is `npm.cmd` on Windows: it needs a shell to spawn.
+      { timeout: timeoutMs, encoding: 'utf-8', shell: process.platform === 'win32' },
+      (err, stdout) => {
+        resolve(err ? null : String(stdout).trim() || null);
+      },
+    );
   });
+}
+
+async function fetchLatestNpmVersion(packageName: string, timeoutMs = 8_000): Promise<string | null> {
+  return (await fetchLatestFromRegistry(packageName, timeoutMs)) ?? fetchLatestViaNpm(packageName, timeoutMs);
 }
 
 /**

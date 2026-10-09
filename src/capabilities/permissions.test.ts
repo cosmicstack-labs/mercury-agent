@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PermissionManager, splitShellSegments } from './permissions.js';
@@ -190,10 +190,15 @@ describe('PermissionManager remote safety', () => {
     await expect(permissions.checkShellCommand('echo poisoned > AGENTS.md')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('echo poisoned>AGENTS.md')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('find . -delete')).resolves.toMatchObject({ allowed: false });
+    // find -exec/-execdir launch a subprocess — the advisory payload from
+    // issues #71/#77/#101 (and #110), minus the redirection so this exercises
+    // the find-flag rule on its own rather than the redirection rule.
+    await expect(permissions.checkShellCommand("find . -maxdepth 0 -exec sh -c 'id' ';'")).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand('find . -execdir touch canary \\;')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch -D protected')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch --delete protected')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch new-branch')).resolves.toMatchObject({ allowed: false });
-    expect(ask).toHaveBeenCalledTimes(6);
+    expect(ask).toHaveBeenCalledTimes(8);
   });
 
   it('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
@@ -305,5 +310,235 @@ describe('PermissionManager symlink write confinement', () => {
     writeFileSync(join(ws, 'inner.txt'), 'x');
     symlinkSync(join(ws, 'inner.txt'), join(ws, 'inner-alias.txt'));
     await expect(permissions.checkFsAccess(join(ws, 'inner-alias.txt'), 'write')).resolves.toMatchObject({ allowed: true });
+  });
+});
+
+describe('PermissionManager read-side canonicalisation (symlink reads, #104 hard links)', () => {
+  let root: string;
+  let ws: string;
+  let outside: string;
+
+  function makePermissions(opts: { ask?: (prompt: string) => Promise<string>; context?: [string, string] } = {}): PermissionManager {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.filesystem.enabled = true;
+    manifest.capabilities.filesystem.scopes = [{ path: ws, read: true, write: false }];
+    permissions.setAutoApproveAll(false);
+    permissions.setCurrentContext(...(opts.context ?? ['web', 'cloud-request-1']));
+    if (opts.ask) permissions.onAsk(opts.ask);
+    return permissions;
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-read-'));
+    ws = join(root, 'ws');
+    outside = join(root, 'outside');
+    mkdirSync(ws);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'id_rsa'), 'PRIVATE');
+    writeFileSync(join(ws, 'plain.txt'), 'plain');
+    writeFileSync(join(ws, 'inner.txt'), 'inner');
+    symlinkSync(join(outside, 'id_rsa'), join(ws, 'alias.txt'));
+    symlinkSync(join(ws, 'inner.txt'), join(ws, 'inner-alias.txt'));
+    writeFileSync(join(ws, 'linked.txt'), 'linked');
+    linkSync(join(ws, 'linked.txt'), join(outside, 'linked-alias.txt'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('allows a plain in-scope read and reports the canonical path and file identity', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'plain.txt'), 'read');
+    expect(result.allowed).toBe(true);
+    expect(result.canonical).toBe(realpathSync(join(ws, 'plain.txt')));
+    expect(result.fileId).toMatchObject({ dev: expect.any(Number), ino: expect.any(Number) });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('denies an in-scope symlink whose target is outside every readable scope (no handler)', async () => {
+    const permissions = makePermissions();
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape', canonical: realpathSync(join(outside, 'id_rsa')) });
+    expect(result.reason).toContain('resolves outside the approved scopes');
+  });
+
+  it('asks for the symlink TARGET when a handler exists, and denies on "no"', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0]).toContain(realpathSync(join(outside, 'id_rsa')));
+  });
+
+  it('allows the symlink read once the user approves the target', async () => {
+    const ask = vi.fn().mockResolvedValue('yes');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: true, canonical: realpathSync(join(outside, 'id_rsa')) });
+    expect(result.fileId).toBeDefined();
+  });
+
+  it('never prompts for the symlink target in fail-closed mode', async () => {
+    const ask = vi.fn().mockResolvedValue('yes');
+    const permissions = makePermissions({ ask });
+    permissions.setFailClosed(true);
+    await expect(permissions.checkFsAccess(join(ws, 'alias.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'symlink-escape' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('allows a symlink whose target stays inside the scope', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const result = await permissions.checkFsAccess(join(ws, 'inner-alias.txt'), 'read');
+    expect(result).toMatchObject({ allowed: true, canonical: realpathSync(join(ws, 'inner.txt')) });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('routes a hard-linked file (nlink > 1) through the approval handler', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    const denied = await permissions.checkFsAccess(join(ws, 'linked.txt'), 'read');
+    expect(denied).toMatchObject({ allowed: false, code: 'hardlink' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0]).toMatch(/hard-linked/);
+
+    ask.mockResolvedValue('yes');
+    const allowed = await permissions.checkFsAccess(join(ws, 'linked.txt'), 'read');
+    expect(allowed).toMatchObject({ allowed: true, canonical: realpathSync(join(ws, 'linked.txt')) });
+  });
+
+  it('"always" remembers the hard-linked file for the interaction context', async () => {
+    const ask = vi.fn().mockResolvedValue('always');
+    const permissions = makePermissions({ ask });
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+    // A different context asks again.
+    permissions.setCurrentContext('web', 'cloud-request-2');
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('denies a hard-linked file when nothing can ask (no handler, fail-closed, internal)', async () => {
+    await expect(makePermissions().checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+
+    const ask = vi.fn().mockResolvedValue('yes');
+    const failClosed = makePermissions({ ask });
+    failClosed.setFailClosed(true);
+    await expect(failClosed.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+
+    const internal = makePermissions({ ask, context: ['internal', 'internal'] });
+    await expect(internal.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: false, code: 'hardlink' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('skips the hard-link prompt under Local allow-all', async () => {
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask, context: ['cli', 'cli'] });
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkFsAccess(join(ws, 'linked.txt'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('a directory with many links (subdirectories) is not treated as a hard-link alias', async () => {
+    mkdirSync(join(ws, 'dir', 'a'), { recursive: true });
+    mkdirSync(join(ws, 'dir', 'b'));
+    const ask = vi.fn().mockResolvedValue('no');
+    const permissions = makePermissions({ ask });
+    await expect(permissions.checkFsAccess(join(ws, 'dir'), 'read')).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('a temp scope granted on a directory of symlinks does not reach through them', async () => {
+    // The user approved the directory (session scope); its entries are
+    // symlinks whose targets are still outside every readable scope → denied.
+    mkdirSync(join(root, 'links'));
+    symlinkSync(join(outside, 'id_rsa'), join(root, 'links', 'key'));
+    const permissions = makePermissions();
+    permissions.addTempScope(join(root, 'links'), true, false);
+    const result = await permissions.checkFsAccess(join(root, 'links', 'key'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'symlink-escape', canonical: realpathSync(join(outside, 'id_rsa')) });
+  });
+
+  it('still returns the plain denial for an out-of-scope read without a handler', async () => {
+    const permissions = makePermissions();
+    const result = await permissions.checkFsAccess(join(outside, 'id_rsa'), 'read');
+    expect(result).toMatchObject({ allowed: false, code: 'denied' });
+    expect(result.reason).toBe(`Permission denied for read access to ${join(outside, 'id_rsa')}`);
+  });
+});
+
+describe('safe-read classifier: residual side-effect flags (table)', () => {
+  function makePermissions() {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    const ask = vi.fn().mockResolvedValue('no');
+    permissions.onAsk(ask);
+    permissions.setCurrentContext('web', 'cloud-request-1');
+    return { permissions, ask };
+  }
+
+  const requiresApproval: Array<[string, string]> = [
+    ['find . -fprint0 out.bin', 'find -fprint0 writes a file (the old \\b after -fprint stopped at the digit)'],
+    ['find . -fprint0=out.bin', 'find -fprint0= form'],
+    ['find . -fls out.txt', 'find -fls writes an ls-style listing'],
+    ['find . -type f -fprintf out.txt %p', 'find -fprintf writes a file'],
+    ['tree -o out.txt', 'tree -o writes the listing'],
+    ['tree -ao out.txt', 'tree -o inside a short-flag cluster'],
+    ['tree --output out.txt', 'tree --output'],
+    ['git log --output=hist.txt', 'git log --output= writes a file'],
+    ['git log --output hist.txt', 'git log --output writes a file'],
+    ['git diff --output=d.patch', 'git diff --output= writes a file'],
+    ['git diff --ext-diff', 'git diff --ext-diff runs the configured external diff'],
+    ['git log -p --ext-diff', 'git log --ext-diff runs the configured external diff'],
+    ['git diff --no-index a.txt b.txt', 'git diff --no-index diffs arbitrary paths'],
+    ['rg --pre cat secret', 'rg --pre runs a preprocessor'],
+    ['rg --pre=./leak.sh secret', 'rg --pre= runs a preprocessor'],
+    ['curl -o out.html http://example.com', 'curl -o writes a file'],
+    ['curl -O http://example.com/x.sh', 'curl -O writes the remote name'],
+    ['curl -sSLo out.sh http://example.com', 'curl -o inside a short-flag cluster'],
+    ['curl -sSLJO http://example.com', 'curl -J/-O inside a cluster'],
+    ['curl --output out.html http://example.com', 'curl --output'],
+    ['curl --remote-name http://example.com/x', 'curl --remote-name'],
+    // Relative paths on purpose: an absolute path outside the cwd is denied
+    // by the cwd gate before the classifier can prompt (macOS /tmp → /private/tmp).
+    ['curl --output-dir downloads -O http://example.com/x', 'curl --output-dir'],
+    ['wget -O out.html http://example.com', 'wget -O'],
+    ['wget --output-document=out.html http://example.com', 'wget --output-document='],
+    ['wget -o log.txt http://example.com', 'wget -o writes a log file'],
+    ['wget -P downloads http://example.com', 'wget -P chooses the download directory'],
+    ['wget -qO- http://example.com', 'wget -O inside a cluster'],
+  ];
+
+  it.each(requiresApproval)('%s → requires approval (%s)', async (command) => {
+    const { permissions, ask } = makePermissions();
+    await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  const staysAutoApproved: Array<[string, string]> = [
+    ['find . -name "*.ts" -print0', 'find -print0 only prints'],
+    ['find . -type f -newer README.md', 'plain find'],
+    ['tree -a -L 2', 'tree without an output flag'],
+    ['git log --oneline -n 5', 'plain git log'],
+    ['git log --format=%H', 'git log --format is read-only'],
+    ['git diff --stat', 'plain git diff'],
+    ['git diff --no-ext-diff', '--no-ext-diff disables the external diff'],
+    ['rg --pretty pattern src', 'rg --pretty is not --pre'],
+    ['rg -n pattern src', 'plain rg'],
+    ['ls -o', 'ls has no write flags; -o is a listing format'],
+    ['grep -o pattern file.txt', 'grep -o prints only matches'],
+  ];
+
+  it.each(staysAutoApproved)('%s → auto-approved (%s)', async (command) => {
+    const { permissions, ask } = makePermissions();
+    await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
   });
 });

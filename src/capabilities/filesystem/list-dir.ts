@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, isAbsolute, join } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
+import { readDenialMessage } from './verified-read.js';
 
 export function createListDirTool(permissions: PermissionManager, getCwd: () => string) {
   return tool({
@@ -14,23 +15,28 @@ export function createListDirTool(permissions: PermissionManager, getCwd: () => 
       const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
       const check = await permissions.checkFsAccess(resolved, 'read');
       if (!check.allowed) {
-        return `Error: Permission denied for read access to ${resolved}. Use the approve_scope tool with path="${resolved}" and mode="read" to request access from the user.`;
+        if (check.code === undefined || check.code === 'denied') {
+          return `Error: Permission denied for read access to ${resolved}. Use the approve_scope tool with path="${resolved}" and mode="read" to request access from the user.`;
+        }
+        return readDenialMessage(resolved, check);
       }
 
-      if (!existsSync(resolved)) {
+      // List the canonical directory the check authorised, not the lexical path.
+      const target = check.canonical ?? resolved;
+      if (!existsSync(target)) {
         return `Error: Directory not found: ${resolved}`;
       }
 
       try {
-        const stat = statSync(resolved);
+        const stat = statSync(target);
         if (!stat.isDirectory()) {
           return `Error: ${resolved} is a file, not a directory. Use read_file instead.`;
         }
 
-        const entries = readdirSync(resolved, { withFileTypes: true });
+        const entries = readdirSync(target, { withFileTypes: true });
         const lines = entries.map(entry => {
           const isDir = entry.isDirectory();
-          const fullPath = join(resolved, entry.name);
+          const fullPath = join(target, entry.name);
           let size = '';
           try {
             if (!isDir) {

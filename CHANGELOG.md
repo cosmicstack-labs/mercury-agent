@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — 1.3.1
+
+### Security
+
+- **Git helpers run argv, not a shell string** — `git_status`, `git_log` and `git_diff` built a command string from a model-chosen `path` and ran it through `execSync` with no permission check. They now pass the path to `execFileSync('git', [...])` as a single argv element after `--` (or `-C <resolved>`), and refuse any path that fails the same read-scope check `read_file` uses. `git_push` rejects option-looking `remote`/`branch` values (`--receive-pack=…`, `--exec=…`) and also uses argv. Regression tests: `src/capabilities/git/git-helpers.test.ts`.
+- **Safe-read bypass fixes, now closed with regression tests** — the read-only auto-approval lane in Ask Me mode denies: `find` action flags (`-exec`/`-execdir`/`-ok`/`-okdir`/`-delete`, since 1.2.2; `-fprint`/`-fprintf`/`-files0-from` since 1.3.0 — #71, #77, #101, #110); shell redirection (`>`, `>>`, `2>`, `<`, `&>`, since 1.2.2 — #72, #82, #109); and shell expansion (`$VAR`, `${VAR}`, `$(…)`, backticks, `$'…'`, `~`, since 1.3.0 / PR #128 — #76, #80, #95). An explicit `find -exec` case was added to `src/capabilities/permissions.test.ts`.
+- **Sub-agent approval routing** — `delegate_task` workers no longer switch the shared permission manager into allow-all with a `/` write scope; their shell and filesystem calls go through the same Ask Me prompts as the parent (since 1.2.2 — #75, #99). `allowedTools` is enforced at runtime, not just in the prompt (since 1.3.0 — #74, #97, #98). Still open: a sibling-ownership check for `stop_agent`, and an immutable per-agent permission context so a concurrent internal-channel turn cannot widen a worker's approvals (ROADMAP P1.12 / P2.2).
+- **Symlink write canonicalisation** — `create_file`/`write_file`/`edit_file` check the resolved target of a symlink against the writable scopes, not only the lexical path (since 1.3.0 — #105).
+- **SSRF guard** — unchanged; see the 1.2.3 entry below (hardened in 1.3.0 by #121 and #124; response record in `docs/security/ssrf-108-response.md`).
+- **Disclosure process** — `SECURITY.md` added (private reporting, response targets, scope); issue-closure and advisory drafts in `docs/security/2026-10-backlog-closure.md`.
+
+### Fixed
+
+- **SQLite in the standalone binaries and on toolchain-less installs** (ROADMAP P1.9, #96, ADR-018) — the binaries bundled better-sqlite3's JavaScript but never its native addon, so every SQLite probe failed inside them: Second Brain was silently disabled and bots/boards fell back to JSON. A shared driver (`src/utils/sqlite-driver.ts`) now selects **better-sqlite3 → bun:sqlite → node:sqlite → JSON**: binaries use Bun's embedded engine, Node ≥ 22.13 installs work without a compiler via `node:sqlite`, and the better-sqlite3 path is untouched. Second Brain, the bots queue, boards and the cloud pool-search cache all go through it; the pool cache now degrades to uncached instead of throwing when no engine loads. New `mercury doctor --storage` prints the active backend (with why the others were rejected), every database file, its size and row counts, and warns loudly when storage is JSON-only. `MERCURY_SQLITE_BACKEND=better-sqlite3|bun:sqlite|node:sqlite|json` forces a backend. Contract tests run the same assertions against every engine the process can load (`src/utils/sqlite-driver.test.ts`).
+
 ## 1.3.0 — Mercury Bots
 
 Persistent, persona-scoped agents that run **outside your conversation** — each with its own persona, workspace, skills, permissions, and durable queue. Onboard specialists, chain them into multi-level fleets, and let them work 24/7 while you keep talking to Mercury.

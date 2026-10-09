@@ -34,6 +34,8 @@ export interface ProviderConfig {
   baseUrl: string;
   model: string;
   enabled: boolean;
+  /** Optional per-provider cap on output tokens per request. */
+  maxOutputTokens?: number;
 }
 
 export interface TelegramAccessUser {
@@ -327,6 +329,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1'),
         model: getEnv('DEEPSEEK_MODEL', 'deepseek-chat'),
         enabled: getEnvBool('DEEPSEEK_ENABLED', true),
+        ...(getEnv('DEEPSEEK_MAX_OUTPUT_TOKENS', '') ? { maxOutputTokens: Number(getEnv('DEEPSEEK_MAX_OUTPUT_TOKENS', '')) } : {}),
       },
       grok: {
         name: 'grok',

@@ -85,3 +85,7 @@ export const NO_CHANGES_BANNER = 'Response delivered · no file changes';
 /** Banner label when the narration guard exhausted and zero work happened. */
 export const WORK_NOT_STARTED_BANNER =
   'I couldn\'t get started on this one yet — send "continue" and I\'ll take another run at it with a different approach.';
+
+/** Banner label when a verification ran but did not pass (or ran before the latest edits). */
+export const VERIFICATION_FAILED_BANNER =
+  'The changes are in, but the last check didn\'t pass — I\'m not calling this done. Send "continue" and I\'ll fix it and re-verify.';
