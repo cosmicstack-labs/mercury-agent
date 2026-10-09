@@ -1292,7 +1292,7 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
             await agent.spotifyClient.authenticateWithCode(code.trim());
             await channel.send('Spotify connected successfully! Try: play some music', channelId);
           } else {
-            await channel.send('Opening browser for Spotify authorization...', channelId);
+            await channel.send(`Opening browser for Spotify authorization...\nIf it doesn't open, visit ${agent.spotifyClient.getLocalLoginUrl()}`, channelId);
             await agent.spotifyClient.authenticate();
             await channel.send('Spotify connected successfully! Try: play some music', channelId);
           }

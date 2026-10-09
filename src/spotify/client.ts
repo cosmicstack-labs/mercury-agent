@@ -127,7 +127,7 @@ export class SpotifyClient {
       const port = new URL(redirectUri).port || '8888';
       server.listen(parseInt(port, 10), () => {
         logger.info({ port }, 'Spotify OAuth server listening');
-        const callbackUrl = `http://127.0.0.1:${port}/login`;
+        const callbackUrl = this.getLocalLoginUrl();
         console.log(`\n  ${'─'.repeat(50)}`);
         console.log(`  Spotify Authorization`);
         console.log(`  ${'─'.repeat(50)}`);
@@ -144,6 +144,12 @@ export class SpotifyClient {
         reject(new Error('Spotify auth timed out after 5 minutes'));
       });
     });
+  }
+
+  /** The local page authenticate() serves; it redirects to Spotify. */
+  getLocalLoginUrl(): string {
+    const port = new URL(this.config.spotify.redirectUri).port || '8888';
+    return `http://127.0.0.1:${port}/login`;
   }
 
   getAuthUrl(): string {
