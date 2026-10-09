@@ -1,0 +1,4 @@
+
+# Vendored, patched ink must stay byte-identical to tarball + patch on every
+# OS (scripts/vendor-ink.cjs --check); never convert line endings.
+vendor/** -text
