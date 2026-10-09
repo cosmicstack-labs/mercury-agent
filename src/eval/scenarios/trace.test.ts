@@ -28,9 +28,9 @@ describe('eval · /trace', () => {
     expect(trace.finalText).toContain('Verification: none');
   });
 
-  // KNOWN REGRESSION: main-loop tool calls never reach the turn trace (see
-  // memory.test.ts) — /trace prints "No tool calls in this turn." here.
-  it.fails('/trace lists the main loop\'s tool calls', async () => {
+  // Regression guard: main-loop tool calls reach the turn trace (fixed in
+  // 1.3.1, see memory.test.ts).
+  it('/trace lists the main loop\'s tool calls', async () => {
     const result = await runScenario({ name: 'trace-tool-lines', turns: [listTurn, { message: '/trace' }] });
     expect(result.turns[1].finalText).toContain('- list_dir path=downloads');
   });

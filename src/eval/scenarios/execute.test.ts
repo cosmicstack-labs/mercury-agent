@@ -16,13 +16,12 @@ const passingTest = call('run_command', { command: 'npm test' }, '> vitest run\n
  * (`turnEnd() === 'text-stop'`) and step-budget continuation/pause
  * (`'steps-exhausted'`) are therefore dead on every streaming channel (CLI,
  * web, Telegram/Discord/Slack with streaming on, Signal). The scenarios below
- * pin the correct behaviour on the non-streaming path and mark the streaming
- * variants `it.fails` — when agent.ts adds `finishReason` to the streamed
- * result they start passing, `it.fails` turns red, and the marker must go.
+ * (Fixed in 1.3.1: finishReason is carried on every result.) Both delivery
+ * paths are pinned below so the regression cannot return.
  */
 const PATHS = [
   { label: 'non-streaming', streaming: false, gateWorks: true },
-  { label: 'streaming', streaming: true, gateWorks: false },
+  { label: 'streaming', streaming: true, gateWorks: true },
 ] as const;
 
 afterAll(async () => (await import('../env.js')).removeEvalRoot());

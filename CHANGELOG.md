@@ -1,12 +1,54 @@
 # Changelog
 
-## Unreleased — 1.3.1
+## 1.3.1 — Honest Mercury
+
+The release where Mercury stops pretending. Chat answers instead of forcing tool rounds, "done" means a check actually passed, every channel shows the same evidence, and the terminal UI takes paste, Esc and IME like a real editor. Built from a full audit (`ROADMAP.md`); every change below is covered by tests, including a replay eval harness that drives the real agent loop.
+
+### Conversation and feedback
+
+- **Chat is no longer forced through tool rounds** — the Mercury Code narration guard and verification gate ran in plain chat, so "make me a workout plan" could trigger up to ten tool-only rounds and end with "I couldn't get started". Both now run in execute mode only.
+- **Done means verified** — a build/test/typecheck counts as evidence only when it exits clean (timeouts and kills are failures) and runs after the last edit; otherwise the task pauses with "the last check didn't pass" instead of "Task complete". Streamed turns now reach this gate too (they reported no finish reason and skipped it).
+- **One feedback contract on every channel** (`TaskSurface`) — begin, done-with-evidence, pause and fail behave the same on CLI, web, Telegram, Discord, Slack and Signal. Verification notes and a trace id reach messaging channels; pause and failure banners are persistent messages, never truncated status-card notices.
+- **`/trace [id]`** — provider, tokens (incl. cached), steps, timing, verification and every tool call for a turn.
+- **`/new`** on every channel — fresh conversation, memory kept (#38).
+- **Telegram prompts** — timeouts say what they defaulted to, taps settle the card, keyboards are removed (#23).
+
+### Context, memory and speed
+
+- **Context window v2** — history is budgeted by tokens and includes a compact per-turn tool trace, so the next turn knows what was read and written. Retrieved memory goes into a per-turn system block instead of fake dialogue.
+- **Prompt caching** — the stable system prompt carries an Anthropic cache marker and no longer changes every minute.
+- **Faster steps** — per-step channel edits no longer block the agent loop; niche tool schemas (Spotify) are left out of unrelated turns; the cloud memory pool is skipped when local recall is strong.
+- **Providers** — DeepSeek thinking for V4/reasoner models with reasoning passed back (#24); per-provider output ceilings; the configured default always leads (fallback is no longer sticky).
+- **Long builds** — `run_command` reports progress so a 10-minute build is not killed as a stalled provider, and stops its child when the turn is interrupted.
+- **Tool results** — read from the AI SDK v6 `output` field, so failing-loop detection works.
+
+### Terminal UI
+
+- **Paste** — multi-line and bracketed paste; Shift+Enter inserts a newline.
+- **Esc interrupts a turn; Ctrl+C clears input**, double-tap to quit.
+- **Concurrent prompts queue** instead of overwriting each other.
+- **Smoother streaming** — fence-aligned tail rendering, one shared tick, async git header, correct repaint on resize; grapheme-aware cursor for emoji and CJK; history persists to `~/.mercury/history`.
+
+### Platforms
+
+- **Windows** — service install via Task Scheduler XML with an HKCU Run fallback (#13); graceful stop and upgrade; wizard no longer exits silently on closed stdin (#64); update check over HTTPS.
+- **Termux** — detected on `android`; `mercury service install` writes a Termux:Boot script.
+- **Bots** — retried jobs can no longer run twice; a fleet lead's synthesis reaches its thread; "needs you" survives restarts.
+
+### Engineering
+
+- **Agent split** — command handlers moved to `src/core/commands/`; one step handler instead of four copies; `agent.ts` from 8,362 to about 5,000 lines.
+- **Replay eval harness** (`npm run eval`) in CI.
+- **CI** — binary smoke tests per OS (built, run and discarded, never published), installer and script checks, Node 24, linux-arm64, ESLint ratchet (provisional baseline), vendored-Ink integrity check.
+
 
 ### Security
 
+- **Argv-lane auto-approval** (ADR-016) — auto-approved commands no longer go through a shell or `PATH`: they must tokenize to plain argv, use an allowlisted program with an allowed flag set, stay inside the workspace, and run via `execFile` on a binary resolved from pinned system directories with a minimal environment (#103). Everything else is shown to the user for approval. Some read-only one-liners (pipelines, `&&` chains) now prompt; see `SECURITY.md`.
+- **Reads are authorised against the real file** — symlink targets must be in scope, hard-linked files prompt, and `read_file` verifies the opened file is the one that was checked (#104).
 - **Git helpers run argv, not a shell string** — `git_status`, `git_log` and `git_diff` built a command string from a model-chosen `path` and ran it through `execSync` with no permission check. They now pass the path to `execFileSync('git', [...])` as a single argv element after `--` (or `-C <resolved>`), and refuse any path that fails the same read-scope check `read_file` uses. `git_push` rejects option-looking `remote`/`branch` values (`--receive-pack=…`, `--exec=…`) and also uses argv. Regression tests: `src/capabilities/git/git-helpers.test.ts`.
 - **Safe-read bypass fixes, now closed with regression tests** — the read-only auto-approval lane in Ask Me mode denies: `find` action flags (`-exec`/`-execdir`/`-ok`/`-okdir`/`-delete`, since 1.2.2; `-fprint`/`-fprintf`/`-files0-from` since 1.3.0 — #71, #77, #101, #110); shell redirection (`>`, `>>`, `2>`, `<`, `&>`, since 1.2.2 — #72, #82, #109); and shell expansion (`$VAR`, `${VAR}`, `$(…)`, backticks, `$'…'`, `~`, since 1.3.0 / PR #128 — #76, #80, #95). An explicit `find -exec` case was added to `src/capabilities/permissions.test.ts`.
-- **Sub-agent approval routing** — `delegate_task` workers no longer switch the shared permission manager into allow-all with a `/` write scope; their shell and filesystem calls go through the same Ask Me prompts as the parent (since 1.2.2 — #75, #99). `allowedTools` is enforced at runtime, not just in the prompt (since 1.3.0 — #74, #97, #98). Still open: a sibling-ownership check for `stop_agent`, and an immutable per-agent permission context so a concurrent internal-channel turn cannot widen a worker's approvals (ROADMAP P1.12 / P2.2).
+- **Sub-agent approval routing** — `delegate_task` workers no longer switch the shared permission manager into allow-all with a `/` write scope; their shell and filesystem calls go through the same Ask Me prompts as the parent (since 1.2.2 — #75, #99). `allowedTools` is enforced at runtime, not just in the prompt (since 1.3.0 — #74, #97, #98). In 1.3.1 sub-agents only see and stop their own descendants and get orchestration tools only when granted (#74), and each agent runs under its own immutable permission context, so a concurrent internal-channel turn can no longer widen a worker's approvals (#75/#99 residual).
 - **Symlink write canonicalisation** — `create_file`/`write_file`/`edit_file` check the resolved target of a symlink against the writable scopes, not only the lexical path (since 1.3.0 — #105).
 - **SSRF guard** — unchanged; see the 1.2.3 entry below (hardened in 1.3.0 by #121 and #124; response record in `docs/security/ssrf-108-response.md`).
 - **Disclosure process** — `SECURITY.md` added (private reporting, response targets, scope); issue-closure and advisory drafts in `docs/security/2026-10-backlog-closure.md`.

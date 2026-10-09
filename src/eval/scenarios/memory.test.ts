@@ -12,13 +12,12 @@ const TRACE_HEADER = '[Tool activity in my previous turn]';
  * `noteToolSteps` in the guard / step-budget / verification continuation
  * rounds. The MAIN loop's `onStepFinish` (streamText and generateText
  * paths) never calls it, so an ordinary tool-using turn leaves no trace and
- * the next turn starts blind. The first scenario is `it.fails` until that
- * call is added; the read side is pinned by the passing scenarios.
+ * the next turn started blind. Fixed in 1.3.1; the first scenario pins it.
  */
 describe('eval · cross-turn memory carries the tool trace', () => {
   afterAll(async () => (await import('../env.js')).removeEvalRoot());
 
-  it.fails('main-loop tool calls are written to the trace the NEXT turn sends to the model', async () => {
+  it('main-loop tool calls are written to the trace the NEXT turn sends to the model', async () => {
     const result = await runScenario({
       name: 'memory-main-loop-trace',
       turns: [
