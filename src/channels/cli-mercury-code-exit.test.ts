@@ -65,12 +65,14 @@ describe('Mercury Code exit paths', () => {
     // Regression: after enterMercuryCode set the TUI to AUTO, the agent
     // pushed its stale 'plan' back via setProgrammingStatus — the status bar
     // showed PLAN even though AUTO was the default.
-    const agent = readFileSync(join(uiDir, '..', 'core', 'agent.ts'), 'utf8');
+    // The /code command lives in core/commands/chat-command.ts (P2.1 split),
+    // where the agent instance is `agent`.
+    const agent = readFileSync(join(uiDir, '..', 'core', 'commands', 'chat-command.ts'), 'utf8');
     const entryIdx = agent.indexOf('cliChannel.enterMercuryCode');
     expect(entryIdx).toBeGreaterThan(-1);
     const syncBlock = agent.slice(entryIdx, entryIdx + 600);
-    expect(syncBlock).toContain('this.programmingMode.setAuto()');
-    expect(syncBlock).not.toContain('this.programmingMode.setPlan()');
+    expect(syncBlock).toContain('agent.programmingMode.setAuto()');
+    expect(syncBlock).not.toContain('agent.programmingMode.setPlan()');
   });
 
   it('routes /code chat and /code back as instant exits in the TUI input handler', () => {
