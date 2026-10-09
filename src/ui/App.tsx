@@ -11,6 +11,7 @@ import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
+import { CursorCell } from './cursor-anchor.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
@@ -183,6 +184,11 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
   }, [skillSuggestions.length, input]);
 
   const showInput = state.mode !== 'mercury-code' && !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
+  // Hardware cursor (IME anchor): only while the composer actually receives
+  // typed text. In the workspace IDE the arrows drive the explorer / code /
+  // git panes until the chat pane is focused or the user starts typing.
+  const inputOwnsKeys = showInput
+    && (state.mode !== 'workspace' || state.workspace?.focusArea === 'chat' || input.length > 0);
 
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
@@ -869,6 +875,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
           botsWorking={state.botRoster.filter((b) => b.state === 'running').length}
           turnRunning={turnRunning}
           ctrlCHint={ctrlCHint}
+          cursorActive={inputOwnsKeys}
         />
       )}
       {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
@@ -2143,6 +2150,7 @@ function InputBox({
   botsWorking,
   turnRunning,
   ctrlCHint,
+  cursorActive = true,
 }: {
   input: string;
   cursorPos: number;
@@ -2156,6 +2164,8 @@ function InputBox({
   turnRunning?: boolean;
   /** Ctrl+C exit armed: show the second-tap hint. */
   ctrlCHint?: boolean;
+  /** The composer owns the keyboard: park the hardware cursor on its cell. */
+  cursorActive?: boolean;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
@@ -2201,7 +2211,7 @@ function InputBox({
             {i === cursorLine ? (
               <>
                 <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
-                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <CursorCell glyph={cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '} active={cursorActive} />
                 <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
@@ -2470,7 +2480,7 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
 }
 
 /** Bordered input box (opencode-style) with mode-tinted prompt. */
-function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number }) {
+function MercuryCodeInput({ input, cursorPos, mode, boxWidth, cursorActive = true }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number; cursorActive?: boolean }) {
   const color = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT;
   const lines = input.split('\n');
   let cursorLine = 0;
@@ -2494,7 +2504,7 @@ function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string;
             {i === cursorLine ? (
               <>
                 <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
-                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <CursorCell glyph={cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '} active={cursorActive} />
                 <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
@@ -2822,7 +2832,7 @@ export function MercuryCodeView({
       <MercuryLiveFeedback state={state} />
       {state.permissionPrompt && <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx ?? 0} />}
       {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
-      <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
+      <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} cursorActive={!state.permissionPrompt && !mc.exitConfirm} />
       <Box height={1} overflow="hidden" paddingX={2} flexShrink={0}>
         <Text dimColor={!ctrlCHint} color={ctrlCHint ? 'yellow' : undefined}>{leftHint}</Text>
         <Spacer />

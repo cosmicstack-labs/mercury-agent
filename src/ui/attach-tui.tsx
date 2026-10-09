@@ -23,6 +23,7 @@ import {
   type BotRosterEntry,
   type SkillEntry,
 } from './input-composer.js';
+import { CursorCell } from './cursor-anchor.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 
 /**
@@ -539,7 +540,7 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
           <Box>
             <Text bold color="cyan">&gt; </Text>
             <Text>{expandTabs(input.slice(0, cursorPos))}</Text>
-            <Text inverse>{cursorPos < input.length ? expandTabs(graphemeAt(input, cursorPos)) : ' '}</Text>
+            <CursorCell glyph={cursorPos < input.length ? expandTabs(graphemeAt(input, cursorPos)) : ' '} active={!prompt} />
             <Text>{expandTabs(input.slice(nextGraphemeBoundary(input, cursorPos)))}</Text>
           </Box>
         </Box>
