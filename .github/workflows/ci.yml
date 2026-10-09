@@ -8,6 +8,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One job per concern. Nothing in this workflow publishes or releases: the
+# binary-smoke and installer jobs build and run throwaway artifacts only.
 jobs:
   typecheck:
     name: Typecheck (Node ${{ matrix.node }}, ${{ matrix.os }})
@@ -20,6 +22,8 @@ jobs:
             node: 20
           - os: ubuntu-latest
             node: 22
+          - os: ubuntu-latest
+            node: 24
           - os: windows-latest
             node: 22
           - os: macos-latest
@@ -33,6 +37,27 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
+  lint:
+    name: Lint (tsc + ESLint ratchet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      # ESLint is pinned here rather than in package.json/package-lock.json so
+      # `npm ci` in every other job is untouched. Move these into
+      # devDependencies (and regenerate the lockfile) once the baseline is real.
+      - name: Install ESLint (pinned, not saved)
+        run: npm install --no-save --no-audit --no-fund eslint@9.39.5 @eslint/js@9.39.5 typescript-eslint@8.71.1
+      # Ratchet: per-rule counts may only go down relative to .lint-baseline.json.
+      # Refresh the baseline with `npm run lint:ratchet -- --update` after a
+      # deliberate clean-up (or on the first run, when the baseline is provisional).
+      - run: npm run lint:ratchet
+
   test:
     name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -44,6 +69,8 @@ jobs:
             node: 20
           - os: ubuntu-latest
             node: 22
+          - os: ubuntu-latest
+            node: 24
           - os: windows-latest
             node: 22
           - os: macos-latest
@@ -55,6 +82,24 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  linux-arm64:
+    name: Typecheck & Test (Node 22, linux-arm64)
+    # GitHub-hosted arm64 runners (`ubuntu-24.04-arm`) are free for public
+    # repos but not enabled in every org. Until a green run proves they are
+    # available here, a missing runner must not block the pipeline.
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
       - run: npm test
 
@@ -82,6 +127,213 @@ jobs:
 
       - name: Verify package integrity
         run: node scripts/verify-package.cjs
+
+  binary-smoke:
+    name: Binary smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # Keep the smoke binary's state out of the runner's real home.
+      MERCURY_HOME: ${{ github.workspace }}/.smoke-home
+      # chalk forces colour on GitHub Actions; the greps below want plain text.
+      FORCE_COLOR: '0'
+      NO_COLOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: npm ci
+      - run: npm run build
+
+      - name: Build host binary (release/smoke, never published)
+        run: node scripts/build-bin.cjs --host-only
+
+      - name: Locate binary
+        id: bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(find release/smoke -maxdepth 2 -type f -name 'mercury-*' ! -name '*.tar.gz' | head -n 1)
+          test -n "$bin" || { echo "::error::no host binary found under release/smoke"; ls -R release; exit 1; }
+          ls -l "$bin"
+          echo "path=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke --version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(node -p "require('./package.json').version")
+          out=$("${{ steps.bin.outputs.path }}" --version)
+          echo "--version → $out"
+          [ "$out" = "$expected" ] || { echo "::error::--version printed '$out', expected '$expected'"; exit 1; }
+
+      - name: Smoke --help
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.bin.outputs.path }}" --help | tee smoke-help.txt
+          grep -q 'Usage:' smoke-help.txt
+
+      - name: Smoke doctor --platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.bin.outputs.path }}" doctor --platform | tee smoke-platform.txt
+          grep -q 'Mercury Platform Doctor' smoke-platform.txt
+
+      - name: Smoke doctor --storage (bun:sqlite must be active)
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.bin.outputs.path }}" doctor --storage | sed 's/\x1b\[[0-9;]*m//g' | tee smoke-storage.txt
+          # The standalone binary ships Bun's embedded SQLite. A JSON-only
+          # report here means the driver fell through every backend.
+          if grep -Eq 'SQLite backend: +bun:sqlite' smoke-storage.txt; then
+            echo "bun:sqlite active"
+          else
+            echo "::error::doctor --storage did not report bun:sqlite as the active backend"
+            exit 1
+          fi
+          if grep -q 'JSON-only' smoke-storage.txt; then
+            echo "::error::doctor --storage reports JSON-only storage"
+            exit 1
+          fi
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-smoke-${{ matrix.os }}
+          path: smoke-*.txt
+          retention-days: 1
+          if-no-files-found: ignore
+
+  script-lint:
+    name: Scripts (shellcheck + PSScriptAnalyzer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          shellcheck scripts/install.sh scripts/install-dev.sh scripts/publish*.sh
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+          Import-Module PSScriptAnalyzer
+          (Get-Module PSScriptAnalyzer).Version
+
+      - name: Invoke-ScriptAnalyzer scripts/*.ps1
+        shell: pwsh
+        run: |
+          $results = @(Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error,Warning
+          })
+          foreach ($r in $results) {
+            $level = if ($r.Severity -eq 'Error') { 'error' } else { 'warning' }
+            Write-Output "::$level file=$($r.ScriptPath),line=$($r.Line)::[$($r.RuleName)] $($r.Message)"
+          }
+          $errors = @($results | Where-Object Severity -eq 'Error')
+          Write-Output "PSScriptAnalyzer: $($results.Count) finding(s), $($errors.Count) error(s)"
+          # Warnings (Write-Host, Invoke-Expression, ShouldProcess) are expected
+          # in a curl|iex-style installer and are surfaced as annotations only.
+          if ($errors.Count -gt 0) { exit 1 }
+
+  installer-smoke:
+    name: Installer dry run (install.sh against a local release dir)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a fake release directory
+        run: |
+          set -euo pipefail
+          version=9.9.9
+          rel="$RUNNER_TEMP/fake-release/v$version"
+          mkdir -p "$rel/web"
+          # A tiny stub "binary": enough to pass the installer's --version smoke.
+          cat > "$rel/mercury-linux-x64" <<'STUB'
+          #!/bin/sh
+          if [ "${1:-}" = "--version" ]; then echo "9.9.9"; exit 0; fi
+          echo "mercury stub: $*"
+          STUB
+          chmod +x "$rel/mercury-linux-x64"
+          echo '<!doctype html><title>stub dashboard</title>' > "$rel/web/index.html"
+          tar -C "$rel" -czf "$rel/web.tar.gz" web
+          (cd "$rel" && sha256sum mercury-linux-x64 web.tar.gz > checksums.txt)
+          cat "$rel/checksums.txt"
+          echo "REL_ROOT=$RUNNER_TEMP/fake-release" >> "$GITHUB_ENV"
+
+      - name: Serve it over HTTP
+        run: |
+          set -euo pipefail
+          (cd "$REL_ROOT" && python3 -m http.server 8765 --bind 127.0.0.1 > "$RUNNER_TEMP/http.log" 2>&1 &)
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8765/v9.9.9/checksums.txt > /dev/null && break
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8765/v9.9.9/checksums.txt
+
+      - name: Run install.sh against the local release dir
+        env:
+          MERCURY_VERSION: 9.9.9
+          MERCURY_DOWNLOAD_BASE: http://127.0.0.1:8765
+          MERCURY_INSTALL: ${{ runner.temp }}/mercury-prefix
+          MERCURY_NO_PATH: '1'
+        run: |
+          set -euo pipefail
+          sh scripts/install.sh 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -q 'Checksums verified' "$RUNNER_TEMP/install.log"
+          grep -q 'Smoke test passed' "$RUNNER_TEMP/install.log"
+          test -x "$MERCURY_INSTALL/bin/mercury"
+          test -f "$MERCURY_INSTALL/bin/web/index.html"
+          [ "$("$MERCURY_INSTALL/bin/mercury" --version)" = "9.9.9" ]
+
+      - name: install-dev.sh delegates to install.sh (dev channel, local release dir)
+        env:
+          MERCURY_DOWNLOAD_BASE: http://127.0.0.1:8765
+          MERCURY_INSTALL: ${{ runner.temp }}/mercury-dev-prefix
+          MERCURY_NO_PATH: '1'
+        run: |
+          set -euo pipefail
+          # The dev channel resolves <base>/mercury-dev-latest/…; alias the fake
+          # release under that tag.
+          ln -s v9.9.9 "$REL_ROOT/mercury-dev-latest"
+          sh scripts/install-dev.sh 2>&1 | tee "$RUNNER_TEMP/install-dev.log"
+          grep -q 'Smoke test passed' "$RUNNER_TEMP/install-dev.log"
+          test -x "$MERCURY_INSTALL/bin/mercury-dev"
+          [ "$("$MERCURY_INSTALL/bin/mercury-dev" --version)" = "9.9.9" ]
+
+      - name: A tampered checksum must abort the install
+        env:
+          MERCURY_VERSION: 9.9.9
+          MERCURY_DOWNLOAD_BASE: http://127.0.0.1:8765
+          MERCURY_INSTALL: ${{ runner.temp }}/mercury-tampered
+          MERCURY_NO_PATH: '1'
+        run: |
+          set -euo pipefail
+          sed -i 's/^[0-9a-f]\{8\}/00000000/' "$REL_ROOT/v9.9.9/checksums.txt"
+          if sh scripts/install.sh > "$RUNNER_TEMP/tampered.log" 2>&1; then
+            echo "::error::install.sh succeeded with a tampered checksums.txt"
+            cat "$RUNNER_TEMP/tampered.log"
+            exit 1
+          fi
+          grep -q 'Checksum mismatch' "$RUNNER_TEMP/tampered.log"
+          test ! -e "$MERCURY_INSTALL/bin/mercury"
 
   termux:
     name: Termux (Android, x86_64)
@@ -136,10 +388,23 @@ jobs:
           # P0.6 Termux detection: Termux's own Node is an Android build, so
           # process.platform is 'android' on real devices ('linux' only for
           # glibc/proot builds). Print it, and assert that `service install`
-          # (what autoDaemonize() runs after the wizard) is a clean Termux
-          # hint with exit 0 — never "Unsupported platform: android" + exit 1.
+          # (what autoDaemonize() runs after the wizard) exits 0 with a Termux
+          # message — never "Unsupported platform: android" + exit 1.
           node -e "console.log('process.platform =', process.platform); if (process.platform !== 'android' && process.platform !== 'linux') { console.error('unexpected process.platform for Termux'); process.exit(1) }"
           node -e "const { spawnSync } = require('node:child_process'); const r = spawnSync(process.execPath, ['dist/index.js', 'service', 'install'], { encoding: 'utf8' }); const out = (r.stdout || '') + (r.stderr || ''); console.log(out); if (r.status !== 0 || /Unsupported platform/.test(out) || !/Termux/.test(out)) { console.error('service install on Termux must print the Termux hint and exit 0 (status ' + r.status + ')'); process.exit(1) }"
+          # P2.8 Termux:Boot: `service install` writes an executable boot script
+          # that takes a wake lock and runs `mercury up`; status sees it;
+          # uninstall removes it.
+          BOOT="$HOME/.termux/boot/mercury.sh"
+          test -f "$BOOT" || { echo "service install did not write $BOOT"; exit 1; }
+          test -x "$BOOT" || { echo "$BOOT is not executable"; exit 1; }
+          cat "$BOOT"
+          grep -q 'termux-wake-lock' "$BOOT"
+          grep -Eq '(^| )up( |$)' "$BOOT"
+          head -1 "$BOOT" | grep -q '^#!'
+          node -e "const { spawnSync } = require('node:child_process'); const r = spawnSync(process.execPath, ['dist/index.js', 'service', 'status'], { encoding: 'utf8' }); const out = (r.stdout || '') + (r.stderr || ''); console.log(out); if (r.status !== 0 || !/\.termux\/boot\/mercury\.sh/.test(out) || /not installed/i.test(out)) { console.error('service status on Termux must report the installed boot script'); process.exit(1) }"
+          node -e "const { spawnSync } = require('node:child_process'); const r = spawnSync(process.execPath, ['dist/index.js', 'service', 'uninstall'], { encoding: 'utf8' }); const out = (r.stdout || '') + (r.stderr || ''); console.log(out); if (r.status !== 0) { console.error('service uninstall on Termux must exit 0'); process.exit(1) }"
+          test ! -e "$BOOT" || { echo "service uninstall left $BOOT behind"; exit 1; }
           node node_modules/vitest/vitest.mjs run
           CI_SCRIPT
           chmod +x /tmp/termux-ci.sh
