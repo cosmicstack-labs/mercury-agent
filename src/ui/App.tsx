@@ -12,6 +12,7 @@ import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
+import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
@@ -112,7 +113,16 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
   const albumArtCache = React.useRef<Map<string, string>>(new Map());
   // Shell-style input history — shared composer state (↑/↓ navigation with
   // draft snapshotting; see input-composer.tsx).
-  const [inputHistory, setInputHistory] = React.useState(createInputHistoryState);
+  // Seeded from ~/.mercury/history (last 500 lines) and persisted on every
+  // submission — see input-history-store.ts.
+  const [inputHistory, setInputHistory] = React.useState(() => createInputHistoryState(loadInputHistory()));
+  const recordHistory = React.useCallback((line: string) => {
+    setInputHistory((prev) => {
+      const next = pushHistoryLine(prev, line);
+      if (next !== prev) saveInputHistory(next.history);
+      return next;
+    });
+  }, []);
   const [gitCursor, setGitCursor] = React.useState(0);
   // Ctrl+C: clear the input when it has text; on an empty input the first
   // tap arms a 1.5 s window and shows a hint, the second tap exits. A single
@@ -391,7 +401,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
           onInput(trimmed);
           // Shared composer history helper (dedup + cap in one place —
           // input-composer.tsx is the single source of truth for both TUIs).
-          setInputHistory((prev) => pushHistoryLine(prev, trimmed));
+          recordHistory(trimmed);
           setInputAndCursor('');
         }
         return;
@@ -559,7 +569,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
         onInput(trimmed);
         // Shared composer history helper (dedup + cap in one place —
         // input-composer.tsx is the single source of truth for both TUIs).
-        setInputHistory((prev) => pushHistoryLine(prev, trimmed));
+        recordHistory(trimmed);
         setInputAndCursor('');
         return;
       }

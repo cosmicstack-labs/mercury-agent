@@ -23,6 +23,7 @@ import {
   type BotRosterEntry,
   type SkillEntry,
 } from './input-composer.js';
+import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 
 /**
  * Attach TUI — the terminal face of `mercury attach`. Native scrollback
@@ -134,7 +135,8 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
 
   const [input, setInput] = React.useState('');
   const [cursorPos, setCursorPos] = React.useState(0);
-  const [inputHistory, setInputHistory] = React.useState(createInputHistoryState);
+  // Same persisted history as the main TUI (~/.mercury/history).
+  const [inputHistory, setInputHistory] = React.useState(() => createInputHistoryState(loadInputHistory()));
 
   // ── Shared-composer suggestion state (main-TUI parity) ──
   const [skills, setSkills] = React.useState<SkillEntry[]>([]);
@@ -393,7 +395,11 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
       }
       setInput('');
       setCursorPos(0);
-      setInputHistory((prev) => pushHistoryLine(prev, trimmed));
+      setInputHistory((prev) => {
+        const next = pushHistoryLine(prev, trimmed);
+        if (next !== prev) saveInputHistory(next.history);
+        return next;
+      });
       void sendInput(trimmed);
       return;
     }

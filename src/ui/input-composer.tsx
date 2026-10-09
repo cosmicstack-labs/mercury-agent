@@ -211,14 +211,18 @@ export interface InputHistoryState {
  * editing mid-walk snapshots the draft, submissions dedup consecutive
  * repeats. Pure state helpers — both TUIs share identical navigation.
  */
-export function createInputHistoryState(): InputHistoryState {
-  return { history: [], index: -1, draft: '' };
+/** In-memory cap — matches the persisted file (input-history-store.ts). */
+export const INPUT_HISTORY_LIMIT = 500;
+
+/** Fresh history state, optionally seeded from the persisted file (oldest first). */
+export function createInputHistoryState(initial: readonly string[] = []): InputHistoryState {
+  return { history: initial.slice(-INPUT_HISTORY_LIMIT), index: -1, draft: '' };
 }
 
 /** Record a submitted line. Consecutive duplicates collapse. */
 export function pushHistoryLine(state: InputHistoryState, line: string): InputHistoryState {
   if (state.history[state.history.length - 1] === line) return state;
-  return { ...state, history: [...state.history.slice(-99), line], index: -1, draft: '' };
+  return { ...state, history: [...state.history.slice(-(INPUT_HISTORY_LIMIT - 1)), line], index: -1, draft: '' };
 }
 
 export function historyPrev(state: InputHistoryState, currentInput: string): { state: InputHistoryState; input: string } {
