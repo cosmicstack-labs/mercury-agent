@@ -32,8 +32,11 @@ describe('agent memory bounds', () => {
 
   it('checks memory at every agent step boundary (event-loop independent)', () => {
     const agent = src('../core/agent.ts');
-    expect(agent).toContain('memoryGovernor(`stream-step-');
-    expect(agent).toContain('memoryGovernor(`gen-step-');
+    // One shared step handler serves both the streaming and the
+    // non-streaming path; the checkpoint label carries the path name.
+    expect(agent).toContain('memoryGovernor(`${path}-step-');
+    expect(agent).toContain("onStepFinish: stepHandler('stream')");
+    expect(agent).toContain("onStepFinish: stepHandler('gen')");
     expect(agent).toContain("from './memory-governor.js'");
   });
 

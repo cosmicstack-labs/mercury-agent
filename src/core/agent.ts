@@ -3446,78 +3446,11 @@ export class Agent {
       // then walks the fallback chain — a narration-locked model is not the
       // only worker the agent has).
       let guardProviderCursor = 0;
-      const providerChain = [...providersForAttempt, ...providersForAttempt];
-      for (const provider of providerChain) {
-        // Per-attempt latency accounting: the only way to answer "why is
-        // coding slow" with data instead of guesses.
-        const attemptStartedAt = Date.now();
-        try {
-          const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
-          this.markProgress(`Calling ${provider.name}...`);
-          this.pushLiveActivity(`Calling ${provider.name}`, provider.getModel());
-          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
-          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
-            ? { deepseek: { thinking: { type: 'enabled' as const } } }
-            : undefined;
-          // DeepSeek thinking models require prior reasoning_content to be
-          // passed back with assistant turns (issue #24); other providers
-          // get plain text.
-          const providerMessages = deepseekProviderOptions ? withReasoningParts(messages) : messages;
-          // Per-provider output ceiling: a 32K request is rejected outright by
-          // providers with smaller limits and burned a halve-and-retry round.
-          const providerMaxOutputTokens = Math.min(effectiveMaxOutputTokens, provider.getMaxOutputTokens() ?? Infinity);
-
-          logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
-
-          // Ensure Mercury Cloud token is fresh before getting model instance
-          if ('ensureFreshToken' in provider && typeof (provider as any).ensureFreshToken === 'function') {
-            await this.withProviderDeadline((provider as any).ensureFreshToken(), loopAbortController, providerDeadlineAt);
-          }
-
-          if (canStream && channel) {
-            let streamError: unknown;
-            let streamAborted = false;
-            const streamResult = streamText({
-              model: provider.getModelInstance(),
-              messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: providerMaxOutputTokens,
-              ...(activeTools ? { activeTools } : {}),
-              stopWhen: stepCountIs(effectiveMaxSteps),
-              abortSignal: loopAbortController.signal,
-              // Memory: the SDK retains a structuredClone of the whole
-              // conversation (plus raw HTTP bodies) in every step of its
-              // `steps` array. With 75 steps × file-size tool outputs that
-              // is O(N²) heap growth → V8 OOM on long coding tasks. We never
-              // read the raw bodies, so exclude them. (SDK default: true.)
-              experimental_include: { requestBody: false },
-              onError: ({ error }) => {
-                streamError = error;
-              },
-              onAbort: () => {
-                streamAborted = true;
-              },
-              // Real-time feedback: these fire at TOOL EXECUTION time, not
-              // step completion — the TUI live block shows what is actually
-              // running during long tool calls instead of nothing.
-              experimental_onToolCallStart: ({ toolCall }) => {
-                const tc = toolCall as any;
-                const label = formatToolStep(tc.toolName, tc.input as Record<string, any> || {});
-                this.markProgress(label);
-                this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
-              },
-              experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
-                const tc = toolCall as any;
-                this.pushLiveToolEvent(
-                  tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
-                  tc.toolName,
-                  success ? output : error,
-                  success ? 'done' : 'error',
-                  durationMs,
-                );
-              },
-              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
-              onStepFinish: async ({ toolCalls, toolResults }) => {
+      // One step handler for both model-call paths (streaming and
+      // non-streaming): they were two ~295-line copies that differed only
+      // in their memory-checkpoint label and drifted on every change. The
+      // continuation rounds (resume / verification) share a lighter handler.
+      const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults }: { toolCalls?: any[]; toolResults?: any[] }): Promise<void> => {
                 this.completedStepCount++;
                 // Completion-contract tracking: per-round step usage and how
                 // the step ended (tool calls pending = work in progress).
@@ -3527,7 +3460,7 @@ export class Agent {
                 if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
                 // Step-level memory checkpoint: deterministic, runs even when
                 // the event loop is saturated (unlike the wall-clock guard).
-                const verdict = memoryGovernor(`stream-step-${this.completedStepCount}`);
+                const verdict = memoryGovernor(`${path}-step-${this.completedStepCount}`);
                 if (verdict === 'exit') {
                   try {
                     const { writeCrashFlag } = await import('./crash-flag.js');
@@ -3811,7 +3744,110 @@ export class Agent {
                     loopAbortController.abort();
                   }
                 }
+              };
+      const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined): Promise<void> => {
+              this.completedStepCount++;
+              lastRoundSteps++;
+              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
+              const cliChResume = this.channels.get('cli');
+              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
+              if (toolCalls && toolResults && toolCalls.length > 0) {
+                hasCompletedTool = true;
+                noteToolSteps(toolCalls, toolResults);
+                for (let i = 0; i < toolCalls.length; i++) {
+                  const tc = toolCalls[i];
+                  executeTurnToolsUsed.add(tc.toolName);
+                  if (tc.toolName === 'run_command') {
+                    const cmd = (tc.input as any)?.command;
+                    if (typeof cmd === 'string') {
+                      executeCommandsRun.push(cmd);
+                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
+                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
+                        recordVerification(cmd, vText);
+                      }
+                    }
+                  }
+                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                  loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
+                }
+              }
+            };
+
+      const providerChain = [...providersForAttempt, ...providersForAttempt];
+      for (const provider of providerChain) {
+        // Per-attempt latency accounting: the only way to answer "why is
+        // coding slow" with data instead of guesses.
+        const attemptStartedAt = Date.now();
+        try {
+          const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
+          this.markProgress(`Calling ${provider.name}...`);
+          this.pushLiveActivity(`Calling ${provider.name}`, provider.getModel());
+          updateCliProviderStatus(this.channels.get('cli'), provider.name, provider.getModel());
+          const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
+            ? { deepseek: { thinking: { type: 'enabled' as const } } }
+            : undefined;
+          // DeepSeek thinking models require prior reasoning_content to be
+          // passed back with assistant turns (issue #24); other providers
+          // get plain text.
+          const providerMessages = deepseekProviderOptions ? withReasoningParts(messages) : messages;
+          // Per-provider output ceiling: a 32K request is rejected outright by
+          // providers with smaller limits and burned a halve-and-retry round.
+          const providerMaxOutputTokens = Math.min(effectiveMaxOutputTokens, provider.getMaxOutputTokens() ?? Infinity);
+
+          logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
+
+          // Ensure Mercury Cloud token is fresh before getting model instance
+          if ('ensureFreshToken' in provider && typeof (provider as any).ensureFreshToken === 'function') {
+            await this.withProviderDeadline((provider as any).ensureFreshToken(), loopAbortController, providerDeadlineAt);
+          }
+
+          if (canStream && channel) {
+            let streamError: unknown;
+            let streamAborted = false;
+            const streamResult = streamText({
+              model: provider.getModelInstance(),
+              messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
+              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              maxOutputTokens: providerMaxOutputTokens,
+              ...(activeTools ? { activeTools } : {}),
+              stopWhen: stepCountIs(effectiveMaxSteps),
+              abortSignal: loopAbortController.signal,
+              // Memory: the SDK retains a structuredClone of the whole
+              // conversation (plus raw HTTP bodies) in every step of its
+              // `steps` array. With 75 steps × file-size tool outputs that
+              // is O(N²) heap growth → V8 OOM on long coding tasks. We never
+              // read the raw bodies, so exclude them. (SDK default: true.)
+              experimental_include: { requestBody: false },
+              onError: ({ error }) => {
+                streamError = error;
               },
+              onAbort: () => {
+                streamAborted = true;
+              },
+              // Real-time feedback: these fire at TOOL EXECUTION time, not
+              // step completion — the TUI live block shows what is actually
+              // running during long tool calls instead of nothing.
+              experimental_onToolCallStart: ({ toolCall }) => {
+                const tc = toolCall as any;
+                const label = formatToolStep(tc.toolName, tc.input as Record<string, any> || {});
+                this.markProgress(label);
+                this.pushLiveToolEvent(tc.toolCallId ?? `${tc.toolName}:${Date.now()}`, tc.toolName, tc.input as Record<string, any> || {}, 'running');
+              },
+              experimental_onToolCallFinish: ({ toolCall, success, output, error, durationMs }) => {
+                const tc = toolCall as any;
+                this.pushLiveToolEvent(
+                  tc.toolCallId ?? `${tc.toolName}:${Date.now()}`,
+                  tc.toolName,
+                  success ? output : error,
+                  success ? 'done' : 'error',
+                  durationMs,
+                );
+              },
+              ...(deepseekProviderOptions ? { providerOptions: deepseekProviderOptions } : {}),
+              onStepFinish: stepHandler('stream'),
             });
 
             const cliChThinking = channel instanceof CLIChannel ? channel : null;
@@ -3959,299 +3995,7 @@ export class Agent {
                   durationMs,
                 );
               },
-              onStepFinish: async ({ toolCalls, toolResults }) => {
-                this.completedStepCount++;
-                // Completion-contract tracking (non-streaming path).
-                lastRoundSteps++;
-                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-                const cliChGen = this.channels.get('cli');
-                if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
-                // Step-level memory checkpoint for the non-streaming path.
-                const verdict = memoryGovernor(`gen-step-${this.completedStepCount}`);
-                if (verdict === 'exit') {
-                  try {
-                    const { writeCrashFlag } = await import('./crash-flag.js');
-                    writeCrashFlag({ reason: 'Step governor: heap beyond exit threshold mid-step', timestamp: Date.now() });
-                  } catch { /* best effort */ }
-                  process.exit(0);
-                }
-                if (verdict === 'abort' && !loopAbortController.signal.aborted && this.currentAbortReason !== 'memory-pressure') {
-                  // Compact FIRST, continue (OpenCode's compact-on-overflow
-                  // practice): a long coding task must not die at memory
-                  // pressure when old tool bulk can be summarized away.
-                  if (!memoryCompactedForTask) {
-                    memoryCompactedForTask = true;
-                    try {
-                      const freed = compactConversation(messages);
-                      logger.warn({ freedChars: freed, heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) }, 'Step governor: memory pressure — compacted conversation, continuing');
-                      this.pushLiveActivity('Freeing memory — compacting the conversation', 'auto-compact');
-                    } catch { /* compaction is best-effort */ }
-                    return;
-                  }
-                  this.currentAbortReason = 'memory-pressure';
-                  loopAbortController.abort(new Error(`Task stopped at ${Math.round(process.memoryUsage().heapUsed / 1048576)}MB heap usage (step governor)`));
-                  return;
-                }
-                if (toolCalls && toolCalls.length > 0) {
-                  for (const tc of toolCalls as any[]) {
-                    this.stepNarrative.push({ tool: tc.toolName, label: formatToolStep(tc.toolName, tc.input as Record<string, any> || {}) });
-                  }
-                  const labels = toolCalls.map((tc: any) => formatToolStep(tc.toolName, tc.input as Record<string, any> || {}));
-                  this.markProgress(labels.join(' → '));
-                  this.pushLiveActivity(labels[labels.length - 1]);
-                } else {
-                  this.markProgress('Thinking...');
-                  this.pushLiveActivity('Thinking', 'model reasoning');
-                }
-                if (toolCalls && toolResults && toolCalls.length > 0) {
-                  if (toolResults.length > 0) hasCompletedTool = true;
-                  const names = toolCalls.map((tc: any) => tc.toolName).join(', ');
-                  logger.info({ tools: names }, 'Tool call step');
-                  for (let i = 0; i < toolCalls.length; i++) {
-                    const tc = toolCalls[i];
-                    executeTurnToolsUsed.add(tc.toolName);
-                    if (tc.toolName === 'run_command') {
-                      const cmd = (tc.input as any)?.command;
-                      if (typeof cmd === 'string') {
-                      executeCommandsRun.push(cmd);
-                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
-                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        recordVerification(cmd, vText);
-                      }
-                    }
-                    }
-                    const tr = toolResults[i] as any;
-                    recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
-                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
-                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
-                    const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
-                    const failed = resultStr.length < 5000 && (
-                      resultStr.startsWith('Error:') ||
-                      resultStr.startsWith('⚠') ||
-                      resultStr.includes('exited with code') ||
-                      resultStr.includes('Command failed') ||
-                      resultStr.startsWith('Command exited with code')
-                    );
-                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, failed);
-                  }
-                  if (loopDetector.detectAbsoluteLimit()) {
-                    logger.warn('Absolute tool call limit reached — aborting');
-                    if (channel && msg.channelType !== 'internal') {
-                      await channel.send('⚠ Tool call limit reached (25 calls). Stopping to prevent runaway loop.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    loopAbortController.abort();
-                    return;
-                  }
-                  if (toolCalls.some((tc: any) => tc.toolName === 'use_skill')) {
-                    loopDetector.reset();
-                  }
-                  const hardLoop = loopDetector.detectIdentical();
-                  if (hardLoop) {
-                    logger.warn({ tool: hardLoop.tool, count: hardLoop.count }, 'Hard loop detected — aborting');
-                    if (!loopWarningSent && channel && msg.channelType !== 'internal') {
-                      loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Identical call loop — ${hardLoop.tool} called ${hardLoop.count}x with same params. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    loopAbortController.abort();
-                    return;
-                  }
-                  const similarLoop = loopDetector.detectSimilarLoop();
-                  if (similarLoop) {
-                    logger.warn({ tool: similarLoop.tool, count: similarLoop.count }, 'Failing loop detected — aborting');
-                    if (!loopWarningSent && channel && msg.channelType !== 'internal') {
-                      loopWarningSent = true;
-                      await channel.send(`☿ **Mercury Autopilot** · Failing loop — ${similarLoop.tool} called ${similarLoop.count}x, all failing. Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    loopAbortController.abort();
-                    return;
-                  }
-                  // ── Mercury Autopilot: intelligent repetition analysis ──
-                  const analysis = loopDetector.analyzeRepetition();
-                  if (analysis && !loopWarningSent && channel && msg.channelType !== 'internal') {
-                    if (analysis.verdict === 'productive') {
-                      // Productive iteration — diverse params, high success rate
-                      // Let it run, just log for transparency
-                      logger.info({
-                        tool: analysis.tool,
-                        count: analysis.count,
-                        diversity: analysis.paramDiversity.toFixed(2),
-                        successRate: analysis.successRate.toFixed(2),
-                      }, 'Mercury Autopilot: productive iteration detected — continuing');
-                    } else if (analysis.verdict === 'suspicious') {
-                      // Suspicious but not definitively stuck — observe further
-                      if (this.capabilities.permissions.isAutoApproveAll()) {
-                        selfCheckCount++;
-                        if (selfCheckCount >= MAX_SELF_CHECKS) {
-                          // Escalate: ask AI for final verdict
-                          const recentCalls = loopDetector.getRecentCallSummaries();
-                          const shouldContinue = await this.aiSelfCheck({
-                            toolName: analysis.tool,
-                            callCount: analysis.count,
-                            recentCalls,
-                            taskDescription: msg.content.slice(0, 300),
-                          });
-                          if (!shouldContinue) {
-                            logger.warn({ tool: analysis.tool, count: analysis.count }, 'Mercury Autopilot: AI verdict — unproductive, aborting');
-                            await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} repeated ${analysis.count}x with low progress (${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                            loopAbortController.abort();
-                            return;
-                          }
-                        }
-                        // Not yet at check limit — let it continue with a note
-                        loopDetector.reset();
-                        loopWarningSent = false;
-                        await channel.send(`☿ **Mercury Autopilot** · Observing ${analysis.tool} (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity). Continuing under monitoring.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      } else {
-                        loopWarningSent = true;
-                        const shouldContinue = await channel.askToContinue(
-                          `☿ Mercury Autopilot: ${analysis.tool} called ${analysis.count}x (${Math.round(analysis.paramDiversity * 100)}% param diversity, ${Math.round(analysis.successRate * 100)}% success rate). Continue?`,
-                          msg.channelId,
-                        ).catch(() => false);
-                        if (shouldContinue) {
-                          loopDetector.reset();
-                          loopWarningSent = false;
-                        } else {
-                          loopAbortController.abort();
-                        }
-                      }
-                    } else {
-                      // verdict === 'stuck'
-                      if (this.capabilities.permissions.isAutoApproveAll()) {
-                        logger.warn({ tool: analysis.tool, count: analysis.count, diversity: analysis.paramDiversity, successRate: analysis.successRate }, 'Mercury Autopilot: stuck loop detected');
-                        await channel.send(`☿ **Mercury Autopilot** · ${analysis.tool} is stuck (${analysis.count} calls, ${Math.round(analysis.paramDiversity * 100)}% diversity, ${Math.round(analysis.successRate * 100)}% success). Stopping this path.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                        loopAbortController.abort();
-                        return;
-                      } else {
-                        loopWarningSent = true;
-                        const shouldContinue = await channel.askToContinue(
-                          `☿ Mercury Autopilot: ${analysis.tool} appears stuck (${analysis.count} calls, ${Math.round(analysis.successRate * 100)}% success). Continue anyway?`,
-                          msg.channelId,
-                        ).catch(() => false);
-                        if (shouldContinue) {
-                          loopDetector.reset();
-                          loopWarningSent = false;
-                        } else {
-                          loopAbortController.abort();
-                        }
-                      }
-                    }
-                  }
-                  if (channel && msg.channelType !== 'internal') {
-                    if (channel instanceof CLIChannel) {
-                      for (const tc of toolCalls) {
-                        void (channel as CLIChannel).sendToolFeedback(tc.toolName, tc.input as Record<string, any>).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
-                          }
-                        }
-                      }
-                    } else if (channel instanceof TelegramChannel) {
-                      const tgCh = channel as TelegramChannel;
-                      for (const tc of toolCalls) {
-                        void tgCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            void tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else if (channel instanceof SignalChannel) {
-                      const sigCh = channel as SignalChannel;
-                      for (const tc of toolCalls) {
-                        void sigCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            void sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else if (channel instanceof WebChannel) {
-                      const webCh = channel as WebChannel;
-                      for (const tc of toolCalls) {
-                        webCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
-                          }
-                        }
-                      }
-                    } else if (channel instanceof DiscordChannel) {
-                      const dcCh = channel as DiscordChannel;
-                      for (const tc of toolCalls) {
-                        void dcCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            void dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else if (channel instanceof SlackChannel) {
-                      const slCh = channel as SlackChannel;
-                      for (const tc of toolCalls) {
-                        slCh.sendToolFeedback(tc.toolName, tc.input as Record<string, any>, msg.channelId);
-                      }
-                      if (toolResults) {
-                        for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
-                          const tcName = toolCalls[i]?.toolName as string | undefined;
-                          if (tcName) {
-                            void Promise.resolve(slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
-                          }
-                        }
-                      }
-                    } else {
-                      void channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    this.markProgress();
-                  }
-                } else if (toolResults === undefined || (toolCalls === undefined)) {
-                  const stepText_nostream = (toolResults as any)?.text ?? '';
-                  if (stepText_nostream) {
-                    loopDetector.recordStepText(String(stepText_nostream));
-                  }
-                  const noActionLoop = loopDetector.recordNoActionResult();
-                  if (noActionLoop) {
-                    logger.warn('Reasoning loop detected — model keeps thinking without acting, aborting');
-                    if (!loopWarningSent && channel && msg.channelType !== 'internal') {
-                      loopWarningSent = true;
-                      await channel.send('⚠ I\'m stuck in a reasoning loop (thinking without taking action). Stopping.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    loopAbortController.abort();
-                    return;
-                  }
-                  const textRepeat = loopDetector.detectTextRepetition();
-                  if (textRepeat) {
-                    logger.warn({ pattern: textRepeat.pattern, count: textRepeat.count }, 'Text repetition loop detected — aborting');
-                    if (!loopWarningSent && channel && msg.channelType !== 'internal') {
-                      loopWarningSent = true;
-                      await channel.send('⚠ I keep generating the same response. Stopping to prevent repetition.', msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-                    loopAbortController.abort();
-                  }
-                }
-              },
+              onStepFinish: stepHandler('gen'),
             }), loopAbortController, providerDeadlineAt);
             if (result.finishReason === 'error') throw new Error('Model generation ended with an error');
             if (result.finishReason === 'length') {
@@ -4727,36 +4471,7 @@ export class Agent {
             abortController: loopAbortController,
             channel,
             channelId: msg.channelId,
-            onStep: async (toolCalls, toolResults) => {
-              this.completedStepCount++;
-              lastRoundSteps++;
-              lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-              const cliChResume = this.channels.get('cli');
-              if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
-              if (toolCalls && toolResults && toolCalls.length > 0) {
-                hasCompletedTool = true;
-                noteToolSteps(toolCalls, toolResults);
-                for (let i = 0; i < toolCalls.length; i++) {
-                  const tc = toolCalls[i];
-                  executeTurnToolsUsed.add(tc.toolName);
-                  if (tc.toolName === 'run_command') {
-                    const cmd = (tc.input as any)?.command;
-                    if (typeof cmd === 'string') {
-                      executeCommandsRun.push(cmd);
-                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
-                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        recordVerification(cmd, vText);
-                      }
-                    }
-                  }
-                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
-                  loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
-                }
-              }
-            },
+            onStep: continuationStepHandler,
           });
           if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
           cliResponseStreamed = channel instanceof CLIChannel;
@@ -4818,36 +4533,7 @@ export class Agent {
               channelId: msg.channelId,
               // Verification must produce evidence, not prose about evidence.
               forceFirstTool: true,
-              onStep: async (toolCalls, toolResults) => {
-                this.completedStepCount++;
-                lastRoundSteps++;
-                lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
-                const cliChVerify = this.channels.get('cli');
-                if (cliChVerify instanceof CLIChannel) cliChVerify.bumpLiveActivitySteps();
-                if (toolCalls && toolResults && toolCalls.length > 0) {
-                  hasCompletedTool = true;
-                noteToolSteps(toolCalls, toolResults);
-                  for (let i = 0; i < toolCalls.length; i++) {
-                    const tc = toolCalls[i];
-                    executeTurnToolsUsed.add(tc.toolName);
-                    if (tc.toolName === 'run_command') {
-                      const cmd = (tc.input as any)?.command;
-                      if (typeof cmd === 'string') {
-                      executeCommandsRun.push(cmd);
-                      if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
-                        const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        recordVerification(cmd, vText);
-                      }
-                    }
-                    }
-                    recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
-                    loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
-                  }
-                }
-              },
+              onStep: continuationStepHandler,
             });
             if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
             cliResponseStreamed = channel instanceof CLIChannel;
