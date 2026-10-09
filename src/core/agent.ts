@@ -91,6 +91,7 @@ import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { setProgressPulse } from './progress-pulse.js';
 import { selectActiveTools } from './tool-exposure.js';
+import { createTaskSurface } from './task-surface.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 
@@ -2819,6 +2820,8 @@ export class Agent {
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
+    // Short id printed on every terminal message and resolvable with /trace.
+    const traceId = (msg.id || '').replace(/[^a-z0-9]/gi, '').slice(-8) || Date.now().toString(36);
     let loopAbortController = new AbortController();
     this.currentMessage = msg;
     this.currentAbort = loopAbortController;
@@ -3416,27 +3419,12 @@ export class Agent {
 
       const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal' || (msg.channelType === 'discord' && this.config.channels.discord.streaming) || (msg.channelType === 'slack' && this.config.channels.slack.streaming);
 
-      const tgChannel = this.channels.get('telegram');
-      if (msg.channelType === 'telegram' && tgChannel) {
-        (tgChannel as TelegramChannel).resetStepCounter(msg.channelId);
-        (tgChannel as TelegramChannel).beginTask(msg.channelId);
-      }
-
-      const sigChannel = this.channels.get('signal');
-      if (msg.channelType === 'signal' && sigChannel) {
-        (sigChannel as SignalChannel).resetStepCounter(msg.channelId);
-        (sigChannel as SignalChannel).beginTask(msg.channelId);
-      }
-
-      const dcChannel = this.channels.get('discord');
-      if (msg.channelType === 'discord' && dcChannel) {
-        (dcChannel as DiscordChannel).beginTask(msg.channelId);
-      }
-
-      const slChannel = this.channels.get('slack');
-      if (msg.channelType === 'slack' && slChannel) {
-        (slChannel as SlackChannel).beginTask(msg.channelId);
-      }
+      // One feedback contract for every channel (see core/task-surface.ts):
+      // begin → steps → done-with-evidence | pause | fail. The per-channel
+      // if/else chains that used to live here drifted apart; now channels
+      // render and the agent decides.
+      const surface = createTaskSurface(channel, msg.channelType, msg.channelId);
+      surface.begin();
 
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
@@ -4472,22 +4460,9 @@ export class Agent {
         }
         if (this.currentWorkKey) this.workLedger.markFailed(this.currentWorkKey, errMsg, errMsg);
         if (channel && msg.channelType !== 'internal') {
-          // End task before sending error so it goes through as a normal message
-          if (channel instanceof TelegramChannel) {
-            (channel as TelegramChannel).endTask(msg.channelId);
-            (channel as TelegramChannel).resetStepCounter(msg.channelId);
-          } else if (channel instanceof SignalChannel) {
-            (channel as SignalChannel).endTask(msg.channelId);
-            (channel as SignalChannel).resetStepCounter(msg.channelId);
-          } else if (channel instanceof DiscordChannel) {
-            (channel as DiscordChannel).endTask(msg.channelId);
-            (channel as DiscordChannel).resetStepCounter(msg.channelId);
-          } else if (channel instanceof SlackChannel) {
-            (channel as SlackChannel).endTask(msg.channelId);
-            (channel as SlackChannel).resetStepCounter(msg.channelId);
-          }
-          const delivered = channel instanceof WebChannel ? channel.sendError(errMsg, msg.channelId) : true;
-          if (!(channel instanceof WebChannel)) await channel.send(errMsg, msg.channelId);
+          // Failure is a persistent message with the reason (TaskSurface.fail
+          // ends the task first so it is never a status-card notice).
+          const delivered = await surface.fail(`${errMsg}\n\n_/trace ${traceId}_`);
           const awaitsCloudAck = msg.channelType === 'web'
             && typeof msg.metadata?.externalConversationId === 'string'
             && typeof msg.metadata?.requestId === 'string';
@@ -4892,27 +4867,8 @@ export class Agent {
           this.workLedger.markPaused(this.currentWorkKey, reason);
         }
         if (channel && msg.channelType !== 'internal') {
-          // End the task FIRST so the banner is delivered as a normal,
-          // persistent message. While a task is active the messaging
-          // channels route short sends into the status card (truncated to
-          // ~80 chars) and then delete the card on finalize — which made a
-          // pause look like the bot simply went silent. Flush any deferred
-          // streamed text too, so the user sees what was produced.
-          let deferred: string | undefined;
-          if (
-            channel instanceof TelegramChannel
-            || channel instanceof SignalChannel
-            || channel instanceof DiscordChannel
-            || channel instanceof SlackChannel
-          ) {
-            channel.endTask(msg.channelId);
-            channel.resetStepCounter(msg.channelId);
-            deferred = channel.popDeferredResponse(msg.channelId);
-          }
-          if (deferred && deferred.trim()) {
-            await channel.send(deferred, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-          }
-          await channel.send(banner, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          // Persistent banner, deferred text flushed first (see TaskSurface.pause).
+          await surface.pause(`${banner}\n\n_/trace ${traceId}_`);
           if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
         }
         this.lifecycle.transition('idle');
@@ -5048,6 +5004,14 @@ export class Agent {
             channelId: msg.channelId,
             ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
             ...(usedProvider ? { provider: usedProvider.name, model: usedProvider.model } : {}),
+            // Per-turn trace, shown by /trace <id>.
+            traceId,
+            elapsedMs: Date.now() - startTime,
+            steps: this.completedStepCount,
+            inputTokens: result.usage?.inputTokens ?? 0,
+            cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
+            outputTokens: result.usage?.outputTokens ?? 0,
+            ...(lastVerificationNote ? { verification: lastVerificationNote } : {}),
           },
         });
         if (msg.channelType !== 'internal' && msg.senderId !== 'system' && usedProvider) {
@@ -5079,145 +5043,35 @@ export class Agent {
       if (channel && msg.channelType !== 'internal') {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
-
-        // Send completion banner only for substantial tasks (3+ steps AND >30s)
-        // Simple responses (greetings, quick answers) don't need a banner
-        const isSubstantialTask = stepCount >= 3 && elapsed >= 30_000;
-        if (isSubstantialTask && channel instanceof TelegramChannel) {
-          // For substantial Telegram tasks: sendCompletion handles endTask + deferred flush + cleanup.
-          // Always queue the final answer explicitly; streaming normally already
-          // defers it, but non-streamed/fallback responses must not be dropped.
-          if (finalText && finalText.trim()) {
-            (channel as TelegramChannel).deferResponse(msg.channelId, finalText);
-          }
-          const completionMeta = {
-            provider: usedProvider?.name ?? 'unknown',
-            model: usedProvider?.model ?? 'unknown',
-            inputTokens: result.usage?.inputTokens ?? 0,
-            outputTokens: result.usage?.outputTokens ?? 0,
-            totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-            budgetUsed: this.tokenBudget.getDailyUsed(),
-            budgetTotal: this.tokenBudget.getBudget(),
-            budgetPercentage: this.tokenBudget.getUsagePercentage(),
-          };
-          await (channel as TelegramChannel).sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-        } else if (channel instanceof TelegramChannel) {
-          // For non-substantial Telegram tasks: end task, flush deferred, clean up
-          (channel as TelegramChannel).endTask(msg.channelId);
-          // Flush deferred response
-          const deferred = (channel as TelegramChannel).popDeferredResponse(msg.channelId);
-          const responseText = deferred || finalText;
-          if (responseText && responseText.trim()) {
-            await channel.send(responseText, msg.channelId, elapsed);
-          }
-          if (stepCount > 0) {
-            await (channel as TelegramChannel).cleanupEphemeralMessages(msg.channelId);
-            (channel as TelegramChannel).resetStepCounter(msg.channelId);
-          }
-          this.markProgress();
-        } else if (channel instanceof SignalChannel) {
-          // For Signal tasks: end task, flush deferred, send completion banner for substantial tasks
-          const sigCh = channel as SignalChannel;
-          if (isSubstantialTask) {
-            await sigCh.stream((async function* () { yield finalText; })(), msg.channelId);
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            await sigCh.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-          } else {
-            sigCh.endTask(msg.channelId);
-            const deferred = sigCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || finalText;
-            if (responseText && responseText.trim()) {
-              await channel.send(responseText, msg.channelId, elapsed);
-            }
-            sigCh.resetStepCounter(msg.channelId);
-            this.markProgress();
-          }
-        } else if (channel instanceof DiscordChannel) {
-          const dcCh = channel as DiscordChannel;
-          if (isSubstantialTask) {
-            await dcCh.stream((async function* () { yield finalText; })(), msg.channelId);
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            await dcCh.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-          } else {
-            dcCh.endTask(msg.channelId);
-            const deferred = dcCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || finalText;
-            if (responseText && responseText.trim()) {
-              await channel.send(responseText, msg.channelId, elapsed);
-            }
-            dcCh.resetStepCounter(msg.channelId);
-            this.markProgress();
-          }
-        } else if (channel instanceof SlackChannel) {
-          const slCh = channel as SlackChannel;
-          if (isSubstantialTask) {
-            await slCh.stream((async function* () { yield finalText; })(), msg.channelId);
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            await slCh.sendCompletion(elapsed, stepCount, msg.channelId, completionMeta);
-          } else {
-            slCh.endTask(msg.channelId);
-            const deferred = slCh.popDeferredResponse(msg.channelId);
-            const responseText = deferred || finalText;
-            if (responseText && responseText.trim()) {
-              await channel.send(responseText, msg.channelId, elapsed);
-            }
-            slCh.resetStepCounter(msg.channelId);
-            this.markProgress();
-          }
-        } else {
-          // CLI or other channels — original flow
-          logger.info({ channelType: msg.channelType, targetId: msg.channelId }, 'Sending durable response');
-          if (requiresFinalSend(msg.channelType, cliResponseStreamed)) {
-            await channel.send(finalText, msg.channelId, elapsed);
-          }
-          this.markProgress();
-          const isMercuryCodeExecution = channel instanceof CLIChannel
-            && channel.getTuiState().mode === 'mercury-code'
-            && (channel.getTuiState().programmingMode === 'execute' || channel.getTuiState().programmingMode === 'auto');
-          if ((isSubstantialTask || isMercuryCodeExecution) && channel instanceof CLIChannel) {
-            const completionMeta = {
-              provider: usedProvider?.name ?? 'unknown',
-              model: usedProvider?.model ?? 'unknown',
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-              budgetUsed: this.tokenBudget.getDailyUsed(),
-              budgetTotal: this.tokenBudget.getBudget(),
-              budgetPercentage: this.tokenBudget.getUsagePercentage(),
-            };
-            (channel as CLIChannel).sendCompletion(elapsed, stepCount, completionMeta, undefined, lastVerificationNote || undefined);
-          }
-        }
+        const completionMeta = {
+          provider: usedProvider?.name ?? 'unknown',
+          model: usedProvider?.model ?? 'unknown',
+          inputTokens: result.usage?.inputTokens ?? 0,
+          outputTokens: result.usage?.outputTokens ?? 0,
+          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          budgetUsed: this.tokenBudget.getDailyUsed(),
+          budgetTotal: this.tokenBudget.getBudget(),
+          budgetPercentage: this.tokenBudget.getUsagePercentage(),
+        };
+        const isMercuryCodeExecution = channel instanceof CLIChannel
+          && channel.getTuiState().mode === 'mercury-code'
+          && (channel.getTuiState().programmingMode === 'execute' || channel.getTuiState().programmingMode === 'auto');
+        logger.info({ channelType: msg.channelType, targetId: msg.channelId, surface: surface.kind, traceId }, 'Delivering final response');
+        await surface.done({
+          finalText,
+          elapsedMs: elapsed,
+          stepCount,
+          meta: completionMeta,
+          verificationNote: lastVerificationNote || undefined,
+          traceId,
+          alreadyStreamed: !requiresFinalSend(msg.channelType, cliResponseStreamed),
+          forceBanner: isMercuryCodeExecution,
+        });
+        this.markProgress();
       } else {
         logger.debug('Internal prompt processed, no channel response needed');
       }
+
 
       const awaitsCloudAck = msg.channelType === 'web'
         && typeof msg.metadata?.externalConversationId === 'string'
@@ -6220,6 +6074,13 @@ Is this productive iteration or a stuck loop?`,
     // Unlike /reset this never halts agents, clears queues, or wipes state.
     if (cmd === '/new') {
       await this.handleSessionCommand('/session new', channelType as ChannelType, channelId);
+      return true;
+    }
+
+    // /trace [id] — what happened in a turn: provider, tokens, timing,
+    // verification, and every tool call. Answers "why did it do that?".
+    if (cmd === '/trace' || cmd.startsWith('/trace ')) {
+      await channel.send(this.renderTrace(channelType as ChannelType, channelId, trimmed.slice('/trace'.length).trim()), channelId);
       return true;
     }
 
@@ -7752,6 +7613,35 @@ Is this productive iteration or a stuck loop?`,
     }
 
     return false;
+  }
+
+  /** Render the trace for a turn in this chat's session (latest when no id). */
+  renderTrace(channelType: ChannelType, channelId: string, idArg = ''): string {
+    const bindingId = channelType === 'cli' ? 'current' : channelId;
+    const session = this.sessions.getByBinding(channelType, bindingId);
+    if (!session) return 'No session is bound to this chat yet.';
+    const turns = session.messages.filter((m) => m.role === 'assistant' && m.kind === 'message');
+    const wanted = idArg.toLowerCase();
+    const target = wanted
+      ? [...turns].reverse().find((m) => String((m.metadata as Record<string, unknown> | undefined)?.traceId ?? '').toLowerCase().startsWith(wanted))
+      : turns.at(-1);
+    if (!target) return wanted ? `No turn found for trace "${idArg}".` : 'No turns in this session yet.';
+    const meta = (target.metadata ?? {}) as Record<string, unknown>;
+    const baseId = (target.externalMessageId ?? '').replace(/:assistant$/, '');
+    const toolEntry = baseId
+      ? session.messages.find((m) => m.kind === TOOL_TRACE_KIND && m.externalMessageId === `${baseId}:tools`)
+      : undefined;
+    const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
+    const elapsed = num(meta.elapsedMs);
+    return [
+      `Trace ${String(meta.traceId ?? target.id.slice(0, 8))} · ${new Date(target.timestamp).toISOString()}`,
+      `Provider: ${String(meta.provider ?? 'unknown')} / ${String(meta.model ?? 'unknown')}`,
+      `Tokens: ${num(meta.inputTokens) ?? '?'} in (${num(meta.cachedInputTokens) ?? 0} cached) · ${num(meta.outputTokens) ?? '?'} out`,
+      `Steps: ${num(meta.steps) ?? '?'} · Elapsed: ${elapsed != null ? `${(elapsed / 1000).toFixed(1)}s` : '?'}`,
+      `Verification: ${typeof meta.verification === 'string' ? meta.verification : 'none'}`,
+      '',
+      toolEntry ? toolEntry.content : 'No tool calls in this turn.',
+    ].join('\n');
   }
 
   private async handleSessionCommand(content: string, channelType: ChannelType, channelId: string): Promise<void> {

@@ -86,7 +86,8 @@ describe('completion contract — source guarantees', () => {
     // The pause verdict must short-circuit BEFORE the completion delivery —
     // the markPaused return path precedes the first sendCompletion call.
     const pauseIdx = agent.indexOf("turnEnd() === 'steps-exhausted'");
-    const deliverIdx = agent.indexOf('sendCompletion(elapsed, stepCount');
+    // Delivery now goes through the TaskSurface contract (core/task-surface.ts).
+    const deliverIdx = agent.indexOf('surface.done({');
     expect(pauseIdx).toBeGreaterThan(-1);
     expect(deliverIdx).toBeGreaterThan(pauseIdx);
   });
@@ -106,7 +107,8 @@ describe('completion contract — source guarantees', () => {
     expect(agent).toContain('WORK_NOT_STARTED_BANNER');
     expect(agent).toContain('Narration guard exhausted (both cycles)');
     const guardExhaustedIdx = agent.indexOf('Narration guard exhausted (both cycles)');
-    const deliverIdx = agent.indexOf('sendCompletion(elapsed, stepCount');
+    // Delivery now goes through the TaskSurface contract (core/task-surface.ts).
+    const deliverIdx = agent.indexOf('surface.done({');
     expect(guardExhaustedIdx).toBeGreaterThan(-1);
     expect(deliverIdx).toBeGreaterThan(guardExhaustedIdx);
   });
