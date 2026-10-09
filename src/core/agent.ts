@@ -394,6 +394,21 @@ class ToolCallLoopDetector {
 
 // Test/soak override: MERCURY_MAX_STEPS=3 forces cheap step-budget
 // exhaustion to exercise the completion contract end to end.
+/**
+ * The value a tool returned. AI SDK v6 tool results carry it as `output`;
+ * older shapes used `result`. Reading only `.result` stringified the whole
+ * envelope, so failures were detected by accident and the loop detector's
+ * failed flag never fired.
+ */
+export function toolResultValue(tr: unknown): unknown {
+  if (tr && typeof tr === 'object') {
+    const o = tr as { output?: unknown; result?: unknown };
+    if (o.output !== undefined) return o.output;
+    if (o.result !== undefined) return o.result;
+  }
+  return tr;
+}
+
 export const MAX_STEPS = (() => {
   const override = Number(process.env.MERCURY_MAX_STEPS);
   return Number.isFinite(override) && override > 0 ? Math.floor(override) : 75;
@@ -1594,7 +1609,7 @@ export class Agent {
     /** Mechanically force the first step to contain a tool call. */
     forceFirstTool?: boolean;
     onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
-  }): Promise<{ text: string; usage: any; reasoning?: any }> {
+  }): Promise<{ text: string; usage: any; reasoning?: any; finishReason?: string }> {
     this.markProgress(`Resuming with ${opts.provider.name}...`);
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
     const stream = streamText({
@@ -1649,7 +1664,7 @@ export class Agent {
     if (completion === 'interrupted') {
       throw new Error('Continuation stream was interrupted (no finish signal from provider)');
     }
-    return { text, usage: await stream.usage, reasoning: stream.reasoning };
+    return { text, usage: await stream.usage, reasoning: stream.reasoning, finishReason: finish };
   }
 
   /**
@@ -2490,7 +2505,7 @@ export class Agent {
         if (!toolCalls || !toolResults) return;
         for (let i = 0; i < toolCalls.length; i++) {
           const tc = toolCalls[i];
-          const raw = (toolResults[i] as any)?.result ?? toolResults[i];
+          const raw = toolResultValue(toolResults[i]);
           const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '');
           turnToolTrace.push(formatToolTraceLine({
             tool: tc.toolName,
@@ -2560,6 +2575,9 @@ export class Agent {
                 lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
                 const cliCh = this.channels.get('cli');
                 if (cliCh instanceof CLIChannel) cliCh.bumpLiveActivitySteps();
+                // Every tool step goes into the per-turn trace (session history
+                // and /trace), not only the guard/continuation rounds.
+                noteToolSteps(toolCalls, toolResults);
                 // Step-level memory checkpoint: deterministic, runs even when
                 // the event loop is saturated (unlike the wall-clock guard).
                 const verdict = memoryGovernor(`${path}-step-${this.completedStepCount}`);
@@ -2610,17 +2628,17 @@ export class Agent {
                       if (typeof cmd === 'string') {
                       executeCommandsRun.push(cmd);
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vResult = toolResultValue(toolResults[i]);
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
                         recordVerification(cmd, vText);
                       }
                     }
                     }
-                    const tr = toolResults[i] as any;
-                    recordExecuteToolResult(tc.toolName, tr?.result ?? tr);
-                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, tr?.result ?? tr);
+                    const trValue = toolResultValue(toolResults[i]);
+                    recordExecuteToolResult(tc.toolName, trValue);
+                    this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, trValue);
                     this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
-                    const resultStr = typeof tr?.result === 'string' ? tr.result : JSON.stringify(tr?.result ?? '');
+                    const resultStr = typeof trValue === 'string' ? trValue : JSON.stringify(trValue ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
                       resultStr.startsWith('⚠') ||
@@ -2742,7 +2760,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            (channel as CLIChannel).sendStepDone(tcName, tr.result ?? tr);
+                            (channel as CLIChannel).sendStepDone(tcName, toolResultValue(tr));
                           }
                         }
                       }
@@ -2756,7 +2774,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            void tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void tgCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -2770,7 +2788,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            void sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void sigCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -2784,7 +2802,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            webCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                            webCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId);
                           }
                         }
                       }
@@ -2798,7 +2816,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            void dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void dcCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -2812,7 +2830,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            void Promise.resolve(slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void Promise.resolve(slCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -2864,14 +2882,14 @@ export class Agent {
                     if (typeof cmd === 'string') {
                       executeCommandsRun.push(cmd);
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                        const vResult = toolResultValue(toolResults[i]);
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
                         recordVerification(cmd, vText);
                       }
                     }
                   }
-                  recordExecuteToolResult(tc.toolName, (toolResults[i] as any)?.result ?? toolResults[i]);
-                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, (toolResults[i] as any)?.result ?? toolResults[i]);
+                  recordExecuteToolResult(tc.toolName, toolResultValue(toolResults[i]));
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, toolResultValue(toolResults[i]));
                   this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
@@ -3005,7 +3023,7 @@ export class Agent {
               ? `${streamedText}\n\n[Response truncated: the model reached its output limit. Ask me to continue from this point.]`
               : streamedText;
 
-            result = { text: fullText, usage, reasoning: streamReasoning };
+            result = { text: fullText, usage, reasoning: streamReasoning, finishReason };
             loopDetector.recordStepText(fullText);
 
             // Auto-continuation: a length-truncated response in code mode
@@ -3448,7 +3466,7 @@ export class Agent {
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
-                  const guardToolResult = (toolResults[i] as any)?.result ?? toolResults[i];
+                  const guardToolResult = toolResultValue(toolResults[i]);
                   recordExecuteToolResult(tc.toolName, guardToolResult);
                   // Remember WHY the work did not land, so an honest pause
                   // can tell the user what actually blocked it.
@@ -3480,7 +3498,7 @@ export class Agent {
           if (gCompletion === 'interrupted') {
             throw new Error('Guard continuation stream was interrupted (no finish signal from provider)');
           }
-          if (guardText.trim()) result = { text: guardText, usage: await guardStream.usage, reasoning: guardStream.reasoning };
+          if (guardText.trim()) result = { text: guardText, usage: await guardStream.usage, reasoning: guardStream.reasoning, finishReason: await guardStream.finishReason };
           cliResponseStreamed = channel instanceof CLIChannel;
         } catch (guardErr: any) {
           // The guard nudge is best-effort: never let it turn a delivered
@@ -3575,7 +3593,7 @@ export class Agent {
             channelId: msg.channelId,
             onStep: continuationStepHandler,
           });
-          if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+          if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };
           cliResponseStreamed = channel instanceof CLIChannel;
         } catch (resumeErr: any) {
           logger.warn({ err: resumeErr?.message || String(resumeErr) }, 'Step-budget continuation failed; falling through to honest pause');
@@ -3637,7 +3655,7 @@ export class Agent {
               forceFirstTool: true,
               onStep: continuationStepHandler,
             });
-            if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning };
+            if (round.text.trim()) result = { text: round.text, usage: round.usage, reasoning: round.reasoning, finishReason: round.finishReason };
             cliResponseStreamed = channel instanceof CLIChannel;
           } catch (verifyErr: any) {
             logger.warn({ err: verifyErr?.message || String(verifyErr) }, 'Verification continuation failed; keeping original response');
