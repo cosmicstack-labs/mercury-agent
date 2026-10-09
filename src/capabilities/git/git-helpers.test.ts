@@ -97,7 +97,10 @@ describe('git helpers pass the path as a single argv element (no shell)', () => 
 
 describe('git helpers reject out-of-scope paths before any exec', () => {
   const OUTSIDE = '/etc/secret';
-  const DENIED = /^Error: Permission denied for read access to \/etc\/secret\. Use the approve_scope tool/;
+  // The tools resolve the path first, so on Windows this becomes D:\etc\secret.
+  const OUTSIDE_RESOLVED = resolve(OUTSIDE);
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const DENIED = new RegExp(`^Error: Permission denied for read access to ${escapeRe(OUTSIDE_RESOLVED)}\\. Use the approve_scope tool`);
 
   it.each([
     ['git_status', (p: PermissionManager) => createGitStatusTool(p, () => CWD), { path: OUTSIDE }],
@@ -108,7 +111,7 @@ describe('git helpers reject out-of-scope paths before any exec', () => {
     const result = await run(make(permissions), input);
 
     expect(result).toMatch(DENIED);
-    expect(permissions.checkFsAccess).toHaveBeenCalledWith(OUTSIDE, 'read');
+    expect(permissions.checkFsAccess).toHaveBeenCalledWith(OUTSIDE_RESOLVED, 'read');
     expect(execFileSync).not.toHaveBeenCalled();
     expect(execSync).not.toHaveBeenCalled();
   });
@@ -116,7 +119,7 @@ describe('git helpers reject out-of-scope paths before any exec', () => {
   it('resolves relative paths against the tool cwd before checking scope', async () => {
     const permissions = fakePermissions({ readAllowed: false });
     await run(createGitLogTool(permissions, () => CWD), { path: '../outside' });
-    expect(permissions.checkFsAccess).toHaveBeenCalledWith('/outside', 'read');
+    expect(permissions.checkFsAccess).toHaveBeenCalledWith(resolve(CWD, '../outside'), 'read');
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
