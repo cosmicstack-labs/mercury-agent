@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
@@ -352,8 +352,10 @@ function xmlEscape(value: string): string {
 
 /** macOS LaunchAgent plist for the given launch argv. */
 export function buildLaunchAgentPlist(launchArgs: string[], opts: ServiceFileOptions): string {
-  const logPath = join(opts.mercuryHome, 'daemon.log');
-  const errPath = join(opts.mercuryHome, 'daemon-error.log');
+  // plist and systemd files are POSIX formats regardless of the host that
+  // renders them (CI runs these builders on Windows too), so use posix joins.
+  const logPath = posix.join(opts.mercuryHome, 'daemon.log');
+  const errPath = posix.join(opts.mercuryHome, 'daemon-error.log');
   const programArgsXml = launchArgs.map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -410,8 +412,8 @@ RestartSec=5
 Environment=PATH=${opts.pathEnv}
 Environment=HOME=${opts.userHome}
 WorkingDirectory=${opts.userHome}
-StandardOutput=append:${join(opts.mercuryHome, 'daemon.log')}
-StandardError=append:${join(opts.mercuryHome, 'daemon-error.log')}
+StandardOutput=append:${posix.join(opts.mercuryHome, 'daemon.log')}
+StandardError=append:${posix.join(opts.mercuryHome, 'daemon-error.log')}
 
 [Install]
 WantedBy=default.target`;
