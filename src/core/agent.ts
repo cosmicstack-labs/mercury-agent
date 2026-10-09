@@ -1977,7 +1977,7 @@ export class Agent {
    * ambiguous match the user disambiguates. May rewrite or append to
    * `messages`; never ends the turn on its own.
    */
-  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: any[]): Promise<void> {
+  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<void> {
     if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
       try {
         const intentRouter = this.skillLoader.intentRouter;
