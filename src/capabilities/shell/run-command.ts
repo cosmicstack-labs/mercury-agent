@@ -1,13 +1,14 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
-import { spawn } from 'node:child_process';
+import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { resolve, isAbsolute } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { PermissionManager } from '../permissions.js';
 import { redactSecrets } from '../../utils/redact.js';
 import { logger } from '../../utils/logger.js';
 import { pulseProgress, TOOL_PULSE_INTERVAL_MS } from '../../core/progress-pulse.js';
+import { planArgvExecution, minimalEnv, type ArgvPlan } from './argv-lane.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 1024 * 1024;
@@ -31,7 +32,36 @@ interface ExecOptions {
   onActivity?: () => void;
 }
 
+/**
+ * Approval-lane executor: runs the exact string the user approved through
+ * the platform shell.
+ */
 export function executeCommand(command: string, cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
+  return superviseChild(() => spawn(command, [], {
+    cwd,
+    shell: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }), timeoutMs, options);
+}
+
+/**
+ * Argv-lane executor: `execFile(absBinary, args)` with no shell and a
+ * minimal environment (pinned PATH, no secrets). Used only for commands the
+ * argv lane auto-approved.
+ */
+export function executeArgv(file: string, args: readonly string[], cwd: string, timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
+  return superviseChild(() => execFile(file, [...args], {
+    cwd,
+    env: minimalEnv(),
+    shell: false,
+    windowsHide: true,
+    // Output is bounded by the stream handlers below; execFile's own buffer
+    // limit would kill a long but legitimate listing.
+    maxBuffer: Number.MAX_SAFE_INTEGER,
+  }, () => { /* results are collected from the streams */ }), timeoutMs, options);
+}
+
+function superviseChild(start: () => ChildProcess, timeoutMs: number, options: ExecOptions): Promise<ExecResult> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -41,11 +71,13 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
     let pulseHandle: ReturnType<typeof setInterval> | undefined;
     const { signal, onActivity } = options;
 
-    const child = spawn(command, [], {
-      cwd,
-      shell: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    let child: ChildProcess;
+    try {
+      child = start();
+    } catch (err: any) {
+      resolve({ stdout: '', stderr: `Process error: ${err?.message ?? String(err)}`, exitCode: null, timedOut: false, aborted: false });
+      return;
+    }
 
     const onAbort = () => terminate('abort');
 
@@ -71,7 +103,7 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
       finish(null, reason === 'timeout', reason === 'abort');
     };
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       onActivity?.();
       if (stdout.length < MAX_BUFFER) {
         stdout += chunk.toString();
@@ -81,7 +113,7 @@ export function executeCommand(command: string, cwd: string, timeoutMs: number, 
       }
     });
 
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       onActivity?.();
       if (stderr.length < MAX_BUFFER) {
         stderr += chunk.toString();
@@ -125,28 +157,40 @@ export function createRunCommandTool(permissions: PermissionManager, getCwd: () 
   return tool({
     description: `Run a shell command in the current working directory. Use the cd tool to change directories first — cd commands within this tool only affect chained commands (e.g., "cd /path && ls"), not subsequent calls.
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
-Auto-approved commands (ls, cat, git status, curl, etc.) run without asking.
-Other commands prompt the user for approval before execution.
+Simple read-only commands (ls, cat, grep, find, git status/log/diff, ...) with no pipes, redirection, variables or globs run without asking, executed directly (no shell).
+Everything else — including pipelines and && chains — prompts the user for approval before execution.
 The optional timeout parameter sets how long (in seconds) the command can run before being killed (default 120, max 600). For very long builds or test suites, set a higher timeout or use /bg to run the command in the background.`,
     inputSchema: zodSchema(z.object({
       command: z.string().describe('The shell command to execute'),
       timeout: z.number().min(10).max(600).default(120).optional().describe('Timeout in seconds (default 120, max 600). Increase for long-running commands like builds or test suites.'),
     })),
     execute: async ({ command, timeout }, toolOptions?: { abortSignal?: AbortSignal }) => {
-      const check = await permissions.checkShellCommand(command);
+      const cwd = getCwd();
+      const check = await permissions.checkShellCommand(command, { cwd });
       if (!check.allowed) {
         return `Error: ${check.reason}`;
       }
 
-      const cwd = getCwd();
       const timeoutMs = (timeout ?? 120) * 1000;
 
+      // Any command the argv lane can express runs through execFile, whichever
+      // lane approved it; only commands that need a shell reach one.
+      const plan = planArgvExecution(command);
+      if (plan?.kind === 'builtin') {
+        return runBuiltin(plan, cwd, setCwd);
+      }
+      if (check.lane === 'argv' && !plan) {
+        // Classified for the argv lane but no longer executable that way
+        // (e.g. the binary vanished): never fall back to a shell unapproved.
+        return 'Error: command could not be executed without a shell; it requires approval.';
+      }
+
       try {
-        logger.info({ cmd: command, cwd, timeoutMs }, 'Executing shell command');
-        const result = await executeCommand(command, cwd, timeoutMs, {
-          signal: toolOptions?.abortSignal,
-          onActivity: pulseProgress,
-        });
+        logger.info({ cmd: command, cwd, timeoutMs, lane: plan ? 'argv' : 'shell' }, 'Executing command');
+        const execOptions = { signal: toolOptions?.abortSignal, onActivity: pulseProgress };
+        const result = plan
+          ? await executeArgv(plan.file, plan.args, cwd, timeoutMs, execOptions)
+          : await executeCommand(command, cwd, timeoutMs, execOptions);
 
         if (result.stdout || result.stderr) {
           detectCd(command, cwd, setCwd);
@@ -200,6 +244,19 @@ The optional timeout parameter sets how long (in seconds) the command can run be
       }
     },
   });
+}
+
+/** `cd` in the argv lane: change the tool cwd in-process (it is a shell builtin). */
+function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, setCwd: (dir: string) => void): string {
+  const target = plan.argv[1] ?? homedir();
+  const resolved = isAbsolute(target) ? resolve(target) : resolve(cwd, target);
+  try {
+    if (!statSync(resolved).isDirectory()) return `Error: Not a directory: ${resolved}`;
+  } catch {
+    return `Error: Directory not found: ${resolved}`;
+  }
+  setCwd(resolved);
+  return `Changed directory to ${resolved}`;
 }
 
 function detectCd(command: string, currentCwd: string, setCwd: (dir: string) => void): void {
