@@ -85,7 +85,8 @@ import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } 
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
-import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult } from './context-window.js';
+import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
+import { buildSystemPrompt as assembleSystemPrompt } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -3094,45 +3095,8 @@ export class Agent {
       // mind." turns primed terse acknowledgements and polluted history.
       const contextBlocks: string[] = [];
 
-      const recentSteps = recentMemory.slice(-6);
-      let loopWarning: string | null = null;
-      if (recentSteps.length >= 3) {
-        const toolCallPattern = /\[Using: (.+?)\]/g;
-        const toolCalls: string[] = [];
-        for (const m of recentSteps) {
-          if (m.role === 'assistant') {
-            let match;
-            while ((match = toolCallPattern.exec(m.content)) !== null) {
-              toolCalls.push(match[1]);
-            }
-          }
-        }
-        if (toolCalls.length >= 3) {
-          const last3 = toolCalls.slice(-3);
-          if (last3[0] === last3[1] && last3[1] === last3[2]) {
-            loopWarning = `[SYSTEM WARNING] You have called ${last3[0]} 3+ times in a row with the same result. Stop repeating this call. Try a different approach — if you're failing on permissions, try a different path. If you're failing on git push auth, use github_api with PUT /repos/{owner}/{repo}/contents/{path} to push files directly through the API.`;
-          }
-        }
-
-        if (!loopWarning) {
-          const assistantMessages = recentSteps.filter(m => m.role === 'assistant' && m.content.length > 20);
-          if (assistantMessages.length >= 3) {
-            const last3 = assistantMessages.slice(-3);
-            const normalizeText = (t: string) => t.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim().slice(0, 150);
-            const normalized = last3.map(m => normalizeText(m.content));
-            const words0 = new Set(normalized[0].split(' '));
-            const overlap01 = normalized[0] && normalized[1] ? [...words0].filter(w => new Set(normalized[1].split(' ')).has(w)).length / Math.max(words0.size, 1) : 0;
-            const overlap12 = normalized[1] && normalized[2] ? [...new Set(normalized[1].split(' '))].filter(w => new Set(normalized[2].split(' ')).has(w)).length / Math.max(new Set(normalized[1].split(' ')).size, 1) : 0;
-            if (overlap01 > 0.75 && overlap12 > 0.75) {
-              loopWarning = `[SYSTEM WARNING] Your last 3 responses are nearly identical. You are stuck in a text repetition loop. Stop immediately and give a completely different response. If you cannot complete the task, tell the user clearly why.`;
-            }
-          }
-        }
-      }
-
-      if (loopWarning) {
-        contextBlocks.push(loopWarning);
-      }
+      const loopWarning = detectRepetitionLoop(recentMemory);
+      if (loopWarning) contextBlocks.push(loopWarning);
 
       if (this.userMemory) {
         const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
@@ -4859,112 +4823,26 @@ export class Agent {
     ];
   }
 
+  /** Stable system prompt; assembly lives in core/system-prompt.ts. */
   private buildSystemPrompt(): string {
-    let prompt = this.identity.getSystemPrompt(this.config.identity);
-    const skillContext = this.capabilities.getSkillContext();
-    if (skillContext) {
-      prompt += '\n\n' + skillContext;
-    }
-    // Mercury Bots: the main agent must know the fleet exists — what each
-    // bot does, its live state, and how to dispatch to it. Without this the
-    // conversational agent answers bot questions blindly.
-    if (this.botManager) {
-      prompt += this.botManager.getSystemPromptSection();
-    }
-    const programmingSuffix = this.programmingMode.getSystemPromptSuffix();
-    if (programmingSuffix) {
-      prompt += programmingSuffix;
-    }
-    const researchSuffix = this.researchMode.getSystemPromptSuffix();
-    if (researchSuffix) {
-      prompt += researchSuffix;
-    }
-    const budgetStatus = this.tokenBudget.getStatusText();
-    prompt += '\n\n' + budgetStatus;
-    if (this.tokenBudget.getUsagePercentage() > 70) {
-      prompt += '\nBe concise to conserve tokens.';
-    }
-    const saverSuffix = this.saverMode.getSystemPromptSuffix();
-    if (saverSuffix) {
-      prompt += saverSuffix;
-    }
-
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    // Hour resolution on purpose: a minute-precise clock changed the system
-    // prompt every turn and defeated prompt caching for the ~10K-token
-    // prefix that follows. Tools report exact timestamps when it matters.
-    const timeStr = `about ${now.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })}`;
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    prompt += `\n\nEnvironment:\n- Date: ${dateStr}, ${timeStr} (${timezone})\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
-
-    prompt += `\n\n**Tool Usage Guidelines:**
-- Use write_file, create_file, and edit_file tools DIRECTLY to create and modify files. Do NOT create intermediary scripts (Python, bash, Node.js) whose sole purpose is to generate other files — you have native file tools for this.
-- Use run_command for: building, testing, installing dependencies, running the project, git operations, and other system tasks that require a shell.
-- Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
-- Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
-- When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
-
-    if (this.userMemory) {
-      const summary = this.userMemory.getSummary();
-      prompt += `\n\nSecond Brain (SQLite-backed long-term memory) is ENABLED. You have ${summary.total} persistent memories about this user.`;
-      prompt += `\nMemory types: identity, preference, goal, project, habit, decision, constraint, relationship, episode, reflection.`;
-      prompt += `\n\nCRITICAL — Memory storage rules:`;
-      prompt += `\n- ALL persistent user knowledge lives in the Second Brain SQLite database — this is the single source of truth.`;
-      prompt += `\n- NEVER use create_file, write_file, edit_file, or any file tool to store memories, notes, facts, preferences, or brain data. Files are for code and documents, not for knowledge storage.`;
-      prompt += `\n- New memories are extracted AUTOMATICALLY after each conversation turn. You do not need to ask the user if they want to save something.`;
-      prompt += `\n- When the user explicitly asks you to "save/remember/note/keep this," use the save_memory tool to store it directly — no follow-up questions needed.`;
-      prompt += `\n- When you need to actively recall something beyond auto-injected context (e.g. "do you remember...", "what do I know about..."), use the search_memory tool.`;
-      prompt += `\n- Relevant memories are auto-injected before each message. You can reference them naturally (e.g. "I remember you prefer TypeScript").`;
-      prompt += `\n- Users can manage memory with: /memory (overview, search, pause learning, clear).`;
-      if (summary.learningPaused) {
-        prompt += `\n\nLearning is currently PAUSED — no new memories will be extracted or saved until resumed.`;
-      }
-    } else {
-      prompt += '\n\nSecond Brain is DISABLED. Basic long-term memory (text search over facts) is still active.';
-    }
-
-    // Notification routing guidance for tweet-notifier skill
-    const skillNames = this.capabilities.getSkillContext();
-    if (skillNames.includes('tweet-notifier')) {
-      prompt += `\n\n**Tweet Notification System Available** — The tweet-notifier skill is installed.
-When you need to schedule tweets, manage approvals, or notify founders/supporters:
-1. Use the \`use_skill\` tool to invoke the \`tweet-notifier\` skill for detailed instructions
-2. The skill provides templates for scheduling tweets, notifying founders (via send_message), and alerting supporters (approved Telegram users)
-3. Key tools used by this system: schedule_task (for timing), send_message (for notifications to Telegram), save_memory (for tweet state tracking), search_memory (for checking existing tweets)
-4. Supporters are all approved Telegram users — send_message will reach them
-5. The founder (Optimus Prime) receives notifications via send_message (Telegram)`;
-    }
-
-    const toolNames = this.capabilities.getToolNames();
-    const githubTools = ['create_pr', 'review_pr', 'list_issues', 'create_issue', 'github_api'];
-    const hasGitHub = githubTools.some(t => toolNames.includes(t));
-    if (hasGitHub) {
-      let githubHint = '\n\nGitHub companion is active.';
-      const { defaultOwner, defaultRepo } = this.config.github;
-      if (defaultOwner && defaultRepo) {
-        githubHint += ` Default repo: ${defaultOwner}/${defaultRepo}. Use this when the user doesn't specify a repo.`;
-      }
-
-      githubHint += `
-
-Available GitHub tools and when to use them:
-- git_add, git_commit, git_push: LOCAL git operations (stage, commit, push to a remote you have SSH/auth access to). All commits include "Co-authored-by: Mercury <mercury@cosmicstack.org>".
-- create_pr: Create a pull request on GitHub. The head branch must already exist on the remote.
-- review_pr: Get PR details and optionally post a review comment.
-- list_issues, create_issue: Browse and file issues.
-- github_api: Raw GitHub API access. IMPORTANT USE CASES:
-  - Push files directly to GitHub via PUT /repos/{owner}/{repo}/contents/{path} when git push fails due to auth. The body must include "message" and "content" (base64-encoded file content). This creates a commit on GitHub with Mercury as co-author.
-  - Delete files via DELETE /repos/{owner}/{repo}/contents/{path} with a "message" and "sha" in the body.
-  - Any other GitHub API operation not covered by the other tools.
-
-When the user asks to "push to GitHub" or "upload files" and git push fails, use github_api with PUT /repos/{owner}/{repo}/contents/{path} to push content directly through the API. This bypasses local git entirely.
-
-Always specify owner and repo parameters on GitHub tools. The user's GitHub username is ${this.config.github.username || 'not set'}.'`;
-
-      prompt += githubHint;
-    }
-    return prompt;
+    const summary = this.userMemory ? this.userMemory.getSummary() : null;
+    return assembleSystemPrompt({
+      identityPrompt: this.identity.getSystemPrompt(this.config.identity),
+      skillContext: this.capabilities.getSkillContext(),
+      botSection: this.botManager ? this.botManager.getSystemPromptSection() : '',
+      programmingSuffix: this.programmingMode.getSystemPromptSuffix(),
+      researchSuffix: this.researchMode.getSystemPromptSuffix(),
+      budgetStatus: this.tokenBudget.getStatusText(),
+      budgetUsagePercentage: this.tokenBudget.getUsagePercentage(),
+      saverSuffix: this.saverMode.getSystemPromptSuffix(),
+      cwd: this.capabilities.getCwd(),
+      now: new Date(),
+      platform: process.platform,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      memorySummary: summary ? { total: summary.total, learningPaused: summary.learningPaused } : null,
+      toolNames: this.capabilities.getToolNames(),
+      github: this.config.github,
+    });
   }
 
   async processInternalPrompt(prompt: string, channelId?: string, channelType?: string): Promise<void> {

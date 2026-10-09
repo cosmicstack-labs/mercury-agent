@@ -137,3 +137,29 @@ export function formatToolTrace(lines: readonly string[]): string {
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
+
+/** Warning injected when the last three assistant replies are near-identical. */
+export const TEXT_REPETITION_WARNING =
+  '[SYSTEM WARNING] Your last 3 responses are nearly identical. You are stuck in a text repetition loop. Stop immediately and give a completely different response. If you cannot complete the task, tell the user clearly why.';
+
+const normalizeText = (t: string) => t.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim().slice(0, 150);
+const overlap = (a: string, b: string): number => {
+  const wa = new Set(a.split(' '));
+  const wb = new Set(b.split(' '));
+  return [...wa].filter((w) => wb.has(w)).length / Math.max(wa.size, 1);
+};
+
+/**
+ * Detect a reply-repetition loop in recent history: three consecutive
+ * assistant replies whose word sets overlap by more than 75%. Returns the
+ * warning text to put in the volatile context block, or null.
+ * (An older check for repeated "[Using: tool]" markers was removed: those
+ * markers were never written to history, so it could never fire.)
+ */
+export function detectRepetitionLoop(recent: readonly { role: string; content: string }[]): string | null {
+  const replies = recent.slice(-6).filter((m) => m.role === 'assistant' && m.content.length > 20);
+  if (replies.length < 3) return null;
+  const [a, b, c] = replies.slice(-3).map((m) => normalizeText(m.content));
+  if (!a || !b || !c) return null;
+  return overlap(a, b) > 0.75 && overlap(b, c) > 0.75 ? TEXT_REPETITION_WARNING : null;
+}
