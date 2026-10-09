@@ -533,7 +533,17 @@ export class CLIChannel extends BaseChannel {
   /** Esc-during-a-turn: installed by the boot path with the agent's stop
    * routine (the same one `/stop` calls). Null until set. */
   private interruptHandler: (() => unknown) | null = null;
-  private permissionResolver: ((value: string | boolean) => void) | null = null;
+  /**
+   * Pending interactive prompts, keyed by prompt id. Several callers can
+   * prompt concurrently (the foreground turn, sub-agents, bots): a single
+   * resolver slot was overwritten by the newest prompt and the earlier
+   * promises never settled. Every prompt now keeps its own resolver; the
+   * TUI shows them in arrival order — `state.permissionPrompt` is the one
+   * on screen, `promptQueue` holds the rest.
+   */
+  private promptResolvers = new Map<string, (value: string | boolean) => void>();
+  private promptQueue: PermissionPromptState[] = [];
+  private promptSeq = 0;
   private menuDepth = 0;
   private menuAbortController: AbortController | null = null;
   private heartbeatMsgId: string | null = null;
@@ -1251,11 +1261,11 @@ export class CLIChannel extends BaseChannel {
         channel: this,
         onInput: (text: string) => { this.inputHandler?.(text); },
         onPermissionResolve: (value: string | boolean) => {
-          if (this.permissionResolver) {
-            this.permissionResolver(value);
-            this.permissionResolver = null;
-          }
-          this.update({ permissionPrompt: null });
+          const shown = this.state.permissionPrompt;
+          if (shown?.id && this.resolvePrompt(shown.id, value)) return;
+          // No live resolver for what is on screen (stale state): clear it
+          // and surface whatever is queued next.
+          this.update({ permissionPrompt: this.promptQueue.shift() ?? null });
         },
         onExit: () => {
           this.scheduleTuiExit();
@@ -1963,105 +1973,136 @@ export class CLIChannel extends BaseChannel {
     }
   }
 
-  async prompt(question: string): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'ask',
-          message: question,
-          resolve: () => {},
-        },
-      });
+  /**
+   * Register a prompt: its resolver lives in the map under a fresh id, and
+   * it is shown now or queued behind the prompt already on screen. The
+   * returned promise settles exactly once, whenever ITS prompt is answered.
+   */
+  private enqueuePrompt<T>(
+    prompt: Omit<PermissionPromptState, 'id' | 'resolve'>,
+    map: (value: string | boolean) => T,
+  ): Promise<T> {
+    return new Promise<T>((resolve) => {
+      const id = `prompt-${++this.promptSeq}`;
+      this.promptResolvers.set(id, (value) => resolve(map(value)));
+      const entry: PermissionPromptState = { ...prompt, id, resolve: (value) => { this.resolvePrompt(id, value); } };
+      if (this.state.permissionPrompt) {
+        this.promptQueue.push(entry);
+      } else {
+        this.update({ permissionPrompt: entry });
+      }
     });
+  }
+
+  /**
+   * Settle the prompt with this id. Returns false when no such prompt is
+   * pending (already answered, or unknown). If it was the one on screen,
+   * the next queued prompt is shown; if it was queued, it is removed.
+   */
+  resolvePrompt(id: string, value: string | boolean): boolean {
+    const resolver = this.promptResolvers.get(id);
+    if (!resolver) return false;
+    this.promptResolvers.delete(id);
+    if (this.state.permissionPrompt?.id === id) {
+      this.update({ permissionPrompt: this.promptQueue.shift() ?? null });
+    } else {
+      this.promptQueue = this.promptQueue.filter((p) => p.id !== id);
+    }
+    resolver(value);
+    return true;
+  }
+
+  /** Ids of every unanswered prompt: the visible one first, then the queue. */
+  pendingPromptIds(): string[] {
+    const shown = this.state.permissionPrompt?.id;
+    const queued = this.promptQueue.map((p) => p.id).filter((id): id is string => typeof id === 'string');
+    return shown ? [shown, ...queued] : queued;
+  }
+
+  async prompt(question: string): Promise<string> {
+    return this.enqueuePrompt({ type: 'ask', message: question }, String);
   }
 
   async askPermissionMode(): Promise<PermissionMode> {
     if (!process.stdout.isTTY) return 'ask-me';
-
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(val as PermissionMode);
-      this.update({
-        permissionPrompt: {
-          type: 'mode',
-          message: 'Choose how Mercury handles risky actions this session.',
-          options: [
-            { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
-            { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
-          ],
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({
+      type: 'mode',
+      message: 'Choose how Mercury handles risky actions this session.',
+      options: [
+        { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
+        { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
+      ],
+    }, (val) => val as PermissionMode);
   }
 
   async askPermission(prompt: string): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'ask',
-          message: prompt,
-          options: [
-            { value: 'yes', label: 'Yes — approve once' },
-            { value: 'always', label: 'Always — remember this permission' },
-            { value: 'no', label: 'No — deny' },
-          ],
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({
+      type: 'ask',
+      message: prompt,
+      options: [
+        { value: 'yes', label: 'Yes — approve once' },
+        { value: 'always', label: 'Always — remember this permission' },
+        { value: 'no', label: 'No — deny' },
+      ],
+    }, String);
   }
 
   async presentChoicePrompt(question: string, options: Array<{ value: string; label: string }>): Promise<string> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => resolve(String(val));
-      this.update({
-        permissionPrompt: {
-          type: 'choice',
-          message: question,
-          options,
-          resolve: () => {},
-        },
-      });
-    });
+    return this.enqueuePrompt({ type: 'choice', message: question, options }, String);
   }
 
   /**
    * Resolve a pending choice prompt with a default value (timeout / dismissal).
    * Time-weighted prompts use this so an unanswered question is answered FOR
-   * the user and the box disappears instead of lingering forever.
+   * the user and the box disappears instead of lingering forever. With
+   * `id` the exact prompt is settled; without it, the OLDEST unanswered
+   * choice prompt (the one whose timer fired first) — visible or queued.
    */
-  resolveChoicePromptWithDefault(value: string): void {
-    if (!this.state.permissionPrompt) return;
-    const resolver = this.permissionResolver;
-    this.permissionResolver = null;
-    this.update({ permissionPrompt: null });
-    resolver?.(value);
+  resolveChoicePromptWithDefault(value: string, id?: string): void {
+    if (id) {
+      this.resolvePrompt(id, value);
+      return;
+    }
+    const target = [this.state.permissionPrompt, ...this.promptQueue]
+      .find((p): p is PermissionPromptState => Boolean(p && p.type === 'choice' && p.id && this.promptResolvers.has(p.id)));
+    if (target?.id) this.resolvePrompt(target.id, value);
   }
 
   async askToContinue(question: string, _targetId?: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      this.permissionResolver = (val) => {
-        const normalized = typeof val === 'string' ? val.trim().toLowerCase() : val;
-        resolve(normalized === true || normalized === 'yes' || normalized === 'y');
-      };
-      this.update({
-        permissionPrompt: {
-          type: 'continue',
-          message: question,
-          options: [
-            { value: 'yes', label: 'Yes — continue' },
-            { value: 'no', label: 'No — stop' },
-          ],
-          resolve: () => {},
-        },
-      });
+    return this.enqueuePrompt({
+      type: 'continue',
+      message: question,
+      options: [
+        { value: 'yes', label: 'Yes — continue' },
+        { value: 'no', label: 'No — stop' },
+      ],
+    }, (val) => {
+      const normalized = typeof val === 'string' ? val.trim().toLowerCase() : val;
+      return normalized === true || normalized === 'yes' || normalized === 'y';
     });
   }
 
+  /**
+   * Dismiss every pending prompt. Each promise still settles — with the
+   * prompt's "declined" answer — so no caller hangs on a box that is gone.
+   */
   clearPermissionPrompt(): void {
+    for (const id of this.pendingPromptIds()) {
+      const entry = this.state.permissionPrompt?.id === id ? this.state.permissionPrompt : this.promptQueue.find((p) => p.id === id);
+      this.resolvePrompt(id, CLIChannel.dismissedAnswer(entry));
+    }
+    this.promptQueue = [];
     this.update({ permissionPrompt: null });
+  }
+
+  /** The answer a dismissed prompt reports (mirrors the TUI's Esc handling). */
+  private static dismissedAnswer(prompt: PermissionPromptState | null | undefined): string | boolean {
+    switch (prompt?.type) {
+      case 'mode': return 'ask-me';
+      case 'choice': return '';
+      case 'continue': return false;
+      default: return prompt?.options ? 'no' : '';
+    }
   }
 
   setSkills(skills: SkillInfo[]): void {
