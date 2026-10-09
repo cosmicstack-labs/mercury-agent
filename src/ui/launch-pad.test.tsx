@@ -10,8 +10,8 @@ import { EventEmitter } from 'node:events';
 import stringWidth from 'string-width';
 import { TuiApp } from './App.js';
 import { CLIChannel, type TuiState } from '../channels/cli.js';
-import { MERCURY_MARK, MERCURY_MARK_SMALL, MERCURY_MARK_WIDTH, MERCURY_MARK_SMALL_WIDTH } from './mercury-mark.js';
-import { launchPadChecks, tildify, isLaunchPadReady } from './launch-pad.js';
+import { launchPadChecks, tildify, isLaunchPadReady, LAUNCH_WORDMARK, LAUNCH_WORDMARK_WIDTH } from './launch-pad.js';
+import { renderMercuryCodeParts } from './pixel-logo.js';
 
 const ESC = String.fromCharCode(27);
 const stripAnsi = (s: string) => s.replace(new RegExp(`${ESC}\\[[0-9;?]*[A-Za-z]`, 'g'), '');
@@ -86,17 +86,15 @@ async function renderPad(s: TuiState, cols: number, onInput: (t: string) => void
   return { stdout, stdin, unmount };
 }
 
-describe('Mercury mark', () => {
-  it.each([
-    ['hero', MERCURY_MARK, MERCURY_MARK_WIDTH],
-    ['small', MERCURY_MARK_SMALL, MERCURY_MARK_SMALL_WIDTH],
-  ] as const)('%s mark is single-width block art, within its width, and left/right symmetric', (_name, mark, width) => {
-    for (const row of mark) {
-      expect(row).toMatch(/^[ █▀▄]*$/);
-      expect(stringWidth(row)).toBeLessThanOrEqual(width);
-      const padded = row.padEnd(width, ' ');
-      expect([...padded].reverse().join('')).toBe(padded);
+describe('launch wordmark', () => {
+  it('is single-width block art sharing the Mercury Code header font', () => {
+    expect(LAUNCH_WORDMARK).toHaveLength(5);
+    for (const row of LAUNCH_WORDMARK) {
+      expect(row).toMatch(/^[ █]*$/);
+      expect(stringWidth(row)).toBeLessThanOrEqual(LAUNCH_WORDMARK_WIDTH);
     }
+    // Same glyphs as the "MERCURY" half of the Mercury Code header.
+    expect(LAUNCH_WORDMARK).toEqual(renderMercuryCodeParts().map((p) => p.left.replace(/\s+$/, '')));
   });
 });
 
@@ -122,18 +120,17 @@ describe('launch pad checks', () => {
 });
 
 describe('launch pad rendering', () => {
-  it.each([100, 70, 50])('fits %i columns with no wrapped rows', async (cols) => {
+  it.each([100, 50, 30])('fits %i columns with no wrapped rows', async (cols) => {
     const { stdout, unmount } = await renderPad(state(), cols);
     const rows = lastFrame(stdout, 'Workspace');
     for (const row of rows) expect(stringWidth(row)).toBeLessThanOrEqual(cols);
     const text = rows.join('\n');
-    expect(text).toContain('MERCURY');
-    expect(text).toContain('anthropic · claude-opus-5-5');
+    expect(text).toMatch(/MERCURY|█   █/);
+    expect(text).toContain(cols >= 50 ? 'anthropic · claude-opus-5-5' : 'anthropic');
     expect(text).toContain('Type to start chatting');
-    // Hero mark at ≥ 80, compact at 60–79, none in narrow terminals.
-    if (cols >= 80) expect(text).toContain(MERCURY_MARK[10]);
-    else if (cols >= 60) expect(text).toContain(MERCURY_MARK_SMALL[1]);
-    else expect(text).not.toContain('███');
+    // Wordmark when it fits (with padding); a one-line header otherwise.
+    if (cols >= LAUNCH_WORDMARK_WIDTH + 4) expect(text).toContain(LAUNCH_WORDMARK[0]);
+    else { expect(text).not.toContain('███'); expect(text).toContain('☿ MERCURY'); }
     unmount();
   });
 

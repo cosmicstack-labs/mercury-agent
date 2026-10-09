@@ -107,26 +107,26 @@ describe('layout rules', () => {
 });
 
 describe(`TUI at ${COLS} columns`, () => {
-  it('splash collapses to one column with no logo art', async () => {
+  it('splash fits 50 columns: wordmark, live checklist, no wrapped rows', async () => {
     const { rows, unmount } = await renderApp(state({ mode: 'splash', web: null, skills: [] }), 'Workspace');
     expectFits(rows);
-    expect(rows.join('\n')).not.toContain('███'); // the ☿ block mark needs >= 60 cols
-    // snapshot-ish: the whole collapsed launch pad, row by row (tip and the
-    // workspace path vary by machine, so they are checked by prefix only)
     const trimmed = rows.map((r) => r.trimStart());
-    expect(trimmed.slice(0, 7)).toEqual([
-      '☿ MERCURY  v1.3.1',
-      'Your soul-driven AI agent',
+    const at = trimmed.findIndex((r) => r.startsWith('Your soul-driven AI agent'));
+    expect(at).toBeGreaterThan(0);
+    expect(trimmed[at]).toMatch(/v1\.3\.1$/);
+    expect(trimmed.slice(at + 1, at + 7)).toEqual([
       '',
       '✓ Provider   deepseek · deepseek-chat',
       '· Skills     none installed',
       '· Web        off',
       '· Budget     ' + (1200).toLocaleString() + ' / ' + (100000).toLocaleString() + ' today',
+      trimmed[at + 6],
     ]);
-    expect(trimmed[7]).toMatch(/^· Workspace  /);
-    expect(trimmed.slice(8, 11)).toEqual(['', 'Type to start chatting', '/code  Mercury Code here   Tab  skills']);
+    expect(trimmed[at + 6]).toMatch(/^· Workspace  /);
+    expect(trimmed.slice(at + 7, at + 10)).toEqual(['', 'Type to start chatting', '/code  Mercury Code here   Tab  skills']);
     unmount();
   });
+
 
 
   it('chat: input chrome is exactly four rows and the sidebar collapses', async () => {

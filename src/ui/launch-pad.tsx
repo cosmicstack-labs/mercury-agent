@@ -6,7 +6,7 @@
  *   discovered, web server, budget, workspace). Nothing ticks on a timer.
  * - The layout never jumps: every row is present from the first frame, and
  *   pending rows show a spinner in place of the check.
- * - The mark draws in top-down over ~300 ms once, then stays still.
+ * - The wordmark draws in top-down once (~120 ms), then stays still.
  * - Typing anywhere starts chat (handled by the app's input layer); Enter on
  *   an empty pad does the same; Tab toggles the skills list.
  */
@@ -16,15 +16,19 @@ import { homedir } from 'node:os';
 import type { TuiState } from '../channels/cli.js';
 import { IS_LIGHT_TERMINAL } from '../utils/terminal-theme.js';
 import { isDevBuild } from '../utils/dev-build.js';
-import { fitText, fitTail, isNarrow } from './layout.js';
+import { fitText, fitTail } from './layout.js';
 import { useTick, spinnerFrame } from './tick-store.js';
-import { MERCURY_MARK, MERCURY_MARK_SMALL, MERCURY_MARK_WIDTH, MERCURY_MARK_SMALL_WIDTH } from './mercury-mark.js';
+import { renderPixelWord } from './pixel-logo.js';
+
+/** MERCURY in the pixel font the Mercury Code header uses: one brand, two screens. */
+export const LAUNCH_WORDMARK: readonly string[] = renderPixelWord('MERCURY', '█').map((row) => row.replace(/\s+$/, ''));
+export const LAUNCH_WORDMARK_WIDTH = Math.max(...LAUNCH_WORDMARK.map((row) => row.length));
 
 const COLORS = IS_LIGHT_TERMINAL
   ? { mark: 'blue', title: 'blue', muted: 'gray', key: 'blue', accent: 'magenta' }
   : { mark: 'cyan', title: 'cyan', muted: 'gray', key: 'cyan', accent: 'magenta' };
 
-/** Milliseconds between mark rows during the draw-in. */
+/** Milliseconds between wordmark rows during the draw-in. */
 export const MARK_REVEAL_STEP_MS = 24;
 
 export interface LaunchPadCheck {
@@ -97,31 +101,48 @@ export interface LaunchPadProps {
 }
 
 export function LaunchPad({ state, cols, showDetails, tip }: LaunchPadProps) {
-  const narrow = isNarrow(cols);
-  // Hero mark from 80 cols, compact from 60, none below (Termux portrait).
-  const mark = narrow ? [] : cols >= 80 ? MERCURY_MARK : MERCURY_MARK_SMALL;
-  const markWidth = narrow ? 0 : cols >= 80 ? MERCURY_MARK_WIDTH : MERCURY_MARK_SMALL_WIDTH;
-  const revealed = useMarkReveal(mark.length);
+  // The wordmark needs its width plus the side padding; below that the
+  // header is a single text line (Termux portrait, split panes).
+  const showWordmark = cols >= LAUNCH_WORDMARK_WIDTH + 4;
+  const revealed = useMarkReveal(showWordmark ? LAUNCH_WORDMARK.length : 0);
   const ready = isLaunchPadReady(state);
   const now = useTick(!ready);
   const frame = spinnerFrame(now);
 
-  const gutter = narrow ? 0 : 5;
-  const panelWidth = Math.max(10, cols - 2 - markWidth - gutter);
+  const width = Math.max(10, cols - 2);
   const checks = launchPadChecks(state);
   const labelWidth = Math.max(...checks.map((c) => c.label.length));
-  const valueWidth = Math.max(4, panelWidth - labelWidth - 4);
+  const valueWidth = Math.max(4, width - labelWidth - 4);
   const versionLabel = `v${state.version}`;
+  const tagline = 'Your soul-driven AI agent';
+  // Version sits flush right under the wordmark when there is room.
+  const versionGap = showWordmark ? Math.max(2, LAUNCH_WORDMARK_WIDTH - tagline.length - versionLabel.length) : 2;
 
-  const panel = (
-    <Box flexDirection="column" width={narrow ? undefined : panelWidth}>
-      <Text wrap="truncate-end">
-        {narrow && <Text color={COLORS.mark}>☿ </Text>}
-        <Text bold color={COLORS.title}>MERCURY</Text>
-        <Text color={COLORS.muted}>  {versionLabel}</Text>
-        {isDevBuild(state.version) && <Text color="yellow">  ⚠ development build</Text>}
-      </Text>
-      <Text color={COLORS.muted} wrap="truncate-end">Your soul-driven AI agent</Text>
+  return (
+    <Box flexDirection="column" flexGrow={1} paddingX={1} paddingTop={showWordmark ? 1 : 0}>
+      {showWordmark ? (
+        <>
+          {LAUNCH_WORDMARK.map((line, i) => (
+            // Unrevealed rows render blank so the layout never jumps.
+            <Text key={i} color={COLORS.mark}>{i < revealed ? line : ' '}</Text>
+          ))}
+          <Text wrap="truncate-end">
+            <Text color={COLORS.muted}>{tagline}</Text>
+            <Text color={COLORS.muted}>{' '.repeat(versionGap)}{versionLabel}</Text>
+            {isDevBuild(state.version) && <Text color="yellow">  ⚠ development build</Text>}
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text wrap="truncate-end">
+            <Text color={COLORS.mark}>☿ </Text>
+            <Text bold color={COLORS.title}>MERCURY</Text>
+            <Text color={COLORS.muted}>  {versionLabel}</Text>
+            {isDevBuild(state.version) && <Text color="yellow">  ⚠ dev</Text>}
+          </Text>
+          <Text color={COLORS.muted} wrap="truncate-end">{tagline}</Text>
+        </>
+      )}
       <Text> </Text>
       {checks.map((check) => (
         <CheckRow key={check.label} check={check} labelWidth={labelWidth} valueWidth={valueWidth} frame={frame} />
@@ -139,25 +160,9 @@ export function LaunchPad({ state, cols, showDetails, tip }: LaunchPadProps) {
       {tip ? (
         <>
           <Text> </Text>
-          <Text color={COLORS.muted} wrap="truncate-end">tip: {fitText(tip, Math.max(4, panelWidth - 5))}</Text>
+          <Text color={COLORS.muted} wrap="truncate-end">tip: {fitText(tip, Math.max(4, width - 5))}</Text>
         </>
       ) : null}
-    </Box>
-  );
-
-  return (
-    <Box flexDirection="column" flexGrow={1} paddingX={1} paddingTop={narrow ? 0 : 1}>
-      {narrow ? panel : (
-        <Box flexDirection="row">
-          <Box flexDirection="column" width={markWidth} marginRight={gutter} flexShrink={0}>
-            {mark.map((line, i) => (
-              // Unrevealed rows render as blank lines so the layout never jumps.
-              <Text key={i} color={COLORS.mark}>{i < revealed ? line : ' '}</Text>
-            ))}
-          </Box>
-          {panel}
-        </Box>
-      )}
       {showDetails && (
         <Box flexDirection="column" marginTop={1}>
           <Text color={COLORS.muted}>Skills</Text>
