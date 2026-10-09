@@ -14,7 +14,7 @@ describe('Mercury Code exit paths', () => {
     vi.restoreAllMocks();
   });
 
-  it('exitMercuryCode tears down Mercury Code state and returns to chat', () => {
+  it('exitMercuryCode tears down Mercury Code state and returns to chat', async () => {
     const channel = new CLIChannel();
     const dir = mkdtempSync(join(tmpdir(), 'mercury-code-exit-'));
     try {
@@ -33,7 +33,10 @@ describe('Mercury Code exit paths', () => {
       expect(state.programmingMode).toBe('off');
       expect(state.exitEscArmed).toBe(false);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      // Wait for the async git header read started by enterMercuryCode;
+      // Windows keeps the directory locked while that child runs.
+      await channel.refreshMercuryCodeGit();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
