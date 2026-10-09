@@ -58,6 +58,21 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  eval:
+    # Replay-based eval harness (ROADMAP P2.3): drives the real agent loop
+    # with scripted providers and recorded tool outputs. No network, no keys.
+    name: Eval harness (Node 22, ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run eval
+
   pack-verify:
     name: Pack & Verify (Node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}

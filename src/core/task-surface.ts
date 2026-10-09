@@ -144,7 +144,8 @@ export function createTaskSurface(channel: Channel | undefined, channelType: Cha
       async done({ finalText, elapsedMs, stepCount, meta, verificationNote, traceId }) {
         // Evidence used to reach the CLI only; messaging users got "done"
         // with nothing to back it. Carry it in the final text instead.
-        const text = verificationNote ? `${finalText}\n\n${evidenceFooter(verificationNote, traceId)}` : finalText;
+        const footer = verificationNote ? `\n\n${evidenceFooter(verificationNote, traceId)}` : '';
+        const text = `${finalText}${footer}`;
         if (isSubstantialTask(stepCount, elapsedMs)) {
           // sendCompletion owns endTask + deferred flush + cleanup on these channels.
           if (ch.deferResponse) {
@@ -156,8 +157,11 @@ export function createTaskSurface(channel: Channel | undefined, channelType: Cha
           return;
         }
         ch.endTask(channelId);
+        // The streamed answer was parked while the task was active; it wins
+        // over finalText, but must still carry the evidence footer (it used
+        // to be dropped on every streaming messaging channel).
         const deferred = ch.popDeferredResponse(channelId);
-        const responseText = deferred || text;
+        const responseText = deferred && deferred.trim() ? `${deferred}${footer}` : text;
         if (responseText && responseText.trim()) await ch.send(responseText, channelId, elapsedMs);
         if (stepCount > 0 && ch.cleanupEphemeralMessages) await ch.cleanupEphemeralMessages(channelId);
         ch.resetStepCounter(channelId);

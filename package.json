@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "vitest run src/eval",
     "postinstall": "patch-package || node scripts/apply-ink-patch.cjs || echo 'WARNING: ink patch not applied — run: node scripts/apply-ink-patch.cjs'",
     "prepublishOnly": "npm run build"
   },
