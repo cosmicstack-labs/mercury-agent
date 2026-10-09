@@ -83,7 +83,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3682,6 +3682,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // `mercury stop` / `restart` / `upgrade` ask over the local web API first
+  // (POST /api/shutdown) — on Windows that is the only way shutdown() runs,
+  // since process.kill there is TerminateProcess.
+  setShutdownHandler(() => { void shutdown(); });
 
   if (!isDaemon && process.platform !== 'win32') {
     process.on('SIGHUP', async () => {
@@ -4759,8 +4763,10 @@ serviceCmd
       const platform = process.platform;
 
       if (platform === 'win32') {
-        // Run after this process exits so Windows releases the current executable.
-        const psCmd = `Start-Sleep -Seconds 1; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
+        // Run after this process exits so Windows releases the current
+        // executable: wait on our pid (not a fixed sleep), and hand the pid
+        // to the installer so it can wait again before replacing the binary.
+        const psCmd = `$env:MERCURY_WAIT_PID='${process.pid}'; Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
         try {
           const installer2 = spawn(
             'powershell.exe',
