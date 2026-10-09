@@ -83,6 +83,9 @@ jobs:
       - name: Verify package integrity
         run: node scripts/verify-package.cjs
 
+      - name: Verify vendor/ink is stock ink 5.2.1 + the patch set (ADR-017)
+        run: node scripts/vendor-ink.cjs --check
+
   termux:
     name: Termux (Android, x86_64)
     runs-on: ubuntu-latest

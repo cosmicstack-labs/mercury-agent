@@ -1,10 +1,14 @@
 /**
- * Ensure the bundled ink fixes are applied to the installed ink.
- * Idempotent: checks for the fix markers first, then edits the two files
- * DIRECTLY — no patch-package dependency (patch-package itself failed on
- * Termux/npm-11 containers: `sh: 1: patch-package: not found`).
+ * The Mercury ink patch set, as deterministic source edits on a stock
+ * ink 5.2.1 build. Idempotent: checks for the fix markers first, then edits
+ * the files DIRECTLY — no patch-package dependency (patch-package itself
+ * failed on Termux/npm-11 containers: `sh: 1: patch-package: not found`).
  *
- * What it applies (mirrors patches/ink+5.2.1.patch):
+ * Since ADR-017 the patched ink is VENDORED: `scripts/vendor-ink.cjs` runs
+ * this applier against a stock tarball and commits the result to
+ * `vendor/ink/`, which tsup/vitest alias `ink` to. This module is therefore
+ * the single source of truth for every hunk (see docs/ink-patch.md for the
+ * rationale behind each one):
  *   1. reconciler.js — freed-Yoga-node hygiene: null every JS reference in
  *      removed subtrees after freeRecursive, and clear the root's cached
  *      staticNode when the removed subtree contains it. Also guards ink's
@@ -14,6 +18,14 @@
  *      commitTick re-render that unmounts written children (ink's renderer
  *      re-prints still-mounted static children on every render).
  *   3. Static.d.ts — the `itemKey` type.
+ *   4. ink.js — freeze gate (`globalThis.__mercuryFrameGate`).
+ *   5. ink.js — live-region guard (bottom-anchored trim instead of
+ *      clearTerminal + full static re-dump).
+ *   6. log-update.js — diff-render (rewrite from the first changed row).
+ *   7. ink.js + log-update.js — resize baseline invalidate.
+ *   8. ink.js + log-update.js — hardware cursor positioning
+ *      (`internal_cursor` host attribute), so IME preedit/candidate
+ *      windows anchor on the input cell.
  *
  * Loud on failure: a silent skip is never acceptable for a crash fix.
  */
@@ -22,30 +34,38 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 
-/** File paths for an ink install. `root` is overridable so tests can
- * exercise the applier against a synthetic ink tree without touching the
- * real node_modules. */
-function pathsFor(projectRoot) {
-  let inkDir = path.join(projectRoot, 'node_modules', 'ink', 'build');
-  // When Mercury is installed as a dependency (not globally), npm hoists ink
-  // to the consumer's node_modules — `<root>/node_modules/ink` does not
-  // exist. Resolve the ink that Node will actually load from this root;
-  // the plain join above stays as the fallback (synthetic trees in tests
-  // carry no package.json for the resolver to find).
-  try {
-    const resolved = require.resolve('ink', { paths: [projectRoot] });
-    if (fs.existsSync(resolved)) inkDir = path.dirname(resolved);
-  } catch {
-    // not installed / not resolvable — fall back to the conventional path
+/** File paths for an ink build directory. `root` is overridable so tests
+ * can exercise the applier against a synthetic ink tree, and `inkDir`
+ * (the `build/` directory) can be given explicitly — that is how
+ * scripts/vendor-ink.cjs patches the extracted stock tarball. */
+function pathsFor(projectRoot, opts = {}) {
+  let inkDir = opts.inkDir || path.join(projectRoot, 'node_modules', 'ink', 'build');
+  if (!opts.inkDir) {
+    // When Mercury is installed as a dependency (not globally), npm hoists ink
+    // to the consumer's node_modules — `<root>/node_modules/ink` does not
+    // exist. Resolve the ink that Node will actually load from this root;
+    // the plain join above stays as the fallback (synthetic trees in tests
+    // carry no package.json for the resolver to find).
+    try {
+      const resolved = require.resolve('ink', { paths: [projectRoot] });
+      if (fs.existsSync(resolved)) inkDir = path.dirname(resolved);
+    } catch {
+      // not installed / not resolvable — fall back to the conventional path
+    }
   }
   return {
+    inkDir,
     reconcilerPath: path.join(inkDir, 'reconciler.js'),
     staticJsPath: path.join(inkDir, 'components', 'Static.js'),
     staticDtsPath: path.join(inkDir, 'components', 'Static.d.ts'),
     inkJsPath: path.join(inkDir, 'ink.js'),
     logUpdatePath: path.join(inkDir, 'log-update.js'),
+    logUpdateDtsPath: path.join(inkDir, 'log-update.d.ts'),
   };
 }
+
+/** The committed vendored build (ADR-017). */
+const VENDORED_INK_DIR = path.join(root, 'vendor', 'ink', 'build');
 
 const paths = pathsFor(root);
 
@@ -58,13 +78,16 @@ function isPatched(p = paths) {
     return reconciler.includes('clearYogaRefs')
       && reconciler.includes('Array.isArray(node.childNodes)')
       && reconciler.includes('rootNode.staticNode = undefined')
+      && reconciler.includes(YOGA_HYGIENE_MARKER)
       && staticComponent.includes('itemKey')
       && staticComponent.includes('setCommitTick')
       && logUpdate.includes('Diff-render (Cosmic Stack patch)')
       && logUpdate.includes(RESIZE_RESET_MARKER)
+      && logUpdate.includes(CURSOR_MARKER)
       && inkJs.includes('maxLiveRows')
       && inkJs.includes(RESIZE_RESET_MARKER)
-      && inkJs.includes(FRAME_GATE_MARKER);
+      && inkJs.includes(FRAME_GATE_MARKER)
+      && inkJs.includes(CURSOR_ANCHOR_MARKER);
   } catch {
     return false;
   }
@@ -72,6 +95,204 @@ function isPatched(p = paths) {
 
 const FRAME_GATE_MARKER = '__mercuryFrameGate';
 const RESIZE_RESET_MARKER = 'Resize baseline reset (Cosmic Stack patch)';
+const CURSOR_MARKER = 'Hardware cursor (Cosmic Stack patch)';
+const CURSOR_ANCHOR_MARKER = '__mercuryCursorAnchor';
+const YOGA_HYGIENE_MARKER = '__mercuryInkYogaHygiene';
+
+/**
+ * Hardware cursor positioning (ADR-017, #41, #66). Stock ink hides the
+ * terminal cursor for its whole lifetime and leaves it on the line below
+ * the live region, so IME preedit/candidate windows anchor in the wrong
+ * place and some terminals (Windows Terminal, iTerm2 with certain input
+ * methods) suppress IME composition entirely while the cursor is hidden.
+ *
+ * The host marks its fake-cursor cell with the `internal_cursor` host
+ * attribute (src/ui/cursor-anchor.tsx). After every frame, ink.js finds
+ * that element in the live tree, sums Yoga's computed offsets (exactly the
+ * arithmetic render-node-to-output uses), subtracts any rows the
+ * live-region guard trimmed, and hands `{row, col}` to log-update. There
+ * the frame write is followed by CUU + CHA + `CSI ?25h` ("park"), and every
+ * later write starts with `CSI ?25l` + CUD + `CSI G` ("unpark") so the
+ * erase arithmetic never sees a parked cursor. Relative moves are used on
+ * purpose — the absolute row of the live region is unknown without a DSR
+ * round-trip — and nothing is ever inserted into the frame text, so no
+ * sentinel can leak into the terminal.
+ */
+function applyCursorPositioning(p = paths) {
+  const { inkJsPath, logUpdatePath, logUpdateDtsPath } = p;
+  let lu = fs.readFileSync(logUpdatePath, 'utf8');
+  if (!lu.includes(CURSOR_MARKER)) {
+    const stateAnchor = '    let hasHiddenCursor = false;';
+    if (!lu.includes(stateAnchor)) return false;
+    lu = lu.replace(stateAnchor, `${stateAnchor}
+    // ${CURSOR_MARKER}: after a frame is written the
+    // cursor sits on the line below the last row (column 0) — that is what
+    // the erase arithmetic assumes. \`park\` moves it up onto the anchor cell
+    // and shows it; \`unpark\` hides it and moves it back BEFORE anything else
+    // is written, so the arithmetic never sees a parked cursor. Relative
+    // moves (CUU/CUD/CHA) on purpose: the absolute row of the live region is
+    // unknown without a DSR round-trip.
+    let parked = null;
+    const targetFor = (cursor, lineCount) => {
+        if (!cursor) return null;
+        const rows = lineCount - 1; // lineCount counts the trailing blank line
+        if (!(cursor.row >= 0 && cursor.row < rows)) return null;
+        return { up: rows - cursor.row, col: Math.max(0, Math.floor(cursor.col)) };
+    };
+    const unpark = () => {
+        if (!parked) return '';
+        const { up } = parked;
+        parked = null;
+        return ansiEscapes.cursorHide + ansiEscapes.cursorDown(up) + ansiEscapes.cursorLeft;
+    };
+    const park = (target) => {
+        if (!target) return '';
+        parked = target;
+        return ansiEscapes.cursorUp(target.up) + ansiEscapes.cursorTo(target.col) + ansiEscapes.cursorShow;
+    };`);
+    const sigAnchor = '    const render = (str) => {';
+    if (!lu.includes(sigAnchor)) return false;
+    lu = lu.replace(sigAnchor, '    const render = (str, cursor) => {');
+    const sameAnchor = `        if (output === previousOutput) {
+            return;
+        }`;
+    if (!lu.includes(sameAnchor)) return false;
+    lu = lu.replace(sameAnchor, `        if (output === previousOutput) {
+            // ${CURSOR_MARKER}: same rows, but the anchor
+            // may have moved or toggled — re-park without touching the frame.
+            const target = targetFor(cursor, previousLineCount);
+            const same = (!parked && !target) || (parked && target && parked.up === target.up && parked.col === target.col);
+            if (!same) stream.write(unpark() + park(target));
+            return;
+        }`);
+    const writeAnchor = "        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\\n') + '\\n');";
+    if (!lu.includes(writeAnchor)) return false;
+    lu = lu.replace(writeAnchor, "        stream.write(unpark() + ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\\n') + '\\n' + park(targetFor(cursor, previousLineCount)));");
+    const clearAnchor = `    render.clear = () => {
+        stream.write(ansiEscapes.eraseLines(previousLineCount));`;
+    if (!lu.includes(clearAnchor)) return false;
+    lu = lu.replace(clearAnchor, `    render.clear = () => {
+        stream.write(unpark() + ansiEscapes.eraseLines(previousLineCount));`);
+    const doneAnchor = '    render.done = () => {';
+    if (!lu.includes(doneAnchor)) return false;
+    lu = lu.replace(doneAnchor, `    render.done = () => {
+        const restore = unpark();
+        if (restore) stream.write(restore);`);
+    fs.writeFileSync(logUpdatePath, lu);
+  }
+
+  // Types: keep the .d.ts honest for anyone reading the vendored build.
+  if (fs.existsSync(logUpdateDtsPath)) {
+    let dts = fs.readFileSync(logUpdateDtsPath, 'utf8');
+    if (!dts.includes('invalidate')) {
+      const anchor = '    done: () => void;\n    (str: string): void;';
+      if (dts.includes(anchor)) {
+        dts = dts.replace(anchor, `    done: () => void;
+    /** Resize baseline reset (Cosmic Stack patch). */
+    invalidate: () => void;
+    /** Hardware cursor (Cosmic Stack patch): \`cursor\` is the live-frame cell to park the terminal cursor on. */
+    (str: string, cursor?: { row: number; col: number } | null): void;`);
+        fs.writeFileSync(logUpdateDtsPath, dts);
+      }
+    }
+  }
+
+  let ink = fs.readFileSync(inkJsPath, 'utf8');
+  if (!ink.includes(CURSOR_ANCHOR_MARKER)) {
+    const gateAnchor = `globalThis.${FRAME_GATE_MARKER} = frameGate;`;
+    if (!ink.includes(gateAnchor)) return false;
+    ink = ink.replace(gateAnchor, `${gateAnchor}
+// ${CURSOR_MARKER}: ink hides the terminal cursor and
+// leaves it below the live region, so IME preedit/candidate windows anchor
+// in the wrong place and some terminals suppress IME entirely. A host marks
+// its fake-cursor cell with the \`internal_cursor\` attribute (Mercury:
+// src/ui/cursor-anchor.tsx); after every frame onRender finds that element
+// in the live tree and log-update parks the real cursor on it. No marked
+// element (non-input views) → the cursor stays hidden. \`enabled: false\`
+// turns the feature off globally.
+export const cursorAnchor = { enabled: true };
+globalThis.${CURSOR_ANCHOR_MARKER} = cursorAnchor;
+// Patch manifest (Cosmic Stack): which hunks this build carries, and whether
+// it is the vendored copy (stamped by scripts/vendor-ink.cjs) or an
+// in-place node_modules edit.
+export const inkPatch = {
+    vendored: false,
+    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'],
+};
+globalThis.__mercuryInkPatch = inkPatch;
+const sameCursor = (a, b) => (!a && !b) || (!!a && !!b && a.row === b.row && a.col === b.col);
+// Depth-first search for the first element carrying a truthy
+// \`internal_cursor\` attribute, accumulating Yoga offsets exactly like
+// render-node-to-output does. <Static> subtrees and display:none subtrees
+// are never part of the live frame and are skipped. Reading the DOM
+// attribute (set in createInstance/commitUpdate) instead of a ref matters:
+// refs attach in React's layout phase, AFTER resetAfterCommit has already
+// rendered the frame, so a ref-based anchor would always lag one frame.
+const findCursorCell = (node, x, y) => {
+    const yoga = node.yogaNode;
+    if (!yoga || node.internal_static || node.style?.display === 'none') return null;
+    const nx = x + yoga.getComputedLeft();
+    const ny = y + yoga.getComputedTop();
+    if (node.attributes?.internal_cursor) return { row: ny, col: nx };
+    if (!Array.isArray(node.childNodes)) return null;
+    for (const child of node.childNodes) {
+        const hit = findCursorCell(child, nx, ny);
+        if (hit) return hit;
+    }
+    return null;
+};`);
+    const onRenderAnchor = '    onRender = () => {';
+    if (!ink.includes(onRenderAnchor)) return false;
+    ink = ink.replace(onRenderAnchor, `    // ${CURSOR_MARKER}: absolute cell of the marked cursor
+    // element inside the live frame, or null when there is none, the feature
+    // is disabled, or the cell was trimmed away by the live-region guard.
+    lastCursor = null;
+    resolveCursor(trimmedRows) {
+        if (!cursorAnchor.enabled) return null;
+        const cell = findCursorCell(this.rootNode, 0, 0);
+        if (!cell) return null;
+        const row = cell.row - trimmedRows;
+        if (row < 0) return null;
+        return { row, col: cell.col };
+    }
+${onRenderAnchor}`);
+    const maxRowsAnchor = '        const maxLiveRows = Math.max(1, (this.options.stdout.rows || 24) - 1);';
+    if (!ink.includes(maxRowsAnchor)) return false;
+    ink = ink.replace(maxRowsAnchor, `${maxRowsAnchor}
+        const liveHeightBeforeTrim = outputHeight;`);
+    const trimEndAnchor = `            outputHeight = maxLiveRows;
+        }`;
+    if (!ink.includes(trimEndAnchor)) return false;
+    ink = ink.replace(trimEndAnchor, `${trimEndAnchor}
+        // ${CURSOR_MARKER}: resolve AFTER the trim so the row
+        // is relative to the rows actually written.
+        const cursor = this.resolveCursor(liveHeightBeforeTrim - outputHeight);`);
+    const staticLogAnchor = `            this.options.stdout.write(staticOutput);
+            this.log(output);`;
+    if (!ink.includes(staticLogAnchor)) return false;
+    ink = ink.replace(staticLogAnchor, `            this.options.stdout.write(staticOutput);
+            this.log(output, cursor);`);
+    const tailAnchor = `        if (!hasStaticOutput && output !== this.lastOutput) {
+            this.throttledLog(output);
+        }
+        this.lastOutput = output;
+    };`;
+    if (!ink.includes(tailAnchor)) return false;
+    ink = ink.replace(tailAnchor, `        if (!hasStaticOutput && (output !== this.lastOutput || !sameCursor(cursor, this.lastCursor))) {
+            this.throttledLog(output, cursor);
+        }
+        this.lastOutput = output;
+        this.lastCursor = cursor;
+    };`);
+    // console patching re-prints the last frame after foreign writes: keep the
+    // cursor parked where it was.
+    const relog = '        this.log(this.lastOutput);';
+    if (!ink.includes(relog)) return false;
+    ink = ink.split(relog).join('        this.log(this.lastOutput, this.lastCursor);');
+    fs.writeFileSync(inkJsPath, ink);
+  }
+  return lu.includes(CURSOR_MARKER) && ink.includes(CURSOR_ANCHOR_MARKER);
+}
 
 /** Resize baseline reset: after a terminal resize the rows already on
  * screen have re-wrapped, so the diff-render's "unchanged rows above stay"
@@ -230,7 +451,11 @@ function applyLogUpdateDiffRender(p = paths) {
 function applyReconcilerFix(p = paths) {
   const { reconcilerPath } = p;
   let s = fs.readFileSync(reconcilerPath, 'utf8');
-  if (s.includes('clearYogaRefs')) return true;
+  if (s.includes('clearYogaRefs')) {
+    const marked = addYogaHygieneMarker(s);
+    if (marked !== s) fs.writeFileSync(reconcilerPath, marked);
+    return true;
+  }
 
   // 1a. Insert the freed-subtree hygiene helpers after cleanupYogaNode.
   const anchorA = `const cleanupYogaNode = (node) => {
@@ -286,8 +511,20 @@ const cleanupRemovedNode = (node, removeNode) => {
     count += 1;
   }
   if (count === 0) return false;
+  s = addYogaHygieneMarker(s);
   fs.writeFileSync(reconcilerPath, s);
   return true;
+}
+
+/** Runtime marker for the hygiene hunk: the bundled/vendored build has no
+ * readable reconciler.js on disk, so src/ui/ink-patch-check.ts reads this
+ * global instead of the file. Idempotent; also upgrades builds patched
+ * before the marker existed. */
+function addYogaHygieneMarker(source) {
+  if (source.includes(YOGA_HYGIENE_MARKER)) return source;
+  const anchor = 'export default createReconciler({';
+  if (!source.includes(anchor)) return source;
+  return source.replace(anchor, `globalThis.${YOGA_HYGIENE_MARKER} = true;\n${anchor}`);
 }
 
 const PATCHED_STATIC_JS = `import React, { useMemo, useState, useLayoutEffect, useRef } from 'react';
@@ -398,11 +635,16 @@ function applyStaticFix(p = paths) {
   return true;
 }
 
+/**
+ * Apply every hunk to an ink build. `opts.inkDir` targets a `build/`
+ * directory directly (vendoring); otherwise the ink resolvable from
+ * `opts.root` (default: this checkout's node_modules) is patched in place.
+ */
 function apply(opts = {}) {
-  const p = pathsFor(opts.root ?? root);
+  const p = pathsFor(opts.root ?? root, { inkDir: opts.inkDir });
   if (isPatched(p)) return { ok: true, applied: false };
   if (!fs.existsSync(p.reconcilerPath)) {
-    return { ok: false, applied: false, error: 'node_modules/ink not installed' };
+    return { ok: false, applied: false, error: `ink build not found at ${p.inkDir}` };
   }
   try {
     const reconcilerOk = applyReconcilerFix(p);
@@ -411,6 +653,10 @@ function apply(opts = {}) {
     const liveRegionOk = applyInkLiveRegionGuard(p);
     const diffRenderOk = applyLogUpdateDiffRender(p);
     const resizeResetOk = applyResizeBaselineReset(p);
+    const cursorOk = applyCursorPositioning(p);
+    if (!cursorOk) {
+      return { ok: false, applied: true, error: 'hardware cursor positioning could not be inserted (ink.js onRender / log-update.js render anchors)' };
+    }
     if (!reconcilerOk) {
       return { ok: false, applied: true, error: 'reconciler.js no longer matches the expected ink 5.2.1 shape — patch anchors not found' };
     }
@@ -438,20 +684,29 @@ function apply(opts = {}) {
   return { ok: true, applied: true };
 }
 
-module.exports = { isPatched, apply, pathsFor };
+/** True when the committed vendored build carries every hunk. */
+function isVendoredPatched() {
+  return isPatched(pathsFor(root, { inkDir: VENDORED_INK_DIR }));
+}
+
+module.exports = { isPatched, apply, pathsFor, isVendoredPatched, VENDORED_INK_DIR };
 
 if (require.main === module) {
-  const result = apply();
+  // CLI: `node scripts/apply-ink-patch.cjs [--ink-dir <build dir>]`. Without
+  // an explicit dir this patches node_modules/ink in place — only useful for
+  // experiments now that the runtime uses vendor/ink (scripts/vendor-ink.cjs).
+  const argv = process.argv.slice(2);
+  const dirFlag = argv.indexOf('--ink-dir');
+  const inkDir = dirFlag >= 0 ? path.resolve(argv[dirFlag + 1] || '') : undefined;
+  const result = apply({ inkDir });
   if (result.ok && result.applied) {
-    console.log('  ✓ ink fixes applied (Yoga WASM crash hygiene + Static identity dedup)');
+    console.log('  ✓ ink fixes applied (Yoga hygiene, Static.itemKey, freeze gate, live-region guard, diff-render, resize invalidate, hardware cursor)');
   } else if (result.ok) {
     console.log('  ✓ ink fixes already applied');
   } else {
-    console.error('  ⚠ INK FIXES NOT APPLIED — the Yoga WASM crash class is UNPATCHED in this install.');
+    console.error('  ⚠ INK FIXES NOT APPLIED — the Yoga WASM crash class is UNPATCHED in this build.');
     console.error(`    Reason: ${result.error}`);
-    console.error('    Fix: reinstall dependencies (npm install) and re-run the build.');
-    // Non-zero so a postinstall chain (`patch-package || node scripts/apply-ink-patch.cjs || echo …`)
-    // falls through to the loud warning instead of reporting success.
+    console.error('    Fix: node scripts/vendor-ink.cjs (regenerates vendor/ink from the stock tarball).');
     process.exitCode = 1;
   }
 }

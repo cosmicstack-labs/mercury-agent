@@ -60,7 +60,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // skip instead of failing the platform job red.
 const inkPatchApplied = (() => {
   try {
-    return createRequire(import.meta.url)('../../scripts/apply-ink-patch.cjs').isPatched();
+    // ADR-017: tests resolve `ink` to vendor/ink (vitest.config.ts), so the
+    // vendored build is the one whose patch state matters.
+    return createRequire(import.meta.url)('../../scripts/apply-ink-patch.cjs').isVendoredPatched();
   } catch {
     return false;
   }

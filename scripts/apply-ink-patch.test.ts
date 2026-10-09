@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const requireCjs = createRequire(import.meta.url);
-const { apply, isPatched, pathsFor } = requireCjs('../scripts/apply-ink-patch.cjs') as {
-  apply: (opts?: { root?: string }) => { ok: boolean; applied: boolean; error?: string };
+const { apply, isPatched, pathsFor, isVendoredPatched, VENDORED_INK_DIR } = requireCjs('../scripts/apply-ink-patch.cjs') as {
+  apply: (opts?: { root?: string; inkDir?: string }) => { ok: boolean; applied: boolean; error?: string };
   isPatched: (p?: unknown) => boolean;
-  pathsFor: (root: string) => Record<string, string>;
+  pathsFor: (root: string, opts?: { inkDir?: string }) => Record<string, string>;
+  isVendoredPatched: () => boolean;
+  VENDORED_INK_DIR: string;
 };
 
 /**
@@ -37,6 +39,8 @@ function writeStockInk(root: string): void {
     '        removeChildNode(node, removeNode);',
     '        cleanupYogaNode(removeNode.yogaNode);',
     '};',
+    'export default createReconciler({',
+    '});',
   ].join('\n'));
   // Stock Static.js: no itemKey, no commitTick — the applier rewrites it wholesale.
   writeFileSync(join(build, 'components', 'Static.js'), "import React from 'react';\nexport default function Static(props) {\n    return null;\n}\n");
@@ -49,9 +53,23 @@ function writeStockInk(root: string): void {
     '        this.calculateLayout();',
     '        this.onRender();',
     '    };',
-    '    onRender() {',
+    '    onRender = () => {',
     '        const { output, outputHeight, staticOutput } = render(this.rootNode);',
     '        const hasStaticOutput = staticOutput && staticOutput !== \'\\n\';',
+    '        if (hasStaticOutput) {',
+    '            this.log.clear();',
+    '            this.options.stdout.write(staticOutput);',
+    '            this.log(output);',
+    '        }',
+    '        if (!hasStaticOutput && output !== this.lastOutput) {',
+    '            this.throttledLog(output);',
+    '        }',
+    '        this.lastOutput = output;',
+    '    };',
+    '    writeToStdout(data) {',
+    '        this.log.clear();',
+    '        this.options.stdout.write(data);',
+    '        this.log(this.lastOutput);',
     '    }',
     '}',
   ].join('\n'));
@@ -59,6 +77,7 @@ function writeStockInk(root: string): void {
     'const create = (stream, { showCursor = false } = {}) => {',
     '    let previousLineCount = 0;',
     '    let previousOutput = \'\';',
+    '    let hasHiddenCursor = false;',
     '    const render = (str) => {',
     "        const output = str + '\\n';",
     '        if (output === previousOutput) {',
@@ -70,6 +89,8 @@ function writeStockInk(root: string): void {
     '    };',
     '    render.clear = () => {',
     '        stream.write(ansiEscapes.eraseLines(previousLineCount));',
+    '    };',
+    '    render.done = () => {',
     '    };',
     '    return render;',
     '};',
@@ -96,6 +117,16 @@ describe('ink patch applier (patch-package-free)', () => {
       expect(resized).toContain("this.lastOutput = '';");
       expect(resized).toContain('this.log.invalidate()');
       expect(resized.indexOf('this.log.invalidate()')).toBeLessThan(resized.indexOf('this.calculateLayout()'));
+      // Hardware cursor: every frame write unparks first and parks after,
+      // and both log() call sites pass the resolved cell through.
+      expect(logUpdate).toContain('const render = (str, cursor) => {');
+      expect(logUpdate).toContain('stream.write(unpark() + ansiEscapes.eraseLines(eraseCount)');
+      expect(logUpdate).toContain('stream.write(unpark() + ansiEscapes.eraseLines(previousLineCount))');
+      expect(inkJs).toContain('this.log(output, cursor);');
+      expect(inkJs).toContain('this.throttledLog(output, cursor);');
+      expect(inkJs).toContain('this.log(this.lastOutput, this.lastCursor);');
+      expect(inkJs).toContain('node.attributes?.internal_cursor');
+      expect(readFileSync(paths.reconcilerPath, 'utf8')).toContain('globalThis.__mercuryInkYogaHygiene = true;');
       // Idempotent: a second run must recognize the applied state and no-op.
       const again = apply({ root });
       expect(again.ok).toBe(true);
@@ -103,5 +134,25 @@ describe('ink patch applier (patch-package-free)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('vendored ink (ADR-017)', () => {
+  it('the committed vendor/ink build carries every hunk', () => {
+    expect(isVendoredPatched()).toBe(true);
+    const inkJs = readFileSync(join(VENDORED_INK_DIR, 'ink.js'), 'utf8');
+    expect(inkJs).toContain('vendored: true');
+    // Runtime-only file set: no source maps, no dangling map trailers.
+    expect(inkJs).not.toContain('sourceMappingURL');
+  });
+
+  it('re-applying the patch set to the vendored build is a no-op', () => {
+    expect(apply({ inkDir: VENDORED_INK_DIR })).toEqual({ ok: true, applied: false });
+  });
+
+  it('reports a missing build directory instead of throwing', () => {
+    const result = apply({ inkDir: join(tmpdir(), 'mercury-no-such-ink', 'build') });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('ink build not found');
   });
 });

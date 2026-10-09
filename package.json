@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "patch-package || node scripts/apply-ink-patch.cjs || echo 'WARNING: ink patch not applied — run: node scripts/apply-ink-patch.cjs'",
+    "vendor:ink": "node scripts/vendor-ink.cjs",
+    "vendor:ink:check": "node scripts/vendor-ink.cjs --check",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -58,8 +59,6 @@
   },
   "files": [
     "dist",
-    "patches",
-    "scripts/apply-ink-patch.cjs",
     "src/web/static"
   ],
   "dependencies": {

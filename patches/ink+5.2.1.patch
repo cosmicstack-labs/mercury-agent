@@ -18,7 +18,7 @@ index 9a25884..a4d515b 100644
  /**
   * `<Static>` component permanently renders its output above everything else.
 diff --git a/node_modules/ink/build/components/Static.js b/node_modules/ink/build/components/Static.js
-index 9c54f14..6274f9a 100644
+index 6bb7894..e22c94e 100644
 --- a/node_modules/ink/build/components/Static.js
 +++ b/node_modules/ink/build/components/Static.js
 @@ -1,4 +1,4 @@
@@ -94,9 +94,10 @@ index 9c54f14..6274f9a 100644
      const style = useMemo(() => ({
          position: 'absolute',
 diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
+index 68d3045..b6adc6d 100644
 --- a/node_modules/ink/build/ink.js
 +++ b/node_modules/ink/build/ink.js
-@@ -14,6 +14,14 @@
+@@ -14,6 +14,53 @@ import logUpdate from './log-update.js';
  import instances from './instances.js';
  import App from './components/App.js';
  const noop = () => { };
@@ -108,10 +109,49 @@ diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
 +// import of this internal module.
 +export const frameGate = { frozen: false, armed: false, marker: '' };
 +globalThis.__mercuryFrameGate = frameGate;
++// Hardware cursor (Cosmic Stack patch): ink hides the terminal cursor and
++// leaves it below the live region, so IME preedit/candidate windows anchor
++// in the wrong place and some terminals suppress IME entirely. A host marks
++// its fake-cursor cell with the `internal_cursor` attribute (Mercury:
++// src/ui/cursor-anchor.tsx); after every frame onRender finds that element
++// in the live tree and log-update parks the real cursor on it. No marked
++// element (non-input views) → the cursor stays hidden. `enabled: false`
++// turns the feature off globally.
++export const cursorAnchor = { enabled: true };
++globalThis.__mercuryCursorAnchor = cursorAnchor;
++// Patch manifest (Cosmic Stack): which hunks this build carries, and whether
++// it is the vendored copy (stamped by scripts/vendor-ink.cjs) or an
++// in-place node_modules edit.
++export const inkPatch = {
++    vendored: true,
++    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'],
++};
++globalThis.__mercuryInkPatch = inkPatch;
++const sameCursor = (a, b) => (!a && !b) || (!!a && !!b && a.row === b.row && a.col === b.col);
++// Depth-first search for the first element carrying a truthy
++// `internal_cursor` attribute, accumulating Yoga offsets exactly like
++// render-node-to-output does. <Static> subtrees and display:none subtrees
++// are never part of the live frame and are skipped. Reading the DOM
++// attribute (set in createInstance/commitUpdate) instead of a ref matters:
++// refs attach in React's layout phase, AFTER resetAfterCommit has already
++// rendered the frame, so a ref-based anchor would always lag one frame.
++const findCursorCell = (node, x, y) => {
++    const yoga = node.yogaNode;
++    if (!yoga || node.internal_static || node.style?.display === 'none') return null;
++    const nx = x + yoga.getComputedLeft();
++    const ny = y + yoga.getComputedTop();
++    if (node.attributes?.internal_cursor) return { row: ny, col: nx };
++    if (!Array.isArray(node.childNodes)) return null;
++    for (const child of node.childNodes) {
++        const hit = findCursorCell(child, nx, ny);
++        if (hit) return hit;
++    }
++    return null;
++};
  export default class Ink {
      options;
      log;
-@@ -81,6 +89,11 @@
+@@ -81,6 +128,11 @@ export default class Ink {
          }
      }
      resized = () => {
@@ -123,7 +163,23 @@ diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
          this.calculateLayout();
          this.onRender();
      };
-@@ -98,7 +111,33 @@
+@@ -94,11 +146,53 @@ export default class Ink {
+         this.rootNode.yogaNode.setWidth(terminalWidth);
+         this.rootNode.yogaNode.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
+     };
++    // Hardware cursor (Cosmic Stack patch): absolute cell of the marked cursor
++    // element inside the live frame, or null when there is none, the feature
++    // is disabled, or the cell was trimmed away by the live-region guard.
++    lastCursor = null;
++    resolveCursor(trimmedRows) {
++        if (!cursorAnchor.enabled) return null;
++        const cell = findCursorCell(this.rootNode, 0, 0);
++        if (!cell) return null;
++        const row = cell.row - trimmedRows;
++        if (row < 0) return null;
++        return { row, col: cell.col };
++    }
+     onRender = () => {
          if (this.isUnmounted) {
              return;
          }
@@ -149,20 +205,116 @@ diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
 +        // is never cleared, the transcript is never re-dumped, and the newest
 +        // rows (live tail, input, status bar) stay visible.
 +        const maxLiveRows = Math.max(1, (this.options.stdout.rows || 24) - 1);
++        const liveHeightBeforeTrim = outputHeight;
 +        if (outputHeight >= (this.options.stdout.rows || 24)) {
 +            // `output` is newline-terminated per row WITHOUT a trailing blank
 +            // line (log-update appends its own), so split and re-join verbatim.
 +            output = output.split('\n').slice(-maxLiveRows).join('\n');
 +            outputHeight = maxLiveRows;
 +        }
++        // Hardware cursor (Cosmic Stack patch): resolve AFTER the trim so the row
++        // is relative to the rows actually written.
++        const cursor = this.resolveCursor(liveHeightBeforeTrim - outputHeight);
          // If <Static> output isn't empty, it means new children have been added to it
          const hasStaticOutput = staticOutput && staticOutput !== '\n';
          if (this.options.debug) {
+@@ -127,12 +221,13 @@ export default class Ink {
+         if (hasStaticOutput) {
+             this.log.clear();
+             this.options.stdout.write(staticOutput);
+-            this.log(output);
++            this.log(output, cursor);
+         }
+-        if (!hasStaticOutput && output !== this.lastOutput) {
+-            this.throttledLog(output);
++        if (!hasStaticOutput && (output !== this.lastOutput || !sameCursor(cursor, this.lastCursor))) {
++            this.throttledLog(output, cursor);
+         }
+         this.lastOutput = output;
++        this.lastCursor = cursor;
+     };
+     render(node) {
+         const tree = (React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, exitOnCtrlC: this.options.exitOnCtrlC, onExit: this.unmount }, node));
+@@ -152,7 +247,7 @@ export default class Ink {
+         }
+         this.log.clear();
+         this.options.stdout.write(data);
+-        this.log(this.lastOutput);
++        this.log(this.lastOutput, this.lastCursor);
+     }
+     writeToStderr(data) {
+         if (this.isUnmounted) {
+@@ -169,7 +264,7 @@ export default class Ink {
+         }
+         this.log.clear();
+         this.options.stderr.write(data);
+-        this.log(this.lastOutput);
++        this.log(this.lastOutput, this.lastCursor);
+     }
+     // eslint-disable-next-line @typescript-eslint/ban-types
+     unmount(error) {
+diff --git a/node_modules/ink/build/log-update.d.ts b/node_modules/ink/build/log-update.d.ts
+index 8068bd3..ff501a9 100644
+--- a/node_modules/ink/build/log-update.d.ts
++++ b/node_modules/ink/build/log-update.d.ts
+@@ -2,7 +2,10 @@ import { type Writable } from 'node:stream';
+ export type LogUpdate = {
+     clear: () => void;
+     done: () => void;
+-    (str: string): void;
++    /** Resize baseline reset (Cosmic Stack patch). */
++    invalidate: () => void;
++    /** Hardware cursor (Cosmic Stack patch): `cursor` is the live-frame cell to park the terminal cursor on. */
++    (str: string, cursor?: { row: number; col: number } | null): void;
+ };
+ declare const logUpdate: {
+     create: (stream: Writable, { showCursor }?: {
 diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
+index 4c72645..501a658 100644
 --- a/node_modules/ink/build/log-update.js
 +++ b/node_modules/ink/build/log-update.js
-@@ -13,10 +13,34 @@
+@@ -4,25 +4,81 @@ const create = (stream, { showCursor = false } = {}) => {
+     let previousLineCount = 0;
+     let previousOutput = '';
+     let hasHiddenCursor = false;
+-    const render = (str) => {
++    // Hardware cursor (Cosmic Stack patch): after a frame is written the
++    // cursor sits on the line below the last row (column 0) — that is what
++    // the erase arithmetic assumes. `park` moves it up onto the anchor cell
++    // and shows it; `unpark` hides it and moves it back BEFORE anything else
++    // is written, so the arithmetic never sees a parked cursor. Relative
++    // moves (CUU/CUD/CHA) on purpose: the absolute row of the live region is
++    // unknown without a DSR round-trip.
++    let parked = null;
++    const targetFor = (cursor, lineCount) => {
++        if (!cursor) return null;
++        const rows = lineCount - 1; // lineCount counts the trailing blank line
++        if (!(cursor.row >= 0 && cursor.row < rows)) return null;
++        return { up: rows - cursor.row, col: Math.max(0, Math.floor(cursor.col)) };
++    };
++    const unpark = () => {
++        if (!parked) return '';
++        const { up } = parked;
++        parked = null;
++        return ansiEscapes.cursorHide + ansiEscapes.cursorDown(up) + ansiEscapes.cursorLeft;
++    };
++    const park = (target) => {
++        if (!target) return '';
++        parked = target;
++        return ansiEscapes.cursorUp(target.up) + ansiEscapes.cursorTo(target.col) + ansiEscapes.cursorShow;
++    };
++    const render = (str, cursor) => {
+         if (!showCursor && !hasHiddenCursor) {
+             cliCursor.hide();
+             hasHiddenCursor = true;
+         }
+         const output = str + '\n';
          if (output === previousOutput) {
++            // Hardware cursor (Cosmic Stack patch): same rows, but the anchor
++            // may have moved or toggled — re-park without touching the frame.
++            const target = targetFor(cursor, previousLineCount);
++            const same = (!parked && !target) || (parked && target && parked.up === target.up && parked.col === target.col);
++            if (!same) stream.write(unpark() + park(target));
              return;
          }
 +        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
@@ -185,23 +337,32 @@ diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-u
          previousOutput = output;
 -        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);
          previousLineCount = output.split('\n').length;
-+        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n');
-     };
++        stream.write(unpark() + ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n' + park(targetFor(cursor, previousLineCount)));
++    };
 +    // Resize baseline reset (Cosmic Stack patch): forget what is on screen
 +    // without touching the line count — the next render erases the old
 +    // frame's rows and rewrites every row instead of diffing against rows
 +    // the terminal has already re-wrapped.
 +    render.invalidate = () => {
 +        previousOutput = '';
-+    };
+     };
      render.clear = () => {
-         stream.write(ansiEscapes.eraseLines(previousLineCount));
+-        stream.write(ansiEscapes.eraseLines(previousLineCount));
++        stream.write(unpark() + ansiEscapes.eraseLines(previousLineCount));
          previousOutput = '';
+         previousLineCount = 0;
+     };
+     render.done = () => {
++        const restore = unpark();
++        if (restore) stream.write(restore);
+         previousOutput = '';
+         previousLineCount = 0;
+         if (!showCursor) {
 diff --git a/node_modules/ink/build/reconciler.js b/node_modules/ink/build/reconciler.js
-index 55acec7..f440fa9 100644
+index 81379f2..5930232 100644
 --- a/node_modules/ink/build/reconciler.js
 +++ b/node_modules/ink/build/reconciler.js
-@@ -58,6 +58,40 @@ const cleanupYogaNode = (node) => {
+@@ -58,6 +58,41 @@ const cleanupYogaNode = (node) => {
      node?.unsetMeasureFunc();
      node?.freeRecursive();
  };
@@ -239,10 +400,11 @@ index 55acec7..f440fa9 100644
 +        rootNode.staticNode = undefined;
 +    }
 +};
++globalThis.__mercuryInkYogaHygiene = true;
  export default createReconciler({
      getRootHostContext: () => ({
          isInsideText: false,
-@@ -173,7 +207,7 @@ export default createReconciler({
+@@ -173,7 +208,7 @@ export default createReconciler({
      insertInContainerBefore: insertBeforeNode,
      removeChildFromContainer(node, removeNode) {
          removeChildNode(node, removeNode);
@@ -251,7 +413,7 @@ index 55acec7..f440fa9 100644
      },
      prepareUpdate(node, _type, oldProps, newProps, rootNode) {
          if (node.internal_static) {
-@@ -213,7 +247,7 @@ export default createReconciler({
+@@ -213,6 +248,6 @@ export default createReconciler({
      },
      removeChild(node, removeNode) {
          removeChildNode(node, removeNode);
@@ -259,5 +421,3 @@ index 55acec7..f440fa9 100644
 +        cleanupRemovedNode(node, removeNode);
      },
  });
- //# sourceMappingURL=reconciler.js.map
-\ No newline at end of file
