@@ -85,6 +85,7 @@ import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } 
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
+import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult } from './context-window.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -2430,6 +2431,8 @@ export class Agent {
   private async runInlineContinuationRound(opts: {
     messages: unknown[];
     systemPrompt: string;
+    /** Per-turn context block (memory, loop warnings); see withCachedSystem. */
+    volatileSystem?: string;
     provider: any;
     maxOutputTokens: number;
     maxSteps: number;
@@ -2444,7 +2447,7 @@ export class Agent {
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
     const stream = streamText({
       model: opts.provider.getModelInstance(),
-      messages: this.withCachedSystem(opts.systemPrompt, opts.messages),
+      messages: this.withCachedSystem(opts.systemPrompt, opts.messages, opts.volatileSystem),
       tools: this.capabilities.getTools(),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
@@ -3054,16 +3057,27 @@ export class Agent {
         externalMessageId: msg.id,
         metadata: { channelType: msg.channelType, channelId: msg.channelId, ...(requestId ? { requestId } : {}) },
       });
+      // One read of the session per turn (it used to be re-read three times).
+      const activeSession = this.sessions.get(canonicalSession.id);
       if (msg.channelType === 'cli') {
-        const activeSession = this.sessions.get(canonicalSession.id);
         const cliChannel = this.channels.get('cli');
         if (cliChannel instanceof CLIChannel) cliChannel.setCurrentSession(activeSession);
       }
-      const recentMemory = this.sessions.get(canonicalSession.id).messages
-        .filter((entry) => entry.kind === 'message' && entry.role !== 'tool')
-        .slice(-this.saverMode.adjustHistoryWindow(10));
+      // Context window v2: history is budgeted by tokens rather than a fixed
+      // ten messages, and includes the compact tool trace written at the end
+      // of each turn, so this turn remembers what the previous one read and
+      // wrote instead of starting blind.
+      const recentMemory = selectHistoryWindow(
+        activeSession.messages,
+        this.saverMode.isActive() ? HISTORY_TOKEN_BUDGET_SAVER : HISTORY_TOKEN_BUDGET,
+      );
 
       const messages: any[] = [];
+      // Per-turn context (retrieved memory, shared-pool hits, loop warnings)
+      // goes into a second, volatile system block instead of being staged as
+      // fake user/assistant dialogue: the fake "Noted. I'll keep this in
+      // mind." turns primed terse acknowledgements and polluted history.
+      const contextBlocks: string[] = [];
 
       const recentSteps = recentMemory.slice(-6);
       let loopWarning: string | null = null;
@@ -3102,27 +3116,25 @@ export class Agent {
       }
 
       if (loopWarning) {
-        messages.push({ role: 'user', content: loopWarning });
-        messages.push({ role: 'assistant', content: 'Acknowledged. I will stop repeating and respond differently, or clearly state if the task cannot be completed.' });
+        contextBlocks.push(loopWarning);
       }
 
       if (this.userMemory) {
         const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
         if (memoryContext.context) {
-          messages.push({
-            role: 'user',
-            content: `[Second Brain — auto-retrieved context]\n${memoryContext.context}\n[End auto-retrieved context]`,
-          });
-          messages.push({ role: 'assistant', content: 'Noted. I\'ll keep this in mind.' });
+          contextBlocks.push(`Second Brain — memory retrieved for this message:\n${memoryContext.context}`);
         }
 
         // Local-first, then pool: query the cloud SharedMemoryPool for additional
         // context the second brain didn't surface. Gated by config, fails open
         // (any error → proceed with local-only context). 5-min cache per query.
+        // Skipped when local recall was already strong: the pool call is an
+        // awaited network round-trip on the path to the first token.
         const ck = this.config.memory.collaborativeKnowledge;
         const cloud = this.config.cloud;
         const tokenStore = getCloudTokenStore();
-        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl) {
+        const localRecallIsStrong = memoryContext.records.length >= 3;
+        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl && !localRecallIsStrong) {
           try {
             const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
             const localSummaries = memoryContext.records.map((r) => r.summary);
@@ -3148,10 +3160,7 @@ export class Agent {
             );
             const deduped = dedupeAgainstLocal(poolHits, localSummaries);
             const poolBlock = formatPoolContextBlock(deduped, 1500);
-            if (poolBlock) {
-              messages.push({ role: 'user', content: poolBlock });
-              messages.push({ role: 'assistant', content: 'Noted. I\'ll use this shared context.' });
-            }
+            if (poolBlock) contextBlocks.push(poolBlock);
           } catch (err) {
             logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
           }
@@ -3159,24 +3168,17 @@ export class Agent {
       } else {
         const relevantFacts = this.longTerm.search(msg.content, 3);
         if (relevantFacts.length > 0) {
-          messages.push({
-            role: 'user',
-            content: 'Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'),
-          });
-          messages.push({ role: 'assistant', content: 'Noted. I\'ll use these facts.' });
+          contextBlocks.push('Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'));
         }
       }
 
-      if (recentMemory.length > 0) {
-        for (const m of recentMemory) {
-          messages.push({
-            role: m.role,
-            content: m.content,
-          });
-        }
-      }
+      for (const m of recentMemory) messages.push(toModelMessage(m));
 
       if (!canonicalSessionId) messages.push({ role: 'user', content: msg.content });
+
+      const volatileSystem = contextBlocks.length > 0
+        ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}`
+        : '';
 
       // ── Skill Intent Routing & Batch Execution ──
       //
@@ -3356,6 +3358,22 @@ export class Agent {
       };
       const verifiedAfterLastMutation = (): boolean =>
         lastVerification != null && lastVerification.ok && lastVerification.step >= lastMutationStep;
+      // Compact per-turn tool trace, written to the session at turn end so
+      // the next turn's history carries what was read and written.
+      const turnToolTrace: string[] = [];
+      const noteToolSteps = (toolCalls: readonly any[] | undefined, toolResults: readonly any[] | undefined): void => {
+        if (!toolCalls || !toolResults) return;
+        for (let i = 0; i < toolCalls.length; i++) {
+          const tc = toolCalls[i];
+          const raw = (toolResults[i] as any)?.result ?? toolResults[i];
+          const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '');
+          turnToolTrace.push(formatToolTraceLine({
+            tool: tc.toolName,
+            args: summarizeToolArgs(tc.input),
+            outcome: summarizeToolResult(raw, !isFailedToolResult(text)),
+          }));
+        }
+      };
       let lastStepHadToolCalls = false;
       let lastRoundSteps = 0;
       let stepBudgetContinuations = 0;
@@ -3433,6 +3451,13 @@ export class Agent {
           const deepseekProviderOptions = provider instanceof DeepSeekProvider && provider.isReasoner
             ? { deepseek: { thinking: { type: 'enabled' as const } } }
             : undefined;
+          // DeepSeek thinking models require prior reasoning_content to be
+          // passed back with assistant turns (issue #24); other providers
+          // get plain text.
+          const providerMessages = deepseekProviderOptions ? withReasoningParts(messages) : messages;
+          // Per-provider output ceiling: a 32K request is rejected outright by
+          // providers with smaller limits and burned a halve-and-retry round.
+          const providerMaxOutputTokens = Math.min(effectiveMaxOutputTokens, provider.getMaxOutputTokens() ?? Infinity);
 
           logger.info({ provider: provider.name, model: provider.getModel(), steps: MAX_STEPS, stream: canStream }, 'Generating agentic response');
 
@@ -3446,9 +3471,9 @@ export class Agent {
             let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
-              messages: this.withCachedSystem(systemPrompt, messages),
+              messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: effectiveMaxOutputTokens,
+              maxOutputTokens: providerMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Memory: the SDK retains a structuredClone of the whole
@@ -3687,7 +3712,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -3701,7 +3726,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -3729,7 +3754,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -3743,12 +3768,12 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                            void Promise.resolve(slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
                     } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      void channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     this.markProgress();
                   }
@@ -3853,12 +3878,12 @@ export class Agent {
                   Promise.resolve(streamText({
                     model: provider.getModelInstance(),
                     messages: this.withCachedSystem(systemPrompt, [
-                      ...messages,
+                      ...providerMessages,
                       { role: 'assistant', content: continuationText },
                       { role: 'user', content: lastStepHadToolCalls
                         ? toolTruncationContinuationPrompt(msg.content)
                         : truncationContinuationPrompt(msg.content) },
-                    ]),
+                    ], volatileSystem),
                     tools: this.capabilities.getTools(),
                     maxOutputTokens: effectiveMaxOutputTokens,
                     // FULL budget: a one-step round can only read files — the
@@ -3900,9 +3925,9 @@ export class Agent {
           } else {
             result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
-              messages: this.withCachedSystem(systemPrompt, messages),
+              messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
-              maxOutputTokens: effectiveMaxOutputTokens,
+              maxOutputTokens: providerMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Same O(N²) step retention as streamText (see comment above).
@@ -4126,7 +4151,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void tgCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -4140,7 +4165,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void sigCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -4168,7 +4193,7 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                            void dcCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
@@ -4182,12 +4207,12 @@ export class Agent {
                           const tr = toolResults[i] as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
-                            await slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId);
+                            void Promise.resolve(slCh.sendStepDone(tcName, tr.result ?? tr, msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
                           }
                         }
                       }
                     } else {
-                      await channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      void channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     this.markProgress();
                   }
@@ -4541,7 +4566,7 @@ export class Agent {
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           const guardStream = streamText({
             model: guardProvider.getModelInstance(),
-            messages: this.withCachedSystem(systemPrompt, messages),
+            messages: this.withCachedSystem(systemPrompt, messages, volatileSystem),
             tools: this.capabilities.getTools(),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
@@ -4576,6 +4601,7 @@ export class Agent {
               if (cliChGen instanceof CLIChannel) cliChGen.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
+                noteToolSteps(toolCalls, toolResults);
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
@@ -4697,6 +4723,7 @@ export class Agent {
           const round = await this.runInlineContinuationRound({
             messages,
             systemPrompt,
+            volatileSystem,
             provider: resumeProvider,
             maxOutputTokens: effectiveMaxOutputTokens,
             maxSteps: effectiveMaxSteps,
@@ -4711,6 +4738,7 @@ export class Agent {
               if (cliChResume instanceof CLIChannel) cliChResume.bumpLiveActivitySteps();
               if (toolCalls && toolResults && toolCalls.length > 0) {
                 hasCompletedTool = true;
+                noteToolSteps(toolCalls, toolResults);
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
@@ -4784,6 +4812,7 @@ export class Agent {
             const round = await this.runInlineContinuationRound({
               messages,
               systemPrompt,
+              volatileSystem,
               provider: verifyProvider,
               maxOutputTokens: effectiveMaxOutputTokens,
               maxSteps: effectiveMaxSteps,
@@ -4800,6 +4829,7 @@ export class Agent {
                 if (cliChVerify instanceof CLIChannel) cliChVerify.bumpLiveActivitySteps();
                 if (toolCalls && toolResults && toolCalls.length > 0) {
                   hasCompletedTool = true;
+                noteToolSteps(toolCalls, toolResults);
                   for (let i = 0; i < toolCalls.length; i++) {
                     const tc = toolCalls[i];
                     executeTurnToolsUsed.add(tc.toolName);
@@ -4941,6 +4971,17 @@ export class Agent {
         channelType: msg.channelType,
         agentId: this.config.cloud.agentId || undefined,
       });
+      logger.info({
+        provider: usedProvider?.name,
+        model: usedProvider?.model,
+        inputTokens: result.usage?.inputTokens ?? 0,
+        cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        steps: this.completedStepCount,
+        toolCalls: turnToolTrace.length,
+        historyEntries: recentMemory.length,
+        elapsedMs: Date.now() - startTime,
+      }, 'Turn usage');
       this.syncTokenInfoToCli();
 
       // Estimate tokens saved by Saver Mode (cap headroom + history trim).
@@ -4960,6 +5001,15 @@ export class Agent {
       }
 
       if (canonicalSessionId) {
+        if (turnToolTrace.length > 0) {
+          this.sessions.appendMessage(canonicalSessionId, {
+            role: 'assistant',
+            kind: TOOL_TRACE_KIND,
+            content: formatToolTrace(turnToolTrace),
+            externalMessageId: `${msg.id}:tools`,
+            metadata: { channelType: msg.channelType, channelId: msg.channelId, toolCalls: turnToolTrace.length },
+          });
+        }
         this.sessions.appendMessage(canonicalSessionId, {
           role: 'assistant',
           content: finalText,
@@ -5232,13 +5282,16 @@ export class Agent {
    * and turns; providers that do not know the option ignore it, and the
    * AI SDK treats a leading system message exactly like `system:`.
    */
-  private withCachedSystem(systemPrompt: string, messages: unknown[]): any[] {
+  private withCachedSystem(systemPrompt: string, messages: unknown[], volatileSystem = ''): any[] {
     return [
       {
         role: 'system',
         content: systemPrompt,
         providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
       },
+      // Per-turn context lives in its own block AFTER the cache marker so it
+      // never invalidates the stable prefix.
+      ...(volatileSystem ? [{ role: 'system', content: volatileSystem }] : []),
       ...messages,
     ];
   }
@@ -6137,6 +6190,13 @@ Is this productive iteration or a stuck loop?`,
 
     if (cmd === '/sessions' || cmd.startsWith('/session')) {
       await this.handleSessionCommand(trimmed, channelType as ChannelType, channelId);
+      return true;
+    }
+
+    // /new — fresh conversation context for this chat; memory is kept.
+    // Unlike /reset this never halts agents, clears queues, or wipes state.
+    if (cmd === '/new') {
+      await this.handleSessionCommand('/session new', channelType as ChannelType, channelId);
       return true;
     }
 

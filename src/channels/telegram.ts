@@ -296,6 +296,7 @@ export class TelegramChannel extends BaseChannel {
       { command: 'spotify', description: 'Spotify playback controls' },
       { command: 'skills', description: 'Browse and install skills from the registry' },
       { command: 'unpair', description: 'Reset all Telegram access (admin only)' },
+      { command: 'new', description: 'Start a fresh conversation (memory is kept)' },
     ];
 
     try {

@@ -11,3 +11,5 @@ website/static/install.ps1
 config/
 soul/
 memory/
+# Claude Code worktrees / local state
+.claude/

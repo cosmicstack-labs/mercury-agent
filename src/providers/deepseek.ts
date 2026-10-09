@@ -12,7 +12,10 @@ export class DeepSeekProvider extends BaseProvider {
     super(config);
     this.name = config.name;
     this.model = config.model;
-    this.isReasoner = config.model === 'deepseek-reasoner';
+    // Thinking is not only `deepseek-reasoner`: V4-family and any model
+    // whose name says reasoner/thinking expose reasoning_content and need
+    // thinking enabled (issue #24).
+    this.isReasoner = /^deepseek-reasoner$|^deepseek-v4|reasoner|thinking/i.test(config.model);
 
     const client = createDeepSeek({
       apiKey: config.apiKey,
@@ -35,5 +38,10 @@ export class DeepSeekProvider extends BaseProvider {
 
   getModelInstance() {
     return this.modelInstance;
+  }
+
+  /** deepseek-chat accepts at most 8K output tokens; reasoning models allow more. */
+  getMaxOutputTokens(): number | undefined {
+    return this.config.maxOutputTokens ?? (this.isReasoner ? undefined : 8192);
   }
 }
