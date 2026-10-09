@@ -66,6 +66,12 @@ export class TelegramChannel extends BaseChannel {
   private statusNotices = new Map<string, string[]>();
   /** Maximum number of notice lines to show in the status card */
   private static readonly MAX_STATUS_NOTICES = 3;
+  /** Maximum number of notice lines retained per task (heartbeats arrive every 20-60s) */
+  private static readonly MAX_STORED_STATUS_NOTICES = 8;
+  /** How long an inline-keyboard prompt waits before answering for the user */
+  private static readonly PROMPT_TIMEOUT_MS = 120_000;
+  /** Sent prompt cards (permission / choice / continue), keyed by prompt id, so the outcome can be written back in place */
+  private promptCards = new Map<string, { chatId: number; messageId: number; html: string }>();
 
   constructor(private config: MercuryConfig) {
     super();
@@ -235,44 +241,7 @@ export class TelegramChannel extends BaseChannel {
       this.emit(msg);
     });
 
-    bot.on('callback_query:data', async (ctx) => {
-      const data = ctx.callbackQuery.data;
-      if (data.startsWith(`${ACCESS_ACTION_PREFIX}:`)) {
-        await this.handleAccessCallback(ctx, data);
-        return;
-      }
-
-      if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
-        await this.handleMemoryCallback(ctx, data);
-        return;
-      }
-
-      if (data.startsWith('choice:')) {
-        const [, id, value] = data.split(':');
-        const resolver = id ? this.pendingChoices.get(id) : undefined;
-        if (!resolver) {
-          await ctx.answerCallbackQuery({ text: 'Expired' });
-          return;
-        }
-
-        this.pendingChoices.delete(id);
-        resolver(value ?? '');
-        await ctx.answerCallbackQuery({ text: 'Selected' });
-        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch((e: any) => logger.debug({ e }, 'telegram editMessageReplyMarkup failed'));
-        return;
-      }
-
-      const resolver = this.pendingApprovals.get(data);
-      if (!resolver) {
-        await ctx.answerCallbackQuery({ text: 'Expired' });
-        return;
-      }
-
-      this.pendingApprovals.delete(data);
-      resolver();
-      const action = data.split(':')[1];
-      await ctx.answerCallbackQuery({ text: action === 'no' ? 'Denied' : 'Approved' });
-    });
+    bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx));
 
     bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
@@ -635,6 +604,95 @@ export class TelegramChannel extends BaseChannel {
     }
   }
 
+  /** Inline-keyboard taps (approvals, choices, access/memory admin actions). */
+  private async handleCallbackQuery(ctx: any): Promise<void> {
+    const data: string = ctx.callbackQuery.data;
+    if (data.startsWith(`${ACCESS_ACTION_PREFIX}:`)) {
+      await this.handleAccessCallback(ctx, data);
+      return;
+    }
+
+    if (data.startsWith(`${MEMORY_ACTION_PREFIX}:`)) {
+      await this.handleMemoryCallback(ctx, data);
+      return;
+    }
+
+    if (data.startsWith('choice:')) {
+      const [, id, value] = data.split(':');
+      const resolver = id ? this.pendingChoices.get(id) : undefined;
+      if (!resolver) {
+        await ctx.answerCallbackQuery({ text: 'Expired' });
+        return;
+      }
+
+      this.pendingChoices.delete(id);
+      // The resolver settles the card: outcome appended, keyboard removed.
+      resolver(value ?? '');
+      await ctx.answerCallbackQuery({ text: 'Selected' });
+      return;
+    }
+
+    const resolver = this.pendingApprovals.get(data);
+    if (!resolver) {
+      await ctx.answerCallbackQuery({ text: 'Expired' });
+      return;
+    }
+
+    this.pendingApprovals.delete(data);
+    // The resolver settles the card: outcome appended, keyboard removed (#23).
+    resolver();
+    const action = data.slice(data.lastIndexOf(':') + 1);
+    await ctx.answerCallbackQuery({ text: action === 'no' ? 'Denied' : 'Approved' });
+  }
+
+  /**
+   * Send a prompt card with an inline keyboard. Returns the message id (or
+   * undefined when sending failed) and remembers the card so the outcome can be
+   * written back into it later.
+   */
+  private async sendPromptCard(id: string, chatId: number, targetId: string | undefined, html: string, keyboard: InlineKeyboard): Promise<number | undefined> {
+    if (!this.bot) return undefined;
+    let sentMsgId: number | undefined;
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: keyboard });
+      sentMsgId = msg.message_id;
+    } catch {
+      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), { reply_markup: keyboard });
+      sentMsgId = msg.message_id;
+    }
+    if (sentMsgId) {
+      this.trackEphemeral(targetId, sentMsgId);
+      this.promptCards.set(id, { chatId, messageId: sentMsgId, html });
+    }
+    return sentMsgId;
+  }
+
+  /**
+   * Write the outcome of a prompt into its card: the inline keyboard is removed
+   * and `outcomeHtml` is appended below the original question. The card stays
+   * in the chat (it is still ephemeral — cleaned up when the task completes) so
+   * the user can see what was decided, including decisions made FOR them on
+   * timeout.
+   */
+  private async settlePromptCard(id: string, outcomeHtml: string): Promise<void> {
+    const card = this.promptCards.get(id);
+    this.promptCards.delete(id);
+    if (!card || !this.bot) return;
+    const html = `${card.html}\n\n${outcomeHtml}`;
+    try {
+      await this.bot.api.editMessageText(card.chatId, card.messageId, html, { parse_mode: 'HTML' });
+    } catch (err: any) {
+      const description = String(err?.description || err?.message || '');
+      if (description.includes('message is not modified')) return;
+      await this.bot.api.editMessageText(card.chatId, card.messageId, this.stripHtml(html))
+        .catch((e: any) => logger.debug({ e }, 'telegram settlePromptCard failed'));
+    }
+  }
+
+  private static timeoutOutcome(decision: string): string {
+    return `⏱ No answer in 2 min — ${decision}`;
+  }
+
   async askPermission(prompt: string, targetId?: string): Promise<string> {
     const chatIds = this.resolveTargetChatIds(targetId);
     const chatId = chatIds[0];
@@ -646,44 +704,29 @@ export class TelegramChannel extends BaseChannel {
       .text('Always', `${id}:always`)
       .text('Deny', `${id}:no`);
 
-    const html = mdToTelegram(prompt);
-    let sentMsgId: number | undefined;
+    await this.sendPromptCard(id, chatId, targetId, mdToTelegram(prompt), keyboard);
 
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, html, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
-
-    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+    const outcomes: Record<string, string> = {
+      yes: '✅ <b>Allowed</b>',
+      always: '✅ <b>Always allowed</b>',
+      no: '🚫 <b>Denied</b>',
+    };
 
     return new Promise((resolve) => {
-      const cleanup = (result: string) => {
-        this.pendingApprovals.delete(`${id}:yes`);
-        this.pendingApprovals.delete(`${id}:always`);
-        this.pendingApprovals.delete(`${id}:no`);
-        // Delete the permission card immediately
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+      const actions = Object.keys(outcomes);
+      const settle = (result: string, outcomeHtml: string) => {
+        clearTimeout(timer);
+        for (const action of actions) this.pendingApprovals.delete(`${id}:${action}`);
+        void this.settlePromptCard(id, outcomeHtml);
         resolve(result);
       };
-      this.pendingApprovals.set(`${id}:yes`, () => cleanup('yes'));
-      this.pendingApprovals.set(`${id}:always`, () => cleanup('always'));
-      this.pendingApprovals.set(`${id}:no`, () => cleanup('no'));
-
-      setTimeout(() => {
-        this.pendingApprovals.delete(`${id}:yes`);
-        this.pendingApprovals.delete(`${id}:always`);
-        this.pendingApprovals.delete(`${id}:no`);
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
-        resolve('no');
-      }, 120_000);
+      for (const action of actions) {
+        this.pendingApprovals.set(`${id}:${action}`, () => settle(action, outcomes[action]));
+      }
+      const timer = setTimeout(
+        () => settle('no', TelegramChannel.timeoutOutcome('treated as <b>Deny</b>')),
+        TelegramChannel.PROMPT_TIMEOUT_MS,
+      );
     });
   }
 
@@ -702,22 +745,23 @@ export class TelegramChannel extends BaseChannel {
       }
     }
 
-    const html = mdToTelegram(question);
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: keyboard });
-      this.trackEphemeral(targetId, msg.message_id);
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), { reply_markup: keyboard });
-      this.trackEphemeral(targetId, msg.message_id);
-    }
+    await this.sendPromptCard(id, chatId, targetId, mdToTelegram(question), keyboard);
+
+    const labelFor = (value: string) => this.escapeHtml(options.find(o => o.value === value)?.label || value);
 
     return new Promise((resolve) => {
-      this.pendingChoices.set(id, resolve);
-      setTimeout(() => {
-        if (!this.pendingChoices.has(id)) return;
+      const settle = (value: string, outcomeHtml: string) => {
+        clearTimeout(timer);
         this.pendingChoices.delete(id);
-        resolve(options[0]?.value || '');
-      }, 120_000);
+        void this.settlePromptCard(id, outcomeHtml);
+        resolve(value);
+      };
+      this.pendingChoices.set(id, (value) => settle(value, `✅ Selected: <b>${labelFor(value)}</b>`));
+      const timer = setTimeout(() => {
+        if (!this.pendingChoices.has(id)) return;
+        const fallback = options[0]?.value || '';
+        settle(fallback, TelegramChannel.timeoutOutcome(`continued with the recommended option: <b>${labelFor(fallback)}</b>`));
+      }, TelegramChannel.PROMPT_TIMEOUT_MS);
     });
   }
 
@@ -731,38 +775,22 @@ export class TelegramChannel extends BaseChannel {
       .text('Continue', `${id}:yes`)
       .text('Stop', `${id}:no`);
 
-    let sentMsgId: number | undefined;
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, mdToTelegram(question), {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, question, {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
-
-    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+    await this.sendPromptCard(id, chatId, targetId, mdToTelegram(question), keyboard);
 
     return new Promise((resolve) => {
-      const cleanup = (result: boolean) => {
+      const settle = (result: boolean, outcomeHtml: string) => {
+        clearTimeout(timer);
         this.pendingApprovals.delete(`${id}:yes`);
         this.pendingApprovals.delete(`${id}:no`);
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        void this.settlePromptCard(id, outcomeHtml);
         resolve(result);
       };
-      this.pendingApprovals.set(`${id}:yes`, () => cleanup(true));
-      this.pendingApprovals.set(`${id}:no`, () => cleanup(false));
-
-      setTimeout(() => {
-        this.pendingApprovals.delete(`${id}:yes`);
-        this.pendingApprovals.delete(`${id}:no`);
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
-        resolve(false);
-      }, 120_000);
+      this.pendingApprovals.set(`${id}:yes`, () => settle(true, '▶️ <b>Continuing</b>'));
+      this.pendingApprovals.set(`${id}:no`, () => settle(false, '⏹ <b>Stopped</b>'));
+      const timer = setTimeout(
+        () => settle(false, TelegramChannel.timeoutOutcome('<b>stopped</b>')),
+        TelegramChannel.PROMPT_TIMEOUT_MS,
+      );
     });
   }
 
@@ -778,38 +806,22 @@ export class TelegramChannel extends BaseChannel {
 
     const html = `<b>Permission Mode</b>\nHow should Mercury handle risky actions this session?\n\n🔒 <b>Ask Me</b> — confirm before file writes, commands, and scope changes\n✅ <b>Allow All</b> — auto-approve everything (scopes, commands, loops)`;
 
-    let sentMsgId: number | undefined;
-    try {
-      const msg = await this.bot.api.sendMessage(chatId, html, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    } catch {
-      const msg = await this.bot.api.sendMessage(chatId, this.stripHtml(html), {
-        reply_markup: keyboard,
-      });
-      sentMsgId = msg.message_id;
-    }
-
-    if (sentMsgId) this.trackEphemeral(targetId, sentMsgId);
+    await this.sendPromptCard(id, chatId, targetId, html, keyboard);
 
     return new Promise((resolve) => {
-      const cleanup = (result: PermissionMode) => {
+      const settle = (result: PermissionMode, outcomeHtml: string) => {
+        clearTimeout(timer);
         this.pendingApprovals.delete(`${id}:ask-me`);
         this.pendingApprovals.delete(`${id}:allow-all`);
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
+        void this.settlePromptCard(id, outcomeHtml);
         resolve(result);
       };
-      this.pendingApprovals.set(`${id}:ask-me`, () => cleanup('ask-me'));
-      this.pendingApprovals.set(`${id}:allow-all`, () => cleanup('allow-all'));
-
-      setTimeout(() => {
-        this.pendingApprovals.delete(`${id}:ask-me`);
-        this.pendingApprovals.delete(`${id}:allow-all`);
-        if (sentMsgId) this.deleteEphemeralMessage(targetId, sentMsgId);
-        resolve('ask-me');
-      }, 120_000);
+      this.pendingApprovals.set(`${id}:ask-me`, () => settle('ask-me', '🔒 <b>Ask Me</b> selected'));
+      this.pendingApprovals.set(`${id}:allow-all`, () => settle('allow-all', '✅ <b>Allow All</b> selected'));
+      const timer = setTimeout(
+        () => settle('ask-me', TelegramChannel.timeoutOutcome('defaulting to <b>Ask Me</b>')),
+        TelegramChannel.PROMPT_TIMEOUT_MS,
+      );
     });
   }
 
@@ -1428,6 +1440,11 @@ export class TelegramChannel extends BaseChannel {
     const step = this.stepCounters.get(key) || 0;
     const history = this.stepHistory.get(key) || [];
     const notices = this.statusNotices.get(key) || [];
+    // Heartbeat lines arrive every 20-60s for the whole task — keep only the tail
+    // so the stored list (and the card) stays short.
+    if (notices.length > TelegramChannel.MAX_STORED_STATUS_NOTICES) {
+      notices.splice(0, notices.length - TelegramChannel.MAX_STORED_STATUS_NOTICES);
+    }
 
     const recentHistory = history.slice(-5);
     const recentNotices = notices.slice(-TelegramChannel.MAX_STATUS_NOTICES);
