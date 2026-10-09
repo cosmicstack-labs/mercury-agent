@@ -16,6 +16,7 @@ import { TASK_SUMMARY_FILE_LIMIT } from '../ui/types.js';
 import { TuiApp } from '../ui/App.js';
 import { nextTip } from '../ui/tips.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
+import { PASTE_SENTINEL, FORWARD_DELETE_KEY } from '../ui/input-composer.js';
 import { detectInkPatch, inkPatchWarning } from '../ui/ink-patch-check.js';
 
 /**
@@ -206,11 +207,45 @@ class TtyStdinProxy extends EventEmitter {
 
 export class MouseSequenceFilter {
   private buf = '';
+  /** Inside a bracketed paste (`ESC[200~` seen, `ESC[201~` not yet). */
+  private inPaste = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly SGR = /^\x1b\[<\d+;\d+;\d+[Mm]/;
   private static readonly X10 = /^\x1b\[M[\x20-\x2f][\x20-\xff][\x20-\xff]/;
   private static readonly DEC = /^\x1b\[\?100[0-7][hl]/;
   private static readonly CSI_COMPLETE = /^\x1b\[[\d;<]*[A-Za-z]/;
+  private static readonly PASTE_START = /^\x1b\[200~/;
+  private static readonly PASTE_END = /^\x1b\[201~/;
+  /** Partial `ESC[201~` at the end of a paste chunk — wait for the rest. */
+  private static readonly PASTE_END_PARTIAL = /^\x1b(\[(2(0(1)?)?)?)?$/;
+  /** Any ANSI escape inside pasted text (never meaningful as input). */
+  private static readonly PASTE_ANSI = /\x1b(\[[0-9;?<>=]*[ -\/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])?/g;
   private static readonly MAX_HOLDBACK = 64;
+  /**
+   * A held-back prefix that is not completed within this window is a real
+   * keypress (a lone Esc, Alt+key) and is released as-is. Terminals deliver
+   * a complete sequence in one read or within a millisecond or two; 35 ms
+   * is the conventional ESC-disambiguation delay (vim's ttimeoutlen scale).
+   */
+  static readonly HOLDBACK_FLUSH_MS = 35;
+  /**
+   * Keys Ink either cannot parse or cannot tell apart, rewritten to
+   * sequences the shared composer understands (see input-composer.tsx):
+   *   Shift+Enter / Ctrl+Enter in every common encoding → Ctrl+N (newline)
+   *   the real Delete key (ESC[3~) → FORWARD_DELETE_KEY (Ink folds it into
+   *   `key.delete` together with \x7f, which is Backspace on macOS/Linux)
+   */
+  private static readonly KEY_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
+    [/^\x1b\[13;[25]u/, '\x0e'],       // kitty keyboard protocol
+    [/^\x1b\[27;[25];13~/, '\x0e'],    // xterm modifyOtherKeys
+    [/^\x1b\r/, '\x0e'],               // ESC CR (iTerm2 / Alt+Enter)
+    [/^\x1b\[3~/, FORWARD_DELETE_KEY],
+    // Home / End: Ink names them but hands the composer an empty `input`
+    // with no `key.home`/`key.end` flag, so they were dead keys. Readline
+    // Ctrl+A / Ctrl+E are what the composer binds to line start / end.
+    [/^\x1b(\[(1~|H)|OH)/, '\x01'],
+    [/^\x1b(\[(4~|F)|OF)/, '\x05'],
+  ];
 
   constructor(
     private onEvent: (ev: MouseEvent) => void,
@@ -220,10 +255,44 @@ export class MouseSequenceFilter {
   /** Feed a raw chunk from the terminal; returns nothing, side-effects only. */
   push(chunk: Buffer | string): void {
     this.buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    this.drain();
+  }
+
+  private drain(): void {
     let out = '';
+    let paste = '';
     let i = 0;
+    const flushOut = () => { if (out) { this.write(out); out = ''; } };
+    const flushPaste = () => {
+      if (paste) {
+        this.write(PASTE_SENTINEL + paste.replace(MouseSequenceFilter.PASTE_ANSI, ''));
+        paste = '';
+      }
+    };
     while (i < this.buf.length) {
       const rest = this.buf.slice(i);
+      if (this.inPaste) {
+        if (rest[0] !== '\x1b') {
+          const esc = rest.indexOf('\x1b');
+          const text = esc < 0 ? rest : rest.slice(0, esc);
+          paste += text;
+          i += text.length;
+          continue;
+        }
+        const end = MouseSequenceFilter.PASTE_END.exec(rest)?.[0];
+        if (end) {
+          this.inPaste = false;
+          flushPaste();
+          i += end.length;
+          continue;
+        }
+        if (MouseSequenceFilter.PASTE_END_PARTIAL.test(rest)) break;
+        // An escape inside the paste: keep it in the payload (stripped
+        // from the text later) and move on.
+        paste += rest[0];
+        i += 1;
+        continue;
+      }
       if (rest[0] !== '\x1b') {
         out += rest[0];
         i += 1;
@@ -240,6 +309,29 @@ export class MouseSequenceFilter {
         i += seq.length;
         continue;
       }
+      const pasteStart = MouseSequenceFilter.PASTE_START.exec(rest)?.[0];
+      if (pasteStart) {
+        // Keystrokes typed before the paste must reach Ink before the
+        // paste payload, as their own chunk.
+        flushOut();
+        this.inPaste = true;
+        i += pasteStart.length;
+        continue;
+      }
+      let rewritten = false;
+      for (const [pattern, replacement] of MouseSequenceFilter.KEY_REWRITES) {
+        const m = pattern.exec(rest)?.[0];
+        if (m) {
+          // A rewritten key is a keystroke of its own: Ink parses a chunk
+          // as ONE key, so it must not be glued to surrounding text.
+          flushOut();
+          this.write(replacement);
+          i += m.length;
+          rewritten = true;
+          break;
+        }
+      }
+      if (rewritten) continue;
       // X10 mouse in flight (ESC [ M + 0-2 pending payload bytes) — MUST be
       // tested before the generic CSI pass-through, because 'M' is a valid
       // CSI final byte and would otherwise leak the prefix downstream.
@@ -268,8 +360,45 @@ export class MouseSequenceFilter {
     if (this.buf.length > MouseSequenceFilter.MAX_HOLDBACK) {
       this.buf = '';
     }
-    if (out) this.write(out);
+    if (this.inPaste) flushPaste();
+    flushOut();
+    this.armHoldbackFlush();
   }
+
+  /**
+   * A held-back prefix is either the head of a sequence still in flight or
+   * a real key (a lone Esc, Alt+letter). Release it after a short delay so
+   * Esc reaches Ink on its own instead of fusing with the NEXT keystroke.
+   */
+  private armHoldbackFlush(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.buf.length === 0 || this.inPaste) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      if (this.buf.length === 0 || this.inPaste) return;
+      const held = this.buf;
+      this.buf = '';
+      // A bare ESC is the Escape key; anything longer is an unknown
+      // sequence whose bytes Ink can still interpret (Alt+key etc.).
+      this.write(held);
+    }, MouseSequenceFilter.HOLDBACK_FLUSH_MS);
+    (this.flushTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** Drop timers (tests / teardown). */
+  dispose(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+  }
+}
+
+/** DECSET: bracketed paste on/off. On, the terminal wraps pasted text in
+ * `ESC[200~ … ESC[201~` so the filter can insert it literally. */
+export function bracketedPasteSequences(enable: boolean): string {
+  return enable ? '\x1b[?2004h' : '\x1b[?2004l';
 }
 
 /** Status-bar hint shown while the TUI is frozen (Ctrl+S scroll lock). The
@@ -748,7 +877,7 @@ export class CLIChannel extends BaseChannel {
    */
   restoreTerminal(): void {
     try {
-      process.stdout.write(mouseTrackingSequences(false) + '\x1b[?25h');
+      process.stdout.write(mouseTrackingSequences(false) + bracketedPasteSequences(false) + '\x1b[?25h');
     } catch { /* not a TTY */ }
   }
 
@@ -1053,9 +1182,13 @@ export class CLIChannel extends BaseChannel {
     };
 
     // Reset mouse-report modes in case a previous run left the terminal
-    // stuck emitting mouse sequences (1000/1002/1003 + SGR 1006).
+    // stuck emitting mouse sequences (1000/1002/1003 + SGR 1006), and turn
+    // on bracketed paste so multi-line pastes arrive as one literal chunk
+    // (the stdin filter strips the ESC[200~/201~ markers; see
+    // MouseSequenceFilter). Turned off again by restoreTerminal() and the
+    // output wrapper's dispose().
     try {
-      process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+      process.stdout.write(mouseTrackingSequences(false) + bracketedPasteSequences(true));
     } catch {
       // Not a TTY or write failed — nothing to reset.
     }

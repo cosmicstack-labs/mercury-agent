@@ -13,8 +13,12 @@ import {
   pushHistoryLine,
   historyPrev,
   historyNext,
-  insertInputChunk,
-  backspaceAt,
+  applyEditKey,
+  isPasteChunk,
+  graphemeAt,
+  nextGraphemeBoundary,
+  expandTabs,
+  type EditorKey,
   SuggestionList,
   type BotRosterEntry,
   type SkillEntry,
@@ -364,7 +368,7 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
       return;
     }
 
-    if (key.return) {
+    if (key.return && !isPasteChunk(ch)) {
       const trimmed = input.trim();
       if (!trimmed) return;
       // Same Enter-fill contract as the main TUI: when the slash picker is
@@ -393,8 +397,6 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
       void sendInput(trimmed);
       return;
     }
-    if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
-    if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
     // ↑/↓ navigate suggestions when a picker is visible, else input history
     // (shell-style, same helpers as the main TUI).
     if (key.upArrow) {
@@ -442,17 +444,12 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
       }
       return;
     }
-    if (key.backspace || key.delete) {
-      const next = backspaceAt(input, cursorPos);
-      setInput(next.input);
-      setCursorPos(next.cursorPos);
-      return;
-    }
-    if (key.ctrl || key.meta) return;
-    if (ch && ch.length > 0 && !key.escape) {
-      const next = insertInputChunk(input, cursorPos, ch);
-      setInput(next.input);
-      setCursorPos(next.cursorPos);
+    // Shared editing reducer (same pipeline as the main TUI): paste,
+    // newline, grapheme-aware cursor moves and deletes, word moves.
+    const edited = applyEditKey(input, cursorPos, ch, key as EditorKey);
+    if (edited) {
+      setInput(edited.input);
+      setCursorPos(edited.cursorPos);
     }
   });
 
@@ -535,9 +532,9 @@ export function AttachTui({ client, pid, onExit }: { client: AttachClient; pid: 
         <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} width={inputWidth}>
           <Box>
             <Text bold color="cyan">&gt; </Text>
-            <Text>{input.slice(0, cursorPos)}</Text>
-            <Text inverse>{cursorPos < input.length ? input[cursorPos] : ' '}</Text>
-            <Text>{input.slice(cursorPos + 1)}</Text>
+            <Text>{expandTabs(input.slice(0, cursorPos))}</Text>
+            <Text inverse>{cursorPos < input.length ? expandTabs(graphemeAt(input, cursorPos)) : ' '}</Text>
+            <Text>{expandTabs(input.slice(nextGraphemeBoundary(input, cursorPos)))}</Text>
           </Box>
         </Box>
       </Box>

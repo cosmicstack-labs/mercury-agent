@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
+import stringWidth from 'string-width';
 
 /**
  * Shared input composer — ONE source of truth for the interactive input
@@ -242,20 +243,46 @@ export function historyNext(state: InputHistoryState): { state: InputHistoryStat
 // ─── Character cleaning / paste safety ──────────────────────────────────────
 
 /**
+ * Private-use sentinels the stdin filter (channels/cli.ts
+ * `MouseSequenceFilter`) prepends to text that must NOT go through Ink's
+ * key parser as keystrokes:
+ *
+ *   • `PASTE_SENTINEL` — the chunk is bracketed-paste payload (`ESC[200~ …
+ *     ESC[201~`). It is inserted literally: a pasted `\n` is a newline in
+ *     the buffer, never Enter.
+ *   • `FORWARD_DELETE_KEY` — the terminal's real Delete key (`ESC[3~`). Ink
+ *     folds that AND `\x7f` (Backspace on macOS/Linux) into `key.delete`,
+ *     so the filter rewrites `ESC[3~` to this sentinel to keep them apart.
+ *
+ * Both live in the Unicode private-use area, so no keyboard produces them.
+ */
+export const PASTE_SENTINEL = '';
+export const FORWARD_DELETE_KEY = '';
+
+/** True when the raw `ch` from `useInput` is a bracketed-paste chunk. */
+export function isPasteChunk(ch: string | undefined): boolean {
+  return typeof ch === 'string' && ch.startsWith(PASTE_SENTINEL);
+}
+
+/**
  * Strip control bytes and escape-sequence fragments from a raw `ch` payload.
  * Mouse scroll in raw mode emits SGR sequences like `\x1b[<0;row;colM` — Ink
  * partially consumes `\x1b[` and leaks the tail as individual chars, so every
  * surface must filter non-printables before accepting input.
+ *
+ * Newlines and tabs are KEPT (`\r\n` and lone `\r` normalise to `\n`): a
+ * multi-line paste must land as multi-line text, not collapse to one line.
+ * Only the control bytes that are never text are dropped.
  */
 export function cleanPrintableInput(ch: string): string {
-  return ch
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-    .split('')
-    .filter((c) => {
-      const code = c.charCodeAt(0);
-      return (code >= 0x20 && code <= 0x7e) || code >= 0xa0;
-    })
-    .join('');
+  let out = '';
+  for (const c of ch.replace(/\r\n?/g, '\n')) {
+    const code = c.codePointAt(0) ?? 0;
+    if (code === 0x0a || code === 0x09) { out += c; continue; }
+    if (code === PASTE_SENTINEL.codePointAt(0) || code === FORWARD_DELETE_KEY.codePointAt(0)) continue;
+    if ((code >= 0x20 && code <= 0x7e) || code >= 0xa0) out += c;
+  }
+  return out;
 }
 
 /** Flood guard: never let a corrupt stream grow the input unboundedly. */
@@ -263,7 +290,8 @@ export const MAX_INPUT_LEN = 8000;
 
 /**
  * Insert a cleaned chunk at the cursor position with the flood guard applied.
- * Returns the (possibly clamped) new input + new cursor position.
+ * Returns the (possibly clamped) new input + new cursor position. Paste
+ * sentinels are stripped, so a bracketed chunk inserts as plain text.
  */
 export function insertInputChunk(
   input: string,
@@ -276,18 +304,282 @@ export function insertInputChunk(
   if (next.length > MAX_INPUT_LEN) {
     if (input.length >= MAX_INPUT_LEN) return { input, cursorPos };
     const accepted = MAX_INPUT_LEN - input.length;
-    return { input: next.slice(0, MAX_INPUT_LEN), cursorPos: cursorPos + Math.max(0, accepted) };
+    // Never cut a surrogate pair in half at the clamp boundary.
+    let cut = MAX_INPUT_LEN;
+    if (cut > 0 && cut < next.length && /[\uD800-\uDBFF]/.test(next[cut - 1]) && /[\uDC00-\uDFFF]/.test(next[cut])) cut -= 1;
+    const clamped = next.slice(0, cut);
+    return { input: clamped, cursorPos: Math.min(clamped.length, cursorPos + Math.max(0, accepted)) };
   }
   return { input: next, cursorPos: cursorPos + clean.length };
 }
 
+// ─── Grapheme-aware cursor math ─────────────────────────────────────────────
+//
+// The input buffer is a JS string, so `cursorPos` is a UTF-16 offset. Every
+// cursor move and deletion below steps by *grapheme cluster* (emoji with
+// modifiers/ZWJ, CJK, combining marks) instead of by code unit, so a
+// backspace over "👨‍👩‍👧" removes the whole family instead of leaving a
+// broken half, and ← / → never land inside a surrogate pair.
+
+type Segmenter = { segment(input: string): Iterable<{ segment: string; index: number }> };
+const graphemeSegmenter: Segmenter | null = (() => {
+  try {
+    const S = (Intl as unknown as { Segmenter?: new (locale?: string, opts?: { granularity: string }) => Segmenter }).Segmenter;
+    return S ? new S(undefined, { granularity: 'grapheme' }) : null;
+  } catch {
+    return null;
+  }
+})();
+
+/** Split a string into grapheme clusters (code-point fallback without Intl.Segmenter). */
+export function graphemes(text: string): string[] {
+  if (text.length === 0) return [];
+  if (graphemeSegmenter) {
+    const out: string[] = [];
+    for (const { segment } of graphemeSegmenter.segment(text)) out.push(segment);
+    return out;
+  }
+  return Array.from(text);
+}
+
+/** UTF-16 offset of the grapheme boundary immediately before `pos` (0 at start). */
+export function prevGraphemeBoundary(text: string, pos: number): number {
+  if (pos <= 0) return 0;
+  const head = text.slice(0, Math.min(pos, text.length));
+  if (head.length === 0) return 0;
+  const parts = graphemes(head);
+  const last = parts[parts.length - 1] ?? '';
+  return head.length - last.length;
+}
+
+/** UTF-16 offset of the grapheme boundary immediately after `pos` (text.length at end). */
+export function nextGraphemeBoundary(text: string, pos: number): number {
+  if (pos >= text.length) return text.length;
+  const tail = text.slice(Math.max(0, pos));
+  if (graphemeSegmenter) {
+    for (const { segment } of graphemeSegmenter.segment(tail)) return pos + segment.length;
+  }
+  const first = Array.from(tail)[0] ?? '';
+  return pos + first.length;
+}
+
+/** The grapheme cluster that starts at `pos` ('' at end of text). */
+export function graphemeAt(text: string, pos: number): string {
+  return text.slice(pos, nextGraphemeBoundary(text, pos));
+}
+
+/** Text as the input box draws it: tabs become two spaces (Ink measures a
+ * raw tab as zero width while the terminal jumps to the next tab stop, so
+ * the cursor cell would drift). */
+export function expandTabs(text: string): string {
+  return text.replace(/\t/g, '  ');
+}
+
+/** Terminal column width of one grapheme cluster (East-Asian wide + emoji = 2). */
+export function graphemeWidth(cluster: string): number {
+  if (cluster.length === 0) return 0;
+  return stringWidth(expandTabs(cluster));
+}
+
+/** Terminal column width of a string (grapheme-aware, via `string-width`). */
+export function displayWidth(text: string): number {
+  return stringWidth(expandTabs(text));
+}
+
+/**
+ * Column (0-based) at which the cursor sits on `line` when `cursorCol` is a
+ * UTF-16 offset into it — i.e. the display width of the text before it.
+ */
+export function cursorColumn(line: string, cursorCol: number): number {
+  return displayWidth(line.slice(0, Math.max(0, Math.min(cursorCol, line.length))));
+}
+
+/** Backspace: delete the grapheme before the cursor. */
 export function backspaceAt(input: string, cursorPos: number): { input: string; cursorPos: number } {
   if (cursorPos <= 0) return { input, cursorPos };
+  const start = prevGraphemeBoundary(input, cursorPos);
   return {
-    input: input.slice(0, cursorPos - 1) + input.slice(cursorPos),
-    cursorPos: cursorPos - 1,
+    input: input.slice(0, start) + input.slice(cursorPos),
+    cursorPos: start,
   };
 }
+
+/** Forward delete: delete the grapheme under the cursor. */
+export function deleteForwardAt(input: string, cursorPos: number): { input: string; cursorPos: number } {
+  if (cursorPos >= input.length) return { input, cursorPos };
+  const end = nextGraphemeBoundary(input, cursorPos);
+  return { input: input.slice(0, cursorPos) + input.slice(end), cursorPos };
+}
+
+/** Delete a range [from, to) and put the cursor at `from`. */
+function deleteRange(input: string, from: number, to: number): { input: string; cursorPos: number } {
+  if (from >= to) return { input, cursorPos: from };
+  return { input: input.slice(0, from) + input.slice(to), cursorPos: from };
+}
+
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+/** Start of the word before `pos` (readline `backward-word`). */
+export function wordBoundaryLeft(text: string, pos: number): number {
+  let p = Math.min(pos, text.length);
+  // Skip separators, then the word.
+  while (p > 0) {
+    const prev = prevGraphemeBoundary(text, p);
+    const g = text.slice(prev, p);
+    if (WORD_CHAR.test(g) || g === '\n') break;
+    p = prev;
+  }
+  if (p > 0 && text.slice(prevGraphemeBoundary(text, p), p) === '\n') return prevGraphemeBoundary(text, p);
+  while (p > 0) {
+    const prev = prevGraphemeBoundary(text, p);
+    if (!WORD_CHAR.test(text.slice(prev, p))) break;
+    p = prev;
+  }
+  return p;
+}
+
+/** End of the word after `pos` (readline `forward-word`). */
+export function wordBoundaryRight(text: string, pos: number): number {
+  let p = Math.max(0, pos);
+  while (p < text.length) {
+    const next = nextGraphemeBoundary(text, p);
+    const g = text.slice(p, next);
+    if (WORD_CHAR.test(g) || g === '\n') break;
+    p = next;
+  }
+  if (p < text.length && text.slice(p, nextGraphemeBoundary(text, p)) === '\n') return nextGraphemeBoundary(text, p);
+  while (p < text.length) {
+    const next = nextGraphemeBoundary(text, p);
+    if (!WORD_CHAR.test(text.slice(p, next))) break;
+    p = next;
+  }
+  return p;
+}
+
+/** Start offset of the line containing `pos`. */
+export function lineStart(text: string, pos: number): number {
+  const i = text.lastIndexOf('\n', Math.max(0, pos - 1));
+  return i < 0 ? 0 : i + 1;
+}
+
+/** End offset (exclusive) of the line containing `pos`. */
+export function lineEnd(text: string, pos: number): number {
+  const i = text.indexOf('\n', pos);
+  return i < 0 ? text.length : i;
+}
+
+// ─── Key reducer (shared by every surface) ──────────────────────────────────
+
+/** The subset of Ink's `Key` the editor cares about. */
+export interface EditorKey {
+  upArrow?: boolean;
+  downArrow?: boolean;
+  leftArrow?: boolean;
+  rightArrow?: boolean;
+  return?: boolean;
+  escape?: boolean;
+  ctrl?: boolean;
+  shift?: boolean;
+  tab?: boolean;
+  backspace?: boolean;
+  delete?: boolean;
+  meta?: boolean;
+  home?: boolean;
+  end?: boolean;
+  /** Ink's internal keypress name (`enter` for a bare `\n`). */
+  name?: string;
+}
+
+export interface EditResult {
+  input: string;
+  cursorPos: number;
+}
+
+/**
+ * Pure text-editing reducer for ONE keystroke. Returns the next buffer and
+ * cursor, or `null` when the key is not an editing key (the caller then
+ * applies its own bindings: submit, history, suggestions, mode shortcuts).
+ *
+ * Bindings (readline-style, identical on the main TUI, Mercury Code and
+ * the attach TUI):
+ *
+ *   paste chunk          insert literally (newlines kept, never Enter)
+ *   Ctrl+N / Shift+Enter insert newline (the stdin filter maps Shift+Enter
+ *                        sequences to Ctrl+N)
+ *   ← / →                move one grapheme
+ *   Alt+← / Alt+→,       move one word
+ *   Ctrl+← / Ctrl+→,
+ *   Alt+B / Alt+F
+ *   Home / End,          line start / line end
+ *   Ctrl+A / Ctrl+E
+ *   Backspace            delete grapheme before cursor
+ *   Delete               delete grapheme under cursor
+ *   Ctrl+W               delete word before cursor
+ *   Ctrl+U               delete to line start
+ *   Ctrl+K               delete to line end
+ *   printable text       insert at cursor
+ */
+export function applyEditKey(input: string, cursorPos: number, ch: string | undefined, key: EditorKey): EditResult | null {
+  const pos = Math.max(0, Math.min(cursorPos, input.length));
+  const c = ch ?? '';
+
+  if (isPasteChunk(c)) return insertInputChunk(input, pos, c);
+  if (c === FORWARD_DELETE_KEY) return deleteForwardAt(input, pos);
+
+  if (key.ctrl) {
+    const letter = c.toLowerCase();
+    if (letter === 'n' || c === '\x0e') return insertInputChunk(input, pos, '\n');
+    if (letter === 'a') return { input, cursorPos: lineStart(input, pos) };
+    if (letter === 'e') return { input, cursorPos: lineEnd(input, pos) };
+    if (letter === 'w') return deleteRange(input, wordBoundaryLeft(input, pos), pos);
+    if (letter === 'u') return deleteRange(input, lineStart(input, pos), pos);
+    if (letter === 'k') return deleteRange(input, pos, lineEnd(input, pos));
+    if (key.leftArrow) return { input, cursorPos: wordBoundaryLeft(input, pos) };
+    if (key.rightArrow) return { input, cursorPos: wordBoundaryRight(input, pos) };
+    return null;
+  }
+
+  if (key.meta) {
+    if (key.leftArrow || c === 'b') return { input, cursorPos: wordBoundaryLeft(input, pos) };
+    if (key.rightArrow || c === 'f') return { input, cursorPos: wordBoundaryRight(input, pos) };
+    // Alt+Backspace (ESC DEL) also deletes the previous word in most shells.
+    if (key.backspace || key.delete) return deleteRange(input, wordBoundaryLeft(input, pos), pos);
+    return null;
+  }
+
+  if (key.leftArrow) return { input, cursorPos: prevGraphemeBoundary(input, pos) };
+  if (key.rightArrow) return { input, cursorPos: nextGraphemeBoundary(input, pos) };
+  if (key.home) return { input, cursorPos: lineStart(input, pos) };
+  if (key.end) return { input, cursorPos: lineEnd(input, pos) };
+  if (key.backspace || key.delete) return backspaceAt(input, pos);
+
+  if (key.return || key.escape || key.tab || key.upArrow || key.downArrow || key.name === 'enter') return null;
+  if (c.length > 0) return insertInputChunk(input, pos, c);
+  return null;
+}
+
+// ─── Ctrl+C semantics ───────────────────────────────────────────────────────
+
+/** Second Ctrl+C within this window (on an empty input) exits. */
+export const CTRL_C_EXIT_WINDOW_MS = 1500;
+
+export type CtrlCAction = 'clear' | 'arm' | 'exit';
+
+/**
+ * Ctrl+C never kills the process on a single tap:
+ *   • input non-empty → `clear` the input
+ *   • input empty, not armed (or armed too long ago) → `arm` and show the
+ *     "Press Ctrl+C again to exit" hint
+ *   • input empty, armed within the window → `exit`
+ */
+export function ctrlCAction(input: string, armedAt: number | null, now: number): CtrlCAction {
+  if (input.length > 0) return 'clear';
+  if (armedAt != null && now - armedAt <= CTRL_C_EXIT_WINDOW_MS) return 'exit';
+  return 'arm';
+}
+
+/** Hint shown while a Ctrl+C exit is armed. */
+export const CTRL_C_EXIT_HINT = 'Press Ctrl+C again to exit';
 
 // ─── Suggestion popup rendering ─────────────────────────────────────────────
 

@@ -2,6 +2,9 @@ import { EventEmitter } from 'node:events';
 
 type TtyWriteStream = NodeJS.WriteStream;
 
+/** DECRST 2004 — mirrors `bracketedPasteSequences(false)` in channels/cli.ts. */
+const BRACKETED_PASTE_OFF = '\x1b[?2004l';
+
 /**
  * Keeps Ink alive when its primary terminal stream is closed unexpectedly.
  * stderr normally points at the same TTY through a separate descriptor, so it
@@ -48,6 +51,10 @@ export class ResilientTuiOutput extends EventEmitter {
     this.primary.off('error', this.onPrimaryError);
     this.fallback.off('error', this.onFallbackError);
     this.primary.off('resize', this.onResize);
+    // Bracketed paste is enabled for the TUI's lifetime; a shell left in
+    // that mode shows `ESC[200~` around every paste. Always reset it here —
+    // this runs on every teardown path, crash handlers included.
+    try { this.active.write(BRACKETED_PASTE_OFF); } catch { /* stream gone */ }
   }
 
   /**

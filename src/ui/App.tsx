@@ -14,7 +14,7 @@ import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
-import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, insertInputChunk, backspaceAt, createInputHistoryState, SuggestionList, type SkillEntry } from './input-composer.js';
+import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, createInputHistoryState, SuggestionList, applyEditKey, isPasteChunk, graphemeAt, nextGraphemeBoundary, expandTabs, type EditorKey, type SkillEntry } from './input-composer.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
@@ -280,7 +280,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
 
   useInput((ch, key) => {
     const keyChar = (ch || (key as any)?.name || '').toLowerCase();
-    const isEnter = key.return || (key as any)?.name === 'enter';
+    const isEnter = (key.return || (key as any)?.name === 'enter') && !isPasteChunk(ch);
     const resolvePermissionAndMaybeContinue = (value: string | boolean) => {
       const shouldAutoEnterChat = state.mode === 'splash' && state.permissionPrompt?.type === 'mode';
       onPermissionResolve(value);
@@ -344,13 +344,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       if (key.ctrl && (ch === 'g' || ch === 'G')) { onInput('/code diff'); return; }
       if (key.ctrl && (ch === 'o' || ch === 'O' || ch === '\x0f')) { onInput('/mc expand'); return; }
 
-      // Ctrl+N newline in input
-      if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
-        setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
-        setCursorPos((p) => p + 1);
-        return;
-      }
-
+      // A bracketed paste is literal text — never Enter, even when the
+      // payload is a single "\n".
       if (isEnter) {
         const trimmed = input.trim();
         if (trimmed) {
@@ -365,45 +360,30 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
 
       if (key.tab) return;
 
-      if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
-      if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
       // Transcript scrolling is terminal-native now (the transcript prints
       // into scrollback via <Static>): ↑/↓ navigate input history instead.
       // Shared composer history helpers (same behavior as chat mode).
-      if (key.upArrow) {
+      if (key.upArrow && !key.meta && !key.ctrl) {
         if (inputHistory.history.length === 0) return;
         const h = historyPrev(inputHistory, input);
         setInputHistory(h.state);
         setInputAndCursor(h.input);
         return;
       }
-      if (key.downArrow) {
+      if (key.downArrow && !key.meta && !key.ctrl) {
         if (inputHistory.index === -1) return;
         const h = historyNext(inputHistory);
         setInputHistory(h.state);
         setInputAndCursor(h.input);
         return;
       }
-      if ((key as any).home) { setCursorPos(0); return; }
-      if ((key as any).end) { setCursorPos(input.length); return; }
-      // Readline-style cursor shortcuts (the old Ctrl+A/Ctrl+E scroll
-      // bindings are gone with the in-app viewport).
-      if (key.ctrl && (ch === 'a' || ch === 'A')) { setCursorPos(0); return; }
-      if (key.ctrl && (ch === 'e' || ch === 'E')) { setCursorPos(input.length); return; }
-      if (key.backspace || key.delete) {
-        const del = backspaceAt(input, cursorPos);
-        setInput(del.input);
-        setCursorPos(del.cursorPos);
-        return;
-      }
-      if (key.ctrl || key.meta) return;
-
-      if (ch && ch.length > 0 && !key.escape) {
-        // Shared composer char-insert (clean + cursor + flood guard in one
-        // place — same pipeline as the attach TUI and chat mode).
-        const next = insertInputChunk(input, cursorPos, ch);
-        setInput(next.input);
-        setCursorPos(next.cursorPos);
+      // Shared editing reducer: paste, newline (Ctrl+N / Shift+Enter),
+      // grapheme-aware cursor moves and deletes, word moves, Ctrl+W/U/K —
+      // one pipeline for the attach TUI, chat mode and Mercury Code.
+      const edited = applyEditKey(input, cursorPos, ch, key as EditorKey);
+      if (edited) {
+        setInput(edited.input);
+        setCursorPos(edited.cursorPos);
       }
       return;
     }
@@ -671,13 +651,6 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       return;
     }
 
-    // Ctrl+N → insert newline (multi-line input)
-    if (key.ctrl && (ch === 'n' || ch === 'N' || ch === '\x0e')) {
-      setInput((prev) => prev.slice(0, cursorPos) + '\n' + prev.slice(cursorPos));
-      setCursorPos((p) => p + 1);
-      return;
-    }
-
     if (key.escape) {
       if (state.mode === 'coding') {
         onInput('/chat');
@@ -693,16 +666,6 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       } else if (input.startsWith('#') && skillSuggestions.length > 0) {
         completeSkillSelection();
       }
-      return;
-    }
-
-    // Left/right arrow: move cursor within input
-    if (key.leftArrow) {
-      setCursorPos((p) => Math.max(0, p - 1));
-      return;
-    }
-    if (key.rightArrow) {
-      setCursorPos((p) => Math.min(input.length, p + 1));
       return;
     }
 
@@ -747,21 +710,13 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       return;
     }
 
-    if (key.backspace || key.delete) {
-      const del = backspaceAt(input, cursorPos);
-      setInput(del.input);
-      setCursorPos(del.cursorPos);
-      return;
-    }
-
-    if (key.ctrl || key.meta) return;
-
-    if (ch && ch.length > 0 && !key.escape) {
-      // Shared composer char-insert (clean + cursor + flood guard in one
-      // place — same pipeline as the attach TUI and Mercury Code mode).
-      const next = insertInputChunk(input, cursorPos, ch);
-      setInput(next.input);
-      setCursorPos(next.cursorPos);
+    // Shared editing reducer: paste, newline (Ctrl+N / Shift+Enter),
+    // grapheme-aware cursor moves and deletes, word moves, Ctrl+W/U/K —
+    // one pipeline for the attach TUI, chat mode and Mercury Code.
+    const edited = applyEditKey(input, cursorPos, ch, key as EditorKey);
+    if (edited) {
+      setInput(edited.input);
+      setCursorPos(edited.cursorPos);
     }
   });
 
@@ -2126,12 +2081,12 @@ function InputBox({
             <Text color={promptColor} bold>{i === 0 ? '> ' : '  '}</Text>
             {i === cursorLine ? (
               <>
-                <Text>{line.slice(0, cursorCol)}</Text>
-                <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
-                <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
+                <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
+                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
-              <Text>{line}</Text>
+              <Text>{expandTabs(line)}</Text>
             )}
           </Box>
         ))}
@@ -2426,12 +2381,12 @@ function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string;
             <Text bold color={color}>{i === 0 ? '> ' : '  '}</Text>
             {i === cursorLine ? (
               <>
-                <Text>{line.slice(0, cursorCol)}</Text>
-                <Text inverse>{cursorCol < line.length ? line[cursorCol] : ' '}</Text>
-                <Text>{cursorCol < line.length ? line.slice(cursorCol + 1) : ''}</Text>
+                <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
+                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
-              <Text>{line}</Text>
+              <Text>{expandTabs(line)}</Text>
             )}
           </Box>
         ))}
