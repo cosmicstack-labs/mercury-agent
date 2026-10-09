@@ -61,7 +61,9 @@ function isPatched(p = paths) {
       && staticComponent.includes('itemKey')
       && staticComponent.includes('setCommitTick')
       && logUpdate.includes('Diff-render (Cosmic Stack patch)')
+      && logUpdate.includes(RESIZE_RESET_MARKER)
       && inkJs.includes('maxLiveRows')
+      && inkJs.includes(RESIZE_RESET_MARKER)
       && inkJs.includes(FRAME_GATE_MARKER);
   } catch {
     return false;
@@ -69,6 +71,51 @@ function isPatched(p = paths) {
 }
 
 const FRAME_GATE_MARKER = '__mercuryFrameGate';
+const RESIZE_RESET_MARKER = 'Resize baseline reset (Cosmic Stack patch)';
+
+/** Resize baseline reset: after a terminal resize the rows already on
+ * screen have re-wrapped, so the diff-render's "unchanged rows above stay"
+ * assumption is false — identical row BYTES no longer sit at the same
+ * terminal rows. Ink's `resized` handler now drops `lastOutput` and
+ * log-update's `previousOutput` baseline (keeping the line count, so the
+ * erase still covers the old frame) and the next frame repaints whole.
+ * Applies to both ink.js and log-update.js (after the diff-render edit). */
+function applyResizeBaselineReset(p = paths) {
+  const { inkJsPath, logUpdatePath } = p;
+  let lu = fs.readFileSync(logUpdatePath, 'utf8');
+  if (!lu.includes(RESIZE_RESET_MARKER)) {
+    const anchor = '    render.clear = () => {';
+    if (!lu.includes(anchor)) return false;
+    lu = lu.replace(anchor, `    // ${RESIZE_RESET_MARKER}: forget what is on screen
+    // without touching the line count — the next render erases the old
+    // frame's rows and rewrites every row instead of diffing against rows
+    // the terminal has already re-wrapped.
+    render.invalidate = () => {
+        previousOutput = '';
+    };
+${anchor}`);
+    fs.writeFileSync(logUpdatePath, lu);
+  }
+  let ink = fs.readFileSync(inkJsPath, 'utf8');
+  if (!ink.includes(RESIZE_RESET_MARKER)) {
+    const anchor = `    resized = () => {
+        this.calculateLayout();
+        this.onRender();
+    };`;
+    if (!ink.includes(anchor)) return false;
+    ink = ink.replace(anchor, `    resized = () => {
+        // ${RESIZE_RESET_MARKER}: rows that re-wrapped on
+        // resize must be repainted even when their bytes did not change, so
+        // the diff-render baseline (ours and log-update's) is dropped first.
+        this.lastOutput = '';
+        if (typeof this.log.invalidate === 'function') this.log.invalidate();
+        this.calculateLayout();
+        this.onRender();
+    };`);
+    fs.writeFileSync(inkJsPath, ink);
+  }
+  return lu.includes(RESIZE_RESET_MARKER) && ink.includes(RESIZE_RESET_MARKER);
+}
 
 /** Diff-render log-update + freeze gate. Both live in already-patched
  * files, so this is an idempotent string-insert on the applied state. */
@@ -363,6 +410,7 @@ function apply(opts = {}) {
     const frameGateOk = applyInkFrameGate(p);
     const liveRegionOk = applyInkLiveRegionGuard(p);
     const diffRenderOk = applyLogUpdateDiffRender(p);
+    const resizeResetOk = applyResizeBaselineReset(p);
     if (!reconcilerOk) {
       return { ok: false, applied: true, error: 'reconciler.js no longer matches the expected ink 5.2.1 shape — patch anchors not found' };
     }
@@ -377,6 +425,9 @@ function apply(opts = {}) {
     }
     if (!diffRenderOk) {
       return { ok: false, applied: true, error: 'log-update.js diff-render could not be inserted' };
+    }
+    if (!resizeResetOk) {
+      return { ok: false, applied: true, error: 'resize baseline reset could not be inserted (ink.js resized / log-update.js clear anchors)' };
     }
   } catch (err) {
     return { ok: false, applied: true, error: err.message };

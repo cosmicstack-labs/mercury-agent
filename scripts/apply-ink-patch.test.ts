@@ -45,6 +45,10 @@ function writeStockInk(root: string): void {
     'import logUpdate from \'./log-update.js\';',
     'const noop = () => { };',
     'export default class Ink {',
+    '    resized = () => {',
+    '        this.calculateLayout();',
+    '        this.onRender();',
+    '    };',
     '    onRender() {',
     '        const { output, outputHeight, staticOutput } = render(this.rootNode);',
     '        const hasStaticOutput = staticOutput && staticOutput !== \'\\n\';',
@@ -64,6 +68,9 @@ function writeStockInk(root: string): void {
     '        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);',
     "        previousLineCount = output.split('\\n').length;",
     '    };',
+    '    render.clear = () => {',
+    '        stream.write(ansiEscapes.eraseLines(previousLineCount));',
+    '    };',
     '    return render;',
     '};',
   ].join('\n'));
@@ -79,6 +86,16 @@ describe('ink patch applier (patch-package-free)', () => {
       expect(result.applied).toBe(true);
       expect(result.error).toBeUndefined();
       expect(isPatched(pathsFor(root))).toBe(true);
+      const paths = pathsFor(root);
+      const inkJs = readFileSync(paths.inkJsPath, 'utf8');
+      const logUpdate = readFileSync(paths.logUpdatePath, 'utf8');
+      // Resize baseline reset: resized() drops both diff baselines BEFORE
+      // the re-layout + render, and log-update exposes the invalidate hook.
+      expect(logUpdate).toContain('render.invalidate = () => {');
+      const resized = inkJs.slice(inkJs.indexOf('resized = () => {'), inkJs.indexOf('onRender() {'));
+      expect(resized).toContain("this.lastOutput = '';");
+      expect(resized).toContain('this.log.invalidate()');
+      expect(resized.indexOf('this.log.invalidate()')).toBeLessThan(resized.indexOf('this.calculateLayout()'));
       // Idempotent: a second run must recognize the applied state and no-op.
       const again = apply({ root });
       expect(again.ok).toBe(true);

@@ -2710,6 +2710,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         })) ?? [],
       });
       bootCli.startStatusPoller(2000);
+      // Esc during a turn: the same stop routine `/stop` runs.
+      bootCli.setInterruptHandler(() => agent.stopAllWork('stopped'));
       bootCli.mountTUI((inputText: string) => {
         bootCli.sendUserMessage(inputText);
       }, spotifyClient, () => {

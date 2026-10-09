@@ -94,10 +94,9 @@ index 9c54f14..6274f9a 100644
      const style = useMemo(() => ({
          position: 'absolute',
 diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
-index a9c444f..f3457f7 100644
 --- a/node_modules/ink/build/ink.js
 +++ b/node_modules/ink/build/ink.js
-@@ -14,6 +14,14 @@ import logUpdate from './log-update.js';
+@@ -14,6 +14,14 @@
  import instances from './instances.js';
  import App from './components/App.js';
  const noop = () => { };
@@ -112,7 +111,19 @@ index a9c444f..f3457f7 100644
  export default class Ink {
      options;
      log;
-@@ -98,7 +106,33 @@ export default class Ink {
+@@ -81,6 +89,11 @@
+         }
+     }
+     resized = () => {
++        // Resize baseline reset (Cosmic Stack patch): rows that re-wrapped on
++        // resize must be repainted even when their bytes did not change, so
++        // the diff-render baseline (ours and log-update's) is dropped first.
++        this.lastOutput = '';
++        if (typeof this.log.invalidate === 'function') this.log.invalidate();
+         this.calculateLayout();
+         this.onRender();
+     };
+@@ -98,7 +111,33 @@
          if (this.isUnmounted) {
              return;
          }
@@ -148,10 +159,9 @@ index a9c444f..f3457f7 100644
          const hasStaticOutput = staticOutput && staticOutput !== '\n';
          if (this.options.debug) {
 diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
-index 547421e..73cb297 100644
 --- a/node_modules/ink/build/log-update.js
 +++ b/node_modules/ink/build/log-update.js
-@@ -13,9 +13,26 @@ const create = (stream, { showCursor = false } = {}) => {
+@@ -13,10 +13,34 @@
          if (output === previousOutput) {
              return;
          }
@@ -177,8 +187,16 @@ index 547421e..73cb297 100644
          previousLineCount = output.split('\n').length;
 +        stream.write(ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n');
      };
++    // Resize baseline reset (Cosmic Stack patch): forget what is on screen
++    // without touching the line count — the next render erases the old
++    // frame's rows and rewrites every row instead of diffing against rows
++    // the terminal has already re-wrapped.
++    render.invalidate = () => {
++        previousOutput = '';
++    };
      render.clear = () => {
          stream.write(ansiEscapes.eraseLines(previousLineCount));
+         previousOutput = '';
 diff --git a/node_modules/ink/build/reconciler.js b/node_modules/ink/build/reconciler.js
 index 55acec7..f440fa9 100644
 --- a/node_modules/ink/build/reconciler.js

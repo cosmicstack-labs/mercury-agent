@@ -220,6 +220,28 @@ export function getManual(): string {
   }
 
   sections.push('');
+  sections.push(chalk.bold.white('  Terminal UI keys'));
+  sections.push('');
+
+  const keys = [
+    ['Esc', 'Interrupt the running turn (same as /stop). When idle: Esc Esc leaves Mercury Code; Esc leaves the coding/workspace view'],
+    ['Ctrl+C', 'Clear the input. On an empty input, press twice within 1.5 s to exit — one tap never quits'],
+    ['Enter', 'Send. A paste never sends: multi-line pastes land as multi-line text'],
+    ['Shift+Enter / Ctrl+N', 'Insert a newline'],
+    ['← → / Alt+← Alt+→', 'Move by character / by word (Ctrl+←/→ and Alt+B/F too)'],
+    ['Home / End', 'Start / end of the line (Ctrl+A / Ctrl+E)'],
+    ['Backspace / Delete', 'Delete before / under the cursor (emoji and CJK stay whole)'],
+    ['Ctrl+W / Ctrl+U / Ctrl+K', 'Delete the previous word / to line start / to line end'],
+    ['↑ ↓', 'Input history (persisted in ~/.mercury/history) or move in a suggestion list'],
+    ['Tab', 'Complete the highlighted / # suggestion'],
+    ['Ctrl+S', 'Mercury Code: freeze the screen to scroll and copy; Ctrl+S resumes'],
+  ];
+
+  for (const [key, desc] of keys) {
+    sections.push(`  ${chalk.white(key.padEnd(26))} ${desc}`);
+  }
+
+  sections.push('');
   sections.push(chalk.bold.white('  Permissions'));
   sections.push('');
 
