@@ -108,27 +108,26 @@ describe('layout rules', () => {
 
 describe(`TUI at ${COLS} columns`, () => {
   it('splash collapses to one column with no logo art', async () => {
-    const { rows, unmount } = await renderApp(state({ mode: 'splash' }), 'Core');
+    const { rows, unmount } = await renderApp(state({ mode: 'splash', web: null, skills: [] }), 'Workspace');
     expectFits(rows);
-    expect(rows.join('\n')).not.toContain('╭─╮'); // the 26-col mark is gone
-    expect(rows[0]).toContain('MERCURY');
-    expect(rows.some((r) => r.includes('Provider: deepseek · deepseek-chat'))).toBe(true);
-    // snapshot-ish: the whole collapsed splash, row by row
-    expect(rows.map((r) => r.trimStart())).toEqual([
-      '☿ MERCURY',
+    expect(rows.join('\n')).not.toContain('███'); // the ☿ block mark needs >= 60 cols
+    // snapshot-ish: the whole collapsed launch pad, row by row (tip and the
+    // workspace path vary by machine, so they are checked by prefix only)
+    const trimmed = rows.map((r) => r.trimStart());
+    expect(trimmed.slice(0, 7)).toEqual([
+      '☿ MERCURY  v1.3.1',
       'Your soul-driven AI agent',
-      '─'.repeat(48),
-      '● Core booting',
-      '● Provider ready',
-      '● Skills 0/0',
-      '─'.repeat(48),
-      'Version: 1.3.1',
-      'Provider: deepseek · deepseek-chat',
-      '─'.repeat(48),
-      'Initializing Mercury...',
+      '',
+      '✓ Provider   deepseek · deepseek-chat',
+      '· Skills     none installed',
+      '· Web        off',
+      '· Budget     ' + (1200).toLocaleString() + ' / ' + (100000).toLocaleString() + ' today',
     ]);
+    expect(trimmed[7]).toMatch(/^· Workspace  /);
+    expect(trimmed.slice(8, 11)).toEqual(['', 'Type to start chatting', '/code  Mercury Code here   Tab  skills']);
     unmount();
   });
+
 
   it('chat: input chrome is exactly four rows and the sidebar collapses', async () => {
     const { rows, unmount } = await renderApp(state({
