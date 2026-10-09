@@ -190,10 +190,15 @@ describe('PermissionManager remote safety', () => {
     await expect(permissions.checkShellCommand('echo poisoned > AGENTS.md')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('echo poisoned>AGENTS.md')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('find . -delete')).resolves.toMatchObject({ allowed: false });
+    // find -exec/-execdir launch a subprocess — the advisory payload from
+    // issues #71/#77/#101 (and #110), minus the redirection so this exercises
+    // the find-flag rule on its own rather than the redirection rule.
+    await expect(permissions.checkShellCommand("find . -maxdepth 0 -exec sh -c 'id' ';'")).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand('find . -execdir touch canary \\;')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch -D protected')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch --delete protected')).resolves.toMatchObject({ allowed: false });
     await expect(permissions.checkShellCommand('git branch new-branch')).resolves.toMatchObject({ allowed: false });
-    expect(ask).toHaveBeenCalledTimes(6);
+    expect(ask).toHaveBeenCalledTimes(8);
   });
 
   it('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
