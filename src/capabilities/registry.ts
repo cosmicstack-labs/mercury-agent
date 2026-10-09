@@ -1,4 +1,5 @@
 import type { Tool } from 'ai';
+import { ensurePinnedBinaries } from './shell/argv-lane.js';
 import { PermissionManager } from './permissions.js';
 import { createReadFileTool } from './filesystem/read-file.js';
 import { createWriteFileTool } from './filesystem/write-file.js';
@@ -105,6 +106,8 @@ export class CapabilityRegistry {
 
   constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
+    // Resolve argv-lane binaries once, at startup, from the pinned PATH (#103).
+    ensurePinnedBinaries();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;

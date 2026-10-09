@@ -361,6 +361,11 @@ export function initPinnedBinaries(dirs: readonly string[] = pinnedSearchDirs())
   return table;
 }
 
+/** Build the pinned table if it does not exist yet (startup hook; idempotent). */
+export function ensurePinnedBinaries(): ReadonlyMap<string, string> {
+  return pinnedTable ?? initPinnedBinaries();
+}
+
 /** Default resolver: the pinned table built once per process. */
 export const pinnedBinary: BinaryResolver = (program) => {
   if (!pinnedTable) initPinnedBinaries();
