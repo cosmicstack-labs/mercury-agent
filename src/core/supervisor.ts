@@ -12,6 +12,8 @@ import { FileLockManager } from './file-lock.js';
 import { TaskBoard } from './task-board.js';
 import { ResourceManager } from './resource-manager.js';
 import { logger } from '../utils/logger.js';
+import { deriveChildContext, type PermissionContext } from '../capabilities/permission-context.js';
+import type { PermissionManager } from '../capabilities/permissions.js';
 
 /** Bounded auto-resumes after a step-budget pause before reporting honestly. */
 const MAX_SUBAGENT_STEP_RESUMES = 3;
@@ -122,7 +124,14 @@ export class SubAgentSupervisor {
 
   async spawn(config: Omit<SubAgentConfig, 'id'>): Promise<string> {
     const id = this.taskBoard.nextId();
-    const fullConfig: SubAgentConfig = { ...config, id };
+    // Snapshot the spawning agent's permission context NOW (spawn runs inside
+    // the caller's async context): a queued agent that starts later must not
+    // pick up whatever the main agent's context is at that moment.
+    const fullConfig: SubAgentConfig = {
+      ...config,
+      id,
+      permissionContext: config.permissionContext ?? this.childPermissionContext(config),
+    };
     this.parents.set(id, config.parentId);
 
     if (!this.resourceManager.canSpawn()) {
@@ -175,6 +184,16 @@ export class SubAgentSupervisor {
 
     this.startAgentInBackground(fullConfig);
     return id;
+  }
+
+  private childPermissionContext(config: Omit<SubAgentConfig, 'id'>): PermissionContext | undefined {
+    const permissions = this.capabilities.permissions as Partial<PermissionManager> | undefined;
+    if (typeof permissions?.currentContext !== 'function') return undefined;
+    return deriveChildContext(permissions.currentContext(), {
+      channelType: config.sourceChannelType,
+      channelId: config.sourceChannelId,
+      allowedTools: config.allowedTools,
+    });
   }
 
   private startAgentInBackground(config: SubAgentConfig): void {

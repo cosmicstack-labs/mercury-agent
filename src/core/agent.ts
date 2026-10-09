@@ -2099,8 +2099,9 @@ export class Agent {
 
       const isInternal = msg.channelType === 'internal';
       if (isInternal) {
-        this.capabilities.permissions.setAutoApproveAll(true);
-        this.capabilities.permissions.addTempScope('/', true, true);
+        // Turn-scoped grant on the root context only (ADR-016): running
+        // sub-agents keep their own context and new ones do not inherit it.
+        this.capabilities.permissions.beginTurnGrant({ scopes: [{ path: '/', read: true, write: true }] });
       }
 
     try {
@@ -3950,7 +3951,7 @@ export class Agent {
         if (ch instanceof CLIChannel) ch.clearLiveActivity();
       }
       if (isInternal) {
-        this.capabilities.permissions.setAutoApproveAll(false);
+        this.capabilities.permissions.endTurnGrant();
       }
       this.capabilities.permissions.clearElevation();
     }

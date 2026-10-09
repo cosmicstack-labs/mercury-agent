@@ -61,6 +61,13 @@ export interface SubAgentConfig {
    * descendants (#74).
    */
   parentId?: string;
+  /**
+   * Frozen permission context, derived from the spawning agent's context at
+   * spawn time (child ⊆ parent; ADR-016). The sub-agent runs under it via
+   * AsyncLocalStorage. Absent only for agents constructed directly (tests),
+   * which derive one from the current context when they start.
+   */
+  permissionContext?: import('../capabilities/permission-context.js').PermissionContext;
 }
 
 export interface SubAgentResult {

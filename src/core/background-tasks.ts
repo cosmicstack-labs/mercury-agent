@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { planArgvExecution, minimalEnv } from '../capabilities/shell/argv-lane.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
@@ -150,11 +151,17 @@ export class BackgroundTaskManager {
     this.save();
 
     try {
-      const child = spawn(command, [], {
-        cwd,
-        shell: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      // Same lane split as run_command: a command the argv lane can express
+      // runs via execFile from the pinned PATH with a minimal env; only the
+      // rest (already approved by the caller's checkShellCommand) uses a shell.
+      const plan = planArgvExecution(command);
+      const child = plan?.kind === 'exec'
+        ? spawn(plan.file, plan.args, { cwd, env: minimalEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+        : spawn(command, [], {
+          cwd,
+          shell: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
 
       task.pid = child.pid ?? undefined;
       this.processes.set(id, child);

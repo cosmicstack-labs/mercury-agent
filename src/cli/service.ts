@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
@@ -338,8 +338,39 @@ export interface ServiceFileOptions {
   mercuryHome: string;
   /** Account home — WorkingDirectory and HOME for the daemon. */
   userHome: string;
-  /** PATH the daemon inherits. */
+  /** PATH the daemon inherits — always `pinnedServicePath()`, never the installing shell's PATH. */
   pathEnv: string;
+}
+
+/**
+ * The fixed PATH written into service files (ROADMAP P2.2, #103): system
+ * directories, the standard package-manager prefixes, and the directory of
+ * the node binary that runs the daemon (so approval-lane `npm`/`npx`
+ * resolve). It is deliberately NOT the PATH of the shell that ran
+ * `mercury service install`: a project-local or user-writable entry there
+ * (node_modules/.bin, ~/bin, a cwd-relative entry) would otherwise be
+ * baked into every command the daemon runs. Argv-lane commands do not use
+ * it at all — they resolve binaries from their own pinned table.
+ */
+export function pinnedServicePath(platform: NodeJS.Platform, nodeBinDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') {
+    const systemRoot = env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    const dirs = [
+      win32.join(systemRoot, 'System32'),
+      systemRoot,
+      win32.join(systemRoot, 'System32', 'Wbem'),
+      win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+      win32.join(programFiles, 'Git', 'cmd'),
+      nodeBinDir,
+    ];
+    return [...new Set(dirs)].join(';');
+  }
+  const dirs = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', '/usr/local/bin'];
+  if (platform === 'darwin') dirs.push('/opt/homebrew/bin');
+  // Only an absolute node directory; never a relative or empty entry.
+  if (nodeBinDir.startsWith('/')) dirs.push(nodeBinDir);
+  return [...new Set(dirs)].join(':');
 }
 
 function xmlEscape(value: string): string {
@@ -544,12 +575,21 @@ export function runKeyLaunchArgs(serviceLaunchArgs: string[]): string[] {
 
 // ─── macOS ───────────────────────────────────────────────────────────────────
 
-function serviceFileOptions(): ServiceFileOptions {
+export function serviceFileOptions(): ServiceFileOptions {
   return {
     mercuryHome: getMercuryHome(),
     userHome: homedir(),
-    pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+    pathEnv: pinnedServicePath(process.platform, dirname(process.execPath)),
   };
+}
+
+/**
+ * Windows Task Scheduler XML has no environment block, so the daemon pins
+ * its own PATH at startup instead (called from runAgent for `--daemon`).
+ */
+export function pinDaemonPathOnWindows(): void {
+  if (process.platform !== 'win32') return;
+  process.env.PATH = pinnedServicePath('win32', dirname(process.execPath));
 }
 
 function installMac(): void {

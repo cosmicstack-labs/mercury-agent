@@ -1,4 +1,5 @@
 import type { Tool } from 'ai';
+import { ensurePinnedBinaries } from './shell/argv-lane.js';
 import { PermissionManager } from './permissions.js';
 import { createReadFileTool } from './filesystem/read-file.js';
 import { createWriteFileTool } from './filesystem/write-file.js';
@@ -88,8 +89,6 @@ export class CapabilityRegistry {
   private userMemory?: UserMemoryStore;
   private sendFileHandler?: (filePath: string, channel?: string) => Promise<void>;
   private sendMessageHandler?: (content: string) => Promise<void>;
-  private currentChannelId = 'cli';
-  private currentChannelType = 'cli';
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
@@ -107,6 +106,8 @@ export class CapabilityRegistry {
 
   constructor(skillLoader?: SkillLoader, scheduler?: Scheduler, tokenBudget?: TokenBudget, supervisor?: SubAgentSupervisor, userMemory?: UserMemoryStore) {
     this.permissions = new PermissionManager();
+    // Resolve argv-lane binaries once, at startup, from the pinned PATH (#103).
+    ensurePinnedBinaries();
     this.skillLoader = skillLoader;
     this.scheduler = scheduler;
     this.tokenBudget = tokenBudget;
@@ -130,14 +131,18 @@ export class CapabilityRegistry {
     return this.chatCommandContext;
   }
 
+  /**
+   * Channel of the calling agent. Stored in its permission context, so a
+   * sub-agent (running under its own context) never overwrites the main
+   * agent's channel, and its prompts route to its own source channel.
+   */
   setChannelContext(channelId: string, channelType: string): void {
-    this.currentChannelId = channelId;
-    this.currentChannelType = channelType;
     this.permissions.setCurrentContext(channelType, channelId);
   }
 
   getChannelContext(): { channelId: string; channelType: string } {
-    return { channelId: this.currentChannelId, channelType: this.currentChannelType };
+    const ctx = this.permissions.currentContext();
+    return { channelId: ctx.channelId, channelType: ctx.channelType };
   }
 
   getCwd(): string {

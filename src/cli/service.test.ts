@@ -12,6 +12,8 @@ import {
   buildWindowsCommandLine,
   buildWindowsTaskXml,
   encodeWindowsTaskXml,
+  pinnedServicePath,
+  serviceFileOptions,
   quoteWindowsArg,
   resolveDistPath,
   runKeyLaunchArgs,
@@ -167,5 +169,47 @@ describe('resolveDistPath', () => {
   it('falls back to the nvm guess when nothing else resolves', () => {
     const guess = resolveDistPath(undefined, 'file:///nowhere/src/cli/service.ts', 'v20.11.0');
     expect(guess.endsWith(join('.nvm', 'versions', 'node', 'v20.11.0', 'lib', 'node_modules', '@cosmicstack', 'mercury-agent', 'dist', 'index.js'))).toBe(true);
+  });
+});
+
+describe('service PATH pinning (ROADMAP P2.2, #103)', () => {
+  const nodeDir = '/Users/jane/.nvm/versions/node/v20.11.0/bin';
+
+  it('pins a fixed PATH of system dirs plus the node directory (darwin, linux)', () => {
+    expect(pinnedServicePath('darwin', nodeDir)).toBe(`/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:${nodeDir}`);
+    expect(pinnedServicePath('linux', '/usr/bin')).toBe('/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin');
+    // A relative node dir is never written.
+    expect(pinnedServicePath('linux', 'node_modules/.bin')).toBe('/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin');
+  });
+
+  it('pins Windows to System32, Git and the node directory', () => {
+    const p = pinnedServicePath('win32', 'C:\\Program Files\\nodejs', { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' });
+    expect(p.split(';')).toEqual([
+      'C:\\Windows\\System32',
+      'C:\\Windows',
+      'C:\\Windows\\System32\\Wbem',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+      'C:\\Program Files\\Git\\cmd',
+      'C:\\Program Files\\nodejs',
+    ]);
+  });
+
+  it('generated plist and systemd unit carry the pinned PATH, not the installing shell PATH', () => {
+    const original = process.env.PATH;
+    process.env.PATH = `/tmp/evil-bin:./node_modules/.bin:${original}`;
+    try {
+      const opts = serviceFileOptions();
+      expect(opts.pathEnv).not.toContain('/tmp/evil-bin');
+      expect(opts.pathEnv).not.toContain('node_modules');
+      const args = ['/usr/local/bin/node', '/opt/mercury/dist/index.js', 'start', '--daemon'];
+      const plist = buildLaunchAgentPlist(args, opts);
+      expect(plist).toContain(`<key>PATH</key>\n    <string>${opts.pathEnv}</string>`);
+      expect(plist).not.toContain('/tmp/evil-bin');
+      const unit = buildSystemdUnit(args, opts);
+      expect(unit).toContain(`Environment=PATH=${opts.pathEnv}`);
+      expect(unit).not.toContain('/tmp/evil-bin');
+    } finally {
+      process.env.PATH = original;
+    }
   });
 });

@@ -17,6 +17,13 @@ import { createGitLogTool } from './git-log.js';
 import { createGitDiffTool } from './git-diff.js';
 import { createGitPushTool } from './git-push.js';
 import type { PermissionManager } from '../permissions.js';
+import { setPinnedBinariesForTest } from '../shell/argv-lane.js';
+import { GIT_READ_HARDENING } from './git-path.js';
+
+// Read helpers run the git resolved from the pinned system PATH (#103).
+const PINNED_GIT = '/usr/bin/git';
+setPinnedBinariesForTest({ git: PINNED_GIT });
+const H = [...GIT_READ_HARDENING];
 
 const CWD = '/repo';
 const INJECTED = '/tmp/x"; echo pwned; "';
@@ -44,10 +51,13 @@ describe('git helpers pass the path as a single argv element (no shell)', () => 
     expect(execSync).not.toHaveBeenCalled();
     expect(execFileSync).toHaveBeenCalledTimes(1);
     const [file, args, opts] = vi.mocked(execFileSync).mock.calls[0] as unknown as [string, string[], any];
-    expect(file).toBe('git');
-    expect(args).toEqual(['-C', resolve(INJECTED), 'status', '--porcelain']);
+    expect(file).toBe(PINNED_GIT);
+    expect(args).toEqual([...H, '-C', resolve(INJECTED), 'status', '--porcelain']);
     expect(opts.cwd).toBe(CWD);
     expect(opts.shell).toBeUndefined();
+    // Minimal env: pinned PATH, nothing inherited wholesale.
+    expect(opts.env.PATH).not.toBe(process.env.PATH);
+    expect(opts.env.GIT_PAGER).toBe('cat');
   });
 
   it('git_log: path follows `--` as one argv element', async () => {
@@ -56,8 +66,8 @@ describe('git helpers pass the path as a single argv element (no shell)', () => 
 
     expect(execSync).not.toHaveBeenCalled();
     const [file, args] = vi.mocked(execFileSync).mock.calls[0] as unknown as [string, string[]];
-    expect(file).toBe('git');
-    expect(args).toEqual(['log', '--oneline', '--decorate', '-5', '--', INJECTED]);
+    expect(file).toBe(PINNED_GIT);
+    expect(args).toEqual([...H, 'log', '--no-ext-diff', '--no-textconv', '--oneline', '--decorate', '-5', '--', INJECTED]);
   });
 
   it('git_diff: path follows `--` as one argv element', async () => {
@@ -66,8 +76,8 @@ describe('git helpers pass the path as a single argv element (no shell)', () => 
 
     expect(execSync).not.toHaveBeenCalled();
     const [file, args] = vi.mocked(execFileSync).mock.calls[0] as unknown as [string, string[]];
-    expect(file).toBe('git');
-    expect(args).toEqual(['diff', '--cached', '--', INJECTED]);
+    expect(file).toBe(PINNED_GIT);
+    expect(args).toEqual([...H, 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--', INJECTED]);
   });
 
   it('git_push: remote and branch are argv elements, and options are refused', async () => {
@@ -91,7 +101,7 @@ describe('git helpers pass the path as a single argv element (no shell)', () => 
     await run(createGitStatusTool(permissions, () => CWD), {});
     expect(permissions.checkFsAccess).not.toHaveBeenCalled();
     const [, args] = vi.mocked(execFileSync).mock.calls[0] as unknown as [string, string[]];
-    expect(args).toEqual(['status', '--porcelain']);
+    expect(args).toEqual([...H, 'status', '--porcelain']);
   });
 });
 
