@@ -1,42 +1,22 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { createRequire } from 'node:module';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
+import { isSqliteAvailable, openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
 
-type BetterSqlite3Database = import('better-sqlite3').Database;
-
-const require = createRequire(import.meta.url);
-
-let syncDatabaseClass: typeof import('better-sqlite3') | null = null;
-let availabilityChecked = false;
-let available = false;
-
-function ensureProbed(): void {
-  if (availabilityChecked) return;
-  availabilityChecked = true;
-  try {
-    const mod = require('better-sqlite3');
-    const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
-    try {
-      mkdirSync(probeDir, { recursive: true });
-      const probeDb = new mod(join(probeDir, 'probe.db'));
-      probeDb.close();
-      rmSync(probeDir, { recursive: true, force: true });
-      syncDatabaseClass = mod;
-      available = true;
-    } catch {
-      syncDatabaseClass = null;
-    }
-  } catch {
-    syncDatabaseClass = null;
-  }
-}
-
+/**
+ * True when any SQLite engine is available (better-sqlite3, bun:sqlite or
+ * node:sqlite — see `src/utils/sqlite-driver.ts`).
+ * @deprecated The name predates the shared driver; prefer `isSqliteAvailable()`.
+ */
 export function isBetterSqlite3Available(): boolean {
-  ensureProbed();
-  return syncDatabaseClass !== null;
+  return isSqliteAvailable();
 }
+
+export const SECOND_BRAIN_UNAVAILABLE_MESSAGE =
+  'No SQLite engine is available — second brain memory requires one. ' +
+  'Use Node >= 22.13 (built-in node:sqlite), a standalone Mercury binary (bun:sqlite), ' +
+  'or install build tools (make, gcc/g++, python3) and run `npm rebuild better-sqlite3`. ' +
+  'Run `mercury doctor --storage` for details.';
 
 export interface MemoryRow {
   id: string;
@@ -89,24 +69,23 @@ export interface PersonConnectionRow {
 }
 
 export class SecondBrainDB {
-  private db: BetterSqlite3Database;
+  private db: SqliteDatabase;
 
   constructor(dbPath: string) {
-    ensureProbed();
-    if (!syncDatabaseClass) {
-      throw new Error(
-        'better-sqlite3 is not available — second brain memory requires it. ' +
-        'Install build tools (make, gcc/g++, python3) or upgrade to Node >= 20. ' +
-        'See: https://github.com/WiseLibs/better-sqlite3/blob/master/docs/compilation.md'
-      );
-    }
     const dir = dirname(dbPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    this.db = new syncDatabaseClass(dbPath);
+    const db = openSqlite(dbPath);
+    if (!db) throw new Error(SECOND_BRAIN_UNAVAILABLE_MESSAGE);
+    this.db = db;
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+  }
+
+  /** Engine backing this database: `better-sqlite3`, `bun:sqlite` or `node:sqlite`. */
+  get backend(): string {
+    return this.db.backend;
   }
 
   init(): void {
@@ -242,7 +221,7 @@ export class SecondBrainDB {
     // Index for incremental fetch (shareable + updated_at — the cloud pull query).
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_memories_shareable_updated ON memories(shareable, updated_at)');
 
-    logger.info('Second brain database initialized');
+    logger.info({ backend: this.db.backend }, 'Second brain database initialized');
   }
 
   insert(row: Omit<MemoryRow, 'rowid'> & { rowid?: never }): void {

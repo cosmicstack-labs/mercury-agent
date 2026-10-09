@@ -11,6 +11,10 @@
 - **SSRF guard** — unchanged; see the 1.2.3 entry below (hardened in 1.3.0 by #121 and #124; response record in `docs/security/ssrf-108-response.md`).
 - **Disclosure process** — `SECURITY.md` added (private reporting, response targets, scope); issue-closure and advisory drafts in `docs/security/2026-10-backlog-closure.md`.
 
+### Fixed
+
+- **SQLite in the standalone binaries and on toolchain-less installs** (ROADMAP P1.9, #96, ADR-018) — the binaries bundled better-sqlite3's JavaScript but never its native addon, so every SQLite probe failed inside them: Second Brain was silently disabled and bots/boards fell back to JSON. A shared driver (`src/utils/sqlite-driver.ts`) now selects **better-sqlite3 → bun:sqlite → node:sqlite → JSON**: binaries use Bun's embedded engine, Node ≥ 22.13 installs work without a compiler via `node:sqlite`, and the better-sqlite3 path is untouched. Second Brain, the bots queue, boards and the cloud pool-search cache all go through it; the pool cache now degrades to uncached instead of throwing when no engine loads. New `mercury doctor --storage` prints the active backend (with why the others were rejected), every database file, its size and row counts, and warns loudly when storage is JSON-only. `MERCURY_SQLITE_BACKEND=better-sqlite3|bun:sqlite|node:sqlite|json` forces a backend. Contract tests run the same assertions against every engine the process can load (`src/utils/sqlite-driver.test.ts`).
+
 ## 1.3.0 — Mercury Bots
 
 Persistent, persona-scoped agents that run **outside your conversation** — each with its own persona, workspace, skills, permissions, and durable queue. Onboard specialists, chain them into multi-level fleets, and let them work 24/7 while you keep talking to Mercury.

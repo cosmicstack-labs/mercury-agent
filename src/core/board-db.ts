@@ -2,9 +2,10 @@
  * Board Database Layer — Optimized Persistence with SQLite/JSON Fallback
  * 
  * Strategy:
- * - Primary: SQLite (if better-sqlite3 available) — fast queries, ACID, FTS
+ * - Primary: SQLite via the shared driver (better-sqlite3 → bun:sqlite →
+ *   node:sqlite, see src/utils/sqlite-driver.ts) — fast queries, ACID
  * - Fallback: JSON file with write batching and debounce — works everywhere
- * 
+ *
  * The BoardManager can use this as its storage backend instead of raw JSON.
  */
 
@@ -12,10 +13,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
-import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
+import { isSqliteAvailable, openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
 import type { Board, BoardCard, BoardContext, BoardContextEvent } from '../types/agent.js';
 
+export const BOARDS_DB_FILE = 'boards.db';
+export const BOARDS_JSON_FILE = 'boards.json';
+export const BOARD_CONTEXTS_JSON_FILE = 'board-contexts.json';
+
 export interface BoardDB {
+  /** `sqlite` (any engine) or `json`. */
+  readonly kind: 'sqlite' | 'json';
   loadAll(): Board[];
   saveBoard(board: Board): void;
   deleteBoard(id: string): void;
@@ -28,6 +35,7 @@ export interface BoardDB {
 // ── JSON Fallback (optimized with write debouncing) ──────────────
 
 class JSONBoardDB implements BoardDB {
+  readonly kind = 'json' as const;
   private boards: Map<string, Board> = new Map();
   private contexts: Map<string, BoardContext> = new Map();
   private dirty = false;
@@ -38,8 +46,8 @@ class JSONBoardDB implements BoardDB {
   constructor() {
     const dir = join(getMercuryHome(), 'memory');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    this.filePath = join(dir, 'boards.json');
-    this.contextPath = join(dir, 'board-contexts.json');
+    this.filePath = join(dir, BOARDS_JSON_FILE);
+    this.contextPath = join(dir, BOARD_CONTEXTS_JSON_FILE);
     this.loadFromDisk();
   }
 
@@ -122,21 +130,25 @@ class JSONBoardDB implements BoardDB {
 // ── SQLite Backend (when available) ──────────────────────────────
 
 class SQLiteBoardDB implements BoardDB {
-  private db: any;
+  readonly kind = 'sqlite' as const;
+  private db: SqliteDatabase;
 
   constructor() {
     const dir = join(getMercuryHome(), 'memory');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const dbPath = join(dir, 'boards.db');
+    const dbPath = join(dir, BOARDS_DB_FILE);
 
-    // Dynamic require
-    const { createRequire } = require('node:module');
-    const req = createRequire(import.meta.url);
-    const Database = req('better-sqlite3');
-    this.db = new Database(dbPath);
+    const db = openSqlite(dbPath);
+    if (!db) throw new Error('No SQLite engine available');
+    this.db = db;
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.initSchema();
+  }
+
+  /** Engine backing this database (`better-sqlite3`, `bun:sqlite`, `node:sqlite`). */
+  get backend(): string {
+    return this.db.backend;
   }
 
   private initSchema(): void {
@@ -195,20 +207,26 @@ class SQLiteBoardDB implements BoardDB {
 
 let instance: BoardDB | null = null;
 
-export function getBoardDB(): BoardDB {
-  if (!instance) {
-    if (isBetterSqlite3Available()) {
-      try {
-        instance = new SQLiteBoardDB();
-        logger.info('Board DB: using SQLite backend');
-      } catch (err) {
-        logger.warn({ err }, 'Board DB: SQLite init failed, falling back to JSON');
-        instance = new JSONBoardDB();
-      }
-    } else {
-      instance = new JSONBoardDB();
-      logger.info('Board DB: using JSON fallback (SQLite not available)');
+/**
+ * Build a fresh BoardDB for the current `MERCURY_HOME`: SQLite when any
+ * engine is available, JSON otherwise. `getBoardDB()` memoizes one instance.
+ */
+export function createBoardDB(): BoardDB {
+  if (isSqliteAvailable()) {
+    try {
+      const db = new SQLiteBoardDB();
+      logger.info({ backend: db.backend }, 'Board DB: using SQLite backend');
+      return db;
+    } catch (err) {
+      logger.warn({ err }, 'Board DB: SQLite init failed, falling back to JSON');
+      return new JSONBoardDB();
     }
   }
+  logger.info('Board DB: using JSON fallback (SQLite not available)');
+  return new JSONBoardDB();
+}
+
+export function getBoardDB(): BoardDB {
+  if (!instance) instance = createBoardDB();
   return instance;
 }

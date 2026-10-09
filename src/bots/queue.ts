@@ -1,37 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { logger } from '../utils/logger.js';
+import { isSqliteAvailable, openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
 import type { BotTrigger } from './types.js';
 
-const require = createRequire(import.meta.url);
-
-// Same availability probe as the second brain (src/memory/second-brain-db.ts):
-// better-sqlite3 is a native module and may be absent on old Node or Termux.
-let sqliteClass: (typeof import('better-sqlite3')) | null = null;
-let probeDone = false;
-function ensureSqliteProbed(): boolean {
-  if (probeDone) return sqliteClass !== null;
-  probeDone = true;
-  try {
-    const mod = require('better-sqlite3');
-    const probeDir = join(tmpdir(), `mercury-sqlite3-probe-${process.pid}`);
-    try {
-      mkdirSync(probeDir, { recursive: true });
-      const probeDb = new mod(join(probeDir, 'probe.db'));
-      probeDb.close();
-      rmSync(probeDir, { recursive: true, force: true });
-      sqliteClass = mod;
-    } catch {
-      sqliteClass = null;
-    }
-  } catch {
-    sqliteClass = null;
-  }
-  return sqliteClass !== null;
-}
+export const QUEUE_DB_FILE = 'queue.db';
 
 export interface DurableBotJob {
   id: string;
@@ -142,7 +116,8 @@ function normalizeJob(raw: any): DurableBotJob {
 
 /**
  * Durable bot job queue — the "enqueue before ack" boundary
- * (BOTS-ARCHITECTURE.md §2.6). Backend chain: native SQLite (better-sqlite3)
+ * (BOTS-ARCHITECTURE.md §2.6). Backend chain: SQLite via the shared driver
+ * (better-sqlite3 → bun:sqlite → node:sqlite, src/utils/sqlite-driver.ts)
  * → JSON-file lease store. Correctness never depends on SQLite: the queue is
  * single-writer (in-process BotManager), so durability (atomic rename +
  * fsync) and lease-expiry timestamp logic are all that is required.
@@ -154,8 +129,8 @@ export class BotQueue {
 
   constructor(botsRoot: string, dlqCap: number = DLQ_CAP) {
     const path = resolve(botsRoot);
-    if (ensureSqliteProbed()) {
-      this.backend = new SqliteQueueBackend(path, dlqCap, sqliteClass!);
+    if (isSqliteAvailable()) {
+      this.backend = new SqliteQueueBackend(path, dlqCap);
     } else {
       this.backend = new JsonFileQueueBackend(path, dlqCap);
     }
@@ -249,23 +224,26 @@ export class BotQueue {
 }
 
 // ---------------------------------------------------------------------------
-// Native SQLite backend (better-sqlite3, WAL)
+// SQLite backend (shared driver, WAL)
 // ---------------------------------------------------------------------------
 
-type SqliteDb = import('better-sqlite3').Database;
-
 export class SqliteQueueBackend implements BotQueueBackend {
-  readonly name = 'better-sqlite3';
-  private db: SqliteDatabase2;
+  /** The engine name (`better-sqlite3`, `bun:sqlite`, `node:sqlite`). */
+  readonly name: string;
+  private db: SqliteDatabase;
   private dlqCap: number;
   // A disposed manager must never turn an in-flight turn's queue access into
   // a crash: post-close ops degrade to no-ops (an unsettled claim survives
   // via lease expiry and resumes on the next boot).
   private closed = false;
 
-  constructor(path: string, dlqCap: number, cls: (typeof import('better-sqlite3'))) {
+  /** `db` lets tests hand in an already-open handle; otherwise `<path>/queue.db` is opened via the driver. */
+  constructor(path: string, dlqCap: number, db?: SqliteDatabase) {
     mkdirSync(path, { recursive: true });
-    this.db = new cls(join(path, 'queue.db')) as unknown as SqliteDatabase2;
+    const handle = db ?? openSqlite(join(path, QUEUE_DB_FILE));
+    if (!handle) throw new Error('No SQLite engine available for the bot queue');
+    this.db = handle;
+    this.name = handle.backend;
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_jobs (
@@ -470,19 +448,6 @@ export class SqliteQueueBackend implements BotQueueBackend {
       // Already closed (double teardown must never throw).
     }
   }
-}
-
-// Minimal structural type for the better-sqlite3 API we use (avoids pulling
-// the optional dep's types into the required build when it is absent).
-interface SqliteDatabase2 {
-  pragma(source: string): void;
-  prepare(sql: string): {
-    run(...params: any[]): { changes: number | bigint };
-    get(...params: any[]): any;
-    all(...params: any[]): any[];
-  };
-  exec(sql: string): void;
-  close(): void;
 }
 
 // ---------------------------------------------------------------------------
