@@ -53,6 +53,14 @@ describe('TaskSurface (ROADMAP P1.1 feedback contract)', () => {
     expect(calls).toEqual(['endTask', 'send:answer\n\n_Verification: npm test ✓ · /trace abc123_', 'cleanup', 'resetStepCounter']);
   });
 
+  it('messaging: a deferred (streamed) answer still carries the evidence footer', async () => {
+    const { ch, calls } = messagingChannel();
+    ch.popDeferredResponse = vi.fn(() => 'streamed answer');
+    const s = createTaskSurface(ch, 'telegram', 'c');
+    await s.done({ finalText: 'streamed answer', elapsedMs: 1000, stepCount: 3, meta, verificationNote: 'npm test ✓', traceId: 'abc123', alreadyStreamed: false });
+    expect(calls).toContain('send:streamed answer\n\n_Verification: npm test ✓ · /trace abc123_');
+  });
+
   it('messaging: substantial turns defer (Telegram) or stream (others) then send the completion banner', async () => {
     const tg = messagingChannel({ deferResponse: true });
     await createTaskSurface(tg.ch, 'telegram', 'c').done({ finalText: 'big', elapsedMs: 60_000, stepCount: 5, meta, traceId: 't1', alreadyStreamed: false });
