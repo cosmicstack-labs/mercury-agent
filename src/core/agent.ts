@@ -1971,6 +1971,187 @@ export class Agent {
     }
   }
 
+  /**
+   * Skill intent routing and batch execution (see the strategy note at the
+   * call site): an explicit `#skill` pick, a clear multi-skill batch, or an
+   * ambiguous match the user disambiguates. May rewrite or append to
+   * `messages`; never ends the turn on its own.
+   */
+  private async routeSkillIntent(msg: ChannelMessage, trimmed: string, messages: Array<{ role: string; content: unknown }>): Promise<void> {
+    if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
+      try {
+        const intentRouter = this.skillLoader.intentRouter;
+
+        // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
+        const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
+        if (intentRouter && intentRouter.isInitialized() && hashMatch) {
+          const skillName = hashMatch[1];
+          const rest = hashMatch[2].trim();
+          const knownSkills = this.skillLoader.getDiscovered?.() || [];
+          const known = knownSkills.some((s: any) => s.name === skillName);
+          if (known) {
+            messages[messages.length - 1] = {
+              role: 'user',
+              content: rest || trimmed,
+            };
+            messages.push({
+              role: 'user',
+              content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
+            });
+            // Skip the rest of routing — explicit pick wins.
+          } else {
+            // Unknown #tag: just strip it and let routing proceed on the rest.
+            const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
+            if (stripped) {
+              messages[messages.length - 1] = { role: 'user', content: stripped };
+            }
+          }
+        }
+
+        if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
+          const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
+
+          // (2a) Ambiguous → ask the user to pick before executing anything.
+          if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
+            const contenders = analysis.closeContenders.slice(0, 5);
+            const choices = [
+              ...contenders.map(c => {
+                const desc = intentRouter.getSkillDescription?.(c.name) || '';
+                return desc ? `${c.name} — ${desc}` : c.name;
+              }),
+              'None of these — answer normally',
+            ];
+            const channel = this.channels.getChannelForMessage(msg);
+            let picked: string | null = null;
+            try {
+              picked = await this.presentChoice(
+                `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
+                choices,
+                msg.channelId,
+                msg.channelType,
+              );
+            } catch {
+              picked = null;
+            }
+            if (picked && !picked.startsWith('None of these')) {
+              const chosenName = picked.split(' — ')[0].trim();
+              messages.push({
+                role: 'user',
+                content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
+              });
+              if (channel) {
+                await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+              }
+            }
+            // If the user picked "None of these" we just fall through silently.
+          } else {
+            // (2b) Clear-enough match → use the existing batch path, but
+            //      only when the *top batch alone* has 2+ skills (genuine
+            //      multi-step request like "download and notify"). Cross-
+            //      category fan-out is what caused the 10-skill explosion.
+            const batches = intentRouter.matchToBatches(trimmed, 0.6);
+            const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
+
+            if (batches.length > 0 && totalMatchedSkills >= 1) {
+              const topBatch = batches[0];
+              const matchedSkillNames = topBatch.skills.map(s => s.name);
+              this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
+
+              if (topBatch.skills.length >= 2 && analysis.clearWinner) {
+                const plan = this.skillBatcher.planExecution([topBatch]);
+                if (plan.batches.length > 0) {
+                  const channel = this.channels.getChannelForMessage(msg);
+                  if (channel) {
+                    await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                  }
+
+                  const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
+                  const summary = this.skillBatcher.summarizeResults(batchResults);
+
+                  if (summary) {
+                    messages.push({
+                      role: 'user',
+                      content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
+                    });
+                    messages.push({
+                      role: 'assistant',
+                      content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
+                    });
+                  }
+                }
+              }
+              // Single clear-winner skill: let the LLM call use_skill itself.
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
+      }
+    }
+  }
+
+  /**
+   * Memory retrieved for this message: Second Brain recall, then the shared
+   * cloud pool when local recall is weak (fail-open), or long-term facts when
+   * Second Brain is off. Returned blocks go into the per-turn system block.
+   */
+  private async retrieveMemoryContext(msg: ChannelMessage): Promise<string[]> {
+    const blocks: string[] = [];
+    if (this.userMemory) {
+      const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
+      if (memoryContext.context) {
+        blocks.push(`Second Brain — memory retrieved for this message:\n${memoryContext.context}`);
+      }
+
+      // Local-first, then pool: query the cloud SharedMemoryPool for additional
+      // context the second brain didn't surface. Gated by config, fails open
+      // (any error → proceed with local-only context). 5-min cache per query.
+      // Skipped when local recall was already strong: the pool call is an
+      // awaited network round-trip on the path to the first token.
+      const ck = this.config.memory.collaborativeKnowledge;
+      const cloud = this.config.cloud;
+      const tokenStore = getCloudTokenStore();
+      const localRecallIsStrong = memoryContext.records.length >= 3;
+      if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl && !localRecallIsStrong) {
+        try {
+          const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
+          const localSummaries = memoryContext.records.map((r) => r.summary);
+          const poolHits = await searchPool(
+            cloud.apiUrl,
+            cloud.jwt,
+            cloud.refreshToken,
+            msg.content,
+            { limit: 10 },
+            (newJwt, newRefresh) => {
+              // Route every rotation through the shared store so all
+              // consumers see the new tokens. Fallback to direct config
+              // mutation if the store isn't initialized (older code path).
+              if (tokenStore) {
+                tokenStore.setTokensAndPersist(newJwt, newRefresh);
+              } else {
+                cloud.jwt = newJwt;
+                cloud.refreshToken = newRefresh;
+                this.config.providers.mercuryCloud.apiKey = newJwt;
+                saveConfig(this.config);
+              }
+            },
+          );
+          const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+          const poolBlock = formatPoolContextBlock(deduped, 1500);
+          if (poolBlock) blocks.push(poolBlock);
+        } catch (err) {
+          logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
+        }
+      }
+    } else {
+      const relevantFacts = this.longTerm.search(msg.content, 3);
+      if (relevantFacts.length > 0) {
+        blocks.push('Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'));
+      }
+    }
+    return blocks;
+  }
+
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     this.lifecycle.transition('thinking');
     const startTime = Date.now();
@@ -2252,58 +2433,7 @@ export class Agent {
       const loopWarning = detectRepetitionLoop(recentMemory);
       if (loopWarning) contextBlocks.push(loopWarning);
 
-      if (this.userMemory) {
-        const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
-        if (memoryContext.context) {
-          contextBlocks.push(`Second Brain — memory retrieved for this message:\n${memoryContext.context}`);
-        }
-
-        // Local-first, then pool: query the cloud SharedMemoryPool for additional
-        // context the second brain didn't surface. Gated by config, fails open
-        // (any error → proceed with local-only context). 5-min cache per query.
-        // Skipped when local recall was already strong: the pool call is an
-        // awaited network round-trip on the path to the first token.
-        const ck = this.config.memory.collaborativeKnowledge;
-        const cloud = this.config.cloud;
-        const tokenStore = getCloudTokenStore();
-        const localRecallIsStrong = memoryContext.records.length >= 3;
-        if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl && !localRecallIsStrong) {
-          try {
-            const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
-            const localSummaries = memoryContext.records.map((r) => r.summary);
-            const poolHits = await searchPool(
-              cloud.apiUrl,
-              cloud.jwt,
-              cloud.refreshToken,
-              msg.content,
-              { limit: 10 },
-              (newJwt, newRefresh) => {
-                // Route every rotation through the shared store so all
-                // consumers see the new tokens. Fallback to direct config
-                // mutation if the store isn't initialized (older code path).
-                if (tokenStore) {
-                  tokenStore.setTokensAndPersist(newJwt, newRefresh);
-                } else {
-                  cloud.jwt = newJwt;
-                  cloud.refreshToken = newRefresh;
-                  this.config.providers.mercuryCloud.apiKey = newJwt;
-                  saveConfig(this.config);
-                }
-              },
-            );
-            const deduped = dedupeAgainstLocal(poolHits, localSummaries);
-            const poolBlock = formatPoolContextBlock(deduped, 1500);
-            if (poolBlock) contextBlocks.push(poolBlock);
-          } catch (err) {
-            logger.debug({ err: (err as Error).message }, 'pool search failed (fail-open)');
-          }
-        }
-      } else {
-        const relevantFacts = this.longTerm.search(msg.content, 3);
-        if (relevantFacts.length > 0) {
-          contextBlocks.push('Relevant facts from memory:\n' + relevantFacts.map(f => `- ${f.fact}`).join('\n'));
-        }
-      }
+      contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
 
       for (const m of recentMemory) messages.push(toModelMessage(m));
 
@@ -2333,116 +2463,7 @@ export class Agent {
       //      - Ambiguous (multiple contenders bunched near the top) → ask the
       //        user to disambiguate before doing anything.
       //      - No usable match → fall through to the normal LLM loop.
-      if (this.skillBatcher && this.skillLoader && msg.channelType !== 'internal') {
-        try {
-          const intentRouter = this.skillLoader.intentRouter;
-
-          // (1) Explicit `#skill-name <rest>` shortcut from the # picker.
-          const hashMatch = trimmed.match(/^#([a-z0-9_:.-]+)\b\s*(.*)$/i);
-          if (intentRouter && intentRouter.isInitialized() && hashMatch) {
-            const skillName = hashMatch[1];
-            const rest = hashMatch[2].trim();
-            const knownSkills = this.skillLoader.getDiscovered?.() || [];
-            const known = knownSkills.some((s: any) => s.name === skillName);
-            if (known) {
-              messages[messages.length - 1] = {
-                role: 'user',
-                content: rest || trimmed,
-              };
-              messages.push({
-                role: 'user',
-                content: `[Routing] The user explicitly selected the \`${skillName}\` skill via #-prefix. Invoke it via \`use_skill\` with name="${skillName}" before doing anything else, then act on the result.`,
-              });
-              // Skip the rest of routing — explicit pick wins.
-            } else {
-              // Unknown #tag: just strip it and let routing proceed on the rest.
-              const stripped = rest || trimmed.replace(/^#\S+\s*/, '');
-              if (stripped) {
-                messages[messages.length - 1] = { role: 'user', content: stripped };
-              }
-            }
-          }
-
-          if (intentRouter && intentRouter.isInitialized() && !hashMatch) {
-            const analysis = intentRouter.analyzeMatch(trimmed, { clearThreshold: 0.85, gap: 0.15 });
-
-            // (2a) Ambiguous → ask the user to pick before executing anything.
-            if (analysis.ambiguous && analysis.closeContenders.length >= 2) {
-              const contenders = analysis.closeContenders.slice(0, 5);
-              const choices = [
-                ...contenders.map(c => {
-                  const desc = intentRouter.getSkillDescription?.(c.name) || '';
-                  return desc ? `${c.name} — ${desc}` : c.name;
-                }),
-                'None of these — answer normally',
-              ];
-              const channel = this.channels.getChannelForMessage(msg);
-              let picked: string | null = null;
-              try {
-                picked = await this.presentChoice(
-                  `I matched several skills for that request and I'm not sure which you meant. Pick one:`,
-                  choices,
-                  msg.channelId,
-                  msg.channelType,
-                );
-              } catch {
-                picked = null;
-              }
-              if (picked && !picked.startsWith('None of these')) {
-                const chosenName = picked.split(' — ')[0].trim();
-                messages.push({
-                  role: 'user',
-                  content: `[Routing] User clarified: use the \`${chosenName}\` skill. Invoke it via \`use_skill\` with name="${chosenName}" before doing anything else.`,
-                });
-                if (channel) {
-                  await channel.send(`Routing to **${chosenName}**.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                }
-              }
-              // If the user picked "None of these" we just fall through silently.
-            } else {
-              // (2b) Clear-enough match → use the existing batch path, but
-              //      only when the *top batch alone* has 2+ skills (genuine
-              //      multi-step request like "download and notify"). Cross-
-              //      category fan-out is what caused the 10-skill explosion.
-              const batches = intentRouter.matchToBatches(trimmed, 0.6);
-              const totalMatchedSkills = batches.reduce((sum, b) => sum + b.skills.length, 0);
-
-              if (batches.length > 0 && totalMatchedSkills >= 1) {
-                const topBatch = batches[0];
-                const matchedSkillNames = topBatch.skills.map(s => s.name);
-                this.markProgress(`Matched intents: ${matchedSkillNames.join(', ')}...`);
-
-                if (topBatch.skills.length >= 2 && analysis.clearWinner) {
-                  const plan = this.skillBatcher.planExecution([topBatch]);
-                  if (plan.batches.length > 0) {
-                    const channel = this.channels.getChannelForMessage(msg);
-                    if (channel) {
-                      await channel.send(`🧠 Routing to ${topBatch.skills.length} skills in **${topBatch.categoryLabel}**: ${matchedSkillNames.join(', ')}.`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
-                    }
-
-                    const batchResults = await this.skillBatcher.execute(plan, trimmed, msg.channelId, msg.channelType);
-                    const summary = this.skillBatcher.summarizeResults(batchResults);
-
-                    if (summary) {
-                      messages.push({
-                        role: 'user',
-                        content: `[Skill Batch Execution Results]\n${summary}\n\nSynthesize a coherent response based on these results. Mention what was done, any failures, and key findings.`,
-                      });
-                      messages.push({
-                        role: 'assistant',
-                        content: 'Acknowledged. I will synthesize the batch execution results into a coherent response.',
-                      });
-                    }
-                  }
-                }
-                // Single clear-winner skill: let the LLM call use_skill itself.
-              }
-            }
-          }
-        } catch (err) {
-          logger.warn({ err }, 'Intent routing / batch execution failed — continuing without it');
-        }
-      }
+      await this.routeSkillIntent(msg, trimmed, messages);
 
       this.lifecycle.transition('responding');
 
