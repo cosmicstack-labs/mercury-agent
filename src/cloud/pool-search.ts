@@ -1,15 +1,9 @@
 import { join } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { getMemoryDir } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
 import { refreshToken } from './pairing.js';
-
-type BetterSqlite3Database = import('better-sqlite3').Database;
-const require = createRequire(import.meta.url);
-function loadDatabase(): typeof import('better-sqlite3') {
-  return require('better-sqlite3');
-}
 
 /**
  * Cloud shared-pool search client for the agent.
@@ -58,24 +52,44 @@ interface CacheRow {
   fetched_at: number;
 }
 
-let cacheDb: BetterSqlite3Database | null = null;
+export const POOL_SEARCH_CACHE_FILE = 'pool-search-cache.db';
 
-function getCacheDb(): BetterSqlite3Database {
+let cacheDb: SqliteDatabase | null = null;
+let cacheDisabled = false;
+
+/**
+ * The cache DB, or `null` when no SQLite engine is available (or the file
+ * cannot be opened) — the search then runs uncached instead of failing.
+ */
+function getCacheDb(): SqliteDatabase | null {
   if (cacheDb) return cacheDb;
-  const dir = getMemoryDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const dbPath = join(dir, 'pool-search-cache.db');
-  cacheDb = loadDatabase()(dbPath);
-  cacheDb.exec(`
-    CREATE TABLE IF NOT EXISTS pool_search_cache (
-      query_hash TEXT PRIMARY KEY,
-      query TEXT NOT NULL,
-      results_json TEXT NOT NULL,
-      fetched_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_pool_search_fetched_at ON pool_search_cache(fetched_at);
-  `);
-  return cacheDb;
+  if (cacheDisabled) return null;
+  try {
+    const dir = getMemoryDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const dbPath = join(dir, POOL_SEARCH_CACHE_FILE);
+    const db = openSqlite(dbPath);
+    if (!db) {
+      cacheDisabled = true;
+      logger.debug('pool search cache disabled: no SQLite engine available');
+      return null;
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pool_search_cache (
+        query_hash TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        results_json TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pool_search_fetched_at ON pool_search_cache(fetched_at);
+    `);
+    cacheDb = db;
+    return cacheDb;
+  } catch (err) {
+    cacheDisabled = true;
+    logger.warn({ err }, 'pool search cache disabled: could not open cache database');
+    return null;
+  }
 }
 
 function hashQuery(query: string): string {
@@ -89,6 +103,7 @@ function hashQuery(query: string): string {
 
 function readCache(queryHash: string): PoolSearchHit[] | null {
   const db = getCacheDb();
+  if (!db) return null;
   const row = db.prepare('SELECT results_json, fetched_at FROM pool_search_cache WHERE query_hash = ?').get(queryHash) as CacheRow | undefined;
   if (!row) return null;
   if (Date.now() - row.fetched_at > CACHE_TTL_MS) return null;
@@ -101,6 +116,7 @@ function readCache(queryHash: string): PoolSearchHit[] | null {
 
 function writeCache(queryHash: string, query: string, results: PoolSearchHit[]): void {
   const db = getCacheDb();
+  if (!db) return;
   const now = Date.now();
   db.prepare('INSERT OR REPLACE INTO pool_search_cache (query_hash, query, results_json, fetched_at) VALUES (?, ?, ?, ?)').run(
     queryHash,
