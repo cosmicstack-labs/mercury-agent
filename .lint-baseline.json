@@ -1,0 +1,10 @@
+{
+  "$comment": "PROVISIONAL baseline estimated with grep (scripts/lint-ratchet.cjs --estimate); refresh with `npm run lint:ratchet -- --update` at the first real ESLint run.",
+  "provisional": true,
+  "generatedAt": "2026-10-09T16:36:45.641Z",
+  "target": "src",
+  "rules": {
+    "@typescript-eslint/no-explicit-any": 1163,
+    "no-console": 134
+  }
+}

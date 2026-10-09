@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,10 +10,21 @@ import {
   buildSchtasksCreateCommand,
   buildSystemdUnit,
   buildWindowsCommandLine,
+  buildTermuxBootScript,
   buildWindowsTaskXml,
   encodeWindowsTaskXml,
   pinnedServicePath,
   serviceFileOptions,
+  installService,
+  isServiceInstalled,
+  isServiceRunning,
+  removeTermuxBootScript,
+  showServiceStatus,
+  stopService,
+  teardownService,
+  termuxBootScriptPath,
+  uninstallService,
+  writeTermuxBootScript,
   quoteWindowsArg,
   resolveDistPath,
   runKeyLaunchArgs,
@@ -211,5 +222,126 @@ describe('service PATH pinning (ROADMAP P2.2, #103)', () => {
     } finally {
       process.env.PATH = original;
     }
+  });
+});
+
+describe('Termux:Boot script (P2.8)', () => {
+  const opts = { prefix: '/data/data/com.termux/files/usr', mercuryHome: '/data/data/com.termux/files/home/.mercury' };
+
+  it('uses the Termux shell, takes a wake lock before `mercury up`, and logs boot output', () => {
+    const script = buildTermuxBootScript(['/data/data/com.termux/files/usr/bin/node', '/data/x/dist/index.js', 'up'], opts);
+    const lines = script.split('\n');
+    expect(lines[0]).toBe('#!/data/data/com.termux/files/usr/bin/sh');
+    const wake = lines.indexOf('termux-wake-lock');
+    const up = lines.findIndex((l) => l.startsWith('/data/data/com.termux/files/usr/bin/node /data/x/dist/index.js up'));
+    expect(wake).toBeGreaterThan(0);
+    expect(up).toBeGreaterThan(wake);
+    expect(lines[up]).toContain('>> /data/data/com.termux/files/home/.mercury/boot.log 2>&1');
+    expect(script).toContain('export PATH="/data/data/com.termux/files/usr/bin:$PATH"');
+    expect(script.endsWith('\n')).toBe(true);
+  });
+
+  it('single-quotes argv words that the boot shell would split or expand', () => {
+    const script = buildTermuxBootScript(["/home/my dir/it's/node", '$HOME/x', 'up'], opts);
+    expect(script).toContain(String.raw`'/home/my dir/it'\''s/node' '$HOME/x' up >>`);
+  });
+
+  it('falls back to the default Termux prefix', () => {
+    expect(buildTermuxBootScript(['mercury', 'up'], { mercuryHome: '/m' }).split('\n')[0])
+      .toBe('#!/data/data/com.termux/files/usr/bin/sh');
+  });
+
+  it('writes ~/.termux/boot/mercury.sh executable under a fake HOME and removes it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'mercury-termux-'));
+    try {
+      const path = writeTermuxBootScript(['mercury', 'up'], { ...opts, home });
+      expect(path).toBe(termuxBootScriptPath(home));
+      expect(path.replace(/\\/g, '/').endsWith('/.termux/boot/mercury.sh')).toBe(true);
+      expect(readFileSync(path, 'utf8')).toContain('termux-wake-lock');
+      if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o755);
+      // Re-install over an existing (non-executable) file restores the mode.
+      if (process.platform !== 'win32') {
+        writeFileSync(path, 'old', { mode: 0o644 });
+        writeTermuxBootScript(['mercury', 'up'], { ...opts, home });
+        expect(statSync(path).mode & 0o777).toBe(0o755);
+      }
+      expect(removeTermuxBootScript(path)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      // Removing an absent script is still "gone".
+      expect(removeTermuxBootScript(path)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('service install/uninstall/status on Termux (fake HOME, platform android)', () => {
+  let home: string;
+  const realPlatform = process.platform;
+  let logs: string[];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'mercury-termux-home-'));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('MERCURY_HOME', join(home, '.mercury'));
+    vi.stubEnv('TERMUX_VERSION', '0.118.0');
+    vi.stubEnv('PREFIX', '/data/data/com.termux/files/usr');
+    Object.defineProperty(process, 'platform', { value: 'android', configurable: true });
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logs.push(args.join(' ')); });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('install writes the boot script and reports it; status and uninstall recognise it', () => {
+    const bootPath = termuxBootScriptPath(home);
+    expect(isServiceInstalled()).toBe(false);
+
+    expect(installService()).toBe(true);
+    expect(existsSync(bootPath)).toBe(true);
+    const script = readFileSync(bootPath, 'utf8');
+    expect(script.split('\n')[0]).toBe('#!/data/data/com.termux/files/usr/bin/sh');
+    expect(script).toMatch(/termux-wake-lock\n.* up >> /);
+    expect(script).not.toContain('--daemon');
+    expect(logs.join('\n')).toContain('Termux:Boot');
+    expect(logs.join('\n')).toContain(bootPath);
+
+    expect(isServiceInstalled()).toBe(true);
+    // Nothing supervises the daemon: no service process to stop or query.
+    expect(isServiceRunning()).toBe(false);
+    expect(stopService()).toBe(true);
+
+    logs.length = 0;
+    showServiceStatus();
+    expect(logs.join('\n')).toContain('Autostart: Termux:Boot script');
+    expect(logs.join('\n')).toContain(bootPath);
+
+    logs.length = 0;
+    expect(uninstallService()).toBe(true);
+    expect(existsSync(bootPath)).toBe(false);
+    expect(logs.join('\n')).toContain('boot script removed');
+    expect(isServiceInstalled()).toBe(false);
+
+    logs.length = 0;
+    showServiceStatus();
+    expect(logs.join('\n')).toMatch(/not installed/);
+  });
+
+  it('uninstall without a boot script reports it and does not exit', () => {
+    expect(uninstallService()).toBe(false);
+    expect(logs.join('\n')).toMatch(/not installed/);
+  });
+
+  it('teardownService (mercury uninstall) removes the boot script', () => {
+    expect(teardownService()).toEqual({ removed: false });
+    installService();
+    expect(teardownService()).toEqual({ removed: true, path: termuxBootScriptPath(home) });
+    expect(existsSync(termuxBootScriptPath(home))).toBe(false);
   });
 });

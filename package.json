@@ -17,6 +17,8 @@
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
+    "lint:eslint": "eslint src",
+    "lint:ratchet": "node scripts/lint-ratchet.cjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

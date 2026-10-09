@@ -15,6 +15,11 @@
 #                     The binary lands at $MERCURY_INSTALL/bin/mercury.
 #                     (mercury-dev on the dev channel.)
 #   MERCURY_NO_PATH   If set to "1", skip modifying shell rc files.
+#   MERCURY_DOWNLOAD_BASE
+#                     Base URL the release assets are fetched from. Default:
+#                     https://github.com/<repo>/releases/download — the
+#                     installer appends /v<version>/ (or the dev tag). Used by
+#                     CI to run this script against a local release directory.
 #
 # Windows users: use install.ps1 instead.
 
@@ -22,7 +27,7 @@ set -eu
 
 REPO="cosmicstack-labs/mercury-agent"
 GITHUB_API="https://api.github.com/repos/${REPO}"
-GITHUB_DL="https://github.com/${REPO}/releases/download"
+GITHUB_DL="${MERCURY_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 
 # ----- helpers ---------------------------------------------------------------
 
@@ -173,10 +178,13 @@ maybe_update_path() {
   fi
 
   mkdir -p "$(dirname "$rc")"
+  # The literal `$PATH` must land in the rc file unexpanded (SC2016 is the point).
   case "$rc" in
     *config.fish)
+      # shellcheck disable=SC2016
       printf '\n%s\nset -gx PATH %s $PATH\n' "$marker" "$bin_dir" >> "$rc" ;;
     *)
+      # shellcheck disable=SC2016
       printf '\n%s\nexport PATH="%s:$PATH"\n' "$marker" "$bin_dir" >> "$rc" ;;
   esac
   info "Added $bin_dir to PATH in $(basename "$rc")"
@@ -211,7 +219,6 @@ Install the supported Node.js package instead:
     release_dir="${GITHUB_DL}/${RELEASE_TAG}"
     version_label="dev (rolling ${RELEASE_TAG})"
   else
-    release_dir="${GITHUB_DL}/v${version}"
     if [ -z "$version" ]; then
       info "Resolving latest version from GitHub..."
       version=$(resolve_latest_version)
@@ -313,10 +320,14 @@ Install the supported Node.js package instead:
     printf '    source %s\n\n' "$(shell_rc_file)"
   fi
 
+  if [ "${PATH_UPDATED:-0}" = "1" ]; then
+    launch_hint="$BIN_NAME"
+  else
+    launch_hint="$bin_path"
+  fi
   printf 'Get started:\n'
   printf '   %s --help\n' "$bin_path"
-  printf '   %s              # first run launches setup wizard\n\n' \
-    "$([ "${PATH_UPDATED:-0}" = "1" ] && echo "$BIN_NAME" || echo "$bin_path")"
+  printf '   %s              # first run launches setup wizard\n\n' "$launch_hint"
 
   if [ "$CHANNEL" = "dev" ]; then
     printf '%s Dev channel — preview builds, may break. Run to check:\n' "$(c_yellow 'NOTE:')"
