@@ -26,7 +26,6 @@
 set -eu
 
 REPO="cosmicstack-labs/mercury-agent"
-GITHUB_API="https://api.github.com/repos/${REPO}"
 GITHUB_DL="${MERCURY_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 
 # ----- helpers ---------------------------------------------------------------

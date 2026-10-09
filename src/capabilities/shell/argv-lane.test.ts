@@ -151,7 +151,13 @@ describe('pinned binaries and minimal env (#103)', () => {
     const dirs = pinnedSearchDirs('linux', { PATH: '/tmp/evil:/usr/bin' });
     expect(dirs).not.toContain('/tmp/evil');
     expect(dirs).toContain('/usr/bin');
-    expect(pinnedPath('linux')).toBe('/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin');
+    expect(pinnedPath('linux', {})).toBe('/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin');
+  });
+
+  it('on Termux, pins $PREFIX/bin first (there is no /usr/bin there)', () => {
+    const prefix = '/data/data/com.termux/files/usr';
+    expect(pinnedSearchDirs('android', { PREFIX: prefix })[0]).toBe(join(prefix, 'bin'));
+    expect(pinnedSearchDirs('linux', { PREFIX: '/usr' })).not.toContain('/usr/bin/bin');
   });
 
   it('resolves from the given dirs only and skips world-writable binaries', () => {

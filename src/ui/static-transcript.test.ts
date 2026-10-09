@@ -40,14 +40,14 @@ describe('ink static-transcript crash fixes', () => {
     expect(patch).toContain('itemKey');
   });
 
-  it('has the patch applied to the installed ink', () => {
-    // If this fails after a dependency change, the postinstall hook did not
-    // run (or patches/ was lost) — every <Static> unmount is a latent crash.
-    const reconciler = read('node_modules/ink/build/reconciler.js');
+  it('has the patch applied to the vendored ink that ships in the bundle', () => {
+    // Ink is vendored and bundled (ADR-017); node_modules/ink is stock and
+    // unused at runtime. If this fails, regenerate with `npm run vendor:ink`.
+    const reconciler = read('vendor/ink/build/reconciler.js');
     expect(reconciler).toContain('clearYogaRefs');
     expect(reconciler).toContain('Array.isArray(node.childNodes)');
     expect(reconciler).toContain('rootNode.staticNode = undefined');
-    const staticComponent = read('node_modules/ink/build/components/Static.js');
+    const staticComponent = read('vendor/ink/build/components/Static.js');
     expect(staticComponent).toContain('itemKey');
   });
 

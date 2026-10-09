@@ -18,7 +18,7 @@ set -eu
 # (POSIX sh has no "$0"-safe dirname in every case; guard rather than trust.)
 case "$0" in
   */*)
-    here=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || here=""
+    here=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || here=""
     ;;
   *)
     here=""

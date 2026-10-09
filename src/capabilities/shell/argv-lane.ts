@@ -303,12 +303,17 @@ export function pinnedSearchDirs(platform: NodeJS.Platform = process.platform, e
     const programFiles = env.ProgramFiles || 'C:\\Program Files';
     return [join(systemRoot, 'System32'), join(programFiles, 'Git', 'cmd')];
   }
-  return ['/usr/bin', '/bin', '/usr/sbin', '/sbin', '/usr/local/bin', '/opt/homebrew/bin'];
+  const dirs = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', '/usr/local/bin', '/opt/homebrew/bin'];
+  // Termux has no /usr/bin: its system binaries live in $PREFIX/bin
+  // (/data/data/com.termux/files/usr/bin), owned by the app.
+  const prefix = env.PREFIX;
+  if (prefix && prefix.includes('com.termux')) dirs.unshift(join(prefix, 'bin'));
+  return dirs;
 }
 
 /** The pinned PATH string for spawned tools (`:`-joined on POSIX, `;` on Windows). */
-export function pinnedPath(platform: NodeJS.Platform = process.platform): string {
-  return pinnedSearchDirs(platform).join(platform === 'win32' ? ';' : ':');
+export function pinnedPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  return pinnedSearchDirs(platform, env).join(platform === 'win32' ? ';' : ':');
 }
 
 function isTrustedExecutable(file: string): boolean {
