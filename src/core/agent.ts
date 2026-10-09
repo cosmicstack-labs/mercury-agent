@@ -89,6 +89,7 @@ import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, sele
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
+import { setProgressPulse } from './progress-pulse.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 
@@ -552,6 +553,7 @@ export class Agent {
     this.lifecycle = new Lifecycle();
     this.scheduler = scheduler;
     this.capabilities = capabilities;
+    this.installProgressPulse();
     this.telegramStreaming = config.channels.telegram.streaming ?? true;
     this.programmingMode = new ProgrammingMode();
     this.researchMode = new ResearchMode();
@@ -2205,6 +2207,15 @@ export class Agent {
     if (cliChannel && cliChannel instanceof CLIChannel) {
       (cliChannel as CLIChannel).updateBackgroundTasks(this.backgroundTasks.getAllSummaries());
     }
+  }
+
+  /**
+   * Long-running tools (run_command) pulse this while they are alive so the
+   * foreground heartbeat and the StallWatchdog do not abort a legitimate
+   * ten-minute build as a "stalled provider". See core/progress-pulse.ts.
+   */
+  private installProgressPulse(): void {
+    setProgressPulse(() => this.markProgress());
   }
 
   private markProgress(activity?: string): void {
