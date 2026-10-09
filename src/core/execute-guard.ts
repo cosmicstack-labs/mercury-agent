@@ -187,6 +187,28 @@ export interface VerificationInput {
   commandsRun: Iterable<string>;
   /** Tool name → whether at least one invocation produced a non-error result. */
   toolsSucceeded?: ReadonlyMap<string, boolean>;
+  /**
+   * Whether the most recent verification command actually passed AND ran
+   * after the last successful mutation. When provided, this replaces the
+   * command-string heuristic: a failing or timed-out `npm test` is not
+   * evidence, and neither is a test that ran before the latest edits.
+   */
+  verifiedOk?: boolean;
+}
+
+/**
+ * Did a verification command's output indicate success? Conservative: any
+ * non-zero exit, explicit failure, timeout, or kill reads as NOT ok. The
+ * run_command tool formats these outcomes as "Command exited with code N",
+ * "⏱ Command timed out after Ns", or an "Error:" prefix.
+ */
+export function isVerificationOutputOk(resultText: string): boolean {
+  if (!resultText || !resultText.trim()) return false;
+  const head = resultText.slice(0, 400);
+  if (/timed out|ETIMEDOUT|SIGKILL|SIGTERM|was killed/i.test(head)) return false;
+  if (/exited with code|command failed|^\s*Error:/im.test(head)) return false;
+  if (/\berror:/i.test(head)) return false;
+  return true;
 }
 
 /**
@@ -200,8 +222,15 @@ export function shouldRequireVerification(input: VerificationInput): boolean {
   const mutated = [...(input.toolsSucceeded?.entries() ?? [])]
     .some(([tool, ok]) => EXECUTE_MUTATING_TOOLS.has(tool) && ok === true);
   if (!mutated) return false;
-  for (const command of input.commandsRun) {
-    if (VERIFICATION_COMMAND_PATTERN.test(command)) return false;
+  if (input.verifiedOk !== undefined) {
+    // Evidence-aware path: only a clean verification after the last edit
+    // releases the gate.
+    if (input.verifiedOk) return false;
+  } else {
+    // Legacy heuristic for callers that do not track results.
+    for (const command of input.commandsRun) {
+      if (VERIFICATION_COMMAND_PATTERN.test(command)) return false;
+    }
   }
   const task = input.taskText.trim();
   if (task.length < 2) return false;

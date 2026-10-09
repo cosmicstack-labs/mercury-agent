@@ -5,6 +5,7 @@ import {
   executeContinuationPrompt,
   isFailedToolResult,
   isTextDeliverableRequest,
+  isVerificationOutputOk,
   responseAsksUser,
   shouldForceExecuteContinuation,
   shouldRequireVerification,
@@ -280,6 +281,31 @@ describe('evidence-based verification gate', () => {
 
   it('bounds verification rounds to one', () => {
     expect(MAX_VERIFICATION_CONTINUATIONS).toBe(1);
+  });
+
+  // Regression: a verification command that FAILED or TIMED OUT used to
+  // satisfy the gate because only the command string was inspected. With
+  // result tracking, only a clean run after the last edit counts.
+  it('a failed or timed-out verification is not evidence', () => {
+    const base = {
+      taskText: 'add the export endpoint',
+      hasApprovedPlan: false,
+      commandsRun: ['npm test'],
+      toolsSucceeded: ok(['edit_file']),
+    };
+    expect(shouldRequireVerification({ ...base, verifiedOk: false })).toBe(true);
+    expect(shouldRequireVerification({ ...base, verifiedOk: true })).toBe(false);
+    // Without result tracking the legacy string heuristic still applies.
+    expect(shouldRequireVerification(base)).toBe(false);
+  });
+
+  it('classifies verification output by outcome, not by command name', () => {
+    expect(isVerificationOutputOk('Tests  25 passed (25)\nDuration 421ms')).toBe(true);
+    expect(isVerificationOutputOk('Command exited with code 1\nFAIL src/app.test.ts')).toBe(false);
+    expect(isVerificationOutputOk('⏱ Command timed out after 120s.\nPartial output:\n...')).toBe(false);
+    expect(isVerificationOutputOk('Error: Permission denied for shell command')).toBe(false);
+    expect(isVerificationOutputOk('src/app.ts(12,5): error: TS2322: Type ...')).toBe(false);
+    expect(isVerificationOutputOk('')).toBe(false);
   });
 
   it('builds a verification nudge', () => {

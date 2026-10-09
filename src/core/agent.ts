@@ -83,8 +83,8 @@ import { updateCliProviderStatus } from './provider-status.js';
 import { isTaskHeapUnsafe, taskHeapAbortThreshold, taskHeapExitThreshold } from './memory-guard.js';
 import { compactConversation, memoryGovernorThresholds, memoryGovernorVerdict } from './memory-governor.js';
 import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPrompt, toolTruncationContinuationPrompt } from './stream-completion.js';
-import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, verificationPrompt, responseAsksUser, isTextDeliverableRequest, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
-import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, type LoopEndCause } from './completion-verdict.js';
+import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
+import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -2444,8 +2444,7 @@ export class Agent {
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
     const stream = streamText({
       model: opts.provider.getModelInstance(),
-      system: opts.systemPrompt,
-      messages: opts.messages as any,
+      messages: this.withCachedSystem(opts.systemPrompt, opts.messages),
       tools: this.capabilities.getTools(),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
@@ -3343,6 +3342,20 @@ export class Agent {
       // evidence exists that the work actually finished?
       const executeCommandsRun: string[] = [];
       let lastVerificationNote = '';
+      // Evidence tracking: the LAST verification command and whether it
+      // actually passed, plus the step of the last successful mutation. A
+      // verification only counts as evidence when it ran clean AND after the
+      // last edit — a failing or timed-out `npm test`, or a test that ran
+      // before five more files were written, is not "verified".
+      let lastVerification: { command: string; ok: boolean; step: number } | null = null;
+      let lastMutationStep = -1;
+      const recordVerification = (command: string, resultText: string): void => {
+        const ok = isVerificationOutputOk(resultText);
+        lastVerification = { command, ok, step: this.completedStepCount };
+        lastVerificationNote = `${command.slice(0, 60)} ${ok ? '✓' : '✗'}`;
+      };
+      const verifiedAfterLastMutation = (): boolean =>
+        lastVerification != null && lastVerification.ok && lastVerification.step >= lastMutationStep;
       let lastStepHadToolCalls = false;
       let lastRoundSteps = 0;
       let stepBudgetContinuations = 0;
@@ -3360,6 +3373,7 @@ export class Agent {
         const text = typeof resultText === 'string' ? resultText : JSON.stringify(resultText ?? '');
         const ok = !isFailedToolResult(text);
         executeToolSucceeded.set(toolName, (executeToolSucceeded.get(toolName) ?? false) || ok);
+        if (ok && EXECUTE_MUTATING_TOOLS.has(toolName)) lastMutationStep = this.completedStepCount;
       };
 
       const canStream = msg.channelType === 'cli' || msg.channelType === 'web' || (msg.channelType === 'telegram' && this.telegramStreaming) || msg.channelType === 'signal' || (msg.channelType === 'discord' && this.config.channels.discord.streaming) || (msg.channelType === 'slack' && this.config.channels.slack.streaming);
@@ -3432,8 +3446,7 @@ export class Agent {
             let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
-              system: systemPrompt,
-              messages,
+              messages: this.withCachedSystem(systemPrompt, messages),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
@@ -3530,8 +3543,7 @@ export class Agent {
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
                         const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
-                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                        recordVerification(cmd, vText);
                       }
                     }
                     }
@@ -3840,14 +3852,13 @@ export class Agent {
                 const continueResult: Awaited<ReturnType<typeof streamText>> = await this.withProviderDeadline(
                   Promise.resolve(streamText({
                     model: provider.getModelInstance(),
-                    system: systemPrompt,
-                    messages: [
+                    messages: this.withCachedSystem(systemPrompt, [
                       ...messages,
                       { role: 'assistant', content: continuationText },
                       { role: 'user', content: lastStepHadToolCalls
                         ? toolTruncationContinuationPrompt(msg.content)
                         : truncationContinuationPrompt(msg.content) },
-                    ],
+                    ]),
                     tools: this.capabilities.getTools(),
                     maxOutputTokens: effectiveMaxOutputTokens,
                     // FULL budget: a one-step round can only read files — the
@@ -3889,8 +3900,7 @@ export class Agent {
           } else {
             result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
-              system: systemPrompt,
-              messages,
+              messages: this.withCachedSystem(systemPrompt, messages),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: effectiveMaxOutputTokens,
               stopWhen: stepCountIs(effectiveMaxSteps),
@@ -3972,8 +3982,7 @@ export class Agent {
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
                         const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
-                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                        recordVerification(cmd, vText);
                       }
                     }
                     }
@@ -4449,19 +4458,18 @@ export class Agent {
       // ── Delivery completion guard ──
       // In Mercury Code execute mode, a narration-only turn ("Building X per
       // its spec. Reading it first.") with zero mutating tool calls must NOT
-      // be celebrated as "Task complete". The same contract holds in plain
-      // chat on every channel: an implementation-style request must actually
-      // run its tools — narration is not delivery, and the task does not
-      // end without having done anything. Conservative gating: questions,
-      // chit-chat, and text deliverables (poems, emails — the reply itself
-      // is the work) are excluded, so only repo/code-shaped requests are
-      // forced through their tools.
+      // be celebrated as "Task complete".
+      //
+      // Execute mode ONLY. This guard used to run in plain chat as well, and
+      // IMPLEMENTATION_PATTERN is broad enough ("make", "add", "test",
+      // "continue", "do it") that ordinary requests — "make me a workout
+      // plan", "add that to my list" — were forced through up to ten
+      // tool-only rounds and then paused with "I couldn't get started on
+      // this one yet". In chat the model may use tools when it wants to;
+      // it is never forced to.
       while (
         !loopAbortController.signal.aborted
-        && (this.programmingMode.isExecute()
-          || (this.programmingMode.getState() === 'off'
-            && msg.channelType !== 'internal'
-            && !isTextDeliverableRequest(msg.content)))
+        && this.programmingMode.isExecute()
         && executeGuardRounds < (narrationSecondWind ? MAX_EXECUTE_CONTINUATIONS * 2 : MAX_EXECUTE_CONTINUATIONS)
         // A turn that ends by asking the user something in plain text is a
         // legitimate pause — forcing rounds here looped the model forever
@@ -4533,8 +4541,7 @@ export class Agent {
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           const guardStream = streamText({
             model: guardProvider.getModelInstance(),
-            system: systemPrompt,
-            messages,
+            messages: this.withCachedSystem(systemPrompt, messages),
             tools: this.capabilities.getTools(),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
@@ -4714,8 +4721,7 @@ export class Agent {
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
                         const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
-                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                        recordVerification(cmd, vText);
                       }
                     }
                   }
@@ -4737,20 +4743,20 @@ export class Agent {
 
       // ── Verification gate ──
       // Implementation work happened, but nothing objectively verified it
-      // (no build/test/typecheck ran). Force one bounded evidence round.
-      // Same contract in plain chat: a change that landed but was never
-      // verified is not a delivered change.
+      // (no build/test/typecheck ran clean after the last edit). Force one
+      // bounded evidence round. Execute mode only: in plain chat "write my
+      // notes to notes.md" must not trigger "running the build/tests now".
       if (
         !loopAbortController.signal.aborted
         && turnEnd() === 'text-stop'
-        && (this.programmingMode.isExecute()
-          || (this.programmingMode.getState() === 'off' && msg.channelType !== 'internal'))
+        && this.programmingMode.isExecute()
         && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
         && shouldRequireVerification({
           taskText: msg.content,
           hasApprovedPlan: this.programmingMode.getLastPlan() != null,
           commandsRun: executeCommandsRun,
           toolsSucceeded: executeToolSucceeded,
+          verifiedOk: verifiedAfterLastMutation(),
         })
       ) {
         verificationContinuations++;
@@ -4804,8 +4810,7 @@ export class Agent {
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
                         const vResult = (toolResults[i] as any)?.result ?? toolResults[i];
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
-                        const vOk = vText && !/exited with code|command failed|error:/i.test(vText.slice(0, 300));
-                        lastVerificationNote = `${cmd.slice(0, 60)} ${vOk ? '✓' : '✗'}`;
+                        recordVerification(cmd, vText);
                       }
                     }
                     }
@@ -4835,6 +4840,26 @@ export class Agent {
           this.workLedger.markPaused(this.currentWorkKey, reason);
         }
         if (channel && msg.channelType !== 'internal') {
+          // End the task FIRST so the banner is delivered as a normal,
+          // persistent message. While a task is active the messaging
+          // channels route short sends into the status card (truncated to
+          // ~80 chars) and then delete the card on finalize — which made a
+          // pause look like the bot simply went silent. Flush any deferred
+          // streamed text too, so the user sees what was produced.
+          let deferred: string | undefined;
+          if (
+            channel instanceof TelegramChannel
+            || channel instanceof SignalChannel
+            || channel instanceof DiscordChannel
+            || channel instanceof SlackChannel
+          ) {
+            channel.endTask(msg.channelId);
+            channel.resetStepCounter(msg.channelId);
+            deferred = channel.popDeferredResponse(msg.channelId);
+          }
+          if (deferred && deferred.trim()) {
+            await channel.send(deferred, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+          }
           await channel.send(banner, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
           if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
         }
@@ -4872,6 +4897,26 @@ export class Agent {
         await pauseHonestly(
           WORK_NOT_STARTED_BANNER + blockerNote,
           `No implementation work was performed across two guard cycles.${lastGuardToolFailure ? ` Last blocker: ${lastGuardToolFailure}` : ''} Send "continue" to resume with tools.`,
+        );
+        return;
+      }
+
+      // Verification failed or is stale: in execute mode, a build/test/
+      // typecheck ran but did not pass, or passed and was then followed by
+      // more edits. Either way there is no evidence the work is correct —
+      // that is an honest pause, never a "Task complete" banner.
+      if (
+        !loopAbortController.signal.aborted
+        && this.programmingMode.isExecute()
+        && lastVerification != null
+        && !verifiedAfterLastMutation()
+        && !responseAsksUser(result.text || '')
+      ) {
+        const stale = lastVerification.ok;
+        logger.warn({ verification: lastVerificationNote, stale }, 'Completion contract: verification failed or stale — pausing instead of completing');
+        await pauseHonestly(
+          `${VERIFICATION_FAILED_BANNER}\n\nLast check: ${lastVerificationNote}${stale ? ' (ran before the latest changes)' : ''}`,
+          `Verification ${stale ? 'is stale' : 'failed'}: ${lastVerificationNote}. Send "continue" to resume.`,
         );
         return;
       }
@@ -5178,6 +5223,26 @@ export class Agent {
     }
   }
 
+  /**
+   * Prompt caching: the system prompt is the large, stable prefix of every
+   * model call (identity, skills, bot roster, guidelines; with ~50 tool
+   * schemas it is roughly 10K tokens) and it is re-sent on every one of up
+   * to 75 steps. Sending it as a system *message* carrying an Anthropic
+   * cache_control marker lets Anthropic serve it from cache across steps
+   * and turns; providers that do not know the option ignore it, and the
+   * AI SDK treats a leading system message exactly like `system:`.
+   */
+  private withCachedSystem(systemPrompt: string, messages: unknown[]): any[] {
+    return [
+      {
+        role: 'system',
+        content: systemPrompt,
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      },
+      ...messages,
+    ];
+  }
+
   private buildSystemPrompt(): string {
     let prompt = this.identity.getSystemPrompt(this.config.identity);
     const skillContext = this.capabilities.getSkillContext();
@@ -5210,7 +5275,10 @@ export class Agent {
 
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    // Hour resolution on purpose: a minute-precise clock changed the system
+    // prompt every turn and defeated prompt caching for the ~10K-token
+    // prefix that follows. Tools report exact timestamps when it matters.
+    const timeStr = `about ${now.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })}`;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     prompt += `\n\nEnvironment:\n- Date: ${dateStr}, ${timeStr} (${timezone})\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
 
