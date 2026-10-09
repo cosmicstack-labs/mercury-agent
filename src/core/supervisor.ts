@@ -48,6 +48,12 @@ export class SubAgentSupervisor {
   /** Bounded auto-resume counter for step-budget pauses, per agent. */
   private stepResumeCounts: Map<string, number> = new Map();
   private pauseResolvers: Map<string, () => void> = new Map();
+  /**
+   * Lineage: agent id → id of the sub-agent that delegated it (undefined for
+   * agents spawned by the main agent or a user command). Kept after an agent
+   * finishes so a grandchild's chain still resolves once its parent is gone.
+   */
+  private parents: Map<string, string | undefined> = new Map();
 
   constructor(
     dependencies: {
@@ -117,6 +123,7 @@ export class SubAgentSupervisor {
   async spawn(config: Omit<SubAgentConfig, 'id'>): Promise<string> {
     const id = this.taskBoard.nextId();
     const fullConfig: SubAgentConfig = { ...config, id };
+    this.parents.set(id, config.parentId);
 
     if (!this.resourceManager.canSpawn()) {
       logger.info({ task: config.task.slice(0, 50) }, 'No resources available, queuing sub-agent task');
@@ -185,6 +192,7 @@ export class SubAgentSupervisor {
       fileLockManager: this.fileLockManager,
       taskBoard: this.taskBoard,
       saverMode: this.saverMode,
+      supervisor: this,
     });
 
     this.activeAgents.set(config.id, subAgent);
@@ -335,14 +343,44 @@ export class SubAgentSupervisor {
     }
   }
 
-  async halt(agentId: string): Promise<boolean> {
+  /** Id of the sub-agent that delegated `agentId`, if any. */
+  getParentId(agentId: string): string | undefined {
+    return this.parents.get(agentId);
+  }
+
+  /**
+   * True when `agentId` sits strictly below `ancestorId` in the delegation
+   * tree. The main agent is not an id, so callers representing it pass no
+   * ancestor and own everything.
+   */
+  isDescendant(agentId: string, ancestorId: string): boolean {
+    let current = this.parents.get(agentId);
+    for (let depth = 0; current !== undefined && depth < 1000; depth++) {
+      if (current === ancestorId) return true;
+      current = this.parents.get(current);
+    }
+    return false;
+  }
+
+  /**
+   * Halt one agent (running or queued). When `callerId` is given, the target
+   * must be one of the caller's descendants — a sub-agent can never halt a
+   * sibling or an ancestor (#74).
+   */
+  async halt(agentId: string, callerId?: string): Promise<boolean> {
+    if (callerId !== undefined && !this.isDescendant(agentId, callerId)) {
+      logger.warn({ agentId, callerId }, 'Cannot halt — agent is not a descendant of the caller');
+      return false;
+    }
+
     const agent = this.activeAgents.get(agentId);
-    if (!agent) {
+    const queued = this.waitQueue.some(c => c.id === agentId);
+    if (!agent && !queued) {
       logger.warn({ agentId }, 'Cannot halt — agent not found');
       return false;
     }
 
-    agent.abort();
+    agent?.abort();
 
     this.waitQueue = this.waitQueue.filter(c => c.id !== agentId);
 
@@ -358,19 +396,35 @@ export class SubAgentSupervisor {
     return true;
   }
 
-  async haltAll(): Promise<void> {
+  /**
+   * Halt every agent, or — with `callerId` — only the caller's descendants.
+   * Returns the ids that were signalled.
+   */
+  async haltAll(callerId?: string): Promise<string[]> {
+    const owned = (id: string) => callerId === undefined || this.isDescendant(id, callerId);
+    const halted: string[] = [];
+
     for (const [agentId, agent] of this.activeAgents.entries()) {
+      if (!owned(agentId)) continue;
       agent.abort();
+      halted.push(agentId);
     }
 
+    const remaining: SubAgentConfig[] = [];
     for (const config of this.waitQueue) {
+      if (!owned(config.id)) {
+        remaining.push(config);
+        continue;
+      }
       this.taskBoard.update(config.id, {
         status: 'halted',
         completedAt: Date.now(),
         progress: 'Halted while queued',
       });
+      halted.push(config.id);
     }
-    this.waitQueue = [];
+    this.waitQueue = remaining;
+    return halted;
   }
 
   async pause(agentId: string): Promise<boolean> {
@@ -403,6 +457,11 @@ export class SubAgentSupervisor {
   clearTaskBoard(): void {
     this.fileLockManager.clearAll();
     this.taskBoard.clear();
+    // Only forget lineage for agents that are gone; a live subtree keeps its
+    // chain so its stop_agent/list_agents stay confined.
+    for (const id of [...this.parents.keys()]) {
+      if (!this.activeAgents.has(id) && !this.waitQueue.some(c => c.id === id)) this.parents.delete(id);
+    }
   }
 
   getResourceUsage(): ResourceUsage {
@@ -413,10 +472,16 @@ export class SubAgentSupervisor {
     );
   }
 
-  getActiveAgents(): Array<{ id: string; task: string; status: SubAgentStatus; progress?: string }> {
+  /**
+   * Active and queued agents. With `ownerId`, only that sub-agent's
+   * descendants are listed — a child never learns about its siblings.
+   */
+  getActiveAgents(ownerId?: string): Array<{ id: string; task: string; status: SubAgentStatus; progress?: string }> {
     const agents: Array<{ id: string; task: string; status: SubAgentStatus; progress?: string }> = [];
+    const owned = (id: string) => ownerId === undefined || this.isDescendant(id, ownerId);
 
     for (const [id, agent] of this.activeAgents.entries()) {
+      if (!owned(id)) continue;
       const entry = this.taskBoard.get(id);
       agents.push({
         id,
@@ -427,6 +492,7 @@ export class SubAgentSupervisor {
     }
 
     for (const config of this.waitQueue) {
+      if (!owned(config.id)) continue;
       agents.push({
         id: config.id,
         task: config.task,

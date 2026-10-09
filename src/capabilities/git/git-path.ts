@@ -1,5 +1,6 @@
 import { resolve, isAbsolute } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
+import { readDenialMessage } from '../filesystem/verified-read.js';
 
 /**
  * Resolve a model-chosen path against the tool cwd and run it through the
@@ -17,13 +18,10 @@ export async function checkGitReadPath(
   const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
   const check = await permissions.checkFsAccess(resolved, 'read');
   if (!check.allowed) {
-    const parentDir = resolve(resolved, '..');
-    return {
-      resolved,
-      error: `Error: Permission denied for read access to ${resolved}. Use the approve_scope tool with path="${parentDir}" and mode="read" to request access from the user.`,
-    };
+    return { resolved, error: readDenialMessage(resolved, check) };
   }
-  return { resolved };
+  // Hand back the canonical directory so git runs where the check looked.
+  return { resolved: check.canonical ?? resolved };
 }
 
 /**

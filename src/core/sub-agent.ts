@@ -11,10 +11,12 @@ import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { FileLockManager } from './file-lock.js';
 import type { TaskBoard } from './task-board.js';
 import type { SaverMode } from './saver-mode.js';
+import type { SubAgentSupervisor } from './supervisor.js';
+import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from '../capabilities/subagents/index.js';
 import { getHeapStatistics } from 'node:v8';
 import { memoryGovernorThresholds, memoryGovernorVerdict, CONVERSATION_TOOL_BUDGET_CHARS, TOOL_RESULT_KEEP_RECENT, summarizeToolResult } from './memory-governor.js';
 import { classifyStreamCompletion } from './stream-completion.js';
-import { filterToolsByAllowlist } from '../utils/tool-filter.js';
+import { resolveChildTools, childMayUse } from '../utils/tool-filter.js';
 import { logger } from '../utils/logger.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
@@ -45,6 +47,7 @@ export class SubAgent {
   private fileLockManager: FileLockManager;
   private taskBoard: TaskBoard;
   private saverMode?: SaverMode;
+  private supervisor?: SubAgentSupervisor;
 
   private onProgress?: ProgressCallback;
   private onComplete?: CompletionCallback;
@@ -67,6 +70,8 @@ export class SubAgent {
       fileLockManager: FileLockManager;
       taskBoard: TaskBoard;
       saverMode?: SaverMode;
+      /** Needed only to hand out lineage-scoped orchestration tools. */
+      supervisor?: SubAgentSupervisor;
     },
   ) {
     this.config = config;
@@ -84,6 +89,7 @@ export class SubAgent {
     this.fileLockManager = dependencies.fileLockManager;
     this.taskBoard = dependencies.taskBoard;
     this.saverMode = dependencies.saverMode;
+    this.supervisor = dependencies.supervisor;
   }
 
   getStatus(): SubAgentStatus {
@@ -489,11 +495,32 @@ export class SubAgent {
 
   /**
    * Tools handed to the model. `allowedTools` is a real runtime restriction:
-   * when set, the child never sees tools outside the list even though the
-   * shared registry would otherwise expose them (e.g. list_agents/stop_agent).
+   * when set, the child never sees tools outside the list. The orchestration
+   * tools (delegate_task, list_agents, stop_agent) are stripped unless the
+   * parent granted them by name, and a granted one is re-bound to THIS
+   * agent's id so the supervisor confines it to this agent's descendants —
+   * the shared registry instance carries the main agent's authority (#74).
    */
   private resolveTools() {
-    return filterToolsByAllowlist(this.capabilities.getTools(), this.config.allowedTools);
+    const tools = resolveChildTools(this.capabilities.getTools(), this.config.allowedTools);
+    if (this.supervisor) {
+      const scoped = { callerId: this.config.id };
+      if (childMayUse('delegate_task', this.config.allowedTools)) {
+        tools.delegate_task = createDelegateTaskTool(this.supervisor, this.capabilities, scoped);
+      }
+      if (childMayUse('list_agents', this.config.allowedTools)) {
+        tools.list_agents = createListAgentsTool(this.supervisor, scoped);
+      }
+      if (childMayUse('stop_agent', this.config.allowedTools)) {
+        tools.stop_agent = createStopAgentTool(this.supervisor, scoped);
+      }
+    }
+    return tools;
+  }
+
+  /** Names of the tools this agent actually receives. */
+  getToolNames(): string[] {
+    return Object.keys(this.resolveTools());
   }
 
   private buildSystemPrompt(): string {
@@ -501,7 +528,8 @@ export class SubAgent {
 
     prompt += `\n\nYou are a sub-agent (ID: ${this.config.id}) working independently on a specific task.`;
     prompt += `\nTask: ${this.config.task}`;
-    prompt += `\nYou have full permissions for this task. Focus only on completing this task efficiently.`;
+    prompt += `\n${this.describePermissions()}`;
+    prompt += `\nFocus only on completing this task efficiently.`;
     if (this.config.workingDirectory) {
       prompt += `\nWorking directory: ${this.config.workingDirectory}`;
     }
@@ -522,12 +550,37 @@ export class SubAgent {
 
     prompt += `\n\nEnvironment:\n- Platform: ${process.platform}\n- Working directory: ${this.capabilities.getCwd()}`;
 
-    const toolNames = this.capabilities.getToolNames();
-    const toolsList = this.config.allowedTools
-      ? toolNames.filter(t => this.config.allowedTools!.includes(t))
-      : toolNames;
-    prompt += `\n\nAvailable tools: ${toolsList.join(', ')}`;
+    prompt += `\n\nAvailable tools: ${this.getToolNames().join(', ')}`;
 
     return prompt;
+  }
+
+  /**
+   * An accurate statement of what this agent may do: it runs under the same
+   * permission state as the agent that delegated it — the same approved
+   * scopes, the same shell approval prompt — never with elevated rights.
+   */
+  private describePermissions(): string {
+    const permissions = this.capabilities.permissions;
+    const readable: string[] = [];
+    const writable: string[] = [];
+    for (const scope of permissions.getManifest().capabilities.filesystem.scopes) {
+      if (scope.write) writable.push(scope.path);
+      else if (scope.read) readable.push(scope.path);
+    }
+    const parts: string[] = [];
+    parts.push('You run with the same permissions as the agent that delegated you, not more.');
+    if (permissions.isAutoApproveAll()) {
+      parts.push('This session is in Allow All mode, so approved-scope actions run without prompts.');
+    } else {
+      parts.push('File writes and non-read-only shell commands go to the user for approval (reads inside approved scopes do not); a denial is final — do not retry it or work around it.');
+    }
+    if (writable.length > 0) parts.push(`Writable scopes: ${writable.join(', ')}.`);
+    if (readable.length > 0) parts.push(`Read-only scopes: ${readable.join(', ')}.`);
+    parts.push('Use approve_scope to request a path outside these scopes.');
+    if (this.config.allowedTools?.some(t => ['delegate_task', 'list_agents', 'stop_agent'].includes(t))) {
+      parts.push('Your delegate_task/list_agents/stop_agent only reach agents you delegated yourself.');
+    }
+    return parts.join(' ');
   }
 }
