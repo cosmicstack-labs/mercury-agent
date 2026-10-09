@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, realpathSync, lstatSync, closeSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, symlinkSync, linkSync, realpathSync, lstatSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { PermissionManager } from '../permissions.js';
@@ -129,7 +129,10 @@ describe('openVerified (TOCTOU guard)', () => {
 
   it('refuses a swapped-in regular file too (replace, not symlink)', () => {
     const checked = lstatSync(join(root, 'a.txt'));
-    rmSync(join(root, 'a.txt'));
+    // Keep the original inode alive under another name: ext4/tmpfs on CI
+    // hand a deleted inode number straight back to the next file, which
+    // would make the replacement indistinguishable by dev/ino.
+    renameSync(join(root, 'a.txt'), join(root, 'a.orig'));
     writeFileSync(join(root, 'a.txt'), 'replacement');
     const opened = openVerified(join(root, 'a.txt'), { dev: checked.dev, ino: checked.ino });
     expect(opened.error).toMatch(/changed between the permission check and the read/);
