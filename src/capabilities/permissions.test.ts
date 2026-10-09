@@ -201,7 +201,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(8);
   });
 
-  it('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('does not classify wc --files0-from as a safe read (indirect path deref)', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
@@ -220,7 +222,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(3);
   });
 
-  it('find -fprint/-fprintf/-files0-from are side-effectful or indirect — require approval', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('find -fprint/-fprintf/-files0-from are side-effectful or indirect — require approval', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
@@ -243,7 +247,9 @@ describe('PermissionManager remote safety', () => {
     expect(ask).toHaveBeenCalledTimes(4);
   });
 
-  it('requires approval for safe-read commands that rely on shell expansion', async () => {
+  // POSIX read tools (wc/find/du/head) are not in the pinned Windows dirs, so
+  // there they always prompt (ADR-016); the auto-approve half is POSIX-only.
+  it.skipIf(process.platform === 'win32')('requires approval for safe-read commands that rely on shell expansion', async () => {
     const permissions = new PermissionManager();
     const manifest = permissions.getManifest();
     manifest.capabilities.shell.enabled = true;
@@ -481,6 +487,9 @@ describe('safe-read classifier: residual side-effect flags (table)', () => {
     const ask = vi.fn().mockResolvedValue('no');
     permissions.onAsk(ask);
     permissions.setCurrentContext('web', 'cloud-request-1');
+    // Verdicts must not depend on which tools the CI host has installed
+    // (tree/rg are often absent from the pinned system dirs).
+    permissions.setBinaryResolver((p) => `/usr/bin/${p}`);
     return { permissions, ask };
   }
 
@@ -539,6 +548,71 @@ describe('safe-read classifier: residual side-effect flags (table)', () => {
   it.each(staysAutoApproved)('%s → auto-approved (%s)', async (command) => {
     const { permissions, ask } = makePermissions();
     await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+});
+
+describe('argv lane (ADR-016)', () => {
+  function makePermissions(installed: (p: string) => string | undefined = (p) => `/usr/bin/${p}`) {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    const ask = vi.fn().mockResolvedValue('no');
+    permissions.onAsk(ask);
+    permissions.setCurrentContext('web', 'cloud-request-1');
+    permissions.setBinaryResolver(installed);
+    return { permissions, ask };
+  }
+
+  it('auto-approves through the argv lane and says so', async () => {
+    const { permissions, ask } = makePermissions();
+    for (const cmd of ['ls', 'git status', 'git branch', 'pwd', 'cat "README.md"', 'grep -rn "a b" src']) {
+      await expect(permissions.checkShellCommand(cmd)).resolves.toMatchObject({ allowed: true, lane: 'argv' });
+    }
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('sends pipelines and chains of read-only commands to the approval lane', async () => {
+    const { permissions, ask } = makePermissions();
+    ask.mockResolvedValue('yes');
+    for (const cmd of ['git log | head', 'ls && pwd', 'cat a; cat b']) {
+      await expect(permissions.checkShellCommand(cmd)).resolves.toMatchObject({ allowed: true, lane: 'shell' });
+    }
+    expect(ask).toHaveBeenCalledTimes(3);
+    expect(ask).toHaveBeenCalledWith('Run command: git log | head');
+  });
+
+  it('sees through quoting: a quoted path outside the cwd and readable scopes prompts', async () => {
+    const { permissions, ask } = makePermissions();
+    permissions.getManifest().capabilities.shell.cwdOnly = false;
+    // Only the workspace is readable (independent of the host's permissions.yaml).
+    permissions.getManifest().capabilities.filesystem.scopes = [{ path: process.cwd(), read: true, write: true }];
+    await expect(permissions.checkShellCommand('cat "/etc/passwd"')).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand('grep --file="/etc/shadow" x')).resolves.toMatchObject({ allowed: false });
+    await expect(permissions.checkShellCommand("cat 'sub/../../outside.txt'")).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(3);
+  });
+
+  it('an allowlisted program missing from the pinned PATH goes to the approval lane (#103)', async () => {
+    const { permissions, ask } = makePermissions(() => undefined);
+    await expect(permissions.checkShellCommand('rg -n pattern src')).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledWith('Run command: rg -n pattern src');
+  });
+
+  it('checks paths against the tool cwd when given', async () => {
+    const { permissions, ask } = makePermissions();
+    permissions.getManifest().capabilities.shell.cwdOnly = false;
+    permissions.getManifest().capabilities.filesystem.scopes = [];
+    await expect(permissions.checkShellCommand('cat ../x.txt', { cwd: '/work/project/sub' })).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('allow-all still approves anything not hard-blocked, through the approval lane', async () => {
+    const { permissions, ask } = makePermissions();
+    permissions.setCurrentContext('cli', 'cli');
+    permissions.setAutoApproveAll(true);
+    await expect(permissions.checkShellCommand('npm test | tee out.txt')).resolves.toMatchObject({ allowed: true, lane: 'shell' });
     expect(ask).not.toHaveBeenCalled();
   });
 });

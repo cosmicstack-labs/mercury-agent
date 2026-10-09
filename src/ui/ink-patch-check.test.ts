@@ -8,8 +8,11 @@ import {
   inkPatchFixCommand,
   inkPatchWarning,
   detectInkPatch,
+  describeInkPatch,
   INK_PATCH_MARKERS,
 } from './ink-patch-check.js';
+
+const VENDORED_MANIFEST = { vendored: true, hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'] };
 
 const PATCHED_STATIC = 'export default function Static(props) { const { itemKey } = props; const [t, setCommitTick] = useState(0); }';
 const STOCK_STATIC = 'export default function Static(props) { const { items, children: render } = props; }';
@@ -46,7 +49,42 @@ describe('evaluateInkPatch', () => {
   });
 });
 
+describe('evaluateInkPatch (vendored build, ADR-017)', () => {
+  it('judges a vendored build by its runtime globals and ignores files', () => {
+    const s = evaluateInkPatch({
+      frameGate: {}, manifest: VENDORED_MANIFEST, yogaHygiene: true, cursorAnchor: { enabled: true },
+      // A stock node_modules copy must not matter once the build is vendored.
+      staticSource: STOCK_STATIC, reconcilerSource: STOCK_RECONCILER,
+    });
+    expect(s).toEqual({ patched: true, missing: [], source: 'vendored' });
+    expect(describeInkPatch(s)).toBe('vendored (patched ink 5.2.1 bundled)');
+  });
+
+  it('names every missing runtime marker of a broken vendored build', () => {
+    const s = evaluateInkPatch({ manifest: { vendored: true, hunks: [] } });
+    expect(s.source).toBe('vendored');
+    expect(s.missing).toEqual([
+      INK_PATCH_MARKERS.frameGate,
+      INK_PATCH_MARKERS.staticItemKey,
+      INK_PATCH_MARKERS.yogaHygiene,
+      INK_PATCH_MARKERS.cursor,
+    ]);
+    expect(describeInkPatch(s)).toMatch(/^MISSING/);
+  });
+
+  it('treats a malformed manifest as non-vendored', () => {
+    expect(evaluateInkPatch({ manifest: { vendored: 'yes' }, frameGate: {} }).source).toBe('node_modules');
+  });
+});
+
 describe('detectInkPatch (this checkout)', () => {
+  it('reports the vendored, fully patched ink that tests and the bundle use', () => {
+    const s = detectInkPatch(true);
+    expect(s.source).toBe('vendored');
+    expect(s.missing).toEqual([]);
+    expect(s.patched).toBe(true);
+  });
+
   it('mirrors the result to globalThis.__mercuryInkPatchMissing', () => {
     const s = detectInkPatch(true);
     expect((globalThis as any).__mercuryInkPatchMissing).toBe(!s.patched);
@@ -63,7 +101,7 @@ describe('fix command', () => {
       writeFileSync(join(root, 'scripts', 'apply-ink-patch.cjs'), '// stub');
       const found = findInkPatchScript(join(root, 'dist', 'deep'));
       expect(found).toBe(join(root, 'scripts', 'apply-ink-patch.cjs'));
-      expect(inkPatchFixCommand(found)).toBe(`node "${found}"`);
+      expect(inkPatchFixCommand(found)).toBe(`node "${join(root, 'scripts', 'vendor-ink.cjs')}" && npm run build`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -72,6 +110,7 @@ describe('fix command', () => {
   it('falls back to a reinstall hint when the script is not shipped', () => {
     expect(findInkPatchScript(tmpdir())).toBeNull();
     expect(inkPatchFixCommand(null)).toContain('npm install -g @cosmicstack/mercury-agent');
+    expect(inkPatchFixCommand(null)).toContain('bundles the patched ink');
   });
 
   it('builds a single-paragraph warning naming the missing markers and the fix', () => {

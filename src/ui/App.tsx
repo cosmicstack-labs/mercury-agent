@@ -11,6 +11,8 @@ import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
+import { CursorCell } from './cursor-anchor.js';
+import { isNarrow, ruleWidth, sidePanelWidth, fitText, fitTail, hintColumns } from './layout.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
@@ -183,6 +185,11 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
   }, [skillSuggestions.length, input]);
 
   const showInput = state.mode !== 'mercury-code' && !state.permissionPrompt && (state.mode === 'chat' || state.mode === 'coding' || state.mode === 'workspace');
+  // Hardware cursor (IME anchor): only while the composer actually receives
+  // typed text. In the workspace IDE the arrows drive the explorer / code /
+  // git panes until the chat pane is focused or the user starts typing.
+  const inputOwnsKeys = showInput
+    && (state.mode !== 'workspace' || state.workspace?.focusArea === 'chat' || input.length > 0);
 
   const completeSkillSelection = React.useCallback(() => {
     const picked = skillSuggestions[skillSelIdx];
@@ -774,11 +781,45 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
     }
   });
 
+  if (state.mode === 'splash' && isNarrow(terminalSize.cols)) {
+    // Narrow (< 60 cols, e.g. Termux portrait): one column, no logo art,
+    // every row truncated instead of wrapped.
+    const w = Math.max(1, terminalSize.cols - 2);
+    const provider = state.provider ? `${state.provider.name} · ${state.provider.model}` : 'Detecting...';
+    return (
+      <Box flexDirection="column" flexGrow={1}>
+        <Box flexDirection="column" paddingX={1}>
+          <Text wrap="truncate-end"><Text color={BRAND.logo}>☿ </Text><Text bold color={BRAND.title}>MERCURY</Text></Text>
+          <Text color={BRAND.subtitle} wrap="truncate-end">Your soul-driven AI agent</Text>
+          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
+          <Text color="green" wrap="truncate-end">● Core {splashPhase === 'ready' ? 'ready' : 'booting'}</Text>
+          <Text color={state.provider ? 'green' : 'yellow'} wrap="truncate-end">{state.provider ? '●' : '◐'} Provider {state.provider ? 'ready' : 'loading'}</Text>
+          <Text color={skillsLoaded >= state.skills.length ? 'green' : 'yellow'} wrap="truncate-end">{skillsLoaded >= state.skills.length ? '●' : '◐'} Skills {skillsLoaded}/{state.skills.length}</Text>
+          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
+          <Text wrap="truncate-end">Version: <Text color="cyan">{state.version}</Text></Text>
+          <Text wrap="truncate-end">Provider: <Text color={BRAND.accent}>{fitText(provider, Math.max(1, w - 10))}</Text></Text>
+          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
+          <Text dimColor wrap="truncate-end">{splashPhase === 'ready' ? 'Enter: open chat · D: details' : 'Initializing Mercury...'}</Text>
+          {showStartupDetails && state.skills.slice(0, skillsLoaded).map((skill, i) => (
+            <Text key={i} dimColor wrap="truncate-end">- {skill.name}</Text>
+          ))}
+        </Box>
+        {state.permissionPrompt && (
+          <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
+        )}
+      </Box>
+    );
+  }
+
   if (state.mode === 'splash') {
+    // Two columns: the mark column is sized to its art (26) + gutter; the
+    // session column takes the rest, its rules capped at what remains.
+    const markColWidth = 34;
+    const sessionRule = '─'.repeat(ruleWidth(terminalSize.cols - markColWidth, 56));
     return (
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" flexGrow={1} paddingX={1}>
-          <Box flexDirection="column" width={34} paddingRight={2}>
+          <Box flexDirection="column" width={markColWidth} paddingRight={2} flexShrink={0}>
             {MERCURY_MARK.map((line, i) => (
               <Text key={i} color={BRAND.logo}>{line}</Text>
             ))}
@@ -794,7 +835,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             <Text bold color="white">Session</Text>
-            <Text color="gray">{'─'.repeat(56)}</Text>
+            <Text color="gray">{sessionRule}</Text>
             <Text>Version: <Text color="cyan">{state.version}</Text>{isDevBuild(state.version) && <Text color="yellow"> ⚠ development build</Text>}</Text>
             <Text>Provider: <Text color={BRAND.accent}>{state.provider ? `${state.provider.name} · ${state.provider.model}` : 'Detecting...'}</Text></Text>
             <Text>Mode: <Text color="yellow">Startup</Text></Text>
@@ -802,7 +843,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
               <Text>Budget: <Text color="green">{state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()} ({state.tokenInfo.percentage}%)</Text></Text>
             )}
             <Text>Web: {state.web?.enabled ? <Text color="green">Serving · http://127.0.0.1:{state.web.port}</Text> : <Text color="gray">Disabled</Text>}</Text>
-            <Text color="gray">{'─'.repeat(56)}</Text>
+            <Text color="gray">{sessionRule}</Text>
             <Text bold color="white">Capabilities</Text>
             <Text>Skills loaded: <Text color="cyan">{skillsLoaded}</Text> / {state.skills.length}</Text>
             {showStartupDetails ? (
@@ -814,7 +855,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
             ) : (
               <Text dimColor>Details hidden (press D)</Text>
             )}
-            <Text color="gray">{'─'.repeat(56)}</Text>
+            <Text color="gray">{sessionRule}</Text>
             <Text>{splashPhase === 'ready' ? 'Mercury is live.' : 'Initializing Mercury...'}</Text>
             {splashPhase === 'ready' && <Text color="green">Ready. Enter to open chat.</Text>}
             {!state.provider && <Text color="yellow">Waiting for provider handshake...</Text>}
@@ -830,7 +871,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} />}
+      {state.backgroundTasks.length > 0 && <BackgroundBarView tasks={state.backgroundTasks} cols={terminalSize.cols} />}
       {state.mode === 'mercury-code' ? (
         <MercuryCodeView
           state={state}
@@ -869,6 +910,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
           botsWorking={state.botRoster.filter((b) => b.state === 'running').length}
           turnRunning={turnRunning}
           ctrlCHint={ctrlCHint}
+          cursorActive={inputOwnsKeys}
+          cols={terminalSize.cols}
         />
       )}
       {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
@@ -882,7 +925,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
   );
 }
 
-function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
+function BackgroundBarView({ tasks, cols }: { tasks: BackgroundTaskInfo[]; cols: number }) {
   if (tasks.length === 0) return null;
 
   const statusIcons: Record<string, string> = {
@@ -897,12 +940,12 @@ function BackgroundBarView({ tasks }: { tasks: BackgroundTaskInfo[] }) {
   const more = tasks.length > 3 ? ` +${tasks.length - 3} more` : '';
 
   return (
-    <Box paddingX={1} paddingBottom={0} flexShrink={0}>
-      <Text color="gray">{'─'.repeat(50)}</Text>
+    <Box paddingX={1} paddingBottom={0} flexShrink={0} flexDirection="column">
+      <Text color="gray">{'─'.repeat(ruleWidth(cols, 50))}</Text>
       <Box flexDirection="column" width="100%">
-        <Box>
+        <Box height={1} overflow="hidden">
           <Text dimColor>⏥ Background:</Text>
-          <Text> {visible.map((t) => {
+          <Text wrap="truncate-end"> {visible.map((t) => {
             const icon = statusIcons[t.status] || '·';
             const label = t.command || t.task || t.id;
             const short = label.length > 25 ? label.slice(0, 22) + '...' : label;
@@ -937,17 +980,17 @@ const MAX_STATIC_MESSAGES = 100;
  */
 const staticItemKey = (item: string | ChatMessage): string => typeof item === 'string' ? item : item.id;
 
-function HeaderBanner(): React.ReactNode {
+function HeaderBanner({ cols }: { cols: number }): React.ReactNode {
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box paddingX={1}>
         <Text color={BRAND.logo}>☿</Text>
         <Text> </Text>
         <Text bold color={BRAND.title}>MERCURY</Text>
-        <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>
+        {!isNarrow(cols) && <Text color={BRAND.subtitle}> · Your soul-driven AI agent</Text>}
       </Box>
       <Box paddingX={1}>
-        <Text color="gray">{'─'.repeat(50)}</Text>
+        <Text color="gray">{'─'.repeat(ruleWidth(cols, 50))}</Text>
       </Box>
     </Box>
   );
@@ -1068,14 +1111,14 @@ function ChatBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDynami
   const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
   return (
     <Box flexDirection="row" flexGrow={1}>
-      {state.sidebarSections.length > 0 && <SidebarView sections={state.sidebarSections} />}
+      {state.sidebarSections.length > 0 && sidePanelWidth(cols, 24) > 0 && <SidebarView sections={state.sidebarSections} />}
       <Box flexDirection="column" flexGrow={1}>
         <Static items={staticItems} itemKey={staticItemKey}>
           {(item) => typeof item === 'string'
-            ? <HeaderBanner key={item} />
+            ? <HeaderBanner key={item} cols={cols} />
             : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
-        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 ? 30 : 0)} />
+        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 && sidePanelWidth(cols, 24) > 0 ? 30 : 0)} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         {state.botChat && !state.isThinking && (
@@ -1087,7 +1130,7 @@ function ChatBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDynami
             botRoster={state.botRoster}
           />
         )}
-        {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
+        {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} cols={cols} />}
       </Box>
     </Box>
   );
@@ -1108,10 +1151,12 @@ function CodingBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDyna
   const dynamicMessages = state.chatMessages.filter((message) => message.streaming && !message.id.startsWith('heartbeat-'));
   const staticItems: Array<string | ChatMessage> = [HEADER_SENTINEL_ID, ...staticMessages];
 
+  const sidebarWidth = sidePanelWidth(cols, 26);
   return (
     <Box flexDirection="row" flexGrow={1}>
-      <Box flexDirection="column" width={26} paddingX={1}>
-        <Text color="gray">{'─'.repeat(24)}</Text>
+      {sidebarWidth > 0 && (
+      <Box flexDirection="column" width={sidebarWidth} paddingX={1} flexShrink={0}>
+        <Text color="gray">{'─'.repeat(sidebarWidth - 2)}</Text>
         <Text bold color="cyan">Workspace</Text>
         <Box marginTop={1}>
           <Text color={modeInfo.color} bold>{modeInfo.label}</Text>
@@ -1126,15 +1171,17 @@ function CodingBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDyna
             ))}
           </Box>
         )}
-        {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} />}
+        {state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} cols={sidebarWidth} />}
       </Box>
+      )}
       <Box flexDirection="column" flexGrow={1}>
+        {sidebarWidth === 0 && state.subAgents.length > 0 && <AgentPanelView agents={state.subAgents} cols={cols} />}
         <Static items={staticItems} itemKey={staticItemKey}>
           {(item) => typeof item === 'string'
-            ? <HeaderBanner key={item} />
+            ? <HeaderBanner key={item} cols={cols} />
             : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
-        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 ? 30 : 0)} />
+        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 && sidePanelWidth(cols, 24) > 0 ? 30 : 0)} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         {state.botChat && !state.isThinking && (
@@ -1146,8 +1193,8 @@ function CodingBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDyna
             botRoster={state.botRoster}
           />
         )}
-        <Box paddingX={1} marginTop={1}>
-          <Text dimColor>Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute (Auto runs by default)</Text>
+        <Box paddingX={1} marginTop={1} height={1} overflow="hidden">
+          <Text dimColor wrap="truncate-end">{isNarrow(cols) ? 'Ctrl+P Plan · Ctrl+X Execute' : 'Mode shortcuts: Ctrl+P Plan · Ctrl+X Execute (Auto runs by default)'}</Text>
         </Box>
       </Box>
     </Box>
@@ -2044,11 +2091,11 @@ function BotFleetLiveRegion({ botId, botName, botLiveActivity, botStreamTails, b
   );
 }
 
-function AgentPanelView({ agents }: { agents: SubAgentInfo[] }) {
+function AgentPanelView({ agents, cols }: { agents: SubAgentInfo[]; cols: number }) {
   if (agents.length === 0) return null;
   return (
     <Box flexDirection="column" marginTop={1} paddingX={1}>
-      <Text color="gray">{'─'.repeat(30)}</Text>
+      <Text color="gray">{'─'.repeat(ruleWidth(cols, 30))}</Text>
       <Text bold color="cyan">Agents</Text>
       {agents.map((agent) => {
         const cfg = STATUS_ICONS[agent.status] || STATUS_ICONS.pending;
@@ -2143,6 +2190,8 @@ function InputBox({
   botsWorking,
   turnRunning,
   ctrlCHint,
+  cursorActive = true,
+  cols = 80,
 }: {
   input: string;
   cursorPos: number;
@@ -2156,14 +2205,31 @@ function InputBox({
   turnRunning?: boolean;
   /** Ctrl+C exit armed: show the second-tap hint. */
   ctrlCHint?: boolean;
+  /** The composer owns the keyboard: park the hardware cursor on its cell. */
+  cursorActive?: boolean;
+  /** Terminal width: every chrome row is fitted to it (never wraps). */
+  cols?: number;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
   const promptColor = botChat ? 'magenta' : inWorkspace ? 'cyan' : inCoding ? 'green' : 'yellow';
   const label = botChat ? `[BOT ${botChat.botId}]` : inWorkspace ? '[IDE CHAT]' : inCoding ? '[CODING]' : '[CHAT]';
-  const contextLabel = projectContext && projectContext.length > 52
-    ? `...${projectContext.slice(-49)}`
-    : (projectContext || 'No project context');
+  // Header row budget: label + " mode=EXECUTE" + bots chip; the context
+  // label gets what is left (and disappears first when narrow).
+  const modeText = `mode=${programmingMode.toUpperCase()}`;
+  const botsText = botsWorking && botsWorking > 0 ? ` 🤖 ${botsWorking} working` : '';
+  const contextBudget = Math.min(52, cols - 2 - label.length - 2 - modeText.length - 1 - botsText.length - 2);
+  const contextLabel = contextBudget >= 8 ? fitTail(projectContext || 'No project context', contextBudget) : '';
+  const narrow = isNarrow(cols);
+  const hint = ctrlCHint
+    ? CTRL_C_EXIT_HINT
+    : turnRunning
+      ? (narrow ? 'Esc stop · Ctrl+C clear' : 'Esc interrupt · Ctrl+C clear input')
+      : inWorkspace
+        ? (narrow ? 'Tab panels · Esc exit' : 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit')
+        : inCoding
+          ? (narrow ? 'Ctrl+P Plan · Ctrl+X Exec' : 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.')
+          : (narrow ? 'Enter send · /help keys' : 'Enter send · Shift+Enter/Ctrl+N newline · Ctrl+C clear · /help keys');
 
   // Split input into lines and figure out which line/col the cursor is on
   const lines = input.split('\n');
@@ -2181,10 +2247,10 @@ function InputBox({
 
   return (
     <Box flexDirection="column">
-      <Text color="dim">{'─'.repeat(60)}</Text>
-      <Box paddingX={1}>
+      <Text color="dim">{'─'.repeat(ruleWidth(cols, 60, 0))}</Text>
+      <Box paddingX={1} height={1} overflow="hidden">
         <Text color={promptColor} bold>{label}</Text>
-        <Text dimColor> {contextLabel} </Text>
+        <Text dimColor>{contextLabel ? ` ${contextLabel} ` : ' '}</Text>
         <Text color={programmingMode === 'execute' ? 'green' : programmingMode === 'plan' ? 'yellow' : 'gray'}>
           mode={programmingMode.toUpperCase()}
         </Text>
@@ -2201,7 +2267,7 @@ function InputBox({
             {i === cursorLine ? (
               <>
                 <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
-                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <CursorCell glyph={cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '} active={cursorActive} />
                 <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
@@ -2210,12 +2276,10 @@ function InputBox({
           </Box>
         ))}
       </Box>
-      <Box paddingX={1}>
+      <Box paddingX={1} height={1} overflow="hidden">
         {ctrlCHint
-          ? <Text color="yellow">{CTRL_C_EXIT_HINT}</Text>
-          : turnRunning
-            ? <Text dimColor>Esc interrupt · Ctrl+C clear input</Text>
-            : <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Shift+Enter/Ctrl+N newline · Ctrl+C clear · /help keys'}</Text>}
+          ? <Text color="yellow" wrap="truncate-end">{hint}</Text>
+          : <Text dimColor wrap="truncate-end">{hint}</Text>}
       </Box>
     </Box>
   );
@@ -2336,17 +2400,20 @@ const THEME_ACCENT = IS_LIGHT_TERMINAL ? 'blue' : 'cyan';
 function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
   const cmdW = Math.max(...CODE_HINTS.map((h) => h[0].length));
   const descW = Math.max(...CODE_HINTS.map((h) => h[1].length));
-  const rowLen = cmdW + 2 + descW + 2 + 8;
+  const keyW = Math.max(...CODE_HINTS.map((h) => h[2].length));
+  // Drop the description column (then the key column) rather than wrap.
+  const fit = hintColumns(cols, cmdW, descW, keyW);
+  const rowLen = cmdW + (fit.desc ? 2 + descW : 0) + (fit.key ? 2 + keyW : 0);
   const indent = Math.max(0, Math.floor((cols - rowLen) / 2));
   return (
     <Box flexDirection="column" alignItems="flex-start" paddingLeft={indent} marginTop={2}>
       {CODE_HINTS.map(([cmd, desc, key]) => (
         <Box key={cmd}>
           <Text bold color={THEME_ACCENT}>{cmd.padEnd(cmdW)}</Text>
-          <Text>  </Text>
-          <Text dimColor>{desc.padEnd(descW)}</Text>
-          <Text>  </Text>
-          <Text color="blue">{key}</Text>
+          {fit.desc && <Text>  </Text>}
+          {fit.desc && <Text dimColor>{desc.padEnd(descW)}</Text>}
+          {fit.key && <Text>  </Text>}
+          {fit.key && <Text color="blue">{key}</Text>}
         </Box>
       ))}
     </Box>
@@ -2470,7 +2537,7 @@ function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
 }
 
 /** Bordered input box (opencode-style) with mode-tinted prompt. */
-function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number }) {
+function MercuryCodeInput({ input, cursorPos, mode, boxWidth, cursorActive = true }: { input: string; cursorPos: number; mode: ProgrammingModeState; boxWidth: number; cursorActive?: boolean }) {
   const color = mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT;
   const lines = input.split('\n');
   let cursorLine = 0;
@@ -2494,7 +2561,7 @@ function MercuryCodeInput({ input, cursorPos, mode, boxWidth }: { input: string;
             {i === cursorLine ? (
               <>
                 <Text>{expandTabs(line.slice(0, cursorCol))}</Text>
-                <Text inverse>{cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '}</Text>
+                <CursorCell glyph={cursorCol < line.length ? expandTabs(graphemeAt(line, cursorCol)) : ' '} active={cursorActive} />
                 <Text>{cursorCol < line.length ? expandTabs(line.slice(nextGraphemeBoundary(line, cursorCol))) : ''}</Text>
               </>
             ) : (
@@ -2821,8 +2888,8 @@ export function MercuryCodeView({
       {state.planProgress && state.planProgress.length > 0 && <PlanProgressView steps={state.planProgress} />}
       <MercuryLiveFeedback state={state} />
       {state.permissionPrompt && <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx ?? 0} />}
-      {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
-      <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
+      {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(12, cols - 4)} />}
+      <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(12, cols - 4)} cursorActive={!state.permissionPrompt && !mc.exitConfirm} />
       <Box height={1} overflow="hidden" paddingX={2} flexShrink={0}>
         <Text dimColor={!ctrlCHint} color={ctrlCHint ? 'yellow' : undefined}>{leftHint}</Text>
         <Spacer />

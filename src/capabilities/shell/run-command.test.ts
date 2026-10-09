@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { executeCommand } from './run-command.js';
+import { executeCommand, executeArgv } from './run-command.js';
+import { pinnedPath } from './argv-lane.js';
 
 // Portable long-running child: Node itself, printing a line every 200 ms.
 const TICKER = `${JSON.stringify(process.execPath)} -e "let n=0;setInterval(()=>{console.log('tick',++n);},200)"`;
@@ -48,5 +49,21 @@ describe('run_command executor (ROADMAP P1.8)', () => {
     expect(ok.stdout.trim()).toBe('hi');
     const bad = await executeCommand(`${JSON.stringify(process.execPath)} -e "process.exit(3)"`, process.cwd(), 5_000);
     expect(bad.exitCode).toBe(3);
+  });
+
+  it('argv lane: executeArgv runs without a shell and with the minimal env', async () => {
+    process.env.MERCURY_TEST_SECRET = 'leak-me';
+    const result = await executeArgv(
+      process.execPath,
+      ['-e', 'console.log(JSON.stringify({ path: process.env.PATH, secret: process.env.MERCURY_TEST_SECRET ?? null })); console.log(process.argv[1])', '$HOME;echo pwned'],
+      process.cwd(),
+      5_000,
+    );
+    delete process.env.MERCURY_TEST_SECRET;
+    expect(result.exitCode).toBe(0);
+    const [json, arg] = result.stdout.trim().split('\n');
+    expect(JSON.parse(json)).toEqual({ path: pinnedPath(), secret: null });
+    // Arguments reach the program verbatim: no expansion, no command separator.
+    expect(arg).toBe('$HOME;echo pwned');
   });
 });

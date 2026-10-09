@@ -1,0 +1,24 @@
+{
+  "$comment": "ESLint ratchet baseline from the first real CI run (PR #149). Counts may only go down; refresh deliberately with `npm run lint:ratchet -- --update`.",
+  "provisional": false,
+  "generatedAt": "2026-10-09T17:40:48.203Z",
+  "target": "src",
+  "rules": {
+    "(unknown)": 1,
+    "@typescript-eslint/no-explicit-any": 1159,
+    "@typescript-eslint/no-require-imports": 6,
+    "@typescript-eslint/no-this-alias": 5,
+    "@typescript-eslint/no-unused-expressions": 100,
+    "@typescript-eslint/no-unused-vars": 281,
+    "no-console": 135,
+    "no-control-regex": 27,
+    "no-func-assign": 5,
+    "no-prototype-builtins": 8,
+    "no-undef": 7,
+    "no-unexpected-multiline": 1,
+    "no-useless-escape": 5,
+    "prefer-const": 4,
+    "react-hooks/exhaustive-deps": 2,
+    "require-yield": 9
+  }
+}

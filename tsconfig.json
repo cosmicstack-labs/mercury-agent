@@ -18,7 +18,8 @@
     "jsxImportSource": "react",
     "types": ["node"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "ink": ["./vendor/ink/build/index.d.ts"]
     }
   },
   "include": ["src/**/*"],

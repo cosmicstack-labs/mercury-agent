@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { SessionMessage } from '../sessions/types.js';
 import {
   HISTORY_MIN_ENTRIES,
+  TEXT_REPETITION_WARNING,
   TOOL_TRACE_KIND,
+  detectRepetitionLoop,
   formatToolTrace,
   formatToolTraceLine,
   selectHistoryWindow,
@@ -81,6 +83,19 @@ describe('reasoning parts', () => {
       ],
     });
     expect(withParts[2]).toEqual({ role: 'assistant', content: 'plain' });
+  });
+});
+
+describe('detectRepetitionLoop', () => {
+  const reply = (text: string) => entry('assistant', text);
+  it('fires when the last three replies are near-identical', () => {
+    const same = 'I will look into the build failure and report back shortly with details.';
+    expect(detectRepetitionLoop([entry('user', 'go'), reply(same), reply(same + '!'), reply(same)])).toBe(TEXT_REPETITION_WARNING);
+  });
+  it('stays quiet for varied replies, short replies, or fewer than three', () => {
+    expect(detectRepetitionLoop([reply('Fixed the test in src/app.ts and re-ran the suite.'), reply('Now updating the docs for the new flag.'), reply('Done — all green, summary below.')])).toBeNull();
+    expect(detectRepetitionLoop([reply('ok'), reply('ok'), reply('ok')])).toBeNull();
+    expect(detectRepetitionLoop([reply('I will look into the build failure and report back shortly.'), reply('I will look into the build failure and report back shortly.')])).toBeNull();
   });
 });
 

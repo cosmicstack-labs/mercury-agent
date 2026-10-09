@@ -20,7 +20,7 @@ CHANNEL_ENV="MERCURY_CHANNEL=dev"
 # (POSIX sh has no "$0"-safe dirname in every case; guard rather than trust.)
 case "$0" in
   */*)
-    here=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+    here=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
     ;;
   *)
     here=""

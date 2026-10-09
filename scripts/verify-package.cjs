@@ -57,7 +57,7 @@ check('shebang present', () => {
 check('no dangling script references', () => {
   const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
   const scripts = pkg.scripts || {};
-  const devOnlyScripts = ['build', 'build:ui', 'build:bin', 'build:bin:all', 'build:bin:force', 'build:bin:all:force', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly'];
+  const devOnlyScripts = ['build', 'build:ui', 'build:bin', 'build:bin:all', 'build:bin:force', 'build:bin:all:force', 'dev', 'lint', 'typecheck', 'test', 'test:watch', 'prepublishOnly', 'eval', 'lint:eslint', 'lint:ratchet', 'vendor:ink', 'vendor:ink:check'];
   for (const [key, val] of Object.entries(scripts)) {
     if (devOnlyScripts.includes(key)) continue;
     if (val.includes('bash ')) {
@@ -73,17 +73,14 @@ check('no dangling script references', () => {
   }
 });
 
-check('scripts/apply-ink-patch.cjs ships in the tarball', () => {
-  if (!existsSync(join(modDir, 'scripts', 'apply-ink-patch.cjs'))) throw new Error('missing scripts/apply-ink-patch.cjs');
-});
-
-check('ink is pinned exactly and the installed copy is patched', () => {
+check('patched ink is bundled into dist (ADR-017, no postinstall)', () => {
+  const bundle = readFileSync(join(modDir, 'dist', 'index.js'), 'utf-8');
+  if (/(?:from|import\()\s*["']ink["']/.test(bundle)) throw new Error('dist/index.js imports "ink" at runtime — the vendored build is not bundled');
+  for (const marker of ['__mercuryFrameGate', '__mercuryCursorAnchor', '__mercuryInkYogaHygiene', 'vendored: true']) {
+    if (!bundle.includes(marker)) throw new Error(`vendored ink marker missing from dist/index.js: ${marker}`);
+  }
   const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
-  const ink = pkg.dependencies && pkg.dependencies.ink;
-  if (!ink || !/^\d+\.\d+\.\d+$/.test(ink)) throw new Error(`ink must be pinned exactly (got ${ink})`);
-  const { isPatched, pathsFor } = require(join(modDir, 'scripts', 'apply-ink-patch.cjs'));
-  // ink is hoisted to the install root; pathsFor resolves it from modDir.
-  if (!isPatched(pathsFor(modDir))) throw new Error('installed ink is NOT patched (Static.itemKey / frame gate markers missing) — postinstall fallback failed');
+  if (pkg.scripts && pkg.scripts.postinstall) throw new Error(`postinstall must not be needed any more (got: ${pkg.scripts.postinstall})`);
 });
 
 check('better-sqlite3 is optional', () => {

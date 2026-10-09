@@ -2,7 +2,7 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { execFileSync } from 'node:child_process';
 import type { PermissionManager } from '../permissions.js';
-import { checkGitReadPath } from './git-path.js';
+import { checkGitReadPath, gitReadInvocation } from './git-path.js';
 
 export function createGitLogTool(permissions: PermissionManager, getCwd: () => string) {
   return tool({
@@ -22,7 +22,9 @@ export function createGitLogTool(permissions: PermissionManager, getCwd: () => s
         args.push('--', path);
       }
       try {
-        const result = execFileSync('git', args, { encoding: 'utf-8', timeout: 20000, cwd: getCwd() });
+        const git = gitReadInvocation(args);
+        if ('error' in git) return git.error;
+        const result = execFileSync(git.file, git.args, { encoding: 'utf-8', timeout: 20000, cwd: getCwd(), env: git.env });
         if (!result.trim()) return 'No commits found.';
         return result.trim();
       } catch (err: any) {

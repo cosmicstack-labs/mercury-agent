@@ -26,8 +26,8 @@
  * deleted first. Host builds are isolated under release/smoke.
  *
  * Usage:
- * Usage:
  *   node scripts/build-bin.cjs                # host target only
+ *   node scripts/build-bin.cjs --host-only    # same, spelled out (CI smoke)
  *   node scripts/build-bin.cjs --all          # all configured targets
  *   node scripts/build-bin.cjs --force        # overwrite existing binaries
  *   node scripts/build-bin.cjs --all --force
@@ -241,13 +241,20 @@ const args = process.argv.slice(2);
 const buildAll = args.includes('--all');
 const buildDev = args.includes('--dev');
 const force = args.includes('--force');
-const unknownArgs = args.filter((arg) => arg !== '--all' && arg !== '--force' && arg !== '--dev');
+// `--host-only` is the explicit spelling of the default (host smoke build);
+// CI passes it so the intent survives a future change of default.
+const hostOnly = args.includes('--host-only');
+const unknownArgs = args.filter((arg) => !['--all', '--force', '--dev', '--host-only'].includes(arg));
 if (unknownArgs.length > 0) {
   console.error(`ERROR: unknown argument(s): ${unknownArgs.join(', ')}`);
   process.exit(1);
 }
 if (buildAll && buildDev) {
   console.error('ERROR: --all and --dev are mutually exclusive.');
+  process.exit(1);
+}
+if (hostOnly && (buildAll || buildDev)) {
+  console.error('ERROR: --host-only cannot be combined with --all or --dev.');
   process.exit(1);
 }
 

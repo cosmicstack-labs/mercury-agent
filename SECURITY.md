@@ -56,15 +56,51 @@ Out of scope:
 ## A note on the permission model
 
 Mercury's "Ask Me" mode is the real security boundary: risky commands and
-out-of-scope file access prompt you before they run. On top of that, a small
-allowlist of read-only commands (`ls`, `cat`, `grep`, `find`, ...) is auto-approved
-for usability. That classifier is a **best-effort** pattern check on the command
-string. Several bypasses of it have been reported and fixed (find action flags,
-shell redirection, variable expansion), and we expect the class to keep producing
-reports until the auto-approval lane is rebuilt around a tokenised argv allowlist
-with per-command flag policy (tracked in `ROADMAP.md`, P2.2). Until then, treat
-auto-approval as a convenience, not a guarantee, and keep Ask Me on for any
-instance reachable by people you do not fully trust.
+out-of-scope file access prompt you before they run. Shell commands take one of
+two lanes (ADR-016 in `DECISIONS.md`):
+
+- **Argv lane (no prompt).** A command is auto-approved only if it tokenises
+  into a plain argument list with no shell syntax at all (no `$`, backticks,
+  `~`, redirection, pipes, `;`/`&&`, unquoted globs, subshells); its program is
+  on a short read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`,
+  `rg`, `find`, `tree`, `du`, `df`, `ps`, `uname`, `pwd`, `which`, `echo`,
+  `git status|diff|log|branch`, and `cd`, handled in-process); its flags pass
+  that program's policy (write/exec flags such as `find -exec`, `rg --pre`,
+  `git --output` are refused); and every path argument stays inside the
+  working directory or an approved scope. It then runs with
+  `execFile(absolute binary, argv)` and a minimal environment, never a shell.
+  Binaries are resolved once at startup from a fixed list of system
+  directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/usr/local/bin`,
+  `/opt/homebrew/bin`; System32 and Git on Windows), not from `PATH`. Git
+  reads run with repository-configured hooks, pagers, external diffs and
+  textconv filters disabled.
+- **Approval lane (prompt).** Everything else, including pipelines such as
+  `git log | head` and `&&` chains of read-only commands. You see the exact
+  string; once approved it runs through the platform shell (`sh -c` /
+  `cmd.exe`) with the daemon's environment. If an approved command can be
+  expressed as argv it still runs without a shell. Allow All, an "always"
+  answer, skill elevation and bot allow-lists approve through this lane
+  without a prompt; hard-blocked commands are refused in every lane.
+
+What this does and does not cover. The argv lane removes the shell from the
+auto-approved path, so the bypass class that kept recurring (redirection,
+expansion, chained commands, PATH substitution) no longer applies to it; what
+remains is the per-program flag policy, which is a deny/allow table we maintain
+and could still miss an option of an allowlisted tool. Path checks are lexical
+plus symlink canonicalisation for file tools; the argv lane checks path
+arguments lexically. Commands you approve run with whatever the shell does,
+by design.
+
+Each agent has its own frozen permission context (channel, sender role, Allow
+All, allowed tools, session scopes). Delegated sub-agents get a context derived
+from their parent's when they are spawned and can never hold more than the
+parent: tool lists are intersected, scopes must be covered by the parent's, skill
+elevation is not inherited, and the allow-all of a scheduled/internal turn is
+neither inherited nor visible to sub-agents running at the same time.
+
+Service files (`mercury service install`) write a fixed `PATH` rather than the
+installing shell's. Keep Ask Me on for any instance reachable by people you do
+not fully trust.
 
 Known-fixed issues and the regression tests that cover them are listed in
 `docs/security/`.

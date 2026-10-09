@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
+import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import chalk from 'chalk';
@@ -31,7 +31,7 @@ export type WindowsServiceMode = 'task' | 'run-key';
 export function isServiceInstalled(): boolean {
   const platform = process.platform;
 
-  if (isTermux()) return false;
+  if (isTermux()) return existsSync(termuxBootScriptPath());
 
   if (platform === 'darwin') {
     return existsSync(join(homedir(), 'Library', 'LaunchAgents', 'com.cosmicstack.mercury.plist'));
@@ -45,6 +45,10 @@ export function isServiceInstalled(): boolean {
 
 export function isServiceRunning(): boolean {
   if (!isServiceInstalled()) return false;
+  // Termux:Boot only launches `mercury up` at boot; nothing supervises the
+  // daemon afterwards, so there is no service process — callers check the
+  // pid-file daemon (getDaemonStatus) themselves.
+  if (isTermux()) return false;
   try {
     if (process.platform === 'darwin') {
       const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
@@ -132,8 +136,7 @@ export function installService(): boolean {
   const platform = process.platform;
 
   if (isTermux()) {
-    showTermuxServiceHelp('install');
-    return false;
+    return installTermux();
   }
 
   if (platform === 'darwin') {
@@ -154,8 +157,7 @@ export function uninstallService(): boolean {
   const platform = process.platform;
 
   if (isTermux()) {
-    showTermuxServiceHelp('uninstall');
-    return false;
+    return uninstallTermux();
   }
 
   if (platform === 'darwin') {
@@ -179,7 +181,13 @@ export function uninstallService(): boolean {
 export function teardownService(): { removed: boolean; path?: string; hint?: string } {
   const platform = process.platform;
 
-  if (isTermux()) return { removed: false, hint: 'Termux: no system service — nothing to remove' };
+  if (isTermux()) {
+    const bootPath = termuxBootScriptPath();
+    if (!existsSync(bootPath)) return { removed: false };
+    return removeTermuxBootScript(bootPath)
+      ? { removed: true, path: bootPath }
+      : { removed: false, hint: `Remove manually: rm ${bootPath}` };
+  }
 
   if (platform === 'darwin') {
     const plistPath = join(homedir(), 'Library', 'LaunchAgents', 'com.cosmicstack.mercury.plist');
@@ -222,7 +230,7 @@ export function showServiceStatus(): void {
   const platform = process.platform;
 
   if (isTermux()) {
-    showTermuxServiceHelp('status');
+    showTermuxStatus();
     return;
   }
 
@@ -237,6 +245,13 @@ export function showServiceStatus(): void {
 
 export function restartService(): void {
   if (!isServiceInstalled()) throw new Error('Mercury system service is not installed');
+
+  if (isTermux()) {
+    // The boot script is not a supervisor: restart the pid-file daemon.
+    stopTrackedDaemonSync();
+    if (!tryAutoDaemonize()) throw new Error('Failed to respawn the Mercury daemon');
+    return;
+  }
 
   if (process.platform === 'darwin') {
     const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
@@ -274,6 +289,8 @@ export function restartService(): void {
 
 export function stopService(): boolean {
   if (!isServiceInstalled()) return true;
+  // Termux: no service-owned process (see isServiceRunning).
+  if (isTermux()) return true;
 
   if (process.platform === 'darwin') {
     const target = `gui/${process.getuid?.() ?? 0}/com.cosmicstack.mercury`;
@@ -321,13 +338,127 @@ function stopTrackedDaemonSync(): void {
   }
 }
 
-function showTermuxServiceHelp(action: 'install' | 'uninstall' | 'status'): void {
+// ─── Termux (Termux:Boot) ────────────────────────────────────────────────────
+//
+// Android has no systemd. The Termux:Boot add-on runs every executable in
+// ~/.termux/boot/ once the device has booted; `service install` drops a
+// script there that takes a wake lock (so Android does not doze the daemon)
+// and runs `mercury up`. No crash recovery — the daemon is tracked by its pid
+// file like the Windows run-key mode.
+
+const TERMUX_DEFAULT_PREFIX = '/data/data/com.termux/files/usr';
+const TERMUX_BOOT_MARKER = '# Managed by `mercury service install` — remove with `mercury service uninstall`.';
+
+/** `~/.termux/boot/mercury.sh` (Termux:Boot convention). */
+export function termuxBootScriptPath(home: string = homedir()): string {
+  return posix.join(home, '.termux', 'boot', 'mercury.sh');
+}
+
+/** Single-quote one word for POSIX sh. */
+function shQuote(arg: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+export interface TermuxBootOptions {
+  /** Termux $PREFIX (shebang + PATH). */
+  prefix?: string;
+  /** Where boot-time output goes (`~/.mercury`). */
+  mercuryHome: string;
+}
+
+/**
+ * The Termux:Boot script for the given `mercury up` argv (absolute node +
+ * dist path for npm installs, so the boot shell needs no PATH lookup).
+ */
+export function buildTermuxBootScript(upArgs: string[], opts: TermuxBootOptions): string {
+  const prefix = opts.prefix || TERMUX_DEFAULT_PREFIX;
+  const log = posix.join(opts.mercuryHome, 'boot.log');
+  return `#!${prefix}/bin/sh
+${TERMUX_BOOT_MARKER}
+# Termux:Boot runs this after the device boots: keep the CPU awake for the
+# daemon, then start Mercury in the background.
+export PATH="${prefix}/bin:$PATH"
+termux-wake-lock
+${upArgs.map(shQuote).join(' ')} >> ${shQuote(log)} 2>&1
+`;
+}
+
+/** Argv that runs `mercury up` for this install (npm or standalone). */
+function termuxUpArgs(): string[] {
+  return getServiceLaunchArgs().filter((a) => a !== 'start' && a !== '--daemon').concat('up');
+}
+
+/** Write the boot script (mode 0755). Returns its path. */
+export function writeTermuxBootScript(upArgs: string[], opts: TermuxBootOptions & { home?: string }): string {
+  const path = termuxBootScriptPath(opts.home);
+  mkdirSync(posix.dirname(path), { recursive: true });
+  writeFileSync(path, buildTermuxBootScript(upArgs, opts), { encoding: 'utf-8', mode: 0o755 });
+  chmodSync(path, 0o755); // mode is ignored when the file already existed
+  return path;
+}
+
+/** Remove the boot script; true when it is gone afterwards. */
+export function removeTermuxBootScript(path: string = termuxBootScriptPath()): boolean {
+  try {
+    unlinkSync(path);
+  } catch {}
+  return !existsSync(path);
+}
+
+function installTermux(): boolean {
+  let bootPath: string;
+  try {
+    bootPath = writeTermuxBootScript(termuxUpArgs(), { prefix: process.env.PREFIX, mercuryHome: getMercuryHome() });
+  } catch (err) {
+    console.log(chalk.yellow(`  Could not write the Termux:Boot script: ${errorText(err)}`));
+    console.log(chalk.dim('  Start Mercury manually with: mercury up'));
+    console.log('');
+    return false;
+  }
   console.log('');
-  console.log(chalk.yellow(`  System service ${action} is not supported on Termux yet (no systemd on Android).`));
-  console.log(chalk.dim('  Start Mercury manually with: mercury up   (or: mercury start)'));
-  console.log(chalk.dim('  Check it with:               mercury status'));
-  console.log(chalk.dim('  Stop it with:                mercury stop'));
-  console.log(chalk.dim('  For boot startup, install the Termux:Boot add-on and put `mercury up` in ~/.termux/boot/mercury.sh.'));
+  console.log(chalk.green('  Mercury boot script installed (Termux:Boot)'));
+  console.log(chalk.dim(`  Script: ${bootPath}`));
+  console.log(chalk.dim(`  Logs: ${posix.join(getMercuryHome(), 'daemon.log')} (boot output: ${posix.join(getMercuryHome(), 'boot.log')})`));
+  console.log(chalk.dim('  Starts on device boot (takes a wake lock). No crash recovery on Android.'));
+  console.log(chalk.yellow('  Requires the Termux:Boot add-on (F-Droid / GitHub) — open it once after installing.'));
+  console.log('');
+  console.log(chalk.dim('  Uninstall: mercury service uninstall'));
+  console.log('');
+  return true;
+}
+
+function uninstallTermux(): boolean {
+  const bootPath = termuxBootScriptPath();
+  if (!existsSync(bootPath)) {
+    console.log(chalk.yellow('  Mercury boot script is not installed (Termux).'));
+    console.log(chalk.dim(`  Expected: ${bootPath}`));
+    console.log('');
+    return false;
+  }
+  if (!removeTermuxBootScript(bootPath)) {
+    console.log(chalk.yellow('  Failed to remove the boot script. Remove manually:'));
+    console.log(chalk.dim(`    rm ${bootPath}`));
+    console.log('');
+    return false;
+  }
+  console.log('');
+  console.log(chalk.green('  Mercury boot script removed (Termux:Boot)'));
+  console.log(chalk.dim(`  Removed: ${bootPath}`));
+  console.log(chalk.dim('  A running daemon keeps running — stop it with: mercury stop'));
+  console.log('');
+  return true;
+}
+
+function showTermuxStatus(): void {
+  const bootPath = termuxBootScriptPath();
+  const daemon = getDaemonStatus();
+  if (existsSync(bootPath)) {
+    console.log(`  ${chalk.green('Autostart: Termux:Boot script')} ${chalk.dim(`(${bootPath})`)}`);
+  } else {
+    console.log(chalk.yellow('  Mercury boot script is not installed (Termux).'));
+    console.log(chalk.dim('  Run `mercury service install` to start Mercury on device boot (needs Termux:Boot).'));
+  }
+  console.log(`  Daemon: ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.yellow('not running')}`);
   console.log('');
 }
 
@@ -338,8 +469,39 @@ export interface ServiceFileOptions {
   mercuryHome: string;
   /** Account home — WorkingDirectory and HOME for the daemon. */
   userHome: string;
-  /** PATH the daemon inherits. */
+  /** PATH the daemon inherits — always `pinnedServicePath()`, never the installing shell's PATH. */
   pathEnv: string;
+}
+
+/**
+ * The fixed PATH written into service files (ROADMAP P2.2, #103): system
+ * directories, the standard package-manager prefixes, and the directory of
+ * the node binary that runs the daemon (so approval-lane `npm`/`npx`
+ * resolve). It is deliberately NOT the PATH of the shell that ran
+ * `mercury service install`: a project-local or user-writable entry there
+ * (node_modules/.bin, ~/bin, a cwd-relative entry) would otherwise be
+ * baked into every command the daemon runs. Argv-lane commands do not use
+ * it at all — they resolve binaries from their own pinned table.
+ */
+export function pinnedServicePath(platform: NodeJS.Platform, nodeBinDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') {
+    const systemRoot = env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    const dirs = [
+      win32.join(systemRoot, 'System32'),
+      systemRoot,
+      win32.join(systemRoot, 'System32', 'Wbem'),
+      win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+      win32.join(programFiles, 'Git', 'cmd'),
+      nodeBinDir,
+    ];
+    return [...new Set(dirs)].join(';');
+  }
+  const dirs = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', '/usr/local/bin'];
+  if (platform === 'darwin') dirs.push('/opt/homebrew/bin');
+  // Only an absolute node directory; never a relative or empty entry.
+  if (nodeBinDir.startsWith('/')) dirs.push(nodeBinDir);
+  return [...new Set(dirs)].join(':');
 }
 
 function xmlEscape(value: string): string {
@@ -544,12 +706,21 @@ export function runKeyLaunchArgs(serviceLaunchArgs: string[]): string[] {
 
 // ─── macOS ───────────────────────────────────────────────────────────────────
 
-function serviceFileOptions(): ServiceFileOptions {
+export function serviceFileOptions(): ServiceFileOptions {
   return {
     mercuryHome: getMercuryHome(),
     userHome: homedir(),
-    pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+    pathEnv: pinnedServicePath(process.platform, dirname(process.execPath)),
   };
+}
+
+/**
+ * Windows Task Scheduler XML has no environment block, so the daemon pins
+ * its own PATH at startup instead (called from runAgent for `--daemon`).
+ */
+export function pinDaemonPathOnWindows(): void {
+  if (process.platform !== 'win32') return;
+  process.env.PATH = pinnedServicePath('win32', dirname(process.execPath));
 }
 
 function installMac(): void {

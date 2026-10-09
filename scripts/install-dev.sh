@@ -14,13 +14,11 @@
 
 set -eu
 
-CHANNEL_ENV="MERCURY_CHANNEL=dev"
-
 # Running inside a repo checkout: prefer the sibling stable installer.
 # (POSIX sh has no "$0"-safe dirname in every case; guard rather than trust.)
 case "$0" in
   */*)
-    here=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+    here=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || here=""
     ;;
   *)
     here=""
@@ -32,7 +30,7 @@ fi
 
 # Otherwise pull the stable installer from the always-current site URL.
 # The MERCURY_CHANNEL env var is set in the child shell's environment, so it
-# flows through the pipe into install.sh.
+# flows through the pipe into install.sh (as do MERCURY_INSTALL and friends).
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL https://mercuryagent.sh/install.sh | env MERCURY_CHANNEL=dev sh
 elif command -v wget >/dev/null 2>&1; then

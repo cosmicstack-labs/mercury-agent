@@ -77,8 +77,8 @@ import { ask, InputClosedError } from './cli/ask.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runAttach } from './cli/attach.js';
-import { installService, uninstallService, showServiceStatus, isServiceInstalled } from './cli/service.js';
-import { detectInkPatch, inkPatchFixCommand } from './ui/ink-patch-check.js';
+import { installService, uninstallService, showServiceStatus, isServiceInstalled, pinDaemonPathOnWindows } from './cli/service.js';
+import { detectInkPatch, describeInkPatch, inkPatchFixCommand } from './ui/ink-patch-check.js';
 import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
@@ -2302,7 +2302,7 @@ function runPlatformDoctor(): void {
   console.log(`  Daemon:             ${daemon.running ? chalk.green(`running (PID: ${daemon.pid})`) : chalk.dim('not running')}`);
   console.log(`  Spotify inline art: ${canInlineArt ? chalk.green('supported (iTerm local)') : chalk.dim('disabled/fallback mode')}`);
   const inkPatch = detectInkPatch();
-  console.log(`  Ink TUI patch:      ${inkPatch.patched ? chalk.green('applied') : chalk.red(`MISSING (${inkPatch.missing.join('; ')})`)}`);
+  console.log(`  Ink TUI patch:      ${inkPatch.patched ? chalk.green(describeInkPatch(inkPatch)) : chalk.red(describeInkPatch(inkPatch))}`);
   console.log('');
   console.log(chalk.bold.white('  Keybinding Notes'));
   console.log(`  • View toggle:      ${chalk.white('Ctrl+T')} (fallback: ${chalk.white('/view')})`);
@@ -2317,7 +2317,7 @@ function runPlatformDoctor(): void {
   }
 
   if (!inkPatch.patched) {
-    console.log(chalk.yellow('  Warning: the bundled ink patch is not applied — the TUI stops rendering new messages after ~100 and may crash on long sessions.'));
+    console.log(chalk.yellow('  Warning: the ink patch set is not active — the TUI stops rendering new messages after ~100 and may crash on long sessions.'));
     console.log(chalk.dim(`  Fix: ${inkPatchFixCommand()}  (then restart Mercury)`));
     console.log('');
   }
@@ -2325,6 +2325,8 @@ function runPlatformDoctor(): void {
 
 async function runAgent(isDaemon: boolean = false): Promise<void> {
   const runtimeMode = isDaemon ? 'daemon' : 'foreground';
+  // launchd/systemd units carry a pinned PATH; Task Scheduler cannot.
+  if (isDaemon) pinDaemonPathOnWindows();
   registerRuntimeProcess(runtimeMode);
 
   // Crash forensics: V8 fatal errors (heap OOM etc.) print a native stack

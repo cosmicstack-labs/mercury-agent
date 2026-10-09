@@ -19,19 +19,21 @@ function copyDirSync(src, dest) {
   }
 }
 
-// 0. Ensure the bundled ink patch is applied. Newer npm policies can block
-// lifecycle scripts (postinstall), so the build pipeline — which runs on
-// every build — enforces it here instead. Un-patched ink carries the Yoga
-// WASM crash class; a skip is never silent.
-try {
-  const { apply } = require('./apply-ink-patch.cjs');
-  const result = apply();
-  if (result.ok && result.applied) console.log('  ✓ ink patch applied');
-  else if (!result.ok) {
-    console.error('  ⚠ INK PATCH NOT APPLIED — Yoga WASM crash class unpatched. Reason:', result.error);
+// 0. ADR-017: the patched ink (vendor/ink) must be INSIDE the bundle — a
+// bare `import "ink"` would load whatever stock ink npm put in node_modules
+// and silently lose every fix (Yoga hygiene, Static.itemKey, hardware cursor).
+{
+  const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'index.js'), 'utf8');
+  const problems = [];
+  if (/(?:from|import\()\s*["']ink["']/.test(bundle)) problems.push('dist/index.js imports "ink" at runtime (tsup alias/noExternal missing)');
+  for (const marker of ['__mercuryFrameGate', '__mercuryCursorAnchor', '__mercuryInkYogaHygiene', 'vendored: true']) {
+    if (!bundle.includes(marker)) problems.push(`vendored ink marker missing from the bundle: ${marker}`);
   }
-} catch (err) {
-  console.error('  ⚠ ink patch step failed:', err.message);
+  if (problems.length) {
+    for (const p of problems) console.error(`  ✗ ${p}`);
+    process.exit(1);
+  }
+  console.log('  ✓ patched ink is bundled (vendor/ink)');
 }
 
 // 1. Copy src/web/static -> dist/web/static

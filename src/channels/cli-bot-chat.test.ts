@@ -104,13 +104,15 @@ describe('CLIChannel bot chat (transcript swap + target routing)', () => {
 // standalone method), so the /persona + /skip contracts are pinned as source
 // assertions — the established pattern for agent/channel internals.
 const cliSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'cli.ts'), 'utf8');
-const agentSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'core', 'agent.ts'), 'utf8');
+// The /bots command lives in core/commands/bots-command.ts (P2.1 split);
+// inside it the agent instance is `agent`, not `this`.
+const agentSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'core', 'commands', 'bots-command.ts'), 'utf8');
 
 describe('bot chat /persona + /skip routing', () => {
   it('bare /persona arms persona capture — never degrades to the /bots roster', () => {
     expect(cliSrc).toMatch(/onInput\(personaText\s*\n\s*\? `\/bots persona \$\{this\.activeBotId\} \$\{personaText\}`\s*\n\s*: `\/bots persona \$\{this\.activeBotId\}`\)/);
     // The agent side consumes the empty-text form as "arm the capture".
-    expect(agentSrc).toMatch(/action === 'persona'[\s\S]*?this\.pendingPersonaFor = resolved/s);
+    expect(agentSrc).toMatch(/action === 'persona'[\s\S]*?agent\.pendingPersonaFor = resolved/s);
     expect(agentSrc).toContain('Persona capture armed');
   });
 

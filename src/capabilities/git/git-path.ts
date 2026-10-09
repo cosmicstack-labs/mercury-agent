@@ -1,6 +1,7 @@
 import { resolve, isAbsolute } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { readDenialMessage } from '../filesystem/verified-read.js';
+import { pinnedBinary, pinnedSearchDirs, minimalEnv } from '../shell/argv-lane.js';
 
 /**
  * Resolve a model-chosen path against the tool cwd and run it through the
@@ -31,3 +32,22 @@ export async function checkGitReadPath(
 export function looksLikeGitOption(value: string): boolean {
   return value.startsWith('-');
 }
+
+/**
+ * Invocation for the auto-approved git read helpers (git_status, git_log,
+ * git_diff): the git binary from the pinned system PATH (never
+ * `process.env.PATH`, #103), a minimal environment, and config overrides so
+ * a repository's own `.git/config` cannot make a read run a program
+ * (fsmonitor hook, pager, external diff, textconv filter).
+ */
+export function gitReadInvocation(args: string[]): { file: string; args: string[]; env: NodeJS.ProcessEnv } | { error: string } {
+  const file = pinnedBinary('git');
+  if (!file) {
+    return { error: `Error: git was not found in the pinned system PATH (${pinnedSearchDirs().join(', ')}). Use run_command to run git with approval.` };
+  }
+  const [sub, ...rest] = args;
+  const body = sub === 'diff' || sub === 'log' ? [sub, '--no-ext-diff', '--no-textconv', ...rest] : args;
+  return { file, args: [...GIT_READ_HARDENING, ...body], env: minimalEnv() };
+}
+
+export const GIT_READ_HARDENING: readonly string[] = ['-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '--no-pager'];

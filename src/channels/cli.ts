@@ -19,6 +19,7 @@ import { nextTip } from '../ui/tips.js';
 import { ResilientTuiOutput } from '../ui/resilient-output.js';
 import { PASTE_SENTINEL, FORWARD_DELETE_KEY } from '../ui/input-composer.js';
 import { detectInkPatch, inkPatchWarning } from '../ui/ink-patch-check.js';
+import { configureHardwareCursor } from '../ui/cursor-anchor.js';
 
 /**
  * Strip mouse-report escape sequences from terminal input before Ink sees
@@ -1253,6 +1254,9 @@ export class CLIChannel extends BaseChannel {
 
     this.tuiOutput?.dispose();
     this.tuiOutput = new ResilientTuiOutput(process.stdout, process.stderr);
+    // Real terminal cursor on the input cell for IME (#41, #66); the
+    // vendored ink parks it after every frame. MERCURY_HW_CURSOR=0 opts out.
+    configureHardwareCursor();
     this.warnIfInkUnpatched();
     // Single mount. Every later UI update flows through useSyncExternalStore
     // notifications — never inkInstance.rerender(), whose synchronous

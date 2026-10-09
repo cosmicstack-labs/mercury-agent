@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -16,8 +14,10 @@ describe('Mercury Code exit paths', () => {
 
   it('exitMercuryCode tears down Mercury Code state and returns to chat', async () => {
     const channel = new CLIChannel();
-    const dir = mkdtempSync(join(tmpdir(), 'mercury-code-exit-'));
-    try {
+    // Enter on the repo cwd: entering spawns async git reads with the dir as
+    // cwd, and Windows keeps a temp dir locked while they run.
+    const dir = process.cwd();
+    {
       const entered = channel.enterMercuryCode(dir, 'test');
       expect(entered.ok).toBe(true);
       expect(channel.getTuiState().mode).toBe('mercury-code');
@@ -32,11 +32,8 @@ describe('Mercury Code exit paths', () => {
       expect(state.mercuryCode).toBeNull();
       expect(state.programmingMode).toBe('off');
       expect(state.exitEscArmed).toBe(false);
-    } finally {
-      // Wait for the async git header read started by enterMercuryCode;
-      // Windows keeps the directory locked while that child runs.
+      // Let the async git header read finish before the test ends.
       await channel.refreshMercuryCodeGit();
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -65,12 +62,14 @@ describe('Mercury Code exit paths', () => {
     // Regression: after enterMercuryCode set the TUI to AUTO, the agent
     // pushed its stale 'plan' back via setProgrammingStatus — the status bar
     // showed PLAN even though AUTO was the default.
-    const agent = readFileSync(join(uiDir, '..', 'core', 'agent.ts'), 'utf8');
+    // The /code command lives in core/commands/chat-command.ts (P2.1 split),
+    // where the agent instance is `agent`.
+    const agent = readFileSync(join(uiDir, '..', 'core', 'commands', 'chat-command.ts'), 'utf8');
     const entryIdx = agent.indexOf('cliChannel.enterMercuryCode');
     expect(entryIdx).toBeGreaterThan(-1);
     const syncBlock = agent.slice(entryIdx, entryIdx + 600);
-    expect(syncBlock).toContain('this.programmingMode.setAuto()');
-    expect(syncBlock).not.toContain('this.programmingMode.setPlan()');
+    expect(syncBlock).toContain('agent.programmingMode.setAuto()');
+    expect(syncBlock).not.toContain('agent.programmingMode.setPlan()');
   });
 
   it('routes /code chat and /code back as instant exits in the TUI input handler', () => {
