@@ -53,7 +53,9 @@ import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } 
 import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { BotManager } from './bots/bot-manager.js';
-import { isBetterSqlite3Available } from './memory/second-brain-db.js';
+import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
+import { isSqliteAvailable } from './utils/sqlite-driver.js';
+import { runStorageDoctor } from './utils/storage-doctor.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Agent } from './core/agent.js';
 import { Scheduler } from './core/scheduler.js';
@@ -2458,7 +2460,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const episodic = new EpisodicMemory(config);
 
   let userMemory: UserMemoryStore | null = null;
-  if (config.memory.secondBrain?.enabled !== false && isBetterSqlite3Available()) {
+  if (config.memory.secondBrain?.enabled !== false && isSqliteAvailable()) {
     try {
       userMemory = new UserMemoryStore(config);
       setWebUserMemory(userMemory);
@@ -2471,11 +2473,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       logger.warn({ err }, 'Second brain initialization failed, continuing without it');
       userMemory = null;
     }
-  } else if (config.memory.secondBrain?.enabled !== false && !isBetterSqlite3Available()) {
-    logger.warn(
-      'Second brain dependency issue: better-sqlite3 is not available. ' +
-      'Memory/brain features require SQLite via better-sqlite3. Install build tools and reinstall dependencies.'
-    );
+  } else if (config.memory.secondBrain?.enabled !== false && !isSqliteAvailable()) {
+    logger.warn(`Second brain disabled: ${SECOND_BRAIN_UNAVAILABLE_MESSAGE}`);
   }
 
   const channels = new ChannelRegistry(config);
@@ -3867,9 +3866,14 @@ program
   .command('doctor')
   .description('Reconfigure Mercury setup (name, providers, channels, permissions defaults)')
   .option('--platform', 'Show platform compatibility diagnostics')
+  .option('--storage', 'Show SQLite backend, database files and row counts')
   .action(async (opts) => {
     if (opts.platform) {
       runPlatformDoctor();
+      return;
+    }
+    if (opts.storage) {
+      runStorageDoctor();
       return;
     }
     if (isSetupComplete()) {
