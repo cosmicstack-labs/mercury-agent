@@ -406,6 +406,9 @@ export function bracketedPasteSequences(enable: boolean): string {
  * lets through only the frame that carries it) — keep them in sync. */
 export const TUI_FROZEN_HINT_MARKER = '⏸ frozen';
 
+/** One-line transcript marker written when Esc interrupts a running turn. */
+export const INTERRUPTED_MARKER = '⏹ Interrupted';
+
 export interface TuiState {
   mode: AppMode;
   viewMode: 'balanced' | 'detailed';
@@ -527,6 +530,9 @@ export class CLIChannel extends BaseChannel {
   private inkInstance: ReturnType<typeof render> | null = null;
   private inputHandler: ((text: string) => void) | null = null;
   private exitHandler: (() => void) | null = null;
+  /** Esc-during-a-turn: installed by the boot path with the agent's stop
+   * routine (the same one `/stop` calls). Null until set. */
+  private interruptHandler: (() => unknown) | null = null;
   private permissionResolver: ((value: string | boolean) => void) | null = null;
   private menuDepth = 0;
   private menuAbortController: AbortController | null = null;
@@ -881,6 +887,47 @@ export class CLIChannel extends BaseChannel {
     } catch { /* not a TTY */ }
   }
 
+  /**
+   * Install the routine Esc calls to interrupt the running turn. The boot
+   * path wires it to the agent's `stopAllWork('stopped')` — exactly what
+   * typing `/stop` does — so the channel never reaches into the agent.
+   */
+  setInterruptHandler(handler: (() => unknown) | null): void {
+    this.interruptHandler = handler;
+  }
+
+  /** True while the agent is mid-turn (thinking, running a tool, or reporting a live phase). */
+  isTurnRunning(): boolean {
+    return this.state.isThinking
+      || this.state.toolSteps.some((s) => s.status === 'running')
+      || this.state.liveActivity !== null;
+  }
+
+  /**
+   * Interrupt the running turn (Esc). Writes a one-line "Interrupted"
+   * marker into the transcript and invokes the stop routine. Returns false
+   * (and does nothing) when no turn is running or no handler is installed.
+   */
+  interruptTurn(): boolean {
+    if (!this.interruptHandler || !this.isTurnRunning()) return false;
+    const marker: ChatMessage = {
+      id: `interrupt-${Date.now().toString(36)}`,
+      role: 'system',
+      content: INTERRUPTED_MARKER,
+      timestamp: Date.now(),
+    };
+    this.trimAndSetMessages([...this.state.chatMessages, marker], { liveActivity: null, thinkingPreview: null });
+    try {
+      const result = this.interruptHandler();
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        (result as Promise<unknown>).catch((err) => logger.warn({ err }, 'interrupt handler failed'));
+      }
+    } catch (err) {
+      logger.warn({ err }, 'interrupt handler failed');
+    }
+    return true;
+  }
+
   mountTUI(onInput: (text: string) => void, spotifyClient?: any, onExit?: any): void {
     this.spotifyClient = spotifyClient ?? null;
     this.exitHandler = onExit ?? null;
@@ -1213,6 +1260,7 @@ export class CLIChannel extends BaseChannel {
         onExit: () => {
           this.scheduleTuiExit();
         },
+        onInterrupt: () => { this.interruptTurn(); },
         spotifyClient: this.spotifyClient,
       }),
       { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },

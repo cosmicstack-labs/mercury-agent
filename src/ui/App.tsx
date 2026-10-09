@@ -14,7 +14,7 @@ import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
-import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, createInputHistoryState, SuggestionList, applyEditKey, isPasteChunk, graphemeAt, nextGraphemeBoundary, expandTabs, type EditorKey, type SkillEntry } from './input-composer.js';
+import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, createInputHistoryState, SuggestionList, applyEditKey, isPasteChunk, graphemeAt, nextGraphemeBoundary, expandTabs, ctrlCAction, CTRL_C_EXIT_HINT, CTRL_C_EXIT_WINDOW_MS, type EditorKey, type SkillEntry } from './input-composer.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
@@ -78,10 +78,13 @@ export interface TuiAppProps {
   onInput: (text: string) => void;
   onPermissionResolve: (value: string | boolean) => void;
   onExit: () => void;
+  /** Esc during a running turn: interrupt it (the channel routes this to
+   * the same stop path `/stop` uses). Optional for test harnesses. */
+  onInterrupt?: () => void;
   spotifyClient?: SpotifyClient | null;
 }
 
-export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyClient }: TuiAppProps) {
+export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterrupt, spotifyClient }: TuiAppProps) {
   // Single source of render truth: the channel's immutable state snapshots.
   // Notifications are scheduled by React's reconciler — no imperative
   // re-render path exists, so re-entrant commits are impossible.
@@ -110,6 +113,23 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
   // draft snapshotting; see input-composer.tsx).
   const [inputHistory, setInputHistory] = React.useState(createInputHistoryState);
   const [gitCursor, setGitCursor] = React.useState(0);
+  // Ctrl+C: clear the input when it has text; on an empty input the first
+  // tap arms a 1.5 s window and shows a hint, the second tap exits. A single
+  // tap never exits (and never process.exit()s) — see ctrlCAction().
+  const ctrlCArmedAtRef = React.useRef<number | null>(null);
+  const [ctrlCHint, setCtrlCHint] = React.useState(false);
+  React.useEffect(() => {
+    if (!ctrlCHint) return;
+    const t = setTimeout(() => {
+      ctrlCArmedAtRef.current = null;
+      setCtrlCHint(false);
+    }, CTRL_C_EXIT_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [ctrlCHint]);
+  // A turn is running while the agent thinks, a tool runs, or a live phase
+  // is reported. Esc interrupts it; Esc's exit/back bindings apply only when
+  // nothing is running.
+  const turnRunning = state.isThinking || state.toolSteps.some((s) => s.status === 'running') || Boolean(state.liveActivity);
 
   // Canonical command list lives in the shared input composer (single source
   // of truth for the main TUI AND the attach TUI — see input-composer.tsx).
@@ -290,7 +310,21 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
     };
 
     if (ch === '\u0003' || (key.ctrl && ((key as any).name === 'c' || ch?.toLowerCase?.() === 'c'))) {
-      onExit();
+      const editable = showInput || state.mode === 'mercury-code';
+      const action = ctrlCAction(editable ? input : '', ctrlCArmedAtRef.current, Date.now());
+      if (action === 'clear') {
+        setInputAndCursor('');
+        ctrlCArmedAtRef.current = null;
+        setCtrlCHint(false);
+        return;
+      }
+      if (action === 'exit') {
+        ctrlCArmedAtRef.current = null;
+        onExit();
+        return;
+      }
+      ctrlCArmedAtRef.current = Date.now();
+      setCtrlCHint(true);
       return;
     }
 
@@ -313,8 +347,6 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       const mc = state.mercuryCode;
       if (!mc) return;
 
-      if (ch === '\u0003') { onExit(); return; }
-
       // Exit confirmation overlay: Esc cancels, y/Enter confirms, Ctrl+D force-quits.
       if (mc.exitConfirm) {
         if (key.escape) { onInput('/mc exit-cancel'); return; }
@@ -324,6 +356,12 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
         return;
       }
 
+      // Esc while a turn runs interrupts it. Esc-Esc to leave Mercury Code
+      // applies only when nothing is running.
+      if (key.escape && turnRunning) {
+        onInterrupt?.();
+        return;
+      }
       // Ask agent to exit: arms the confirm overlay.
       if (key.escape && state.exitEscArmed) {
         onInput('/mc exit-arm');
@@ -530,8 +568,9 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
       const focusArea = state.workspace?.focusArea || 'explorer';
       const rightPanel = state.workspace?.rightPanel || 'chat';
 
-      // Global workspace shortcuts (always active)
-      if (key.escape || (key.ctrl && (ch === 'q' || ch === 'Q'))) {
+      // Global workspace shortcuts (always active). Esc leaves/returns only
+      // when no turn is running — otherwise it falls through to interrupt.
+      if ((key.escape && !turnRunning) || (key.ctrl && (ch === 'q' || ch === 'Q'))) {
         // Esc in non-explorer panel returns to explorer; Esc in explorer exits workspace
         if (focusArea !== 'explorer') {
           onInput('/ws focus explorer');
@@ -652,6 +691,10 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
     }
 
     if (key.escape) {
+      if (turnRunning) {
+        onInterrupt?.();
+        return;
+      }
       if (state.mode === 'coding') {
         onInput('/chat');
       }
@@ -785,6 +828,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
           input={input}
           cursorPos={cursorPos}
           permIdx={permIdx}
+          ctrlCHint={ctrlCHint}
         />
       ) : null}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
@@ -812,6 +856,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, spotifyC
           projectContext={state.projectContext}
           botChat={state.botChat}
           botsWorking={state.botRoster.filter((b) => b.state === 'running').length}
+          turnRunning={turnRunning}
+          ctrlCHint={ctrlCHint}
         />
       )}
       {showInput && state.mode !== 'mercury-code' && slashSuggestions.length > 0 && (
@@ -2028,6 +2074,8 @@ function InputBox({
   projectContext,
   botChat,
   botsWorking,
+  turnRunning,
+  ctrlCHint,
 }: {
   input: string;
   cursorPos: number;
@@ -2037,6 +2085,10 @@ function InputBox({
   botChat?: { botId: string; botName: string } | null;
   /** Bots currently running a turn (live roster, polled every 2s). */
   botsWorking?: number;
+  /** A turn is in flight: the hint row offers Esc to interrupt. */
+  turnRunning?: boolean;
+  /** Ctrl+C exit armed: show the second-tap hint. */
+  ctrlCHint?: boolean;
 }) {
   const inWorkspace = mode === 'workspace';
   const inCoding = mode === 'coding' || inWorkspace;
@@ -2092,7 +2144,11 @@ function InputBox({
         ))}
       </Box>
       <Box paddingX={1}>
-        <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Ctrl+N newline'}</Text>
+        {ctrlCHint
+          ? <Text color="yellow">{CTRL_C_EXIT_HINT}</Text>
+          : turnRunning
+            ? <Text dimColor>Esc interrupt · Ctrl+C clear input</Text>
+            : <Text dimColor>{inWorkspace ? 'Tab switch panels · Ctrl+J chat · Ctrl+P Plan · Ctrl+X Execute · Esc back/exit' : inCoding ? 'Coding chat active. Ctrl+P Plan · Ctrl+X Execute.' : 'Enter send · Shift+Enter/Ctrl+N newline · Ctrl+C clear · /help keys'}</Text>}
       </Box>
     </Box>
   );
@@ -2542,6 +2598,7 @@ export function MercuryCodeView({
   input,
   cursorPos,
   permIdx,
+  ctrlCHint,
 }: {
   state: TuiState;
   cols: number;
@@ -2549,6 +2606,7 @@ export function MercuryCodeView({
   input?: string | undefined;
   cursorPos?: number | undefined;
   permIdx?: number | undefined;
+  ctrlCHint?: boolean;
 }): React.ReactNode {
   const mc = state.mercuryCode;
   const contentWidth = Math.max(20, cols - 4);
@@ -2684,13 +2742,15 @@ export function MercuryCodeView({
   }
   // Freeze hint lives in the status bar (not a new row) so the live region's
   // height stays constant — a new row would re-introduce scrollback churn.
-  const leftHint = state.tuiFrozen
+  const leftHint = ctrlCHint
+    ? CTRL_C_EXIT_HINT
+    : state.tuiFrozen
     ? `${TUI_FROZEN_HINT_MARKER} — Ctrl+S to resume · /mc resume`
     : mc.exitConfirm || state.permissionPrompt
     ? '' // the prompt / confirm box already shows its own controls
     : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
-      ? '' // the live feedback block above is showing progress
-      : '↵ send · /help';
+      ? 'esc interrupt' // the live feedback block above is showing progress
+      : '↵ send · esc esc exit · /help';
 
   const showHints = finalizedMessages.length === 0 && streamTail.length === 0;
 
@@ -2713,7 +2773,7 @@ export function MercuryCodeView({
       {mc.exitConfirm && <MercuryCodeExitConfirm boxWidth={Math.max(40, cols - 4)} />}
       <MercuryCodeInput input={input ?? ''} cursorPos={cursorPos ?? 0} mode={state.programmingMode} boxWidth={Math.max(40, cols - 4)} />
       <Box height={1} overflow="hidden" paddingX={2} flexShrink={0}>
-        <Text dimColor>{leftHint}</Text>
+        <Text dimColor={!ctrlCHint} color={ctrlCHint ? 'yellow' : undefined}>{leftHint}</Text>
         <Spacer />
         <Text wrap="truncate-end">
           {rightSegs.map((seg, i) => (
