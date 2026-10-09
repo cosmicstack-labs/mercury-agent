@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { render } from 'ink';
 import fs from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { execSync, execFile, execFileSync } from 'node:child_process';
 import type { ChannelMessage } from '../types/channel.js';
 import { BaseChannel, type PermissionMode } from './base.js';
@@ -2072,7 +2073,7 @@ export class CLIChannel extends BaseChannel {
    * capture wheel/drag events and break both.
    */
   enterMercuryCode(dir: string, version: string): { ok: boolean; message: string } {
-    const target = path.resolve(dir.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    const target = path.resolve(dir.replace(/^~(?=$|\/|\\)/, homedir()));
     if (!fs.existsSync(target)) return { ok: false, message: `Directory does not exist: ${target}` };
     if (!fs.statSync(target).isDirectory()) return { ok: false, message: `Not a directory: ${target}` };
 
@@ -2228,7 +2229,7 @@ export class CLIChannel extends BaseChannel {
   }
 
   openWorkspace(rawPath: string): { ok: boolean; message: string } {
-    const target = path.resolve(rawPath.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+    const target = path.resolve(rawPath.replace(/^~(?=$|\/|\\)/, homedir()));
     if (!fs.existsSync(target)) return { ok: false, message: `Workspace path does not exist: ${target}` };
     if (!fs.statSync(target).isDirectory()) return { ok: false, message: `Workspace path is not a directory: ${target}` };
 

@@ -1,5 +1,6 @@
 import { refinePersona } from './persona-template.js';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, relative, resolve, join } from 'node:path';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import type { Tool } from 'ai';
@@ -1408,7 +1409,7 @@ export class BotManager {
    */
   deliver(botId: string, filePath: string, rename?: string): { accepted: boolean; path?: string; reasonCode?: string } {
     if (!this.store.get(botId)) return { accepted: false, reasonCode: 'target_unknown' };
-    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, process.env.HOME || '~'));
+    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, homedir()));
     const allowedBases = [this.store.sharedSandboxDir(), this.store.sandboxDir(botId)];
     const inside = allowedBases.some((base) => {
       const rel = relative(resolve(base), candidate);

@@ -24,6 +24,20 @@ REPO="cosmicstack-labs/mercury-agent"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 GITHUB_DL="https://github.com/${REPO}/releases/download"
 
+# ----- helpers ---------------------------------------------------------------
+
+c_red()    { printf '\033[31m%s\033[0m'  "$1"; }
+c_green()  { printf '\033[32m%s\033[0m'  "$1"; }
+c_yellow() { printf '\033[33m%s\033[0m'  "$1"; }
+c_bold()   { printf '\033[1m%s\033[0m'   "$1"; }
+
+info()  { printf '%s %s\n' "$(c_green '→')"  "$1"; }
+warn()  { printf '%s %s\n' "$(c_yellow '!')" "$1" >&2; }
+err()   { printf '%s %s\n' "$(c_red 'x')"    "$1" >&2; }
+die()   { err "$1"; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
 # ----- channel ---------------------------------------------------------------
 #
 # Stable is the default distribution channel — it resolves the numbered
@@ -50,20 +64,6 @@ case "$CHANNEL" in
     exit 1
     ;;
 esac
-
-# ----- helpers ---------------------------------------------------------------
-
-c_red()    { printf '\033[31m%s\033[0m'  "$1"; }
-c_green()  { printf '\033[32m%s\033[0m'  "$1"; }
-c_yellow() { printf '\033[33m%s\033[0m'  "$1"; }
-c_bold()   { printf '\033[1m%s\033[0m'   "$1"; }
-
-info()  { printf '%s %s\n' "$(c_green '→')"  "$1"; }
-warn()  { printf '%s %s\n' "$(c_yellow '!')" "$1" >&2; }
-err()   { printf '%s %s\n' "$(c_red 'x')"    "$1" >&2; }
-die()   { err "$1"; exit 1; }
-
-have() { command -v "$1" >/dev/null 2>&1; }
 
 # Detect OS in Mercury's release naming (macos | linux).
 detect_os() {
@@ -288,6 +288,17 @@ Install the supported Node.js package instead:
   fi
 
   info "Installed to $bin_path"
+
+  # Post-install smoke: the binary must at least report its version. A
+  # wrong-arch download, a glibc mismatch or a quarantined binary fails
+  # here with a readable message instead of at first use.
+  if smoke_out=$("$bin_path" --version 2>&1); then
+    info "Smoke test passed: $BIN_NAME --version → $smoke_out"
+  else
+    err "The installed binary failed to run: $bin_path --version"
+    printf '%s\n' "$smoke_out" | sed 's/^/    /' >&2
+    die "Mercury ${version_label} is installed but not runnable on ${os}-${arch}. Please report this at https://github.com/${REPO}/issues (include the lines above)."
+  fi
 
   rm -rf "$tmp_dir"
   trap - EXIT INT TERM
