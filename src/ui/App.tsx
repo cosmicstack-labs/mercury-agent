@@ -11,6 +11,7 @@ import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
+import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
@@ -833,7 +834,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
       ) : null}
       {state.mode === 'spotify' ? <SpotifyBody activeIdx={spotifyIdx} nowPlaying={spotifyNow} status={spotifyStatus} volume={spotifyVolume} albumArtAnsi={spotifyArtAnsi} /> : null}
       {state.mode === 'menu' ? <MenuBody menuIdx={menuIdx} /> : null}
-      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} /> : null}
+      {state.mode === 'coding' ? <CodingBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} cols={terminalSize.cols} /> : null}
       {state.mode === 'workspace' ? (
         <WorkspaceBody state={state} gitCursor={gitCursor} height={Math.max(8, terminalSize.rows - 6)} cols={terminalSize.cols} onInput={onInput} />
       ) : null}
@@ -842,7 +843,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
         // repaint per frame — finalized content is already in <Static>. A
         // near-full-screen live region was rewritten every 60ms frame, which
         // read as a visible "on-off" flicker on long chats.
-        <ChatBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} />
+        <ChatBody state={state} maxDynamicLines={Math.min(12, Math.max(3, terminalSize.rows - 14))} cols={terminalSize.cols} />
       ) : null}
       {state.permissionPrompt && state.mode !== 'mercury-code' && (
         <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
@@ -1043,7 +1044,7 @@ function formatCompact(n: number): string {
   return String(n);
 }
 
-function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
+function ChatBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDynamicLines: number; cols: number }) {
   // Static-output bound: Ink's <Static> accumulates every rendered item in a
   // monotonically growing output string that is re-written on each frame.
   // Retaining the entire transcript there is O(N²) work and permanent heap;
@@ -1064,7 +1065,7 @@ function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines
             ? <HeaderBanner key={item} />
             : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
-        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
+        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 ? 30 : 0)} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         {state.botChat && !state.isThinking && (
@@ -1082,7 +1083,7 @@ function ChatBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines
   );
 }
 
-function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLines: number }) {
+function CodingBody({ state, maxDynamicLines, cols }: { state: TuiState; maxDynamicLines: number; cols: number }) {
   const modeLabels: Record<ProgrammingModeState, { label: string; color: string }> = {
     off: { label: 'OFF', color: 'gray' },
     auto: { label: 'AUTO', color: 'cyan' },
@@ -1123,7 +1124,7 @@ function CodingBody({ state, maxDynamicLines }: { state: TuiState; maxDynamicLin
             ? <HeaderBanner key={item} />
             : <ChatMessagesView key={item.id} messages={[item]} agentName={state.agentName} />}
         </Static>
-        <ChatMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} />
+        <StreamingMessagesView messages={dynamicMessages} agentName={state.agentName} maxLines={maxDynamicLines} width={cols - (state.sidebarSections.length > 0 ? 30 : 0)} />
         {state.toolSteps.length > 0 && !state.isThinking && <ToolStepsView steps={state.toolSteps} viewMode={state.viewMode} idle />}
         {state.isThinking && <ThinkingIndicator agentName={state.agentName} steps={state.toolSteps} mode={state.mode} liveActivity={state.liveActivity} thinkingPreview={state.thinkingPreview} />}
         {state.botChat && !state.isThinking && (
@@ -1631,6 +1632,82 @@ function SpotifyBody({ activeIdx, nowPlaying, status, volume, albumArtAnsi }: { 
   );
 }
 
+/**
+ * Throttled live tail of the streaming message (shared by chat, coding and
+ * Mercury Code). Recomputes at most every 120 ms while content grows, with
+ * a TRAILING flush: the frame after the last delta always repaints with
+ * the complete text (the old memo returned the stale cache and left the
+ * final chunk unrendered until something else re-rendered).
+ */
+function useThrottledStreamTail<T>(
+  message: ChatMessage | null | undefined,
+  compute: (message: ChatMessage) => T,
+  empty: T,
+  deps: readonly unknown[],
+): T {
+  const cacheRef = React.useRef<null | { id: string; at: number; contentLength: number; value: T; deps: readonly unknown[] }>(null);
+  const [, bump] = React.useReducer((n: number) => n + 1, 0);
+  const trailingRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => { if (trailingRef.current) clearTimeout(trailingRef.current); }, []);
+  if (!message) {
+    cacheRef.current = null;
+    return empty;
+  }
+  const now = Date.now();
+  const cache = cacheRef.current;
+  const sameDeps = cache !== null && cache.deps.length === deps.length && cache.deps.every((d, i) => d === deps[i]);
+  if (cache && sameDeps && cache.id === message.id && cache.contentLength === message.content.length) return cache.value;
+  if (cache && sameDeps && cache.id === message.id && now - cache.at < STREAM_TAIL_THROTTLE_MS && cache.contentLength <= message.content.length) {
+    // Stale but inside the window: schedule the trailing repaint once.
+    if (!trailingRef.current) {
+      trailingRef.current = setTimeout(() => { trailingRef.current = null; bump(); }, STREAM_TAIL_THROTTLE_MS - (now - cache.at) + 1);
+    }
+    return cache.value;
+  }
+  const value = compute(message);
+  cacheRef.current = { id: message.id, at: now, contentLength: message.content.length, value, deps };
+  return value;
+}
+
+const STREAM_TAIL_THROTTLE_MS = 120;
+
+/**
+ * The streaming agent message in chat / coding mode. Renders only the
+ * fence-aligned tail of the buffer (buildStreamTailLines — the same
+ * renderer Mercury Code uses) instead of running renderMarkdown over the
+ * ENTIRE buffer on every delta, which was O(message) work per frame and
+ * the main reason long replies made the TUI crawl.
+ */
+function StreamingMessageTail({ message, agentName, maxLines, width }: { message: ChatMessage; agentName: string; maxLines: number; width: number }) {
+  const lines = useThrottledStreamTail(
+    message,
+    (m) => buildStreamTailLines(m, width, STREAM_TAIL_CHARS, maxLines, { showHeader: false }),
+    [] as MercuryTranscriptLine[],
+    [width, maxLines],
+  );
+  return (
+    <Box flexDirection="column" marginBottom={1} flexShrink={0}>
+      <Box flexShrink={0}>
+        <Text bold color="cyan">{agentName}:</Text>
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
+        {lines.map((line) => <MercuryTranscriptRow key={line.key} line={line} />)}
+      </Box>
+    </Box>
+  );
+}
+
+function StreamingMessagesView({ messages, agentName, maxLines, width }: { messages: ChatMessage[]; agentName: string; maxLines: number; width: number }) {
+  if (messages.length === 0) return null;
+  return (
+    <Box flexDirection="column" flexGrow={1} flexShrink={0} paddingX={1}>
+      {messages.slice(-3).map((msg) => (
+        <StreamingMessageTail key={msg.id} message={msg} agentName={agentName} maxLines={maxLines} width={width} />
+      ))}
+    </Box>
+  );
+}
+
 function ChatMessagesView({ messages, agentName, maxLines }: { messages: ChatMessage[]; agentName: string; maxLines?: number }) {
   if (messages.length === 0) return null;
 
@@ -1725,8 +1802,6 @@ const MessageRow = React.memo(function MessageRow({
   );
 });
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 /**
  * Animated row for a currently-running tool step.
  *
@@ -1740,19 +1815,12 @@ const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', 
  *   > 90s : red        — long-op warning (mentions Ctrl+C)
  */
 function RunningStepRow({ step }: { step: ToolStep }) {
-  const [frame, setFrame] = React.useState(0);
-  const [elapsed, setElapsed] = React.useState(() =>
-    step.startedAt ? Math.floor((Date.now() - step.startedAt) / 1000) : 0,
-  );
-
-  React.useEffect(() => {
-    const startedAt = step.startedAt ?? Date.now();
-    const timer = setInterval(() => {
-      setFrame((v) => (v + 1) % SPINNER_FRAMES.length);
-      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-    }, 80);
-    return () => clearInterval(timer);
-  }, [step.startedAt]);
+  // Shared 100 ms tick (tick-store.ts): one timer for every animated row.
+  const tick = useTick();
+  const frame = tick % SPINNER_FRAMES.length;
+  const startedAtRef = React.useRef(step.startedAt ?? Date.now());
+  if (step.startedAt) startedAtRef.current = step.startedAt;
+  const elapsed = elapsedSeconds(startedAtRef.current);
 
   const tone = elapsed >= 90 ? 'red' : elapsed >= 30 ? 'yellow' : 'cyan';
   const mins = Math.floor(elapsed / 60);
@@ -1823,23 +1891,14 @@ function ToolStepsView({ steps, viewMode, idle }: { steps: ToolStep[]; viewMode:
 }
 
 function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPreview, frozen, title, longOpHint }: { agentName: string; steps: ToolStep[]; mode: AppMode; liveActivity?: LiveActivityState | null; thinkingPreview?: string | null; frozen?: boolean; title?: string; longOpHint?: boolean }) {
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const [frame, setFrame] = React.useState(0);
-  const [elapsed, setElapsed] = React.useState(0);
+  const frames = SPINNER_FRAMES;
   const startRef = React.useRef(Date.now());
+  // Shared 100 ms tick. Scroll lock: an unsubscribed (frozen) indicator
+  // commits no frames at all.
+  const frame = useTick(!frozen) % frames.length;
+  const elapsed = elapsedSeconds(startRef.current);
 
-  React.useEffect(() => {
-    startRef.current = Date.now();
-    // Scroll lock: the self-ticker must not repaint while frames are frozen.
-    if (frozen) return;
-    const timer = setInterval(() => {
-      setFrame((v) => (v + 1) % frames.length);
-      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-    }, 80);
-    return () => clearInterval(timer);
-  }, [frozen]);
-
-  const spinner = frames[frame % frames.length];
+  const spinner = frames[frame];
   const runningStep = [...steps].reverse().find((s) => s.status === 'running');
   const doneSteps = steps.filter((s) => s.status === 'done');
   const totalSteps = steps.length;
@@ -1855,7 +1914,7 @@ function ThinkingIndicator({ agentName, steps, mode, liveActivity, thinkingPrevi
         : (mode === 'coding' || mode === 'workspace') ? 'Analyzing code' : 'Composing response';
 
   const displayElapsed = runningStep?.startedAt
-    ? Math.floor((Date.now() - runningStep.startedAt) / 1000) + (frame * 0)
+    ? elapsedSeconds(runningStep.startedAt)
     : elapsed;
   const actionTone = displayElapsed >= 90 ? 'red' : displayElapsed >= 30 ? 'yellow' : 'white';
 
@@ -1918,14 +1977,12 @@ function BotFleetLiveRegion({ botId, botName, botLiveActivity, botStreamTails, b
   const crew = botRoster.filter(b => b.parent === botId);
   const crewLive = crew.filter(c => botLiveActivity[c.id]);
   const ownTail = botStreamTails[botId];
-  if (!own && crewLive.length === 0 && !ownTail) return null;
+  const visible = Boolean(own || crewLive.length > 0 || ownTail);
+  // Shared 100 ms tick; subscribed only while there is something to animate.
+  const tick = useTick(visible);
+  if (!visible) return null;
 
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    const timer = setInterval(() => setTick(v => v + 1), 250);
-    return () => clearInterval(timer);
-  }, []);
+  const frames = SPINNER_FRAMES;
 
   const row = (id: string, name: string, label: string, indent: string): React.ReactNode => {
     return (
@@ -2288,28 +2345,17 @@ function MercuryCodeHints({ cols }: { cols: number }): React.ReactNode {
 
 /** Single active live-feedback block: phase + elapsed + running tool + done ticks + swarm. */
 function MercuryLiveFeedback({ state }: { state: TuiState }): React.ReactNode {
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const [frame, setFrame] = React.useState(0);
-  const [, forceTick] = React.useState(0);
+  const frames = SPINNER_FRAMES;
   // Finished steps are not repeated here: each one is already a block in
   // the transcript above (tool-block.ts). Only live work shows.
   const running = [...state.toolSteps].reverse().find((s) => s.status === 'running');
   const activeAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused');
   const activity = state.liveActivity;
   const active = Boolean(running || state.isThinking || activeAgents.length > 0 || activity);
-  React.useEffect(() => {
-    if (!active || state.mode !== 'mercury-code') return;
-    // Scroll lock: the self-ticker must not repaint while the TUI is frozen
-    // (each tick commits a frame — frame writes are what freezing stops).
-    if (state.tuiFrozen) return;
-    // 100ms tick: smooth spinner AND a live seconds counter. The old 250ms
-    // tick with no elapsed read as frozen during long tool calls.
-    const t = setInterval(() => {
-      setFrame((v) => (v + 1) % frames.length);
-      forceTick((v) => v + 1);
-    }, 100);
-    return () => clearInterval(t);
-  }, [active, state.mode, state.tuiFrozen]);
+  // Shared 100 ms tick: smooth spinner AND a live seconds counter. Scroll
+  // lock: a frozen screen is not subscribed, so no frame is committed.
+  const forceTick = useTick(active && state.mode === 'mercury-code' && !state.tuiFrozen);
+  const frame = forceTick % frames.length;
 
   // "Did you know?" tip row: after a minute of a running task, ONE dim tip
   // appears and its content rotates a couple of times — the row's height is
@@ -2653,28 +2699,22 @@ export function MercuryCodeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ref bookkeeping, not state
   }, [streamingMessage]);
 
-  const tailRef = React.useRef<null | { id: string; at: number; contentLength: number; lines: MercuryTranscriptLine[] }>(null);
   const tailCap = streamTailRowCap(rows);
-  const streamTail = React.useMemo(() => {
-    if (!streamingMessage) {
-      tailRef.current = null;
-      return [] as MercuryTranscriptLine[];
-    }
-    const now = Date.now();
-    const cache = tailRef.current;
-    if (cache && cache.id === streamingMessage.id && now - cache.at < 120 && cache.contentLength <= streamingMessage.content.length) {
-      return cache.lines;
-    }
-    // The live tail renders only the unsettled remainder (settled blocks
-    // have already joined <Static> above); the 32KB fence-aligned slice
-    // stays as the safety net for a huge in-progress block.
-    const remainderMessage = { ...streamingMessage, content: streamingMessage.content.slice(streamingChunks.remainderStart) };
-    // Role marker only while the remainder is still the message's first block.
-    const lines = buildStreamTailLines(remainderMessage, contentWidth, STREAM_TAIL_CHARS, tailCap, { showHeader: streamingChunks.remainderStart === 0 });
-    tailRef.current = { id: streamingMessage.id, at: now, contentLength: streamingMessage.content.length, lines };
-    return lines;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- tailCap derives from rows; cache ref holds state
-  }, [streamingMessage, streamingChunks, contentWidth, tailCap]);
+  // 120 ms throttle with a trailing flush (useThrottledStreamTail): the
+  // last delta of a stream is always painted.
+  const streamTail = useThrottledStreamTail(
+    streamingMessage,
+    (message) => {
+      // The live tail renders only the unsettled remainder (settled blocks
+      // have already joined <Static> above); the 32KB fence-aligned slice
+      // stays as the safety net for a huge in-progress block.
+      const remainderMessage = { ...message, content: message.content.slice(streamingChunks.remainderStart) };
+      // Role marker only while the remainder is still the message's first block.
+      return buildStreamTailLines(remainderMessage, contentWidth, STREAM_TAIL_CHARS, tailCap, { showHeader: streamingChunks.remainderStart === 0 });
+    },
+    [] as MercuryTranscriptLine[],
+    [contentWidth, tailCap, streamingChunks.remainderStart],
+  );
   const paddedStreamTail = React.useMemo(() => {
     if (streamTail.length === 0) return streamTail;
     const pad = tailCap - streamTail.length;
@@ -2715,7 +2755,8 @@ export function MercuryCodeView({
   const mode = state.programmingMode;
   const modeLabel = mode === 'execute' ? 'EXECUTE' : mode === 'plan' ? 'PLAN' : mode === 'auto' ? 'AUTO' : 'CHAT';
   const git = mc.git;
-  const hasGit = git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
+  // '' = not read yet (async refresh pending); hide the segment until then.
+  const hasGit = git.branch !== '' && git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
   const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: THEME_ACCENT }];
   if (hasGit) {
     const gitBits = [`⎇ ${git.branch}`];

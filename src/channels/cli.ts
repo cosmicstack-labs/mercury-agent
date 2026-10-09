@@ -1082,7 +1082,7 @@ export class CLIChannel extends BaseChannel {
           this.exitMercuryCode();
           return;
         }
-        if (sub === 'git-refresh') { this.refreshMercuryCodeGit(); return; }
+        if (sub === 'git-refresh') { void this.refreshMercuryCodeGit(); return; }
         return;
       }
       if (trimmed === '/mc') {
@@ -2312,7 +2312,11 @@ export class CLIChannel extends BaseChannel {
       mercuryCode: {
         cwd: target,
         dirName,
-        git: this.readGitStateQuick(target),
+        // Filled in asynchronously below: a blocking git read here stalled
+        // the first frame. An EMPTY branch means "not read yet" (the status
+        // bar hides the segment); 'no-git' is the settled "not a repo"
+        // answer, which also disables completion-time change stats.
+        git: { branch: '', ahead: 0, behind: 0, dirty: 0 },
         mouse: false,
         scrollOffset: 0,
         exitConfirm: false,
@@ -2332,6 +2336,8 @@ export class CLIChannel extends BaseChannel {
     // throttled background update check. Entirely async and unref'd — a slow
     // npm look-up must never stall the TUI.
     void this.announceVersionNotices(version);
+    // Branch / ahead / behind / dirty for the status bar — off the hot path.
+    void this.refreshMercuryCodeGit();
     return { ok: true, message: `Mercury Code active in ${dirName}` };
   }
 
@@ -2415,34 +2421,44 @@ export class CLIChannel extends BaseChannel {
     this.update({ mercuryCode: { ...mc, scrollOffset: 0 } });
   }
 
-  /** Refresh cached git header state from disk. */
-  refreshMercuryCodeGit(): void {
+  /** A git header refresh in flight (coalesces overlapping requests). */
+  private gitRefreshInFlight: Promise<void> | null = null;
+
+  /**
+   * Refresh the cached git header state from disk — asynchronously. The
+   * old `execSync` pair blocked the event loop for the whole `git status`
+   * (hundreds of ms on a large tree), freezing streaming and input every
+   * time Mercury Code entered or `/mc git-refresh` ran.
+   */
+  refreshMercuryCodeGit(): Promise<void> {
+    if (this.gitRefreshInFlight) return this.gitRefreshInFlight;
     const mc = this.state.mercuryCode;
-    if (!mc) return;
-    const git = this.readGitStateQuick(mc.cwd);
-    if (
-      git.branch !== mc.git.branch ||
-      git.ahead !== mc.git.ahead ||
-      git.behind !== mc.git.behind ||
-      git.dirty !== mc.git.dirty
-    ) {
-      this.update({ mercuryCode: { ...mc, git } });
-    }
+    if (!mc) return Promise.resolve();
+    const cwd = mc.cwd;
+    this.gitRefreshInFlight = this.readGitStateQuick(cwd)
+      .then((git) => {
+        const current = this.state.mercuryCode;
+        // The session may have left Mercury Code (or moved) meanwhile.
+        if (!current || current.cwd !== cwd) return;
+        if (
+          git.branch !== current.git.branch ||
+          git.ahead !== current.git.ahead ||
+          git.behind !== current.git.behind ||
+          git.dirty !== current.git.dirty
+        ) {
+          this.update({ mercuryCode: { ...current, git } });
+        }
+      })
+      .catch((err) => logger.debug({ err }, 'git header refresh failed'))
+      .finally(() => { this.gitRefreshInFlight = null; });
+    return this.gitRefreshInFlight;
   }
 
-  private readGitStateQuick(rootPath: string): MercuryCodeGitState {
-    try {
-      const branch = execSync('git -C ' + JSON.stringify(rootPath) + ' branch --show-current', { stdio: 'pipe' }).toString().trim() || 'detached';
-      const out = execSync('git -C ' + JSON.stringify(rootPath) + ' status --porcelain=v1 --branch', { stdio: 'pipe' }).toString();
-      const lines = out.split('\n');
-      const header = lines[0] || '';
-      const ahead = parseInt(header.match(/ahead (\d+)/)?.[1] ?? '0', 10);
-      const behind = parseInt(header.match(/behind (\d+)/)?.[1] ?? '0', 10);
-      const dirty = lines.slice(1).filter((l) => l.trim().length > 0).length;
-      return { branch, ahead, behind, dirty };
-    } catch {
-      return { branch: 'no-git', ahead: 0, behind: 0, dirty: 0 };
-    }
+  /** Header-sized git state (branch / ahead / behind / dirty count) via async execFile. */
+  private async readGitStateQuick(rootPath: string): Promise<MercuryCodeGitState> {
+    const state = await this.readGitStateAsync(rootPath);
+    if (state.branch === 'not-a-git-repo') return { branch: 'no-git', ahead: 0, behind: 0, dirty: 0 };
+    return { branch: state.branch, ahead: state.ahead, behind: state.behind, dirty: state.files.length };
   }
 
   setProgrammingStatus(mode: import('../core/programming-mode.js').ProgrammingModeState, projectContext: string | null): void {
