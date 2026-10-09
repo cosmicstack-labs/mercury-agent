@@ -39,8 +39,12 @@
  *
  * Cross-compilation:
  *   Bun ships its own runtime per target, so cross-compile works for JS.
- *   Native addons still need target-specific packaging; sql.js is not a
- *   general fallback for every better-sqlite3-backed feature.
+ *   Native addons still need target-specific packaging: better-sqlite3's
+ *   addon is NOT in the binary, so inside it the shared driver
+ *   (src/utils/sqlite-driver.ts) falls through to `bun:sqlite`, which Bun
+ *   embeds on every target. `bun:sqlite` / `node:sqlite` are resolved at run
+ *   time via createRequire and are externals in tsup.config.ts; sql.js is
+ *   only the web dashboard's read-only fallback.
  */
 const { execFileSync, execSync, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
