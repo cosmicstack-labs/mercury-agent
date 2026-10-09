@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
-import readline from 'node:readline';
 import chalk from 'chalk';
 
 import {
@@ -72,6 +71,7 @@ import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { registerBotsCommand } from './bots/cli.js';
 import { getManual } from './utils/manual.js';
+import { ask, InputClosedError } from './cli/ask.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runAttach } from './cli/attach.js';
@@ -148,16 +148,6 @@ function splashScreen() {
     console.log(chalk.yellow(`  ⚠ ${devBuildLabel(pkgVersion)}`));
   }
   console.log('');
-}
-
-async function ask(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
 }
 
 function maskKey(key: string): string {
@@ -729,7 +719,11 @@ function appendToEnv(key: string, value: string): void {
   }
   const lines = envContent.split('\n').filter((l: string) => !l.startsWith(`${key}=`) && l.trim() !== '');
   lines.push(`${key}=${value}`);
-  writeFileSync(envPath, lines.join('\n') + '\n', 'utf-8');
+  // Holds API keys and bot tokens: owner-only, like config.yaml and the web
+  // credential files. `mode` only applies on create, so chmod repairs a
+  // file an older version wrote with the default umask (0644).
+  writeFileSync(envPath, lines.join('\n') + '\n', { encoding: 'utf-8', mode: 0o600 });
+  try { chmodSync(envPath, 0o600); } catch { /* best effort (Windows ACLs) */ }
   process.env[key] = value;
 }
 
@@ -2341,6 +2335,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     const { appendFileSync } = await import('node:fs');
     const dumpFile = join(getMercuryHome(), 'crash-report.log');
     const line = (m: string) => appendFileSync(dumpFile, `[${new Date().toISOString()}] ${m}\n`);
+    removeBootCrashHandlers();
     Error.stackTraceLimit = 50;
     if (typeof (process as any).report !== 'undefined') {
       try { (process as any).report.uncaughtException = true; } catch { /* unsupported */ }
@@ -3711,6 +3706,42 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     });
   }
 }
+
+/**
+ * Boot-time crash handlers (#64). Installed before any command runs — in
+ * particular before the setup wizard — so a failure there is loud and
+ * exits 1. Without them, web/server.ts's import-time `unhandledRejection`
+ * listener disables Node's default throw-on-rejection, and a rejected
+ * `configure()` (e.g. stdin closed mid-wizard) ended the process with
+ * exit code 0 and no message. runAgent() swaps these for its forensics
+ * handlers (crash-report.log) once the runtime boots.
+ */
+function describeBootError(err: unknown): string {
+  if (err instanceof Error) {
+    return process.env.MERCURY_DEBUG && err.stack ? err.stack : err.message;
+  }
+  return String(err);
+}
+function bootUncaughtException(err: unknown): void {
+  try { process.stderr.write(`\n✗ Mercury hit an unexpected error: ${describeBootError(err)}\n`); } catch { /* stderr gone */ }
+  process.exit(1);
+}
+function bootUnhandledRejection(reason: unknown): void {
+  if (reason instanceof InputClosedError) {
+    try { process.stderr.write(`\n✗ ${reason.message}\n`); } catch { /* stderr gone */ }
+    process.exit(1);
+  }
+  bootUncaughtException(reason);
+}
+function installBootCrashHandlers(): void {
+  process.on('uncaughtException', bootUncaughtException);
+  process.on('unhandledRejection', bootUnhandledRejection);
+}
+function removeBootCrashHandlers(): void {
+  process.off('uncaughtException', bootUncaughtException);
+  process.off('unhandledRejection', bootUnhandledRejection);
+}
+installBootCrashHandlers();
 
 const program = new Command();
 
