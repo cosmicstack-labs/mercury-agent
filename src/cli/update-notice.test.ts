@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  fetchLatestFromRegistry,
   isNewerVersion,
   latestSeenUpdate,
   markWhatsNewHintShown,
@@ -106,3 +107,45 @@ describe('/whatsnew content', () => {
 function shouldShowHelper(v: string): boolean {
   return shouldShowWhatsNewHint(v);
 }
+
+/**
+ * The remote look-up goes to the npm registry over HTTPS first: no npm
+ * binary involved, so Windows (where `execFile('npm')` without a shell fails
+ * with EINVAL on npm.cmd) finally sees updates. `fetch` is mocked — never
+ * the network.
+ */
+describe('update check over HTTPS (registry.npmjs.org)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function fetchMock(status: number, body: unknown) {
+    return vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }));
+  }
+
+  it('reads dist-tags/latest from the registry document', async () => {
+    const f = fetchMock(200, { name: '@cosmicstack/mercury-agent', version: '9.9.9' });
+    expect(await fetchLatestFromRegistry('@cosmicstack/mercury-agent', 1_000, f as unknown as typeof fetch)).toBe('9.9.9');
+    expect(f).toHaveBeenCalledOnce();
+    expect(String(f.mock.calls[0][0])).toBe('https://registry.npmjs.org/@cosmicstack/mercury-agent/latest');
+    expect((f.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('returns null on a non-2xx, a malformed document, or a network error (never throws)', async () => {
+    expect(await fetchLatestFromRegistry('x', 1_000, fetchMock(404, { error: 'not found' }) as unknown as typeof fetch)).toBeNull();
+    expect(await fetchLatestFromRegistry('x', 1_000, fetchMock(200, { version: 42 }) as unknown as typeof fetch)).toBeNull();
+    const failing = vi.fn(async () => { throw new TypeError('fetch failed'); });
+    expect(await fetchLatestFromRegistry('x', 1_000, failing as unknown as typeof fetch)).toBeNull();
+  });
+
+  it('maybeCheckForUpdate uses the HTTPS route (global fetch) and persists what it saw', async () => {
+    const f = fetchMock(200, { version: '3.0.0' });
+    vi.stubGlobal('fetch', f);
+    expect(await maybeCheckForUpdate('1.2.9')).toBe('3.0.0');
+    expect(f).toHaveBeenCalledOnce();
+    const { loadUpdateState } = await import('./update-notice.js');
+    expect(loadUpdateState().latestSeen).toBe('3.0.0');
+    // Throttled: a second call within the window does not hit the network again.
+    expect(await maybeCheckForUpdate('1.2.9')).toBe('3.0.0');
+    expect(f).toHaveBeenCalledOnce();
+  });
+});

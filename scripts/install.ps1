@@ -201,8 +201,31 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-    # Windows cannot overwrite a running executable; surface that error.
-    if (Test-Path $binPath) { Remove-Item $binPath -Force }
+    # Windows cannot overwrite a running executable. `mercury upgrade` hands
+    # us its own PID in MERCURY_WAIT_PID: wait for it to exit (not a fixed
+    # sleep). Then wait for any other process still running the old binary
+    # (a daemon that has not finished its graceful shutdown yet).
+    if ($env:MERCURY_WAIT_PID) {
+        $waitPid = 0
+        if ([int]::TryParse($env:MERCURY_WAIT_PID, [ref]$waitPid) -and $waitPid -gt 0) {
+            Write-Info "Waiting for Mercury (PID $waitPid) to exit..."
+            Wait-Process -Id $waitPid -Timeout 60 -ErrorAction SilentlyContinue
+        }
+    }
+    if (Test-Path $binPath) {
+        $holders = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            try { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -ieq [IO.Path]::GetFullPath($binPath)) } catch { $false }
+        })
+        if ($holders.Count -gt 0) {
+            Write-Info ("Waiting for running Mercury (PID {0}) to exit..." -f ($holders.Id -join ', '))
+            $holders | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+            $still = @($holders | Where-Object { -not $_.HasExited })
+            if ($still.Count -gt 0) {
+                Die ("Mercury is still running (PID {0}). Run `mercury stop` and re-run the installer." -f ($still.Id -join ', '))
+            }
+        }
+        Remove-Item $binPath -Force
+    }
     Move-Item -Path $binaryTmp -Destination $binPath -Force
     $webDir = Join-Path $binDir 'web'
     if (Test-Path $webDir) { Remove-Item $webDir -Recurse -Force }

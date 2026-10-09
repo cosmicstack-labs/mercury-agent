@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
-import readline from 'node:readline';
 import chalk from 'chalk';
 
 import {
@@ -74,6 +73,7 @@ import { SkillLoader } from './skills/loader.js';
 import { registerSkillsCommand } from './skills/cli.js';
 import { registerBotsCommand } from './bots/cli.js';
 import { getManual } from './utils/manual.js';
+import { ask, InputClosedError } from './cli/ask.js';
 import { startBackground, stopDaemon, showLogs, getDaemonStatus, registerRuntimeProcess, releaseRuntimeProcess, restartDaemon, tryAutoDaemonize, isStandaloneBinary, getForegroundRuntimeStatus, stopForegroundRuntime } from './cli/daemon.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runAttach } from './cli/attach.js';
@@ -85,7 +85,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -150,16 +150,6 @@ function splashScreen() {
     console.log(chalk.yellow(`  ⚠ ${devBuildLabel(pkgVersion)}`));
   }
   console.log('');
-}
-
-async function ask(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
 }
 
 function maskKey(key: string): string {
@@ -731,7 +721,11 @@ function appendToEnv(key: string, value: string): void {
   }
   const lines = envContent.split('\n').filter((l: string) => !l.startsWith(`${key}=`) && l.trim() !== '');
   lines.push(`${key}=${value}`);
-  writeFileSync(envPath, lines.join('\n') + '\n', 'utf-8');
+  // Holds API keys and bot tokens: owner-only, like config.yaml and the web
+  // credential files. `mode` only applies on create, so chmod repairs a
+  // file an older version wrote with the default umask (0644).
+  writeFileSync(envPath, lines.join('\n') + '\n', { encoding: 'utf-8', mode: 0o600 });
+  try { chmodSync(envPath, 0o600); } catch { /* best effort (Windows ACLs) */ }
   process.env[key] = value;
 }
 
@@ -2343,6 +2337,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     const { appendFileSync } = await import('node:fs');
     const dumpFile = join(getMercuryHome(), 'crash-report.log');
     const line = (m: string) => appendFileSync(dumpFile, `[${new Date().toISOString()}] ${m}\n`);
+    removeBootCrashHandlers();
     Error.stackTraceLimit = 50;
     if (typeof (process as any).report !== 'undefined') {
       try { (process as any).report.uncaughtException = true; } catch { /* unsupported */ }
@@ -3681,6 +3676,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // `mercury stop` / `restart` / `upgrade` ask over the local web API first
+  // (POST /api/shutdown) — on Windows that is the only way shutdown() runs,
+  // since process.kill there is TerminateProcess.
+  setShutdownHandler(() => { void shutdown(); });
 
   if (!isDaemon && process.platform !== 'win32') {
     process.on('SIGHUP', async () => {
@@ -3706,6 +3705,42 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     });
   }
 }
+
+/**
+ * Boot-time crash handlers (#64). Installed before any command runs — in
+ * particular before the setup wizard — so a failure there is loud and
+ * exits 1. Without them, web/server.ts's import-time `unhandledRejection`
+ * listener disables Node's default throw-on-rejection, and a rejected
+ * `configure()` (e.g. stdin closed mid-wizard) ended the process with
+ * exit code 0 and no message. runAgent() swaps these for its forensics
+ * handlers (crash-report.log) once the runtime boots.
+ */
+function describeBootError(err: unknown): string {
+  if (err instanceof Error) {
+    return process.env.MERCURY_DEBUG && err.stack ? err.stack : err.message;
+  }
+  return String(err);
+}
+function bootUncaughtException(err: unknown): void {
+  try { process.stderr.write(`\n✗ Mercury hit an unexpected error: ${describeBootError(err)}\n`); } catch { /* stderr gone */ }
+  process.exit(1);
+}
+function bootUnhandledRejection(reason: unknown): void {
+  if (reason instanceof InputClosedError) {
+    try { process.stderr.write(`\n✗ ${reason.message}\n`); } catch { /* stderr gone */ }
+    process.exit(1);
+  }
+  bootUncaughtException(reason);
+}
+function installBootCrashHandlers(): void {
+  process.on('uncaughtException', bootUncaughtException);
+  process.on('unhandledRejection', bootUnhandledRejection);
+}
+function removeBootCrashHandlers(): void {
+  process.off('uncaughtException', bootUncaughtException);
+  process.off('unhandledRejection', bootUnhandledRejection);
+}
+installBootCrashHandlers();
 
 const program = new Command();
 
@@ -4763,8 +4798,10 @@ serviceCmd
       const platform = process.platform;
 
       if (platform === 'win32') {
-        // Run after this process exits so Windows releases the current executable.
-        const psCmd = `Start-Sleep -Seconds 1; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
+        // Run after this process exits so Windows releases the current
+        // executable: wait on our pid (not a fixed sleep), and hand the pid
+        // to the installer so it can wait again before replacing the binary.
+        const psCmd = `$env:MERCURY_WAIT_PID='${process.pid}'; Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue; irm https://mercuryagent.sh/${installer}.ps1 | iex`;
         try {
           const installer2 = spawn(
             'powershell.exe',

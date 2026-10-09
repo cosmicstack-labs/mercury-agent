@@ -9,7 +9,7 @@ const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/auth/logout']);
  * depth: the secret itself is an owner-only file, but a matching token from
  * a non-loopback peer must not open the API even if a future bug leaks it.
  */
-function isLoopbackRequest(c: Context): boolean {
+export function isLoopbackRequest(c: Context): boolean {
   try {
     const address: string = (c.env as any)?.incoming?.socket?.remoteAddress || '';
     return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);

@@ -4,6 +4,22 @@ import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { BLOCKED_COMMANDS } from './shell/blocklist.js';
+
+/**
+ * Command-pattern glob → anchored, case-insensitive RegExp. `*` matches any
+ * text, `?` one character; everything else is literal. Regex metacharacters
+ * are escaped so `C:\\*` means "C:\ then anything" (not "C: + any char"),
+ * `curl * | sh` is one pattern (not an alternation), and `rm -rf .` matches
+ * only a literal dot.
+ */
+export function globToRegExp(pattern: string): RegExp {
+  const source = pattern
+    .split(/([*?])/)
+    .map((part) => (part === '*' ? '.*' : part === '?' ? '.' : part.replace(/[.+^${}()|[\]\\\/]/g, '\\$&')))
+    .join('');
+  return new RegExp(`^${source}$`, 'i');
+}
 
 export interface FileScope {
   path: string;
@@ -84,33 +100,9 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
     },
     shell: {
       enabled: true,
-      blocked: [
-        'sudo *',
-        'rm -rf /',
-        'rm -rf ~',
-        'rm -rf /*',
-        'mkfs *',
-        'dd if=*',
-        'chmod 777 /',
-        'chown * /',
-        ':(){ :|:& };:',
-        'shutdown *',
-        'reboot *',
-        'halt *',
-        'init 0',
-        'init 6',
-        'kill -9 1',
-        '> /dev/sda',
-        'mv /* /dev/null',
-        'del /s /q C:\\*',
-        'rmdir /s /q C:\\*',
-        'format *',
-        'icacls * C:\\* /grant',
-        'net user *',
-        'netsh *',
-        'reg delete *',
-        'cmd /c rd /s /q *',
-      ],
+      // Single source of truth: shell/blocklist.ts (also carries the
+      // PowerShell forms — Set-ExecutionPolicy, Remove-Item -Recurse roots).
+      blocked: [...BLOCKED_COMMANDS],
       autoApproved: [
         'ls *',
         'cat *',
@@ -987,9 +979,8 @@ export class PermissionManager {
   }
 
   private matchPattern(command: string, pattern: string): boolean {
-    const regexStr = '^' + pattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$';
     try {
-      return new RegExp(regexStr, 'i').test(command);
+      return globToRegExp(pattern).test(command);
     } catch {
       return command.startsWith(pattern.replace(/ \*$/, ''));
     }

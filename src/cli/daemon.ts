@@ -5,6 +5,7 @@ import process from 'node:process';
 import chalk from 'chalk';
 import { getMercuryHome } from '../utils/config.js';
 import { killStaleSignalCliProcesses } from '../signal/jsonrpc.js';
+import { getWebPort, readAttachToken } from '../web/auth.js';
 
 /**
  * Detect whether Mercury is running from a standalone, single-file binary
@@ -107,17 +108,18 @@ export async function stopForegroundRuntime(): Promise<boolean> {
   const status = getForegroundRuntimeStatus();
   if (!status.running || !status.pid) return true;
 
-  try {
-    process.kill(status.pid, process.platform === 'win32' ? undefined : 'SIGTERM');
-  } catch {
-    return false;
+  // Graceful first (the foreground runtime also serves the local API when
+  // the web dashboard is enabled); signal / TerminateProcess as fallback.
+  const graceful = await requestGracefulShutdown(status.pid);
+  if (!graceful) {
+    try {
+      process.kill(status.pid, process.platform === 'win32' ? undefined : 'SIGTERM');
+    } catch {
+      return false;
+    }
   }
 
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline && isProcessRunning(status.pid)) {
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  if (isProcessRunning(status.pid)) {
+  if (!await waitForExit(status.pid, graceful ? 10_000 : 5_000)) {
     try { process.kill(status.pid, 'SIGKILL'); } catch {}
     await new Promise(resolve => setTimeout(resolve, 500));
   }
@@ -133,6 +135,50 @@ function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(pid)) return true;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  return !isProcessRunning(pid);
+}
+
+/**
+ * Ask the runtime to run its own `shutdown()` over the local web API
+ * (`POST /api/shutdown`, attach-token auth, loopback only). Returns true
+ * when the runtime acknowledged — the caller then waits for the pid to
+ * exit. False when there is no token, no listener, the port belongs to
+ * another runtime, or the request times out; the caller falls back to
+ * signals / TerminateProcess.
+ *
+ * This is the only graceful path on Windows: `process.kill(pid)` there is
+ * TerminateProcess, which never runs the runtime's shutdown hooks.
+ */
+export async function requestGracefulShutdown(
+  pid: number,
+  timeoutMs = 2_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  const token = readAttachToken();
+  if (!token) return false;
+  try {
+    const res = await fetchImpl(`http://127.0.0.1:${getWebPort()}/api/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => ({})) as { ok?: boolean; pid?: number };
+    if (body?.ok !== true) return false;
+    // A different process answering on the port must not make us believe
+    // *this* pid is going away.
+    return typeof body.pid !== 'number' || body.pid === pid;
   } catch {
     return false;
   }
@@ -215,27 +261,30 @@ export async function stopDaemon(): Promise<boolean> {
     return true;
   }
 
-  try {
-    if (process.platform === 'win32') {
-      process.kill(status.pid);
-    } else {
-      process.kill(status.pid, 'SIGTERM');
-    }
-  } catch {
-    console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
-    killStaleSignalCliProcesses();
-    console.log('');
-    return false;
-  }
-
   console.log(chalk.dim(`  Stopping Mercury (PID: ${status.pid})...`));
 
-  // Wait up to 5 seconds for the process to exit
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    if (!isProcessRunning(status.pid)) break;
-    await new Promise(resolve => setTimeout(resolve, 200));
+  // 1. Ask the runtime to shut itself down over the local API — the only
+  //    path that runs shutdown() on Windows. 2. Otherwise SIGTERM (POSIX)
+  //    or TerminateProcess (Windows). 3. SIGKILL as the last resort.
+  const graceful = await requestGracefulShutdown(status.pid);
+  if (!graceful) {
+    try {
+      if (process.platform === 'win32') {
+        process.kill(status.pid);
+      } else {
+        process.kill(status.pid, 'SIGTERM');
+      }
+    } catch {
+      console.log(chalk.red(`  Failed to stop PID ${status.pid}. You may need to kill it manually.`));
+      killStaleSignalCliProcesses();
+      console.log('');
+      return false;
+    }
   }
+
+  // A graceful shutdown notifies channels and consolidates memory first —
+  // give it longer than a plain signal before forcing.
+  await waitForExit(status.pid, graceful ? 10_000 : 5_000);
 
   if (isProcessRunning(status.pid)) {
     console.log(chalk.yellow('  Mercury did not exit gracefully, forcing...'));
