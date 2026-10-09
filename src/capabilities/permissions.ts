@@ -820,14 +820,40 @@ export class PermissionManager {
     return { allowed: false, reason: 'Command not in auto-approve list — requires approval', needsApproval: true };
   }
 
+  /**
+   * Per-command flags that turn a "read-only" command into a write or an
+   * exec. Each entry is matched against the segment's command word, then its
+   * flag pattern against the whole segment. Flags are anchored at a token
+   * start and must end at whitespace, `=` or end-of-segment, so `-fprint0`
+   * and `-fls` cannot hide behind a `\b` that stops at the digit (#71 family).
+   */
+  private static readonly SIDE_EFFECT_FLAGS: ReadonlyArray<{ command: RegExp; flags: RegExp }> = [
+    // find: -exec/-execdir/-ok/-okdir run commands; -delete deletes;
+    // -fprint/-fprint0/-fprintf/-fls write attacker-chosen files;
+    // -files0-from dereferences a path list the literal-path gate never saw.
+    { command: /^find(?:\s|$)/, flags: /(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprintf|fprint0|fprint|fls|files0-from)(?=\s|=|$)/ },
+    // tree -o FILE / --output FILE writes the listing to a file.
+    { command: /^tree(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*o[A-Za-z]*|--output)(?=\s|=|$)/ },
+    // curl: -o/-O (also inside a cluster such as -sSLo), --output,
+    // --remote-name(-all), -J/--remote-header-name, --output-dir write files.
+    { command: /^curl(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOJ][A-Za-z]*|--output|--output-dir|--remote-name|--remote-name-all|--remote-header-name|--create-dirs)(?=\s|=|$)/ },
+    // wget: -O/--output-document, -o/--output-file, -a/--append-output,
+    // -P/--directory-prefix all choose where it writes.
+    { command: /^wget(?:\s|$)/, flags: /(?:^|\s)(?:-[A-Za-z]*[oOaP][A-Za-z]*|--output-document|--output-file|--append-output|--directory-prefix)(?=\s|=|$)/ },
+    // git log/diff: --output writes the result to a file; --ext-diff runs the
+    // configured external diff program; --no-index diffs arbitrary paths.
+    { command: /^git\s+(?:log|diff|status|branch)(?:\s|$)/, flags: /(?:^|\s)(?:--output|--ext-diff|--no-index)(?=\s|=|$)/ },
+    // rg --pre CMD pipes every file through an arbitrary preprocessor.
+    { command: /^rg(?:\s|$)/, flags: /(?:^|\s)--pre(?=\s|=|$)/ },
+  ];
+
   private isSafeReadSegment(segment: string): boolean {
     // Redirection turns otherwise read-only commands such as cat/echo into writes.
     if (/\d*(?:>{1,2}|<{1,2})|&>/.test(segment)) return false;
-    // find's action flags are side-effectful: -exec/-execdir/-ok/-okdir run
-    // arbitrary commands, -fprint/-fprintf write files, and -files0-from
-    // dereferences a path list at execution time (the literal-path gate never
-    // sees those paths).
-    if (/^find\b.*(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprintf|fprint|files0-from)\b/.test(segment)) return false;
+    // Command-specific write/exec flags (find -exec, curl -o, rg --pre, …).
+    for (const rule of PermissionManager.SIDE_EFFECT_FLAGS) {
+      if (rule.command.test(segment) && rule.flags.test(segment)) return false;
+    }
     // File-list indirection in any safe-read command (wc/du/sort/…): the
     // paths live inside the referenced file, invisible to the literal-path
     // gate, so the read can escape the approved scopes.
@@ -844,7 +870,6 @@ export class PermissionManager {
       !branchArgs.startsWith('-')
       || /(?:^|\s)(?:-[dDmMcC]\b|--(?:delete|move|copy|edit-description|set-upstream-to|unset-upstream|track)\b)/.test(branchArgs)
     )) return false;
-    if (/^git\s+diff\b.*(?:--output(?:=|\s)|--no-index\b)/.test(segment)) return false;
     return PermissionManager.SAFE_READ_PATTERNS.some((pattern) => this.matchPattern(segment, pattern));
   }
 

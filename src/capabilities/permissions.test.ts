@@ -471,3 +471,72 @@ describe('PermissionManager read-side canonicalisation (symlink reads, #104 hard
     expect(result.reason).toBe(`Permission denied for read access to ${join(outside, 'id_rsa')}`);
   });
 });
+
+describe('safe-read classifier: residual side-effect flags (table)', () => {
+  function makePermissions() {
+    const permissions = new PermissionManager();
+    const manifest = permissions.getManifest();
+    manifest.capabilities.shell.enabled = true;
+    manifest.capabilities.shell.blocked = [];
+    const ask = vi.fn().mockResolvedValue('no');
+    permissions.onAsk(ask);
+    permissions.setCurrentContext('web', 'cloud-request-1');
+    return { permissions, ask };
+  }
+
+  const requiresApproval: Array<[string, string]> = [
+    ['find . -fprint0 out.bin', 'find -fprint0 writes a file (the old \\b after -fprint stopped at the digit)'],
+    ['find . -fprint0=out.bin', 'find -fprint0= form'],
+    ['find . -fls out.txt', 'find -fls writes an ls-style listing'],
+    ['find . -type f -fprintf out.txt %p', 'find -fprintf writes a file'],
+    ['tree -o out.txt', 'tree -o writes the listing'],
+    ['tree -ao out.txt', 'tree -o inside a short-flag cluster'],
+    ['tree --output out.txt', 'tree --output'],
+    ['git log --output=hist.txt', 'git log --output= writes a file'],
+    ['git log --output hist.txt', 'git log --output writes a file'],
+    ['git diff --output=d.patch', 'git diff --output= writes a file'],
+    ['git diff --ext-diff', 'git diff --ext-diff runs the configured external diff'],
+    ['git log -p --ext-diff', 'git log --ext-diff runs the configured external diff'],
+    ['git diff --no-index a.txt b.txt', 'git diff --no-index diffs arbitrary paths'],
+    ['rg --pre cat secret', 'rg --pre runs a preprocessor'],
+    ['rg --pre=./leak.sh secret', 'rg --pre= runs a preprocessor'],
+    ['curl -o out.html http://example.com', 'curl -o writes a file'],
+    ['curl -O http://example.com/x.sh', 'curl -O writes the remote name'],
+    ['curl -sSLo out.sh http://example.com', 'curl -o inside a short-flag cluster'],
+    ['curl -sSLJO http://example.com', 'curl -J/-O inside a cluster'],
+    ['curl --output out.html http://example.com', 'curl --output'],
+    ['curl --remote-name http://example.com/x', 'curl --remote-name'],
+    ['curl --output-dir /tmp -O http://example.com/x', 'curl --output-dir'],
+    ['wget -O out.html http://example.com', 'wget -O'],
+    ['wget --output-document=out.html http://example.com', 'wget --output-document='],
+    ['wget -o log.txt http://example.com', 'wget -o writes a log file'],
+    ['wget -P /tmp http://example.com', 'wget -P chooses the download directory'],
+    ['wget -qO- http://example.com', 'wget -O inside a cluster'],
+  ];
+
+  it.each(requiresApproval)('%s → requires approval (%s)', async (command) => {
+    const { permissions, ask } = makePermissions();
+    await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  const staysAutoApproved: Array<[string, string]> = [
+    ['find . -name "*.ts" -print0', 'find -print0 only prints'],
+    ['find . -type f -newer README.md', 'plain find'],
+    ['tree -a -L 2', 'tree without an output flag'],
+    ['git log --oneline -n 5', 'plain git log'],
+    ['git log --format=%H', 'git log --format is read-only'],
+    ['git diff --stat', 'plain git diff'],
+    ['git diff --no-ext-diff', '--no-ext-diff disables the external diff'],
+    ['rg --pretty pattern src', 'rg --pretty is not --pre'],
+    ['rg -n pattern src', 'plain rg'],
+    ['ls -o', 'ls has no write flags; -o is a listing format'],
+    ['grep -o pattern file.txt', 'grep -o prints only matches'],
+  ];
+
+  it.each(staysAutoApproved)('%s → auto-approved (%s)', async (command) => {
+    const { permissions, ask } = makePermissions();
+    await expect(permissions.checkShellCommand(command)).resolves.toMatchObject({ allowed: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+});
