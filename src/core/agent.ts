@@ -90,6 +90,7 @@ import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } fro
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { setProgressPulse } from './progress-pulse.js';
+import { selectActiveTools } from './tool-exposure.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 
@@ -3190,6 +3191,14 @@ export class Agent {
       const volatileSystem = contextBlocks.length > 0
         ? `## Context for this turn\n\n${contextBlocks.join('\n\n')}`
         : '';
+      // Mode-aware tool exposure: niche tool groups (Spotify) are left out of
+      // the request unless the turn is about them. Schemas are re-sent on
+      // every step, so this saves tokens on every step of every turn.
+      const activeTools = selectActiveTools(
+        Object.keys(this.capabilities.getTools()),
+        msg.content,
+        recentMemory.map((m) => m.content),
+      );
 
       // ── Skill Intent Routing & Batch Execution ──
       //
@@ -3485,6 +3494,7 @@ export class Agent {
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: providerMaxOutputTokens,
+              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Memory: the SDK retains a structuredClone of the whole
@@ -3939,6 +3949,7 @@ export class Agent {
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: providerMaxOutputTokens,
+              ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
               abortSignal: loopAbortController.signal,
               // Same O(N²) step retention as streamText (see comment above).
@@ -4991,6 +5002,7 @@ export class Agent {
         steps: this.completedStepCount,
         toolCalls: turnToolTrace.length,
         historyEntries: recentMemory.length,
+        activeTools: activeTools?.length ?? 'all',
         elapsedMs: Date.now() - startTime,
       }, 'Turn usage');
       this.syncTokenInfoToCli();
