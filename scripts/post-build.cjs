@@ -24,9 +24,9 @@ function copyDirSync(src, dest) {
 // and silently lose every fix (Static.itemKey, freeze gate, live-region
 // guard, hardware cursor).
 {
-  const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'index.js'), 'utf8');
+  const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'mercury.js'), 'utf8');
   const problems = [];
-  if (/(?:from|import\()\s*["']ink["']/.test(bundle)) problems.push('dist/index.js imports "ink" at runtime (tsup alias/noExternal missing)');
+  if (/(?:from|import\()\s*["']ink["']/.test(bundle)) problems.push('dist/mercury.js imports "ink" at runtime (tsup alias/noExternal missing)');
   for (const marker of ['__mercuryFrameGate', '__mercuryCursorAnchor', 'maxLiveRows', 'setCommitTick', 'vendored: true']) {
     if (!bundle.includes(marker)) problems.push(`vendored ink marker missing from the bundle: ${marker}`);
   }

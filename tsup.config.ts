@@ -22,7 +22,9 @@ const channelVersion = process.env.MERCURY_CHANNEL_VERSION || pkg.version;
 const channelStamp = process.env.MERCURY_CHANNEL_VERSION || '';
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // dist/index.js is the launcher (see src/launcher.ts); dist/mercury.js is
+  // the real bundle it loads once the Node version check has passed.
+  entry: { index: "src/launcher.ts", mercury: "src/index.ts" },
   format: ["esm"],
   target: "node22",
   outDir: "dist",
@@ -39,10 +41,12 @@ export default defineConfig({
       "#!/usr/bin/env node",
       'import { createRequire as __mercuryCreateRequire } from "node:module";',
       "const require = __mercuryCreateRequire(import.meta.url);",
-      // ink 8 (the TUI renderer) needs Node 22 (Promise.withResolvers and
-      // friends). Say so up front instead of crashing at the first render.
-      // Bun reports its own Node-compat version, so it is exempt.
-      'if (!process.versions.bun && Number(process.versions.node.split(".")[0]) < 22) { console.error("Mercury needs Node.js 22 or newer (found " + process.version + "). Upgrade Node, e.g. `nvm install 22`."); process.exit(1); }',
+      // Node 22 is required (ADR-019: ink 8). Say so in plain words instead
+      // of crashing. Bun reports its own Node-compat version and is exempt.
+      // Under a service manager (`--daemon`), exit 0: launchd and systemd
+      // restart a daemon that exits non-zero, which would loop forever;
+      // the message still lands in the daemon log.
+      'if (!process.versions.bun && Number(process.versions.node.split(".")[0]) < 22) { console.error("Mercury needs Node.js 22 or newer — this is Node " + process.version + ".\\n  Upgrade Node:  nvm install 22 && nvm alias default 22   (or https://nodejs.org)\\n  Then reinstall Mercury with that Node:  npm install -g @cosmicstack/mercury-agent"); process.exit(process.argv.includes("--daemon") ? 0 : 1); }',
     ].join("\n"),
   },
   // Inject the version so standalone binaries (Bun --compile) can read it

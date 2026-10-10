@@ -169,12 +169,16 @@ describe('resolveDistPath', () => {
     expect(resolved).not.toContain(join('npm', '..', 'lib'));
   });
 
-  it('falls back to the module location when argv[1] is not a real file (bun-virtual path)', () => {
+  it('falls back to the launcher next to the bundle when argv[1] is not a real file (bun-virtual path)', () => {
+    // The bundle is dist/mercury.js; services must launch dist/index.js, the
+    // launcher that checks the Node version before loading the bundle.
     root = mkdtempSync(join(tmpdir(), 'mercury-dist-self-'));
-    const self = join(root, 'dist', 'index.js');
     mkdirSync(join(root, 'dist'));
-    writeFileSync(self, '// bundle');
-    expect(resolveDistPath('/$bunfs/root/mercury', pathToFileURL(self).href)).toBe(self);
+    const bundle = join(root, 'dist', 'mercury.js');
+    const launcher = join(root, 'dist', 'index.js');
+    writeFileSync(bundle, '// bundle');
+    writeFileSync(launcher, '// launcher');
+    expect(resolveDistPath('/$bunfs/root/mercury', pathToFileURL(bundle).href)).toBe(launcher);
   });
 
   it('falls back to the nvm guess when nothing else resolves', () => {

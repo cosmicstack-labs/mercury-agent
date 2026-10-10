@@ -54,7 +54,9 @@ const os = require('node:os');
 
 const root = path.join(__dirname, '..');
 const releaseRoot = path.join(root, 'release');
-const entry = path.join(root, 'dist', 'index.js');
+// The bundle itself; dist/index.js is only the Node version launcher, and
+// Bun binaries carry their own runtime.
+const entry = path.join(root, 'dist', 'mercury.js');
 
 function copyDirSync(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
