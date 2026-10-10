@@ -13,6 +13,7 @@ import { render, Box, Text, Static } from 'ink';
 import { EventEmitter } from 'node:events';
 import { MercuryCodeView } from './App.js';
 import type { TuiState } from '../channels/cli.js';
+import { VtScreen } from './vt-screen.js';
 
 class FakeStdout extends EventEmitter {
   chunks: string[] = [];
@@ -124,10 +125,22 @@ guard('ink live-region overflow guard', () => {
     expect(stdout.output.split('static message one').length - 1).toBe(dumpCount);
     expect(stdout.output).not.toContain('\x1b[3J');
 
-    // The bottom of the live region must stay visible (bottom-anchored trim):
-    // the newest rows — what the user is reading — survive the trim.
-    const lastChunk = stdout.chunks[stdout.chunks.length - 1];
-    expect(lastChunk).toContain('live row 39 tick');
+    // Replay the bytes on a 12-row screen. The bottom of the live region
+    // must be what is visible (bottom-anchored trim), and no repaint may
+    // have stamped copies of the live rows into scrollback: each live row
+    // the user can find exists at most once.
+    const screen = new VtScreen(80, 12);
+    screen.write(stdout.output);
+    const lines = screen.text();
+    expect(lines.slice(-12).join('\n')).toContain('live row 39 tick');
+    for (const row of ['live row 30', 'live row 35', 'live row 39 tick']) {
+      expect(lines.filter((l) => l.trim() === row).length, row).toBeLessThanOrEqual(1);
+    }
+    // Rows trimmed off the top of an over-tall frame are never written, so
+    // they cannot scroll into the user's history. Stock ink 8 writes the
+    // whole frame and pushes them into scrollback on every repaint.
+    expect(lines.some((l) => l.trim() === 'live row 0')).toBe(false);
+    expect(lines.some((l) => l.trim() === 'live row 0 tick')).toBe(false);
 
     unmount();
   }, 10_000);

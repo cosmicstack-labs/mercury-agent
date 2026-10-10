@@ -44,7 +44,7 @@ curl -fsSL https://mercuryagent.sh/install.sh | sh
 irm https://mercuryagent.sh/install.ps1 | iex
 ```
 
-Or via npm if you already have Node.js 20+:
+Or via npm if you already have Node.js 22+:
 
 ```bash
 npx @cosmicstack/mercury-agent
@@ -385,7 +385,7 @@ Plus community-driven compat providers (LiteLLM, GitHub Copilot model endpoints)
 
 ## Architecture
 
-- **TypeScript + Node.js 20+** — ESM, tsup build
+- **TypeScript + Node.js 22+** — ESM, tsup build
 - **Vercel AI SDK v6** — `generateText` + `streamText`, agentic step loop, provider fallback, OpenAI-compat routing
 - **grammY** — Telegram bot with typing indicators, editable streaming, auto-retry, and file uploads
 - **discord.js / @slack/bolt / signal-cli** — Discord, Slack (Socket Mode), and E2E-encrypted Signal bridges

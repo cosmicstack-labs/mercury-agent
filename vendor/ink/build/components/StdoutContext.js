@@ -1,8 +1,8 @@
 import process from 'node:process';
 import { createContext } from 'react';
 /**
- * `StdoutContext` is a React context, which exposes stdout stream, where Ink renders your app.
- */
+`StdoutContext` is a React context that exposes the stdout stream where Ink renders your app.
+*/
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const StdoutContext = createContext({
     stdout: process.stdout,

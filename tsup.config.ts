@@ -24,7 +24,7 @@ const channelStamp = process.env.MERCURY_CHANNEL_VERSION || '';
 export default defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
-  target: "node20",
+  target: "node22",
   outDir: "dist",
   clean: true,
   bundle: true,
@@ -32,12 +32,17 @@ export default defineConfig({
   sourcemap: true,
   minify: false,
   // createRequire: ink's bundled CommonJS dependencies (signal-exit 3, …)
-  // `require()` node builtins, which an ESM bundle has no global for.
+  // `require()` node builtins, which an ESM bundle has no global for. Then a
+  // Node version gate, which runs before any Mercury code.
   banner: {
     js: [
       "#!/usr/bin/env node",
       'import { createRequire as __mercuryCreateRequire } from "node:module";',
       "const require = __mercuryCreateRequire(import.meta.url);",
+      // ink 8 (the TUI renderer) needs Node 22 (Promise.withResolvers and
+      // friends). Say so up front instead of crashing at the first render.
+      // Bun reports its own Node-compat version, so it is exempt.
+      'if (!process.versions.bun && Number(process.versions.node.split(".")[0]) < 22) { console.error("Mercury needs Node.js 22 or newer (found " + process.version + "). Upgrade Node, e.g. `nvm install 22`."); process.exit(1); }',
     ].join("\n"),
   },
   // Inject the version so standalone binaries (Bun --compile) can read it

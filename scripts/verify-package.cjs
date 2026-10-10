@@ -93,10 +93,11 @@ check('better-sqlite3 is optional', () => {
   }
 });
 
-check('engines requires >=20', () => {
+check('engines requires >=22', () => {
   const pkg = JSON.parse(readFileSync(join(modDir, 'package.json'), 'utf-8'));
-  if (!pkg.engines || !pkg.engines.node || !pkg.engines.node.includes('20')) {
-    throw new Error('engines.node should require >=20.0.0');
+  // ink 8 (the vendored TUI renderer) requires Node 22.
+  if (!pkg.engines || !pkg.engines.node || !pkg.engines.node.includes('22')) {
+    throw new Error('engines.node should require >=22.0.0');
   }
 });
 

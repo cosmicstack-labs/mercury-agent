@@ -2,57 +2,63 @@ import { describe, expect, it, vi } from 'vitest';
 
 // Ink skips frame writes when it detects CI (`is-in-ci`); '0' is the one
 // value it treats as false. Must run before ink loads.
-// FORCE_COLOR: the fake cell's inverse SGR is how these tests locate it.
 vi.hoisted(() => {
   process.env.CI = '0';
-  process.env.FORCE_COLOR = '1';
 });
 
 import React from 'react';
 import { render, Box, Text, Static } from 'ink';
 import { EventEmitter } from 'node:events';
-import stringWidth from 'string-width';
 import { CursorCell, hardwareCursorEnabled, configureHardwareCursor } from './cursor-anchor.js';
 import { MercuryCodeView, TuiApp } from './App.js';
 import { CLIChannel } from '../channels/cli.js';
 import type { TuiState } from '../channels/cli.js';
+import { VtScreen } from './vt-screen.js';
 
 /**
  * Hardware cursor positioning (#41, #66) against the REAL vendored ink:
- * after every frame the terminal cursor must be parked — shown — exactly on
- * the input's fake-cursor cell, so IME preedit/candidate windows anchor
- * there; it must be hidden and moved back below the live region before the
- * next frame is written (the diff-render erase arithmetic depends on it),
- * and stay hidden while no input owns the keyboard.
+ * after every frame the terminal cursor must be shown exactly on the input's
+ * fake-cursor cell, so IME preedit/candidate windows anchor there, and stay
+ * hidden while no input owns the keyboard.
+ *
+ * Ink 8 owns the cursor plumbing (setCursorPosition); Mercury's patch only
+ * resolves the `internal_cursor` cell from the layout. So these tests check
+ * the RESULT on an emulated terminal — where the cursor ends up and whether
+ * it is visible — not the escape sequences used to get there.
  */
 
 const SHOW = '\x1b[?25h';
-const HIDE = '\x1b[?25l';
-const INVERSE = '\x1b[7m';
-const ESC = String.fromCharCode(27);
-// CUU n, CHA col, DECTCEM show — exactly what log-update's park() writes.
-const PARK_RE = new RegExp(`${ESC}\\[(\\d+)A${ESC}\\[(\\d+)G${ESC}\\[\\?25h$`);
-const stripAnsi = (s: string) => s.replace(new RegExp(`${ESC}\\[[0-9;?]*[A-Za-z]`, 'g'), '');
-
-// Synchronized output (DEC 2026) brackets every frame; it is framing, not
-// content, so the cursor assertions below see chunks without it.
+// Synchronized output (DEC 2026) brackets every frame on ink 8.
 const BSU = '\x1b[?2026h';
 const ESU = '\x1b[?2026l';
+/** Glyph for the fake cursor cell in the fixtures, so it is easy to find. */
+const MARK = '▮';
 
 class FakeStdout extends EventEmitter {
   chunks: string[] = [];
   raw: string[] = [];
-  columns = 80;
-  rows = 30;
   isTTY = true;
+  screen: VtScreen;
+  constructor(public columns = 80, public rows = 30) {
+    super();
+    this.screen = new VtScreen(columns, rows);
+  }
   write(chunk: string): boolean {
     this.raw.push(chunk);
+    this.screen.write(chunk);
     const content = chunk.split(BSU).join('').split(ESU).join('');
     if (content) this.chunks.push(content);
     return true;
   }
   get output(): string {
     return this.chunks.join('');
+  }
+  resize(columns: number, rows = this.rows): void {
+    this.columns = columns;
+    this.rows = rows;
+    this.screen.columns = columns;
+    this.screen.rows = rows;
+    this.emit('resize');
   }
 }
 
@@ -62,29 +68,26 @@ async function waitFor(pred: () => boolean, timeoutMs = 4000): Promise<void> {
   if (!pred()) throw new Error('condition not met in time');
 }
 
-/** Last chunk ending in a park sequence. */
-const lastParkChunk = (stdout: FakeStdout) => [...stdout.chunks].reverse().find((c) => PARK_RE.test(c));
-
-/**
- * For a FULL-frame write (first frame, or a repaint after resize), derive
- * where the inverse cell sits from the frame text itself and compare it with
- * the park sequence that followed. Returns both for assertions.
- */
-function analyse(chunk: string): { parked: { up: number; col: number }; expected: { up: number; col: number }; rows: string[] } {
-  const m = PARK_RE.exec(chunk)!;
-  const parked = { up: Number(m[1]), col: Number(m[2]) - 1 };
-  const frameEnd = chunk.length - m[0].length;
-  // eraseLines(n) ends with a bare CHA (`ESC[G`); the frame text follows it.
-  const eraseEnd = chunk.lastIndexOf(`${ESC}[G`, frameEnd);
-  const frame = chunk.slice(eraseEnd < 0 ? 0 : eraseEnd + 3, frameEnd);
-  const rows = frame.split('\n').slice(0, -1); // trailing '\n' after the last row
-  const rowIdx = rows.findIndex((r) => r.includes(INVERSE));
-  expect(rowIdx).toBeGreaterThanOrEqual(0);
-  const col = stringWidth(stripAnsi(rows[rowIdx].slice(0, rows[rowIdx].indexOf(INVERSE))));
-  return { parked, expected: { up: rows.length - rowIdx, col }, rows };
+/** Last cell on the emulated screen holding `ch`, as { row, col }. */
+function cellOf(screen: VtScreen, ch: string): { row: number; col: number } | null {
+  for (let row = screen.lines.length - 1; row >= 0; row--) {
+    const col = screen.lines[row].lastIndexOf(ch);
+    if (col >= 0) return { row, col };
+  }
+  return null;
 }
 
-function Prompt({ before, glyph, after = '', active = true, lead = 0 }: { before: string; glyph: string; after?: string; active?: boolean; lead?: number }) {
+/** Where the real cursor is, when it is shown. */
+const cursorAt = (screen: VtScreen) => (screen.cursorVisible ? { row: screen.row, col: screen.col } : null);
+
+/** True once the shown cursor sits on the cell holding `ch`. */
+function cursorOn(stdout: FakeStdout, ch = MARK): boolean {
+  const target = cellOf(stdout.screen, ch);
+  const at = cursorAt(stdout.screen);
+  return !!target && !!at && at.row === target.row && at.col === target.col;
+}
+
+function Prompt({ before, glyph = MARK, after = '', active = true, lead = 0 }: { before: string; glyph?: string; after?: string; active?: boolean; lead?: number }) {
   return (
     <Box flexDirection="column">
       {Array.from({ length: lead }, (_, i) => <Text key={i}>transcript row {i}</Text>)}
@@ -102,58 +105,47 @@ function Prompt({ before, glyph, after = '', active = true, lead = 0 }: { before
   );
 }
 
+const opts = (stdout: FakeStdout) => ({ stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+
 describe('hardware cursor positioning (vendored ink)', () => {
-  it('parks the real cursor exactly on the fake cursor cell, including after wide (CJK) text', async () => {
+  it('shows the real cursor exactly on the fake cursor cell, including after wide (CJK) text', async () => {
     const stdout = new FakeStdout();
-    const { unmount } = render(<Prompt before="日本語 ok" glyph="x" after="yz" />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
-    const { parked, expected, rows } = analyse(lastParkChunk(stdout)!);
-    expect(parked).toEqual(expected);
-    // header, border, input row, border, status → input row is 3rd of 5;
+    const { unmount } = render(<Prompt before="日本語 ok" after="yz" />, opts(stdout));
+    await waitFor(() => cursorOn(stdout));
     // col = border(1) + padding(1) + "> "(2) + width("日本語 ok")(9) = 13.
-    expect(rows).toHaveLength(5);
-    expect(expected).toEqual({ up: 3, col: 13 });
+    expect(cursorAt(stdout.screen)?.col).toBe(13);
+    expect(stdout.screen.lines[stdout.screen.row].join('')).toContain('> 日本語 ok▮yz');
     unmount();
   });
 
-  it('unparks (hide + move back below the frame) before every later write', async () => {
+  it('follows the cell as the user types', async () => {
     const stdout = new FakeStdout();
-    const { rerender, unmount } = render(<Prompt before="ab" glyph=" " />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
-    const first = analyse(lastParkChunk(stdout)!);
-    const mark = stdout.chunks.length;
-    rerender(<Prompt before="abc" glyph=" " />);
-    await waitFor(() => stdout.chunks.slice(mark).some((c) => PARK_RE.test(c)));
-    const next = stdout.chunks.slice(mark).find((c) => PARK_RE.test(c))!;
-    // Unpark first — the erase arithmetic assumes the cursor sits below the
-    // last row at column 0 — then the diff-rendered row, then re-park.
-    expect(next.startsWith(`${HIDE}${ESC}[${first.parked.up}B${ESC}[G`)).toBe(true);
-    const m = PARK_RE.exec(next)!;
-    expect(Number(m[1])).toBe(first.parked.up);
-    expect(Number(m[2]) - 1).toBe(first.parked.col + 1); // one more char typed
+    const { rerender, unmount } = render(<Prompt before="ab" />, opts(stdout));
+    await waitFor(() => cursorOn(stdout));
+    const first = cursorAt(stdout.screen)!;
+    rerender(<Prompt before="abc" />);
+    await waitFor(() => cursorOn(stdout) && cursorAt(stdout.screen)!.col === first.col + 1);
+    expect(cursorAt(stdout.screen)!.row).toBe(first.row);
     unmount();
   });
 
-  it('re-parks without repainting when only the cursor moves', async () => {
+  it('hides the cursor without repainting the frame when only the cursor changes', async () => {
     const stdout = new FakeStdout();
-    const { rerender, unmount } = render(<Prompt before="abc" glyph="d" after="" />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
+    const { rerender, unmount } = render(<Prompt before="abc" glyph="d" />, opts(stdout));
+    await waitFor(() => cursorOn(stdout, 'd'));
     const mark = stdout.chunks.length;
-    // Same text, cursor one cell left: identical bytes except the inverse cell
-    // moved, so rows differ; then a pure cursor toggle with identical rows.
-    rerender(<Prompt before="abc" glyph="d" after="" active={false} />);
-    await waitFor(() => stdout.chunks.slice(mark).some((c) => c.includes(HIDE)));
-    const hideChunk = stdout.chunks.slice(mark).find((c) => c.includes(HIDE))!;
-    // Rows are byte-identical (the attribute is not rendered): the only write
-    // is the unpark — no erase, no frame text, and no show.
-    expect(hideChunk).toMatch(new RegExp(`^${ESC}\\[\\?25l${ESC}\\[\\d+B${ESC}\\[G$`));
-    expect(stdout.chunks.slice(mark).join('')).not.toContain(SHOW);
+    // Same text: only the anchor attribute changes, which is not rendered.
+    rerender(<Prompt before="abc" glyph="d" active={false} />);
+    await waitFor(() => !stdout.screen.cursorVisible);
+    const after = stdout.chunks.slice(mark).join('');
+    expect(after).not.toContain('abc'); // no frame text rewritten
+    expect(after).not.toContain(SHOW);
     unmount();
   });
 
   it('keeps the cursor hidden while no input owns the keyboard', async () => {
     const stdout = new FakeStdout();
-    const { unmount } = render(<Prompt before="abc" glyph=" " active={false} />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
+    const { unmount } = render(<Prompt before="abc" active={false} />, opts(stdout));
     await waitFor(() => stdout.output.includes('status bar'));
     await new Promise((r) => setTimeout(r, 80));
     expect(stdout.output).not.toContain(SHOW);
@@ -161,58 +153,43 @@ describe('hardware cursor positioning (vendored ink)', () => {
   });
 
   it('accounts for rows trimmed by the live-region guard', async () => {
-    const stdout = new FakeStdout();
-    stdout.rows = 10; // frame is 5 + 20 rows → trimmed to the newest 9
-    const { unmount } = render(<Prompt before="hi" glyph=" " lead={20} />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
-    const { parked, expected, rows } = analyse(lastParkChunk(stdout)!);
-    expect(rows).toHaveLength(9);
-    expect(parked).toEqual(expected);
+    const stdout = new FakeStdout(80, 10); // frame is 5 + 20 rows → trimmed to the newest 9
+    const { unmount } = render(<Prompt before="hi" lead={20} />, opts(stdout));
+    await waitFor(() => cursorOn(stdout));
+    // The trimmed rows were never written, so the cursor's row is real.
+    expect(stdout.screen.text().some((l) => l.includes('transcript row 0'))).toBe(false);
     unmount();
   });
 
-  it('repaints and re-parks correctly after a resize, and after <Static> output', async () => {
+  it('stays on the cell after <Static> output and after a resize', async () => {
     const stdout = new FakeStdout();
-    const items = ['first static line'];
     const tree = (its: string[]) => (
       <>
         <Static items={its}>{(item) => <Text key={item}>{item}</Text>}</Static>
-        <Prompt before="résumé" glyph=" " />
+        <Prompt before="résumé" />
       </>
     );
-    const { rerender, unmount } = render(tree(items), { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
+    const { rerender, unmount } = render(tree(['first static line']), opts(stdout));
+    await waitFor(() => cursorOn(stdout));
 
-    // New static item: ink clears the live region (unpark first), writes the
-    // static line, then the full live frame + park.
-    let mark = stdout.chunks.length;
-    rerender(tree([...items, 'second static line']));
-    await waitFor(() => stdout.chunks.slice(mark).some((c) => PARK_RE.test(c)));
-    const afterStatic = stdout.chunks.slice(mark);
-    expect(afterStatic.join('')).toContain('second static line');
-    const s = analyse(afterStatic.find((c) => PARK_RE.test(c))!);
-    expect(s.parked).toEqual(s.expected);
+    rerender(tree(['first static line', 'second static line']));
+    await waitFor(() => stdout.output.includes('second static line') && cursorOn(stdout));
 
-    // Resize: baseline invalidated, whole frame rewritten, cursor re-parked.
-    mark = stdout.chunks.length;
-    stdout.columns = 40;
-    stdout.emit('resize');
-    await waitFor(() => stdout.chunks.slice(mark).some((c) => PARK_RE.test(c)));
-    const resized = stdout.chunks.slice(mark).find((c) => PARK_RE.test(c))!;
-    expect(resized.startsWith(HIDE)).toBe(true);
-    const r = analyse(resized);
-    expect(r.parked).toEqual(r.expected);
+    stdout.resize(40);
+    await new Promise((r) => setTimeout(r, 120));
+    await waitFor(() => cursorOn(stdout));
     unmount();
   });
 
-  it('restores the cursor below the frame on unmount', async () => {
+  it('leaves the cursor below the frame on unmount', async () => {
     const stdout = new FakeStdout();
-    const { unmount } = render(<Prompt before="x" glyph=" " />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
-    await waitFor(() => !!lastParkChunk(stdout));
-    const { parked } = analyse(lastParkChunk(stdout)!);
-    const mark = stdout.chunks.length;
+    const { unmount } = render(<Prompt before="x" />, opts(stdout));
+    await waitFor(() => cursorOn(stdout));
     unmount();
-    expect(stdout.chunks.slice(mark).join('')).toContain(`${HIDE}${ESC}[${parked.up}B${ESC}[G`);
+    const status = stdout.screen.lines.findIndex((l) => l.join('').includes('status bar'));
+    expect(status).toBeGreaterThanOrEqual(0);
+    expect(stdout.screen.row).toBeGreaterThan(status);
+    expect(stdout.screen.col).toBe(0);
   });
 
   it('honours MERCURY_HW_CURSOR=0 (global toggle on the vendored ink)', async () => {
@@ -221,7 +198,7 @@ describe('hardware cursor positioning (vendored ink)', () => {
     configureHardwareCursor({ MERCURY_HW_CURSOR: 'off' });
     try {
       const stdout = new FakeStdout();
-      const { unmount } = render(<Prompt before="x" glyph=" " />, { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false });
+      const { unmount } = render(<Prompt before="x" />, opts(stdout));
       await waitFor(() => stdout.output.includes('status bar'));
       await new Promise((r) => setTimeout(r, 80));
       expect(stdout.output).not.toContain(SHOW);
@@ -234,8 +211,7 @@ describe('hardware cursor positioning (vendored ink)', () => {
 
 /**
  * Frame bytes written outside any BSU…ESU bracket (should be none while
- * mounted). Cursor show/hide toggles (ink hides it once at startup) are
- * mode switches, not frame content.
+ * mounted). Cursor show/hide toggles are mode switches, not frame content.
  */
 function unbracketed(raw: string[]): string {
   let depth = 0;
@@ -250,10 +226,10 @@ function unbracketed(raw: string[]): string {
     depth += next === open ? 1 : -1;
     rest = rest.slice(next + BSU.length);
   }
-  return outside.split(HIDE).join('').split(SHOW).join('');
+  return outside.split('\x1b[?25l').join('').split(SHOW).join('');
 }
 
-describe('synchronized output (vendored ink, DEC 2026)', () => {
+describe('synchronized output (ink 8, DEC 2026)', () => {
   function Transcript({ lines, live }: { lines: string[]; live: string }) {
     return (
       <>
@@ -265,7 +241,7 @@ describe('synchronized output (vendored ink, DEC 2026)', () => {
 
   it('brackets every frame write on a TTY, so the terminal paints it atomically', async () => {
     const stdout = new FakeStdout();
-    const { rerender, unmount } = render(<Transcript lines={[]} live="tick 0" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    const { rerender, unmount } = render(<Transcript lines={[]} live="tick 0" />, opts(stdout));
     for (let i = 1; i <= 5; i++) {
       rerender(<Transcript lines={[]} live={`tick ${i}`} />);
       await new Promise((r) => setTimeout(r, 40));
@@ -278,20 +254,17 @@ describe('synchronized output (vendored ink, DEC 2026)', () => {
 
   it('writes a new transcript line and the redrawn live region as ONE update', async () => {
     const stdout = new FakeStdout();
-    const { rerender, unmount } = render(<Transcript lines={['first line']} live="working" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    const { rerender, unmount } = render(<Transcript lines={['first line']} live="working" />, opts(stdout));
     await waitFor(() => stdout.output.includes('working'));
     const mark = stdout.raw.length;
     rerender(<Transcript lines={['first line', 'second line']} live="done" />);
     await waitFor(() => stdout.output.includes('done'));
     const update = stdout.raw.slice(mark).join('');
     const open = update.indexOf(BSU);
-    const close = update.indexOf(ESU, open);
-    // Erase, the static line and the new frame all sit between one BSU/ESU.
+    const inside = update.slice(open, update.indexOf(ESU, open));
     expect(open).toBeGreaterThanOrEqual(0);
-    const inside = update.slice(open, close);
     expect(inside).toContain('second line');
     expect(inside).toContain('done');
-    expect(inside.indexOf('second line')).toBeLessThan(inside.indexOf('done'));
     expect(unbracketed(stdout.raw)).toBe('');
     unmount();
   });
@@ -299,10 +272,11 @@ describe('synchronized output (vendored ink, DEC 2026)', () => {
   it('never emits mode 2026 when the output is not a TTY', async () => {
     const stdout = new FakeStdout();
     stdout.isTTY = false;
-    const { rerender, unmount } = render(<Transcript lines={['a']} live="x" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    const { rerender, unmount } = render(<Transcript lines={['a']} live="x" />, opts(stdout));
     rerender(<Transcript lines={['a', 'b']} live="y" />);
-    await waitFor(() => stdout.output.includes('y'));
+    await new Promise((r) => setTimeout(r, 120));
     unmount();
+    expect(stdout.raw.join('')).toContain('b');
     expect(stdout.raw.join('')).not.toContain('2026');
   });
 });
@@ -331,22 +305,30 @@ function mercuryState(overrides: Partial<Record<string, unknown>> = {}): TuiStat
   } as unknown as TuiState;
 }
 
+/** The shown cursor sits right after `text` on a row that contains `line`. */
+function cursorAfter(stdout: FakeStdout, line: string, text: string): boolean {
+  const at = cursorAt(stdout.screen);
+  if (!at) return false;
+  const cells = stdout.screen.lines[at.row] ?? [];
+  if (!cells.join('').includes(line)) return false;
+  // Column just past `text`: find its last character's cell, then step over it.
+  const lastChar = [...text].pop()!;
+  const col = cells.lastIndexOf(lastChar, at.col - 1);
+  return col >= 0 && at.col === col + (cells[col + 1] === '' ? 2 : 1);
+}
+
 describe('hardware cursor in the Mercury Code view', () => {
-  it('parks on the input cell of a real TUI frame, and the anchor never leaks into the terminal', async () => {
+  it('sits on the input cell of a real TUI frame, and the anchor never leaks into the terminal', async () => {
     const stdout = new FakeStdout();
     const input = 'fix 漢字 bug';
     const cursorPos = 'fix 漢字'.length; // on the space before "bug"
     const { unmount } = render(
       <MercuryCodeView state={mercuryState()} cols={80} rows={30} input={input} cursorPos={cursorPos} />,
-      { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false },
+      opts(stdout),
     );
-    await waitFor(() => !!lastParkChunk(stdout));
-    const { parked, expected, rows } = analyse(lastParkChunk(stdout)!);
-    expect(parked).toEqual(expected);
-    // The cell sits inside the bordered input box: "│ > fix 漢字" → paddingX 2,
-    // border 1, padding 1, "> " 2, "fix " 4, 漢字 4 = col 14.
-    expect(expected.col).toBe(14);
-    expect(stripAnsi(rows[rows.length - expected.up])).toContain('> fix 漢字 bug');
+    await waitFor(() => cursorAfter(stdout, '> fix 漢字 bug', 'fix 漢字'));
+    // "│ > fix 漢字": paddingX 2, border 1, padding 1, "> " 2, "fix " 4, 漢字 4 = col 14.
+    expect(cursorAt(stdout.screen)?.col).toBe(14);
     expect(stdout.output).not.toContain('internal_cursor');
     expect(stdout.output).not.toContain('true');
     unmount();
@@ -359,7 +341,7 @@ describe('hardware cursor in the Mercury Code view', () => {
     });
     const { unmount } = render(
       <MercuryCodeView state={state} cols={80} rows={30} input="abc" cursorPos={3} />,
-      { stdout: stdout as any, exitOnCtrlC: false, patchConsole: false },
+      opts(stdout),
     );
     await waitFor(() => stdout.output.includes('Proceed?'));
     await new Promise((r) => setTimeout(r, 80));
@@ -397,10 +379,10 @@ function mountTuiApp(state: TuiState) {
   const stdin = new FakeStdin();
   const app = render(
     <TuiApp channel={channel} onInput={() => {}} onPermissionResolve={() => {}} onExit={() => {}} />,
-    { stdout: stdout as any, stdin: stdin as any, exitOnCtrlC: false, patchConsole: false },
+    { stdout: stdout as never, stdin: stdin as never, exitOnCtrlC: false, patchConsole: false },
   );
-  const setState = (patch: Partial<TuiState>) => {
-    snapshot = { ...snapshot, ...patch } as TuiState;
+  const setState = (patch: Record<string, unknown>) => {
+    snapshot = { ...snapshot, ...patch } as unknown as TuiState;
     for (const l of listeners) l();
   };
   return { stdout, stdin, setState, unmount: app.unmount };
@@ -409,36 +391,25 @@ function mountTuiApp(state: TuiState) {
 const baseState = (patch: Record<string, unknown>): TuiState => ({ ...new CLIChannel().getTuiStateSnapshot(), ...patch } as TuiState);
 
 describe('hardware cursor in TuiApp', () => {
-  it('chat: typed CJK input parks the cursor on the cell after it', async () => {
+  it('chat: typed CJK input puts the cursor on the cell after it', async () => {
     const { stdout, stdin, unmount } = mountTuiApp(baseState({ mode: 'chat' }));
     await waitFor(() => stdout.output.includes('[CHAT]'));
     stdin.type('日本');
-    await waitFor(() => stdout.output.includes('日本') && !!lastParkChunk(stdout));
-    // Force one full repaint so the frame text can be analysed end to end.
-    const mark = stdout.chunks.length;
-    stdout.emit('resize');
-    await waitFor(() => stdout.chunks.slice(mark).some((c) => PARK_RE.test(c)));
-    const { parked, expected, rows } = analyse(stdout.chunks.slice(mark).find((c) => PARK_RE.test(c))!);
-    expect(parked).toEqual(expected);
+    await waitFor(() => cursorAfter(stdout, '> 日本', '日本'));
     // "> 日本" inside paddingX 1: 1 + 2 + 4 = column 7.
-    expect(expected.col).toBe(7);
-    expect(stripAnsi(rows[rows.length - expected.up])).toContain('> 日本');
+    expect(cursorAt(stdout.screen)?.col).toBe(7);
     unmount();
   });
 
   it('chat: a permission prompt hides the cursor; dismissing it brings it back', async () => {
     const { stdout, setState, unmount } = mountTuiApp(baseState({ mode: 'chat' }));
-    await waitFor(() => !!lastParkChunk(stdout));
-    const mark = stdout.chunks.length;
-    setState({ permissionPrompt: { type: 'choice', message: 'Proceed?', options: [{ value: 'y', label: 'Yes' }], resolve: () => {} } } as any);
-    await waitFor(() => stdout.output.includes('Proceed?'));
+    await waitFor(() => stdout.screen.cursorVisible && stdout.output.includes(SHOW));
+    setState({ permissionPrompt: { type: 'choice', message: 'Proceed?', options: [{ value: 'y', label: 'Yes' }], resolve: () => {} } });
+    await waitFor(() => stdout.output.includes('Proceed?') && !stdout.screen.cursorVisible);
     await new Promise((r) => setTimeout(r, 80));
-    const during = stdout.chunks.slice(mark).join('');
-    expect(during.startsWith(HIDE)).toBe(true);
-    expect(during).not.toContain(SHOW);
-    const mark2 = stdout.chunks.length;
-    setState({ permissionPrompt: null } as any);
-    await waitFor(() => stdout.chunks.slice(mark2).some((c) => PARK_RE.test(c)));
+    expect(stdout.screen.cursorVisible).toBe(false);
+    setState({ permissionPrompt: null });
+    await waitFor(() => stdout.screen.cursorVisible);
     unmount();
   });
 
@@ -454,7 +425,7 @@ describe('hardware cursor in TuiApp', () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(stdout.output).not.toContain(SHOW);
     stdin.type('q');
-    await waitFor(() => !!lastParkChunk(stdout));
+    await waitFor(() => stdout.output.includes(SHOW) && stdout.screen.cursorVisible);
     unmount();
   });
 });

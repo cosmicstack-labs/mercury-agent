@@ -1,3 +1,3 @@
 import type Ink from './ink.js';
-declare const instances: WeakMap<NodeJS.WriteStream, Ink>;
+declare const instances: WeakMap<NodeJS.WritableStream, Ink>;
 export default instances;

@@ -1,5 +1,6 @@
 import widestLine from 'widest-line';
-const cache = {};
+import QuickLRU from 'quick-lru';
+const cache = new QuickLRU({ maxSize: 4096 });
 const measureText = (text) => {
     if (text.length === 0) {
         return {
@@ -7,13 +8,14 @@ const measureText = (text) => {
             height: 0,
         };
     }
-    const cachedDimensions = cache[text];
+    const cachedDimensions = cache.get(text);
     if (cachedDimensions) {
         return cachedDimensions;
     }
     const width = widestLine(text);
     const height = text.split('\n').length;
-    cache[text] = { width, height };
-    return { width, height };
+    const dimensions = { width, height };
+    cache.set(text, dimensions);
+    return dimensions;
 };
 export default measureText;

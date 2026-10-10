@@ -1,39 +1,51 @@
-import React from 'react';
+import React, { use } from 'react';
 import chalk from 'chalk';
 import colorize from '../colorize.js';
+import { AccessibilityContext } from './AccessibilityContext.js';
+import { BackgroundContext } from './BackgroundContext.js';
 /**
- * This component can display text, and change its style to make it colorful, bold, underline, italic or strikethrough.
- */
-export default function Text({ color, backgroundColor, dimColor = false, bold = false, italic = false, underline = false, strikethrough = false, inverse = false, wrap = 'wrap', children, }) {
-    if (children === undefined || children === null) {
+This component can display text and change its style to make it bold, underlined, italic, or strikethrough.
+*/
+export default function Text({ color, backgroundColor, dimColor = false, bold = false, italic = false, underline = false, strikethrough = false, inverse = false, wrap = 'wrap', children, 'aria-label': ariaLabel, 'aria-hidden': ariaHidden = false, }) {
+    const { isScreenReaderEnabled } = use(AccessibilityContext);
+    const inheritedBackgroundColor = use(BackgroundContext);
+    // Use explicit backgroundColor if provided, otherwise inherit from the nearest parent Text or Box.
+    const effectiveBackgroundColor = backgroundColor ?? inheritedBackgroundColor;
+    const childrenOrAriaLabel = isScreenReaderEnabled && Boolean(ariaLabel) ? ariaLabel : children;
+    if (childrenOrAriaLabel === undefined ||
+        childrenOrAriaLabel === null ||
+        (isScreenReaderEnabled && ariaHidden)) {
         return null;
     }
-    const transform = (children) => {
+    const transform = (text) => {
         if (dimColor) {
-            children = chalk.dim(children);
+            text = chalk.dim(text);
         }
-        if (color) {
-            children = colorize(children, color, 'foreground');
-        }
-        if (backgroundColor) {
-            children = colorize(children, backgroundColor, 'background');
-        }
+        // `colorize` returns the text unchanged when the color is unset.
+        text = colorize(text, color, 'foreground');
+        text = colorize(text, effectiveBackgroundColor, 'background');
         if (bold) {
-            children = chalk.bold(children);
+            text = chalk.bold(text);
         }
         if (italic) {
-            children = chalk.italic(children);
+            text = chalk.italic(text);
         }
         if (underline) {
-            children = chalk.underline(children);
+            text = chalk.underline(text);
         }
         if (strikethrough) {
-            children = chalk.strikethrough(children);
+            text = chalk.strikethrough(text);
         }
         if (inverse) {
-            children = chalk.inverse(children);
+            text = chalk.inverse(text);
         }
-        return children;
+        return text;
     };
-    return (React.createElement("ink-text", { style: { flexGrow: 0, flexShrink: 1, flexDirection: 'row', textWrap: wrap }, internal_transform: transform }, children));
+    return (React.createElement(BackgroundContext, { value: effectiveBackgroundColor },
+        React.createElement("ink-text", { style: {
+                flexGrow: 0,
+                flexShrink: 1,
+                flexDirection: 'row',
+                textWrap: wrap,
+            }, internal_transform: isScreenReaderEnabled ? undefined : transform }, childrenOrAriaLabel)));
 }

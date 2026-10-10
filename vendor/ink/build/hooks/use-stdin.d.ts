@@ -1,5 +1,7 @@
+import { type PublicProps, type Props } from '../components/StdinContext.js';
 /**
- * `useStdin` is a React hook, which exposes stdin stream.
- */
-declare const useStdin: () => import("../components/StdinContext.js").Props;
+A React hook that returns the stdin stream and stdin-related utilities.
+*/
+declare const useStdin: () => PublicProps;
+export declare const useStdinContext: () => Props;
 export default useStdin;

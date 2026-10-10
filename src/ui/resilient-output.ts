@@ -17,6 +17,12 @@ export class ResilientTuiOutput extends EventEmitter {
   private active: TtyWriteStream;
   private failedOver = false;
   private outOfSync = false;
+  /**
+   * How to repaint after shed writes. The TUI sets this to clear the frame
+   * (so the next one is written whole) and re-render. Without it, a
+   * same-size 'resize' is emitted, which only re-renders.
+   */
+  onResync: (() => void) | null = null;
   private readonly onPrimaryError = () => this.failOver();
   private readonly onFallbackError = () => {
     // There is nowhere else to render, but an output failure must not kill an
@@ -115,8 +121,8 @@ export class ResilientTuiOutput extends EventEmitter {
     this.outOfSync = true;
     destination.once('drain', () => {
       this.outOfSync = false;
-      // Ink's resize path forgets the on-screen baseline and rewrites every row.
-      this.emit('resize');
+      if (this.onResync) this.onResync();
+      else this.emit('resize');
     });
   }
 

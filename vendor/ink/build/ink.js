@@ -6,275 +6,797 @@ import isInCi from 'is-in-ci';
 import autoBind from 'auto-bind';
 import signalExit from 'signal-exit';
 import patchConsole from 'patch-console';
+import { LegacyRoot, ConcurrentRoot } from 'react-reconciler/constants.js';
 import Yoga from 'yoga-layout';
+import wrapAnsi from 'wrap-ansi';
+import { getWindowSize } from './utils.js';
 import reconciler from './reconciler.js';
 import render from './renderer.js';
 import * as dom from './dom.js';
+import { hideCursorEscape, showCursorEscape } from './cursor-helpers.js';
 import logUpdate from './log-update.js';
+import { bsu, esu, shouldSynchronize } from './write-synchronized.js';
 import instances from './instances.js';
 import App from './components/App.js';
+import RootNodeContext from './components/RootNodeContext.js';
+import { AccessibilityContext } from './components/AccessibilityContext.js';
+import { resolveFlags, } from './kitty-keyboard.js';
+import { isTty } from './stream.js';
 const noop = () => { };
-// Freeze gate (Cosmic Stack patch): while frozen, onRender writes NOTHING
-// and must not advance lastOutput / log-update's baseline — the resume frame
-// must diff against the last frame actually on screen. `armed` lets exactly
-// one frame through (the "⏸ frozen" hint) if its output contains `marker`.
-// Exposed on globalThis so host code can reach it without a type-level
-// import of this internal module.
+// Freeze gate (Cosmic Stack patch): while frozen, onRender writes NOTHING and
+// must not advance lastOutput or log-update's baseline, so the frame that
+// ends the freeze diffs against what is really on screen. `armed` lets
+// exactly one frame through (the "⏸ frozen" hint) if it contains `marker`.
 export const frameGate = { frozen: false, armed: false, marker: '' };
 globalThis.__mercuryFrameGate = frameGate;
-// Hardware cursor (Cosmic Stack patch): ink hides the terminal cursor and
-// leaves it below the live region, so IME preedit/candidate windows anchor
-// in the wrong place and some terminals suppress IME entirely. A host marks
-// its fake-cursor cell with the `internal_cursor` attribute (Mercury:
-// src/ui/cursor-anchor.tsx); after every frame onRender finds that element
-// in the live tree and log-update parks the real cursor on it. No marked
-// element (non-input views) → the cursor stays hidden. `enabled: false`
-// turns the feature off globally.
+// Cursor anchor (Cosmic Stack patch): after every frame, the element marked
+// with the `internal_cursor` attribute (Mercury's CursorCell) is located in
+// the laid-out live tree and handed to ink's setCursorPosition, so the real
+// terminal cursor (and with it IME preedit/candidate windows) sits on the
+// input cell. `enabled: false` turns it off (MERCURY_HW_CURSOR=0).
 export const cursorAnchor = { enabled: true };
 globalThis.__mercuryCursorAnchor = cursorAnchor;
 // Patch manifest (Cosmic Stack): which hunks this build carries, and whether
-// it is the vendored copy (stamped by scripts/vendor-ink.cjs) or an
-// in-place node_modules edit.
+// it is the vendored copy (stamped by scripts/vendor-ink.cjs).
 export const inkPatch = {
     vendored: true,
-    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning', 'synchronized-output'],
+    base: 'ink@8.0.0',
+    hunks: ['static-item-key', 'freeze-gate', 'live-region-guard', 'cursor-anchor'],
 };
 globalThis.__mercuryInkPatch = inkPatch;
-const sameCursor = (a, b) => (!a && !b) || (!!a && !!b && a.row === b.row && a.col === b.col);
-// Depth-first search for the first element carrying a truthy
-// `internal_cursor` attribute, accumulating Yoga offsets exactly like
-// render-node-to-output does. <Static> subtrees and display:none subtrees
-// are never part of the live frame and are skipped. Reading the DOM
-// attribute (set in createInstance/commitUpdate) instead of a ref matters:
-// refs attach in React's layout phase, AFTER resetAfterCommit has already
-// rendered the frame, so a ref-based anchor would always lag one frame.
+// Depth-first search for the first element with a truthy `internal_cursor`
+// attribute, accumulating Yoga offsets like render-node-to-output does.
+// <Static> and display:none subtrees are never part of the live frame. The
+// DOM attribute is read instead of a ref because refs attach in React's
+// layout phase, after the frame has already been rendered.
 const findCursorCell = (node, x, y) => {
     const yoga = node.yogaNode;
-    if (!yoga || node.internal_static || node.style?.display === 'none') return null;
+    if (!yoga || node.internal_static || node.style?.display === 'none') return undefined;
     const nx = x + yoga.getComputedLeft();
     const ny = y + yoga.getComputedTop();
-    if (node.attributes?.internal_cursor) return { row: ny, col: nx };
-    if (!Array.isArray(node.childNodes)) return null;
+    if (node.attributes?.internal_cursor) return { x: nx, y: ny };
+    if (!Array.isArray(node.childNodes)) return undefined;
     for (const child of node.childNodes) {
         const hit = findCursorCell(child, nx, ny);
         if (hit) return hit;
     }
-    return null;
+    return undefined;
+};
+const yieldImmediate = async () => new Promise(resolve => {
+    setImmediate(resolve);
+});
+// Windows consoles scroll the buffer when the bottom-right cell is written,
+// unlike xterm-like terminals which defer the wrap. That extra scroll
+// desynchronizes the incremental erase used for frames that exactly fill the
+// viewport, leaving stale copies of previous frames behind (#969). Keep the
+// pre-7.0 behavior of fully clearing between fullscreen frames there.
+const isWindowsConsole = process.platform === 'win32';
+// Full-clear path (see `shouldClearTerminalForFrame`). It must clear only
+// what is visible: `ansiEscapes.clearTerminal` emits CSI 3J, which erases the
+// terminal's scrollback, and both it and `ansiEscapes.clearViewport` emit
+// CSI 2J, which VS Code and Windows Terminal handle by pushing the viewport
+// into scrollback first (#935). Exported so tests assert against the real
+// sequence rather than a copy.
+export const homeAndEraseDown = ansiEscapes.cursorTo(0, 0) + ansiEscapes.eraseDown;
+const shouldClearTerminalForFrame = ({ isStdoutTty, viewportRows, previousViewportRows, previousOutputHeight, nextOutputHeight, isUnmounting, }) => {
+    if (!isStdoutTty) {
+        return false;
+    }
+    const wasFullscreen = previousOutputHeight >= viewportRows;
+    const isFullscreen = nextOutputHeight >= viewportRows;
+    if (isWindowsConsole && (wasFullscreen || isFullscreen)) {
+        return true;
+    }
+    const hadPreviousFrame = previousOutputHeight > 0;
+    const wasOverflowing = previousOutputHeight > viewportRows;
+    const isOverflowing = nextOutputHeight > viewportRows;
+    const isLeavingFullscreen = wasFullscreen && nextOutputHeight < viewportRows;
+    const isViewportShrinking = viewportRows < previousViewportRows;
+    const shouldClearOnUnmount = isUnmounting && wasFullscreen;
+    return (
+    // Overflowing frames still need full clear fallback.
+    wasOverflowing ||
+        (isOverflowing && hadPreviousFrame) ||
+        // Clear when shrinking from fullscreen to non-fullscreen output.
+        isLeavingFullscreen ||
+        // A terminal that loses rows scrolls only as far as it must to keep the cursor on screen, so the frame is cut only when it fills the new viewport. Then the cursor-relative diff no longer lines up with what is on screen.
+        (isViewportShrinking && wasFullscreen) ||
+        // Preserve legacy unmount behavior for fullscreen frames: final teardown
+        // render should clear once to avoid leaving a scrolled viewport state.
+        shouldClearOnUnmount);
+};
+const isErrorInput = (value) => value instanceof Error ||
+    Object.prototype.toString.call(value) === '[object Error]';
+const getWritableStreamState = (stdout) => {
+    const canWriteToStdout = !stdout.destroyed && !stdout.writableEnded && (stdout.writable ?? true);
+    return {
+        canWriteToStdout,
+    };
+};
+const settleThrottle = (throttled, canWriteToStdout) => {
+    if (throttled === undefined ||
+        throttled === null ||
+        typeof throttled.flush !== 'function') {
+        return;
+    }
+    const throttledValue = throttled;
+    if (canWriteToStdout) {
+        throttledValue.flush();
+    }
+    else if (typeof throttledValue.cancel === 'function') {
+        throttledValue.cancel();
+    }
 };
 export default class Ink {
     options;
     log;
+    cursorPosition;
     throttledLog;
+    isScreenReaderEnabled;
+    interactive;
+    renderThrottleMs;
+    alternateScreen;
     // Ignore last render after unmounting a tree to prevent empty output before exit
     isUnmounted;
+    isUnmounting;
     lastOutput;
+    lastOutputToRender;
+    lastOutputHeight;
+    lastTerminalWidth;
+    lastTerminalHeight;
     container;
     rootNode;
-    // This variable is used only in debug mode to store full static output
-    // so that it's rerendered every time, not just new static parts, like in non-debug mode
+    // Accumulated <Static> output. Only kept in debug mode, where every frame rewrites it, and on the alternate screen, where it has to be replayed on full clears because there is no scrollback to keep it in.
     fullStaticOutput;
+    // Whether any <Static> output has been written. The final unmount render is skipped once it has, since rendering again would duplicate <Static> children on exit (#397).
+    hasRenderedStaticOutput;
     exitPromise;
+    exitResult;
+    beforeExitHandler;
     restoreConsole;
     unsubscribeResize;
+    throttledOnRender;
+    hasPendingThrottledRender = false;
+    kittyProtocolEnabled = false;
+    kittyFlags;
+    finishKittyDetection;
+    nextRenderCommit;
+    // Set while suspendTerminal() has handed the terminal to a child process.
+    isSuspended = false;
+    // Input pause/resume hooks registered by the App component, which owns raw
+    // mode and bracketed paste state.
+    pauseInput;
+    resumeInput;
+    /**
+    Whether this instance is using concurrent rendering mode.
+    */
+    isConcurrent;
+    resized = () => {
+        const { columns: currentWidth, rows: currentHeight } = getWindowSize(this.options.stdout);
+        // We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders. Decreasing the height with a cursor shown also drops the frame rows below the cursor, so erase what is left and render the frame again.
+        if (currentWidth < this.lastTerminalWidth ||
+            (currentHeight < this.lastTerminalHeight &&
+                this.log.getCursorPosition() !== undefined)) {
+            this.log.clear();
+            this.lastOutput = '';
+            this.lastOutputToRender = '';
+            this.lastOutputHeight = 0;
+        }
+        this.calculateLayout();
+        dom.emitLayoutListeners(this.rootNode);
+        this.onRender();
+        this.lastTerminalWidth = currentWidth;
+        this.lastTerminalHeight = currentHeight;
+    };
+    resolveExitPromise = () => { };
+    rejectExitPromise = () => { };
+    unsubscribeExit = () => { };
+    handleAppExit = (errorOrResult) => {
+        if (this.isUnmounted || this.isUnmounting) {
+            return;
+        }
+        if (isErrorInput(errorOrResult)) {
+            this.unmount(errorOrResult);
+            return;
+        }
+        this.exitResult = errorOrResult;
+        this.unmount();
+    };
+    setCursorPosition = (position) => {
+        this.cursorPosition = position;
+        this.log.setCursorPosition(position);
+    };
+    // Must stay referentially stable across `render()` calls: it feeds into App's
+    // `setRawMode` identity, so a new function per `rerender()` would make every
+    // `useInput`/`usePaste` re-run its raw-mode effect and reset the input parser,
+    // dropping keys and pastes that were still in flight.
+    handleKittyQueryResponse = () => {
+        this.finishKittyDetection?.(true);
+    };
+    restoreLastOutput = () => {
+        if (!this.interactive) {
+            return;
+        }
+        // Screen-reader frames bypass `log()`, so restore them the same way: write, then sync log-update, with no cursor hide or placement.
+        if (this.isScreenReaderEnabled) {
+            this.options.stdout.write(this.lastOutputToRender);
+            this.log.setCursorPosition(undefined);
+            this.log.sync(this.lastOutputToRender);
+            return;
+        }
+        // Clear() resets log-update's cursor state, so replay the latest cursor intent
+        // before restoring output after external stdout/stderr writes.
+        this.log.setCursorPosition(this.cursorPosition);
+        this.log(this.lastOutputToRender === ''
+            ? this.lastOutput + '\n'
+            : this.lastOutputToRender);
+    };
+    calculateLayout = () => {
+        const { yogaNode } = this.rootNode;
+        // Calling exit() from an effect unmounts synchronously, so React's teardown commit can land after the root Yoga node is freed. There is nothing left to lay out.
+        if (!yogaNode) {
+            return;
+        }
+        const terminalWidth = getWindowSize(this.options.stdout).columns;
+        yogaNode.setWidth(terminalWidth);
+        yogaNode.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
+    };
+    // Resets the accumulated static output when the <Static> identity changes so stale items from a previous instance are not replayed on future rewrites.
+    handleStaticChange = () => {
+        this.fullStaticOutput = '';
+        this.hasRenderedStaticOutput = false;
+    };
+    onRender = () => {
+        this.hasPendingThrottledRender = false;
+        if (this.isUnmounted) {
+            return;
+        }
+        // While suspended, the terminal belongs to a child process. Discard queued
+        // renders; resume() forces a full redraw once Ink reclaims the terminal.
+        // Resolve any awaited render commit so callers don't hang during suspension.
+        if (this.isSuspended) {
+            if (this.nextRenderCommit) {
+                this.nextRenderCommit.resolve();
+                this.nextRenderCommit = undefined;
+            }
+            return;
+        }
+        if (this.nextRenderCommit) {
+            this.nextRenderCommit.resolve();
+            this.nextRenderCommit = undefined;
+        }
+        // After clear(), the recorded frame is no longer on screen, so forget it and draw the next frame even when unchanged. Keep it while unmounting, so clear() followed by unmount() leaves the terminal clean.
+        if (this.lastOutputHeight === 0 &&
+            this.lastOutput !== '' &&
+            !this.isUnmounting) {
+            this.lastOutputToRender = '';
+        }
+        const startTime = performance.now();
+        let { output, outputHeight, staticOutput } = render(this.rootNode, this.isScreenReaderEnabled);
+        // Freeze gate (Cosmic Stack patch): drop the frame entirely.
+        if (frameGate.frozen && !(frameGate.armed && frameGate.marker && output.includes(frameGate.marker))) {
+            return;
+        }
+        if (frameGate.armed) frameGate.armed = false;
+        // Live-region guard (Cosmic Stack patch): a live frame as tall as the viewport is
+        // written whole by stock ink, and on the primary screen every row
+        // past the viewport scrolls into scrollback, so each repaint while
+        // a reply streams stamps another copy of the live region into the
+        // user's history. Keep the newest rows (input, status bar, the live
+        // tail) and send the trimmed frame through the normal diff path.
+        const liveHeightBeforeTrim = outputHeight;
+        if (this.interactive && !this.alternateScreen && !this.isScreenReaderEnabled && !this.options.debug && this.options.stdout.isTTY) {
+            const viewportRows = getWindowSize(this.options.stdout).rows;
+            if (outputHeight >= viewportRows) {
+                const maxLiveRows = Math.max(1, viewportRows - 1);
+                output = output.split('\n').slice(-maxLiveRows).join('\n');
+                outputHeight = maxLiveRows;
+            }
+        }
+        // Cursor anchor (Cosmic Stack patch): resolved after the trim, so the
+        // row is relative to the rows actually written. Only a CHANGE is
+        // pushed: setCursorPosition marks the cursor dirty, and a dirty
+        // cursor forces a rewrite of an otherwise unchanged frame.
+        if (cursorAnchor.enabled && !this.isScreenReaderEnabled) {
+            const cell = findCursorCell(this.rootNode, 0, 0);
+            const row = cell ? cell.y - (liveHeightBeforeTrim - outputHeight) : -1;
+            const next = cell && row >= 0 ? { x: cell.x, y: row } : undefined;
+            if (next?.x !== this.cursorPosition?.x || next?.y !== this.cursorPosition?.y) {
+                this.setCursorPosition(next);
+            }
+        }
+        const renderTime = performance.now() - startTime;
+        this.renderFrame(output, outputHeight, staticOutput);
+        this.options.onRender?.({ renderTime });
+    };
     constructor(options) {
         autoBind(this);
         this.options = options;
         this.rootNode = dom.createNode('ink-root');
         this.rootNode.onComputeLayout = this.calculateLayout;
-        this.rootNode.onRender = options.debug
-            ? this.onRender
-            : throttle(this.onRender, 32, {
+        this.isScreenReaderEnabled =
+            options.isScreenReaderEnabled ??
+                process.env['INK_SCREEN_READER'] === 'true';
+        // CI detection takes precedence: even a TTY stdout in CI defaults to non-interactive.
+        // Using Boolean(isTTY) (rather than an 'in' guard) correctly handles piped streams
+        // where the property is absent (e.g. `node app.js | cat`).
+        this.interactive = this.resolveInteractiveOption(options.interactive);
+        this.alternateScreen = false;
+        const isUnthrottled = options.debug || this.isScreenReaderEnabled;
+        const maxFps = options.maxFps ?? 30;
+        // Treat non-positive maxFps as an internal fallback case, not a supported
+        // "disable throttling" mode. Keep animation scheduling on a normal cadence
+        // so future changes don't accidentally reintroduce zero-delay loops.
+        const renderThrottleMs = maxFps > 0 ? Math.max(1, Math.ceil(1000 / maxFps)) : 0;
+        this.renderThrottleMs = isUnthrottled ? 0 : renderThrottleMs;
+        if (isUnthrottled) {
+            this.rootNode.onRender = this.onRender;
+            this.throttledOnRender = undefined;
+        }
+        else {
+            const throttled = throttle(this.onRender, renderThrottleMs, {
                 leading: true,
                 trailing: true,
             });
+            this.rootNode.onRender = () => {
+                this.hasPendingThrottledRender = true;
+                throttled();
+            };
+            this.throttledOnRender = throttled;
+        }
         this.rootNode.onImmediateRender = this.onRender;
-        // Synchronized output (Cosmic Stack patch): same gate as upstream shouldSynchronize().
-        this.log = logUpdate.create(options.stdout, { synchronize: Boolean(options.stdout.isTTY) && !isInCi && !options.debug });
-        this.throttledLog = options.debug
+        this.rootNode.onStaticChange = this.handleStaticChange;
+        this.log = logUpdate.create(options.stdout, {
+            incremental: options.incrementalRendering,
+        });
+        this.cursorPosition = undefined;
+        this.throttledLog = isUnthrottled
             ? this.log
-            : throttle(this.log, undefined, {
+            : throttle((output) => {
+                const shouldWrite = this.log.willRender(output);
+                const shouldSync = this.shouldSync();
+                if (shouldSync && shouldWrite) {
+                    this.options.stdout.write(bsu);
+                }
+                this.log(output);
+                if (shouldSync && shouldWrite) {
+                    this.options.stdout.write(esu);
+                }
+            }, undefined, {
                 leading: true,
                 trailing: true,
             });
         // Ignore last render after unmounting a tree to prevent empty output before exit
         this.isUnmounted = false;
+        this.isUnmounting = false;
+        // Store concurrent mode setting
+        this.isConcurrent = options.concurrent ?? false;
         // Store last output to only rerender when needed
         this.lastOutput = '';
-        // This variable is used only in debug mode to store full static output
-        // so that it's rerendered every time, not just new static parts, like in non-debug mode
+        this.lastOutputToRender = '';
+        this.lastOutputHeight = 0;
+        const { columns, rows } = getWindowSize(this.options.stdout);
+        this.lastTerminalWidth = columns;
+        this.lastTerminalHeight = rows;
         this.fullStaticOutput = '';
+        this.hasRenderedStaticOutput = false;
+        // Use ConcurrentRoot for concurrent mode, LegacyRoot for legacy mode
+        const rootTag = options.concurrent ? ConcurrentRoot : LegacyRoot;
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        this.container = reconciler.createContainer(this.rootNode, 
-        // Legacy mode
-        0, null, false, null, 'id', () => { }, null);
+        this.container = reconciler.createContainer(this.rootNode, rootTag, null, false, null, 'id', () => { }, () => { }, () => { }, () => { }, null);
         // Unmount when process exits
         this.unsubscribeExit = signalExit(this.unmount, { alwaysLast: false });
+        this.setAlternateScreen(Boolean(options.alternateScreen));
         if (process.env['DEV'] === 'true') {
-            reconciler.injectIntoDevTools({
-                bundleType: 0,
-                // Reporting React DOM's version, not Ink's
-                // See https://github.com/facebook/react/issues/16666#issuecomment-532639905
-                version: '16.13.1',
-                rendererPackageName: 'ink',
-            });
+            reconciler.injectIntoDevTools();
         }
         if (options.patchConsole) {
             this.patchConsole();
         }
-        if (!isInCi) {
+        if (this.interactive) {
             options.stdout.on('resize', this.resized);
             this.unsubscribeResize = () => {
                 options.stdout.off('resize', this.resized);
             };
         }
+        this.initKittyKeyboard();
+        this.exitPromise = new Promise((resolve, reject) => {
+            this.resolveExitPromise = resolve;
+            this.rejectExitPromise = reject;
+        });
+        // Prevent global unhandled-rejection crashes when app code exits with an
+        // error but consumers never call waitUntilExit().
+        void this.exitPromise.catch(noop);
     }
-    resized = () => {
-        // Resize baseline reset (Cosmic Stack patch): rows that re-wrapped on
-        // resize must be repainted even when their bytes did not change, so
-        // the diff-render baseline (ours and log-update's) is dropped first.
-        this.lastOutput = '';
-        if (typeof this.log.invalidate === 'function') this.log.invalidate();
-        this.calculateLayout();
-        this.onRender();
-    };
-    resolveExitPromise = () => { };
-    rejectExitPromise = () => { };
-    unsubscribeExit = () => { };
-    calculateLayout = () => {
-        // The 'columns' property can be undefined or 0 when not using a TTY.
-        // In that case we fall back to 80.
-        const terminalWidth = this.options.stdout.columns || 80;
-        this.rootNode.yogaNode.setWidth(terminalWidth);
-        this.rootNode.yogaNode.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
-    };
-    // Hardware cursor (Cosmic Stack patch): absolute cell of the marked cursor
-    // element inside the live frame, or null when there is none, the feature
-    // is disabled, or the cell was trimmed away by the live-region guard.
-    lastCursor = null;
-    resolveCursor(trimmedRows) {
-        if (!cursorAnchor.enabled) return null;
-        const cell = findCursorCell(this.rootNode, 0, 0);
-        if (!cell) return null;
-        const row = cell.row - trimmedRows;
-        if (row < 0) return null;
-        return { row, col: cell.col };
-    }
-    onRender = () => {
-        if (this.isUnmounted) {
-            return;
-        }
-        let { output, outputHeight, staticOutput } = render(this.rootNode);
-        // Freeze gate (Cosmic Stack patch): drop the frame entirely — no
-        // write, and crucially NO advance of `lastOutput` or log-update's
-        // `previousOutput`/`previousLineCount` baseline, so the frame that
-        // ends the freeze diffs against what is actually on screen.
-        if (frameGate.frozen && !(frameGate.armed && frameGate.marker && output.includes(frameGate.marker))) {
-            return;
-        }
-        if (frameGate.armed) frameGate.armed = false;
-        // Live-region guard (Cosmic Stack patch): a live frame as tall as (or
-        // taller than) the terminal cannot go through log-update's cursor
-        // arithmetic, and stock ink's fallback is `clearTerminal +
-        // fullStaticOutput + output` — erasing the ENTIRE scrollback buffer
-        // and re-dumping every static byte ever printed, on EVERY frame. With
-        // a long transcript that is megabytes per frame: the scrollbar jumps
-        // to the top, the UI flickers, and native scrolling becomes
-        // impossible. Instead keep the frame bottom-anchored: trim to what
-        // fits (rows - 1) and let the normal diff path write it. Scrollback
-        // is never cleared, the transcript is never re-dumped, and the newest
-        // rows (live tail, input, status bar) stay visible.
-        const maxLiveRows = Math.max(1, (this.options.stdout.rows || 24) - 1);
-        const liveHeightBeforeTrim = outputHeight;
-        if (outputHeight >= (this.options.stdout.rows || 24)) {
-            // `output` is newline-terminated per row WITHOUT a trailing blank
-            // line (log-update appends its own), so split and re-join verbatim.
-            output = output.split('\n').slice(-maxLiveRows).join('\n');
-            outputHeight = maxLiveRows;
-        }
-        // Hardware cursor (Cosmic Stack patch): resolve AFTER the trim so the row
-        // is relative to the rows actually written.
-        const cursor = this.resolveCursor(liveHeightBeforeTrim - outputHeight);
+    renderFrame(output, outputHeight, staticOutput) {
         // If <Static> output isn't empty, it means new children have been added to it
-        const hasStaticOutput = staticOutput && staticOutput !== '\n';
+        const hasStaticOutput = staticOutput !== '';
         if (this.options.debug) {
             if (hasStaticOutput) {
                 this.fullStaticOutput += staticOutput;
+                this.hasRenderedStaticOutput = true;
             }
+            this.lastOutput = output;
+            this.lastOutputToRender = output;
+            this.lastOutputHeight = outputHeight;
             this.options.stdout.write(this.fullStaticOutput + output);
             return;
         }
-        if (isInCi) {
+        if (!this.interactive) {
             if (hasStaticOutput) {
                 this.options.stdout.write(staticOutput);
             }
             this.lastOutput = output;
+            this.lastOutputToRender = output + '\n';
+            this.lastOutputHeight = outputHeight;
+            return;
+        }
+        if (this.isScreenReaderEnabled) {
+            const shouldSync = this.shouldSync();
+            if (shouldSync) {
+                this.options.stdout.write(bsu);
+            }
+            const terminalWidth = getWindowSize(this.options.stdout).columns;
+            const wrappedOutput = wrapAnsi(output, terminalWidth, {
+                trim: false,
+                hard: true,
+            });
+            if (!hasStaticOutput && wrappedOutput === this.lastOutputToRender) {
+                if (shouldSync) {
+                    this.options.stdout.write(esu);
+                }
+                return;
+            }
+            // Erase the main output before writing new static output or replacing the frame.
+            // Log-update tracks the actual rows, including frames restored after external writes.
+            this.log.clear();
+            // After erasing, the last output is gone, so reset its height until the new frame is written.
+            this.lastOutputHeight = 0;
+            if (hasStaticOutput) {
+                this.options.stdout.write(staticOutput);
+                if (this.alternateScreen) {
+                    this.fullStaticOutput += staticOutput;
+                }
+            }
+            this.options.stdout.write(wrappedOutput);
+            this.lastOutput = output;
+            this.lastOutputToRender = wrappedOutput;
+            this.lastOutputHeight =
+                wrappedOutput === '' ? 0 : wrappedOutput.split('\n').length;
+            // Screen-reader output uses its own cursor placement.
+            this.log.setCursorPosition(undefined);
+            this.log.sync(wrappedOutput);
+            if (shouldSync) {
+                this.options.stdout.write(esu);
+            }
             return;
         }
         if (hasStaticOutput) {
-            this.fullStaticOutput += staticOutput;
+            this.hasRenderedStaticOutput = true;
+            if (this.alternateScreen) {
+                this.fullStaticOutput += staticOutput;
+            }
         }
-        if (outputHeight >= this.options.stdout.rows) {
-            this.options.stdout.write(ansiEscapes.clearTerminal + this.fullStaticOutput + output);
+        this.renderInteractiveFrame(output, outputHeight, hasStaticOutput ? staticOutput : '');
+    }
+    setAlternateScreen(isEnabled) {
+        this.alternateScreen = this.resolveAlternateScreenOption(isEnabled, this.interactive);
+        if (!this.alternateScreen) {
+            return;
+        }
+        this.writeBestEffort(this.options.stdout, ansiEscapes.enterAlternativeScreen);
+        this.writeBestEffort(this.options.stdout, hideCursorEscape);
+    }
+    resolveInteractiveOption(interactive) {
+        return interactive ?? (!isInCi && Boolean(this.options.stdout.isTTY));
+    }
+    resolveAlternateScreenOption(alternateScreen, isInteractive) {
+        return (Boolean(alternateScreen) &&
+            isInteractive &&
+            Boolean(this.options.stdout.isTTY));
+    }
+    shouldSync() {
+        return shouldSynchronize(this.options.stdout, this.interactive);
+    }
+    // Best-effort write: streams may already be destroyed during shutdown.
+    writeBestEffort(stream, data) {
+        try {
+            stream.write(data);
+        }
+        catch { }
+    }
+    // Waits for the exit promise to settle, suppressing any rejection.
+    // Errors are surfaced via waitUntilExit() instead.
+    async awaitExit() {
+        try {
+            await this.exitPromise;
+        }
+        catch { }
+    }
+    hasPendingConcurrentWork() {
+        const concurrentContainer = this.container;
+        return ((concurrentContainer.pendingLanes ?? 0) !== 0 &&
+            concurrentContainer.callbackNode !== undefined &&
+            concurrentContainer.callbackNode !== null);
+    }
+    async awaitNextRender() {
+        this.nextRenderCommit ??= Promise.withResolvers();
+        return this.nextRenderCommit.promise;
+    }
+    renderInteractiveFrame(output, outputHeight, staticOutput) {
+        const hasStaticOutput = staticOutput !== '';
+        const isStdoutTty = Boolean(this.options.stdout.isTTY);
+        // Detect fullscreen: output fills or exceeds terminal height.
+        // Only apply when writing to a real TTY — piped output always gets trailing newlines.
+        const viewportRows = isStdoutTty
+            ? getWindowSize(this.options.stdout).rows
+            : 24;
+        const isFullscreen = isStdoutTty && outputHeight >= viewportRows;
+        const outputToRender = isFullscreen ? output : output + '\n';
+        const previousViewportRows = this.lastTerminalHeight;
+        const shouldClearTerminal = shouldClearTerminalForFrame({
+            isStdoutTty,
+            viewportRows,
+            previousViewportRows,
+            previousOutputHeight: this.lastOutputHeight,
+            nextOutputHeight: outputHeight,
+            isUnmounting: this.isUnmounting,
+        });
+        this.lastTerminalHeight = viewportRows;
+        if (!shouldClearTerminal &&
+            !hasStaticOutput &&
+            outputToRender === this.lastOutputToRender &&
+            !this.log.isCursorDirty()) {
+            return;
+        }
+        // Keep the committed cursor position when its component skips rendering.
+        this.log.setCursorPosition(this.cursorPosition);
+        if (shouldClearTerminal) {
+            const shouldSync = this.shouldSync();
+            if (shouldSync) {
+                this.options.stdout.write(bsu);
+            }
+            // On the primary screen, erase only the previous frame. Everything above it, whether <Static> output, console writes or the shell's own history, is left where the terminal put it, so nothing needs to be replayed there. Replaying `fullStaticOutput` used to restore what `clearTerminal` wiped; with scrollback preserved it only stamps another copy of every <Static> line into history on each full clear. New <Static> output from this frame is still written once, ahead of the frame.
+            if (this.alternateScreen) {
+                // The alternate screen has no scrollback, so whatever the full clear erases or an overflowing frame pushed off the top is gone for good. Replay the accumulated static output, which already includes this frame's new items, ahead of the frame.
+                this.options.stdout.write(homeAndEraseDown + this.fullStaticOutput + outputToRender);
+            }
+            else if (this.lastOutputHeight >= viewportRows) {
+                // The previous frame filled the viewport, so erasing the viewport erases exactly that frame. The absolute sequence also sidesteps the cursor-relative erase that Windows consoles desynchronize (#969).
+                //
+                // When the terminal just lost rows while a useCursor() position was active, the real cursor sat above the bottom of the output, so the terminal dropped the rows below it instead of scrolling and the absolute origin can land on rows above the frame that Ink does not own. Walk up from the committed cursor position to the frame's top row instead.
+                let erasePrefix = homeAndEraseDown;
+                const previousCursor = this.log.getCursorPosition();
+                if (!isWindowsConsole &&
+                    previousCursor &&
+                    viewportRows < previousViewportRows) {
+                    erasePrefix =
+                        (previousCursor.y > 0
+                            ? ansiEscapes.cursorUp(previousCursor.y)
+                            : '') +
+                            ansiEscapes.cursorTo(0) +
+                            ansiEscapes.eraseDown;
+                }
+                this.options.stdout.write(erasePrefix + staticOutput + outputToRender);
+            }
+            else {
+                // The previous frame only covers the bottom of the viewport. Erase those rows relative to the cursor and let the new frame scroll whatever sits above them into scrollback naturally.
+                this.log.clear();
+                this.options.stdout.write(staticOutput + outputToRender);
+            }
             this.lastOutput = output;
+            this.lastOutputToRender = outputToRender;
+            this.lastOutputHeight = outputHeight;
+            this.log.sync(outputToRender);
+            if (shouldSync) {
+                this.options.stdout.write(esu);
+            }
             return;
         }
         // To ensure static output is cleanly rendered before main output, clear main output first
         if (hasStaticOutput) {
-            this.synchronized(() => {
-                this.log.clear();
-                this.options.stdout.write(staticOutput);
-                this.log(output, cursor);
-            });
+            const shouldSync = this.shouldSync();
+            if (shouldSync) {
+                this.options.stdout.write(bsu);
+            }
+            this.log.clear();
+            this.options.stdout.write(staticOutput);
+            this.log(outputToRender);
+            if (shouldSync) {
+                this.options.stdout.write(esu);
+            }
         }
-        if (!hasStaticOutput && (output !== this.lastOutput || !sameCursor(cursor, this.lastCursor))) {
-            this.throttledLog(output, cursor);
+        else {
+            // ThrottledLog manages its own bsu/esu at actual write time
+            this.throttledLog(outputToRender);
         }
         this.lastOutput = output;
-        this.lastCursor = cursor;
-    };
-    render(node) {
-        const tree = (React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, exitOnCtrlC: this.options.exitOnCtrlC, onExit: this.unmount }, node));
-        reconciler.updateContainer(tree, this.container, null, noop);
+        this.lastOutputToRender = outputToRender;
+        this.lastOutputHeight = outputHeight;
     }
-    // Synchronized output (Cosmic Stack patch): run several writes as ONE terminal update (DEC
-    // mode 2026), so a new transcript line and the redrawn live region
-    // appear together instead of erase → static → redraw.
-    synchronized(write) {
-        const log = this.log;
-        if (!log.synchronize) {
-            write();
+    initKittyKeyboard() {
+        // Protocol is opt-in: if kittyKeyboard is not specified, do nothing
+        if (!this.options.kittyKeyboard) {
             return;
         }
-        this.options.stdout.write('\u001B[?2026h');
-        log.syncDepth++;
-        try {
-            write();
+        const options = this.options.kittyKeyboard;
+        const mode = options.mode ?? 'auto';
+        if (mode === 'disabled') {
+            return;
         }
-        finally {
-            log.syncDepth--;
-            this.options.stdout.write('\u001B[?2026l');
+        const flags = options.flags ?? ['disambiguateEscapeCodes'];
+        // 'enabled' force-enables the protocol as long as both streams are TTYs,
+        // regardless of the interactive setting (e.g. even in CI).
+        if (mode === 'enabled') {
+            if (isTty(this.options.stdin) && this.options.stdout.isTTY) {
+                this.enableKittyProtocol(flags);
+            }
+            return;
+        }
+        // Auto mode: require interactive + TTY
+        if (!this.interactive ||
+            !isTty(this.options.stdin) ||
+            !this.options.stdout.isTTY) {
+            return;
+        }
+        // Auto mode: query the terminal for kitty keyboard protocol support.
+        // The CSI ? u query is safe to send to any terminal — unsupporting
+        // terminals simply won't respond, and the 200ms timeout handles that.
+        // This avoids maintaining a hardcoded whitelist of terminal names.
+        this.confirmKittySupport(flags);
+    }
+    confirmKittySupport(flags) {
+        // Consume responses through App's normal input pipeline so user input is never read twice.
+        const finish = (isSupported) => {
+            this.finishKittyDetection = undefined;
+            clearTimeout(timer);
+            if (isSupported && !this.isUnmounted) {
+                this.enableKittyProtocol(flags);
+            }
+        };
+        // Register before writing the query so immediate responses are not missed.
+        const timer = setTimeout(() => {
+            finish(false);
+        }, 200);
+        this.finishKittyDetection = finish;
+        this.options.stdout.write('\u{1B}[?u');
+    }
+    enableKittyProtocol(flags) {
+        this.options.stdout.write(`\u{1B}[>${resolveFlags(flags)}u`);
+        this.kittyProtocolEnabled = true;
+        // Remember the flags so suspendTerminal() can re-enable the same protocol
+        // after a child process has had the terminal.
+        this.kittyFlags = flags;
+    }
+    beginSuspend() {
+        if (!this.interactive) {
+            return;
+        }
+        if (this.isSuspended) {
+            throw new Error('The terminal is already suspended. Resume the current suspension before suspending again.');
+        }
+        this.finishKittyDetection?.(false);
+        this.isSuspended = true;
+        if (!this.interactive || this.isUnmounted || this.isUnmounting) {
+            return;
+        }
+        try {
+            const { stdout } = this.options;
+            const { canWriteToStdout } = getWritableStreamState(stdout);
+            // Flush any pending render/log so the child starts from a settled screen.
+            settleThrottle(this.throttledOnRender, canWriteToStdout);
+            settleThrottle(this.throttledLog, canWriteToStdout);
+            if (canWriteToStdout) {
+                // Erase Ink's current frame, then show the cursor and re-arm the hide.
+                // The forced redraw on resume hides the cursor again.
+                this.log.clear();
+                this.log.done();
+                if (this.kittyProtocolEnabled) {
+                    this.writeBestEffort(this.options.stdout, '\u{1B}[<u');
+                    this.kittyProtocolEnabled = false;
+                }
+                if (this.alternateScreen) {
+                    this.writeBestEffort(this.options.stdout, ansiEscapes.exitAlternativeScreen);
+                }
+            }
+            // Hand input back to the terminal (raw mode off, bracketed paste off).
+            this.pauseInput?.();
+        }
+        catch (error) {
+            // If handing over the terminal fails partway, don't strand the app in a
+            // suspended state with no way back. Best-effort reclaim input, clear the
+            // flag, and rethrow so the caller sees the failure.
+            this.isSuspended = false;
+            try {
+                this.resumeInput?.();
+            }
+            catch { }
+            throw error;
+        }
+    }
+    async endSuspend() {
+        if (!this.isSuspended) {
+            return;
+        }
+        this.isSuspended = false;
+        if (!this.interactive || this.isUnmounted || this.isUnmounting) {
+            return;
+        }
+        // Reclaim input only while the app still owns the terminal. After unmount, App cleanup has already restored raw mode, so resuming must not re-enable it.
+        this.resumeInput?.();
+        const { stdout } = this.options;
+        const { canWriteToStdout } = getWritableStreamState(stdout);
+        if (canWriteToStdout) {
+            if (this.alternateScreen) {
+                // Re-entering the alternate screen gives an empty buffer with no scrollback behind it, and the forced redraw below only carries new <Static> items. Replay the accumulated static output ahead of it, as the full-clear path does, so the rows the child process's turn erased come back. The debug redraw writes fullStaticOutput itself, so skip the replay there.
+                this.writeBestEffort(this.options.stdout, ansiEscapes.enterAlternativeScreen +
+                    (this.options.debug ? '' : this.fullStaticOutput));
+            }
+            if (this.kittyFlags) {
+                this.writeBestEffort(this.options.stdout, `\u{1B}[>${resolveFlags(this.kittyFlags)}u`);
+                this.kittyProtocolEnabled = true;
+            }
+        }
+        // Force a full redraw instead of diffing against the stale pre-suspension
+        // frame, which the child process may have overwritten. A redraw failure here
+        // is best-effort: it must not mask a callback error propagating through the
+        // caller's finally block.
+        this.lastOutput = '';
+        this.lastOutputToRender = '';
+        this.lastOutputHeight = 0;
+        this.log.reset();
+        try {
+            this.calculateLayout();
+            this.onRender();
+            await this.waitUntilRenderFlush();
+        }
+        catch { }
+    }
+    render(node) {
+        const tree = (React.createElement(AccessibilityContext, { value: { isScreenReaderEnabled: this.isScreenReaderEnabled } },
+            React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, exitOnCtrlC: this.options.exitOnCtrlC, interactive: this.interactive, renderThrottleMs: this.renderThrottleMs, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, setCursorPosition: this.setCursorPosition, onExit: this.handleAppExit, onWaitUntilRenderFlush: this.waitUntilRenderFlush, onSuspendTerminal: this.suspendTerminal, onRegisterInputControl: this.registerInputControl, onKittyQueryResponse: this.handleKittyQueryResponse },
+                React.createElement(RootNodeContext, { value: this.rootNode }, node))));
+        if (this.options.concurrent) {
+            // Concurrent mode: use updateContainer (async scheduling)
+            reconciler.updateContainer(tree, this.container, null, noop);
+        }
+        else {
+            // Legacy mode: use updateContainerSync + flushSyncWork (sync)
+            reconciler.updateContainerSync(tree, this.container, null, noop);
+            reconciler.flushSyncWork();
         }
     }
     writeToStdout(data) {
-        if (this.isUnmounted) {
+        if (this.isUnmounted ||
+            // While suspended, the terminal belongs to a child process. Don't erase or
+            // repaint Ink's frame around console output; the forced redraw on resume
+            // restores the screen.
+            this.isSuspended) {
             return;
         }
         if (this.options.debug) {
             this.options.stdout.write(data + this.fullStaticOutput + this.lastOutput);
             return;
         }
-        if (isInCi) {
+        if (!this.interactive) {
             this.options.stdout.write(data);
             return;
         }
-        this.synchronized(() => {
-            this.log.clear();
-            this.options.stdout.write(data);
-            this.log(this.lastOutput, this.lastCursor);
-        });
+        const shouldSync = this.shouldSync();
+        if (shouldSync) {
+            this.options.stdout.write(bsu);
+        }
+        this.log.clear();
+        this.options.stdout.write(data);
+        this.restoreLastOutput();
+        if (shouldSync) {
+            this.options.stdout.write(esu);
+        }
     }
     writeToStderr(data) {
-        if (this.isUnmounted) {
+        if (this.isUnmounted ||
+            // See writeToStdout: stay off the terminal while suspended.
+            this.isSuspended) {
             return;
         }
         if (this.options.debug) {
@@ -282,59 +804,194 @@ export default class Ink {
             this.options.stdout.write(this.fullStaticOutput + this.lastOutput);
             return;
         }
-        if (isInCi) {
+        if (!this.interactive) {
             this.options.stderr.write(data);
             return;
         }
-        this.synchronized(() => {
-            this.log.clear();
-            this.options.stderr.write(data);
-            this.log(this.lastOutput, this.lastCursor);
-        });
+        const shouldSync = this.shouldSync();
+        if (shouldSync) {
+            this.options.stdout.write(bsu);
+        }
+        this.log.clear();
+        this.options.stderr.write(data);
+        this.restoreLastOutput();
+        if (shouldSync) {
+            this.options.stdout.write(esu);
+        }
     }
-    // eslint-disable-next-line @typescript-eslint/ban-types
+    // eslint-disable-next-line @typescript-eslint/no-restricted-types
     unmount(error) {
-        if (this.isUnmounted) {
+        if (this.isUnmounted || this.isUnmounting) {
             return;
         }
-        this.calculateLayout();
-        this.onRender();
+        this.isUnmounting = true;
+        if (this.beforeExitHandler) {
+            process.off('beforeExit', this.beforeExitHandler);
+            this.beforeExitHandler = undefined;
+        }
+        const { stdout } = this.options;
+        const { canWriteToStdout } = getWritableStreamState(stdout);
+        // Clear any pending throttled render timer on unmount. When stdout is writable,
+        // flush so the final frame is emitted; otherwise cancel to avoid delayed callbacks.
+        settleThrottle(this.throttledOnRender, canWriteToStdout);
+        if (canWriteToStdout) {
+            // If throttling is enabled and there is already a pending render, flushing above
+            // is sufficient. Also avoid calling onRender() again when static output already
+            // exists, as that can duplicate <Static> children output on exit (see issue #397).
+            const shouldRenderFinalFrame = !this.throttledOnRender ||
+                (!this.hasPendingThrottledRender && !this.hasRenderedStaticOutput);
+            if (shouldRenderFinalFrame) {
+                this.calculateLayout();
+                this.onRender();
+            }
+        }
+        // Mark as unmounted after the final render but before stdout writes
+        // that could re-enter exit() via synchronous write callbacks.
+        this.isUnmounted = true;
         this.unsubscribeExit();
+        // Flush any pending throttled log writes if possible, otherwise cancel to
+        // prevent delayed callbacks from writing to a closed stream.
+        settleThrottle(this.throttledLog, canWriteToStdout);
         if (typeof this.restoreConsole === 'function') {
+            // Once unmount starts, Ink stops trying to manage teardown-time
+            // console output. Restoring the native console before React cleanup keeps
+            // unmount behavior simple and avoids special-case handling for custom
+            // streams, fullscreen frames, and alternate-screen teardown.
             this.restoreConsole();
         }
-        if (typeof this.unsubscribeResize === 'function') {
-            this.unsubscribeResize();
-        }
-        // CIs don't handle erasing ansi escapes well, so it's better to
-        // only render last frame of non-static output
-        if (isInCi) {
-            this.options.stdout.write(this.lastOutput + '\n');
-        }
-        else if (!this.options.debug) {
-            this.log.done();
-        }
-        this.isUnmounted = true;
-        reconciler.updateContainer(null, this.container, null, noop);
-        instances.delete(this.options.stdout);
-        if (error instanceof Error) {
-            this.rejectExitPromise(error);
+        const finishUnmount = () => {
+            if (typeof this.unsubscribeResize === 'function') {
+                this.unsubscribeResize();
+            }
+            // Cancel any in-progress auto-detection before checking protocol state
+            this.finishKittyDetection?.(false);
+            if (canWriteToStdout) {
+                if (this.kittyProtocolEnabled) {
+                    this.writeBestEffort(this.options.stdout, '\u{1B}[<u');
+                    this.kittyProtocolEnabled = false;
+                }
+                if (this.interactive && !this.options.debug) {
+                    this.log.done();
+                }
+                // Alternate-screen content is disposable by design. We intentionally
+                // leave it active until React cleanup finishes, then restore the
+                // primary buffer without replaying prior frames, hook writes, or
+                // diagnostics onto it. Trying to preserve teardown output across the
+                // buffer switch adds fragile lifecycle-specific behavior, so Ink keeps
+                // alternate-screen teardown intentionally simple and best-effort.
+                if (this.alternateScreen) {
+                    this.writeBestEffort(this.options.stdout, ansiEscapes.exitAlternativeScreen);
+                    this.writeBestEffort(this.options.stdout, showCursorEscape);
+                    this.alternateScreen = false;
+                }
+                if (!this.interactive) {
+                    // Non-interactive environments don't handle erasing ansi escapes well.
+                    // In debug mode, each render already writes to stdout, so only a trailing
+                    // newline is needed. In non-debug mode, write the last frame now (it was
+                    // deferred during rendering).
+                    this.options.stdout.write(this.options.debug ? '\n' : this.lastOutput + '\n');
+                }
+            }
+            this.kittyProtocolEnabled = false;
+            instances.delete(this.options.stdout);
+            // By the time this runs, React has torn down the tree and freed the child Yoga nodes, but the root node is Ink's own. Free it and drop the reference so any late access is a no-op rather than a use-after-free, as `freeYogaSubtree` does.
+            this.rootNode.yogaNode?.free();
+            this.rootNode.yogaNode = undefined;
+            // Ensure all queued writes have been processed before resolving the
+            // exit promise. Queue an empty write as a barrier — its callback fires
+            // only after all prior writes complete.
+            //
+            // When called from signal-exit during process shutdown (error is a
+            // number or null rather than undefined/Error), resolve synchronously
+            // because the event loop is draining and async callbacks won't fire.
+            const { exitResult } = this;
+            const resolveOrReject = () => {
+                if (isErrorInput(error)) {
+                    this.rejectExitPromise(error);
+                }
+                else {
+                    this.resolveExitPromise(exitResult);
+                }
+            };
+            const isProcessExiting = error !== undefined && !isErrorInput(error);
+            if (isProcessExiting) {
+                resolveOrReject();
+            }
+            else if (canWriteToStdout) {
+                this.options.stdout.write('', resolveOrReject);
+            }
+            else {
+                setImmediate(resolveOrReject);
+            }
+        };
+        const concurrentReconciler = reconciler;
+        if (this.options.concurrent) {
+            reconciler.updateContainerSync(null, this.container, null, noop);
+            reconciler.flushSyncWork();
+            concurrentReconciler.flushPassiveEffects?.();
+            finishUnmount();
         }
         else {
-            this.resolveExitPromise();
+            // Legacy mode: use updateContainerSync + flushSyncWork (sync)
+            reconciler.updateContainerSync(null, this.container, null, noop);
+            reconciler.flushSyncWork();
+            finishUnmount();
         }
     }
     async waitUntilExit() {
-        this.exitPromise ||= new Promise((resolve, reject) => {
-            this.resolveExitPromise = resolve;
-            this.rejectExitPromise = reject;
-        });
+        if (!this.isUnmounting && !this.beforeExitHandler) {
+            this.beforeExitHandler = () => {
+                this.unmount();
+            };
+            process.once('beforeExit', this.beforeExitHandler);
+        }
         return this.exitPromise;
     }
-    clear() {
-        if (!isInCi && !this.options.debug) {
-            this.log.clear();
+    async waitUntilRenderFlush() {
+        if (this.isUnmounted || this.isUnmounting) {
+            await this.awaitExit();
+            return;
         }
+        // Yield to the macrotask queue so that React's scheduler has a chance to
+        // fire passive effects and process any work they enqueued.
+        await yieldImmediate();
+        if (this.isUnmounted || this.isUnmounting) {
+            await this.awaitExit();
+            return;
+        }
+        // In concurrent mode, React's scheduler may still be mid-render after
+        // the yield. Wait for the next render commit instead of polling.
+        if (this.isConcurrent && this.hasPendingConcurrentWork()) {
+            await Promise.race([this.awaitNextRender(), this.awaitExit()]);
+            if (this.isUnmounted || this.isUnmounting) {
+                this.nextRenderCommit = undefined;
+                await this.awaitExit();
+                return;
+            }
+        }
+        reconciler.flushSyncWork();
+        const { stdout } = this.options;
+        const { canWriteToStdout } = getWritableStreamState(stdout);
+        // Flush pending throttled render/log timers so their output is included in this wait.
+        settleThrottle(this.throttledOnRender, canWriteToStdout);
+        settleThrottle(this.throttledLog, canWriteToStdout);
+        if (canWriteToStdout) {
+            await new Promise(resolve => {
+                this.options.stdout.write('', () => {
+                    resolve();
+                });
+            });
+            return;
+        }
+        await yieldImmediate();
+    }
+    clear() {
+        if (!this.interactive || this.options.debug) {
+            return;
+        }
+        this.log.clear();
+        // Keep lastOutput so that unmount's final onRender sees it as unchanged, but no rows remain on screen.
+        this.lastOutputHeight = 0;
     }
     patchConsole() {
         if (this.options.debug) {
@@ -344,12 +1001,37 @@ export default class Ink {
             if (stream === 'stdout') {
                 this.writeToStdout(data);
             }
-            if (stream === 'stderr') {
+            else if (stream === 'stderr') {
                 const isReactMessage = data.startsWith('The above error occurred');
                 if (!isReactMessage) {
                     this.writeToStderr(data);
                 }
             }
         });
+    }
+    registerInputControl(pauseInput, resumeInput) {
+        this.pauseInput = pauseInput;
+        this.resumeInput = resumeInput;
+    }
+    async suspendTerminal(callback) {
+        this.beginSuspend();
+        if (callback) {
+            try {
+                await callback();
+            }
+            finally {
+                await this.endSuspend();
+            }
+            return undefined;
+        }
+        let isResumed = false;
+        const resume = async () => {
+            if (isResumed) {
+                return;
+            }
+            isResumed = true;
+            await this.endSuspend();
+        };
+        return { resume, [Symbol.asyncDispose]: resume };
     }
 }

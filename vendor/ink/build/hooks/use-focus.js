@@ -1,34 +1,30 @@
-import { useEffect, useContext, useMemo } from 'react';
+import { useEffect, use, useId } from 'react';
 import FocusContext from '../components/FocusContext.js';
 import useStdin from './use-stdin.js';
 /**
- * Component that uses `useFocus` hook becomes "focusable" to Ink,
- * so when user presses <kbd>Tab</kbd>, Ink will switch focus to this component.
- * If there are multiple components that execute `useFocus` hook, focus will be
- * given to them in the order that these components are rendered in.
- * This hook returns an object with `isFocused` boolean property, which
- * determines if this component is focused or not.
- */
+A React hook that returns focus state and focus controls for the current component.
+A component that uses the `useFocus` hook becomes "focusable" to Ink, so when the user presses <kbd>Tab</kbd>, Ink will switch focus to this component. If there are multiple components that execute the `useFocus` hook, focus will be given to them in registration order. Reordering keyed components does not change their registration order.
+*/
 const useFocus = ({ isActive = true, autoFocus = false, id: customId, } = {}) => {
     const { isRawModeSupported, setRawMode } = useStdin();
-    const { activeId, add, remove, activate, deactivate, focus } = useContext(FocusContext);
-    const id = useMemo(() => {
-        return customId ?? Math.random().toString().slice(2, 7);
-    }, [customId]);
+    const { activeId, add, remove, activate, deactivate, focus } = use(FocusContext);
+    const generatedId = useId();
+    const id = customId ?? generatedId;
     useEffect(() => {
         add(id, { autoFocus });
         return () => {
             remove(id);
         };
-    }, [id, autoFocus]);
+    }, [id, autoFocus, add, remove]);
     useEffect(() => {
+        // Reapply active state when autoFocus changes and re-registers this component.
         if (isActive) {
             activate(id);
         }
         else {
             deactivate(id);
         }
-    }, [isActive, id]);
+    }, [isActive, id, autoFocus, activate, deactivate]);
     useEffect(() => {
         if (!isRawModeSupported || !isActive) {
             return;
@@ -37,9 +33,9 @@ const useFocus = ({ isActive = true, autoFocus = false, id: customId, } = {}) =>
         return () => {
             setRawMode(false);
         };
-    }, [isActive]);
+    }, [isActive, isRawModeSupported, setRawMode]);
     return {
-        isFocused: Boolean(id) && activeId === id,
+        isFocused: activeId === id,
         focus,
     };
 };

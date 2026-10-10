@@ -5,6 +5,7 @@ import wrapText from './wrap-text.js';
 import getMaxWidth from './get-max-width.js';
 import squashTextNodes from './squash-text-nodes.js';
 import renderBorder from './render-border.js';
+import renderBackground from './render-background.js';
 // If parent container is `<Box>`, text nodes will be treated as separate nodes in
 // the tree and will have their own coordinates in the layout.
 // To ensure text nodes are aligned correctly, take X and Y of the first text node
@@ -12,13 +13,59 @@ import renderBorder from './render-border.js';
 // Only first node is taken into account, because other text nodes can't have margin or padding,
 // so their coordinates will be relative to the first node anyway
 const applyPaddingToText = (node, text) => {
-    const yogaNode = node.childNodes[0]?.yogaNode;
+    const yogaNode = node.childNodes.at(0)?.yogaNode;
     if (yogaNode) {
         const offsetX = yogaNode.getComputedLeft();
         const offsetY = yogaNode.getComputedTop();
         text = '\n'.repeat(offsetY) + indentString(text, offsetX);
     }
     return text;
+};
+// Content offsets end up as terminal cell coordinates, so they have to be whole numbers. Fractions would drop or duplicate cells and non-finite values would erase content entirely.
+const normalizeContentOffset = (value) => typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0;
+export const renderNodeToScreenReaderOutput = (node, options = {}) => {
+    if (Boolean(options.skipStaticElements && node.internal_static) ||
+        node.yogaNode?.getDisplay() === Yoga.DISPLAY_NONE) {
+        return '';
+    }
+    let output = '';
+    if (node.nodeName === 'ink-text') {
+        output = squashTextNodes(node);
+    }
+    else if (node.nodeName === 'ink-box' || node.nodeName === 'ink-root') {
+        const separator = node.style.flexDirection === 'row' ||
+            node.style.flexDirection === 'row-reverse'
+            ? ' '
+            : '\n';
+        const childNodes = node.style.flexDirection === 'row-reverse' ||
+            node.style.flexDirection === 'column-reverse'
+            ? [...node.childNodes].reverse()
+            : [...node.childNodes];
+        output = childNodes
+            .map(childNode => {
+            const screenReaderOutput = renderNodeToScreenReaderOutput(childNode, {
+                parentRole: node.internal_accessibility?.role,
+                skipStaticElements: options.skipStaticElements,
+            });
+            return screenReaderOutput;
+        })
+            .filter(Boolean)
+            .join(separator);
+    }
+    if (node.internal_accessibility) {
+        const { role, state } = node.internal_accessibility;
+        if (state) {
+            const stateKeys = Object.keys(state);
+            const stateDescription = stateKeys.filter(key => state[key]).join(', ');
+            if (stateDescription !== '') {
+                output = `(${stateDescription}) ${output}`;
+            }
+        }
+        if (Boolean(role) && role !== options.parentRole) {
+            output = `${role}: ${output}`;
+        }
+    }
+    return output;
 };
 // After nodes are laid out, render each to output object, which later gets rendered to terminal
 const renderNodeToOutput = (node, output, options) => {
@@ -27,72 +74,71 @@ const renderNodeToOutput = (node, output, options) => {
         return;
     }
     const { yogaNode } = node;
-    if (yogaNode) {
-        if (yogaNode.getDisplay() === Yoga.DISPLAY_NONE) {
-            return;
-        }
-        // Left and top positions in Yoga are relative to their parent node
-        const x = offsetX + yogaNode.getComputedLeft();
-        const y = offsetY + yogaNode.getComputedTop();
-        // Transformers are functions that transform final text output of each component
-        // See Output class for logic that applies transformers
-        let newTransformers = transformers;
-        if (typeof node.internal_transform === 'function') {
-            newTransformers = [node.internal_transform, ...transformers];
-        }
-        if (node.nodeName === 'ink-text') {
-            let text = squashTextNodes(node);
-            if (text.length > 0) {
-                const currentWidth = widestLine(text);
-                const maxWidth = getMaxWidth(yogaNode);
-                if (currentWidth > maxWidth) {
-                    const textWrap = node.style.textWrap ?? 'wrap';
-                    text = wrapText(text, maxWidth, textWrap);
-                }
-                text = applyPaddingToText(node, text);
-                output.write(x, y, text, { transformers: newTransformers });
+    if (!yogaNode || yogaNode.getDisplay() === Yoga.DISPLAY_NONE) {
+        return;
+    }
+    // Left and top positions in Yoga are relative to their parent node
+    const x = offsetX + yogaNode.getComputedLeft();
+    const y = offsetY + yogaNode.getComputedTop();
+    // Transformers are functions that transform final text output of each component
+    // See Output class for logic that applies transformers
+    const newTransformers = typeof node.internal_transform === 'function'
+        ? [node.internal_transform, ...transformers]
+        : transformers;
+    if (node.nodeName === 'ink-text') {
+        let text = squashTextNodes(node);
+        if (text.length > 0) {
+            const currentWidth = widestLine(text);
+            const maxWidth = getMaxWidth(yogaNode);
+            if (currentWidth > maxWidth) {
+                const textWrap = node.style.textWrap ?? 'wrap';
+                text = wrapText(text, maxWidth, textWrap);
             }
-            return;
+            text = applyPaddingToText(node, text);
+            output.write(x, y, text, { transformers: newTransformers });
         }
-        let clipped = false;
-        if (node.nodeName === 'ink-box') {
-            renderBorder(x, y, node, output);
-            const clipHorizontally = node.style.overflowX === 'hidden' || node.style.overflow === 'hidden';
-            const clipVertically = node.style.overflowY === 'hidden' || node.style.overflow === 'hidden';
-            if (clipHorizontally || clipVertically) {
-                const x1 = clipHorizontally
-                    ? x + yogaNode.getComputedBorder(Yoga.EDGE_LEFT)
-                    : undefined;
-                const x2 = clipHorizontally
-                    ? x +
-                        yogaNode.getComputedWidth() -
-                        yogaNode.getComputedBorder(Yoga.EDGE_RIGHT)
-                    : undefined;
-                const y1 = clipVertically
-                    ? y + yogaNode.getComputedBorder(Yoga.EDGE_TOP)
-                    : undefined;
-                const y2 = clipVertically
-                    ? y +
-                        yogaNode.getComputedHeight() -
-                        yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM)
-                    : undefined;
-                output.clip({ x1, x2, y1, y2 });
-                clipped = true;
-            }
+        return;
+    }
+    let isClipped = false;
+    if (node.nodeName === 'ink-box') {
+        renderBackground(x, y, node, output);
+        renderBorder(x, y, node, output);
+        const shouldClipHorizontally = (node.style.overflowX ?? node.style.overflow) === 'hidden';
+        const shouldClipVertically = (node.style.overflowY ?? node.style.overflow) === 'hidden';
+        if (shouldClipHorizontally || shouldClipVertically) {
+            const x1 = shouldClipHorizontally
+                ? x + yogaNode.getComputedBorder(Yoga.EDGE_LEFT)
+                : undefined;
+            const x2 = shouldClipHorizontally
+                ? x +
+                    yogaNode.getComputedWidth() -
+                    yogaNode.getComputedBorder(Yoga.EDGE_RIGHT)
+                : undefined;
+            const y1 = shouldClipVertically
+                ? y + yogaNode.getComputedBorder(Yoga.EDGE_TOP)
+                : undefined;
+            const y2 = shouldClipVertically
+                ? y +
+                    yogaNode.getComputedHeight() -
+                    yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM)
+                : undefined;
+            output.clip({ x1, x2, y1, y2 });
+            isClipped = true;
         }
-        if (node.nodeName === 'ink-root' || node.nodeName === 'ink-box') {
-            for (const childNode of node.childNodes) {
-                renderNodeToOutput(childNode, output, {
-                    offsetX: x,
-                    offsetY: y,
-                    transformers: newTransformers,
-                    skipStaticElements,
-                });
-            }
-            if (clipped) {
-                output.unclip();
-            }
-        }
+    }
+    if (!(node.nodeName === 'ink-root' || node.nodeName === 'ink-box')) {
+        return;
+    }
+    for (const childNode of node.childNodes) {
+        renderNodeToOutput(childNode, output, {
+            offsetX: x - normalizeContentOffset(node.style.contentOffsetX),
+            offsetY: y - normalizeContentOffset(node.style.contentOffsetY),
+            transformers: newTransformers,
+            skipStaticElements,
+        });
+    }
+    if (isClipped) {
+        output.unclip();
     }
 };
 export default renderNodeToOutput;
