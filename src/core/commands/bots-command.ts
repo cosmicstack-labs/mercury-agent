@@ -4,6 +4,7 @@
  */
 import type { Agent } from '../agent.js';
 import type { ChannelMessage } from '../../types/channel.js';
+import type { Channel } from '../../channels/base.js';
 import { formatRelative, formatBytes } from './format.js';
 import path from 'node:path';
 import { homedir } from 'node:os';
@@ -95,7 +96,69 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     }
     const running = summaries.filter(s => s.state === 'running').length;
     lines.push('', `Running: ${running} | Queued: ${summaries.reduce((a, s) => a + (s.state === 'queued' ? 1 : 0), 0)}`);
+    // Tappable controls where the surface has them (Telegram): one row per
+    // lead/solo (crew follow their lead), plus a fleet row. Taps run the
+    // same /bots commands.
+    if (typeof channel.sendWithActions === 'function') {
+      const roots = summaries.filter(s => !s.parent).slice(0, 8);
+      const rows = roots.map(s => {
+        const off = s.state === 'disabled' || s.state === 'paused';
+        return [
+          { label: `${off ? '▶ Start' : '⏹ Stop'} ${s.name}`.slice(0, 40), command: `/bots ${off ? 'start' : 'stop'} ${s.id}` },
+          { label: '🏃 Run', command: `/bots run ${s.id}` },
+          { label: '📋 Runs', command: `/bots journal ${s.id}` },
+        ];
+      });
+      rows.push([
+        { label: '💰 Cost', command: '/bots cost' },
+        { label: '📁 Outputs', command: '/bots outputs' },
+        { label: '🩺 Doctor', command: '/bots doctor' },
+        { label: '🛑 Stop all', command: '/bots stop all' },
+      ]);
+      await channel.sendWithActions(lines.join('\n'), rows, channelId);
+      return;
+    }
     await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
+  if (action === 'help') {
+    await sendBotsHelp(channel, channelId);
+    return;
+  }
+
+  if (action === 'doctor') {
+    const report = bm.doctor();
+    const errors = report.findings.filter(f => f.severity === 'error').length;
+    const lines = [report.findings.length === 0
+      ? `✅ Fleet healthy — ${report.checked} bot(s) checked, nothing actionable.`
+      : `🩺 **Fleet doctor** — ${errors} actionable, ${report.findings.length - errors} warning(s), ${report.checked} bot(s) checked`, ''];
+    for (const f of report.findings.slice(0, 25)) lines.push(`${f.severity === 'error' ? '❌' : '⚠️'} **${f.botId}** ${f.check}: ${f.detail}`);
+    if (report.findings.length > 25) lines.push(`…and ${report.findings.length - 25} more`);
+    await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
+  if (action === 'fetch' || action === 'get') {
+    // /bots fetch <id> [name|latest] — send a deliverable to THIS chat (a phone
+    // cannot open a path on the owner's machine).
+    const target = parts[1]?.toLowerCase();
+    if (!target || !bm.store.exists(target)) {
+      await channel.send('Usage: `/bots fetch <id> [name|latest]` — sends a delivered file to this chat.', channelId);
+      return;
+    }
+    const items = bm.listDeliverables(target);
+    const wanted = parts.slice(2).join(' ').trim();
+    const item = !wanted || wanted === 'latest' ? items[0] : items.find(d => d.name === wanted || d.name.endsWith(wanted) || path.basename(d.path) === wanted);
+    if (!item) {
+      await channel.send(items.length === 0 ? `**${target}** has delivered nothing yet.` : `No deliverable "${wanted}" — \`/bots outputs ${target}\` lists them.`, channelId);
+      return;
+    }
+    if (typeof channel.sendFile !== 'function' || channel.type === 'cli') {
+      await channel.send(`📁 ${tildify(item.path)}`, channelId);
+      return;
+    }
+    await channel.sendFile(item.path, channelId);
     return;
   }
 
@@ -657,7 +720,12 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     for (const d of items) {
       lines.push(`${d.final ? '📄' : '📝'} ${formatRelative(d.mtimeMs)} · **${d.botId}** · ${d.name} (${formatBytes(d.bytes)})`);
     }
-    lines.push('', '📄 final · 📝 work in progress (under work/) · `/bots folder <id>` opens the folder');
+    lines.push('', '📄 final · 📝 work in progress (under work/) · `/bots folder <id>` opens the folder · `/bots fetch <id> [name]` sends a file here');
+    if (typeof channel.sendWithActions === 'function' && channel.type !== 'cli') {
+      const rows = items.slice(0, 6).map(d => [{ label: `📎 ${path.basename(d.path).slice(0, 36)}`, command: `/bots fetch ${d.botId} ${d.name}` }]);
+      await channel.sendWithActions(lines.join('\n'), rows, channelId);
+      return;
+    }
     await channel.send(lines.join('\n'), channelId);
     return;
   }
@@ -775,6 +843,10 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     return;
   }
 
+  await sendBotsHelp(channel, channelId);
+}
+
+async function sendBotsHelp(channel: Pick<Channel, 'send'>, channelId: string): Promise<void> {
   await channel.send(
     '**Bots commands**\n' +
     '`/bots` — roster with live states\n' +
@@ -793,6 +865,9 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     '`/bots cost [days]` — token spend per bot and fleet, against caps\n' +
     '`/bots show <id> [runId]` — what a run actually did (tools, deliverables, reply)\n' +
     '`/bots stop all` / `/bots start all` — fleet kill switch\n' +
+    '`/bots doctor` — fleet health check\n' +
+    '`/bots fetch <id> [name|latest]` — send a delivered file to this chat\n' +
+    '`/bots help` — this list\n' +
     '`/bots replay <botId> <jobId>` — re-run a dead-lettered job\n' +
     '`/bots storage` — disk usage\n' +
     '`/bots enable|disable|stop|start <id>` — control (stop holds queued jobs; start resumes them)\n' +

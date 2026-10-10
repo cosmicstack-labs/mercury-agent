@@ -2,12 +2,20 @@ import type { ChannelType, ChannelMessage } from '../types/channel.js';
 
 export type PermissionMode = 'allow-all' | 'ask-me';
 
+/** A tappable button that runs a slash command as if the user had typed it (ADR-023). */
+export interface ChannelAction {
+  label: string;
+  command: string;
+}
+
 export interface Channel {
   readonly type: ChannelType;
   start(): Promise<void>;
   stop(): Promise<void>;
   send(content: string, targetId?: string, elapsedMs?: number): Promise<void>;
   sendFile(filePath: string, targetId?: string): Promise<void>;
+  /** Text with rows of tappable actions; channels without buttons leave this undefined and callers fall back to send(). */
+  sendWithActions?(content: string, rows: ChannelAction[][], targetId?: string): Promise<void>;
   stream(content: AsyncIterable<string>, targetId?: string): Promise<string>;
   typing(targetId?: string): Promise<void>;
   askToContinue(question: string, targetId?: string): Promise<boolean>;

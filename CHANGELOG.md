@@ -1,10 +1,22 @@
-#uununundefinedefundefinednedefineddefinedununundundefinedfinedundefundefinednedfinedundundefinedfinedfinedundundundefinedfinedfundefinednedundundefinedfinedfinedndefinedCundefinedundefinedngeundefinedundefinedg
+# Changelog
 
-##undefinedUnundefinedeundefinedeundefinedundefinededundefined—undefinedseeundefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedeundefinedbundefinedundefinedsundefinedundefinedundefinedsundefinedundefinedandundefineddidundefined(ADRundefined022)
+## Unreleased — bots in your pocket (ADR-023)
 
--undefinedundefinedundefined`/bundefinedundefinedsundefinedundefinedosundefined [daundefineds]`undefinedundefined — undefinedoken sundefinedend peundefined bot and peundefined fleetundefined today against the undefinedapundefined the window's undefinedunsundefined failures, deliundefinederies and eundefinedpty runsundefined Also `GEundefined /api/bots-undefinedost`.
+- **Telegram controls.** `/bots` and `/bot` are in Telegram's command menu; the roster arrives with buttons — Stop/Start, Run and Runs per bot, plus Cost, Outputs, Doctor and Stop all for the fleet. A tap runs the slash command behind it as if you had typed it (same permissions, same reply). `/bots outputs` carries a 📎 button per delivered file.
+- **Files, not paths.** A task asked for from Telegram (or any remote chat) comes back with its delivered files attached. `/bots fetch <id> [name|latest]` sends one on demand.
+- **`/bots doctor`** runs the fleet health check from any chat; **`/bots help`** lists the commands. The TUI's slash completion, the busy-mode `/help`, and the docs now list every `/bots` subcommand.
+
+## Unreleased — bots stay online
+
+- **Idle, never dead.** A routine that keeps producing nothing is cooled down instead of parked: 6 hours, doubling to 24, then it resumes by itself (`/bots start` resumes it now). Budget pauses lift at midnight and queued work is pumped then.
+- **Declared cadence is honoured.** A schedule in `bot.yaml` runs as written; the 30-minute floor applies only to routines a bot creates for itself.
+- **Doctor `stale` check** flags a bot whose routine has not fired in twice its cadence; the roster shows when a cooled-down routine resumes.
+
+## Unreleased — see what the bots cost and did (ADR-022)
+
+- **`/bots cost [days]`** — token spend per bot and per fleet: today against the cap, the window's runs, failures, deliveries and empty runs. Also `GET /api/bots-cost`.
 - **`/bots show <id> [runId]`** — what a run actually did: the tool trace, delivered files, the reply, and a flag when the reply claimed more than the trace shows. Also `GET /api/bots/:id/runs[/:runId]`.
-- **Kill switch** — `/bots stop all` halts every bot and holds queued work; `/bots start all` resumes. Also `PundefinedST /api/bots-stop-all` / `-start-all`.
+- **Kill switch** — `/bots stop all` halts every bot and holds queued work; `/bots start all` resumes. Also `POST /api/bots-stop-all` / `-start-all`.
 - **`/bots dlq clear [id]`** — drop dead-lettered jobs (the journal keeps the runs). Also `DELETE /api/bots-dlq`.
 - **Onboarding budget presets** — `light` (1M/day), `standard` (the default, 5M), `heavy` (20M), a number, or `none`; the step also tells you where the bot's results will appear.
 - `GET /api/bots/:id/tasks` lists a lead's delegated tasks.
