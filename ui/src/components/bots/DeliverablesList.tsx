@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Package, Download, Trash2, Eye } from "lucide-react";
+import { Package, Download, Trash2, Eye, FolderOpen, FileCheck2, FileClock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
-import api, { type DeliverableInfo } from "@/lib/api";
+import api, { type DeliverableInfo, type DeliverablesFolder } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
 
 /**
@@ -30,11 +30,17 @@ export function DeliverablesList({
   const [loading, setLoading] = useState(true);
   const [preview, setPreview] = useState<{ d: DeliverableInfo; content: string; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [folder, setFolder] = useState<DeliverablesFolder | null>(null);
+  const [openState, setOpenState] = useState<"idle" | "opened" | "failed">("idle");
 
   const refresh = useCallback(async () => {
     try {
-      const data = botId ? await api.bots.botOutputs(botId) : await api.bots.outputs();
+      const [data, dir] = await Promise.all([
+        botId ? api.bots.botOutputs(botId) : api.bots.outputs(),
+        api.bots.folder(botId),
+      ]);
       setOutputs(data.outputs);
+      setFolder(dir);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -54,6 +60,16 @@ export function DeliverablesList({
     } catch (e) {
       setError((e as Error).message);
     }
+  };
+
+  const openInFinder = async () => {
+    try {
+      const r = await api.bots.openFolder(botId);
+      setOpenState(r.ok ? "opened" : "failed");
+    } catch {
+      setOpenState("failed");
+    }
+    setTimeout(() => setOpenState("idle"), 2500);
   };
 
   const remove = async (d: DeliverableInfo) => {
@@ -76,13 +92,24 @@ export function DeliverablesList({
         {error && <Badge variant="destructive" className="text-xs">{error}</Badge>}
       </div>
 
+      {folder && (
+        <div className="flex items-center gap-2 text-xs rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <code className="truncate flex-1" title={folder.path}>{folder.display}</code>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void openInFinder()}>
+            {openState === "opened" ? "Opened" : openState === "failed" ? "Couldn't open — copy the path" : "Open folder"}
+          </Button>
+        </div>
+      )}
+
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : outputs.length === 0 ? (
         <Card>
           <CardContent className={cn("py-6 text-center text-sm text-muted-foreground")}>
-            No deliverables yet. Bots deliver finished artifacts with their <code>bot_deliver</code> tool
-            (a report, export, dataset — anything final). They appear here the moment they land.
+            Nothing delivered yet. When a bot finishes real work it files the result with <code>bot_deliver</code>
+            into {folder ? <code>{folder.display}</code> : "its deliverables folder"} — finals on top, stage work under <code>work/</code> —
+            and it appears here the moment it lands. A routine that only writes notes never shows up here; <code>/bots cost</code> and the journal tell you why.
           </CardContent>
         </Card>
       ) : (
@@ -95,7 +122,11 @@ export function DeliverablesList({
                     {botNames?.[d.botId] ?? d.botId}
                   </Badge>
                 )}
-                <span className="truncate flex-1" title={d.name}>{d.name}</span>
+                {d.final
+                  ? <FileCheck2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="Final" />
+                  : <FileClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Stage work" />}
+                <span className="truncate flex-1" title={d.path}>{d.final ? d.name : d.name.replace(/^work\//, "")}</span>
+                {!d.final && <Badge variant="outline" className="text-[10px] shrink-0">work</Badge>}
                 <span className="text-muted-foreground text-xs shrink-0">
                   {formatBytes(d.bytes)} · {formatDate(d.mtimeMs)}
                 </span>

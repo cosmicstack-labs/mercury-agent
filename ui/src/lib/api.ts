@@ -707,9 +707,20 @@ export interface BotActivityEvent {
 
 export interface DeliverableInfo {
   botId: string;
+  /** File name; stage work carries a `work/` prefix. */
   name: string;
   bytes: number;
   mtimeMs: number;
+  /** Absolute path on the owner's machine. */
+  path: string;
+  /** A finished result at the top of the folder (vs. a stage under work/). */
+  final: boolean;
+}
+
+export interface DeliverablesFolder {
+  path: string;
+  display: string;
+  exists: boolean;
 }
 
 export interface BotTierInfo {
@@ -913,6 +924,8 @@ const api = {
       put<{ permissions: BotPermissionsFile }>(`/api/bots/${id}/permissions`, body),
     start: (id: string) => post<{ ok: boolean; resumed: number; message: string }>(`/api/bots/${id}/start`),
     run: (id: string, routine?: string) => post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${id}/run`, { routine }),
+    folder: (id?: string) => get<DeliverablesFolder>(id ? `/api/bots/${id}/folder` : "/api/bots/folder"),
+    openFolder: (id?: string) => post<{ ok: boolean; path: string }>(id ? `/api/bots/${id}/folder/open` : "/api/bots/folder/open"),
     outputs: () => get<{ outputs: DeliverableInfo[] }>("/api/bots/outputs"),
     botOutputs: (id: string) => get<{ outputs: DeliverableInfo[] }>(`/api/bots/${id}/outputs`),
     outputPreview: (id: string, name: string) =>

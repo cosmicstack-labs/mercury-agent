@@ -13,6 +13,7 @@ import { refinePersona } from '../../bots/persona-template.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, writeBundle, readBundle, importBotBundle } from '../../bots/bundle.js';
 import { applyBotFieldPatch } from '../../bots/edit.js';
+import { openFolder, tildify } from '../../bots/open-folder.js';
 
 export async function handleBotsCommand(agent: Agent, trimmed: string, msg: ChannelMessage, channel: any): Promise<void> {
   const bm = agent.botManager;
@@ -883,23 +884,5 @@ async function sendBotsHelp(channel: Pick<Channel, 'send'>, channelId: string): 
 }
 
 /** ~ for the home dir — paths shown to people, not to tools. */
-function tildify(p: string): string {
-  const home = homedir();
-  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
-}
 
 /** Open a folder in the platform file manager; false when there is none (headless/SSH). */
-async function openFolder(dir: string): Promise<boolean> {
-  const { execFile } = await import('node:child_process');
-  const cmd = process.platform === 'darwin' ? ['open', [dir]]
-    : process.platform === 'win32' ? ['explorer', [dir]]
-      : ['xdg-open', [dir]];
-  return new Promise((resolve) => {
-    try {
-      const child = execFile(cmd[0] as string, cmd[1] as string[], { timeout: 5000 }, (err) => resolve(!err));
-      child.on('error', () => resolve(false));
-    } catch {
-      resolve(false);
-    }
-  });
-}

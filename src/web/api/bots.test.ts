@@ -196,3 +196,13 @@ describe('web bots API — operations (ADR-022)', () => {
     expect(started.started).toBe(1);
   });
 });
+
+describe('web bots API — deliverables folder (where results land)', () => {
+  it('reports the fleet root and a bot folder with a readable path', async () => {
+    const root = await jreq(await app.request('/api/bots/folder'));
+    expect(typeof root.path).toBe('string');
+    expect(typeof root.display).toBe('string');
+    expect(typeof root.exists).toBe('boolean');
+    expect((await app.request('/api/bots/ghost/folder')).status).toBe(404);
+  });
+});
