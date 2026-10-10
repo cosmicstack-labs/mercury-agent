@@ -345,7 +345,7 @@ describe('BotManager queue + turn lifecycle', () => {
     await vi.waitFor(() => {
       expect(systemPrompt).toContain(store.sandboxDir('pathfinder'));
       expect(systemPrompt).toContain('_shared');
-      expect(systemPrompt).toContain('even when not explicitly asked');
+      expect(systemPrompt).toContain('DATA other bots consume');
     });
   });
 

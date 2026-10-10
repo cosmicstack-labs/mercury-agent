@@ -52,13 +52,30 @@ export interface BotScheduleConfig {
    * is skipped entirely (Hermes' wakeAgent gate pattern).
    */
   gateScript?: string;
+  /**
+   * Outcome contract: 'work' (default) — the run must deliver, act or
+   * delegate, and gets one nudge if it only wrote notes; 'check' — a
+   * monitoring routine that may legitimately find nothing to do.
+   */
+  expects?: 'work' | 'check';
+  /**
+   * Minimum minutes between two runs of this routine (default 30). A tick
+   * that arrives sooner, or while the previous run is still queued or
+   * running, is skipped — never stacked.
+   */
+  minIntervalMinutes?: number;
 }
 
 export interface BotAutonomyConfig {
   maxConcurrent?: number;
   maxSteps?: number;
-  /** Hard daily token cap. Exceeded → the bot pauses until the next day. */
+  /** Hard daily token cap. Exceeded → the bot pauses until the next day.
+   * Unset = the fleet default (config bots.suggestedDailyTokenBudget). */
   dailyTokenBudget?: number;
+  /** Tokens (in + out) one turn may spend before it is cut off (default 300k). */
+  maxTokensPerTurn?: number;
+  /** Wall-clock minutes one turn may run (default 20). */
+  maxTurnMinutes?: number;
 }
 
 export interface BotRetentionConfig {
@@ -169,6 +186,20 @@ export interface BotRunRecord {
   /** Escalation marker: this run needs the owner (DLQ'd failure / crash).
    * The newest row's flag is the durable "needs you" state across restarts. */
   needsYou?: boolean;
+  /** Journal v2 (ADR-020). Absent on rows written before it. */
+  /** When the turn itself started; `startedAt` is the enqueue time. */
+  turnStartedAt?: number;
+  steps?: number;
+  toolCalls?: number;
+  /** Largest single-step prompt the provider saw. */
+  peakInputTokens?: number;
+  /** What the tool trace proved: deliverable | action | delegated | message | none. */
+  outcome?: string;
+  deliverables?: string[];
+  /** The reply claimed delivery/execution with no matching tool call. */
+  claimedWithoutAction?: boolean;
+  /** Routine id for cron/self runs (consecutive no-outcome tracking). */
+  routineId?: string;
 }
 
 /** Live bot state surfaced by /bots, the status bar, and the API. */
