@@ -216,6 +216,8 @@ export interface MercuryConfig {
       maxCrew?: number;
       /** Lead bots may create/remove their own crew via bot_spawn/bot_retire. */
       allowLeadSpawn?: boolean;
+      /** Provider crew bots use when their manifest sets none (a cheaper lane for stage work). ADR-021. */
+      crewProvider?: string;
     };
     /** Per-bot daily token cap applied when a bot sets none (0 = unlimited). ADR-020. */
     suggestedDailyTokenBudget?: number;
@@ -504,6 +506,7 @@ export function getDefaultConfig(): MercuryConfig {
       fleets: {
         maxCrew: getEnvNum('BOTS_FLEET_MAX_CREW', 6),
         allowLeadSpawn: getEnvBool('BOTS_FLEET_LEAD_SPAWN', true),
+        crewProvider: getEnv('BOTS_FLEET_CREW_PROVIDER') || undefined,
       },
       suggestedDailyTokenBudget: getEnvNum('BOTS_SUGGESTED_DAILY_TOKEN_BUDGET', 5_000_000),
       fleetDailyTokenBudget: getEnvNum('BOTS_FLEET_DAILY_TOKEN_BUDGET', 20_000_000),

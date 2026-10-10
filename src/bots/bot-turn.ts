@@ -101,6 +101,10 @@ export interface BotTurnInput {
   };
   /** Outcome contract for this run (default 'work'). */
   expects?: BotExpectedOutcome;
+  /** Journal digest of the last few runs (ADR-021): continuity without records. */
+  recentRuns?: string;
+  /** The bot's own working-state note (bot_state). */
+  stateNote?: string;
   limits?: Partial<BotTurnLimits>;
   capabilities: CapabilityRegistry;
   tools: Record<string, Tool>;
@@ -804,6 +808,16 @@ Anything outside these two areas and your declared Access grants is denied.`;
 - Name the delivered file in your reply.`;
   }
 
+  // Continuity (ADR-021): what the journal already knows, and the bot's own
+  // note. Together they replace "records about records" — nothing here
+  // needs to be written to disk by the bot.
+  if (input.recentRuns) {
+    prompt += `\n\nYour recent runs (from the journal — you do not need to record these):\n${input.recentRuns}`;
+  }
+  if (input.stateNote) {
+    prompt += `\n\nYour working state (set with bot_state; replace it when it changes):\n${input.stateNote}`;
+  }
+
   const roster = manifest.comms?.canMessage ?? [];
   if (roster.length > 0) {
     prompt += `\n\nBots you can message via bot_send: ${roster.join(', ')}.`;
@@ -829,8 +843,9 @@ ${roster}
 
 Fleet protocol:
 - SELF-ORGANIZE: if your crew is empty or lacks a specialist the task needs, BUILD IT FIRST with bot_spawn — design each sub-bot's role and persona from YOUR persona and the current task (e.g. a product lead spawns research/QA/support specialists). Do not report that you lack a team; hire one. Then delegate.
-- DELEGATE with bot_send (task: true) — be concrete and self-contained; the result arrives in your mailbox when the bot finishes.
-- MONITOR with fleet_status — check who is running, idle, or blocked before and after delegating.
+- DELEGATE with fleet_delegate — several typed tasks in one call, each with a goal and what "done" means. You are woken ONCE with a digest when they finish (or the deadline passes): finish your turn after delegating, never poll.
+- If you have a pipeline (fleet_pipeline), use it for the standard job: the stages chain themselves and you are woken at the end.
+- MONITOR with fleet_status / fleet_tasks only when you need to — results come to you.
 - You may create specialists with bot_spawn (crew cap: ${input.fleet.maxCrew}) and retire your own crew with bot_retire.
 - Crew run CONCURRENTLY — dispatch independent work in parallel rather than sequentially.
 - You SYNTHESIZE: crew results arrive in your mailbox attributed by bot; combine them and report a single coherent outcome.${input.fleet.leadName ? `\n- You are also crew of **${input.fleet.leadName}** — your task results return to it automatically; treat it as your manager.` : ''}`;

@@ -235,6 +235,16 @@ Added after an audit of real fleets (see ADR-020 for the numbers). Four mechanis
 
 Deliverables live in an owner-visible folder (`BotStore.deliverablesDir`): finals on top, crew work under `work/`, a README index, dated human names. The hidden `outputs/` zone is legacy and migrated once.
 
+### 2.13 Typed tasks, fan-in, pipelines, continuity (ADR-021, Oct 2026)
+
+| Mechanism | Where | Effect |
+|---|---|---|
+| Durable typed tasks + batches with a wake policy and a deadline | `tasks.ts`, `BotManager.delegate` / `notifyBatch` | A lead is woken once with a digest, not once per crew mail |
+| Pipelines as data (`pipeline.stages` in bot.yaml) | `BotManager.runPipeline` / `advancePipeline` | Stages chain themselves; no lead turn between stages; finals promoted |
+| Journal digest + `bot_state` note in every prompt | `BotManager.recentRunsDigest`, `tools/bot-state.ts` | Continuity without status files |
+| Memory extraction after productive runs | `memory-extract.ts` | The bot's own namespace accumulates sources, decisions, locations |
+| Crew provider lane | `resolveProvider` | Stage work on a cheaper provider |
+
 ### 2.11 Devices without native SQLite (old Node versions, Termux)
 
 `better-sqlite3` is a native module: on unsupported Node versions or Termux/Android it may fail to install or load. Mercury already handles this exact problem for the second brain (optionalDependency + tmp-dir runtime probe, `src/memory/second-brain-db.ts:19-25`; `sql.js` ships as a regular dependency). Bots follow and extend the pattern:

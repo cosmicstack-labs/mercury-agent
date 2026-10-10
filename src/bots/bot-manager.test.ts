@@ -910,7 +910,8 @@ describe('Bot fleets (lead + crew)', () => {
     const dispatch = manager.dispatchTask('researcher', 'ceo', 'Study the market');
     expect(dispatch.accepted).toBe(true);
     await vi.waitFor(() => {
-      expect(sendSpy).toHaveBeenCalledWith('ceo', 'researcher', expect.stringContaining('MARKET REPORT'));
+      // ADR-021: the result arrives as a typed batch digest from the fleet, not as crew mail.
+      expect(sendSpy).toHaveBeenCalledWith('ceo', 'fleet', expect.stringContaining('MARKET REPORT'));
     });
     sendSpy.mockRestore();
   });
@@ -931,7 +932,7 @@ describe('Bot fleets (lead + crew)', () => {
     mockedGenerateText.mockImplementation(async (opts: any) => {
       const text = JSON.stringify(opts?.messages ?? '');
       // Lead wake (mailbox trigger) after the crew result landed: synthesize.
-      if (text.includes('Task complete')) {
+      if (text.includes('is complete')) {
         return { text: 'SYNTHESIS: combined market report', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
       }
       // Crew task turn (mailbox trigger with a reply target = the lead).

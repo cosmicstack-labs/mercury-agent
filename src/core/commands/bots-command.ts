@@ -637,6 +637,30 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     return;
   }
 
+  if (action === 'tasks') {
+    // /bots tasks <leadId> — what a lead has delegated and what came back.
+    const target = parts[1]?.toLowerCase();
+    if (!target || !bm.store.exists(target)) {
+      await channel.send('Usage: `/bots tasks <leadId>` — open and recent delegated tasks of a fleet lead.', channelId);
+      return;
+    }
+    const tasks = bm.tasksFor(target);
+    if (tasks.length === 0) {
+      await channel.send(`**${target}** has not delegated any tasks yet.`, channelId);
+      return;
+    }
+    const icons: Record<string, string> = { queued: '🔵', running: '🟢', done: '✅', failed: '❌', halted: '⏹', cancelled: '🚫' };
+    const lines = [`**${target} — delegated tasks** (newest first)`, ''];
+    for (const t of tasks) {
+      const r = t.result;
+      lines.push(`${icons[t.status] ?? '•'} ${t.id} → **${t.assignee}**${t.stage ? ` (${t.stage})` : ''} · ${t.status}${r?.outcome ? ` · ${r.outcome}` : ''} · ${formatRelative(t.completedAt ?? t.startedAt ?? t.createdAt)}`);
+      lines.push(`   ${t.goal.slice(0, 100)}`);
+      for (const d of r?.deliverables ?? []) lines.push(`   📁 ${tildify(d)}`);
+    }
+    await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
   if (action === 'folder') {
     // /bots folder <id> — open the deliverables folder in Finder / Explorer / the file manager.
     const target = parts[1]?.toLowerCase();
@@ -677,6 +701,7 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     '`/bots persona <id> <text>` — set/replace its character (with template conversion)\n' +
     '`/bots budget <id> <tokens|suggest|none>` — daily token budget (default 5M/day; none = unlimited)\n' +
     '`/bots outputs [id]` — what the bots delivered, and where\n' +
+    '`/bots tasks <leadId>` — a lead\'s delegated tasks and their results\n' +
     '`/bots folder <id>` — open a bot\'s deliverables folder\n' +
     '`/bots edit <id> <field> <value>` — edit any config field anytime\n' +
     '`/bots journal <id>` — recent runs\n' +

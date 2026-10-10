@@ -1,0 +1,272 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
+
+vi.mock('ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ai')>();
+  return { ...actual, generateText: vi.fn(), streamText: vi.fn() };
+});
+import { generateText, streamText } from 'ai';
+import { BotManager, DEFAULT_TASK_DEADLINE_MINUTES } from './bot-manager.js';
+import { BotStore } from './store.js';
+import { BotTaskStore, renderBatchDigest, renderTaskPrompt } from './tasks.js';
+import { getDefaultConfig, type MercuryConfig } from '../utils/config.js';
+
+const mockedGenerateText = vi.mocked(generateText);
+const mockedStreamText = vi.mocked(streamText);
+
+// Same shim as bot-manager.test.ts: the scripted generateText drives the
+// streaming shape runBotTurn consumes.
+mockedStreamText.mockImplementation(((opts: unknown) => {
+  let final = { text: '', finishReason: 'stop', usage: {} };
+  let failed: unknown = null;
+  let resolveSettled: () => void = () => {};
+  const settled = new Promise<void>((r) => { resolveSettled = r; });
+  const gen = (generateText as unknown as (o: unknown) => Promise<typeof final>)(opts) || Promise.resolve(final);
+  const fullStream = (async function* () {
+    try { final = await gen; } catch (err) { failed = err; }
+    resolveSettled();
+    yield { type: 'finish' };
+  })();
+  const once = async (pick: () => unknown) => { await settled; if (failed !== null) throw failed; return pick(); };
+  return { fullStream, text: once(() => final.text), finishReason: once(() => final.finishReason), usage: once(() => final.usage).catch(() => ({})) };
+}) as never);
+
+type StepOpts = { messages?: Array<{ content: string }>; onStepFinish?: (step: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => void };
+const reply = (text: string) => ({ text, finishReason: 'stop', usage: { inputTokens: 5, outputTokens: 5 } }) as never;
+const stubProvider = { name: 'stub', model: 'stub-model', isAvailable: () => true, getModelInstance: () => ({}), getModel: () => 'stub-model' };
+const providers = { get: (name?: string) => (name === 'cheap' ? { ...stubProvider, name: 'cheap' } : name === 'stub' ? stubProvider : undefined), getDefault: () => stubProvider } as never;
+const tokenBudget = { recordUsage: () => {}, getRemaining: () => 100000, canAfford: () => true, getStatusText: () => 'ok', getUsagePercentage: () => 0 } as never;
+
+describe('fleet tasks (ADR-021)', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+  const managers: BotManager[] = [];
+
+  function makeManager(overrides: Partial<MercuryConfig['bots']> = {}): BotManager {
+    const config = getDefaultConfig() as MercuryConfig;
+    config.bots.maxConcurrent = 4;
+    Object.assign(config.bots, overrides);
+    const m = new BotManager({ config, providers, tokenBudget, store: new BotStore(join(root, 'bots')), userMemoryFactory: () => null });
+    managers.push(m);
+    return m;
+  }
+
+  const idle = (botId: string) => vi.waitFor(() => {
+    expect(manager.getStatusSummaries().find(s => s.id === botId)?.state).not.toBe('running');
+    expect(manager.getQueuedCount(botId)).toBe(0);
+  });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-fleet-tasks-'));
+    store = new BotStore(join(root, 'bots'));
+    manager = makeManager();
+    mockedGenerateText.mockReset();
+    store.create({ id: 'lead', name: 'Lead', manifest: { fleetRole: 'lead' } });
+    manager.addCrew('lead', { id: 'alpha', name: 'Alpha' });
+    manager.addCrew('lead', { id: 'beta', name: 'Beta' });
+  });
+  afterEach(() => {
+    for (const m of managers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('task store: dedupes open goals, tracks batches, finds overdue ones, prunes settled ones', () => {
+    const tasks = new BotTaskStore(join(root, 'tasks'));
+    const batch = tasks.createBatch({ requester: 'lead', label: 'x', deadlineAt: Date.now() - 1 });
+    const a = tasks.createTask({ batchId: batch.id, requester: 'lead', assignee: 'alpha', goal: 'research X' });
+    const again = tasks.createTask({ batchId: batch.id, requester: 'lead', assignee: 'alpha', goal: 'research X' });
+    expect(again.duplicated).toBe(true);
+    expect(again.task.id).toBe(a.task.id);
+    expect(tasks.open({ requester: 'lead' })).toHaveLength(1);
+    expect(tasks.overdueBatches().map(b => b.id)).toEqual([batch.id]);
+    tasks.markBatchNotified(batch.id);
+    expect(tasks.overdueBatches()).toHaveLength(0);
+    tasks.update(a.task.id, { status: 'done', completedAt: Date.now() - 8 * 24 * 3600 * 1000 });
+    expect(tasks.prune()).toBe(1);
+    // Survives a reload: the settled task is gone, the (recent) batch row stays.
+    const reloaded = new BotTaskStore(join(root, 'tasks'));
+    expect(reloaded.tasksInBatch(batch.id)).toHaveLength(0);
+    expect(reloaded.batch(batch.id)?.id).toBe(batch.id);
+  });
+
+  it('fans out a batch and wakes the lead ONCE with a typed digest when every task is done', async () => {
+    const leadPrompts: string[] = [];
+    const crewPrompts: string[] = [];
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
+      const last = opts.messages?.at(-1)?.content ?? '';
+      if (last.includes('Task ') && last.includes('from Lead')) {
+        crewPrompts.push(last);
+        return reply(last.includes('alpha-goal') ? 'Alpha found three sources.' : 'Beta drafted the outline.');
+      }
+      leadPrompts.push(last);
+      return reply('noted');
+    }) as never);
+    const r = manager.delegate('lead', { tasks: [{ bot: 'alpha', goal: 'alpha-goal: find sources for X', acceptance: '3 sources' }, { bot: 'beta', goal: 'beta-goal: outline X' }], label: 'X research' });
+    expect(r.ok).toBe(true);
+    await idle('alpha'); await idle('beta');
+    await vi.waitFor(() => expect(leadPrompts.length).toBe(1));
+    await idle('lead');
+    expect(crewPrompts[0]).toContain('Done means: 3 sources');
+    expect(crewPrompts[0]).toContain('bot_deliver');
+    const digest = leadPrompts[0];
+    expect(digest).toContain('Message from 🤖 fleet');
+    expect(digest).toContain('Batch "X research" is complete (2 tasks)');
+    expect(digest).toContain('✅ Alpha');
+    expect(digest).toContain('Alpha found three sources.');
+    expect(digest).toContain('✅ Beta');
+    expect(manager.tasksFor('lead').every(t => t.status === 'done')).toBe(true);
+    // No per-task "Task complete" mails ever reached the lead.
+    expect(leadPrompts.some(p => p.includes('Task complete (job'))).toBe(false);
+  });
+
+  it('a deadline wakes the lead once with partial results; stragglers report once each', async () => {
+    let releaseBeta!: () => void;
+    const leadMail: string[] = [];
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
+      const last = opts.messages?.at(-1)?.content ?? '';
+      if (last.includes('alpha-goal')) return reply('alpha done');
+      if (last.includes('beta-goal')) return new Promise((resolve) => { releaseBeta = () => resolve(reply('beta done late')); });
+      leadMail.push(last); // the lead's wake drains its mailbox into the prompt
+      return reply('noted');
+    }) as never);
+    const r = manager.delegate('lead', { tasks: [{ bot: 'alpha', goal: 'alpha-goal' }, { bot: 'beta', goal: 'beta-goal' }], label: 'slow', deadlineMinutes: 5 });
+    expect(r.ok).toBe(true);
+    await idle('alpha');
+    // Force the deadline.
+    const batch = manager.tasks.batch((r as { batchId: string }).batchId)!;
+    batch.deadlineAt = Date.now() - 1;
+    manager.tasks.markBatchNotified(batch.id); manager.tasks.update(manager.tasks.tasksInBatch(batch.id)[0].id, {}); // persist the edited deadline
+    (manager.tasks.batch(batch.id) as { notifiedAt?: number }).notifiedAt = undefined;
+    (manager as unknown as { sweepTaskDeadlines: () => void }).sweepTaskDeadlines();
+    const mail = () => [...leadMail, ...manager.peekMailbox('lead').map(m => m.content)];
+    await vi.waitFor(() => expect(mail().some(m => m.includes('1 of 2 tasks done, 1 still running'))).toBe(true));
+    (manager as unknown as { sweepTaskDeadlines: () => void }).sweepTaskDeadlines(); // idempotent
+    await idle('lead');
+    expect(mail().filter(m => m.includes('still running')).length).toBe(1);
+    releaseBeta();
+    await idle('beta');
+    await vi.waitFor(() => expect(mail().some(m => m.includes('Late result for batch "slow"') && m.includes('beta done late'))).toBe(true));
+  });
+
+  it('runs a pipeline stage by stage, hands deliverables forward, promotes the final, wakes the lead at the end', async () => {
+    store.update('lead', m => { m.pipeline = { name: 'article', stages: [
+      { name: 'research', bot: 'alpha', goal: 'Research {{input}}' },
+      { name: 'draft', bot: 'beta', goal: 'Draft from {{previous}}', final: true },
+    ] }; });
+    manager.invalidateRuntime('lead');
+    const seen: string[] = [];
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
+      const last = opts.messages?.at(-1)?.content ?? '';
+      seen.push(last);
+      if (last.includes('Research Oxide')) {
+        const f = join(store.sandboxDir('alpha'), 'dossier.md'); mkdirSync(store.sandboxDir('alpha'), { recursive: true }); writeFileSync(f, '# dossier');
+        const d = manager.deliver('alpha', f, { title: 'Oxide dossier' });
+        return reply(`Research done. Delivered ${d.path}`);
+      }
+      if (last.includes('Draft from')) {
+        const f = join(store.sandboxDir('beta'), 'piece.md'); mkdirSync(store.sandboxDir('beta'), { recursive: true }); writeFileSync(f, '# piece');
+        const d = manager.deliver('beta', f, { title: 'Oxide explained' });
+        // The delivery is reported through the trace in production; here the
+        // wrapper is bypassed, so hand the path back through the journal
+        // shape the task reads: the summary.
+        return reply(`Draft delivered: ${d.path}`);
+      }
+      return reply('noted');
+    }) as never);
+    const r = manager.runPipeline('lead', 'Oxide');
+    expect(r).toMatchObject({ ok: true, total: 2, firstStage: 'research' });
+    await idle('alpha'); await idle('beta');
+    await vi.waitFor(() => expect(seen.some(s => s.includes('Message from 🤖 fleet'))).toBe(true));
+    await idle('lead');
+    const draftPrompt = seen.find(s => s.includes('Draft from'))!;
+    expect(draftPrompt).toContain('pipeline stage "draft" (2/2)');
+    expect(draftPrompt).toContain('Hand-off from the previous stage');
+    const digest = seen.find(s => s.includes('Message from 🤖 fleet'))!;
+    expect(digest).toContain('is complete (2 tasks)');
+    expect(digest).toContain('(research)');
+    expect(digest).toContain('(draft)');
+    expect(manager.tasksFor('lead').map(t => t.status)).toEqual(['done', 'done']);
+  });
+
+  it('promotes a final-stage deliverable from work/<crew>/ to the top of the fleet folder', () => {
+    const work = join(store.deliverablesDir('beta'));
+    mkdirSync(work, { recursive: true });
+    const file = join(work, '2026-10-10 Oxide explained.md');
+    writeFileSync(file, '# piece');
+    const promoted = (manager as unknown as { promoteDeliverable: (lead: string, p: string) => string }).promoteDeliverable('lead', file);
+    expect(promoted).toBe(join(store.deliverablesDir('lead'), '2026-10-10 Oxide explained.md'));
+    expect(existsSync(file)).toBe(false);
+    expect(readFileSync(join(store.deliverablesDir('lead'), 'README.md'), 'utf-8')).toContain(basename(promoted));
+    // Not under the lead's work/ → untouched.
+    expect((manager as unknown as { promoteDeliverable: (lead: string, p: string) => string }).promoteDeliverable('lead', '/nowhere/x.md')).toBe('/nowhere/x.md');
+  });
+
+  it('cancel halts a running task and drops a queued one; fleet tools are attached to leads', async () => {
+    let release!: () => void;
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
+      const last = opts.messages?.at(-1)?.content ?? '';
+      if (last.includes('long job')) return new Promise((resolve) => { release = () => resolve(reply('late')); });
+      return reply('noted');
+    }) as never);
+    const r = manager.delegate('lead', { tasks: [{ bot: 'alpha', goal: 'long job one' }, { bot: 'alpha', goal: 'long job two' }] });
+    expect(r.ok).toBe(true);
+    const [first, second] = (r as { tasks: Array<{ id: string }> }).tasks;
+    await vi.waitFor(() => expect(manager.tasks.get(first.id)?.status).toBe('running'));
+    expect(manager.tasks.get(second.id)?.status).toBe('queued');
+    expect(await manager.cancelTask('lead', second.id)).toEqual({ ok: true });
+    expect(manager.getQueuedCount('alpha')).toBe(0);
+    expect(await manager.cancelTask('lead', first.id)).toEqual({ ok: true });
+    release();
+    await idle('alpha');
+    expect(manager.tasks.get(first.id)?.status).toBe('cancelled');
+    expect(await manager.cancelTask('alpha', first.id)).toMatchObject({ ok: false });
+    const tools = (manager as unknown as { getOrCreateRuntime: (id: string, m: unknown) => { tools: Record<string, unknown> } }).getOrCreateRuntime('lead', store.get('lead'));
+    for (const name of ['fleet_delegate', 'fleet_tasks', 'fleet_status', 'bot_state']) expect(tools.tools[name]).toBeDefined();
+    expect(tools.tools.fleet_pipeline).toBeUndefined();
+    const crewTools = (manager as unknown as { getOrCreateRuntime: (id: string, m: unknown) => { tools: Record<string, unknown> } }).getOrCreateRuntime('alpha', store.get('alpha'));
+    expect(crewTools.tools.fleet_delegate).toBeUndefined();
+    expect(crewTools.tools.bot_state).toBeDefined();
+  });
+
+  it('delegation refuses bots outside the roster and self-delegation', () => {
+    expect(manager.delegate('lead', { tasks: [{ bot: 'ghost', goal: 'anything at all' }] })).toMatchObject({ ok: false });
+    expect(manager.delegate('lead', { tasks: [{ bot: 'lead', goal: 'anything at all' }] })).toMatchObject({ ok: false });
+    expect(manager.runPipeline('lead', 'x')).toMatchObject({ ok: false });
+  });
+
+  it('continuity: the bot sees its recent runs and its own state note instead of writing records', async () => {
+    const prompts: string[] = [];
+    mockedGenerateText.mockImplementation((async (opts: StepOpts & { system?: string }) => { prompts.push(opts.system ?? ''); return reply('done something'); }) as never);
+    store.writeState('alpha', 'Working on: the Oxide dossier. Pending: fact-check.');
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'first' });
+    await idle('alpha');
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'second' });
+    await idle('alpha');
+    expect(prompts[1]).toContain('Your working state');
+    expect(prompts[1]).toContain('Pending: fact-check.');
+    expect(prompts[1]).toMatch(/Your recent runs[\s\S]*chat · completed · message — done something/);
+    expect(prompts[1]).toContain('you do not need to record these');
+    store.writeState('alpha', '');
+    expect(store.readState('alpha')).toBe('');
+  });
+
+  it('crew bots use the configured crew provider when they have none of their own', () => {
+    const m = makeManager({ fleets: { maxCrew: 6, allowLeadSpawn: true, crewProvider: 'cheap' } });
+    expect(m.resolveProviderFor('alpha').name).toBe('cheap');
+    expect(m.resolveProviderFor('lead').name).toBe('stub');
+    store.update('alpha', x => { x.model = { provider: 'stub' as never }; });
+    expect(m.resolveProviderFor('alpha').name).toBe('stub');
+  });
+
+  it('renders prompts and digests', () => {
+    const task = { id: 't1', batchId: 'b', requester: 'lead', assignee: 'alpha', goal: 'do it', acceptance: 'a file', status: 'done' as const, createdAt: 0, result: { outcome: 'deliverable', summary: 'done it', deliverables: ['/x/y.md'] } };
+    expect(renderTaskPrompt(task, 'Lead', { outcome: 'deliverable', summary: 'prev', deliverables: ['/p.md'] })).toContain('- file: /p.md');
+    const digest = renderBatchDigest({ id: 'b', requester: 'lead', wakeWhen: 'all', createdAt: 0 }, [task], (id) => id.toUpperCase());
+    expect(digest).toContain('✅ ALPHA — task t1: done · deliverable');
+    expect(digest).toContain('📁 /x/y.md');
+    expect(DEFAULT_TASK_DEADLINE_MINUTES).toBe(120);
+  });
+});

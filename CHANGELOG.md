@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — fleets that coordinate (ADR-021)
+
+Wave 2 of the bots work: how a lead hands out work and gets it back, how a bot remembers, and how a fleet's standard job runs without a lead turn between every step.
+
+- **Typed tasks with fan-in.** `fleet_delegate` hands several tasks to the crew in one call — each with a goal and what "done" means — and the lead is woken **once** with a digest (status, outcome, delivered files, summary per task) when the batch completes or its deadline passes (default 120 min; stragglers report once each). `bot_send(task: true)` is now a batch of one. `fleet_tasks` lists and cancels; `fleet_status` shows open tasks. Tasks are durable (`tasks.json`) and deduplicated, so a replayed delegation turn never double-dispatches.
+- **Pipelines as data.** A lead's standard job in `bot.yaml` (`pipeline.stages`: name, bot, goal with `{{input}}` / `{{previous}}`, optional `final`). `fleet_pipeline` runs it: stages chain themselves, each handing its deliverable to the next, with no lead turn in between; the lead is woken at the end; a `final` stage's deliverable is promoted to the top of the fleet folder.
+- **Bots remember.** After a productive run, 0–3 durable facts (sources and their quality, decisions, where things are, what to avoid) are extracted into the bot's own memory (`memory.learn: false` disables). Every turn also starts with a digest of the last five runs from the journal and the bot's own working-state note (`bot_state`, ≤1500 chars, replaced not appended) — the legitimate version of the status files bots used to write.
+- **Cheaper crew.** `bots.fleets.crewProvider` routes crew bots without a provider of their own to a cheaper lane; leads keep the default.
+- `/bots tasks <leadId>` shows a lead's open and recent tasks from the TUI.
+
 ## Unreleased — bots that do work (ADR-020)
 
 An audit of eleven days of real fleets found bots spending 617M input tokens (a median turn of 750k, the largest 6.6M), failing 38% of runs, and mostly writing notes about earlier runs. This wave gives every bot turn a governor, every routine a gate, every run an outcome verdict, and every owner a folder they can find.

@@ -21,6 +21,8 @@ export const BOT_ENV_FILENAME = '.env';
 export const BOT_JOURNAL_FILENAME = 'journal.jsonl';
 /** Per-run compact transcripts (tool trace + reply), pruned by retention.transcriptRuns. */
 export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
+/** The bot's own working-state note (bot_state) — ADR-021. */
+export const BOT_STATE_FILENAME = 'state.md';
 /** Routine state (paused routines, no-outcome streaks) — ADR-020. */
 export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
 /**
@@ -264,6 +266,24 @@ export class BotStore {
       lines.push('', '_Maintained by Mercury. Delete files freely; this index is rewritten on the next delivery._');
       writeFileSync(join(dir, 'README.md'), lines.join('\n') + '\n', 'utf-8');
     } catch { /* an index is a convenience, never a failure */ }
+  }
+
+  /** The bot's working-state note; '' when none. */
+  readState(id: string): string {
+    try {
+      return readFileSync(join(this.botDir(id), BOT_STATE_FILENAME), 'utf-8').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  writeState(id: string, state: string): void {
+    const file = join(this.botDir(id), BOT_STATE_FILENAME);
+    if (!state) {
+      try { rmSync(file, { force: true }); } catch { /* nothing to clear */ }
+      return;
+    }
+    atomicWrite(file, state + '\n');
   }
 
   readRoutineState(id: string): BotRoutineState {
