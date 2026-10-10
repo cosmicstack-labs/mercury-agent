@@ -37,6 +37,24 @@ function copyDirSync(src, dest) {
   console.log('  ✓ patched ink is bundled (vendor/ink)');
 }
 
+// 0b. Standalone binaries have no node_modules: a CommonJS `require("pkg")`
+// left in the bundle resolves at runtime only, so `bun build --compile`
+// cannot see it and the binary throws "Cannot find package" when that code
+// first runs (react-reconciler → react broke the TUI this way). Only node
+// builtins may be required at runtime.
+{
+  const { builtinModules } = require('node:module');
+  const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'mercury.js'), 'utf8');
+  const runtime = new Set([...bundle.matchAll(/__require\("([^"]+)"\)/g)].map((m) => m[1]));
+  const foreign = [...runtime].filter((id) => !id.startsWith('node:') && !builtinModules.includes(id.split('/')[0]));
+  if (foreign.length) {
+    console.error(`  ✗ runtime require of bundled-away packages (breaks standalone binaries): ${foreign.join(', ')}`);
+    console.error('    add them to tsup noExternal so they are bundled');
+    process.exit(1);
+  }
+  console.log('  ✓ no runtime requires of npm packages (binary-safe)');
+}
+
 // 1. Copy src/web/static -> dist/web/static
 const staticSrc = path.join(__dirname, '..', 'src', 'web', 'static');
 const staticDest = path.join(__dirname, '..', 'dist', 'web', 'static');

@@ -55,7 +55,13 @@ export default defineConfig({
     "globalThis.__MERCURY_VERSION__": JSON.stringify(channelVersion),
     "globalThis.__MERCURY_CHANNEL_VERSION__": JSON.stringify(channelStamp),
   },
-  noExternal: ["ink"],
+  // React is bundled too. The vendored ink bundles react-reconciler, a
+  // CommonJS module whose `require("react")` would otherwise stay a runtime
+  // lookup: fine with node_modules on disk, fatal in a Bun-compiled binary
+  // ("Cannot find package 'react'" at the first render). Bundling also
+  // guarantees one React instance. post-build.cjs fails on any such
+  // runtime require of a non-builtin package.
+  noExternal: ["ink", /^react($|\/)/],
   esbuildOptions(options) {
     options.alias = { ...(options.alias ?? {}), ink: VENDORED_INK };
   },
