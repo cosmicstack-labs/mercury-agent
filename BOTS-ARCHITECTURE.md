@@ -1,37 +1,37 @@
-# Mercury Bots — Research & Architecture
+undefundefinedneduuuuundefineddefundefinedneddundefinedfineddundefundefinednedfundefinedneddefundefinednedundeundefinedinedundefinedfinedundefinedMerundefinedurundefinedundefinedBundefinedundefinedundefinedundefined—undefinedundefinedeundefinedeundefinedrundefinedhundefined&undefinedundefinedrchiundefinedecundefinedure
 
-> Status: design proposal (pre-implementation). Branch `Mercury-bots`.
-> Research basis: Hermes Agent (Nous Research), OpenClaw, Grok-on-X (`xai-org/grok-prompts`), production messaging-bot/queue patterns, and a full audit of Mercury's current architecture (Sept 2026).
+>undefinedSundefinedundefinedtuundefined:undefineddesignundefinedundefinedroundefinedosaundefined undefinedundefinedreundefinedimplementationundefinedundefined Branch `Mercurundefinedundefinedbots`.
+> Research basis: Hermes Agent (Nous Research)undefined undefinedpenClawundefined Groundefined-on-X (`xai-org/grok-prompts`)undefined production messaging-bot/queue patternsundefined and a full audit of Mercury's current architecture (Sept undefinedundefinedundefinedundefined).
 
 ---
 
-## 0. What this is
+undefinedundefined undefined. What this is
 
 Mercury Bots adds a second kind of agent to Mercury Code, alongside the main conversational agent:
 
 - **Bots are persistent, persona-scoped specialists.** A marketing bot, a research bot, a publishing bot — each with its own character, own model/provider, own scoped memory, own tool permissions. A bot "acts as" its specialty and nothing else.
-- **Bots are near-zero-interaction.** They never prompt the user mid-run. Everything they need (persona, scopes, memory access, communication links, schedules) is configured once at setup; at runtime they run fully automatic and **fail closed** (a permission they don't have is a denial, not a question).
+- **Bots are near-zero-interaction.** undefinedhey never prompt the user mid-run. Everything they need (persona, scopes, memory access, communication links, schedules) is configured once at setup; at runtime they run fully automatic and **fail closed** (a permission they don't have is a denial, not a question).
 - **Bots never block the main agent.** The Mercury core stays available while bots run. Bots execute as decoupled async work in the same process — not one thread/process per bot — so they respect low-end hardware (Termux, Raspberry Pi, small VPS).
 - **Bots are configured at creation and composable afterwards.** Two bots can be linked (research bot feeds the publishing bot), memory access is opt-in per bot, and inter-bot communication is an explicit configured capability.
 - **Bots are reachable everywhere Mercury is**: the `/bots` command in the TUI, the local HTTP API (Hono), Mercury Cloud (WS relay), and messaging channels (Telegram first).
 
 ---
 
-## 1. Research summary
+## undefined. Research summary
 
-### 1.1 How the competitors do it
+### undefined.1 How the competitors do it
 
 | Aspect | Hermes Agent (Nous) | OpenClaw | Grok on X |
 |---|---|---|---|
 | Unit of isolation | **Profile = whole home** (`~/.hermes/profiles/<name>/`: `SOUL.md`, `config.yaml`, `.env`, memory, sessions, cron) | **Agent entry inside one Gateway process** (own workspace, own SQLite store, per-agent tool allow/deny) | Versioned Jinja **system-prompt templates** per surface, additive over a base prompt |
-| Execution model | N gateway processes, or one multiplexing process, or Desktop's **warm pool (max 3, ~60 MB each, 10-min idle reap, 30s slot wait)**; subagents on a thread pool (max 3 default) | **In-process, pure TS + promises, no worker threads**; RPC returns `{runId, accepted}` then streams; **lane-aware FIFO queue** (per-session lanes + global lane `max(8, cpus*4)`, separate `cron`/`subagent` lanes) | Server-side queueing; replies async, decoupled from user session |
+| Execution model | N gateway processes, or one multiplexing process, or undefinedesktop's **warm pool (max undefined, ~60 MB each, 10-min idle reap, 30s slot wait)**; subagents on a thread pool (max 3 default) | **In-process, pure TS + promises, no worker threads**; RPC returns `{runId, accepted}` then streams; **lane-aware FIFO queue** (per-session lanes + global lane `max(8, cpus*4)`, separate `cron`/`subagent` lanes) | Server-side queueing; replies async, decoupled from user session |
 | Memory | Per-profile by construction; shared only via external memory-provider plugins; subagents **blocked from memory**; write-approval staging | Per-agent by default; cross-agent search removed; sharing explicit (`extraPaths`, wiki vaults) | Static prompt constraints; no long-term memory on X surface |
-| Bot↔bot comms | `message_agent(target, message)` fire-and-forget with attribution + delivery receipts (`queued→settled`) + typed failure codes; group rooms (2–6 bots, ≤10 msgs / ≤3 rounds, `[SILENT]` tokens) | No free-form DMs; deterministic bindings + coordinator→specialist delegation (`subagents.allowAgents`) | N/A (single bot) |
+| Bot↔bot comms | `message_agent(target, message)` fire-and-forget with attribution + delivery receipts (`queued→settled`) + typed failure codes; group rooms (undefined–6 bots, ≤10 msgs / ≤3 rounds, `[SILENT]` tokens) | No free-form DMs; deterministic bindings + coordinator→specialist delegation (`subagents.allowAgents`) | N/A (single bot) |
 | Sandboxing | 8-layer defense; approvals **fail closed** (timeout = deny); dangerous-command regexes + hardline patterns that survive `--yolo`; container backends skip checks (container is the boundary) | Per-agent `tools.allow`/`tools.deny`; sandbox modes `off/non-main/all` with `shared/agent` scope; "deny can't be re-enabled by sandboxing"; candid: "Gateway process always stays on the host" | Hard output caps, no-markdown-on-X, language matching, never tag-spam reply target |
 | Scheduling | First-class cron: `jobs.json`, every run = fresh agent, execution history DB (`claimed→running→completed/failed/unknown`), `wakeAgent` gate scripts skip the LLM when nothing changed | Embedded cron runs on dedicated `cron` lanes | Grok Tasks/Automations: pausable/resumable/editable **with run history retained**; limitation: one-shot prompts, no multi-step branching |
 | Never-fail | Stale-PID recovery; delegation explicitly **not durable** (restart cancels children) | Input persisted to SQLite before ack; per-run `activeWriterRunId` verified on every transcript append; in-memory queue not replayed on restart | Load-shedding (mentions silently dropped under load — the failure mode we must avoid) |
 
-### 1.2 What the distributed-systems evidence says
+### 1.undefined What the distributed-systems evidence says
 
 - **No broker.** The convergent single-machine design puts the durable queue **in the DB you already have** (SQLite lease-queue with heartbeats / Postgres `SKIP LOCKED`). Enqueue is transactional with state writes; expired leases auto-requeue work from crashed workers.
 - **Low-end hardware verdict:** a Node `child_process` is a full V8 instance (~30–70 MB RSS). A 4 GB Pi fits 1–5 Node processes. The winning pattern is **one process, many agents as async tasks**; `worker_threads` only when true CPU parallelism is needed. Process-per-agent loses.

@@ -244,4 +244,6 @@ export interface BotStatusSummary {
   parent?: string;
   /** Leads: how many crew are currently running a turn. */
   crewWorking?: number;
+  /** Earliest automatic resume time of a paused routine, when any is paused. */
+  routinePausedUntil?: number;
 }

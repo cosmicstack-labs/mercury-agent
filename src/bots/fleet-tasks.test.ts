@@ -379,3 +379,107 @@ describe('fleet operations (ADR-022)', () => {
     expect(manager.clearDlq()).toBe(0);
   });
 });
+
+// ── Liveness contract (§2.14): idle, never dead ───────────────────────────
+
+describe('liveness contract', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+  const managers: BotManager[] = [];
+  type StepOpts3 = { onStepFinish?: (step: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => void };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-liveness-'));
+    store = new BotStore(join(root, 'bots'));
+    const config = getDefaultConfig() as MercuryConfig;
+    config.bots.maxConcurrent = 4;
+    manager = new BotManager({ config, providers, tokenBudget, store, userMemoryFactory: () => null });
+    managers.push(manager);
+    mockedGenerateText.mockReset();
+    store.create({ id: 'watch', name: 'Watch' });
+  });
+  afterEach(() => {
+    for (const m of managers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const idle = (botId: string) => vi.waitFor(() => {
+    expect(manager.getStatusSummaries().find(s => s.id === botId)?.state).not.toBe('running');
+    expect(manager.getQueuedCount(botId)).toBe(0);
+  });
+
+  it('a no-outcome cooldown ends by itself, backs off, and resets after a productive run', async () => {
+    const alerts: string[] = [];
+    manager.setAlert(async (m) => { alerts.push(m); });
+    store.update('watch', m => { m.schedules = [{ name: 'cycle', cron: '0 * * * *', prompt: 'cycle' }]; });
+    mockedGenerateText.mockImplementation((async () => reply('nothing happened, wrote a note')) as never);
+    for (let i = 1; i <= 3; i++) {
+      expect(manager.enqueue('watch', { trigger: 'cron', prompt: `cycle ${i}`, routineId: 'bot:watch:cycle' }).accepted).toBe(true);
+      await idle('watch');
+    }
+    let state = store.readRoutineState('watch');
+    const entry = state.paused['bot:watch:cycle']!;
+    expect(entry.until).toBeDefined();
+    expect(Date.parse(entry.until!) - Date.now()).toBeGreaterThan(5.9 * 3600 * 1000);
+    expect(alerts.some(a => a.includes('resumes automatically'))).toBe(true);
+    expect(manager.getStatusSummaries().find(s => s.id === 'watch')?.routinePausedUntil).toBe(Date.parse(entry.until!));
+    // The bot is still online for chat and mail while the routine cools down.
+    expect(manager.enqueue('watch', { trigger: 'chat', prompt: 'are you there?' }).accepted).toBe(true);
+    await idle('watch');
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'cycle 4', routineId: 'bot:watch:cycle' })).toMatchObject({ accepted: false, reasonCode: 'routine_paused' });
+    // Cooldown over → the tick runs again with a clean streak.
+    entry.until = new Date(Date.now() - 1).toISOString();
+    store.writeRoutineState('watch', state);
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'cycle 5', routineId: 'bot:watch:cycle' }).accepted).toBe(true);
+    await idle('watch');
+    state = store.readRoutineState('watch');
+    expect(state.paused['bot:watch:cycle']).toBeUndefined();
+    expect(state.noOutcomeStreak['bot:watch:cycle']).toBe(1);
+    expect(state.pauseCount?.['bot:watch:cycle']).toBe(1);
+    // Second cooldown doubles.
+    for (let i = 6; i <= 7; i++) { manager.enqueue('watch', { trigger: 'cron', prompt: `cycle ${i}`, routineId: 'bot:watch:cycle' }); await idle('watch'); }
+    state = store.readRoutineState('watch');
+    expect(Date.parse(state.paused['bot:watch:cycle']!.until!) - Date.now()).toBeGreaterThan(11.9 * 3600 * 1000);
+    // A productive run resets the backoff.
+    state.paused = {}; store.writeRoutineState('watch', state);
+    mockedGenerateText.mockImplementation((async (opts: StepOpts3) => {
+      opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'run_command', toolCallId: 'c', input: { command: 'npm run build' } }], toolResults: [{ toolCallId: 'c', output: { type: 'text', value: 'ok' } }] });
+      return reply('built it');
+    }) as never);
+    manager.enqueue('watch', { trigger: 'cron', prompt: 'cycle 8', routineId: 'bot:watch:cycle' });
+    await idle('watch');
+    expect(store.readRoutineState('watch').pauseCount?.['bot:watch:cycle']).toBeUndefined();
+  });
+
+  it('a cadence declared in bot.yaml is honoured as written; bot-created routines get the 30-minute floor', async () => {
+    mockedGenerateText.mockImplementation((async () => reply('ok')) as never);
+    store.update('watch', m => { m.schedules = [{ name: 'fast', cron: '*/5 * * * *', prompt: 'x' }]; });
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'fast 1', routineId: 'bot:watch:fast' }).accepted).toBe(true);
+    await idle('watch');
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'fast 2', routineId: 'bot:watch:fast' }).accepted).toBe(true);
+    await idle('watch');
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'self 1', routineId: 'bot:watch:routine-self' }).accepted).toBe(true);
+    await idle('watch');
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'self 2', routineId: 'bot:watch:routine-self' })).toMatchObject({ accepted: false, reasonCode: 'too_soon' });
+  });
+
+  it('a budget-paused bot with queued work resumes at the day rollover from the sweep alone', async () => {
+    store.update('watch', m => { m.autonomy = { dailyTokenBudget: 100 }; });
+    const runs: string[] = [];
+    mockedGenerateText.mockImplementation((async (opts: StepOpts3 & { messages?: Array<{ content: string }> }) => {
+      runs.push(opts.messages?.at(-1)?.content ?? '');
+      opts.onStepFinish?.({ usage: { inputTokens: 150, outputTokens: 1 }, toolCalls: [], toolResults: [] });
+      return reply('ok');
+    }) as never);
+    manager.enqueue('watch', { trigger: 'chat', prompt: 'first' });
+    manager.enqueue('watch', { trigger: 'chat', prompt: 'second' });
+    await vi.waitFor(() => expect(manager.getStatusSummaries().find(s => s.id === 'watch')?.state).toBe('paused'));
+    expect(runs).toEqual(['first']);
+    expect(manager.getQueuedCount('watch')).toBe(1);
+    // Midnight: the usage row belongs to yesterday. Nothing new arrives; the sweep runs.
+    (manager as unknown as { dailyTokens: Map<string, { day: string; tokens: number }> }).dailyTokens.set('watch', { day: '2000-01-01', tokens: 150 });
+    (manager as unknown as { resumeDueJobs: () => void }).resumeDueJobs();
+    await idle('watch');
+    expect(runs).toEqual(['first', 'second']);
+  });
+});

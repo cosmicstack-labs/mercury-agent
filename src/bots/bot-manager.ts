@@ -108,6 +108,9 @@ export interface BotManagerDeps {
 const MAX_TRANSIENT_ATTEMPTS = 3;
 /** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
 export const NO_OUTCOME_PAUSE_AFTER = 3;
+/** First no-outcome cooldown; doubles per repeat up to NO_OUTCOME_PAUSE_MAX_MS. A pause always ends by itself. */
+export const NO_OUTCOME_PAUSE_MS = 6 * 60 * 60 * 1000;
+export const NO_OUTCOME_PAUSE_MAX_MS = 24 * 60 * 60 * 1000;
 /** A delegated batch wakes its requester with partial results after this long (ADR-021). */
 export const DEFAULT_TASK_DEADLINE_MINUTES = 120;
 const MAILBOX_CAPACITY = 100;
@@ -322,6 +325,12 @@ export class BotManager {
       if (this.disabled.has(job.botId) || this.held.has(job.botId)) continue;
       this.reenterJob(job);
     }
+    // Liveness: a bot paused for its daily budget with work already queued
+    // has nothing new arriving to pump it — the sweep does, so the pause
+    // ends at the day rollover rather than at the next trigger.
+    for (const [botId, queue] of this.queues) {
+      if (queue.length > 0 && !this.held.has(botId)) this.pump(botId);
+    }
   }
 
   /** Re-enter a durable job into its bot's in-memory lane unless that id is
@@ -381,7 +390,17 @@ export class BotManager {
     // producing nothing. The next tick tries again.
     if (job.trigger === 'cron') {
       const key = job.routineId ?? `bot:${botId}:cron`;
-      if (this.store.readRoutineState(botId).paused[key]) return { jobId: '', accepted: false, reasonCode: 'routine_paused' };
+      const routineState = this.store.readRoutineState(botId);
+      const pausedEntry = routineState.paused[key];
+      if (pausedEntry) {
+        const until = pausedEntry.until ? Date.parse(pausedEntry.until) : Number.POSITIVE_INFINITY;
+        if (Date.now() < until) return { jobId: '', accepted: false, reasonCode: 'routine_paused' };
+        // Cooldown over: the routine is live again with a clean streak (liveness contract).
+        delete routineState.paused[key];
+        delete routineState.noOutcomeStreak[key];
+        this.store.writeRoutineState(botId, routineState);
+        logger.info({ botId, routineKey: key }, 'Bot routine cooldown over — resuming');
+      }
       if (queue.length > 0 || (this.running.get(botId)?.size ?? 0) > 0) return { jobId: '', accepted: false, reasonCode: 'busy' };
       const lastEnd = this.routineLastEnd.get(key);
       const minGapMs = this.routineConfig(manifest, key).minIntervalMinutes * 60_000;
@@ -415,9 +434,12 @@ export class BotManager {
   /** A routine's declared contract (bot.yaml schedules) or the defaults. */
   private routineConfig(manifest: BotManifest, routineKey: string): { expects: BotExpectedOutcome; minIntervalMinutes: number } {
     const declared = (manifest.schedules ?? []).find(r => `bot:${manifest.id}:${r.name}` === routineKey);
+    // A cadence the owner declared in bot.yaml is honoured as written (the
+    // busy-skip still applies); routines a bot created for itself are
+    // rate-limited to 30 minutes unless the owner says otherwise.
     return {
       expects: declared?.expects ?? 'work',
-      minIntervalMinutes: declared?.minIntervalMinutes ?? 30,
+      minIntervalMinutes: declared?.minIntervalMinutes ?? (declared ? 0 : 30),
     };
   }
 
@@ -825,13 +847,21 @@ export class BotManager {
           const streak = (state.noOutcomeStreak[routineKey] ?? 0) + 1;
           state.noOutcomeStreak[routineKey] = streak;
           if (streak >= NO_OUTCOME_PAUSE_AFTER) {
-            state.paused[routineKey] = { since: new Date().toISOString(), reason: `${streak} consecutive runs produced no deliverable or action` };
+            // Cooldown, not a stop: the routine resumes by itself (6h, doubling
+            // to 24h while it keeps producing nothing). The bot stays online
+            // for chat, mail and tasks throughout.
+            const pauses = (state.pauseCount?.[routineKey] ?? 0) + 1;
+            const cooldownMs = Math.min(NO_OUTCOME_PAUSE_MAX_MS, NO_OUTCOME_PAUSE_MS * 2 ** (pauses - 1));
+            const until = new Date(Date.now() + cooldownMs);
+            state.paused[routineKey] = { since: new Date().toISOString(), until: until.toISOString(), reason: `${streak} consecutive runs produced no deliverable or action` };
+            state.pauseCount = { ...(state.pauseCount ?? {}), [routineKey]: pauses };
             delete state.noOutcomeStreak[routineKey];
-            logger.warn({ botId, routineKey, streak }, 'Bot routine paused — no outcome in consecutive runs');
-            void this.alertOwner(botId, `⏸ **${manifest.name}**'s routine \`${routineKey.split(':').pop()}\` is paused: ${streak} runs in a row produced no deliverable or action (only notes). It will not fire again until \`/bots start ${botId}\`. Check its persona for instructions that reward activity over results.`);
+            logger.warn({ botId, routineKey, streak, resumesAt: until.toISOString() }, 'Bot routine cooling down — no outcome in consecutive runs');
+            void this.alertOwner(botId, `⏸ **${manifest.name}**'s routine \`${routineKey.split(':').pop()}\` is cooling down for ${Math.round(cooldownMs / 3600000)}h: ${streak} runs in a row produced no deliverable or action (only notes). It resumes automatically at ${until.toISOString().slice(11, 16)} UTC; \`/bots start ${botId}\` resumes it now. The bot still answers chat, mail and tasks meanwhile. Check its persona for instructions that reward activity over results.`);
           }
         } else {
           delete state.noOutcomeStreak[routineKey];
+          if (state.pauseCount?.[routineKey]) delete state.pauseCount[routineKey];
         }
         this.store.writeRoutineState(botId, state);
       }
@@ -1591,7 +1621,7 @@ export class BotManager {
     // resume with a clean streak.
     const routines = this.store.readRoutineState(botId);
     if (Object.keys(routines.paused).length > 0 || Object.keys(routines.noOutcomeStreak).length > 0) {
-      this.store.writeRoutineState(botId, { paused: {}, noOutcomeStreak: {} });
+      this.store.writeRoutineState(botId, { paused: {}, noOutcomeStreak: {}, pauseCount: {} });
     }
     let resumed = this.rehydratePending(botId);
     if (!manifest.enabled || this.disabled.has(botId)) {
@@ -1685,8 +1715,17 @@ export class BotManager {
         crewWorking: m.fleetRole === 'lead'
           ? this.store.crewOf(m.id).filter(c => (this.running.get(c.id)?.size ?? 0) > 0).length
           : undefined,
+        routinePausedUntil: this.routinePausedUntil(m.id),
       };
     });
+  }
+
+  /** Earliest automatic resume among a bot's cooling-down routines. */
+  private routinePausedUntil(botId: string): number | undefined {
+    const paused = Object.values(this.store.readRoutineState(botId).paused);
+    if (paused.length === 0) return undefined;
+    const times = paused.map(p => (p.until ? Date.parse(p.until) : Number.POSITIVE_INFINITY));
+    return Math.min(...times);
   }
 
   getJournal(botId: string, limit = 20): BotRunRecord[] {

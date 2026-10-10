@@ -64,9 +64,12 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
       const lastRun = s.lastRunAt ? ` · last run ${s.lastRunState ?? '?'} ${formatRelative(s.lastRunAt)}` : '';
       const activity = s.activity ? `\n${indent}   ↳ ${s.activity}` : '';
       const attention = s.needsYou ? ' · ⚠ needs you' : '';
+      const cooling = s.routinePausedUntil !== undefined
+        ? (Number.isFinite(s.routinePausedUntil) ? ` · ⏸ routine cooling down, resumes ${formatRelative(s.routinePausedUntil)}` : ' · ⏸ routine paused')
+        : '';
       // Where the owner finds results — on the fleet's folder, not per crew.
       const folder = !s.parent ? `\n${indent}   📁 ${tildify(bm.store.deliverablesDir(s.id))}` : '';
-      return `${indent}${icon} **${s.name}** (${s.id})${badge} — ${s.state}${crewNote}${attention}${lastRun}${folder}${activity}`;
+      return `${indent}${icon} **${s.name}** (${s.id})${badge} — ${s.state}${crewNote}${attention}${cooling}${lastRun}${folder}${activity}`;
     };
     const lines: string[] = [`**Bots** (${summaries.length})`, ''];
     const rendered = new Set<string>();
