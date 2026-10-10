@@ -2,6 +2,7 @@ import React from 'react';
 import { EventEmitter } from 'node:events';
 import { render } from 'ink';
 import fs from 'node:fs';
+import { inspect } from 'node:util';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFile, execFileSync } from 'node:child_process';
@@ -530,6 +531,7 @@ export class CLIChannel extends BaseChannel {
   readonly type = 'cli' as const;
   private agentName: string;
   private inkInstance: ReturnType<typeof render> | null = null;
+  private restoreConsole: (() => void) | null = null;
   private inputHandler: ((text: string) => void) | null = null;
   private exitHandler: (() => void) | null = null;
   /** Esc-during-a-turn: installed by the boot path with the agent's stop
@@ -646,6 +648,8 @@ export class CLIChannel extends BaseChannel {
     // Unmount may throw on a corrupted Yoga heap; shutdown must still
     // release the output wrapper and restore the terminal.
     try { inkInstance?.unmount(); } catch { /* best effort teardown */ }
+    this.restoreConsole?.();
+    this.restoreConsole = null;
     this.stateListeners.clear();
     this.tuiOutput?.dispose();
     this.tuiOutput = null;
@@ -1261,6 +1265,7 @@ export class CLIChannel extends BaseChannel {
     // Single mount. Every later UI update flows through useSyncExternalStore
     // notifications — never inkInstance.rerender(), whose synchronous
     // reconciler entry caused re-entrant commits and Yoga WASM corruption.
+    this.captureConsole();
     this.inkInstance = render(
       React.createElement(TuiApp, {
         channel: this,
@@ -1280,6 +1285,31 @@ export class CLIChannel extends BaseChannel {
       }),
       { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
     );
+  }
+
+  /**
+   * While the TUI owns the terminal nothing may print behind the renderer's
+   * back. The renderer redraws only the rows that changed and assumes the
+   * screen holds exactly what it last wrote; a stray console line (a library
+   * warning, say) shifts everything down, the next erase misses rows, and the
+   * "Processing" block stays frozen in the transcript. Console output goes to
+   * the logger instead (silent unless --verbose) until teardown.
+   */
+  private captureConsole(): void {
+    /* eslint-disable no-console -- this is the console redirect itself */
+    if (this.restoreConsole) return;
+    const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+    const original = methods.map((m) => [m, console[m]] as const);
+    for (const m of methods) {
+      console[m] = (...args: unknown[]) => {
+        const level = m === 'error' ? 'error' : m === 'warn' ? 'warn' : 'debug';
+        logger[level]({ console: m }, args.map((a) => (typeof a === 'string' ? a : inspect(a))).join(' '));
+      };
+    }
+    this.restoreConsole = () => {
+      for (const [m, fn] of original) console[m] = fn;
+    };
+    /* eslint-enable no-console */
   }
 
   private inkPatchWarned = false;

@@ -86,7 +86,7 @@ import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPro
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
-import { buildSystemPrompt as assembleSystemPrompt } from './system-prompt.js';
+import { buildSystemPrompt as assembleSystemPrompt, budgetContext } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -391,6 +391,13 @@ class ToolCallLoopDetector {
     this.consecutiveNoActionSteps = 0;
   }
 }
+
+// AI SDK warnings go to Mercury's logger, never straight to the terminal: a raw
+// console.warn lands in the middle of the TUI's live region and the renderer
+// then erases the wrong rows (a stuck "Processing" block in the transcript).
+(globalThis as { AI_SDK_LOG_WARNINGS?: unknown }).AI_SDK_LOG_WARNINGS = (options: { warnings: unknown[]; provider?: string; model?: string }) => {
+  logger.warn({ warnings: options.warnings, provider: options.provider, model: options.model }, 'AI SDK warning');
+};
 
 // Test/soak override: MERCURY_MAX_STEPS=3 forces cheap step-budget
 // exhaustion to exercise the completion contract end to end.
@@ -1614,6 +1621,9 @@ export class Agent {
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
     const stream = streamText({
       model: opts.provider.getModelInstance(),
+      // Mercury builds this system message itself (trusted, not user input);
+      // opting in stops the SDK printing a warning on every call.
+      allowSystemInMessages: true,
       messages: this.withCachedSystem(opts.systemPrompt, opts.messages, opts.volatileSystem),
       tools: this.capabilities.getTools(),
       maxOutputTokens: opts.maxOutputTokens,
@@ -2429,6 +2439,7 @@ export class Agent {
       // fake user/assistant dialogue: the fake "Noted. I'll keep this in
       // mind." turns primed terse acknowledgements and polluted history.
       const contextBlocks: string[] = [];
+      contextBlocks.push(budgetContext(this.tokenBudget.getStatusText(), this.tokenBudget.getUsagePercentage()));
 
       const loopWarning = detectRepetitionLoop(recentMemory);
       if (loopWarning) contextBlocks.push(loopWarning);
@@ -2951,6 +2962,9 @@ export class Agent {
             let streamAborted = false;
             const streamResult = streamText({
               model: provider.getModelInstance(),
+              // Mercury builds this system message itself (trusted, not user input);
+              // opting in stops the SDK printing a warning on every call.
+              allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: providerMaxOutputTokens,
@@ -3064,6 +3078,9 @@ export class Agent {
                 const continueResult: Awaited<ReturnType<typeof streamText>> = await this.withProviderDeadline(
                   Promise.resolve(streamText({
                     model: provider.getModelInstance(),
+                    // Mercury builds this system message itself (trusted, not user input);
+                    // opting in stops the SDK printing a warning on every call.
+                    allowSystemInMessages: true,
                     messages: this.withCachedSystem(systemPrompt, [
                       ...providerMessages,
                       { role: 'assistant', content: continuationText },
@@ -3112,6 +3129,9 @@ export class Agent {
           } else {
             result = await this.withProviderDeadline(generateText({
               model: provider.getModelInstance(),
+              // Mercury builds this system message itself (trusted, not user input);
+              // opting in stops the SDK printing a warning on every call.
+              allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
               tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
               maxOutputTokens: providerMaxOutputTokens,
@@ -3449,6 +3469,9 @@ export class Agent {
           const guardDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           const guardStream = streamText({
             model: guardProvider.getModelInstance(),
+            // Mercury builds this system message itself (trusted, not user input);
+            // opting in stops the SDK printing a warning on every call.
+            allowSystemInMessages: true,
             messages: this.withCachedSystem(systemPrompt, messages, volatileSystem),
             tools: this.capabilities.getTools(),
             maxOutputTokens: effectiveMaxOutputTokens,
@@ -4010,8 +4033,6 @@ export class Agent {
       botSection: this.botManager ? this.botManager.getSystemPromptSection() : '',
       programmingSuffix: this.programmingMode.getSystemPromptSuffix(),
       researchSuffix: this.researchMode.getSystemPromptSuffix(),
-      budgetStatus: this.tokenBudget.getStatusText(),
-      budgetUsagePercentage: this.tokenBudget.getUsagePercentage(),
       saverSuffix: this.saverMode.getSystemPromptSuffix(),
       cwd: this.capabilities.getCwd(),
       now: new Date(),

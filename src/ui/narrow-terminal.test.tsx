@@ -107,26 +107,23 @@ describe('layout rules', () => {
 });
 
 describe(`TUI at ${COLS} columns`, () => {
-  it('splash collapses to one column with no logo art', async () => {
-    const { rows, unmount } = await renderApp(state({ mode: 'splash' }), 'Core');
+  it('splash fits 50 columns: wordmark, live checklist, no wrapped rows', async () => {
+    const { rows, unmount } = await renderApp(state({ mode: 'splash', web: null, skills: [] }), 'Workspace');
     expectFits(rows);
-    expect(rows.join('\n')).not.toContain('╭─╮'); // the 26-col mark is gone
-    expect(rows[0]).toContain('MERCURY');
-    expect(rows.some((r) => r.includes('Provider: deepseek · deepseek-chat'))).toBe(true);
-    // snapshot-ish: the whole collapsed splash, row by row
-    expect(rows.map((r) => r.trimStart())).toEqual([
-      '☿ MERCURY',
-      'Your soul-driven AI agent',
-      '─'.repeat(48),
-      '● Core booting',
-      '● Provider ready',
-      '● Skills 0/0',
-      '─'.repeat(48),
-      'Version: 1.3.1',
-      'Provider: deepseek · deepseek-chat',
-      '─'.repeat(48),
-      'Initializing Mercury...',
+    const trimmed = rows.map((r) => r.trimStart());
+    const at = trimmed.findIndex((r) => r.startsWith('Your soul-driven AI agent'));
+    expect(at).toBeGreaterThan(0);
+    expect(trimmed[at]).toMatch(/v1\.3\.1$/);
+    expect(trimmed.slice(at + 1, at + 7)).toEqual([
+      '',
+      '✓ Provider   deepseek · deepseek-chat',
+      '· Skills     none installed',
+      '· Web        off',
+      '· Budget     ' + (1200).toLocaleString() + ' / ' + (100000).toLocaleString() + ' today',
+      trimmed[at + 6],
     ]);
+    expect(trimmed[at + 6]).toMatch(/^· Workspace {2}/);
+    expect(trimmed.slice(at + 7, at + 10)).toEqual(['', 'Type to start chatting', '/code  Mercury Code here   Tab  skills']);
     unmount();
   });
 

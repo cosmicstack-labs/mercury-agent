@@ -7,43 +7,21 @@ import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { IS_LIGHT_TERMINAL } from '../utils/terminal-theme.js';
-import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
 import { CursorCell } from './cursor-anchor.js';
-import { isNarrow, ruleWidth, sidePanelWidth, fitText, fitTail, hintColumns } from './layout.js';
+import { isNarrow, ruleWidth, sidePanelWidth, fitTail, hintColumns } from './layout.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
 import { GENERIC_PHASES, PLANNING_VERBS, lastUserText, pickStatusWord } from './status-word.js';
 import { nextTip, rotateTip } from './tips.js';
+import { LaunchPad } from './launch-pad.js';
 import { SLASH_COMMANDS, buildSlashSuggestions, buildSkillSuggestions, skillFillText, shouldSubmitSlash, pushHistoryLine, historyPrev, historyNext, createInputHistoryState, SuggestionList, applyEditKey, isPasteChunk, graphemeAt, nextGraphemeBoundary, expandTabs, ctrlCAction, CTRL_C_EXIT_HINT, CTRL_C_EXIT_WINDOW_MS, type EditorKey, type SkillEntry } from './input-composer.js';
 import { PLAYER_CONTROLS, formatNowPlaying } from '../spotify/ui.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import type { SubAgentStatus } from '../types/agent.js';
-
-const MERCURY_LOGO = [
-  '    __  _____________  ________  ________  __',
-  '   /  |/  / ____/ __ \\/ ____/ / / / __ \\/ < /',
-  '  / /|_/ / __/ / /_/ / /   / / / / /_/ /\\  / ',
-  ' / /  / / /___/ _, _/ /___/ /_/ / _, _/ / /  ',
-  '/_/  /_/_____/_/ |_|\\____/\\____/_/ |_| /_/   ',
-];
-
-const MERCURY_MARK = [
-  '        ╭─╮     ╭─╮',
-  '      ╭─╯ ╰─────╯ ╰─╮',
-  '    ╭─╯               ╰─╮',
-  '   │      ●       ●      │',
-  '   │          ◡          │',
-  '   │                     │',
-  '    ╰─╮               ╭─╯',
-  '      ╰─────╮   ╭─────╯',
-  '            │   │',
-  '           ─┼───┼─',
-  '            │   │',
-];
 
 const BRAND = IS_LIGHT_TERMINAL
   ? { logo: 'blue', title: 'blue', subtitle: 'gray', accent: 'magenta' }
@@ -104,8 +82,6 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
   const permIdxRef = React.useRef(0);
   const [menuIdx, setMenuIdx] = React.useState(0);
   const [spotifyIdx, setSpotifyIdx] = React.useState(6);
-  const [splashPhase, setSplashPhase] = React.useState<'logo' | 'skills' | 'provider' | 'ready'>('logo');
-  const [skillsLoaded, setSkillsLoaded] = React.useState(0);
   const [showStartupDetails, setShowStartupDetails] = React.useState(false);
   const [spotifyNow, setSpotifyNow] = React.useState('');
   const [spotifyStatus, setSpotifyStatus] = React.useState('');
@@ -199,33 +175,8 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
     return true;
   }, [skillSuggestions, skillSelIdx, input]);
 
-  React.useEffect(() => {
-    if (state.mode !== 'splash') return;
-    if (splashPhase === 'logo') {
-      const t = setTimeout(() => setSplashPhase('skills'), 80);
-      return () => clearTimeout(t);
-    }
-  }, [state.mode, splashPhase]);
-
-  React.useEffect(() => {
-    if (state.mode !== 'splash') return;
-    if (splashPhase === 'skills') {
-      if (skillsLoaded >= state.skills.length) {
-        const t = setTimeout(() => setSplashPhase('provider'), 60);
-        return () => clearTimeout(t);
-      }
-      const t = setTimeout(() => setSkillsLoaded((i) => i + 1), 20);
-      return () => clearTimeout(t);
-    }
-  }, [state.mode, splashPhase, skillsLoaded, state.skills.length]);
-
-  React.useEffect(() => {
-    if (state.mode !== 'splash') return;
-    if (splashPhase === 'provider') {
-      const t = setTimeout(() => setSplashPhase('ready'), 80);
-      return () => clearTimeout(t);
-    }
-  }, [state.mode, splashPhase]);
+  // One tip per launch, picked once so it does not change on re-render.
+  const launchTip = React.useMemo(() => rotateTip('chat')?.tip ?? null, []);
 
   React.useEffect(() => {
     if (state.mode === 'spotify' && spotifyClient) {
@@ -346,15 +297,24 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
       return;
     }
 
-    if (state.mode === 'splash') {
-      if (ch === 'd' || ch === 'D') {
+    if (state.mode === 'splash' && !state.permissionPrompt) {
+      if (key.tab) {
         setShowStartupDetails((v) => !v);
         return;
       }
-      if (!state.permissionPrompt && isEnter) {
+      if (isEnter) {
         onInput('/chat');
         return;
       }
+      // Typing anywhere starts chat with that text already in the input:
+      // keystrokes on the launch pad are never dropped.
+      if (ch && !key.ctrl && !key.meta && !key.escape && [...ch].some((c) => { const code = c.codePointAt(0) ?? 0; return code >= 0x20 && code !== 0x7f; })) {
+        onInput('/chat');
+        const text = ch.replace(/[\r\n]+$/, '');
+        setInputAndCursor(text);
+        return;
+      }
+      return;
     }
 
     // ── Mercury Code full-screen mode ──
@@ -781,87 +741,10 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
     }
   });
 
-  if (state.mode === 'splash' && isNarrow(terminalSize.cols)) {
-    // Narrow (< 60 cols, e.g. Termux portrait): one column, no logo art,
-    // every row truncated instead of wrapped.
-    const w = Math.max(1, terminalSize.cols - 2);
-    const provider = state.provider ? `${state.provider.name} · ${state.provider.model}` : 'Detecting...';
-    return (
-      <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="column" paddingX={1}>
-          <Text wrap="truncate-end"><Text color={BRAND.logo}>☿ </Text><Text bold color={BRAND.title}>MERCURY</Text></Text>
-          <Text color={BRAND.subtitle} wrap="truncate-end">Your soul-driven AI agent</Text>
-          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
-          <Text color="green" wrap="truncate-end">● Core {splashPhase === 'ready' ? 'ready' : 'booting'}</Text>
-          <Text color={state.provider ? 'green' : 'yellow'} wrap="truncate-end">{state.provider ? '●' : '◐'} Provider {state.provider ? 'ready' : 'loading'}</Text>
-          <Text color={skillsLoaded >= state.skills.length ? 'green' : 'yellow'} wrap="truncate-end">{skillsLoaded >= state.skills.length ? '●' : '◐'} Skills {skillsLoaded}/{state.skills.length}</Text>
-          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
-          <Text wrap="truncate-end">Version: <Text color="cyan">{state.version}</Text></Text>
-          <Text wrap="truncate-end">Provider: <Text color={BRAND.accent}>{fitText(provider, Math.max(1, w - 10))}</Text></Text>
-          <Text color="gray">{'─'.repeat(ruleWidth(terminalSize.cols, 56))}</Text>
-          <Text dimColor wrap="truncate-end">{splashPhase === 'ready' ? 'Enter: open chat · D: details' : 'Initializing Mercury...'}</Text>
-          {showStartupDetails && state.skills.slice(0, skillsLoaded).map((skill, i) => (
-            <Text key={i} dimColor wrap="truncate-end">- {skill.name}</Text>
-          ))}
-        </Box>
-        {state.permissionPrompt && (
-          <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
-        )}
-      </Box>
-    );
-  }
-
   if (state.mode === 'splash') {
-    // Two columns: the mark column is sized to its art (26) + gutter; the
-    // session column takes the rest, its rules capped at what remains.
-    const markColWidth = 34;
-    const sessionRule = '─'.repeat(ruleWidth(terminalSize.cols - markColWidth, 56));
     return (
       <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="row" flexGrow={1} paddingX={1}>
-          <Box flexDirection="column" width={markColWidth} paddingRight={2} flexShrink={0}>
-            {MERCURY_MARK.map((line, i) => (
-              <Text key={i} color={BRAND.logo}>{line}</Text>
-            ))}
-            <Text bold color={BRAND.title}>MERCURY</Text>
-            <Text color={BRAND.subtitle}>Your soul-driven AI agent</Text>
-            <Text color="gray">{'─'.repeat(30)}</Text>
-            <Text color="green">● Core {splashPhase === 'ready' ? 'ready' : 'booting'}</Text>
-            <Text color={state.provider ? 'green' : 'yellow'}>{state.provider ? '●' : '◐'} Provider {state.provider ? 'ready' : 'loading'}</Text>
-            <Text color={skillsLoaded >= state.skills.length ? 'green' : 'yellow'}>{skillsLoaded >= state.skills.length ? '●' : '◐'} Skills {skillsLoaded}/{state.skills.length}</Text>
-            <Text color="gray">{'─'.repeat(30)}</Text>
-            <Text dimColor>Press Enter to open chat</Text>
-            <Text dimColor>Press D for startup details</Text>
-          </Box>
-          <Box flexDirection="column" flexGrow={1}>
-            <Text bold color="white">Session</Text>
-            <Text color="gray">{sessionRule}</Text>
-            <Text>Version: <Text color="cyan">{state.version}</Text>{isDevBuild(state.version) && <Text color="yellow"> ⚠ development build</Text>}</Text>
-            <Text>Provider: <Text color={BRAND.accent}>{state.provider ? `${state.provider.name} · ${state.provider.model}` : 'Detecting...'}</Text></Text>
-            <Text>Mode: <Text color="yellow">Startup</Text></Text>
-            {state.tokenInfo && (
-              <Text>Budget: <Text color="green">{state.tokenInfo.used.toLocaleString()}/{state.tokenInfo.budget.toLocaleString()} ({state.tokenInfo.percentage}%)</Text></Text>
-            )}
-            <Text>Web: {state.web?.enabled ? <Text color="green">Serving · http://127.0.0.1:{state.web.port}</Text> : <Text color="gray">Disabled</Text>}</Text>
-            <Text color="gray">{sessionRule}</Text>
-            <Text bold color="white">Capabilities</Text>
-            <Text>Skills loaded: <Text color="cyan">{skillsLoaded}</Text> / {state.skills.length}</Text>
-            {showStartupDetails ? (
-              <Box flexDirection="column" marginTop={1}>
-                {state.skills.slice(0, skillsLoaded).map((skill, i) => (
-                  <Text key={i} dimColor>- {skill.name}</Text>
-                ))}
-              </Box>
-            ) : (
-              <Text dimColor>Details hidden (press D)</Text>
-            )}
-            <Text color="gray">{sessionRule}</Text>
-            <Text>{splashPhase === 'ready' ? 'Mercury is live.' : 'Initializing Mercury...'}</Text>
-            {splashPhase === 'ready' && <Text color="green">Ready. Enter to open chat.</Text>}
-            {!state.provider && <Text color="yellow">Waiting for provider handshake...</Text>}
-            {state.provider && <Text color="green">Provider connected.</Text>}
-          </Box>
-        </Box>
+        <LaunchPad state={state} cols={terminalSize.cols} showDetails={showStartupDetails} tip={launchTip} />
         {state.permissionPrompt && (
           <PermPromptView prompt={state.permissionPrompt} activeIdx={permIdx} />
         )}

@@ -4,7 +4,8 @@
  * budget, memory summary, tool names, GitHub config) and this module turns
  * them into the prompt text. Everything here is the STABLE prefix of a turn;
  * per-turn context (retrieved memory, loop warnings) goes into the volatile
- * system block built in Agent.handleMessage.
+ * system block built in Agent.handleMessage — the token budget included,
+ * since it changes on every turn.
  */
 
 export interface SystemPromptInputs {
@@ -16,8 +17,6 @@ export interface SystemPromptInputs {
   botSection: string;
   programmingSuffix: string;
   researchSuffix: string;
-  budgetStatus: string;
-  budgetUsagePercentage: number;
   saverSuffix: string;
   cwd: string;
   now: Date;
@@ -37,6 +36,16 @@ export const TOOL_USAGE_GUIDELINES = `**Tool Usage Guidelines:**
 - Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
 - Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
 - When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
+
+/**
+ * Token budget line for the per-turn (volatile) system block. It changes on
+ * every turn, so it must never sit in the stable prompt: there it broke the
+ * provider's prefix cache for the tool schemas and everything after it,
+ * and the whole ~12K-token prompt was re-read on every request.
+ */
+export function budgetContext(statusText: string, usagePercentage: number): string {
+  return usagePercentage > 70 ? `${statusText}\nBe concise to conserve tokens.` : statusText;
+}
 
 /** Date at day resolution and time at hour resolution: the prompt is cached as a prefix. */
 export function environmentSection(now: Date, timezone: string, platform: string, cwd: string): string {
@@ -109,8 +118,6 @@ export function buildSystemPrompt(i: SystemPromptInputs): string {
   if (i.botSection) prompt += i.botSection;
   if (i.programmingSuffix) prompt += i.programmingSuffix;
   if (i.researchSuffix) prompt += i.researchSuffix;
-  prompt += '\n\n' + i.budgetStatus;
-  if (i.budgetUsagePercentage > 70) prompt += '\nBe concise to conserve tokens.';
   if (i.saverSuffix) prompt += i.saverSuffix;
   prompt += '\n\n' + environmentSection(i.now, i.timezone, i.platform, i.cwd);
   prompt += '\n\n' + TOOL_USAGE_GUIDELINES;
