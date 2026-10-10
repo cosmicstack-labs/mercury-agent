@@ -12,7 +12,7 @@ import {
   INK_PATCH_MARKERS,
 } from './ink-patch-check.js';
 
-const VENDORED_MANIFEST = { vendored: true, hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'] };
+const VENDORED_MANIFEST = { vendored: true, hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning', 'synchronized-output'] };
 
 const PATCHED_STATIC = 'export default function Static(props) { const { itemKey } = props; const [t, setCommitTick] = useState(0); }';
 const STOCK_STATIC = 'export default function Static(props) { const { items, children: render } = props; }';

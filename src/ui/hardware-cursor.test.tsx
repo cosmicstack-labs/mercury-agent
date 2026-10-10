@@ -34,13 +34,21 @@ const ESC = String.fromCharCode(27);
 const PARK_RE = new RegExp(`${ESC}\\[(\\d+)A${ESC}\\[(\\d+)G${ESC}\\[\\?25h$`);
 const stripAnsi = (s: string) => s.replace(new RegExp(`${ESC}\\[[0-9;?]*[A-Za-z]`, 'g'), '');
 
+// Synchronized output (DEC 2026) brackets every frame; it is framing, not
+// content, so the cursor assertions below see chunks without it.
+const BSU = '\x1b[?2026h';
+const ESU = '\x1b[?2026l';
+
 class FakeStdout extends EventEmitter {
   chunks: string[] = [];
+  raw: string[] = [];
   columns = 80;
   rows = 30;
   isTTY = true;
   write(chunk: string): boolean {
-    this.chunks.push(chunk);
+    this.raw.push(chunk);
+    const content = chunk.split(BSU).join('').split(ESU).join('');
+    if (content) this.chunks.push(content);
     return true;
   }
   get output(): string {
@@ -221,6 +229,81 @@ describe('hardware cursor positioning (vendored ink)', () => {
     } finally {
       configureHardwareCursor({});
     }
+  });
+});
+
+/**
+ * Frame bytes written outside any BSU…ESU bracket (should be none while
+ * mounted). Cursor show/hide toggles (ink hides it once at startup) are
+ * mode switches, not frame content.
+ */
+function unbracketed(raw: string[]): string {
+  let depth = 0;
+  let outside = '';
+  let rest = raw.join('');
+  while (rest) {
+    const open = rest.indexOf(BSU);
+    const close = rest.indexOf(ESU);
+    const next = [open, close].filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? rest.length;
+    if (depth === 0) outside += rest.slice(0, next);
+    if (next === rest.length) break;
+    depth += next === open ? 1 : -1;
+    rest = rest.slice(next + BSU.length);
+  }
+  return outside.split(HIDE).join('').split(SHOW).join('');
+}
+
+describe('synchronized output (vendored ink, DEC 2026)', () => {
+  function Transcript({ lines, live }: { lines: string[]; live: string }) {
+    return (
+      <>
+        <Static items={lines}>{(l) => <Text key={l}>{l}</Text>}</Static>
+        <Box><Text>{live}</Text></Box>
+      </>
+    );
+  }
+
+  it('brackets every frame write on a TTY, so the terminal paints it atomically', async () => {
+    const stdout = new FakeStdout();
+    const { rerender, unmount } = render(<Transcript lines={[]} live="tick 0" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    for (let i = 1; i <= 5; i++) {
+      rerender(<Transcript lines={[]} live={`tick ${i}`} />);
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    await waitFor(() => stdout.output.includes('tick 5'));
+    expect(stdout.raw.join('')).toContain(BSU);
+    expect(unbracketed(stdout.raw)).toBe('');
+    unmount();
+  });
+
+  it('writes a new transcript line and the redrawn live region as ONE update', async () => {
+    const stdout = new FakeStdout();
+    const { rerender, unmount } = render(<Transcript lines={['first line']} live="working" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    await waitFor(() => stdout.output.includes('working'));
+    const mark = stdout.raw.length;
+    rerender(<Transcript lines={['first line', 'second line']} live="done" />);
+    await waitFor(() => stdout.output.includes('done'));
+    const update = stdout.raw.slice(mark).join('');
+    const open = update.indexOf(BSU);
+    const close = update.indexOf(ESU, open);
+    // Erase, the static line and the new frame all sit between one BSU/ESU.
+    expect(open).toBeGreaterThanOrEqual(0);
+    const inside = update.slice(open, close);
+    expect(inside).toContain('second line');
+    expect(inside).toContain('done');
+    expect(inside.indexOf('second line')).toBeLessThan(inside.indexOf('done'));
+    expect(unbracketed(stdout.raw)).toBe('');
+    unmount();
+  });
+
+  it('never emits mode 2026 when the output is not a TTY', async () => {
+    const stdout = new FakeStdout();
+    stdout.isTTY = false;
+    const { rerender, unmount } = render(<Transcript lines={['a']} live="x" />, { stdout: stdout as never, exitOnCtrlC: false, patchConsole: false });
+    rerender(<Transcript lines={['a', 'b']} live="y" />);
+    await waitFor(() => stdout.output.includes('y'));
+    unmount();
+    expect(stdout.raw.join('')).not.toContain('2026');
   });
 });
 

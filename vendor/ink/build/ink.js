@@ -37,7 +37,7 @@ globalThis.__mercuryCursorAnchor = cursorAnchor;
 // in-place node_modules edit.
 export const inkPatch = {
     vendored: true,
-    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'],
+    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning', 'synchronized-output'],
 };
 globalThis.__mercuryInkPatch = inkPatch;
 const sameCursor = (a, b) => (!a && !b) || (!!a && !!b && a.row === b.row && a.col === b.col);
@@ -88,7 +88,8 @@ export default class Ink {
                 trailing: true,
             });
         this.rootNode.onImmediateRender = this.onRender;
-        this.log = logUpdate.create(options.stdout);
+        // Synchronized output (Cosmic Stack patch): same gate as upstream shouldSynchronize().
+        this.log = logUpdate.create(options.stdout, { synchronize: Boolean(options.stdout.isTTY) && !isInCi && !options.debug });
         this.throttledLog = options.debug
             ? this.log
             : throttle(this.log, undefined, {
@@ -219,9 +220,11 @@ export default class Ink {
         }
         // To ensure static output is cleanly rendered before main output, clear main output first
         if (hasStaticOutput) {
-            this.log.clear();
-            this.options.stdout.write(staticOutput);
-            this.log(output, cursor);
+            this.synchronized(() => {
+                this.log.clear();
+                this.options.stdout.write(staticOutput);
+                this.log(output, cursor);
+            });
         }
         if (!hasStaticOutput && (output !== this.lastOutput || !sameCursor(cursor, this.lastCursor))) {
             this.throttledLog(output, cursor);
@@ -232,6 +235,25 @@ export default class Ink {
     render(node) {
         const tree = (React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, exitOnCtrlC: this.options.exitOnCtrlC, onExit: this.unmount }, node));
         reconciler.updateContainer(tree, this.container, null, noop);
+    }
+    // Synchronized output (Cosmic Stack patch): run several writes as ONE terminal update (DEC
+    // mode 2026), so a new transcript line and the redrawn live region
+    // appear together instead of erase → static → redraw.
+    synchronized(write) {
+        const log = this.log;
+        if (!log.synchronize) {
+            write();
+            return;
+        }
+        this.options.stdout.write('\u001B[?2026h');
+        log.syncDepth++;
+        try {
+            write();
+        }
+        finally {
+            log.syncDepth--;
+            this.options.stdout.write('\u001B[?2026l');
+        }
     }
     writeToStdout(data) {
         if (this.isUnmounted) {
@@ -245,9 +267,11 @@ export default class Ink {
             this.options.stdout.write(data);
             return;
         }
-        this.log.clear();
-        this.options.stdout.write(data);
-        this.log(this.lastOutput, this.lastCursor);
+        this.synchronized(() => {
+            this.log.clear();
+            this.options.stdout.write(data);
+            this.log(this.lastOutput, this.lastCursor);
+        });
     }
     writeToStderr(data) {
         if (this.isUnmounted) {
@@ -262,9 +286,11 @@ export default class Ink {
             this.options.stderr.write(data);
             return;
         }
-        this.log.clear();
-        this.options.stderr.write(data);
-        this.log(this.lastOutput, this.lastCursor);
+        this.synchronized(() => {
+            this.log.clear();
+            this.options.stderr.write(data);
+            this.log(this.lastOutput, this.lastCursor);
+        });
     }
     // eslint-disable-next-line @typescript-eslint/ban-types
     unmount(error) {
