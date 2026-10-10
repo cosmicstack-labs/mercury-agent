@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — bots that do work (ADR-020)
+
+An audit of eleven days of real fleets found bots spending 617M input tokens (a median turn of 750k, the largest 6.6M), failing 38% of runs, and mostly writing notes about earlier runs. This wave gives every bot turn a governor, every routine a gate, every run an outcome verdict, and every owner a folder they can find.
+
+- **Per-turn caps.** A turn stops at 300k tokens or 20 minutes (`autonomy.maxTokensPerTurn` / `maxTurnMinutes`). A cut-off is journaled as `turn_budget` / `turn_time` — terminal, no dead-letter, no "needs you", one notice a day.
+- **Context compaction.** Tool results older than the last 8 are stubbed on every step; any single result is capped at 24KB. Prompts stop growing with the number of steps.
+- **Budgets on by default.** Every bot has a daily cap (5M tokens unless `/bots budget` says otherwise; `none` = unlimited) and the fleet has one (`bots.fleetDailyTokenBudget`, 20M). You are warned at 80%.
+- **Routine gate.** A cron tick is skipped — never stacked — while the bot is busy or within 30 minutes of its last run (`schedules[].minIntervalMinutes`). Bot-created routines run at most every 30 minutes, at most 3 per bot; self-scheduled follow-ups are at least 10 minutes out.
+- **Outcome verdict.** The tool trace, not the reply, decides what a run did: `deliverable`, `action`, `delegated`, `message` or `none`. An unattended run that only wrote notes gets one nudge to deliver or admit it. A reply that claims delivery with no matching tool call is flagged. Three empty runs in a row pause the routine; `/bots start` resumes it.
+- **Shared-folder budget.** Writes to `_shared/` are limited per run (warn at 2 files / 32KB, refuse at 6 / 128KB). The private workspace is unlimited.
+- **Deliverables you can find.** Results go to `~/Documents/Mercury/<Bot name>/` (Windows: Documents; Termux: shared storage; `bots.deliverablesDir` overrides) — finals on top, crew work under `work/`, a README index, files named `YYYY-MM-DD <title>`. Shown at onboarding, in the roster, and in every "delivered" message. `/bots outputs [id]` lists them, `/bots folder <id>` opens the folder. The hidden `outputs/` zone is migrated once.
+- **Honest failures.** Network cuts ("terminated", socket closed, interrupted streams) and empty streams retry instead of dead-lettering; the provider's real error (an invalid key, a 429) reaches the journal instead of "No output generated".
+- **Journal v2.** Real turn start, steps, tool calls, peak prompt size, outcome and delivered paths per run, plus a compact transcript per run (last 50 kept). `/bots journal` shows them; `mercury bots doctor` flags bots whose unattended runs mostly produce nothing, paused routines, and write access to the whole home directory.
+- Bot file tools and shell commands now resolve relative paths inside the bot's workspace, never the daemon's working directory. The roster scan ignores profile copies in `sandbox/` and `outputs/`.
+
 ## Unreleased — ink 8
 
 Mercury's terminal renderer moves from a heavily patched ink 5.2.1 to ink 8.0.0, which now does most of that work itself.

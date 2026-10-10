@@ -30,6 +30,26 @@ const SELF_PREFIX = 'self-';
 const ROUTINE_PREFIX = 'routine-';
 const MAX_DELAY_MINUTES = 60 * 24 * 30; // 30 days
 const MAX_PENDING_SELF_SCHEDULES = 10;
+/** Bot-created routines: never more often than this, never more than this many. ADR-020. */
+const MIN_ROUTINE_GAP_MINUTES = 30;
+const MAX_SELF_ROUTINES = 3;
+const MIN_ONESHOT_DELAY_MINUTES = 10;
+
+/** Smallest gap (minutes) a 5-field cron's minute field can produce; Infinity when it cannot tell. */
+export function cronMinGapMinutes(cron: string): number {
+  const minute = cron.trim().split(/\s+/)[0] ?? '';
+  const hour = cron.trim().split(/\s+/)[1] ?? '';
+  if (minute === '*') return 1;
+  const step = /^\*\/(\d+)$/.exec(minute);
+  if (step) return Math.max(1, Number(step[1]));
+  const values = minute.split(',').map(v => Number(v)).filter(v => Number.isInteger(v)).sort((a, b) => a - b);
+  if (values.length === 0) return Infinity;
+  if (values.length === 1) return hour === '*' || /^\*\//.test(hour) ? 60 : Infinity;
+  let gap = Infinity;
+  for (let i = 1; i < values.length; i++) gap = Math.min(gap, values[i] - values[i - 1]);
+  gap = Math.min(gap, 60 - values[values.length - 1] + values[0]);
+  return gap;
+}
 
 /**
  * bot_schedule — a bot schedules its OWN future run (durable, persisted with
@@ -64,6 +84,14 @@ export function createBotScheduleTool(scheduler: BotScheduler, botId: string) {
         if (cron.trim().split(/\s+/).length !== 5) {
           return `Error: "${cron}" is not a 5-field cron expression.`;
         }
+        if (cronMinGapMinutes(cron) < MIN_ROUTINE_GAP_MINUTES) {
+          return `Error: routines run at most every ${MIN_ROUTINE_GAP_MINUTES} minutes — "${cron}" fires more often. A wake that finds nothing to do still costs a full turn; schedule follow-ups with delayMinutes instead.`;
+        }
+        const routines = scheduler.getManifests().filter(m => m.botId === botId && m.id.includes(`:${ROUTINE_PREFIX}`));
+        const replacing = routines.some(m => m.id === `bot:${botId}:${ROUTINE_PREFIX}${name.toLowerCase().replace(/[^a-z0-9-]+/g, '-')}`);
+        if (!replacing && routines.length >= MAX_SELF_ROUTINES) {
+          return `Error: you already have ${MAX_SELF_ROUTINES} routines (${routines.map(m => m.id.split(':' + ROUTINE_PREFIX)[1]).join(', ')}). Re-use one of those names to replace it, or ask the owner to add more in bot.yaml.`;
+        }
         const id = `bot:${botId}:${ROUTINE_PREFIX}${name.toLowerCase().replace(/[^a-z0-9-]+/g, '-')}`;
         scheduler.addPersistedTask({
           id,
@@ -95,6 +123,9 @@ export function createBotScheduleTool(scheduler: BotScheduler, botId: string) {
       } else {
         if ((delayMinutes as number) > MAX_DELAY_MINUTES) {
           return `Error: delayMinutes exceeds the ${MAX_DELAY_MINUTES / 60 / 24}-day horizon.`;
+        }
+        if ((delayMinutes as number) < MIN_ONESHOT_DELAY_MINUTES) {
+          return `Error: a follow-up run must be at least ${MIN_ONESHOT_DELAY_MINUTES} minutes out — if the work is not done yet, keep working in this turn.`;
         }
         delaySeconds = Math.round((delayMinutes as number) * 60);
       }

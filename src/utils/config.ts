@@ -217,8 +217,12 @@ export interface MercuryConfig {
       /** Lead bots may create/remove their own crew via bot_spawn/bot_retire. */
       allowLeadSpawn?: boolean;
     };
-    /** Suggested per-bot daily token budget offered during onboarding. */
+    /** Per-bot daily token cap applied when a bot sets none (0 = unlimited). ADR-020. */
     suggestedDailyTokenBudget?: number;
+    /** Fleet-wide daily token cap across all bots (0 = unlimited). ADR-020. */
+    fleetDailyTokenBudget?: number;
+    /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
+    deliverablesDir?: string;
     retention: {
       transcriptRuns: number;
       journalRotateBytes: number;
@@ -502,6 +506,8 @@ export function getDefaultConfig(): MercuryConfig {
         allowLeadSpawn: getEnvBool('BOTS_FLEET_LEAD_SPAWN', true),
       },
       suggestedDailyTokenBudget: getEnvNum('BOTS_SUGGESTED_DAILY_TOKEN_BUDGET', 5_000_000),
+      fleetDailyTokenBudget: getEnvNum('BOTS_FLEET_DAILY_TOKEN_BUDGET', 20_000_000),
+      deliverablesDir: getEnv('BOTS_DELIVERABLES_DIR') || undefined,
       retention: {
         transcriptRuns: getEnvNum('BOTS_RETENTION_TRANSCRIPT_RUNS', 50),
         journalRotateBytes: getEnvNum('BOTS_JOURNAL_ROTATE_BYTES', 5 * 1024 * 1024),

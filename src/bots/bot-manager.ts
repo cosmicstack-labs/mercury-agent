@@ -2,7 +2,7 @@ import { refinePersona } from './persona-template.js';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, relative, resolve, join } from 'node:path';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { writeFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import type { Tool } from 'ai';
 import type { MercuryConfig } from '../utils/config.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -10,7 +10,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
-import { BotStore, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
+import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
 import { BotJournal } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
@@ -21,7 +21,7 @@ import { createBotDeliverTool } from './tools/bot-deliver.js';
 import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.js';
 import { createFleetStatusTool } from './tools/fleet-status.js';
 import { createBotSpawnTool } from './tools/bot-spawn.js';
-import { runBotTurn, isTransientFailure, type BotTurnMail, type BotActivityEvent } from './bot-turn.js';
+import { runBotTurn, isTransientFailure, isTurnLimitFailure, type BotExpectedOutcome, type BotTurnMail, type BotActivityEvent } from './bot-turn.js';
 import { parsePersonaAccess, stripPersonaAccessSection } from './persona-access.js';
 import { mergePathScopes } from './registry-factory.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
@@ -46,6 +46,8 @@ export interface BotJob {
   source?: { channelType: string; channelId: string };
   createdAt: number;
   attempts: number;
+  /** Scheduler task id for cron runs (routine gating + no-outcome streaks). */
+  routineId?: string;
 }
 
 /**
@@ -80,6 +82,8 @@ export interface BotManagerDeps {
 }
 
 const MAX_TRANSIENT_ATTEMPTS = 3;
+/** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
+export const NO_OUTCOME_PAUSE_AFTER = 3;
 const MAILBOX_CAPACITY = 100;
 /** Bot-thread result display cap — matches CLIChannel.MAX_MESSAGE_CHARS (64KB). */
 const BOT_RESULT_DISPLAY_CAP = 64 * 1024;
@@ -164,6 +168,15 @@ export class BotManager {
   /** Per-bot daily token usage: botId → { day (UTC yyyy-mm-dd), tokens }. */
   private dailyTokens: Map<string, { day: string; tokens: number }> = new Map();
   private pausedForBudget = new Set<string>();
+  /** botId → UTC day the 80% budget warning was sent. */
+  private budgetWarned: Map<string, string> = new Map();
+  /** Fleet-wide daily usage and pause (ADR-020). */
+  private fleetDailyTokens: { day: string; tokens: number } = { day: '', tokens: 0 };
+  private fleetPausedDay: string | null = null;
+  /** routine key → when its last run ended (min-interval gate). */
+  private routineLastEnd: Map<string, number> = new Map();
+  /** botId → UTC day a turn-limit notice was sent (once a day, not per run). */
+  private turnLimitAlerted: Map<string, string> = new Map();
   /** Periodic due-sweep interval — cleared by dispose() (tests, shutdown). */
   private dueTimer?: ReturnType<typeof setInterval>;
 
@@ -185,7 +198,7 @@ export class BotManager {
       }
     });
     this.notify = deps.notify;
-    this.store = deps.store ?? new BotStore();
+    this.store = deps.store ?? new BotStore(undefined, this.config.bots?.deliverablesDir);
     this.skillsRoot = deps.skillsRoot;
     this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
     // Resume work a crashed predecessor left behind: pending jobs (and
@@ -315,7 +328,7 @@ export class BotManager {
     if (!j) {
       const manifest = this.store.get(botId);
       const retention = { ...(this.config.bots?.retention ?? {}), ...(manifest?.retention ?? {}) };
-      j = new BotJournal(this.store.botDir(botId), retention.journalRotateBytes, retention.journalKeepRotations);
+      j = new BotJournal(this.store.botDir(botId), retention.journalRotateBytes, retention.journalKeepRotations, retention.transcriptRuns ?? 50);
       this.journals.set(botId, j);
     }
     return j;
@@ -325,13 +338,26 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number }): { jobId: string; accepted: boolean; reasonCode?: string } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string }): { jobId: string; accepted: boolean; reasonCode?: string } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
 
     const queue = this.queues.get(botId) ?? [];
     this.queues.set(botId, queue);
+
+    // Routine gate (ADR-020): a cron tick is an opportunity, not an order.
+    // It is skipped — never stacked — when the bot is still busy, when the
+    // routine ran too recently, or when the routine was paused for
+    // producing nothing. The next tick tries again.
+    if (job.trigger === 'cron') {
+      const key = job.routineId ?? `bot:${botId}:cron`;
+      if (this.store.readRoutineState(botId).paused[key]) return { jobId: '', accepted: false, reasonCode: 'routine_paused' };
+      if (queue.length > 0 || (this.running.get(botId)?.size ?? 0) > 0) return { jobId: '', accepted: false, reasonCode: 'busy' };
+      const lastEnd = this.routineLastEnd.get(key);
+      const minGapMs = this.routineConfig(manifest, key).minIntervalMinutes * 60_000;
+      if (lastEnd !== undefined && Date.now() - lastEnd < minGapMs) return { jobId: '', accepted: false, reasonCode: 'too_soon' };
+    }
     if (queue.length >= MAILBOX_CAPACITY) {
       return { jobId: '', accepted: false, reasonCode: 'queue_full' };
     }
@@ -352,9 +378,30 @@ export class BotManager {
       return { jobId: durable.job.id, accepted: true };
     }
     const id = durable.job.id;
-    queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts });
+    queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts, routineId: job.routineId });
     this.pump(botId);
     return { jobId: id, accepted: true };
+  }
+
+  /** A routine's declared contract (bot.yaml schedules) or the defaults. */
+  private routineConfig(manifest: BotManifest, routineKey: string): { expects: BotExpectedOutcome; minIntervalMinutes: number } {
+    const declared = (manifest.schedules ?? []).find(r => `bot:${manifest.id}:${r.name}` === routineKey);
+    return {
+      expects: declared?.expects ?? 'work',
+      minIntervalMinutes: declared?.minIntervalMinutes ?? 30,
+    };
+  }
+
+  /**
+   * The outcome contract of a job: unattended wakes must produce work; a
+   * delegated task or a conversation is answered by its reply; a bare
+   * mailbox wake may find nothing.
+   */
+  private expectationFor(manifest: BotManifest, job: BotJob): BotExpectedOutcome {
+    if (job.trigger === 'cron') return this.routineConfig(manifest, job.routineId ?? `bot:${manifest.id}:cron`).expects;
+    if (job.trigger === 'mailbox') return job.prompt ? 'message' : 'check';
+    if (job.trigger === 'api' || job.trigger === 'cloud') return 'work';
+    return 'message';
   }
 
   /**
@@ -425,6 +472,10 @@ export class BotManager {
       this.activity.set(botId, 'Paused — daily token budget reached');
       return;
     }
+    if (this.fleetPausedDay === today) {
+      this.activity.set(botId, 'Paused — fleet daily token budget reached');
+      return;
+    }
     const queue = this.queues.get(botId) ?? [];
     const running = this.running.get(botId) ?? new Set();
     this.running.set(botId, running);
@@ -443,12 +494,39 @@ export class BotManager {
     const entry = this.dailyTokens.get(botId);
     const next = entry && entry.day === today ? entry.tokens + tokens : tokens;
     this.dailyTokens.set(botId, { day: today, tokens: next });
-    const cap = manifest.autonomy?.dailyTokenBudget;
-    if (cap && next >= cap) {
+    const cap = this.dailyCapFor(manifest);
+    if (cap > 0 && next >= cap) {
       this.pausedForBudget.add(botId);
       logger.warn({ botId, used: next, cap }, 'Bot daily token budget reached — pausing until next day');
-      void this.alertOwner(botId, `🟡 **${manifest.name}** paused — daily token budget reached (${next} ≥ ${cap}). Resumes tomorrow; raise the cap in bot.yaml if this is too tight.`);
+      void this.alertOwner(botId, `🟡 **${manifest.name}** paused — daily token budget reached (${next.toLocaleString()} ≥ ${cap.toLocaleString()}). Resumes tomorrow; \`/bots budget ${botId} <tokens>\` to change it.`);
+    } else if (cap > 0 && next >= cap * 0.8 && this.budgetWarned.get(botId) !== today) {
+      this.budgetWarned.set(botId, today);
+      void this.alertOwner(botId, `🟠 **${manifest.name}** has used ${Math.round(100 * next / cap)}% of today's token budget (${next.toLocaleString()} / ${cap.toLocaleString()}).`);
     }
+    // Fleet-wide cap: one runaway bot must not spend the whole day's budget.
+    if (this.fleetDailyTokens.day !== today) this.fleetDailyTokens = { day: today, tokens: 0 };
+    this.fleetDailyTokens.tokens += tokens;
+    const fleetCap = this.config.bots?.fleetDailyTokenBudget ?? 0;
+    if (fleetCap > 0 && this.fleetDailyTokens.tokens >= fleetCap && this.fleetPausedDay !== today) {
+      this.fleetPausedDay = today;
+      logger.warn({ used: this.fleetDailyTokens.tokens, cap: fleetCap }, 'Fleet daily token budget reached — all bots paused until next day');
+      void this.alertOwner(botId, `🔴 All bots paused — the fleet's daily token budget is used up (${this.fleetDailyTokens.tokens.toLocaleString()} ≥ ${fleetCap.toLocaleString()}). Resumes tomorrow; \`bots.fleetDailyTokenBudget\` in mercury.yaml changes the cap.`);
+    }
+  }
+
+  /** Effective daily cap: the bot's own, else the fleet default; 0 = unlimited. */
+  dailyCapFor(manifest: BotManifest): number {
+    const own = manifest.autonomy?.dailyTokenBudget;
+    if (own !== undefined) return own;
+    return this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+  }
+
+  /** Today's spend for /bots and the API. */
+  dailyUsage(botId: string): { tokens: number; cap: number } {
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.dailyTokens.get(botId);
+    const manifest = this.store.get(botId);
+    return { tokens: entry && entry.day === today ? entry.tokens : 0, cap: manifest ? this.dailyCapFor(manifest) : 0 };
   }
 
   private fleetRunningCount(): number {
@@ -500,6 +578,8 @@ export class BotManager {
       // it from the newest journal row on restart).
       const willRetry = output.status === 'failed' && !!output.reasonCode
         && isTransientFailure(output.reasonCode) && job.attempts + 1 < MAX_TRANSIENT_ATTEMPTS;
+      const turnLimited = output.status === 'failed' && isTurnLimitFailure(output.reasonCode);
+      const routineKey = job.trigger === 'cron' ? (job.routineId ?? `bot:${botId}:cron`) : undefined;
       const record: BotRunRecord = {
         runId: job.id,
         botId,
@@ -512,12 +592,52 @@ export class BotManager {
         summary: output.output.slice(0, 300),
         error: output.error,
         reasonCode: output.reasonCode,
-        ...(output.status === 'failed' && !willRetry ? { needsYou: true } : {}),
+        // A turn cut off by policy is not an escalation (ADR-020).
+        ...(output.status === 'failed' && !willRetry && !turnLimited ? { needsYou: true } : {}),
+        turnStartedAt: output.startedAt,
+        steps: output.steps,
+        toolCalls: output.toolCalls,
+        peakInputTokens: output.peakInputTokens,
+        outcome: output.outcome,
+        ...(output.deliverables.length > 0 ? { deliverables: output.deliverables } : {}),
+        ...(output.claimedWithoutAction ? { claimedWithoutAction: true } : {}),
+        ...(routineKey ? { routineId: routineKey } : {}),
       };
-      this.journalFor(botId).append(record);
+      const journal = this.journalFor(botId);
+      journal.append(record);
+      journal.writeTranscript(record, { prompt: job.prompt, output: output.output, trace: output.trace });
       this.lastRun.set(botId, { at: Date.now(), state: record.state });
       this.needsYou.delete(botId);
       this.recordBotTokens(botId, manifest, output.tokensIn + output.tokensOut);
+      if (routineKey) this.routineLastEnd.set(routineKey, Date.now());
+
+      // No-outcome streak (ADR-020): a work routine that produces nothing
+      // three runs in a row is paused — the owner is told once, and
+      // /bots start resumes it. This is what stops a bot that has
+      // talked itself into a loop of records about records.
+      if (routineKey && this.expectationFor(manifest, job) === 'work' && output.status !== 'halted') {
+        const state = this.store.readRoutineState(botId);
+        if (output.outcome === 'none') {
+          const streak = (state.noOutcomeStreak[routineKey] ?? 0) + 1;
+          state.noOutcomeStreak[routineKey] = streak;
+          if (streak >= NO_OUTCOME_PAUSE_AFTER) {
+            state.paused[routineKey] = { since: new Date().toISOString(), reason: `${streak} consecutive runs produced no deliverable or action` };
+            delete state.noOutcomeStreak[routineKey];
+            logger.warn({ botId, routineKey, streak }, 'Bot routine paused — no outcome in consecutive runs');
+            void this.alertOwner(botId, `⏸ **${manifest.name}**'s routine \`${routineKey.split(':').pop()}\` is paused: ${streak} runs in a row produced no deliverable or action (only notes). It will not fire again until \`/bots start ${botId}\`. Check its persona for instructions that reward activity over results.`);
+          }
+        } else {
+          delete state.noOutcomeStreak[routineKey];
+        }
+        this.store.writeRoutineState(botId, state);
+      }
+      if (turnLimited) {
+        const today = new Date().toISOString().slice(0, 10);
+        if (this.turnLimitAlerted.get(botId) !== today) {
+          this.turnLimitAlerted.set(botId, today);
+          void this.alertOwner(botId, `🟠 **${manifest.name}** hit the per-turn limit (${output.reasonCode === 'turn_time' ? 'time' : 'tokens'}) and was stopped. One task is too big for one run — split it, or raise \`autonomy.maxTokensPerTurn\` / \`maxTurnMinutes\` in bot.yaml.`);
+        }
+      }
 
       // Auto-skill synthesis (P2-3): a completed multi-step run is a
       // procedure worth keeping. Fire-and-forget, gated by config.
@@ -553,6 +673,8 @@ export class BotManager {
         this.queue.retry(job.id, job.attempts + 1, Date.now() + delay);
         logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying in place');
         setTimeout(() => this.resumeDueJobs(), delay).unref?.();
+      } else if (turnLimited) {
+        this.queue.settle(job.id, 'done');
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
         this.needsYou.add(botId);
@@ -593,9 +715,15 @@ export class BotManager {
         const body = output.output.length > BOT_RESULT_DISPLAY_CAP
           ? output.output.slice(0, BOT_RESULT_DISPLAY_CAP) + `\n\n[…output truncated at ${Math.round(BOT_RESULT_DISPLAY_CAP / 1024)}KB — full text in the run transcripts]`
           : output.output;
+        const delivered = output.deliverables.length > 0
+          ? output.deliverables.map(p => `📁 Delivered → ${p}`).join('\n') + '\n\n'
+          : '';
+        const noOutcome = output.status === 'completed' && output.outcome === 'none' && this.expectationFor(manifest, job) === 'work'
+          ? '⚠ No deliverable or action this run — only notes.' + (output.claimedWithoutAction ? ' The reply claims otherwise; the tool trace shows nothing was delivered.' : '') + '\n\n'
+          : '';
         const fullText = output.status === 'halted'
           ? `⏹ Run ${job.id} was stopped by you — no further output. It is recorded in \`/bots journal ${botId}\`.`
-          : `${icon} (${job.trigger}): ${body}`;
+          : `${icon} (${job.trigger}): ${delivered}${noOutcome}${body}`;
         // 1. Full result → the bot's own thread, always.
         await this.notify('cli', botThread, fullText).catch((e) =>
           logger.warn({ e, botId }, 'Bot result deliver to bot thread failed'));
@@ -705,6 +833,8 @@ export class BotManager {
         mail,
         pollMail: () => this.drainMailbox(botId),
         sandbox: { workspace: this.store.sandboxDir(botId), shared: this.store.sharedSandboxDir() },
+        deliverablesDir: this.store.deliverablesDir(botId),
+        expects: this.expectationFor(manifest, job),
         skillsPrompt,
         fleet: this.fleetContext(botId, manifest),
         capabilities: registry,
@@ -1214,6 +1344,12 @@ export class BotManager {
     const manifest = this.store.get(botId);
     if (!manifest) throw new Error(`Bot "${botId}" does not exist`);
     this.held.delete(botId);
+    // An explicit start is the owner saying "try again": paused routines
+    // resume with a clean streak.
+    const routines = this.store.readRoutineState(botId);
+    if (Object.keys(routines.paused).length > 0 || Object.keys(routines.noOutcomeStreak).length > 0) {
+      this.store.writeRoutineState(botId, { paused: {}, noOutcomeStreak: {} });
+    }
     let resumed = this.rehydratePending(botId);
     if (!manifest.enabled || this.disabled.has(botId)) {
       this.setEnabled(botId, true); // persists enabled + pumps
@@ -1400,15 +1536,23 @@ export class BotManager {
   }
 
   /**
-   * bot_deliver: move a finished artifact out of the bot's writable areas
-   * (its private sandbox or the fleet-shared folder) into the owner-curated
-   * `outputs/<botId>/` zone — exempt from the retention janitor. Only files
-   * from the bot's OWN writable roots travel (containment is enforced); the
-   * source is removed on success (a move, not a copy — the shared surface
-   * stays lean by construction).
+   * bot_deliver (ADR-020): move a finished artifact out of the bot's
+   * writable areas (its private sandbox or the fleet-shared folder) into
+   * the OWNER-VISIBLE deliverables folder (default ~/Documents/Mercury/
+   * <Bot name>/). Finals land on top of the folder; everything else goes
+   * under work/ (a crew bot's deliveries always do — the lead delivers the
+   * final). Files are named "YYYY-MM-DD <title>.<ext>" and the folder keeps
+   * a README index. Only files from the bot's OWN writable roots travel
+   * (containment is enforced); the source is removed on success (a move).
    */
-  deliver(botId: string, filePath: string, rename?: string): { accepted: boolean; path?: string; reasonCode?: string } {
-    if (!this.store.get(botId)) return { accepted: false, reasonCode: 'target_unknown' };
+  deliver(
+    botId: string,
+    filePath: string,
+    opts: string | { saveAs?: string; title?: string; final?: boolean } = {},
+  ): { accepted: boolean; path?: string; final?: boolean; reasonCode?: string } {
+    const options = typeof opts === 'string' ? { saveAs: opts } : opts;
+    const manifest = this.store.get(botId);
+    if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
     const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, homedir()));
     const allowedBases = [this.store.sharedSandboxDir(), this.store.sandboxDir(botId)];
     const inside = allowedBases.some((base) => {
@@ -1418,28 +1562,24 @@ export class BotManager {
     if (!inside || !existsSync(candidate) || !statSync(candidate).isFile()) {
       return { accepted: false, reasonCode: 'outside_sandbox' };
     }
-    const outputsDir = join(this.store.outputsDir(), botId);
-    mkdirSync(outputsDir, { recursive: true });
-    // Default name keeps the FULL basename — the extension is part of the
-    // artifact (a report.md stayed .md; the stem-only default silently
-    // stripped it). `saveAs` is honored as written; dedupe inserts the -N
-    // before whatever extension remains.
-    const ext = extname(rename || basename(candidate));
-    const stem = basename(rename || basename(candidate), ext);
-    const requested = (stem)
-      .replace(/[ <>:"/\\|?*]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 120) || 'output';
-    const finalExt = ext;
-    let dest = join(outputsDir, `${requested}${finalExt}`);
+    const isCrew = Boolean(manifest.parent);
+    const final = Boolean(options.final) && !isCrew;
+    const botFolder = this.store.deliverablesDir(botId);
+    const destDir = isCrew ? botFolder : final ? botFolder : join(botFolder, 'work');
+    mkdirSync(destDir, { recursive: true });
+    const sourceName = options.saveAs || basename(candidate);
+    const ext = extname(sourceName) || extname(candidate);
+    const stem = options.title?.trim() || basename(sourceName, ext);
+    const fileName = deliverableFileName(stem, ext);
+    const finalExt = extname(fileName);
+    const requested = basename(fileName, finalExt);
+    let dest = join(destDir, fileName);
     for (let i = 2; existsSync(dest); i++) {
-      dest = join(outputsDir, `${requested}-${i}${finalExt}`);
+      dest = join(destDir, `${requested} (${i})${finalExt}`);
     }
     try {
       renameSync(candidate, dest);
     } catch {
-      // Cross-device fallback: copy then remove the source.
       try {
         copyFileSync(candidate, dest);
         unlinkSync(candidate);
@@ -1447,44 +1587,85 @@ export class BotManager {
         return { accepted: false, reasonCode: 'move_failed' };
       }
     }
-    logger.info({ botId, dest }, 'Bot delivered a final artifact');
-    // The deliverable moment is the event the owner reacts to: broadcast it
-    // on the activity bus so the CLI bot-thread region, the /bots roster and
-    // the web SSE feed all announce the artifact live.
+    // The index lives on the fleet folder (finals on top); crew work is
+    // reachable from it under work/.
+    this.store.writeDeliverablesIndex(isCrew ? this.store.deliverablesDir(manifest.parent!) : botFolder);
+    logger.info({ botId, dest, final }, 'Bot delivered an artifact');
     this.emitBotActivity({
       botId,
       jobId: '',
       kind: 'tool',
-      label: `Delivered ${basename(dest, extname(dest))}${extname(dest)}`,
+      label: `Delivered ${basename(dest)}`,
       detail: dest,
       stepIndex: 0,
       elapsedMs: 0,
       status: 'done',
     });
-    return { accepted: true, path: dest };
+    return { accepted: true, path: dest, final };
   }
 
   /**
-   * Owner-curated deliverables (bot_deliver → outputs/<botId>/). Read-only
-   * views for the web cockpit: list with newest first; read (text preview,
-   * 64KB cap) and deletes are containment-guarded — nothing outside the
-   * bot's own outputs zone is addressable.
+   * One-time move of the hidden legacy outputs zone
+   * (~/.mercury/bots/outputs/<botId>/) into the visible deliverables folder.
+   * Idempotent: whatever is still there moves; a README pointer is left
+   * behind so an owner with a bookmark finds the new place.
    */
-  listDeliverables(botId?: string): Array<{ botId: string; name: string; bytes: number; mtimeMs: number }> {
-    const root = this.store.outputsDir();
-    if (!existsSync(root)) return [];
-    const bots = botId
-      ? [botId]
-      : readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name);
-    const out: Array<{ botId: string; name: string; bytes: number; mtimeMs: number }> = [];
-    for (const bot of bots) {
-      const dir = join(root, bot);
-      if (!existsSync(dir)) continue;
-      for (const name of readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name)) {
+  migrateDeliverables(): { moved: number } {
+    const legacy = this.store.outputsDir();
+    if (!existsSync(legacy)) return { moved: 0 };
+    let moved = 0;
+    for (const entry of readdirSync(legacy, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !this.store.exists(entry.name)) continue;
+      const from = join(legacy, entry.name);
+      const manifest = this.store.get(entry.name)!;
+      const to = manifest.parent ? this.store.deliverablesDir(entry.name) : join(this.store.deliverablesDir(entry.name), 'work');
+      for (const file of readdirSync(from, { withFileTypes: true })) {
+        if (!file.isFile()) continue;
         try {
-          const stat = statSync(join(dir, name));
-          out.push({ botId: bot, name, bytes: stat.size, mtimeMs: stat.mtimeMs });
+          mkdirSync(to, { recursive: true });
+          let dest = join(to, file.name);
+          for (let i = 2; existsSync(dest); i++) dest = join(to, `${basename(file.name, extname(file.name))} (${i})${extname(file.name)}`);
+          renameSync(join(from, file.name), dest);
+          moved++;
+        } catch (err) {
+          logger.warn({ botId: entry.name, file: file.name, err: (err as Error)?.message }, 'Legacy deliverable could not be moved');
+        }
+      }
+      try { if (readdirSync(from).length === 0) rmSync(from, { recursive: true }); } catch { /* keep */ }
+      this.store.writeDeliverablesIndex(manifest.parent ? this.store.deliverablesDir(manifest.parent) : this.store.deliverablesDir(entry.name));
+    }
+    if (moved > 0) {
+      try {
+        writeFileSync(join(legacy, 'README.md'), `Deliverables moved to ${this.store.deliverablesRoot()} (Mercury 1.3.1, ADR-020).\nThis folder is no longer used.\n`, 'utf-8');
+      } catch { /* best effort */ }
+      logger.info({ moved, to: this.store.deliverablesRoot() }, 'Legacy bot outputs moved to the deliverables folder');
+    }
+    return { moved };
+  }
+
+  /** Finals (top of a bot's folder) and work (under work/), newest first. */
+  listDeliverables(botId?: string): Array<{ botId: string; name: string; bytes: number; mtimeMs: number; path: string; final: boolean }> {
+    const bots = botId ? [botId] : this.store.list().map(m => m.id);
+    const out: Array<{ botId: string; name: string; bytes: number; mtimeMs: number; path: string; final: boolean }> = [];
+    const scan = (bot: string, dir: string, prefix: string, final: boolean): void => {
+      if (!existsSync(dir)) return;
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (!e.isFile() || e.name === 'README.md' || e.name.startsWith('.')) continue;
+        try {
+          const stat = statSync(join(dir, e.name));
+          out.push({ botId: bot, name: prefix + e.name, bytes: stat.size, mtimeMs: stat.mtimeMs, path: join(dir, e.name), final });
         } catch { /* raced a concurrent delete — skip */ }
+      }
+    };
+    for (const bot of bots) {
+      const manifest = this.store.get(bot);
+      if (!manifest) continue;
+      const dir = this.store.deliverablesDir(bot);
+      if (manifest.parent) {
+        scan(bot, dir, '', false);
+      } else {
+        scan(bot, dir, '', true);
+        scan(bot, join(dir, 'work'), 'work/', false);
       }
     }
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -1492,7 +1673,8 @@ export class BotManager {
 
   /** Contained path resolution for deliverable access; null when it escapes. Public for the web API's byte-exact download route. */
   deliverableFile(botId: string, name: string): string | null {
-    const dir = join(this.store.outputsDir(), botId);
+    if (!this.store.exists(botId)) return null;
+    const dir = this.store.deliverablesDir(botId);
     const candidate = resolve(dir, name);
     const rel = relative(dir, candidate);
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null;

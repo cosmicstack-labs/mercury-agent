@@ -107,18 +107,22 @@ describe('web bots API — cockpit', () => {
 
     // Fleet inbox lists it
     let list = await jreq(await app.request('/api/bots/outputs'));
-    expect(list.outputs).toEqual([expect.objectContaining({ botId: 'publisher', name: 'final-report.md' })]);
+    // Delivered names are dated + humanised; non-final work lands under work/.
+    expect(list.outputs).toEqual([expect.objectContaining({ botId: 'publisher', final: false })]);
+    const name: string = list.outputs[0].name;
+    expect(name).toMatch(/^work\/\d{4}-\d{2}-\d{2} final report\.md$/);
+    const enc = encodeURIComponent(name);
 
     // Per-bot list
     list = await jreq(await app.request('/api/bots/publisher/outputs'));
     expect(list.outputs).toHaveLength(1);
 
     // Preview
-    const preview = await jreq(await app.request('/api/bots/publisher/outputs/final-report.md/preview'));
+    const preview = await jreq(await app.request(`/api/bots/publisher/outputs/${enc}/preview`));
     expect(preview.preview).toContain('# The final report');
 
     // Download — raw bytes + content type
-    const dl = await app.request('/api/bots/publisher/outputs/final-report.md/download');
+    const dl = await app.request(`/api/bots/publisher/outputs/${enc}/download`);
     expect(dl.status).toBe(200);
     expect(dl.headers.get('content-type')).toBe('text/markdown');
     expect(await dl.text()).toContain('# The final report');
@@ -128,7 +132,7 @@ describe('web bots API — cockpit', () => {
     expect((await app.request('/api/bots/publisher/outputs/ghost.md/preview')).status).toBe(404);
 
     // Remove
-    const del = await app.request('/api/bots/publisher/outputs/final-report.md', { method: 'DELETE' });
+    const del = await app.request(`/api/bots/publisher/outputs/${enc}`, { method: 'DELETE' });
     expect(del.status).toBe(200);
     expect((await app.request('/api/bots/publisher/outputs')).status ?? 0).toBeLessThan(500);
     const after = await jreq(await app.request('/api/bots/publisher/outputs'));

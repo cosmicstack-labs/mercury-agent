@@ -7,6 +7,7 @@ import type { ChannelMessage } from '../../types/channel.js';
 import { formatRelative, formatBytes } from './format.js';
 import path from 'node:path';
 import { homedir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { refinePersona } from '../../bots/persona-template.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, writeBundle, readBundle, importBotBundle } from '../../bots/bundle.js';
@@ -63,7 +64,9 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
       const lastRun = s.lastRunAt ? ` · last run ${s.lastRunState ?? '?'} ${formatRelative(s.lastRunAt)}` : '';
       const activity = s.activity ? `\n${indent}   ↳ ${s.activity}` : '';
       const attention = s.needsYou ? ' · ⚠ needs you' : '';
-      return `${indent}${icon} **${s.name}** (${s.id})${badge} — ${s.state}${crewNote}${attention}${lastRun}${activity}`;
+      // Where the owner finds results — on the fleet's folder, not per crew.
+      const folder = !s.parent ? `\n${indent}   📁 ${tildify(bm.store.deliverablesDir(s.id))}` : '';
+      return `${indent}${icon} **${s.name}** (${s.id})${badge} — ${s.state}${crewNote}${attention}${lastRun}${folder}${activity}`;
     };
     const lines: string[] = [`**Bots** (${summaries.length})`, ''];
     const rendered = new Set<string>();
@@ -132,7 +135,7 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
       if (personaText) {
         bm.store.writePersona(id, personaText + '\n');
         bm.invalidateRuntime(id);
-        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded with your persona — enabled, fail-closed defaults.\nStart using it: \`/bot ${id} <task>\`, \`/bots open ${id}\`, or just \`@${id} <task>\`.`, channelId);
+        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded with your persona — enabled, fail-closed defaults.\n📁 Its results will appear in \`${tildify(bm.store.deliverablesDir(id))}\` (\`/bots folder ${id}\` opens it).\nStart using it: \`/bot ${id} <task>\`, \`/bots open ${id}\`, or just \`@${id} <task>\`.`, channelId);
         await agent.offerFleetStep(bm, id, manifest.name, msg, channel);
         return;
       }
@@ -141,11 +144,11 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
         (channel as any).enterBotChat(id, manifest.name);
         agent.pendingPersonaFor = id;
         await channel.send(
-          `🤖 **${manifest.name}** onboarded (fail-closed defaults).\n\nNow give it its character — your next message here becomes its **persona** (who it is, how it works, how it reports). Send \`/skip\` to keep the starter template, or \`/persona\` later to change it.`,
+          `🤖 **${manifest.name}** onboarded (fail-closed defaults). 📁 Results: \`${tildify(bm.store.deliverablesDir(id))}\`\n\nNow give it its character — your next message here becomes its **persona** (who it is, how it works, how it reports). Send \`/skip\` to keep the starter template, or \`/persona\` later to change it.`,
           `bot:${id}`,
         );
       } else {
-        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults.\nPersona: \`${bm.store.botDir(id)}/persona.md\` — set it now with \`/bots persona ${id} <text>\`.`, channelId);
+        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults.\n📁 Results will appear in \`${tildify(bm.store.deliverablesDir(id))}\`.\nPersona: \`${bm.store.botDir(id)}/persona.md\` — set it now with \`/bots persona ${id} <text>\`.`, channelId);
       }
     } catch (err: any) {
       await channel.send(`Could not create bot "${id}": ${err?.message}`, channelId);
@@ -216,13 +219,14 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     const value = (parts[2] ?? '').toLowerCase();
     if (!target || !value) {
       const suggested = agent.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
-      await channel.send(`Usage: \`/bots budget <id> <tokens|suggest|none>\` — suggest = ${suggested.toLocaleString()}/day, none = no cap (default).`, channelId);
+      await channel.send(`Usage: \`/bots budget <id> <tokens|suggest|none>\` — every bot has a daily cap (default ${suggested.toLocaleString()}/day); suggest = that default, none = unlimited.`, channelId);
       return;
     }
     try {
       bm.store.update(target, m => {
-        if (value === 'none') { if (m.autonomy) delete m.autonomy.dailyTokenBudget; }
-        else if (value === 'suggest') { m.autonomy = { ...m.autonomy, dailyTokenBudget: agent.config.bots?.suggestedDailyTokenBudget ?? 5_000_000 }; }
+        // 0 = explicitly unlimited; absent = the fleet default applies (ADR-020).
+        if (value === 'none') { m.autonomy = { ...m.autonomy, dailyTokenBudget: 0 }; }
+        else if (value === 'suggest') { if (m.autonomy) delete m.autonomy.dailyTokenBudget; }
         else {
           const n = parseInt(value, 10);
           if (!Number.isFinite(n) || n <= 0) throw new Error('budget must be a positive integer, "suggest", or "none"');
@@ -231,7 +235,8 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
       });
       bm.invalidateRuntime(target);
       const m = bm.store.get(target);
-      const applied = m?.autonomy?.dailyTokenBudget ? `${m.autonomy.dailyTokenBudget.toLocaleString()}/day` : 'none (unlimited)';
+      const cap = m ? bm.dailyCapFor(m) : 0;
+      const applied = cap > 0 ? `${cap.toLocaleString()}/day${m?.autonomy?.dailyTokenBudget === undefined ? ' (fleet default)' : ''}` : 'none (unlimited)';
       await channel.send(`💰 Budget for **${target}**: ${applied}. Hit the cap → the bot pauses until the next day, never killed.`, channelId);
     } catch (err: any) {
       await channel.send(`Failed: ${err?.message}`, channelId);
@@ -405,7 +410,10 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     for (const r of [...records].reverse()) {
       const icon = r.state === 'completed' ? '✅' : r.state === 'failed' ? '❌' : r.state === 'paused' ? '⏸' : '⛔';
       const reason = r.reasonCode ? ` · [reason: ${r.reasonCode}]` : '';
-      lines.push(`${icon} ${r.runId} · ${r.trigger} · ${r.state} · ${(r.durationMs / 1000).toFixed(1)}s · ${r.tokensIn + r.tokensOut} tok${reason}`);
+      const outcome = r.outcome ? ` · ${r.outcome === 'none' ? '⚠ no outcome' : r.outcome}` : '';
+      const runFor = r.turnStartedAt ? ((Date.now() - r.turnStartedAt < r.durationMs ? r.durationMs : (r.startedAt + r.durationMs - r.turnStartedAt)) / 1000).toFixed(0) + 's run' : (r.durationMs / 1000).toFixed(1) + 's';
+      lines.push(`${icon} ${r.runId} · ${r.trigger} · ${r.state} · ${runFor} · ${(r.tokensIn + r.tokensOut).toLocaleString()} tok${r.steps !== undefined ? ` · ${r.steps} steps` : ''}${outcome}${reason}`);
+      for (const d of r.deliverables ?? []) lines.push(`   📁 ${tildify(d)}`);
       if (r.summary) lines.push(`   ${r.summary.slice(0, 100)}`);
     }
     await channel.send(lines.join('\n'), channelId);
@@ -607,6 +615,42 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     return;
   }
 
+  if (action === 'outputs' || action === 'deliverables') {
+    // /bots outputs [id] — what the bots delivered, and where it is on disk.
+    const target = parts[1]?.toLowerCase();
+    if (target && !bm.store.exists(target)) {
+      await channel.send(`No bot "${target}". See \`/bots\` for the roster.`, channelId);
+      return;
+    }
+    const items = bm.listDeliverables(target).slice(0, 30);
+    const root = target ? bm.store.deliverablesDir(target) : bm.store.deliverablesRoot();
+    if (items.length === 0) {
+      await channel.send(`Nothing delivered yet. Results will appear in \`${tildify(root)}\` — a bot delivers with bot_deliver when a result is finished.`, channelId);
+      return;
+    }
+    const lines = [`**Deliverables** — ${tildify(root)}`, ''];
+    for (const d of items) {
+      lines.push(`${d.final ? '📄' : '📝'} ${formatRelative(d.mtimeMs)} · **${d.botId}** · ${d.name} (${formatBytes(d.bytes)})`);
+    }
+    lines.push('', '📄 final · 📝 work in progress (under work/) · `/bots folder <id>` opens the folder');
+    await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
+  if (action === 'folder') {
+    // /bots folder <id> — open the deliverables folder in Finder / Explorer / the file manager.
+    const target = parts[1]?.toLowerCase();
+    if (!target || !bm.store.exists(target)) {
+      await channel.send('Usage: `/bots folder <id>` — opens the bot\'s deliverables folder.', channelId);
+      return;
+    }
+    const dir = bm.store.deliverablesDir(target);
+    mkdirSync(dir, { recursive: true });
+    const opened = await openFolder(dir);
+    await channel.send(opened ? `📁 Opened \`${tildify(dir)}\`` : `📁 ${tildify(dir)}\n(could not open a file manager here — copy the path)`, channelId);
+    return;
+  }
+
   if (action === 'storage') {
     const usage = bm.getStorage();
     if (usage.length === 0) {
@@ -631,7 +675,9 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     '`/bots create <id> "Name" "Description"` — onboard a bot\n' +
     '`/bot <id> <message>` — message a bot from any channel\n' +
     '`/bots persona <id> <text>` — set/replace its character (with template conversion)\n' +
-    '`/bots budget <id> <tokens|suggest|none>` — daily token budget (none = no cap, default)\n' +
+    '`/bots budget <id> <tokens|suggest|none>` — daily token budget (default 5M/day; none = unlimited)\n' +
+    '`/bots outputs [id]` — what the bots delivered, and where\n' +
+    '`/bots folder <id>` — open a bot\'s deliverables folder\n' +
     '`/bots edit <id> <field> <value>` — edit any config field anytime\n' +
     '`/bots journal <id>` — recent runs\n' +
     '`/bots inbox <id>` — pending bot-to-bot mail\n' +
@@ -648,4 +694,26 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     '`/bots delete <id> confirm` — permanently delete',
     channelId,
   );
+}
+
+/** ~ for the home dir — paths shown to people, not to tools. */
+function tildify(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
+
+/** Open a folder in the platform file manager; false when there is none (headless/SSH). */
+async function openFolder(dir: string): Promise<boolean> {
+  const { execFile } = await import('node:child_process');
+  const cmd = process.platform === 'darwin' ? ['open', [dir]]
+    : process.platform === 'win32' ? ['explorer', [dir]]
+      : ['xdg-open', [dir]];
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(cmd[0] as string, cmd[1] as string[], { timeout: 5000 }, (err) => resolve(!err));
+      child.on('error', () => resolve(false));
+    } catch {
+      resolve(false);
+    }
+  });
 }
