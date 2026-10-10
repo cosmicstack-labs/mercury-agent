@@ -21,6 +21,7 @@ import { BotTaskStore, renderTaskPrompt, renderBatchDigest, isTerminalTask, type
 import { createFleetDelegateTool, createFleetTasksTool, createFleetPipelineTool } from './tools/fleet-tasks.js';
 import { createBotStateTool } from './tools/bot-state.js';
 import { extractBotMemories } from './memory-extract.js';
+import { runBotDoctor, type DoctorReport } from './doctor.js';
 import { createBotDeliverTool } from './tools/bot-deliver.js';
 import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.js';
 import { createFleetStatusTool } from './tools/fleet-status.js';
@@ -147,6 +148,7 @@ export class BotManager {
   private readonly skillsRoot?: BotManagerDeps['skillsRoot'];
   private notify?: BotManagerDeps['notify'];
   private alert?: (message: string) => Promise<void>;
+  private sendFile?: (channelType: string, channelId: string, filePath: string) => Promise<void>;
 
   /** Deliver turn output to the invoking surface (wired by the Agent). */
   setNotify(cb: NonNullable<BotManagerDeps['notify']>): void {
@@ -156,6 +158,21 @@ export class BotManager {
   /** Push needs-you events (permanent failure, budget pause) to the owner. */
   setAlert(cb: (message: string) => Promise<void>): void {
     this.alert = cb;
+  }
+
+  /** Deliver a file to a remote chat (Telegram/Discord/Slack) — a path on the owner's disk is useless on a phone. */
+  setSendFile(cb: (channelType: string, channelId: string, filePath: string) => Promise<void>): void {
+    this.sendFile = cb;
+  }
+
+  /** Fleet health, same checks as `mercury bots doctor`. */
+  doctor(): DoctorReport {
+    return runBotDoctor({
+      store: this.store,
+      queue: this.queue,
+      journalFor: (id) => this.journalFor(id),
+      scheduledRoutineIds: this.scheduler?.getManifests().map(m => m.id),
+    });
   }
 
   /** Wire the main Scheduler so bots can self-schedule (bot_schedule tool). */
@@ -968,6 +985,13 @@ export class BotManager {
         if (sourceChannelId && sourceChannelId !== botThread && sourceChannelType !== 'cli') {
           await this.notify(sourceChannelType, sourceChannelId, fullText).catch((e) =>
             logger.warn({ e, botId }, 'Bot remote-channel result notify failed'));
+          // The files themselves, not just their paths (ADR-023).
+          if (this.sendFile) {
+            for (const file of output.deliverables) {
+              await this.sendFile(sourceChannelType, sourceChannelId, file).catch((e) =>
+                logger.warn({ e, botId, file }, 'Bot deliverable send to remote channel failed'));
+            }
+          }
         }
       }
 

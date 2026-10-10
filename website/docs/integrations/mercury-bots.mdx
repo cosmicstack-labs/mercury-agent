@@ -1,19 +1,19 @@
 ---
-undundefinedfinedndundundefinedfundefinednedfinedundefineddefinedd:uundefineddefinedndundefinedfinedundefinedundundefinedfinedundefinedcuundefinedundefined-undefinedundefinedundefinedundefined
-undefinediundefinedle:undefinedMeundefinedcuundefinedyundefinedBundefinedundefinedundefinedundefined—undefinedTundefinedeundefinedFleeundefined
-deundefinedcundefinediundefinedundefinedion:undefined"Perundefinediundefinedtent,undefinedundefinederundefinedonundefined-scopedundefinedundefinedgentsundefinedthundefinedt run outside your conversation — each undefinedith its own persona, sandbox, skills, perundefinedission scopes, and durable queueundefined Build fleets with lead bots and crews."
+id: mercury-bots
+title: Mercury Bots — The Fleet
+description: "Persistent, persona-scoped agents that run outside your conversation — each with its own persona, sandbox, skills, permission scopes, and durable queue. Build fleets with lead bots and crews."
 keywords: [bots, fleet, persona, mercury bots, fleet lead, crew, dispatch, dlq, bundles]
 ---
 
 # Mercury Bots — The Fleet
 
-Mercury Bots are **persistent, persona-scoped agents** that run *outside your conversation*. Unlike sub-agents undefinedwhich die with their taskundefined or channels (which answer as one persona), bots are long-lived specialists: each has a name, a character, its own private workspace, its own skill library and permission scopes, a per-bot token budget, and a durable job queue. Dispatch work and keep talking — the bot works in the background and delivers results in **its own thread**.
+Mercury Bots are **persistent, persona-scoped agents** that run *outside your conversation*. Unlike sub-agents (which die with their task) or channels (which answer as one persona), bots are long-lived specialists: each has a name, a character, its own private workspace, its own skill library and permission scopes, a per-bot token budget, and a durable job queue. Dispatch work and keep talking — the bot works in the background and delivers results in **its own thread**.
 
 ## Concepts
 
 | Concept | What it is |
 |---|---|
-| **Bot** | A persistent persona agent: undefinedbot.yamlundefined manifest + `permissions.yaml`, sandbox at `~undefined.mercury/bots/<id>/`, journal-backed history |
+| **Bot** | A persistent persona agent: `bot.yaml` manifest + `permissions.yaml`, sandbox at `~/.mercury/bots/<id>/`, journal-backed history |
 | **Wake** | Turning a bot on for a turn (`/bots run <id> [routine]` or a dispatched task) |
 | **Thread** | The bot's own chat — results, thinking streams, and journal history land here, never in your active chat |
 | **Fleet lead** | A bot promoted to organize its own crew (`/bots promote <id>`) — tell it *what*, it decides *how* and who |
@@ -53,22 +53,25 @@ Run these inside a conversation with Mercury (CLI, Telegram, Discord, Slack, or 
 
 | Command | Description |
 |---------|-------------|
-| `/bots` | Roster with live states |
-| `/bots create <id> "Name" "Description"` | Onboard a bot (walks persona, workspace, budget, permission tiers) |
-| `/bots open <id>` | Open the bot's own thread |
-| `/bot <id> <message>` or `@<id> <message>` | Dispatch a task; the result lands only in the bot's thread |
-| `/bots persona <id> <text>` | Replace the bot's character |
-| `/bots edit <id>` | Change name, description, model, budget |
-| `/bots delete <id>` | Remove the bot and its sandbox |
-| `/bots promote <id>` / `/bots demote <id>` | Make lead / return to solo |
-| `/bots stop <id>` / `/bots start <id>` | Stop holds jobs (resumable); start resumes the whole subtree for leads |
-| `/bots enable <id>` / `/bots disable <id>` | Suspend/reactivate (imported bots start disabled) |
+| `/bots` | Roster with live states — on Telegram with tappable Stop/Start/Run/Runs buttons per bot and a fleet row (Cost, Outputs, Doctor, Stop all) |
+| `/bots create <id> "Name" "Description"` | Onboard a bot (persona, permission tier, fleet, budget size, and where results land) |
+| `/bots open <id>` | Open the bot's own thread (TUI) |
+| `/bot <id> <message>` or `@<id> <message>` | Dispatch a task; the result (and any delivered files) come back to the chat that asked |
+| `/bots cost [days]` | Token spend per bot and fleet, today against the caps |
+| `/bots outputs [id]` · `/bots folder <id>` · `/bots fetch <id> [name]` | What was delivered; open the folder; send a file to this chat |
+| `/bots show <id> [runId]` · `/bots journal <id>` | What a run did (tools, deliveries, reply) · recent runs |
+| `/bots tasks <leadId>` | A lead's delegated tasks and their results |
+| `/bots budget <id> <tokens\|suggest\|none>` | Daily token cap (default 5M; none = unlimited) |
+| `/bots persona <id> <text>` · `/bots edit <id> <field> <value>` | Character · any config field |
+| `/bots permissions <id> [readonly\|builder\|operator\|full]` | Capability tier |
+| `/bots promote <id>` / `demote` · `/bots crew <leadId>` · `/bots add-crew` / `remove-crew` | Fleet structure |
+| `/bots stop <id>` / `start <id>` · `/bots stop all` / `start all` | Hold and resume one bot (and its crew) · the whole fleet |
+| `/bots enable <id>` / `disable <id>` | Suspend/reactivate (imported bots start disabled) |
 | `/bots run <id> [routine]` | Fire a routine now, or a bare wake |
-| `/bots journal <id>` | Recent runs |
-| `/bots dlq` | Failed jobs (replayable) |
-| `/bots replay <id> <jobId>` | Re-run a DLQ job non-destructively |
-| `/bots export <id> [path]` | Bundle export (a lead's carries its crew) |
-| `/bots import <path>` | Recreate from a bundle (starts disabled) |
+| `/bots dlq [clear [id]]` · `/bots replay <id> <jobId>` | Failed jobs; drop them; re-run one |
+| `/bots doctor` · `/bots storage` | Fleet health · disk usage |
+| `/bots export <id> [path]` · `/bots import <path>` | Bundles (a lead's carries its crew; imports start disabled) |
+| `/bots help` | This list, inside any chat |
 
 CLI mirrors the read-only surface — `mercury bots doctor` (fleet health check, exit 1 when actionable), `mercury bots list`, `mercury bots storage`.
 
@@ -90,7 +93,8 @@ Every unattended run is governed:
 
 - **A turn is capped** at 300k tokens and 20 minutes (`autonomy.maxTokensPerTurn`, `maxTurnMinutes` in `bot.yaml`); long context is compacted automatically.
 - **Every bot has a daily token cap** — 5M unless you set one with `/bots budget <id> <tokens|suggest|none>` — and the fleet has one (`bots.fleetDailyTokenBudget`). You are warned at 80%; at 100% the bot pauses until tomorrow.
-- **A routine tick is skipped, never queued,** while the bot is still busy or within 30 minutes of its last run (`schedules[].minIntervalMinutes`). Bot-created routines run at most every 30 minutes, at most three per bot.
+- **A routine tick is skipped, never queued,** while the bot is still busy or within its routine's minimum interval (`schedules[].minIntervalMinutes`). A cadence you declare in `bot.yaml` is honoured as written; routines a bot creates for itself run at most every 30 minutes, at most three per bot.
+- **Bots stay online.** A bot is idle between runs, never dead: a routine that keeps producing nothing is cooled down (6 hours, doubling to a day) and resumes by itself; budget pauses lift at midnight and queued work is pumped then; `/bots doctor` flags a bot whose routine has not fired in twice its cadence (`stale`). Bots run in their own lane — they never touch your main chat or code session.
 - **Leads delegate typed tasks** with `fleet_delegate` — several at once, each with a goal and what "done" means — and are woken **once** with a digest when the batch finishes or its deadline passes. A lead's standard job can be declared as a **pipeline** in `bot.yaml` (`pipeline.stages`), and `fleet_pipeline` runs it end to end with no lead turn between stages:
 
   ```yaml
@@ -103,7 +107,11 @@ Every unattended run is governed:
       - { name: package,  bot: delivery-packager, goal: "Finalise {{previous}} for delivery", final: true }
   ```
 - **Bots remember.** After a productive run, durable facts (sources, decisions, where things are) go into the bot's own memory, and every turn starts with a digest of its last five runs plus its own working-state note (`bot_state`). `bots.fleets.crewProvider` puts crew work on a cheaper provider.
-- **A run is judged by what it did,** not by what it says: delivered a file, took an action, delegated, or nothing. A routine that only writes notes gets one nudge to deliver; three empty runs in a row pause it (`/bots start` resumes). Monitoring routines can declare `expects: check` to be allowed to find nothing.
+- **A run is judged by what it did,** not by what it says: delivered a file, took an action, delegated, or nothing. A routine that only writes notes gets one nudge to deliver; three empty runs in a row cool it down (6h, doubling to 24h; it resumes by itself, or `/bots start` resumes it now). Monitoring routines can declare `expects: check` to be allowed to find nothing.
+
+## From Telegram
+
+Everything above works from your phone: `/bots` and `/bot` are in Telegram's command menu, and the roster comes with buttons — **Stop / Start**, **Run** and **Runs** per bot, and a fleet row with **Cost**, **Outputs**, **Doctor** and **Stop all**. A tap runs the same slash command you would have typed (same permissions, same reply). When a bot finishes a task you asked for from Telegram, the reply comes back to that chat **with the delivered files attached**, not a path on your Mac; `/bots outputs <id>` lists what a bot has delivered with a 📎 button per file, and `/bots fetch <id> [name|latest]` sends one.
 
 ## Bundles
 
@@ -124,7 +132,7 @@ The local dashboard ('Mercury Bots' section) shows the live roster, per-bot thre
 - **`/bots cost [days]`** — token spend per bot and fleet against the caps; **`/bots show <id> [runId]`** — the tool trace, deliveries and reply of a run; **`/bots stop all`** — the kill switch; **`/bots dlq clear`** — drop dead-lettered jobs.
 - **Journals** — per-bot run history with real timings, steps, tool calls, the outcome (`deliverable`, `action`, `delegated`, `message`, `none`) and delivered paths; a compact transcript per run is kept (last 50).
 - **DLQ + replay** — failures classify honestly (`failed`, `timed out`) and replay non-destructively.
-- **`mercury bots doctor`** — storage health, queue depth, journal rotation, and scheduler linkage (routines registered but never wired are flagged before they silently never fire).
+- **`/bots doctor`** (in any chat) and **`mercury bots doctor`** — storage health, stale routines, whole-home write grants, outcome ratio, queue depth, journal rotation, and scheduler linkage (routines registered but never wired are flagged before they silently never fire).
 
 ## Security notes
 

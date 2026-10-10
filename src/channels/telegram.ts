@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Bot, InputFile, InlineKeyboard } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
 import type { ChannelMessage } from '../types/channel.js';
-import { BaseChannel, type PermissionMode } from './base.js';
+import { BaseChannel, type PermissionMode, type ChannelAction } from './base.js';
 import type { MercuryConfig, TelegramAccessUser, TelegramPendingRequest } from '../utils/config.js';
 import {
   addTelegramPendingRequest,
@@ -32,6 +32,13 @@ const MEMORY_ACTION_PREFIX = 'tg_memory';
 
 type ApprovalResolver = () => void;
 type ChoiceResolver = (value: string) => void;
+
+interface ActionTapContext {
+  callbackQuery: { data: string; message?: { chat?: { id?: number } } };
+  chat?: { id?: number };
+  from?: { id?: number; first_name?: string };
+  answerCallbackQuery: (args: { text: string }) => Promise<unknown>;
+}
 
 export class TelegramChannel extends BaseChannel {
   readonly type = 'telegram' as const;
@@ -292,6 +299,8 @@ export class TelegramChannel extends BaseChannel {
       { command: 'models', description: 'List providers or switch AI model' },
       { command: 'code', description: 'Programming mode (plan / execute / off)' },
       { command: 'agents', description: 'List and manage sub-agents' },
+      { command: 'bots', description: 'Your bots: roster with controls, cost, outputs, stop/start' },
+      { command: 'bot', description: 'Message a bot: /bot <id> <task>' },
       { command: 'bg', description: 'Background tasks (list / cancel / run)' },
       { command: 'spotify', description: 'Spotify playback controls' },
       { command: 'skills', description: 'Browse and install skills from the registry' },
@@ -605,9 +614,51 @@ export class TelegramChannel extends BaseChannel {
     }
   }
 
+  /**
+   * Tappable actions (bots control, ADR-023): a message with inline buttons
+   * whose taps run slash commands exactly as if the user had typed them —
+   * same routing, same permissions, same replies. Commands are kept behind
+   * short tokens (callback data is capped at 64 bytes) in a bounded map.
+   */
+  private readonly actionTokens = new Map<string, string>();
+  private static readonly ACTION_TOKENS_MAX = 300;
+
+  async sendWithActions(content: string, rows: ChannelAction[][], targetId?: string): Promise<void> {
+    const chatIds = this.resolveTargetChatIds(targetId);
+    const chatId = chatIds[0];
+    if (!chatId || !this.bot) {
+      await this.send(content, targetId);
+      return;
+    }
+    const keyboard = new InlineKeyboard();
+    rows.forEach((row, i) => {
+      for (const button of row) {
+        const token = Math.random().toString(36).slice(2, 10);
+        this.actionTokens.set(token, button.command);
+        keyboard.text(button.label.slice(0, 40), `ba:${token}`);
+      }
+      if (i < rows.length - 1) keyboard.row();
+    });
+    while (this.actionTokens.size > TelegramChannel.ACTION_TOKENS_MAX) {
+      const oldest = this.actionTokens.keys().next().value;
+      if (oldest === undefined) break;
+      this.actionTokens.delete(oldest);
+    }
+    const html = mdToTelegram(content);
+    try {
+      await this.bot.api.sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: keyboard });
+    } catch {
+      await this.bot.api.sendMessage(chatId, this.stripHtml(html), { reply_markup: keyboard }).catch((e: unknown) => logger.warn({ e }, 'telegram actions send failed'));
+    }
+  }
+
   /** Inline-keyboard taps (approvals, choices, access/memory admin actions). */
   private async handleCallbackQuery(ctx: any): Promise<void> {
     const data: string = ctx.callbackQuery.data;
+    if (data.startsWith('ba:')) {
+      await this.handleActionTap(ctx, data.slice(3));
+      return;
+    }
     if (data.startsWith(`${ACCESS_ACTION_PREFIX}:`)) {
       await this.handleAccessCallback(ctx, data);
       return;
@@ -644,6 +695,34 @@ export class TelegramChannel extends BaseChannel {
     resolver();
     const action = data.slice(data.lastIndexOf(':') + 1);
     await ctx.answerCallbackQuery({ text: action === 'no' ? 'Denied' : 'Approved' });
+  }
+
+  /** A tapped action runs its slash command as a message from the tapping user. */
+  // (the grammy context fields the handler reads; the rest is irrelevant here)
+  private async handleActionTap(ctx: ActionTapContext, token: string): Promise<void> {
+    const command = this.actionTokens.get(token);
+    const userId: number | undefined = ctx.from?.id;
+    const chatId: number | undefined = ctx.callbackQuery?.message?.chat?.id ?? ctx.chat?.id;
+    if (!command || !chatId) {
+      await ctx.answerCallbackQuery({ text: 'Expired — send /bots again' }).catch(() => {});
+      return;
+    }
+    if (!userId || !findTelegramApprovedUser(this.config, userId)) {
+      await ctx.answerCallbackQuery({ text: 'Not allowed' }).catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: command.slice(0, 60) }).catch(() => {});
+    this.emit({
+      id: `tap-${Date.now().toString(36)}-${token}`,
+      channelId: `telegram:${chatId}`,
+      channelType: 'telegram',
+      senderId: String(userId),
+      senderName: ctx.from?.first_name,
+      senderRole: this.isAdminUser(userId) ? 'admin' : 'member',
+      content: command,
+      timestamp: Date.now(),
+      metadata: { chatId, tapped: true },
+    });
   }
 
   /**

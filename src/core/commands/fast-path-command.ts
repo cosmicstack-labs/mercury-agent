@@ -77,7 +77,7 @@ export async function handleFastPathCommand(agent: Agent, msg: ChannelMessage): 
   }
 
   if (trimmed === '/help') {
-    await channel.send('Agent is busy. Available: /sessions, /session, /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg', msg.channelId);
+    await channel.send('Agent is busy. Available: /sessions, /session, /agents, /halt, /stop, /progress, /spotify, /code, /research, /memory, /bg, /bots (always available — the bot lane is separate), /bot <id> <task>', msg.channelId);
     return;
   }
 

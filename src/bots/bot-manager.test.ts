@@ -1267,3 +1267,55 @@ describe('bot governance (ADR-020)', () => {
     expect(registry.getCwd()).toBe(store.sandboxDir('anchored'));
   });
 });
+
+// ── ADR-023: remote surfaces get the files, and doctor lives on the manager ──
+
+describe('remote delivery and doctor (ADR-023)', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-bot-remote-'));
+    store = new BotStore(join(root, 'bots'));
+    manager = makeManager(root);
+  });
+
+  afterEach(() => {
+    for (const m of activeManagers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('sends each delivered file to the remote chat that asked, after the text', async () => {
+    seedBot(store, 'courier');
+    mkdirSync(store.sandboxDir('courier'), { recursive: true });
+    writeFileSync(join(store.sandboxDir('courier'), 'report.md'), 'body');
+    type DeliverOpts = { tools: { bot_deliver: { execute: (input: { file: string }, ctx: unknown) => Promise<unknown> } }; onStepFinish?: (step: unknown) => void };
+    mockedGenerateText.mockImplementation((async (opts: DeliverOpts) => {
+      const r = await opts.tools.bot_deliver.execute({ file: join(store.sandboxDir('courier'), 'report.md') }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ toolName: 'bot_deliver', toolCallId: 'd', input: {} }], toolResults: [{ toolCallId: 'd', output: { type: 'text', value: r } }] });
+      return { text: 'Delivered.', finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } };
+    }) as never);
+    const events: string[] = [];
+    manager['notify'] = async (t, target) => { events.push(`text:${t}:${target}`); };
+    manager.setSendFile(async (t, target, file) => { events.push(`file:${t}:${target}:${file}`); });
+    manager.enqueue('courier', { trigger: 'chat', prompt: 'report please', source: { channelType: 'telegram', channelId: 'chat-42' } });
+    await vi.waitFor(() => {
+      expect(events.some(e => e.startsWith('file:telegram:chat-42:'))).toBe(true);
+    });
+    const text = events.indexOf('text:telegram:chat-42');
+    const file = events.findIndex(e => e.startsWith('file:telegram:chat-42:'));
+    expect(text).toBeGreaterThanOrEqual(0);
+    expect(file).toBeGreaterThan(text);
+    expect(events.find(e => e.startsWith('file:'))).toMatch(/report\.md$/);
+    // The bot thread (CLI) never gets a file push — the path is already there.
+    expect(events.some(e => e.startsWith('file:cli:'))).toBe(false);
+  });
+
+  it('doctor() runs the same fleet checks as the CLI', () => {
+    seedBot(store, 'fine');
+    const report = manager.doctor();
+    expect(report.checked).toBe(1);
+    expect(Array.isArray(report.findings)).toBe(true);
+  });
+});

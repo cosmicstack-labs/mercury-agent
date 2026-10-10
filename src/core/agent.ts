@@ -624,10 +624,14 @@ export class Agent {
   setBotManager(botManager: import('../bots/bot-manager.js').BotManager): void {
     this.botManager = botManager;
     botManager.setNotify(async (channelType, channelId, message) => {
-      const channel = this.channels.get(channelType as any);
+      const channel = this.channels.get(channelType as ChannelType);
       if (channel) {
         await channel.send(message, channelId).catch((e) => logger.warn({ e }, 'bot notify channel send failed'));
       }
+    });
+    botManager.setSendFile(async (channelType, channelId, filePath) => {
+      const channel = this.channels.get(channelType as any);
+      if (channel) await channel.sendFile(filePath, channelId);
     });
     botManager.setAlert(async (message) => {
       const channel = this.channels.getNotificationChannel();
