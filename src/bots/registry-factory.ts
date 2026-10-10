@@ -117,7 +117,10 @@ export function createBotCapabilityRegistry(deps: BotRegistryDeps): CapabilityRe
   pm.setFailClosed(true);
   pm.setCurrentContext('bot', deps.botId);
 
-  registry.setCwd(process.cwd());
+  // Relative paths and shell commands resolve inside the bot's workspace,
+  // never the daemon's cwd (a bot with a wide grant wrote "sandbox/…" files
+  // into whatever repo the daemon happened to be started from).
+  registry.setCwd(deps.sandbox?.workspace ?? process.cwd());
   registry.registerAll();
 
   const tools = filterBotTools(registry.getTools(), deps.manifest, deps.permissions);

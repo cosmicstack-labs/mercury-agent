@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1065,11 +1065,14 @@ describe('bot_deliver — final artifact delivery', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('moves a shared-folder artifact into the protected outputs zone', () => {
+  it('moves a shared-folder artifact into the owner-visible deliverables folder (work/ unless final)', () => {
     const sharedFile = join(root, 'bots', '_shared', 'final-report.md');
     const result = manager.deliver('researcher', sharedFile);
     expect(result.accepted).toBe(true);
-    expect(result.path).toContain(join('outputs', 'researcher'));
+    // Custom bots root → deliverables beside it, never the developer's Documents.
+    expect(result.path).toContain(join(root, 'Mercury', 'RESEARCHER', 'work'));
+    expect(result.path).toMatch(/\d{4}-\d{2}-\d{2} final report\.md$/);
+    expect(existsSync(join(root, 'Mercury', 'RESEARCHER', 'README.md'))).toBe(true);
     expect(existsSync(sharedFile)).toBe(false); // a MOVE — the shared surface stays lean
     expect(existsSync(result.path!)).toBe(true);
   });
@@ -1091,5 +1094,172 @@ describe('bot_deliver — final artifact delivery', () => {
     expect(second.path).not.toBe(first.path);
     expect(existsSync(first.path!)).toBe(true);
     expect(existsSync(second.path!)).toBe(true);
+  });
+});
+
+// ── ADR-020: governance ──────────────────────────────────────────────────────
+
+describe('bot governance (ADR-020)', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-bot-gov-'));
+    store = new BotStore(join(root, 'bots'));
+    manager = makeManager(root);
+  });
+  afterEach(() => {
+    for (const m of activeManagers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const ok = (text = 'done') => ({ text, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } } as any);
+  const completes = () => mockedGenerateText.mockImplementation(async () => ok());
+  const waitIdle = (botId: string) => vi.waitFor(() => {
+    expect((manager as any).running.get(botId)?.size ?? 0).toBe(0);
+    expect(manager.getQueuedCount(botId)).toBe(0);
+  });
+
+  it('a cron tick is skipped while the bot is busy, and until the routine min-interval has passed', async () => {
+    seedBot(store, 'ticker');
+    let release!: () => void;
+    mockedGenerateText.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(ok()); }));
+    const first = manager.enqueue('ticker', { trigger: 'cron', prompt: 'cycle', routineId: 'bot:ticker:cycle' });
+    expect(first.accepted).toBe(true);
+    await vi.waitFor(() => expect((manager as any).running.get('ticker')?.size).toBe(1));
+    // Busy → the tick is dropped, never stacked (the old behaviour queued it).
+    expect(manager.enqueue('ticker', { trigger: 'cron', prompt: 'cycle v2', routineId: 'bot:ticker:cycle' })).toMatchObject({ accepted: false, reasonCode: 'busy' });
+    // A delegated task is NOT a tick: it still queues behind the running turn.
+    expect(manager.enqueue('ticker', { trigger: 'mailbox', prompt: 'please research X', fromBot: 'lead' }).accepted).toBe(true);
+    completes();
+    release();
+    await waitIdle('ticker');
+    // Finished → the next tick is still too soon (30-minute default gap).
+    expect(manager.enqueue('ticker', { trigger: 'cron', prompt: 'cycle', routineId: 'bot:ticker:cycle' })).toMatchObject({ accepted: false, reasonCode: 'too_soon' });
+    // A routine that declares a shorter gap in bot.yaml is honoured.
+    store.update('ticker', m => { m.schedules = [{ name: 'fast', cron: '*/5 * * * *', prompt: 'x', minIntervalMinutes: 0 }]; });
+    expect(manager.enqueue('ticker', { trigger: 'cron', prompt: 'x', routineId: 'bot:ticker:fast' }).accepted).toBe(true);
+  });
+
+  it('every bot gets the fleet default daily cap; 0 means unlimited; 80% warns once', async () => {
+    seedBot(store, 'spender');
+    const alerts: string[] = [];
+    manager.setAlert(async (m) => { alerts.push(m); });
+    expect(manager.dailyCapFor(store.get('spender')!)).toBe(5_000_000);
+    store.update('spender', m => { m.autonomy = { dailyTokenBudget: 0 }; });
+    expect(manager.dailyCapFor(store.get('spender')!)).toBe(0);
+    store.update('spender', m => { m.autonomy = { dailyTokenBudget: 1000 }; });
+    // Usage reaches the turn through onStepFinish (the SDK callback), not the result.
+    mockedGenerateText.mockImplementation(async (opts: any) => { opts.onStepFinish?.({ usage: { inputTokens: 800, outputTokens: 50 }, toolCalls: [], toolResults: [] }); return ok(); });
+    manager.enqueue('spender', { trigger: 'chat', prompt: 'a' });
+    await waitIdle('spender');
+    expect(alerts.some(a => a.includes('85% of today'))).toBe(true);
+    manager.enqueue('spender', { trigger: 'chat', prompt: 'b' });
+    await waitIdle('spender');
+    expect(alerts.some(a => a.includes('daily token budget reached'))).toBe(true);
+    expect(manager.getStatusSummaries().find(s => s.id === 'spender')?.state).toBe('paused');
+  });
+
+  it('a work routine that produces nothing three runs in a row is paused, told once, and resumed by start', async () => {
+    seedBot(store, 'writer');
+    const alerts: string[] = [];
+    manager.setAlert(async (m) => { alerts.push(m); });
+    // Every run only writes a note into _shared — no deliverable, no action.
+    mockedGenerateText.mockImplementation(async (opts: any) => {
+      opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ toolName: 'write_file', toolCallId: 'w', input: { path: join(store.sharedSandboxDir(), 'record.md'), content: 'x' } }], toolResults: [{ toolCallId: 'w', output: { type: 'text', value: 'Wrote file' } }] });
+      return ok('Record filed.');
+    });
+    store.update('writer', m => { m.schedules = [{ name: 'cycle', cron: '0 * * * *', prompt: 'cycle', minIntervalMinutes: 0 }]; });
+    for (let i = 1; i <= 3; i++) {
+      const r = manager.enqueue('writer', { trigger: 'cron', prompt: `cycle ${i}`, routineId: 'bot:writer:cycle' });
+      expect(r.accepted).toBe(true);
+      await waitIdle('writer');
+    }
+    const journal = manager.getJournal('writer', 5);
+    expect(journal.map(r => r.outcome)).toEqual(['none', 'none', 'none']);
+    expect(journal.every(r => r.claimedWithoutAction)).toBe(true);
+    expect(journal[0].steps).toBeDefined();
+    expect(journal[0].toolCalls).toBe(2); // the note, then the note again after the one nudge
+    expect(journal[0].routineId).toBe('bot:writer:cycle');
+    expect(store.readRoutineState('writer').paused['bot:writer:cycle']).toBeDefined();
+    expect(alerts.filter(a => a.includes('is paused')).length).toBe(1);
+    expect(manager.enqueue('writer', { trigger: 'cron', prompt: 'cycle 4', routineId: 'bot:writer:cycle' })).toMatchObject({ accepted: false, reasonCode: 'routine_paused' });
+    manager.start('writer');
+    expect(store.readRoutineState('writer').paused).toEqual({});
+    expect(manager.enqueue('writer', { trigger: 'cron', prompt: 'cycle 5', routineId: 'bot:writer:cycle' }).accepted).toBe(true);
+    await waitIdle('writer');
+    // A completed-but-empty run is shown as such in the bot thread.
+    const transcripts = readdirSync(join(store.botDir('writer'), 'transcripts'));
+    expect(transcripts.length).toBe(4);
+    expect(readFileSync(join(store.botDir('writer'), 'transcripts', transcripts[0]), 'utf-8')).toContain('"trace"');
+  });
+
+  it('a turn-limit stop is journaled as failed/turn_budget but is not an escalation', async () => {
+    seedBot(store, 'big', { autonomy: { maxTokensPerTurn: 100 } });
+    const alerts: string[] = [];
+    manager.setAlert(async (m) => { alerts.push(m); });
+    mockedGenerateText.mockImplementation(async (opts: any) => {
+      opts.onStepFinish?.({ usage: { inputTokens: 500, outputTokens: 5 }, toolCalls: [], toolResults: [] });
+      return ok('partial');
+    });
+    manager.enqueue('big', { trigger: 'chat', prompt: 'huge task' });
+    await waitIdle('big');
+    const [row] = manager.getJournal('big', 1);
+    expect(row.state).toBe('failed');
+    expect(row.reasonCode).toBe('turn_budget');
+    expect(row.needsYou).toBeUndefined();
+    expect(manager.getDlq('big')).toHaveLength(0);
+    expect(alerts.some(a => a.includes('per-turn limit'))).toBe(true);
+    expect(manager.getStatusSummaries().find(s => s.id === 'big')?.needsYou).toBe(false);
+  });
+
+  it('deliverables: human names, finals on top, crew under the lead folder, index, and legacy migration', () => {
+    seedBot(store, 'lead', { fleetRole: 'lead', name: 'Article Writer' } as any);
+    store.update('lead', m => { m.name = 'Article Writer'; });
+    manager.addCrew('lead', { id: 'fact-checker', name: 'Fact Checker' });
+    const shared = store.sharedSandboxDir();
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, 'draft-c34-oxide-v2.md'), '# Oxide');
+    writeFileSync(join(shared, 'checks.md'), '# checks');
+    const final = manager.deliver('lead', join(shared, 'draft-c34-oxide-v2.md'), { title: 'Oxide Series D explained', final: true });
+    expect(final.path).toMatch(/Mercury\/Article Writer\/\d{4}-\d{2}-\d{2} Oxide Series D explained\.md$/);
+    const crew = manager.deliver('fact-checker', join(shared, 'checks.md'), { final: true });
+    expect(crew.final).toBe(false); // crew never produce finals
+    expect(crew.path).toMatch(/Mercury\/Article Writer\/work\/fact-checker\/\d{4}-\d{2}-\d{2} checks\.md$/);
+    const index = readFileSync(join(store.deliverablesDir('lead'), 'README.md'), 'utf-8');
+    expect(index).toContain('Oxide Series D explained.md');
+    expect(index).toContain('work/');
+    const listed = manager.listDeliverables('lead');
+    expect(listed.map(d => d.final)).toEqual([true]);
+    expect(manager.listDeliverables().map(d => d.botId).sort()).toEqual(['fact-checker', 'lead']);
+    // Legacy outputs zone moves into the visible folder once.
+    mkdirSync(join(store.outputsDir(), 'lead'), { recursive: true });
+    writeFileSync(join(store.outputsDir(), 'lead', 'old-piece.md'), 'old');
+    expect(manager.migrateDeliverables()).toEqual({ moved: 1 });
+    expect(existsSync(join(store.deliverablesDir('lead'), 'work', 'old-piece.md'))).toBe(true);
+    expect(existsSync(join(store.outputsDir(), 'README.md'))).toBe(true);
+    expect(manager.migrateDeliverables()).toEqual({ moved: 0 });
+  });
+
+  it('the roster scan ignores profile copies inside sandbox/, outputs/ and other data dirs', () => {
+    seedBot(store, 'real');
+    // A bot "mirroring" its own profile into its sandbox and the outputs zone.
+    for (const copy of [join(store.sandboxDir('real'), 'real'), join(store.outputsDir(), 'real')]) {
+      mkdirSync(copy, { recursive: true });
+      writeFileSync(join(copy, 'bot.yaml'), readFileSync(join(store.botDir('real'), 'bot.yaml')));
+    }
+    expect(store.list().map(m => m.id)).toEqual(['real']);
+    expect(store.botDir('real')).toBe(join(root, 'bots', 'real'));
+  });
+
+  it('bot file tools resolve relative paths inside the bot workspace, not the daemon cwd', () => {
+    seedBot(store, 'anchored');
+    const registry = createBotCapabilityRegistry({
+      botId: 'anchored', manifest: store.get('anchored')!, botDir: store.botDir('anchored'), permissions: {},
+      config: getDefaultConfig() as MercuryConfig,
+      sandbox: { workspace: store.sandboxDir('anchored'), shared: store.sharedSandboxDir() },
+    });
+    expect(registry.getCwd()).toBe(store.sandboxDir('anchored'));
   });
 });

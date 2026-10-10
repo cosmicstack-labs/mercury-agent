@@ -72,6 +72,32 @@ export function runBotDoctor(deps: DoctorDeps): DoctorReport {
       });
     }
 
+    // ADR-020: a bot whose unattended runs mostly produce nothing is
+    // spending tokens on commentary — the owner should look at its persona.
+    const recent = deps.journalFor(manifest.id).read(manifest.id, 20).filter(r => r.outcome !== undefined && (r.trigger === 'cron' || r.trigger === 'api'));
+    if (recent.length >= 4) {
+      const none = recent.filter(r => r.outcome === 'none').length;
+      if (none * 2 >= recent.length) {
+        findings.push({
+          botId: manifest.id,
+          severity: 'warning',
+          check: 'outcome',
+          detail: `${none} of the last ${recent.length} unattended runs produced no deliverable or action — check the persona for instructions that reward activity over results`,
+        });
+      }
+      const claimed = recent.filter(r => r.claimedWithoutAction).length;
+      if (claimed > 0) {
+        findings.push({ botId: manifest.id, severity: 'warning', check: 'outcome', detail: `${claimed} run(s) claimed delivery or execution the tool trace does not show` });
+      }
+    }
+    const routineState = deps.store.readRoutineState(manifest.id);
+    for (const [key, info] of Object.entries(routineState.paused)) {
+      findings.push({ botId: manifest.id, severity: 'warning', check: 'routine', detail: `routine "${key.split(':').pop()}" paused since ${info.since.slice(0, 16).replace('T', ' ')}: ${info.reason} — /bots start ${manifest.id} resumes it` });
+    }
+    const homeGrant = (perms.paths ?? []).find(p => p && typeof p.scope === 'string' && /^~[\\/]?$/.test(p.scope.trim()) && p.write);
+    if (homeGrant) {
+      findings.push({ botId: manifest.id, severity: 'warning', check: 'permissions', detail: 'write access to the whole home directory — an unattended bot can write anywhere; prefer specific scopes (/bots permissions)' });
+    }
     const dlqDepth = dlqByBot.get(manifest.id) ?? 0;
     if (dlqDepth > 0) {
       findings.push({

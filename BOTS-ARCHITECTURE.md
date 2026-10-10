@@ -222,6 +222,19 @@ Plus: **SQLite hygiene** (WAL + periodic idle `wal_checkpoint(TRUNCATE)` + sched
 
 Net: a bot running hourly for a year costs tens of MB; a 10-bot fleet stays under ~200 MB before pruning.
 
+### 2.12 Governance and deliverables (ADR-020, Oct 2026)
+
+Added after an audit of real fleets (see ADR-020 for the numbers). Four mechanisms, all computed by the runtime, none by the model:
+
+| Mechanism | Where | Default |
+|---|---|---|
+| Per-turn caps (tokens, minutes) + context compaction | `bot-turn.ts` governor, `prepareStep` | 300k / 20 min; keep 8 results × 24KB |
+| Daily caps (per bot, per fleet) + 80% warning | `BotManager.recordBotTokens` | 5M per bot, 20M per fleet |
+| Routine gate (busy / too soon / paused) + bot-schedule limits | `BotManager.enqueue`, `tools/bot-schedule.ts` | 30-minute gap, 3 routines per bot |
+| Outcome verdict from the tool trace, one nudge, 3-strike pause, shared-folder write budget | `bot-turn.ts` `computeOutcome`, `wrapBotTools`; `routine-state.json` | `work` for unattended runs |
+
+Deliverables live in an owner-visible folder (`BotStore.deliverablesDir`): finals on top, crew work under `work/`, a README index, dated human names. The hidden `outputs/` zone is legacy and migrated once.
+
 ### 2.11 Devices without native SQLite (old Node versions, Termux)
 
 `better-sqlite3` is a native module: on unsupported Node versions or Termux/Android it may fail to install or load. Mercury already handles this exact problem for the second brain (optionalDependency + tmp-dir runtime probe, `src/memory/second-brain-db.ts:19-25`; `sql.js` ships as a regular dependency). Bots follow and extend the pattern:

@@ -55,10 +55,10 @@ describe('bot_schedule (bot self-scheduling)', () => {
 
   it('caps pending one-shots at 10 per bot (runaway-loop guard)', async () => {
     for (let i = 0; i < 10; i++) {
-      const reply = await tool.execute({ prompt: `task ${i}`, delayMinutes: i + 1 });
+      const reply = await tool.execute({ prompt: `task ${i}`, delayMinutes: i + 10 });
       expect(reply).toContain('Scheduled');
     }
-    const reply = await tool.execute({ prompt: 'task 11', delayMinutes: 5 });
+    const reply = await tool.execute({ prompt: 'task 11', delayMinutes: 15 });
     expect(reply).toContain('pending self-scheduled runs');
     expect(scheduler.manifests).toHaveLength(10);
   });
@@ -72,10 +72,10 @@ describe('bot_schedule (bot self-scheduling)', () => {
 
   it('the cap counts only this bot\'s one-shots', async () => {
     for (let i = 0; i < 10; i++) {
-      await tool.execute({ prompt: `t${i}`, delayMinutes: 5 });
+      await tool.execute({ prompt: `t${i}`, delayMinutes: 15 });
     }
     const otherTool = createBotScheduleTool(scheduler, 'other-bot');
-    const reply = await (otherTool as any).execute({ prompt: 'other', delayMinutes: 5 });
+    const reply = await (otherTool as any).execute({ prompt: 'other', delayMinutes: 15 });
     expect(reply).toContain('Scheduled');
   });
 });

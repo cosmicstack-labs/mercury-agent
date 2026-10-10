@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -18,6 +19,61 @@ export const BOT_SHARED_SANDBOX_DIRNAME = '_shared';
 export const BOT_SANDBOX_DIRNAME = 'sandbox';
 export const BOT_ENV_FILENAME = '.env';
 export const BOT_JOURNAL_FILENAME = 'journal.jsonl';
+/** Per-run compact transcripts (tool trace + reply), pruned by retention.transcriptRuns. */
+export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
+/** Routine state (paused routines, no-outcome streaks) — ADR-020. */
+export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
+/**
+ * Data directories that live INSIDE a bot's profile dir but are never bot
+ * profiles themselves. The roster scan does not descend into them: bots
+ * used to copy their own profile folders into sandbox/ and outputs/ as
+ * "mirrors", which the scan then reported as duplicate bots on every boot.
+ */
+export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME]);
+
+export interface BotRoutineState {
+  /** Routine key → why/when it was paused (cleared by /bots start). */
+  paused: Record<string, { since: string; reason: string }>;
+  /** Routine key → consecutive runs that produced no outcome. */
+  noOutcomeStreak: Record<string, number>;
+}
+
+/**
+ * Where finished results go — a folder the OWNER can find without knowing
+ * about ~/.mercury (ADR-020). Overridable (bots.deliverablesDir); the
+ * default is the platform's Documents folder. A custom MERCURY_HOME (eval
+ * harness, tests) keeps deliverables inside that home.
+ */
+export function defaultDeliverablesRoot(): string {
+  if (process.env.MERCURY_HOME) return join(getMercuryHome(), 'deliverables');
+  const home = homedir();
+  const isTermux = Boolean(process.env.TERMUX_VERSION) || (process.env.PREFIX ?? '').includes('com.termux');
+  if (isTermux) {
+    const shared = join(home, 'storage', 'shared');
+    return existsSync(shared) ? join(shared, 'Documents', 'Mercury') : join(home, 'Mercury');
+  }
+  const documents = join(home, 'Documents');
+  return existsSync(documents) ? join(documents, 'Mercury') : join(home, 'Mercury');
+}
+
+/** A folder name a person recognises: the bot's display name, filesystem-safe. */
+export function deliverablesFolderName(name: string, id: string): string {
+  const clean = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return clean || id;
+}
+
+/** "2026-10-10 Oxide Series D.md" — date first so a folder sorts by time, then a human title. */
+export function deliverableFileName(stemOrTitle: string, ext: string, date: Date = new Date()): string {
+  const day = date.toISOString().slice(0, 10);
+  const title = stemOrTitle
+    .replace(/^\d{4}-\d{2}-\d{2}[ _-]*/, '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'untitled';
+  return `${day} ${title}${ext}`;
+}
 
 /** Fleet nesting cap — mirrors addCrew's 3-level guard (CEO → Lead → Crew). */
 export const MAX_FLEET_DEPTH = 3;
@@ -154,8 +210,74 @@ export class BotStore {
    * open journal handles and registry caches for that id are stale. */
   onRelocate: ((id: string, oldDir: string, newDir: string) => void) | null = null;
 
-  constructor(botsRoot?: string) {
+  private readonly deliverablesRootDir: string;
+
+  constructor(botsRoot?: string, deliverablesRoot?: string) {
     this.botsRoot = resolve(botsRoot ?? join(getMercuryHome(), 'bots'));
+    // A custom bots root (tests) keeps deliverables beside it, never in the
+    // developer's real Documents folder.
+    this.deliverablesRootDir = resolve(deliverablesRoot ?? (botsRoot ? join(this.botsRoot, '..', 'Mercury') : defaultDeliverablesRoot()));
+  }
+
+  /** The owner-visible deliverables root (e.g. ~/Documents/Mercury). */
+  deliverablesRoot(): string {
+    return this.deliverablesRootDir;
+  }
+
+  /**
+   * The folder the owner opens to find a bot's results. Leads and solos get
+   * `<root>/<Bot name>/`; a crew bot's work lives under its lead's folder,
+   * `<lead folder>/work/<crew id>/`, so one fleet = one folder with the
+   * finals on top and the stages underneath.
+   */
+  deliverablesDir(id: string): string {
+    const manifest = this.get(id);
+    if (!manifest) return join(this.deliverablesRootDir, id);
+    if (manifest.parent && manifest.parent !== id) {
+      return join(this.deliverablesDir(manifest.parent), 'work', id);
+    }
+    return join(this.deliverablesRootDir, deliverablesFolderName(manifest.name, manifest.id));
+  }
+
+  /** Rewrite the README index of a deliverables folder (finals on top, stages under work/). */
+  writeDeliverablesIndex(dir: string): void {
+    try {
+      if (!existsSync(dir)) return;
+      const files = readdirSync(dir, { withFileTypes: true })
+        .filter(e => e.isFile() && e.name !== 'README.md' && !e.name.startsWith('.'))
+        .map(e => { const st = statSync(join(dir, e.name)); return { name: e.name, bytes: st.size, mtimeMs: st.mtimeMs }; })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const lines = [
+        `# ${basename(dir)} — deliverables`,
+        '',
+        'Finished results from this Mercury bot land here, newest first. Work in progress from the crew (research, drafts, checks) is under `work/`.',
+        '',
+      ];
+      if (files.length === 0) lines.push('_Nothing delivered yet._');
+      else {
+        lines.push('| Delivered | File | Size |', '|---|---|---|');
+        for (const f of files) lines.push(`| ${new Date(f.mtimeMs).toISOString().slice(0, 16).replace('T', ' ')} | ${f.name} | ${f.bytes < 1024 ? f.bytes + ' B' : Math.round(f.bytes / 1024) + ' KB'} |`);
+      }
+      lines.push('', '_Maintained by Mercury. Delete files freely; this index is rewritten on the next delivery._');
+      writeFileSync(join(dir, 'README.md'), lines.join('\n') + '\n', 'utf-8');
+    } catch { /* an index is a convenience, never a failure */ }
+  }
+
+  readRoutineState(id: string): BotRoutineState {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), 'utf-8'));
+      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {} };
+    } catch {
+      return { paused: {}, noOutcomeStreak: {} };
+    }
+  }
+
+  writeRoutineState(id: string, state: BotRoutineState): void {
+    try {
+      atomicWrite(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), JSON.stringify(state, null, 2) + '\n');
+    } catch (err: any) {
+      logger.warn({ botId: id, err: err?.message }, 'Could not persist routine state');
+    }
   }
 
   /** Bot directory for an id, with traversal guard. Throws on invalid ids. */
@@ -192,10 +314,11 @@ export class BotStore {
     }
     const root = resolve(this.botsRoot);
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_') || BOT_DATA_DIRNAMES.has(entry.name)) continue;
       const sub = join(dir, entry.name);
       if (!resolve(sub).startsWith(root + sep)) continue;
-      if (entry.name === id && existsSync(join(sub, BOT_MANIFEST_FILENAME))) return sub;
+      if (!existsSync(join(sub, BOT_MANIFEST_FILENAME))) continue;
+      if (entry.name === id) return sub;
       const deeper = this.scanForBotDir(sub, id, depth + 1);
       if (deeper) return deeper;
     }
@@ -272,8 +395,12 @@ export class BotStore {
         return;
       }
       for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
+        if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_') || BOT_DATA_DIRNAMES.has(entry.name)) continue;
         const sub = join(dir, entry.name);
+        // Only a profile dir can contain crew profiles. A root-level data
+        // dir (outputs/) or a bot's own sandbox is never descended.
+        const isProfile = existsSync(join(sub, BOT_MANIFEST_FILENAME));
+        if (!isProfile) continue;
         try {
           const m = this.get(entry.name);
           if (m) {

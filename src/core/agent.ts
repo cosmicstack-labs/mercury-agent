@@ -4068,9 +4068,12 @@ export class Agent {
       const result = this.botManager.enqueue(manifest.botId, {
         trigger: 'cron',
         prompt: manifest.prompt || manifest.description,
+        routineId: manifest.id,
       });
       if (!result.accepted) {
-        logger.warn({ botId: manifest.botId, reasonCode: result.reasonCode }, 'Bot routine could not be enqueued');
+        // Gate skips (busy, too soon, paused) are the governor working, not faults.
+        const level = result.reasonCode === 'busy' || result.reasonCode === 'too_soon' || result.reasonCode === 'routine_paused' ? 'info' : 'warn';
+        logger[level]({ botId: manifest.botId, task: manifest.id, reasonCode: result.reasonCode }, 'Bot routine tick skipped');
       }
       return;
     }

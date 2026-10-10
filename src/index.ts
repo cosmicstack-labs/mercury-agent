@@ -2619,6 +2619,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     // single permissions.yaml source.
     void bot.migrateFleetLayout()
       .then(() => bot.migratePermissions())
+      .then(() => bot.migrateDeliverables())
       .then(() => bot.registerRoutines(scheduler));
     agent.setBotManager(bot);
     setWebBotManager(bot);

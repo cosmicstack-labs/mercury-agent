@@ -1,6 +1,6 @@
-import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BOT_JOURNAL_FILENAME, assertValidBotId } from './store.js';
+import { BOT_JOURNAL_FILENAME, BOT_TRANSCRIPTS_DIRNAME, assertValidBotId } from './store.js';
 import type { BotRunRecord } from './types.js';
 
 /**
@@ -14,10 +14,37 @@ export class BotJournal {
   private readonly rotateBytes: number;
   private readonly keepRotations: number;
 
-  constructor(dir: string, rotateBytes = 5 * 1024 * 1024, keepRotations = 3) {
+  private readonly keepTranscripts: number;
+
+  constructor(dir: string, rotateBytes = 5 * 1024 * 1024, keepRotations = 3, keepTranscripts = 50) {
     this.dir = dir;
     this.rotateBytes = rotateBytes;
     this.keepRotations = keepRotations;
+    this.keepTranscripts = keepTranscripts;
+  }
+
+  /**
+   * Compact per-run transcript (ADR-020): what the run actually did — the
+   * tool trace and the full reply — so a journal row can be explained after
+   * the fact. Bounded: the oldest files beyond `keepTranscripts` are pruned.
+   */
+  writeTranscript(record: BotRunRecord, body: { prompt: string; output: string; trace: unknown[] }): string | null {
+    assertValidBotId(record.botId);
+    if (this.keepTranscripts <= 0) return null;
+    const dir = join(this.dir, BOT_TRANSCRIPTS_DIRNAME);
+    try {
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${new Date(record.startedAt).toISOString().slice(0, 19).replace(/[:T]/g, '-')}-${record.runId}.json`);
+      writeFileSync(file, JSON.stringify({ record, ...body }, null, 1), 'utf-8');
+      const names = readdirSync(dir).filter(n => n.endsWith('.json')).sort();
+      for (const stale of names.slice(0, Math.max(0, names.length - this.keepTranscripts))) {
+        try { rmSync(join(dir, stale)); } catch { /* best effort */ }
+      }
+      return file;
+    } catch (err: any) {
+      console.error(`[bots] transcript write failed for ${record.botId}: ${err?.message}`);
+      return null;
+    }
   }
 
   append(record: BotRunRecord): void {

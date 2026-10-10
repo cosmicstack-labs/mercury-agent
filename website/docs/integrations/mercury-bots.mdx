@@ -78,12 +78,20 @@ CLI mirrors the read-only surface — `mercury bots doctor` (fleet health check,
 - The fleet-shared folder `~/.mercury/bots/_shared/` is for cross-bot files — implicit grants for crew members, explicit for leads.
 - Access scopes (**read / write / execute** per directory) are declared in the bot's `permissions.yaml`; hand-edits apply live; malformed entries skip + warn rather than crash.
 - Shell approval follows the bot's own allow-list (`permissions.yaml autoApproveCommands`).
-- Final artifacts must exit via **`bot_deliver`** (platform folder or download) — nothing lives only inside a sandbox.
+- Finished results exit via **`bot_deliver`** into a folder you can actually find: `~/Documents/Mercury/<Bot name>/` (Windows: Documents; Termux: shared storage; `bots.deliverablesDir` in `mercury.yaml` overrides). Finals sit on top, crew work under `work/`, with a README index and files named `2026-10-10 Oxide Series D explained.md`. The path is shown when you onboard a bot and in `/bots`; `/bots outputs` lists deliveries and `/bots folder <id>` opens the folder.
+- Writes to the shared folder are budgeted per run — it is for data other bots consume, not for notes. Bots never write to the deliverables folder by hand.
 - The **retention janitor** enforces per-bot disk caps (journal rotation, DLQ cap), so a forgotten fleet can't fill your disk.
 
 ## Scheduling & autonomy
 
 Bots own routines through `bot_schedule` — schedule their own future runs and recurring jobs, visible in `/tasks` and the fleet doctor. Leads additionally self-organize: give a lead a goal and it recruits crew, splits work, and synthesizes results upward.
+
+Every unattended run is governed:
+
+- **A turn is capped** at 300k tokens and 20 minutes (`autonomy.maxTokensPerTurn`, `maxTurnMinutes` in `bot.yaml`); long context is compacted automatically.
+- **Every bot has a daily token cap** — 5M unless you set one with `/bots budget <id> <tokens|suggest|none>` — and the fleet has one (`bots.fleetDailyTokenBudget`). You are warned at 80%; at 100% the bot pauses until tomorrow.
+- **A routine tick is skipped, never queued,** while the bot is still busy or within 30 minutes of its last run (`schedules[].minIntervalMinutes`). Bot-created routines run at most every 30 minutes, at most three per bot.
+- **A run is judged by what it did,** not by what it says: delivered a file, took an action, delegated, or nothing. A routine that only writes notes gets one nudge to deliver; three empty runs in a row pause it (`/bots start` resumes). Monitoring routines can declare `expects: check` to be allowed to find nothing.
 
 ## Bundles
 
@@ -101,7 +109,7 @@ The local dashboard ('Mercury Bots' section) shows the live roster, per-bot thre
 ## Observability
 
 - **`/bots` roster** — live per-bot states (running / waiting / stopped / needs-you).
-- **Journals** — per-bot run history, tail-read and mtime-cached for speed.
+- **Journals** — per-bot run history with real timings, steps, tool calls, the outcome (`deliverable`, `action`, `delegated`, `message`, `none`) and delivered paths; a compact transcript per run is kept (last 50).
 - **DLQ + replay** — failures classify honestly (`failed`, `timed out`) and replay non-destructively.
 - **`mercury bots doctor`** — storage health, queue depth, journal rotation, and scheduler linkage (routines registered but never wired are flagged before they silently never fire).
 
