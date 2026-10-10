@@ -1225,10 +1225,11 @@ describe('bot governance (ADR-020)', () => {
     writeFileSync(join(shared, 'draft-c34-oxide-v2.md'), '# Oxide');
     writeFileSync(join(shared, 'checks.md'), '# checks');
     const final = manager.deliver('lead', join(shared, 'draft-c34-oxide-v2.md'), { title: 'Oxide Series D explained', final: true });
-    expect(final.path).toMatch(/Mercury\/Article Writer\/\d{4}-\d{2}-\d{2} Oxide Series D explained\.md$/);
+    // Separator-agnostic: Windows runners join with backslashes.
+    expect(final.path).toMatch(/Mercury[\\/]Article Writer[\\/]\d{4}-\d{2}-\d{2} Oxide Series D explained\.md$/);
     const crew = manager.deliver('fact-checker', join(shared, 'checks.md'), { final: true });
     expect(crew.final).toBe(false); // crew never produce finals
-    expect(crew.path).toMatch(/Mercury\/Article Writer\/work\/fact-checker\/\d{4}-\d{2}-\d{2} checks\.md$/);
+    expect(crew.path).toMatch(/Mercury[\\/]Article Writer[\\/]work[\\/]fact-checker[\\/]\d{4}-\d{2}-\d{2} checks\.md$/);
     const index = readFileSync(join(store.deliverablesDir('lead'), 'README.md'), 'utf-8');
     expect(index).toContain('Oxide Series D explained.md');
     expect(index).toContain('work/');
