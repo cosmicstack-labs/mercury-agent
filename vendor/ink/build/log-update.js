@@ -1,6 +1,11 @@
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
-const create = (stream, { showCursor = false } = {}) => {
+// Synchronized output (Cosmic Stack patch): see ink.js synchronized().
+const BSU = '\u001B[?2026h';
+const ESU = '\u001B[?2026l';
+const create = (stream, { showCursor = false, synchronize = false } = {}) => {
+    // One atomic update per write, unless ink.js already opened one.
+    const syncWrite = (data) => stream.write(synchronize && !(render.syncDepth > 0) ? BSU + data + ESU : data);
     let previousLineCount = 0;
     let previousOutput = '';
     let hasHiddenCursor = false;
@@ -40,7 +45,7 @@ const create = (stream, { showCursor = false } = {}) => {
             // may have moved or toggled — re-park without touching the frame.
             const target = targetFor(cursor, previousLineCount);
             const same = (!parked && !target) || (parked && target && parked.up === target.up && parked.col === target.col);
-            if (!same) stream.write(unpark() + park(target));
+            if (!same) syncWrite(unpark() + park(target));
             return;
         }
         // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
@@ -62,7 +67,7 @@ const create = (stream, { showCursor = false } = {}) => {
         const eraseCount = previousLineCount - firstChange;
         previousOutput = output;
         previousLineCount = output.split('\n').length;
-        stream.write(unpark() + ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n' + park(targetFor(cursor, previousLineCount)));
+        syncWrite(unpark() + ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n' + park(targetFor(cursor, previousLineCount)));
     };
     // Resize baseline reset (Cosmic Stack patch): forget what is on screen
     // without touching the line count — the next render erases the old
@@ -71,8 +76,10 @@ const create = (stream, { showCursor = false } = {}) => {
     render.invalidate = () => {
         previousOutput = '';
     };
+    render.synchronize = synchronize;
+    render.syncDepth = 0;
     render.clear = () => {
-        stream.write(unpark() + ansiEscapes.eraseLines(previousLineCount));
+        syncWrite(unpark() + ansiEscapes.eraseLines(previousLineCount));
         previousOutput = '';
         previousLineCount = 0;
     };

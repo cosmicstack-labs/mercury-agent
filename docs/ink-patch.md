@@ -87,6 +87,19 @@ The attribute lives on ink's DOM node instead of a ref for a reason. React attac
 
 **Upstream.** Ink has no cursor API in 5.x. A proposal could be a public `useCursor()` hook or a `<Cursor />` marker component that resolves the same way, plus the park/unpark contract in log-update. The tests in `src/ui/hardware-cursor.test.tsx` show the expected byte sequences: wide characters, diff frames, cursor-only moves, trim, `<Static>` output, resize and unmount.
 
+
+## 8. Synchronized output (`ink.js`, `log-update.js`)
+
+**Problem.** A frame reaches the terminal as an erase followed by a redraw, and a new transcript line takes three writes: erase the live region, print the line, redraw. Terminals paint between those steps, so the user briefly sees the region blank or half-drawn. That is the flicker in iTerm2, kitty, WezTerm, Ghostty and Windows Terminal, and it is worst while a reply streams.
+
+**Fix.** Bracket each update in BSU/ESU (`ESC[?2026h` … `ESC[?2026l`, DEC private mode 2026), so the terminal swaps the finished frame in at once.
+- log-update brackets its own single writes. This also covers the throttled path, which writes after `onRender` returns.
+- `Ink.synchronized()` brackets multi-write sequences (clear + static + frame, and the console write-through paths) as one update. log-update skips its own brackets while one is open.
+- The gate matches upstream's `shouldSynchronize()`: a TTY, not CI, not debug.
+- Terminals without mode 2026 ignore both sequences.
+
+**Upstream.** Ink 6.7 shipped this (#866). This hunk is a backport, and it goes away with the move to Ink 8.
+
 ---
 
 ## Upgrading ink

@@ -26,6 +26,8 @@
  *   8. ink.js + log-update.js — hardware cursor positioning
  *      (`internal_cursor` host attribute), so IME preedit/candidate
  *      windows anchor on the input cell.
+ *   9. ink.js + log-update.js — synchronized output (DEC mode 2026): every
+ *      frame is painted atomically; backport of ink 6.7 (#866).
  *
  * Loud on failure: a silent skip is never acceptable for a crash fix.
  */
@@ -87,7 +89,9 @@ function isPatched(p = paths) {
       && inkJs.includes('maxLiveRows')
       && inkJs.includes(RESIZE_RESET_MARKER)
       && inkJs.includes(FRAME_GATE_MARKER)
-      && inkJs.includes(CURSOR_ANCHOR_MARKER);
+      && inkJs.includes(CURSOR_ANCHOR_MARKER)
+      && logUpdate.includes(SYNC_MARKER)
+      && inkJs.includes(SYNC_MARKER);
   } catch {
     return false;
   }
@@ -98,6 +102,7 @@ const RESIZE_RESET_MARKER = 'Resize baseline reset (Cosmic Stack patch)';
 const CURSOR_MARKER = 'Hardware cursor (Cosmic Stack patch)';
 const CURSOR_ANCHOR_MARKER = '__mercuryCursorAnchor';
 const YOGA_HYGIENE_MARKER = '__mercuryInkYogaHygiene';
+const SYNC_MARKER = 'Synchronized output (Cosmic Stack patch)';
 
 /**
  * Hardware cursor positioning (ADR-017, #41, #66). Stock ink hides the
@@ -217,7 +222,7 @@ globalThis.${CURSOR_ANCHOR_MARKER} = cursorAnchor;
 // in-place node_modules edit.
 export const inkPatch = {
     vendored: false,
-    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning'],
+    hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning', 'synchronized-output'],
 };
 globalThis.__mercuryInkPatch = inkPatch;
 const sameCursor = (a, b) => (!a && !b) || (!!a && !!b && a.row === b.row && a.col === b.col);
@@ -301,6 +306,84 @@ ${onRenderAnchor}`);
  * log-update's `previousOutput` baseline (keeping the line count, so the
  * erase still covers the old frame) and the next frame repaints whole.
  * Applies to both ink.js and log-update.js (after the diff-render edit). */
+/** Synchronized output: bracket every frame write in BSU/ESU (DEC private
+ * mode 2026) so the terminal swaps it in atomically — no visible gap between
+ * the erase and the redraw, which is the flicker modern terminals show.
+ * Terminals without 2026 ignore both sequences. log-update brackets its own
+ * single writes (that also covers the throttled path, which writes later);
+ * ink.js brackets multi-write sequences (clear + static + frame) as one
+ * update, and log-update skips its own brackets while one is open.
+ * Runs after the cursor hunk: it rewrites the unpark() writes that hunk adds. */
+function applySynchronizedOutput(p = paths) {
+  const { logUpdatePath, inkJsPath } = p;
+  let lu = fs.readFileSync(logUpdatePath, 'utf8');
+  let ink = fs.readFileSync(inkJsPath, 'utf8');
+  if (lu.includes(SYNC_MARKER) && ink.includes(SYNC_MARKER)) return true;
+  if (!lu.includes(SYNC_MARKER)) {
+    const createAnchor = 'const create = (stream, { showCursor = false } = {}) => {';
+    const clearAnchor = '    render.clear = () => {';
+    if (!lu.includes(createAnchor) || !lu.includes(clearAnchor)) return false;
+    const writes = lu.split('stream.write(unpark()').length - 1;
+    if (writes < 2) return false;
+    lu = lu.replace(createAnchor, `// ${SYNC_MARKER}: see ink.js synchronized().
+const BSU = '\\u001B[?2026h';
+const ESU = '\\u001B[?2026l';
+const create = (stream, { showCursor = false, synchronize = false } = {}) => {
+    // One atomic update per write, unless ink.js already opened one.
+    const syncWrite = (data) => stream.write(synchronize && !(render.syncDepth > 0) ? BSU + data + ESU : data);`);
+    lu = lu.split('stream.write(unpark()').join('syncWrite(unpark()');
+    lu = lu.replace(clearAnchor, `    render.synchronize = synchronize;
+    render.syncDepth = 0;
+${clearAnchor}`);
+  }
+  if (!ink.includes(SYNC_MARKER)) {
+    const createAnchor = 'this.log = logUpdate.create(options.stdout);';
+    const staticAnchor = '            this.log.clear();\n            this.options.stdout.write(staticOutput);\n            this.log(output, cursor);';
+    const writeToAnchor = '    writeToStdout(data) {';
+    if (!ink.includes(createAnchor) || !ink.includes(staticAnchor) || !ink.includes(writeToAnchor)) return false;
+    ink = ink.replace(createAnchor, `// ${SYNC_MARKER}: same gate as upstream shouldSynchronize().
+        this.log = logUpdate.create(options.stdout, { synchronize: Boolean(options.stdout.isTTY) && !isInCi && !options.debug });`);
+    ink = ink.replace(staticAnchor, `            this.synchronized(() => {
+                this.log.clear();
+                this.options.stdout.write(staticOutput);
+                this.log(output, cursor);
+            });`);
+    for (const stream of ['stdout', 'stderr']) {
+      const block = `        this.log.clear();\n        this.options.${stream}.write(data);\n        this.log(this.lastOutput, this.lastCursor);`;
+      if (ink.includes(block)) {
+        ink = ink.replace(block, `        this.synchronized(() => {
+            this.log.clear();
+            this.options.${stream}.write(data);
+            this.log(this.lastOutput, this.lastCursor);
+        });`);
+      }
+    }
+    ink = ink.replace(writeToAnchor, `    // ${SYNC_MARKER}: run several writes as ONE terminal update (DEC
+    // mode 2026), so a new transcript line and the redrawn live region
+    // appear together instead of erase → static → redraw.
+    synchronized(write) {
+        const log = this.log;
+        if (!log.synchronize) {
+            write();
+            return;
+        }
+        this.options.stdout.write('\\u001B[?2026h');
+        log.syncDepth++;
+        try {
+            write();
+        }
+        finally {
+            log.syncDepth--;
+            this.options.stdout.write('\\u001B[?2026l');
+        }
+    }
+${writeToAnchor}`);
+  }
+  fs.writeFileSync(logUpdatePath, lu);
+  fs.writeFileSync(inkJsPath, ink);
+  return true;
+}
+
 function applyResizeBaselineReset(p = paths) {
   const { inkJsPath, logUpdatePath } = p;
   let lu = fs.readFileSync(logUpdatePath, 'utf8');
@@ -654,8 +737,12 @@ function apply(opts = {}) {
     const diffRenderOk = applyLogUpdateDiffRender(p);
     const resizeResetOk = applyResizeBaselineReset(p);
     const cursorOk = applyCursorPositioning(p);
+    const syncOk = cursorOk && applySynchronizedOutput(p);
     if (!cursorOk) {
       return { ok: false, applied: true, error: 'hardware cursor positioning could not be inserted (ink.js onRender / log-update.js render anchors)' };
+    }
+    if (!syncOk) {
+      return { ok: false, applied: true, error: 'synchronized output could not be inserted (ink.js log/static/writeToStdout or log-update.js create/clear anchors)' };
     }
     if (!reconcilerOk) {
       return { ok: false, applied: true, error: 'reconciler.js no longer matches the expected ink 5.2.1 shape — patch anchors not found' };

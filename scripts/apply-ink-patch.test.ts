@@ -49,6 +49,9 @@ function writeStockInk(root: string): void {
     'import logUpdate from \'./log-update.js\';',
     'const noop = () => { };',
     'export default class Ink {',
+    '    constructor(options) {',
+    '        this.log = logUpdate.create(options.stdout);',
+    '    }',
     '    resized = () => {',
     '        this.calculateLayout();',
     '        this.onRender();',
@@ -117,16 +120,22 @@ describe('ink patch applier (patch-package-free)', () => {
       expect(resized).toContain("this.lastOutput = '';");
       expect(resized).toContain('this.log.invalidate()');
       expect(resized.indexOf('this.log.invalidate()')).toBeLessThan(resized.indexOf('this.calculateLayout()'));
-      // Hardware cursor: every frame write unparks first and parks after,
+      // Hardware cursor: every frame write unparks first and parks after
+      // (through syncWrite, see the synchronized-output checks below),
       // and both log() call sites pass the resolved cell through.
       expect(logUpdate).toContain('const render = (str, cursor) => {');
-      expect(logUpdate).toContain('stream.write(unpark() + ansiEscapes.eraseLines(eraseCount)');
-      expect(logUpdate).toContain('stream.write(unpark() + ansiEscapes.eraseLines(previousLineCount))');
       expect(inkJs).toContain('this.log(output, cursor);');
       expect(inkJs).toContain('this.throttledLog(output, cursor);');
       expect(inkJs).toContain('this.log(this.lastOutput, this.lastCursor);');
       expect(inkJs).toContain('node.attributes?.internal_cursor');
       expect(readFileSync(paths.reconcilerPath, 'utf8')).toContain('globalThis.__mercuryInkYogaHygiene = true;');
+      // Synchronized output: log-update brackets its own writes, ink.js
+      // brackets clear + static + frame as one update, gated on a TTY.
+      expect(logUpdate).toContain('syncWrite(unpark() + ansiEscapes.eraseLines(eraseCount)');
+      expect(logUpdate).toContain('syncWrite(unpark() + ansiEscapes.eraseLines(previousLineCount))');
+      expect(logUpdate).not.toContain('stream.write(unpark()');
+      expect(inkJs).toContain('synchronize: Boolean(options.stdout.isTTY) && !isInCi && !options.debug');
+      expect(inkJs).toMatch(/this\.synchronized\(\(\) => \{\n\s+this\.log\.clear\(\);\n\s+this\.options\.stdout\.write\(staticOutput\);/);
       // Idempotent: a second run must recognize the applied state and no-op.
       const again = apply({ root });
       expect(again.ok).toBe(true);
