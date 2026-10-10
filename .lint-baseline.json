@@ -1,7 +1,7 @@
 {
   "$comment": "ESLint ratchet baseline. Per-rule counts (errors + warnings) may only go down. Refresh with `npm run lint:ratchet -- --update` after a clean-up.",
   "provisional": false,
-  "generatedAt": "2026-10-10T16:18:00.110Z",
+  "generatedAt": "2026-10-10T16:59:09.838Z",
   "target": "src",
   "rules": {
     "(unknown)": 1,

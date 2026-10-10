@@ -215,7 +215,16 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
           `bot:${id}`,
         );
       } else {
-        await channel.send(`🤖 Bot **${manifest.name}** (\`${id}\`) onboarded — enabled, fail-closed defaults.\n📁 Results will appear in \`${tildify(bm.store.deliverablesDir(id))}\`.\nPersona: \`${bm.store.botDir(id)}/persona.md\` — set it now with \`/bots persona ${id} <text>\`.`, channelId);
+        // No bot thread here (Telegram, web, Discord): the next message in
+        // this chat is the persona; the tier, fleet and budget steps follow
+        // as tappable choices — the same onboarding as the TUI.
+        agent.pendingPersonaFor = id;
+        agent.pendingPersonaChannelId = channelId;
+        await channel.send(
+          `🤖 **${manifest.name}** (\`${id}\`) created — enabled, fail-closed defaults. 📁 Results: \`${tildify(bm.store.deliverablesDir(id))}\`\n\n` +
+          `Now give it its character — your **next message here** becomes its persona (who it is, how it works, how it reports). I will offer to structure it into a template. Send \`/skip\` to keep the starter persona.`,
+          channelId,
+        );
       }
     } catch (err: any) {
       await channel.send(`Could not create bot "${id}": ${err?.message}`, channelId);
