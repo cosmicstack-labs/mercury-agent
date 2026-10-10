@@ -2,6 +2,7 @@
 
 ## Unreleased — bots in your pocket (ADR-023)
 
+- **Onboarding from Telegram.** `/bots create <id> "Name" "Description"` in Telegram (or the web chat) now runs the same flow as the TUI: your next message is the persona (keep as-is or convert to the template), then permissions tier, solo vs fleet, and the daily budget — each a tap on Telegram's native buttons that settle in place. Every reply lands in the chat that asked; nothing is lost to the TUI-only bot thread any more.
 - **Telegram controls.** `/bots` and `/bot` are in Telegram's command menu; the roster arrives with buttons — Stop/Start, Run and Runs per bot, plus Cost, Outputs, Doctor and Stop all for the fleet. A tap runs the slash command behind it as if you had typed it (same permissions, same reply). `/bots outputs` carries a 📎 button per delivered file.
 - **Files, not paths.** A task asked for from Telegram (or any remote chat) comes back with its delivered files attached. `/bots fetch <id> [name|latest]` sends one on demand.
 - **`/bots doctor`** runs the fleet health check from any chat; **`/bots help`** lists the commands. The TUI's slash completion, the busy-mode `/help`, and the docs now list every `/bots` subcommand.

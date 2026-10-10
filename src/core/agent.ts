@@ -545,6 +545,8 @@ export class Agent {
   botManager?: import('../bots/bot-manager.js').BotManager;
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   pendingPersonaFor: string | null = null;
+  /** The chat whose next message is the persona (Telegram/web/Discord — channels without a bot thread). */
+  pendingPersonaChannelId: string | null = null;
   /** True while the pending persona capture belongs to a JUST-created bot —
    * gates the fleet (solo vs lead) onboarding step in finalizePersona. */
   pendingPersonaNewlyCreated = false;
@@ -703,6 +705,31 @@ export class Agent {
     logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
 
     const trimmed = msg.content.trim();
+
+    // Onboarding from a chat without a bot thread (Telegram, web, Discord):
+    // the next plain message in THAT chat is the new bot's persona — same
+    // state machine as the TUI, same choices, just addressed to the chat
+    // that asked. A slash command means the owner moved on.
+    if (this.pendingPersonaFor && this.pendingPersonaChannelId === msg.channelId && this.botManager) {
+      const botId = this.pendingPersonaFor;
+      const channel = this.channels.getChannelForMessage(msg);
+      if (trimmed.toLowerCase() === '/skip') {
+        this.pendingPersonaFor = null;
+        this.pendingPersonaChannelId = null;
+        channel?.send(`⏭ Keeping the starter persona — change it anytime with \`/bots persona ${botId} <text>\`.`, msg.channelId).catch(() => {});
+        return;
+      }
+      if (trimmed.startsWith('/')) {
+        this.pendingPersonaFor = null;
+        this.pendingPersonaChannelId = null;
+      } else if (channel) {
+        this.pendingPersonaChannelId = null;
+        this.finalizePersona(this.botManager, botId, trimmed, msg, this.pendingPersonaNewlyCreated).catch((err) => {
+          logger.warn({ err, botId }, 'Persona onboarding failed');
+        });
+        return;
+      }
+    }
 
     // Mercury Bots never touch the main message queue — /bots is always
     // fast-path, whether the main loop is busy or idle.
@@ -1096,6 +1123,7 @@ export class Agent {
     const manifest = bm.store.get(botId);
     if (!channel || !manifest) return;
     const channelType = msg.channelType as any;
+    const target = this.onboardingTarget(botId, msg, channel);
 
     let choice = 'template';
     try {
@@ -1122,7 +1150,7 @@ export class Agent {
     if (choice.startsWith('Convert')) {
       // The builder is an LLM call (10-60s on slower providers) — the user
       // must see it is working, or onboarding reads as a hang.
-      await channel.send('⏳ Running the persona builder — structuring your text (typically 10–60s)…', `bot:${botId}`).catch(() => {});
+      await channel.send('⏳ Running the persona builder — structuring your text (typically 10–60s)…', target).catch(() => {});
       (channel as any).sendHeartbeat?.('⏳ Persona builder running…');
       const refined = await refinePersona(raw, manifest.name, this.providers.getDefault());
       (channel as any).clearHeartbeat?.();
@@ -1137,7 +1165,7 @@ export class Agent {
     bm.invalidateRuntime(botId);
     this.pendingPersonaFor = null;
     const mode = finalPersona === raw ? 'as-is' : 'as a structured template';
-    await channel.send(`✍️ Persona saved ${mode}.`, `bot:${botId}`).catch(() => {});
+    await channel.send(`✍️ Persona saved ${mode}.`, target).catch(() => {});
 
     // New-bot onboarding: permission tier, then solo vs fleet (edits later never ask).
     if (newlyCreated) {
@@ -1148,6 +1176,10 @@ export class Agent {
     // Final onboarding step: the daily token budget. Every bot has one
     // (ADR-020) — the presets are sizes, not a yes/no.
     const standard = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+    if (channel.type !== 'cli') {
+      await this.offerBudgetChoice(bm, botId, manifest.name, msg, channel, standard);
+      return;
+    }
     this.pendingBudgetFor = botId;
     const home = homedir();
     const folder = bm.store.deliverablesDir(botId);
@@ -1159,8 +1191,43 @@ export class Agent {
       `• a number, or \`none\` for no cap\n` +
       `When the cap is hit the bot pauses until tomorrow; you are warned at 80%. Change anytime: \`/bots budget ${botId} <tokens|suggest|none>\`.\n` +
       `📁 Its results will appear in \`${folder.startsWith(home) ? '~' + folder.slice(home.length) : folder}\` (\`/bots folder ${botId}\` opens it).`,
-      `bot:${botId}`,
+      target,
     ).catch(() => {});
+  }
+
+  /**
+   * Where onboarding talks: the bot's own thread in the TUI, the chat that
+   * asked everywhere else (Telegram cannot resolve `bot:<id>`).
+   */
+  private onboardingTarget(botId: string, msg: ChannelMessage, channel: { type?: string }): string {
+    return channel.type === 'cli' ? `bot:${botId}` : msg.channelId;
+  }
+
+  /** Budget step as buttons (Telegram/web): sizes, not a typed keyword. */
+  private async offerBudgetChoice(bm: import('../bots/bot-manager.js').BotManager, botId: string, botName: string, msg: ChannelMessage, channel: { send: (text: string, target?: string) => Promise<void> }, standard: number): Promise<void> {
+    const home = homedir();
+    const folder = bm.store.deliverablesDir(botId);
+    const options = [
+      `Standard — ${standard.toLocaleString()}/day (recommended)`,
+      'Light — 1M/day',
+      'Heavy — 20M/day',
+      'No cap',
+    ];
+    let choice = options[0];
+    try {
+      choice = await this.presentChoice(
+        `Last step — how much may **${botName}** spend per day? When the cap is hit it pauses until tomorrow (warned at 80%). Change anytime: \`/bots budget ${botId} <tokens|suggest|none>\`.\n📁 Results will appear in \`${folder.startsWith(home) ? '~' + folder.slice(home.length) : folder}\`.`,
+        options,
+        msg.channelId,
+        msg.channelType,
+      );
+    } catch {
+      choice = options[0];
+    }
+    const keyword = choice.startsWith('Light') ? 'light' : choice.startsWith('Heavy') ? 'heavy' : choice.startsWith('No cap') ? 'none' : 'standard';
+    this.pendingBudgetFor = botId;
+    await this.applyBudgetAnswer(bm, botId, keyword, msg);
+    await channel.send(`✅ **${botName}** is ready. Give it work with \`/bot ${botId} <task>\` or \`@${botId} <task>\` — results come back here, with the files.`, msg.channelId).catch(() => {});
   }
 
   /**
@@ -1169,11 +1236,14 @@ export class Agent {
    * anytime with `/bots permissions <id> <tier>`.
    */
   private async offerPermissionTier(bm: import('../bots/bot-manager.js').BotManager, botId: string, botName: string, msg: ChannelMessage, channel: any): Promise<void> {
+    const target = this.onboardingTarget(botId, msg, channel);
     let choice = 'Read-only (recommended default)';
     try {
       choice = await this.presentChoice(
-        `What should **${botName}** be allowed to do? (Path scopes always stay fail-closed — a tool only reaches what its Access grants cover.)`,
-        Object.values(PERMISSION_TIERS).map(t => `${t.label} — ${t.description}`),
+        `What should **${botName}** be allowed to do?\n` +
+        Object.values(PERMISSION_TIERS).map(t => `• **${t.label}** — ${t.description}`).join('\n') +
+        '\n(Path scopes always stay fail-closed — a tool only reaches what its Access grants cover.)',
+        Object.values(PERMISSION_TIERS).map(t => t.label),
         msg.channelId,
         msg.channelType as any,
       );
@@ -1188,7 +1258,7 @@ export class Agent {
     bm.store.writePermissions(botId, tierPermissionsFile(tier));
     bm.store.update(botId, m => { delete (m as any).tools; });
     bm.invalidateRuntime(botId);
-    await channel.send(`🔐 Permissions for **${botName}**: **${PERMISSION_TIERS[tier].label}**. Change anytime with \`/bots permissions ${botId} <readonly|builder|operator|full>\`.`, `bot:${botId}`).catch(() => {});
+    await channel.send(`🔐 Permissions for **${botName}**: **${PERMISSION_TIERS[tier].label}**. Change anytime with \`/bots permissions ${botId} <readonly|builder|operator|full>\`.`, target).catch(() => {});
   }
 
   /**
@@ -1197,6 +1267,7 @@ export class Agent {
    * budget step follows either way.
    */
   async offerFleetStep(bm: import('../bots/bot-manager.js').BotManager, botId: string, botName: string, msg: ChannelMessage, channel: any): Promise<void> {
+    const target = this.onboardingTarget(botId, msg, channel);
     let choice = 'Solo bot';
     try {
       choice = await this.presentChoice(
@@ -1219,7 +1290,7 @@ export class Agent {
         `👑 **${botName}** is now a fleet lead. Add specialists anytime:\n` +
         `\`/bots add-crew ${botId} <id> "Name" "Description" "persona (optional)"\`\n` +
         `Review the fleet with \`/bots crew ${botId}\` — or just tell **${botName}** to hire its own crew (it has bot_spawn).`,
-        `bot:${botId}`,
+        target,
       ).catch(() => {});
       return;
     }
@@ -1227,7 +1298,7 @@ export class Agent {
     // Auto-build: one LLM proposal, created through the standard path. This
     // is an LLM call (30-90s) — it must NOT hold onboarding hostage: run it
     // detached with visible progress, and deliver the roster when ready.
-    await channel.send(`👑 **${botName}** is now a fleet lead — building the crew in the background…`, `bot:${botId}`).catch(() => {});
+    await channel.send(`👑 **${botName}** is now a fleet lead — building the crew in the background…`, target).catch(() => {});
     (channel as any).sendHeartbeat?.('⏳ Proposing fleet crew (up to ~90s)…');
     const persona = bm.store.readPersona(botId);
     const leadDescription = bm.store.get(botId)?.description ?? '';
@@ -1236,7 +1307,7 @@ export class Agent {
         const proposals = await proposeCrew(botName, leadDescription, persona, this.providers.getDefault(), bm.maxCrew());
         (channel as any).clearHeartbeat?.();
         if (proposals.length === 0) {
-          await channel.send(`⚠ Crew proposal unavailable (provider) — **${botName}** is a lead with an empty crew. Add members with \`/bots add-crew ${botId} <id> "Name" "Description" "persona"\` or tell the lead to hire its own.`, `bot:${botId}`).catch(() => {});
+          await channel.send(`⚠ Crew proposal unavailable (provider) — **${botName}** is a lead with an empty crew. Add members with \`/bots add-crew ${botId} <id> "Name" "Description" "persona"\` or tell the lead to hire its own.`, target).catch(() => {});
           return;
         }
         const lines: string[] = [`👑 **${botName}** fleet ready — ${proposals.length} crew member(s) created:`, ''];
@@ -1251,10 +1322,10 @@ export class Agent {
           }
         }
         lines.push('', 'Dispatch tasks with `/bot <crewId> <task>` or tell the lead to delegate — it can also spawn more crew itself.');
-        await channel.send(lines.join('\n'), `bot:${botId}`).catch(() => {});
+        await channel.send(lines.join('\n'), target).catch(() => {});
       } catch (err: any) {
         (channel as any).clearHeartbeat?.();
-        await channel.send(`⚠ Fleet auto-build failed: ${err?.message ?? err} — **${botName}** is a lead with an empty crew; add members with \`/bots add-crew ${botId} <id> "Name" "Description" "persona"\`.`, `bot:${botId}`).catch(() => {});
+        await channel.send(`⚠ Fleet auto-build failed: ${err?.message ?? err} — **${botName}** is a lead with an empty crew; add members with \`/bots add-crew ${botId} <id> "Name" "Description" "persona"\`.`, target).catch(() => {});
       }
     })();
   }
@@ -1290,7 +1361,7 @@ export class Agent {
     }
     bm.invalidateRuntime(botId);
     const channel = this.channels.getChannelForMessage(msg);
-    await channel?.send(`💰 Budget for **${manifest?.name ?? botId}**: ${applied}. When the cap is hit the bot pauses until the next day — never killed.`, `bot:${botId}`)
+    await channel?.send(`💰 Budget for **${manifest?.name ?? botId}**: ${applied}. When the cap is hit the bot pauses until the next day — never killed.`, channel ? this.onboardingTarget(botId, msg, channel) : msg.channelId)
       .catch(() => {});
     return true;
   }
