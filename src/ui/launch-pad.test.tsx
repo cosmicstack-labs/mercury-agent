@@ -78,7 +78,7 @@ async function renderPad(s: TuiState, cols: number, onInput: (t: string) => void
   const channel = { getTuiStateSnapshot: () => s, subscribeToTuiState: () => () => {} };
   const { unmount } = render(
     <TuiApp channel={channel} onInput={onInput} onPermissionResolve={() => {}} onExit={() => {}} />,
-    { stdout: stdout as any, stdin: stdin as any, exitOnCtrlC: false, patchConsole: false, debug: true },
+    { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false, debug: true },
   );
   // Wait for the full mark draw-in (13 rows × 24 ms) and a settled frame.
   await waitFor(() => stripAnsi(stdout.output).includes('Workspace'));
@@ -125,7 +125,7 @@ describe('launch pad rendering', () => {
     const rows = lastFrame(stdout, 'Workspace');
     for (const row of rows) expect(stringWidth(row)).toBeLessThanOrEqual(cols);
     const text = rows.join('\n');
-    expect(text).toMatch(/MERCURY|█   █/);
+    expect(text).toMatch(/MERCURY|█ {3}█/);
     expect(text).toContain(cols >= 50 ? 'anthropic · claude-opus-5-5' : 'anthropic');
     expect(text).toContain('Type to start chatting');
     // Wordmark when it fits (with padding); a one-line header otherwise.

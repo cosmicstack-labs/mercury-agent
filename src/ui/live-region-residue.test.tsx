@@ -44,7 +44,22 @@ class FakeStdin extends EventEmitter {
   read(): null { return null; }
 }
 
+/** Ink render options over the fake terminal. */
+const io = (stdout: unknown) => ({
+  stdout: stdout as NodeJS.WriteStream,
+  stdin: new FakeStdin() as unknown as NodeJS.ReadStream,
+  exitOnCtrlC: false,
+  patchConsole: false,
+});
+
+/** Test-only access to CLIChannel's private state update. */
+const updateChannel = (channel: CLIChannel, patch: Record<string, unknown>) =>
+  (channel as unknown as { update(p: Record<string, unknown>): void }).update(patch);
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fixture messages are plain objects; the TUI only reads the fields they set. */
+type StatePatch = Record<string, unknown>;
 
 function mount(initial: TuiState, cols = 100, rows = 40) {
   let snapshot = initial;
@@ -57,10 +72,10 @@ function mount(initial: TuiState, cols = 100, rows = 40) {
   const stdout = new FakeStdout(screen);
   const app = render(
     <TuiApp channel={channel} onInput={() => {}} onPermissionResolve={() => {}} onExit={() => {}} />,
-    { stdout: stdout as any, stdin: new FakeStdin() as any, exitOnCtrlC: false, patchConsole: false },
+    io(stdout),
   );
-  const setState = (patch: Partial<TuiState>) => {
-    snapshot = { ...snapshot, ...patch } as TuiState;
+  const setState = (patch: StatePatch) => {
+    snapshot = { ...snapshot, ...patch } as unknown as TuiState;
     for (const l of listeners) l();
   };
   return { screen, stdout, setState, unmount: app.unmount };
@@ -85,11 +100,11 @@ describe('live region residue', () => {
   it.each([[100, 40], [100, 12]])('Processing block disappears when the reply lands (%i×%i)', async (cols, rows) => {
     const { screen, setState, unmount } = mount(base(), cols, rows);
     await sleep(80);
-    setState({ chatMessages: [userMsg] as any, isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } as any });
+    setState({ chatMessages: [userMsg], isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } });
     await sleep(250); // a few spinner ticks
     expect(screen.text().join('\n')).toContain('Processing');
     // The reply lands and the turn ends in one state update, as in the agent.
-    setState({ chatMessages: [userMsg, agentMsg] as any, isThinking: false, liveActivity: null as any });
+    setState({ chatMessages: [userMsg, agentMsg], isThinking: false, liveActivity: null });
     await sleep(250);
     const text = screen.text().join('\n');
     unmount();
@@ -102,11 +117,11 @@ describe('live region residue', () => {
   it('Processing block disappears when the turn ends before the reply is added', async () => {
     const { screen, setState, unmount } = mount(base());
     await sleep(80);
-    setState({ chatMessages: [userMsg] as any, isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } as any });
+    setState({ chatMessages: [userMsg], isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } });
     await sleep(250);
-    setState({ isThinking: false, liveActivity: null as any });
+    setState({ isThinking: false, liveActivity: null });
     await sleep(60);
-    setState({ chatMessages: [userMsg, agentMsg] as any });
+    setState({ chatMessages: [userMsg, agentMsg] });
     await sleep(250);
     const text = screen.text().join('\n');
     unmount();
@@ -121,15 +136,15 @@ describe('live region residue — streamed reply', () => {
     const { screen, setState, unmount } = mount(base(), cols, rows);
     await sleep(80);
     const live = { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() };
-    setState({ chatMessages: [userMsg] as any, isThinking: true, liveActivity: live as any });
+    setState({ chatMessages: [userMsg], isThinking: true, liveActivity: live });
     await sleep(200);
     // Stream the reply in chunks while the turn is still thinking.
     for (let n = 1; n <= 6; n++) {
       const partial = longReply.split('\n').slice(0, n * 2).join('\n');
-      setState({ chatMessages: [userMsg, { id: 'a1', role: 'agent', content: partial, timestamp: Date.now(), streaming: true }] as any, isThinking: true, liveActivity: { ...live, phase: 'Composing response' } as any });
+      setState({ chatMessages: [userMsg, { id: 'a1', role: 'agent', content: partial, timestamp: Date.now(), streaming: true }], isThinking: true, liveActivity: { ...live, phase: 'Composing response' } });
       await sleep(90);
     }
-    setState({ chatMessages: [userMsg, { id: 'a1', role: 'agent', content: longReply, timestamp: Date.now() }] as any, isThinking: false, liveActivity: null as any });
+    setState({ chatMessages: [userMsg, { id: 'a1', role: 'agent', content: longReply, timestamp: Date.now() }], isThinking: false, liveActivity: null });
     await sleep(300);
     const text = screen.text().join('\n');
     unmount();
@@ -155,16 +170,16 @@ describe('live region residue — real CLIChannel turn', () => {
   ] as const)('%s: Processing does not survive', async (_label, fromSplash, cols, rows) => {
     const channel = new CLIChannel();
     channel.initSplash('Mercury', '1.3.1');
-    (channel as any).update({ provider: { name: 'anthropic', model: 'claude-opus-5-5' } });
-    if (!fromSplash) (channel as any).update({ mode: 'chat' });
+    updateChannel(channel, { provider: { name: 'anthropic', model: 'claude-opus-5-5' } });
+    if (!fromSplash) updateChannel(channel, { mode: 'chat' });
     const screen = new VtScreen(cols, rows);
     const stdout = new FakeStdout(screen);
     const app = render(
-      <TuiApp channel={channel as any} onInput={() => {}} onPermissionResolve={() => {}} onExit={() => {}} />,
-      { stdout: stdout as any, stdin: new FakeStdin() as any, exitOnCtrlC: false, patchConsole: false },
+      <TuiApp channel={channel} onInput={() => {}} onPermissionResolve={() => {}} onExit={() => {}} />,
+      io(stdout),
     );
     await sleep(500); // launch pad draw-in
-    if (fromSplash) (channel as any).update({ mode: 'chat' });
+    if (fromSplash) updateChannel(channel, { mode: 'chat' });
     await sleep(50);
     channel.sendUserMessage('so sup');
     channel.setLiveActivity('Starting task');
@@ -199,22 +214,22 @@ describe('live region residue — terminal backpressure', () => {
     let snapshot = base();
     const listeners = new Set<() => void>();
     const channel = { getTuiStateSnapshot: () => snapshot, subscribeToTuiState: (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; } };
-    const setState = (patch: Partial<TuiState>) => { snapshot = { ...snapshot, ...patch } as TuiState; for (const l of listeners) l(); };
+    const setState = (patch: StatePatch) => { snapshot = { ...snapshot, ...patch } as unknown as TuiState; for (const l of listeners) l(); };
     const screen = new VtScreen(100, 40);
     const tty = new BackpressureStdout(screen);
-    const out = new ResilientTuiOutput(tty as any, new FakeStdout(new VtScreen(100, 40)) as any);
+    const out = new ResilientTuiOutput(tty as unknown as NodeJS.WriteStream, new FakeStdout(new VtScreen(100, 40)) as unknown as NodeJS.WriteStream);
     const app = render(
       <TuiApp channel={channel} onInput={() => {}} onPermissionResolve={() => {}} onExit={() => {}} />,
-      { stdout: out as any, stdin: new FakeStdin() as any, exitOnCtrlC: false, patchConsole: false },
+      io(out),
     );
     await sleep(80);
-    setState({ chatMessages: [userMsg] as any, isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } as any });
+    setState({ chatMessages: [userMsg], isThinking: true, liveActivity: { phase: 'Starting task', stepsDone: 0, startedAt: Date.now() } });
     await sleep(120);
     // The buffer is momentarily full while the reply lands.
     tty.needDrainFor = 2;
-    setState({ chatMessages: [userMsg, agentMsg] as any, isThinking: false, liveActivity: null as any });
+    setState({ chatMessages: [userMsg, agentMsg], isThinking: false, liveActivity: null });
     await sleep(250);
-    setState({ chatMessages: [userMsg, agentMsg, { id: 'u2', role: 'user', content: 'next', timestamp: Date.now() }] as any });
+    setState({ chatMessages: [userMsg, agentMsg, { id: 'u2', role: 'user', content: 'next', timestamp: Date.now() }] });
     await sleep(250);
     app.unmount();
     out.dispose();

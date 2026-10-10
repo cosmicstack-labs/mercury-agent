@@ -7,12 +7,11 @@ import type { PermissionMode } from '../channels/base.js';
 import type { ProgrammingModeState } from '../core/programming-mode.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { IS_LIGHT_TERMINAL } from '../utils/terminal-theme.js';
-import { isDevBuild } from '../utils/dev-build.js';
 import { highlightCodeBlock } from '../utils/highlight.js';
 import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js';
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
 import { CursorCell } from './cursor-anchor.js';
-import { isNarrow, ruleWidth, sidePanelWidth, fitText, fitTail, hintColumns } from './layout.js';
+import { isNarrow, ruleWidth, sidePanelWidth, fitTail, hintColumns } from './layout.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
@@ -309,7 +308,7 @@ export function TuiApp({ channel, onInput, onPermissionResolve, onExit, onInterr
       }
       // Typing anywhere starts chat with that text already in the input:
       // keystrokes on the launch pad are never dropped.
-      if (ch && !key.ctrl && !key.meta && !key.escape && /[^\x00-\x1f\x7f]/.test(ch)) {
+      if (ch && !key.ctrl && !key.meta && !key.escape && [...ch].some((c) => { const code = c.codePointAt(0) ?? 0; return code >= 0x20 && code !== 0x7f; })) {
         onInput('/chat');
         const text = ch.replace(/[\r\n]+$/, '');
         setInputAndCursor(text);

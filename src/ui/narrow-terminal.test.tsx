@@ -122,12 +122,10 @@ describe(`TUI at ${COLS} columns`, () => {
       '· Budget     ' + (1200).toLocaleString() + ' / ' + (100000).toLocaleString() + ' today',
       trimmed[at + 6],
     ]);
-    expect(trimmed[at + 6]).toMatch(/^· Workspace  /);
+    expect(trimmed[at + 6]).toMatch(/^· Workspace {2}/);
     expect(trimmed.slice(at + 7, at + 10)).toEqual(['', 'Type to start chatting', '/code  Mercury Code here   Tab  skills']);
     unmount();
   });
-
-
 
   it('chat: input chrome is exactly four rows and the sidebar collapses', async () => {
     const { rows, unmount } = await renderApp(state({

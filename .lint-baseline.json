@@ -1,7 +1,7 @@
 {
-  "$comment": "ESLint ratchet baseline from the first real CI run (PR #149). Counts may only go down; refresh deliberately with `npm run lint:ratchet -- --update`.",
+  "$comment": "ESLint ratchet baseline. Per-rule counts (errors + warnings) may only go down. Refresh with `npm run lint:ratchet -- --update` after a clean-up.",
   "provisional": false,
-  "generatedAt": "2026-10-09T17:40:48.203Z",
+  "generatedAt": "2026-10-10T06:55:02.126Z",
   "target": "src",
   "rules": {
     "(unknown)": 1,
@@ -9,7 +9,7 @@
     "@typescript-eslint/no-require-imports": 6,
     "@typescript-eslint/no-this-alias": 5,
     "@typescript-eslint/no-unused-expressions": 100,
-    "@typescript-eslint/no-unused-vars": 281,
+    "@typescript-eslint/no-unused-vars": 280,
     "no-console": 135,
     "no-control-regex": 27,
     "no-func-assign": 5,

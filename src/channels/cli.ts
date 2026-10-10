@@ -1296,6 +1296,7 @@ export class CLIChannel extends BaseChannel {
    * the logger instead (silent unless --verbose) until teardown.
    */
   private captureConsole(): void {
+    /* eslint-disable no-console -- this is the console redirect itself */
     if (this.restoreConsole) return;
     const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
     const original = methods.map((m) => [m, console[m]] as const);
@@ -1308,6 +1309,7 @@ export class CLIChannel extends BaseChannel {
     this.restoreConsole = () => {
       for (const [m, fn] of original) console[m] = fn;
     };
+    /* eslint-enable no-console */
   }
 
   private inkPatchWarned = false;

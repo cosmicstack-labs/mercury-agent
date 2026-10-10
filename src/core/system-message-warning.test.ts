@@ -77,7 +77,7 @@ describe('AI SDK system-message warning', () => {
 
 describe('console while the TUI is mounted', () => {
   it('never reaches the terminal, and is restored on teardown', () => {
-    const channel = new CLIChannel() as any;
+    const channel = new CLIChannel() as unknown as { captureConsole(): void; restoreConsole: (() => void) | null };
     const original = console.warn;
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const errWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -88,7 +88,7 @@ describe('console while the TUI is mounted', () => {
       console.log('stray log');
       expect(write).not.toHaveBeenCalled();
       expect(errWrite).not.toHaveBeenCalled();
-      channel.restoreConsole();
+      channel.restoreConsole?.();
       expect(console.warn).toBe(original);
     } finally {
       write.mockRestore();
