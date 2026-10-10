@@ -270,3 +270,112 @@ describe('fleet tasks (ADR-021)', () => {
     expect(DEFAULT_TASK_DEADLINE_MINUTES).toBe(120);
   });
 });
+
+// ── ADR-022: cost view, run viewer, kill switch, DLQ clear ────────────────
+
+describe('fleet operations (ADR-022)', () => {
+  let root: string;
+  let store: BotStore;
+  let manager: BotManager;
+  const managers: BotManager[] = [];
+  type StepOpts2 = { onStepFinish?: (step: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => void };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-fleet-ops-'));
+    store = new BotStore(join(root, 'bots'));
+    const config = getDefaultConfig() as MercuryConfig;
+    config.bots.maxConcurrent = 4;
+    config.bots.fleetDailyTokenBudget = 1_000_000;
+    manager = new BotManager({ config, providers, tokenBudget, store, userMemoryFactory: () => null });
+    managers.push(manager);
+    mockedGenerateText.mockReset();
+    store.create({ id: 'lead', name: 'Lead', manifest: { fleetRole: 'lead' } });
+    manager.addCrew('lead', { id: 'alpha', name: 'Alpha' });
+  });
+  afterEach(() => {
+    for (const m of managers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const idle = (botId: string) => vi.waitFor(() => {
+    expect(manager.getStatusSummaries().find(s => s.id === botId)?.state).not.toBe('running');
+    expect(manager.getQueuedCount(botId)).toBe(0);
+  });
+
+  it('cost report: per-bot today vs cap, window totals, fleet rollup, empty-run count', async () => {
+    mockedGenerateText.mockImplementation((async (opts: StepOpts2) => {
+      opts.onStepFinish?.({ usage: { inputTokens: 1000, outputTokens: 100 }, toolCalls: [], toolResults: [] });
+      return reply('did a thing');
+    }) as never);
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'a' });
+    await idle('alpha');
+    manager.enqueue('lead', { trigger: 'cron', prompt: 'cycle', routineId: 'bot:lead:cycle' });
+    await idle('lead');
+    const report = manager.costReport(7);
+    const alpha = report.bots.find(b => b.id === 'alpha')!;
+    expect(alpha.today.tokensIn).toBe(1000);
+    expect(alpha.today.tokensOut).toBe(100);
+    expect(alpha.cap).toBe(5_000_000);
+    const lead = report.bots.find(b => b.id === 'lead')!;
+    expect(lead.window.noOutcome).toBe(1); // cron run with no deliverable/action
+    expect(report.fleets).toEqual([expect.objectContaining({ id: 'lead', members: 2 })]);
+    expect(report.fleets[0].window.runs).toBe(2);
+    expect(report.fleetCap).toBe(1_000_000);
+    expect(report.fleetToday).toBeGreaterThan(0);
+  });
+
+  it('transcripts: list and read a run, newest by default', async () => {
+    mockedGenerateText.mockImplementation((async () => reply('first reply')) as never);
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'one' });
+    await idle('alpha');
+    mockedGenerateText.mockImplementation((async () => reply('second reply')) as never);
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'two' });
+    await idle('alpha');
+    const runs = manager.listTranscripts('alpha');
+    expect(runs).toHaveLength(2);
+    const latest = manager.readTranscript('alpha')!;
+    expect(latest.output).toBe('second reply');
+    expect(latest.prompt).toBe('two');
+    expect(manager.readTranscript('alpha', runs[1].runId)?.output).toBe('first reply');
+    expect(manager.readTranscript('alpha', 'nope')).toBeNull();
+  });
+
+  it('kill switch stops every fleet and holds queued work; start all resumes', async () => {
+    let release!: () => void;
+    mockedGenerateText.mockImplementation((async (opts: { messages?: Array<{ content: string }> }) => {
+      if (opts.messages?.at(-1)?.content === 'slow') return new Promise((resolve) => { release = () => resolve(reply('late')); });
+      return reply('ok');
+    }) as never);
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'slow' });
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'queued one' });
+    await vi.waitFor(() => expect(manager.getStatusSummaries().find(s => s.id === 'alpha')?.state).toBe('running'));
+    const r = await manager.stopAll();
+    expect(r.stopped).toBe(2);
+    expect(r.halted).toBe(1);
+    expect(r.heldJobs).toBe(1);
+    release();
+    await idle('alpha');
+    // Held: nothing resumes on its own.
+    expect(manager.queue.pendingJobs('alpha')).toHaveLength(1);
+    const s = manager.startAll();
+    expect(s.started).toBe(1);
+    expect(s.resumed).toBe(1);
+    await idle('alpha');
+    expect(manager.queue.pendingJobs('alpha')).toHaveLength(0);
+  });
+
+  it('dlq clear drops dead jobs for one bot or all and clears the needs-you badge', async () => {
+    mockedGenerateText.mockImplementation((async () => { throw new Error('No LLM providers available — configure one'); }) as never);
+    manager.enqueue('alpha', { trigger: 'chat', prompt: 'x' });
+    await idle('alpha');
+    manager.enqueue('lead', { trigger: 'chat', prompt: 'y' });
+    await idle('lead');
+    await vi.waitFor(() => expect(manager.getDlq()).toHaveLength(2));
+    expect(manager.getStatusSummaries().find(s => s.id === 'alpha')?.needsYou).toBe(true);
+    expect(manager.clearDlq('alpha')).toBe(1);
+    expect(manager.getDlq('alpha')).toHaveLength(0);
+    expect(manager.getStatusSummaries().find(s => s.id === 'alpha')?.needsYou).toBe(false);
+    expect(manager.clearDlq()).toBe(1);
+    expect(manager.getDlq()).toHaveLength(0);
+    expect(manager.clearDlq()).toBe(0);
+  });
+});

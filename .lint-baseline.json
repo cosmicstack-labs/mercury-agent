@@ -1,7 +1,7 @@
 {
   "$comment": "ESLint ratchet baseline. Per-rule counts (errors + warnings) may only go down. Refresh with `npm run lint:ratchet -- --update` after a clean-up.",
   "provisional": false,
-  "generatedAt": "2026-10-10T14:37:25.243Z",
+  "generatedAt": "2026-10-10T15:47:23.840Z",
   "target": "src",
   "rules": {
     "(unknown)": 1,
@@ -9,7 +9,7 @@
     "@typescript-eslint/no-require-imports": 6,
     "@typescript-eslint/no-this-alias": 5,
     "@typescript-eslint/no-unused-expressions": 100,
-    "@typescript-eslint/no-unused-vars": 280,
+    "@typescript-eslint/no-unused-vars": 279,
     "no-console": 135,
     "no-control-regex": 27,
     "no-func-assign": 5,

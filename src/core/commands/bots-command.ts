@@ -344,7 +344,12 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
   if (action === 'stop' || action === 'pause') {
     const target = parts[1]?.toLowerCase();
     if (!target) {
-      await channel.send('Usage: `/bots stop <id>`', channelId);
+      await channel.send('Usage: `/bots stop <id>` or `/bots stop all` (kill switch — every bot halts, queued work is held)', channelId);
+      return;
+    }
+    if (target === 'all') {
+      const r = await bm.stopAll();
+      await channel.send(`🛑 Kill switch: ${r.stopped} bot(s) stopped, ${r.halted} running turn(s) halted, ${r.heldJobs} queued job(s) held. Nothing runs until \`/bots start all\` (or per bot).`, channelId);
       return;
     }
     const result = await bm.stop(target);
@@ -353,6 +358,12 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     await channel.send(result.halted
       ? `⛔ Halt signal sent to **${target}** — it will stop after the current tool step.${crewNote}${heldNote}`
       : `⛔ **${target}** stopped — nothing was running.${crewNote}${heldNote}`, channelId);
+  }
+
+  if (action === 'start' && parts[1]?.toLowerCase() === 'all') {
+    const r = bm.startAll();
+    await channel.send(`▶ Started ${r.started} fleet(s)/solo bot(s); ${r.resumed} held job(s) resumed; paused routines cleared.`, channelId);
+    return;
   }
 
   if (action === 'start') {
@@ -440,13 +451,24 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
   }
 
   if (action === 'dlq') {
+    // /bots dlq clear [id] — drop dead-lettered jobs (the journal keeps the runs).
+    if (parts[1]?.toLowerCase() === 'clear') {
+      const target = parts[2]?.toLowerCase();
+      if (target && !bm.store.exists(target)) {
+        await channel.send(`No bot "${target}".`, channelId);
+        return;
+      }
+      const n = bm.clearDlq(target);
+      await channel.send(n > 0 ? `🧹 Cleared ${n} dead-lettered job(s)${target ? ` for **${target}**` : ''}. The runs stay in \`/bots journal\`.` : 'Dead-letter queue was already empty.', channelId);
+      return;
+    }
     const target = parts[1]?.toLowerCase();
     const entries = target ? bm.getDlq(target) : bm.getDlq();
     if (entries.length === 0) {
       await channel.send('Dead-letter queue is empty — nothing failed permanently.', channelId);
       return;
     }
-    const lines = ['**Dead-letter queue** (replay: `/bots replay <botId> <jobId>`)', ''];
+    const lines = ['**Dead-letter queue** (replay: `/bots replay <botId> <jobId>` · clear: `/bots dlq clear [id]`)', ''];
     for (const e of entries.slice(0, 10)) {
       lines.push(`🚫 **${e.botId}** ${e.id} · ${e.trigger} · attempts ${e.attempts} · [reason: ${e.reasonCode ?? 'unknown'}] · ${e.prompt.slice(0, 60)}`);
     }
@@ -637,6 +659,64 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     return;
   }
 
+  if (action === 'cost' || action === 'usage') {
+    // /bots cost [days] — where the tokens go, per bot and per fleet.
+    const days = Math.max(1, Math.min(90, parseInt(parts[1] ?? '7', 10) || 7));
+    const report = bm.costReport(days);
+    if (report.bots.length === 0) {
+      await channel.send('No bots configured.', channelId);
+      return;
+    }
+    const k = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+    const lines = [`**Bot token spend** — today and the last ${days} days`, ''];
+    if (report.fleetCap > 0) lines.push(`Fleet today: ${k(report.fleetToday)} / ${k(report.fleetCap)}${report.fleetPaused ? ' · ⛔ paused (cap reached)' : ''}`, '');
+    for (const fleet of report.fleets) {
+      const lead = report.bots.find(b => b.id === fleet.id)!;
+      const members = report.bots.filter(b => b.parent === fleet.id);
+      const row = (b: typeof lead, indent: string) => {
+        const capNote = b.cap > 0 ? ` / ${k(b.cap)}${b.paused ? ' ⛔' : ''}` : ' (no cap)';
+        const w = b.window;
+        const empty = w.noOutcome > 0 ? ` · ⚠ ${w.noOutcome} empty` : '';
+        return `${indent}**${b.name}** — today ${k(b.today.tokensIn + b.today.tokensOut)}${capNote} · ${days}d ${k(w.tokensIn + w.tokensOut)} in ${w.runs} runs (${w.failed} failed, ${w.deliverables} delivered${empty})`;
+      };
+      lines.push(row(lead, members.length ? '👑 ' : ''));
+      for (const m of members) lines.push(row(m, '  └─ '));
+      if (members.length) lines.push(`  fleet total: ${days}d ${k(fleet.window.tokensIn + fleet.window.tokensOut)} · ${fleet.window.deliverables} delivered`);
+    }
+    const total = report.bots.reduce((a, b) => a + b.window.tokensIn + b.window.tokensOut, 0);
+    lines.push('', `All bots, ${days}d: ${k(total)} tokens. \`/bots budget <id>\` sets a cap; \`/bots show <id>\` opens a run.`);
+    await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
+  if (action === 'show' || action === 'transcript') {
+    // /bots show <id> [runId] — what a run actually did.
+    const target = parts[1]?.toLowerCase();
+    if (!target || !bm.store.exists(target)) {
+      await channel.send('Usage: `/bots show <id> [runId]` — the tool trace and reply of a run (newest when no id).', channelId);
+      return;
+    }
+    const t = bm.readTranscript(target, parts[2]);
+    if (!t) {
+      await channel.send(`No transcript${parts[2] ? ` for run ${parts[2]}` : ''} — transcripts exist for runs made after the governance update.`, channelId);
+      return;
+    }
+    const r = t.record;
+    const lines = [`**${target} · run ${r.runId}** — ${r.trigger} · ${r.state}${r.outcome ? ` · ${r.outcome}` : ''} · ${(r.tokensIn + r.tokensOut).toLocaleString()} tok · ${r.steps ?? '?'} steps${r.reasonCode ? ` · [${r.reasonCode}]` : ''}`, ''];
+    if (t.prompt) lines.push(`**Task:** ${t.prompt.replace(/\s+/g, ' ').slice(0, 240)}`, '');
+    if (t.trace.length > 0) {
+      lines.push(`**Tools (${t.trace.length}):**`);
+      for (const step of t.trace.slice(0, 25)) lines.push(`${step.ok ? '✓' : '✗'} ${step.name}${step.arg ? ` ${step.arg.slice(0, 70)}` : ''}`);
+      if (t.trace.length > 25) lines.push(`…and ${t.trace.length - 25} more`);
+      lines.push('');
+    }
+    for (const d of r.deliverables ?? []) lines.push(`📁 ${tildify(d)}`);
+    if (r.claimedWithoutAction) lines.push('⚠ The reply claimed delivery or execution the trace does not show.');
+    lines.push('', `**Reply:** ${t.output.slice(0, 1200)}${t.output.length > 1200 ? '…' : ''}`);
+    await channel.send(lines.join('\n'), channelId);
+    return;
+  }
+
   if (action === 'tasks') {
     // /bots tasks <leadId> — what a lead has delegated and what came back.
     const target = parts[1]?.toLowerCase();
@@ -706,7 +786,10 @@ export async function handleBotsCommand(agent: Agent, trimmed: string, msg: Chan
     '`/bots edit <id> <field> <value>` — edit any config field anytime\n' +
     '`/bots journal <id>` — recent runs\n' +
     '`/bots inbox <id>` — pending bot-to-bot mail\n' +
-    '`/bots dlq` — dead-lettered jobs\n' +
+    '`/bots dlq [clear [id]]` — dead-lettered jobs; clear drops them\n' +
+    '`/bots cost [days]` — token spend per bot and fleet, against caps\n' +
+    '`/bots show <id> [runId]` — what a run actually did (tools, deliverables, reply)\n' +
+    '`/bots stop all` / `/bots start all` — fleet kill switch\n' +
     '`/bots replay <botId> <jobId>` — re-run a dead-lettered job\n' +
     '`/bots storage` — disk usage\n' +
     '`/bots enable|disable|stop|start <id>` — control (stop holds queued jobs; start resumes them)\n' +

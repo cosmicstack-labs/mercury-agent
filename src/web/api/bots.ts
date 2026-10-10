@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { readFileSync } from 'node:fs';
 import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
@@ -411,6 +412,54 @@ app.get('/api/bots/:id/bundle', (c: any) => {
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'Failed to build bundle' }, 400);
   }
+});
+
+// Token spend per bot and fleet (ADR-022)
+app.get('/api/bots-cost', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const days = Math.max(1, Math.min(90, parseInt(c.req.query('days') ?? '7', 10) || 7));
+  return c.json(botManager.costReport(days));
+});
+
+// Fleet kill switch
+app.post('/api/bots-stop-all', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  return c.json(await botManager.stopAll());
+});
+app.post('/api/bots-start-all', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  return c.json(botManager.startAll());
+});
+
+// Drop dead-lettered jobs (all, or ?bot=<id>)
+app.delete('/api/bots-dlq', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const bot = c.req.query('bot') || undefined;
+  if (bot && !botManager.store.exists(bot)) return c.json({ error: 'Bot not found' }, 404);
+  return c.json({ cleared: botManager.clearDlq(bot) });
+});
+
+// A lead's delegated tasks
+app.get('/api/bots/:id/tasks', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  if (!botManager.store.exists(String(c.req.param('id') ?? ''))) return c.json({ error: 'Bot not found' }, 404);
+  return c.json({ tasks: botManager.tasksFor(String(c.req.param('id') ?? '')) });
+});
+
+// Run transcripts: list, and one run (newest when runId is "latest")
+app.get('/api/bots/:id/runs', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  if (!botManager.store.exists(String(c.req.param('id') ?? ''))) return c.json({ error: 'Bot not found' }, 404);
+  return c.json({ runs: botManager.listTranscripts(String(c.req.param('id') ?? '')) });
+});
+app.get('/api/bots/:id/runs/:runId', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = String(c.req.param('id') ?? '');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const runId = String(c.req.param('runId') ?? '');
+  const t = botManager.readTranscript(id, runId === 'latest' ? undefined : runId);
+  if (!t) return c.json({ error: 'Transcript not found' }, 404);
+  return c.json(t);
 });
 
 // This bot's deliverables

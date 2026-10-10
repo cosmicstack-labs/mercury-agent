@@ -84,6 +84,52 @@ export class BotJournal {
     return { total, completed, failed, bytes };
   }
 
+  /** Token and outcome totals for runs that started since `sinceMs` (all rotations). */
+  usage(botId: string, sinceMs = 0): BotUsage {
+    assertValidBotId(botId);
+    const out: BotUsage = { runs: 0, completed: 0, failed: 0, noOutcome: 0, deliverables: 0, tokensIn: 0, tokensOut: 0 };
+    const files = [join(this.dir, BOT_JOURNAL_FILENAME), ...rotationFiles(this.dir, this.keepRotations)];
+    for (const f of files) {
+      if (!existsSync(f)) continue;
+      for (const rec of readLines(f)) {
+        if ((rec.turnStartedAt ?? rec.startedAt) < sinceMs) continue;
+        out.runs++;
+        if (rec.state === 'completed') out.completed++;
+        if (rec.state === 'failed') out.failed++;
+        if (rec.outcome === 'none' && (rec.trigger === 'cron' || rec.trigger === 'api')) out.noOutcome++;
+        out.deliverables += rec.deliverables?.length ?? 0;
+        out.tokensIn += rec.tokensIn || 0;
+        out.tokensOut += rec.tokensOut || 0;
+      }
+    }
+    return out;
+  }
+
+  /** Transcript files, newest first (name = <when>-<runId>.json). */
+  listTranscripts(botId: string): Array<{ runId: string; file: string; mtimeMs: number }> {
+    assertValidBotId(botId);
+    const dir = join(this.dir, BOT_TRANSCRIPTS_DIRNAME);
+    try {
+      return readdirSync(dir)
+        .filter(n => n.endsWith('.json'))
+        .map(n => ({ runId: n.replace(/\.json$/, '').split('-').pop() ?? '', file: join(dir, n), mtimeMs: statSync(join(dir, n)).mtimeMs }))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch {
+      return [];
+    }
+  }
+
+  /** One run's transcript; the newest when no run id is given. */
+  readTranscript(botId: string, runId?: string): BotTranscript | null {
+    const entry = runId ? this.listTranscripts(botId).find(t => t.runId === runId) : this.listTranscripts(botId)[0];
+    if (!entry) return null;
+    try {
+      return JSON.parse(readFileSync(entry.file, 'utf-8')) as BotTranscript;
+    } catch {
+      return null;
+    }
+  }
+
   private rotateIfNeeded(): void {
     const file = join(this.dir, BOT_JOURNAL_FILENAME);
     if (!existsSync(file) || statSync(file).size < this.rotateBytes) return;
@@ -97,6 +143,24 @@ export class BotJournal {
     }
     renameSync(file, join(this.dir, `${BOT_JOURNAL_FILENAME}.1`));
   }
+}
+
+export interface BotUsage {
+  runs: number;
+  completed: number;
+  failed: number;
+  /** Unattended runs that produced no deliverable or action. */
+  noOutcome: number;
+  deliverables: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+export interface BotTranscript {
+  record: BotRunRecord;
+  prompt: string;
+  output: string;
+  trace: Array<{ name: string; ok: boolean; arg?: string; task?: boolean }>;
 }
 
 /** Tail-read chunk: one journal line is ~300 bytes, so 64KB ≈ 200 records —

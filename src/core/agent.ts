@@ -1141,17 +1141,20 @@ export class Agent {
       await this.offerFleetStep(bm, botId, manifest.name, msg, channel);
     }
 
-    // Final onboarding step: the daily token budget — optional and OFF by
-    // default (no cap). "suggest" fills a generous number so heavy bots are
-    // protected from runaway spend without ever being strangled.
-    const suggested = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
+    // Final onboarding step: the daily token budget. Every bot has one
+    // (ADR-020) — the presets are sizes, not a yes/no.
+    const standard = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
     this.pendingBudgetFor = botId;
+    const home = homedir();
+    const folder = bm.store.deliverablesDir(botId);
     await channel.send(
-      `Final setup step — **daily token budget** for **${manifest.name}** (tokens/day):\n` +
-      `• \`suggest\` — recommended, generous: ${suggested.toLocaleString()}/day\n` +
-      `• a number — set your own cap\n` +
-      `• \`none\` (or \`skip\`) — no cap (default)\n` +
-      `Editable anytime: \`/bots budget ${botId} <tokens|suggest|none>\`. Or just type your first task — the budget stays unset.`,
+      `Last step — how much may **${manifest.name}** spend per day?\n` +
+      `• \`light\` — 1M tokens/day (a few runs)\n` +
+      `• \`standard\` — ${standard.toLocaleString()}/day (default — just type your first task)\n` +
+      `• \`heavy\` — 20M/day (a busy fleet)\n` +
+      `• a number, or \`none\` for no cap\n` +
+      `When the cap is hit the bot pauses until tomorrow; you are warned at 80%. Change anytime: \`/bots budget ${botId} <tokens|suggest|none>\`.\n` +
+      `📁 Its results will appear in \`${folder.startsWith(home) ? '~' + folder.slice(home.length) : folder}\` (\`/bots folder ${botId}\` opens it).`,
       `bot:${botId}`,
     ).catch(() => {});
   }
@@ -1255,7 +1258,7 @@ export class Agent {
   /** Apply the budget answer typed after the persona step (or a later task). */
   private async applyBudgetAnswer(bm: import('../bots/bot-manager.js').BotManager, botId: string, message: string, msg: ChannelMessage): Promise<boolean> {
     const value = message.trim().toLowerCase();
-    const isBudgetCommand = /^\d+$/.test(value) || ['suggest', 'none', 'skip'].includes(value);
+    const isBudgetCommand = /^\d+$/.test(value) || ['suggest', 'none', 'skip', 'light', 'standard', 'heavy', 'unlimited'].includes(value);
     if (!isBudgetCommand) {
       // Not a budget answer — treat as the user's first task; budget stays unset.
       this.pendingBudgetFor = null;
@@ -1265,12 +1268,17 @@ export class Agent {
     const manifest = bm.store.get(botId);
     const suggested = this.config.bots?.suggestedDailyTokenBudget ?? 5_000_000;
     let applied: string;
-    if (value === 'suggest') {
-      bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: suggested }; });
-      applied = `${suggested.toLocaleString()}/day`;
-    } else if (value === 'none' || value === 'skip') {
+    const presets: Record<string, number> = { light: 1_000_000, heavy: 20_000_000 };
+    if (value === 'suggest' || value === 'standard' || value === 'skip') {
+      // The fleet default applies (ADR-020): nothing to write.
       bm.store.update(botId, m => { if (m.autonomy) delete m.autonomy.dailyTokenBudget; });
+      applied = `${suggested.toLocaleString()}/day (default)`;
+    } else if (value === 'none' || value === 'unlimited') {
+      bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: 0 }; });
       applied = 'no cap (unlimited)';
+    } else if (presets[value]) {
+      bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: presets[value] }; });
+      applied = `${presets[value].toLocaleString()}/day`;
     } else {
       const n = parseInt(value, 10);
       bm.store.update(botId, m => { m.autonomy = { ...m.autonomy, dailyTokenBudget: n }; });

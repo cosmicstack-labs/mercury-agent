@@ -69,6 +69,8 @@ export interface BotQueueBackend {
   /** Read a DLQ entry without removing it (replay does lookup-then-remove so a bot mismatch never destroys the entry). */
   peekDlq(jobId: string): DurableBotJob | null;
   removeFromDlq(jobId: string): DurableBotJob | null;
+  /** Drop every dead-lettered job (of one bot, or all). Returns the count removed. */
+  clearDlq(botId?: string): number;
   /** Durable bot-to-bot mailbox (§2.6: a handoff must survive a crash). */
   enqueueMail(mail: Omit<DurableMail, 'id'>): string;
   drainMail(botId: string): DurableMail[];
@@ -210,6 +212,11 @@ export class BotQueue {
   peekDlq(jobId: string): DurableBotJob | null {
     if (this.closed) return null;
     return this.backend.peekDlq(jobId);
+  }
+
+  clearDlq(botId?: string): number {
+    if (this.closed) return 0;
+    return this.backend.clearDlq(botId);
   }
 
   heartbeatLease(jobId: string, leaseSeconds: number = LEASE_SECONDS): void {
@@ -432,6 +439,13 @@ export class SqliteQueueBackend implements BotQueueBackend {
     return normalizeJob(row);
   }
 
+  clearDlq(botId?: string): number {
+    const before = (this.db.prepare(botId ? `SELECT COUNT(*) AS n FROM bot_dlq WHERE bot_id = ?` : `SELECT COUNT(*) AS n FROM bot_dlq`).get(...(botId ? [botId] : [])) as { n: number }).n;
+    if (botId) this.db.prepare(`DELETE FROM bot_dlq WHERE bot_id = ?`).run(botId);
+    else this.db.prepare(`DELETE FROM bot_dlq`).run();
+    return before;
+  }
+
   counts(): QueueCounts {
     const pending = (this.db.prepare(`SELECT COUNT(*) c FROM bot_jobs WHERE state = 'pending'`).get() as any).c as number;
     const claimed = (this.db.prepare(`SELECT COUNT(*) c FROM bot_jobs WHERE state = 'claimed'`).get() as any).c as number;
@@ -625,6 +639,13 @@ export class JsonFileQueueBackend implements BotQueueBackend {
     const [job] = this.data.dlq.splice(idx, 1);
     this.flush();
     return job;
+  }
+
+  clearDlq(botId?: string): number {
+    const before = this.data.dlq.length;
+    this.data.dlq = botId ? this.data.dlq.filter(j => j.botId !== botId) : [];
+    if (this.data.dlq.length !== before) this.flush();
+    return before - this.data.dlq.length;
   }
 
   counts(): QueueCounts {

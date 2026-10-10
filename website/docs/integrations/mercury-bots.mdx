@@ -121,6 +121,7 @@ The local dashboard ('Mercury Bots' section) shows the live roster, per-bot thre
 ## Observability
 
 - **`/bots` roster** — live per-bot states (running / waiting / stopped / needs-you).
+- **`/bots cost [days]`** — token spend per bot and fleet against the caps; **`/bots show <id> [runId]`** — the tool trace, deliveries and reply of a run; **`/bots stop all`** — the kill switch; **`/bots dlq clear`** — drop dead-lettered jobs.
 - **Journals** — per-bot run history with real timings, steps, tool calls, the outcome (`deliverable`, `action`, `delegated`, `message`, `none`) and delivered paths; a compact transcript per run is kept (last 50).
 - **DLQ + replay** — failures classify honestly (`failed`, `timed out`) and replay non-destructively.
 - **`mercury bots doctor`** — storage health, queue depth, journal rotation, and scheduler linkage (routines registered but never wired are flagged before they silently never fire).

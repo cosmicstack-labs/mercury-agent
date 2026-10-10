@@ -177,3 +177,22 @@ describe('web bots API — cockpit', () => {
     expect((await app.request('/api/bots/import', { method: 'POST', body: JSON.stringify({ nope: true }), headers: { 'Content-Type': 'application/json' } })).status).toBe(400);
   });
 });
+describe('web bots API — operations (ADR-022)', () => {
+  it('cost, tasks, runs, dlq clear and the kill switch are reachable', async () => {
+    store.create({ id: 'solo', name: 'Solo' });
+    const cost = await jreq(await app.request('/api/bots-cost?days=3'));
+    expect(cost.days).toBe(3);
+    expect(cost.bots.map((b: { id: string }) => b.id)).toContain('solo');
+    expect((await app.request('/api/bots/solo/tasks')).status).toBe(200);
+    expect((await app.request('/api/bots/ghost/tasks')).status).toBe(404);
+    const runs = await jreq(await app.request('/api/bots/solo/runs'));
+    expect(runs.runs).toEqual([]);
+    expect((await app.request('/api/bots/solo/runs/latest')).status).toBe(404);
+    expect(await jreq(await app.request('/api/bots-dlq', { method: 'DELETE' }))).toEqual({ cleared: 0 });
+    expect((await app.request('/api/bots-dlq?bot=ghost', { method: 'DELETE' })).status).toBe(404);
+    const stopped = await jreq(await app.request('/api/bots-stop-all', { method: 'POST' }));
+    expect(stopped.stopped).toBe(1);
+    const started = await jreq(await app.request('/api/bots-start-all', { method: 'POST' }));
+    expect(started.started).toBe(1);
+  });
+});
