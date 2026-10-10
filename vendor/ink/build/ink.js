@@ -46,12 +46,12 @@ export const inkPatch = {
 globalThis.__mercuryInkPatch = inkPatch;
 // Depth-first search for the first element with a truthy `internal_cursor`
 // attribute, accumulating Yoga offsets like render-node-to-output does.
-// <Static> and display:none subtrees are never part of the live frame. The
+// <Static>, hidden and display:none subtrees are never part of the live frame. The
 // DOM attribute is read instead of a ref because refs attach in React's
 // layout phase, after the frame has already been rendered.
 const findCursorCell = (node, x, y) => {
     const yoga = node.yogaNode;
-    if (!yoga || node.internal_static || node.style?.display === 'none') return undefined;
+    if (!yoga || node.internal_static || node.isHidden || node.style?.display === 'none') return undefined;
     const nx = x + yoga.getComputedLeft();
     const ny = y + yoga.getComputedTop();
     if (node.attributes?.internal_cursor) return { x: nx, y: ny };

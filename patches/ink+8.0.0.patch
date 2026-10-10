@@ -76,7 +76,7 @@ index 0c519c3..4c8fb63 100644
      const style = useMemo(() => ({
          position: 'absolute',
 diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
-index 29d1a98..6ee4d5a 100644
+index 29d1a98..be21856 100644
 --- a/node_modules/ink/build/ink.js
 +++ b/node_modules/ink/build/ink.js
 @@ -23,6 +23,45 @@ import { AccessibilityContext } from './components/AccessibilityContext.js';
@@ -106,12 +106,12 @@ index 29d1a98..6ee4d5a 100644
 +globalThis.__mercuryInkPatch = inkPatch;
 +// Depth-first search for the first element with a truthy `internal_cursor`
 +// attribute, accumulating Yoga offsets like render-node-to-output does.
-+// <Static> and display:none subtrees are never part of the live frame. The
++// <Static>, hidden and display:none subtrees are never part of the live frame. The
 +// DOM attribute is read instead of a ref because refs attach in React's
 +// layout phase, after the frame has already been rendered.
 +const findCursorCell = (node, x, y) => {
 +    const yoga = node.yogaNode;
-+    if (!yoga || node.internal_static || node.style?.display === 'none') return undefined;
++    if (!yoga || node.internal_static || node.isHidden || node.style?.display === 'none') return undefined;
 +    const nx = x + yoga.getComputedLeft();
 +    const ny = y + yoga.getComputedTop();
 +    if (node.attributes?.internal_cursor) return { x: nx, y: ny };

@@ -1,10 +1,11 @@
 # Mercury's ink patch set
 
-Mercury renders its TUI with [ink](https://github.com/vadimdemedes/ink) 8.0.0 and carries four changes to it. Since ADR-017 the patched build is vendored in `vendor/ink/` and bundled into `dist/index.js`, so no install step has to apply them. This page describes each hunk, why it exists, and what an upstream version could look like.
+Mercury renders its TUI with [ink](https://github.com/vadimdemedes/ink) 8.0.0 and carries four changes to it. The same four changes live as reviewable TypeScript commits on the `mercury` branch of our fork, [cosmicstack-labs/ink](https://github.com/cosmicstack-labs/ink) (see its `FORK.md`); that is where they are rebased onto new ink releases and proposed upstream. Since ADR-017 the patched build is vendored in `vendor/ink/` and bundled into `dist/index.js`, so no install step has to apply them. This page describes each hunk, why it exists, and what an upstream version could look like.
 
 | Item | Where |
 |---|---|
 | Single source of truth for the hunks | `scripts/apply-ink-patch.cjs` |
+| The same changes as TypeScript commits | [cosmicstack-labs/ink](https://github.com/cosmicstack-labs/ink), branch `mercury` |
 | Regenerate `vendor/ink` (stock tarball + hunks) | `node scripts/vendor-ink.cjs` |
 | Prove the committed files are exactly tarball + hunks | `node scripts/vendor-ink.cjs --check` (runs in CI) |
 | Reviewable stock-vs-vendored diff | `patches/ink+8.0.0.patch` (generated) |
