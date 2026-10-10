@@ -132,3 +132,27 @@ describe('runBotDoctor', () => {
     expect(sick).toContain('[a] dlq');
   });
 });
+describe('doctor liveness (stale bots)', () => {
+  it('flags an enabled bot with a declared cadence that has not run in twice its interval', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mercury-doctor-stale-'));
+    try {
+      const store = new BotStore(join(root, 'bots'));
+      const queue = new BotQueue(join(root, 'bots'), 100);
+      try {
+        store.create({ id: 'ticker', name: 'Ticker', manifest: { schedules: [{ name: 'cycle', cron: '*/15 * * * *', prompt: 'x' }] } });
+        const journal = new BotJournal(store.botDir('ticker'));
+        journal.append({ runId: 'r1', botId: 'ticker', trigger: 'cron', state: 'completed', startedAt: Date.now() - 5 * 3600 * 1000, durationMs: 1000, tokensIn: 1, tokensOut: 1 });
+        const report = runBotDoctor({ store, queue, journalFor: () => journal, scheduledRoutineIds: ['bot:ticker:cycle'] });
+        const stale = report.findings.find(f => f.check === 'stale');
+        expect(stale?.detail).toContain('every 15 min');
+        // A fresh run clears it.
+        journal.append({ runId: 'r2', botId: 'ticker', trigger: 'cron', state: 'completed', startedAt: Date.now(), durationMs: 1000, tokensIn: 1, tokensOut: 1 });
+        expect(runBotDoctor({ store, queue, journalFor: () => journal, scheduledRoutineIds: ['bot:ticker:cycle'] }).findings.some(f => f.check === 'stale')).toBe(false);
+      } finally {
+        queue.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

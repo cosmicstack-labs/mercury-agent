@@ -1186,7 +1186,7 @@ describe('bot governance (ADR-020)', () => {
     expect(journal[0].toolCalls).toBe(2); // the note, then the note again after the one nudge
     expect(journal[0].routineId).toBe('bot:writer:cycle');
     expect(store.readRoutineState('writer').paused['bot:writer:cycle']).toBeDefined();
-    expect(alerts.filter(a => a.includes('is paused')).length).toBe(1);
+    expect(alerts.filter(a => a.includes('is cooling down')).length).toBe(1);
     expect(manager.enqueue('writer', { trigger: 'cron', prompt: 'cycle 4', routineId: 'bot:writer:cycle' })).toMatchObject({ accepted: false, reasonCode: 'routine_paused' });
     manager.start('writer');
     expect(store.readRoutineState('writer').paused).toEqual({});

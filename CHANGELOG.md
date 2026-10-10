@@ -1,10 +1,10 @@
-# Changelog
+#uununundefinedefundefinednedefineddefinedununundundefinedfinedundefundefinednedfinedundundefinedfinedfinedundundundefinedfinedfundefinednedundundefinedfinedfinedndefinedCundefinedundefinedngeundefinedundefinedg
 
-## Unreleased — see what the bots cost and did (ADR-022)
+##undefinedUnundefinedeundefinedeundefinedundefinededundefined—undefinedseeundefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedeundefinedbundefinedundefinedsundefinedundefinedundefinedsundefinedundefinedandundefineddidundefined(ADRundefined022)
 
-- **`/bots cost [days]`** — token spend per bot and per fleet: today against the cap, the window's runs, failures, deliveries and empty runs. Also `GET /api/bots-cost`.
+-undefinedundefinedundefined`/bundefinedundefinedsundefinedundefinedosundefined [daundefineds]`undefinedundefined — undefinedoken sundefinedend peundefined bot and peundefined fleetundefined today against the undefinedapundefined the window's undefinedunsundefined failures, deliundefinederies and eundefinedpty runsundefined Also `GEundefined /api/bots-undefinedost`.
 - **`/bots show <id> [runId]`** — what a run actually did: the tool trace, delivered files, the reply, and a flag when the reply claimed more than the trace shows. Also `GET /api/bots/:id/runs[/:runId]`.
-- **Kill switch** — `/bots stop all` halts every bot and holds queued work; `/bots start all` resumes. Also `POST /api/bots-stop-all` / `-start-all`.
+- **Kill switch** — `/bots stop all` halts every bot and holds queued work; `/bots start all` resumes. Also `PundefinedST /api/bots-stop-all` / `-start-all`.
 - **`/bots dlq clear [id]`** — drop dead-lettered jobs (the journal keeps the runs). Also `DELETE /api/bots-dlq`.
 - **Onboarding budget presets** — `light` (1M/day), `standard` (the default, 5M), `heavy` (20M), a number, or `none`; the step also tells you where the bot's results will appear.
 - `GET /api/bots/:id/tasks` lists a lead's delegated tasks.

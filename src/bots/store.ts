@@ -34,10 +34,16 @@ export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
 export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME]);
 
 export interface BotRoutineState {
-  /** Routine key → why/when it was paused (cleared by /bots start). */
-  paused: Record<string, { since: string; reason: string }>;
+  /**
+   * Routine key → why/when it was paused and when it resumes BY ITSELF
+   * (`until`). A bot is never left dead: /bots start resumes early, the
+   * cooldown resumes otherwise (ADR-020, liveness contract §2.14).
+   */
+  paused: Record<string, { since: string; until?: string; reason: string }>;
   /** Routine key → consecutive runs that produced no outcome. */
   noOutcomeStreak: Record<string, number>;
+  /** Routine key → how many times it has been paused (cooldown backoff); reset by a productive run. */
+  pauseCount?: Record<string, number>;
 }
 
 /**
@@ -289,9 +295,9 @@ export class BotStore {
   readRoutineState(id: string): BotRoutineState {
     try {
       const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), 'utf-8'));
-      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {} };
+      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {} };
     } catch {
-      return { paused: {}, noOutcomeStreak: {} };
+      return { paused: {}, noOutcomeStreak: {}, pauseCount: {} };
     }
   }
 

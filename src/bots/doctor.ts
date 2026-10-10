@@ -1,5 +1,6 @@
 import type { BotStore } from './store.js';
 import type { BotQueue } from './queue.js';
+import { cronMinGapMinutes } from './tools/bot-schedule.js';
 import { validateBotManifest } from './store.js';
 import type { BotRunRecord } from './types.js';
 import type { BotJournal } from './journal.js';
@@ -123,6 +124,26 @@ export function runBotDoctor(deps: DoctorDeps): DoctorReport {
       }
     }
     if (manifest.enabled === false) continue;
+    // Liveness: an enabled bot with a declared cadence that has not run in
+    // twice its interval (plus grace) is stale — something upstream (the
+    // scheduler, a held queue, a provider) is keeping it from its routine.
+    const cadences = (manifest.schedules ?? []).map(r => cronMinGapMinutes(r.cron)).filter(n => Number.isFinite(n));
+    if (cadences.length > 0) {
+      const expectedMin = Math.min(...cadences);
+      const grace = deps.graceMinutes ?? 60;
+      const last = deps.journalFor(manifest.id).read(manifest.id, 1)[0];
+      const lastAt = last ? (last.turnStartedAt ?? last.startedAt) : (manifest.createdAt ? Date.parse(manifest.createdAt) : 0);
+      const staleAfterMs = (2 * expectedMin + grace) * 60_000;
+      if (lastAt > 0 && Date.now() - lastAt > staleAfterMs) {
+        const paused = Object.keys(deps.store.readRoutineState(manifest.id).paused).length > 0;
+        findings.push({
+          botId: manifest.id,
+          severity: 'warning',
+          check: 'stale',
+          detail: `last run ${Math.round((Date.now() - lastAt) / 3_600_000)}h ago but a routine is declared every ${expectedMin} min${paused ? ' (a routine is cooling down)' : ' — check the scheduler and /bots start'}`,
+        });
+      }
+    }
     for (const routine of manifest.schedules ?? []) {
       const id = `bot:${manifest.id}:${routine.name}`;
       if (deps.scheduledRoutineIds && !deps.scheduledRoutineIds.includes(id)) {

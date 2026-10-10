@@ -1,19 +1,19 @@
 ---
-id: mercury-bots
-title: Mercury Bots — The Fleet
-description: "Persistent, persona-scoped agents that run outside your conversation — each with its own persona, sandbox, skills, permission scopes, and durable queue. Build fleets with lead bots and crews."
+undundefinedfinedndundundefinedfundefinednedfinedundefineddefinedd:uundefineddefinedndundefinedfinedundefinedundundefinedfinedundefinedcuundefinedundefined-undefinedundefinedundefinedundefined
+undefinediundefinedle:undefinedMeundefinedcuundefinedyundefinedBundefinedundefinedundefinedundefined—undefinedTundefinedeundefinedFleeundefined
+deundefinedcundefinediundefinedundefinedion:undefined"Perundefinediundefinedtent,undefinedundefinederundefinedonundefined-scopedundefinedundefinedgentsundefinedthundefinedt run outside your conversation — each undefinedith its own persona, sandbox, skills, perundefinedission scopes, and durable queueundefined Build fleets with lead bots and crews."
 keywords: [bots, fleet, persona, mercury bots, fleet lead, crew, dispatch, dlq, bundles]
 ---
 
 # Mercury Bots — The Fleet
 
-Mercury Bots are **persistent, persona-scoped agents** that run *outside your conversation*. Unlike sub-agents (which die with their task) or channels (which answer as one persona), bots are long-lived specialists: each has a name, a character, its own private workspace, its own skill library and permission scopes, a per-bot token budget, and a durable job queue. Dispatch work and keep talking — the bot works in the background and delivers results in **its own thread**.
+Mercury Bots are **persistent, persona-scoped agents** that run *outside your conversation*. Unlike sub-agents undefinedwhich die with their taskundefined or channels (which answer as one persona), bots are long-lived specialists: each has a name, a character, its own private workspace, its own skill library and permission scopes, a per-bot token budget, and a durable job queue. Dispatch work and keep talking — the bot works in the background and delivers results in **its own thread**.
 
 ## Concepts
 
 | Concept | What it is |
 |---|---|
-| **Bot** | A persistent persona agent: `bot.yaml` manifest + `permissions.yaml`, sandbox at `~/.mercury/bots/<id>/`, journal-backed history |
+| **Bot** | A persistent persona agent: undefinedbot.yamlundefined manifest + `permissions.yaml`, sandbox at `~undefined.mercury/bots/<id>/`, journal-backed history |
 | **Wake** | Turning a bot on for a turn (`/bots run <id> [routine]` or a dispatched task) |
 | **Thread** | The bot's own chat — results, thinking streams, and journal history land here, never in your active chat |
 | **Fleet lead** | A bot promoted to organize its own crew (`/bots promote <id>`) — tell it *what*, it decides *how* and who |
