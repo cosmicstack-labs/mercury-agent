@@ -43,6 +43,7 @@ const NAV_SECTIONS = [
     items: [
       { to: "/", icon: LayoutDashboard, label: "Status" },
       { to: "/chat", icon: MessageSquare, label: "Chat" },
+      { to: "/bots", icon: Bot, label: "Bots" },
       { to: "/tasks", icon: ListTodo, label: "Tasks" },
       { to: "/board", icon: Kanban, label: "Board" },
       { to: "/workspace", icon: Code2, label: "Workspace" },
@@ -64,7 +65,6 @@ const NAV_SECTIONS = [
       { to: "/skills", icon: Puzzle, label: "Skills" },
       { to: "/permissions", icon: Shield, label: "Permissions" },
       { to: "/schedules", icon: Clock, label: "Schedules" },
-      { to: "/bots", icon: Bot, label: "Bots" },
       { to: "/usage", icon: BarChart3, label: "Usage" },
     ],
   },

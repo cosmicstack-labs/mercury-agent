@@ -162,7 +162,7 @@ export function OnboardWizard({
               <Input placeholder="Provider (e.g. deepseek; empty = inherit)" value={provider === "inherit" ? "" : provider} onChange={(e) => { setProvider(e.target.value || "inherit"); }} />
               <Input placeholder="Model (e.g. deepseek-chat)" value={model} onChange={(e) => setModel(e.target.value)} />
             </div>
-            <Input placeholder="Daily token budget (optional, e.g. 500000)" value={budget} onChange={(e) => setBudget(e.target.value.replace(/[^0-9]/g, ""))} />
+            <Input placeholder="Daily token budget (default 5,000,000 · light 1,000,000 · heavy 20,000,000 · 0 = unlimited)" value={budget} onChange={(e) => setBudget(e.target.value.replace(/[^0-9]/g, ""))} />
           </div>
         )}
 

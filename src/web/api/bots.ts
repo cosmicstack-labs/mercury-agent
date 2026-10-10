@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
+import { openFolder, tildify } from '../../bots/open-folder.js';
 import type { Context } from 'hono';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
@@ -117,6 +118,39 @@ app.get('/api/bots/events', (c: any) => {
 });
 
 // ── Deliverables (owner-curated outputs zone — bot_deliver) ────────────────
+// Where results land — the fleet root and one bot's folder (ADR-020). The
+// dashboard shows the path and, since it runs on the owner's machine, can
+// open the folder in the file manager.
+app.get('/api/bots/folder', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const dir = botManager.store.deliverablesRoot();
+  return c.json({ path: dir, display: tildify(dir), exists: existsSync(dir) });
+});
+
+app.get('/api/bots/:id/folder', (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = String(c.req.param('id') ?? '');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const dir = botManager.store.deliverablesDir(id);
+  return c.json({ path: dir, display: tildify(dir), exists: existsSync(dir) });
+});
+
+app.post('/api/bots/folder/open', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const dir = botManager.store.deliverablesRoot();
+  mkdirSync(dir, { recursive: true });
+  return c.json({ ok: await openFolder(dir), path: dir });
+});
+
+app.post('/api/bots/:id/folder/open', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = String(c.req.param('id') ?? '');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const dir = botManager.store.deliverablesDir(id);
+  mkdirSync(dir, { recursive: true });
+  return c.json({ ok: await openFolder(dir), path: dir });
+});
+
 // Fleet-wide inbox, newest first.
 app.get('/api/bots/outputs', (c: any) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
