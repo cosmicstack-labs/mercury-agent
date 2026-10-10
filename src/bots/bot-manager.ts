@@ -17,6 +17,10 @@ import { sweepSharedSandbox } from './retention.js';
 import { proposeCrew } from './fleet-onboarding.js';
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
+import { BotTaskStore, renderTaskPrompt, renderBatchDigest, isTerminalTask, type BotTask, type BotTaskResult } from './tasks.js';
+import { createFleetDelegateTool, createFleetTasksTool, createFleetPipelineTool } from './tools/fleet-tasks.js';
+import { createBotStateTool } from './tools/bot-state.js';
+import { extractBotMemories } from './memory-extract.js';
 import { createBotDeliverTool } from './tools/bot-deliver.js';
 import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.js';
 import { createFleetStatusTool } from './tools/fleet-status.js';
@@ -84,6 +88,8 @@ export interface BotManagerDeps {
 const MAX_TRANSIENT_ATTEMPTS = 3;
 /** Consecutive no-outcome runs after which a work routine is paused (ADR-020). */
 export const NO_OUTCOME_PAUSE_AFTER = 3;
+/** A delegated batch wakes its requester with partial results after this long (ADR-021). */
+export const DEFAULT_TASK_DEADLINE_MINUTES = 120;
 const MAILBOX_CAPACITY = 100;
 /** Bot-thread result display cap — matches CLIChannel.MAX_MESSAGE_CHARS (64KB). */
 const BOT_RESULT_DISPLAY_CAP = 64 * 1024;
@@ -109,6 +115,8 @@ type BotSchedulerLike = {
 export class BotManager {
   readonly store: BotStore;
   readonly queue: BotQueue;
+  /** Durable fleet tasks (ADR-021). */
+  readonly tasks: BotTaskStore;
   private readonly config: MercuryConfig;
   private readonly providers: ProviderRegistry;
   private readonly tokenBudget: TokenBudget;
@@ -201,6 +209,7 @@ export class BotManager {
     this.store = deps.store ?? new BotStore(undefined, this.config.bots?.deliverablesDir);
     this.skillsRoot = deps.skillsRoot;
     this.queue = deps.queue ?? new BotQueue(this.store.botsRoot, this.config.bots?.retention?.dlqCap);
+    this.tasks = new BotTaskStore(this.store.botsRoot);
     // Resume work a crashed predecessor left behind: pending jobs (and
     // expired-lease claimed jobs) re-enter the in-memory queues. Durable
     // enqueue happens before any ack, so nothing was lost (§2.6).
@@ -236,7 +245,7 @@ export class BotManager {
     };
     // Periodic due-sweep: retry-backoff jobs re-enter the in-memory queues
     // when their run_after elapses (also covers crash-restart backoffs).
-    this.dueTimer = setInterval(() => this.resumeDueJobs(), 30_000);
+    this.dueTimer = setInterval(() => { this.resumeDueJobs(); this.sweepTaskDeadlines(); }, 30_000);
     this.dueTimer.unref?.();
     // Retention janitor: on boot + once a day, cool down aged files in the
     // fleet-shared folder into the archive and expire the archive (disabled
@@ -411,9 +420,182 @@ export class BotManager {
    * (replyTargetFor), closing the delegation loop.
    */
   dispatchTask(targetBotId: string, fromBot: string, task: string): BotSendResult {
-    const result = this.enqueue(targetBotId, { trigger: 'mailbox', prompt: task, fromBot });
-    if (!result.accepted) return { accepted: false, reasonCode: result.reasonCode as BotSendResult['reasonCode'] };
-    return { accepted: true, jobId: result.jobId };
+    // One typed task in a batch of one (ADR-021): same wake-once contract
+    // and digest as fleet_delegate.
+    const r = this.delegate(fromBot, { tasks: [{ bot: targetBotId, goal: task }] });
+    if (!r.ok) return { accepted: false, reasonCode: 'not_linked' };
+    const t = this.tasks.get(r.tasks[0].id);
+    if (!t || t.status === 'failed') return { accepted: false, reasonCode: (t?.result?.reasonCode as BotSendResult['reasonCode']) ?? 'target_disabled' };
+    return { accepted: true, jobId: t.jobId };
+  }
+
+  // ---- fleet tasks (ADR-021) ------------------------------------------------
+
+  /**
+   * Fan-out: typed tasks for several crew at once, grouped in a batch. The
+   * requester is woken ONCE with a digest when the batch settles or its
+   * deadline passes — never once per task.
+   */
+  delegate(requester: string, spec: { tasks: Array<{ bot: string; goal: string; acceptance?: string }>; label?: string; deadlineMinutes?: number; wakeWhen?: 'all' | 'each' }): { ok: true; batchId: string; tasks: Array<{ id: string; assignee: string; duplicated: boolean }> } | { ok: false; error: string } {
+    const lead = this.store.get(requester);
+    if (!lead) return { ok: false, error: `No bot "${requester}"` };
+    const roster = this.effectiveRoster(requester, lead);
+    for (const t of spec.tasks) {
+      if (t.bot === requester) return { ok: false, error: 'You cannot delegate to yourself' };
+      if (!roster.includes(t.bot)) return { ok: false, error: `"${t.bot}" is not in your crew (${roster.join(', ') || 'no crew yet — bot_spawn one'})` };
+    }
+    const deadlineAt = Date.now() + (spec.deadlineMinutes ?? DEFAULT_TASK_DEADLINE_MINUTES) * 60_000;
+    const batch = this.tasks.createBatch({ requester, label: spec.label, wakeWhen: spec.wakeWhen ?? 'all', deadlineAt });
+    const out: Array<{ id: string; assignee: string; duplicated: boolean }> = [];
+    for (const t of spec.tasks) {
+      const r = this.startTask({ batchId: batch.id, requester, assignee: t.bot, goal: t.goal, acceptance: t.acceptance });
+      out.push({ id: r.task.id, assignee: t.bot, duplicated: r.duplicated });
+    }
+    logger.info({ requester, batchId: batch.id, tasks: out.length }, 'Fleet batch dispatched');
+    return { ok: true, batchId: batch.id, tasks: out };
+  }
+
+  private startTask(input: Omit<BotTask, 'id' | 'status' | 'createdAt' | 'jobId'>, previous?: BotTaskResult): { task: BotTask; duplicated: boolean } {
+    const created = this.tasks.createTask(input);
+    if (created.duplicated) return created;
+    const requesterName = this.store.get(input.requester)?.name ?? input.requester;
+    const job = this.enqueue(input.assignee, { trigger: 'mailbox', prompt: renderTaskPrompt(created.task, requesterName, previous), fromBot: input.requester });
+    if (!job.accepted) {
+      this.tasks.update(created.task.id, { status: 'failed', completedAt: Date.now(), result: { outcome: 'none', summary: `could not dispatch: ${job.reasonCode}`, deliverables: [], reasonCode: job.reasonCode } });
+      this.onTaskSettled(created.task.id);
+    } else {
+      // enqueue pumps synchronously: the turn may already be running by the
+      // time the job id is known, so record that state here.
+      const alreadyRunning = this.running.get(input.assignee)?.has(job.jobId) ?? false;
+      this.tasks.update(created.task.id, { jobId: job.jobId, ...(alreadyRunning ? { status: 'running', startedAt: Date.now() } : {}) });
+    }
+    return created;
+  }
+
+  /** A lead's pipeline (bot.yaml) on one input: stages chain themselves. */
+  runPipeline(leadId: string, input: string, label?: string): { ok: true; runId: string; total: number; firstStage: string; duplicated: boolean } | { ok: false; error: string } {
+    const lead = this.store.get(leadId);
+    const stages = lead?.pipeline?.stages ?? [];
+    if (!lead || stages.length === 0) return { ok: false, error: 'No pipeline declared in bot.yaml (pipeline.stages)' };
+    const roster = this.effectiveRoster(leadId, lead);
+    const missing = stages.map(st => st.bot).filter(b => !roster.includes(b));
+    if (missing.length > 0) return { ok: false, error: `Pipeline stage bot(s) not in your crew: ${missing.join(', ')}` };
+    const runId = randomUUID().slice(0, 8);
+    const batch = this.tasks.createBatch({ requester: leadId, label: label ?? `${lead.pipeline?.name ?? 'pipeline'}: ${input.slice(0, 40)}`, wakeWhen: 'all', deadlineAt: Date.now() + stages.length * DEFAULT_TASK_DEADLINE_MINUTES * 60_000 });
+    const r = this.startStage(leadId, batch.id, runId, input, 0);
+    return { ok: true, runId, total: stages.length, firstStage: stages[0].name, duplicated: r.duplicated };
+  }
+
+  private startStage(leadId: string, batchId: string, runId: string, input: string, index: number, previous?: BotTaskResult): { task: BotTask; duplicated: boolean } {
+    const stages = this.store.get(leadId)?.pipeline?.stages ?? [];
+    const stage = stages[index];
+    const handoff = previous ? (previous.deliverables.join(', ') || previous.summary.slice(0, 500)) : '(none)';
+    const goal = stage.goal.replace(/\{\{\s*input\s*\}\}/g, input).replace(/\{\{\s*previous\s*\}\}/g, handoff);
+    return this.startTask({
+      batchId, requester: leadId, assignee: stage.bot, goal, acceptance: stage.acceptance, stage: stage.name,
+      pipeline: { runId, index, total: stages.length, input, final: Boolean(stage.final) },
+    }, previous);
+  }
+
+  private onTaskSettled(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    if (task.pipeline) {
+      this.advancePipeline(task);
+      return;
+    }
+    this.notifyBatch(task.batchId, 'settled', task.id);
+  }
+
+  private advancePipeline(task: BotTask): void {
+    const stages = this.store.get(task.requester)?.pipeline?.stages ?? [];
+    const p = task.pipeline!;
+    const isLast = p.index + 1 >= stages.length;
+    if (task.status === 'done' && !isLast) {
+      this.startStage(task.requester, task.batchId, p.runId, p.input, p.index + 1, task.result);
+      return;
+    }
+    // Last stage done, or a stage failed: promote finals, then wake the lead once.
+    if (task.status === 'done' && p.final && task.result) {
+      task.result.deliverables = task.result.deliverables.map(d => this.promoteDeliverable(task.requester, d));
+      this.tasks.update(task.id, { result: task.result });
+    }
+    this.notifyBatch(task.batchId, 'settled', task.id);
+  }
+
+  /** A crew's finished deliverable becomes the fleet's final: moved from work/<crew>/ to the top of the lead's folder. */
+  private promoteDeliverable(leadId: string, path: string): string {
+    const leadDir = this.store.deliverablesDir(leadId);
+    const rel = relative(join(leadDir, 'work'), path);
+    if (rel.startsWith('..') || isAbsolute(rel) || !existsSync(path)) return path;
+    let dest = join(leadDir, basename(path));
+    for (let i = 2; existsSync(dest); i++) dest = join(leadDir, `${basename(path, extname(path))} (${i})${extname(path)}`);
+    try {
+      renameSync(path, dest);
+      this.store.writeDeliverablesIndex(leadDir);
+      logger.info({ leadId, dest }, 'Pipeline final promoted to the fleet folder');
+      return dest;
+    } catch {
+      return path;
+    }
+  }
+
+  /**
+   * Wake the requester with a digest: on settle, when every task in an
+   * 'all' batch is terminal (a late result after a deadline wake reports
+   * just itself); on deadline, once, with what is done and what is still
+   * running. 'each' batches wake per task.
+   */
+  private notifyBatch(batchId: string, reason: 'settled' | 'deadline', settledTaskId?: string): void {
+    const batch = this.tasks.batch(batchId);
+    if (!batch) return;
+    const tasks = this.tasks.tasksInBatch(batchId);
+    const open = tasks.filter(t => !isTerminalTask(t.status));
+    const name = (id: string) => this.store.get(id)?.name ?? id;
+    let digest: string | null = null;
+    if (reason === 'deadline') {
+      if (open.length === 0 || batch.notifiedAt) return;
+      digest = renderBatchDigest(batch, tasks, name);
+      this.tasks.markBatchNotified(batchId);
+    } else if (batch.wakeWhen === 'each') {
+      const one = tasks.find(t => t.id === settledTaskId);
+      if (one) digest = renderBatchDigest(batch, [one], name);
+    } else if (open.length === 0) {
+      digest = batch.notifiedAt
+        ? `Late result for batch "${batch.label ?? batchId}":\n` + renderBatchDigest(batch, tasks.filter(t => t.id === settledTaskId), name)
+        : renderBatchDigest(batch, tasks, name);
+      this.tasks.markBatchNotified(batchId);
+    } else if (batch.notifiedAt) {
+      // Deadline already woke the requester; each straggler reports itself once.
+      const one = tasks.find(t => t.id === settledTaskId);
+      if (one) digest = `Late result for batch "${batch.label ?? batchId}":\n` + renderBatchDigest(batch, [one], name);
+    }
+    if (!digest) return;
+    const sent = this.sendToBot(batch.requester, 'fleet', digest);
+    if (!sent.accepted) logger.warn({ requester: batch.requester, batchId, reason: sent.reasonCode }, 'Fleet digest not delivered');
+  }
+
+  private sweepTaskDeadlines(): void {
+    for (const batch of this.tasks.overdueBatches()) this.notifyBatch(batch.id, 'deadline');
+  }
+
+  /** Open and recent tasks a lead asked for, newest first. */
+  tasksFor(requester: string): BotTask[] {
+    return this.tasks.recent(requester, 20);
+  }
+
+  async cancelTask(requester: string, taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const task = this.tasks.get(taskId);
+    if (!task || task.requester !== requester) return { ok: false, error: `No task ${taskId} of yours` };
+    if (isTerminalTask(task.status)) return { ok: false, error: `Task ${taskId} is already ${task.status}` };
+    if (task.jobId) {
+      const q = this.queues.get(task.assignee) ?? [];
+      this.queues.set(task.assignee, q.filter(j => j.id !== task.jobId));
+      if (this.running.get(task.assignee)?.has(task.jobId)) await this.halt(task.assignee, task.jobId);
+      else this.queue.settle(task.jobId, 'done');
+    }
+    this.tasks.update(taskId, { status: 'cancelled', completedAt: Date.now() });
+    return { ok: true };
   }
 
   /** Fire-and-forget mailbox delivery from another bot. */
@@ -564,6 +746,8 @@ export class BotManager {
         try { this.queue.heartbeatLease(job.id, LEASE_SECONDS); } catch { /* best effort */ }
       }, (LEASE_SECONDS / 3) * 1000);
       heartbeat.unref?.();
+      const taskForJob = this.tasks.byJob(job.id);
+      if (taskForJob) this.tasks.update(taskForJob.id, { status: 'running', startedAt: Date.now() });
       const turn = this.buildTurn(botId, manifest, job, controller.signal);
       const output = await runBotTurn({
         ...turn.input,
@@ -652,7 +836,7 @@ export class BotManager {
           prompt: job.prompt,
           output: output.output,
           toolsUsed: output.toolsUsed,
-          provider: resolveProvider(this.providers, manifest),
+          provider: resolveProvider(this.providers, manifest, this.config),
           // The synthesized skill lands in the BOT'S OWN library (draft:true),
           // not the global root — it is that bot's learned procedure, usable
           // by it on the next run (runtime invalidated on success).
@@ -741,7 +925,27 @@ export class BotManager {
       // result back to the sender's mailbox (attributed, plain mail — never a
       // task, so results can't ping-pong). Paused runs requeue and report
       // later; the failure/retry machinery above owns transient states.
-      const replyTarget = replyTargetFor(job);
+      // Memory (ADR-021): a productive run teaches the bot something.
+      const memoryStore = this.userMemoryFor(botId, manifest);
+      if (output.status === 'completed' && memoryStore && manifest.memory?.learn !== false) {
+        void extractBotMemories({
+          botId, botName: manifest.name, prompt: job.prompt, output: output.output, outcome: output.outcome,
+          deliverables: output.deliverables, provider: resolveProvider(this.providers, manifest, this.config), tokenBudget: this.tokenBudget, memory: memoryStore,
+        }).then((n) => { if (n > 0) logger.info({ botId, remembered: n }, 'Bot memories extracted'); });
+      }
+
+      // Typed task (ADR-021): record the result on the task and let the
+      // batch decide whether the requester is woken now.
+      const settledTask = output.status !== 'paused' ? this.tasks.byJob(job.id) : null;
+      if (settledTask) {
+        this.tasks.update(settledTask.id, {
+          status: output.status === 'completed' ? 'done' : output.status === 'failed' ? 'failed' : 'halted',
+          completedAt: Date.now(),
+          result: { outcome: output.outcome, summary: output.output.slice(0, 4000), deliverables: output.deliverables, reasonCode: output.reasonCode },
+        });
+        this.onTaskSettled(settledTask.id);
+      }
+      const replyTarget = settledTask ? undefined : replyTargetFor(job);
       if (replyTarget && (output.status === 'completed' || output.status === 'failed' || output.status === 'halted')) {
         const icon = output.status === 'completed' ? '✅' : output.status === 'failed' ? '❌' : '⏹';
         const reply = output.status === 'completed'
@@ -835,17 +1039,30 @@ export class BotManager {
         sandbox: { workspace: this.store.sandboxDir(botId), shared: this.store.sharedSandboxDir() },
         deliverablesDir: this.store.deliverablesDir(botId),
         expects: this.expectationFor(manifest, job),
+        recentRuns: this.recentRunsDigest(botId),
+        stateNote: this.store.readState(botId),
         skillsPrompt,
         fleet: this.fleetContext(botId, manifest),
         capabilities: registry,
         tools,
         userMemory,
-        provider: resolveProvider(this.providers, manifest),
+        provider: resolveProvider(this.providers, manifest, this.config),
         tokenBudget: this.tokenBudget,
         abortSignal: signal,
       },
       cleanup: () => { /* per-bot registries are persistent, nothing to restore */ },
     };
+  }
+
+  /** Last few runs, one line each — continuity the bot used to write to disk itself. */
+  private recentRunsDigest(botId: string): string {
+    const rows = this.journalFor(botId).read(botId, 5);
+    if (rows.length === 0) return '';
+    return [...rows].reverse().map(r => {
+      const when = new Date(r.turnStartedAt ?? r.startedAt).toISOString().slice(0, 16).replace('T', ' ');
+      const what = r.deliverables?.length ? `delivered ${r.deliverables.map(d => basename(d)).join(', ')}` : (r.summary ?? '').replace(/\s+/g, ' ').slice(0, 120);
+      return `- ${when} · ${r.trigger} · ${r.state}${r.outcome ? ` · ${r.outcome}` : ''} — ${what}`;
+    }).join('\n');
   }
 
   /** Fleet context for the turn prompt (undefined for solo bots). */
@@ -929,8 +1146,13 @@ export class BotManager {
     // (exempt from the retention janitor).
     filtered.bot_deliver = createBotDeliverTool(this, botId) as Tool;
     // Fleet tools for leads: monitor the crew, spawn/retire within caps.
+    filtered.bot_state = createBotStateTool(this.store, botId) as Tool;
     if (manifest.fleetRole === 'lead') {
       filtered.fleet_status = createFleetStatusTool(this, botId);
+      filtered.fleet_delegate = createFleetDelegateTool(this, botId) as Tool;
+      filtered.fleet_tasks = createFleetTasksTool(this, botId) as Tool;
+      const stages = manifest.pipeline?.stages ?? [];
+      if (stages.length > 0) filtered.fleet_pipeline = createFleetPipelineTool(this, botId, stages.map(st => st.name)) as Tool;
       if (this.config.bots?.fleets?.allowLeadSpawn !== false) {
         const fleet = createBotSpawnTool(this, botId);
         filtered.bot_spawn = fleet.spawn;
@@ -973,7 +1195,7 @@ export class BotManager {
   /** The bot's provider (public for fleet tools — persona building on spawn). */
   resolveProviderFor(botId: string): ReturnType<typeof resolveProvider> {
     const manifest = this.store.get(botId);
-    return resolveProvider(this.providers, manifest ?? { id: botId, name: botId, enabled: true } as BotManifest);
+    return resolveProvider(this.providers, manifest ?? { id: botId, name: botId, enabled: true } as BotManifest, this.config);
   }
 
   /**
@@ -1009,7 +1231,7 @@ export class BotManager {
         if (manifest.fleetRole !== 'lead') this.promoteLead(botId);
         const persona = this.store.readPersona(botId);
         const leadDescription = manifest.description ?? '';
-        const proposals = await proposeCrew(manifest.name, leadDescription, persona, resolveProvider(this.providers, manifest), this.maxCrew());
+        const proposals = await proposeCrew(manifest.name, leadDescription, persona, resolveProvider(this.providers, manifest, this.config), this.maxCrew());
         if (proposals.length === 0) {
           hooks.onError?.("Crew proposal unavailable (provider) — the lead has an empty crew. Add specialists yourself, or give the lead a task and tell it to hire its own crew (bot_spawn).");
           return;
@@ -1109,7 +1331,7 @@ export class BotManager {
   schedulePersonaRefinement(botId: string, name: string, rawPersona: string): void {
     const manifest = this.store.get(botId);
     if (!manifest) return;
-    const provider = resolveProvider(this.providers, manifest);
+    const provider = resolveProvider(this.providers, manifest, this.config);
     void refinePersona(rawPersona, name, provider)
       .then((refined) => {
         if (!refined) return;
@@ -1179,6 +1401,7 @@ export class BotManager {
       this.scheduler.persistSchedules();
     }
     this.queue.purgeBot(botId);
+    this.tasks.purgeBot(botId);
     this.store.delete(botId);
     this.registries.delete(botId);
     this.journals.delete(botId);
@@ -1722,13 +1945,18 @@ export class BotManager {
   }
 }
 
-function resolveProvider(providers: ProviderRegistry, manifest: BotManifest) {
+function resolveProvider(providers: ProviderRegistry, manifest: BotManifest, config?: MercuryConfig) {
   const requested = manifest.model?.provider;
   const provider = requested ? providers.get(requested) : undefined;
   if (provider) return provider;
   if (requested) {
     logger.warn({ botId: manifest.id, requested }, 'Bot provider not registered — falling back to default');
   }
+  // Crew lane (ADR-021): stage work on a cheaper provider when the fleet
+  // config names one and the crew bot has no choice of its own.
+  const crewProvider = manifest.parent ? config?.bots?.fleets?.crewProvider : undefined;
+  const crewLane = crewProvider ? providers.get(crewProvider) : undefined;
+  if (crewLane) return crewLane;
   return providers.getDefault();
 }
 

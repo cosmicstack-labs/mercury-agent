@@ -31,6 +31,8 @@ export interface BotToolAccess {
 export interface BotMemoryConfig {
   /** none = stateless; own = private namespace (default); shared-read = also read listed bots. */
   scope: BotMemoryScope;
+  /** Extract durable facts after productive runs (default true). ADR-021. */
+  learn?: boolean;
   /** Bot ids whose context this bot may search when scope is shared-read. */
   allowCrossBotRecall?: string[];
 }
@@ -125,8 +127,30 @@ export interface BotManifest {
   fleetRole?: 'lead' | 'crew';
   /** Crew bots only: the lead's id. Leads and solos never set this. */
   parent?: string;
+  /**
+   * A lead's standard job as data (ADR-021): stages run in order, each a
+   * typed task for one crew bot, each handing its deliverable to the next.
+   * Goal templates may use {{input}} and {{previous}}. The lead is woken
+   * once, at the end. A stage marked final promotes its deliverable to the
+   * fleet folder's top level.
+   */
+  pipeline?: BotPipelineConfig;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface BotPipelineStage {
+  name: string;
+  /** Crew bot id. */
+  bot: string;
+  goal: string;
+  acceptance?: string;
+  final?: boolean;
+}
+
+export interface BotPipelineConfig {
+  name?: string;
+  stages: BotPipelineStage[];
 }
 
 /**

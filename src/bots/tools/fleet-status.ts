@@ -26,6 +26,11 @@ export function createFleetStatusTool(manager: BotManager, leadId: string) {
         const attention = s.needsYou ? ' · ⚠ NEEDS YOU' : '';
         lines.push(`- ${s.name} (${s.id}) [${s.state}]${attention}${detail}`);
       }
+      const open = manager.tasks.open({ requester: leadId });
+      if (open.length > 0) {
+        lines.push('', `Open tasks (${open.length}) — you will be woken when they finish:`);
+        for (const t of open) lines.push(`- ${t.id} → ${t.assignee}: ${t.status}${t.stage ? ` (${t.stage})` : ''} — ${t.goal.slice(0, 70)}`);
+      }
       return lines.join('\n');
     },
   });

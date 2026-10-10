@@ -91,6 +91,18 @@ Every unattended run is governed:
 - **A turn is capped** at 300k tokens and 20 minutes (`autonomy.maxTokensPerTurn`, `maxTurnMinutes` in `bot.yaml`); long context is compacted automatically.
 - **Every bot has a daily token cap** — 5M unless you set one with `/bots budget <id> <tokens|suggest|none>` — and the fleet has one (`bots.fleetDailyTokenBudget`). You are warned at 80%; at 100% the bot pauses until tomorrow.
 - **A routine tick is skipped, never queued,** while the bot is still busy or within 30 minutes of its last run (`schedules[].minIntervalMinutes`). Bot-created routines run at most every 30 minutes, at most three per bot.
+- **Leads delegate typed tasks** with `fleet_delegate` — several at once, each with a goal and what "done" means — and are woken **once** with a digest when the batch finishes or its deadline passes. A lead's standard job can be declared as a **pipeline** in `bot.yaml` (`pipeline.stages`), and `fleet_pipeline` runs it end to end with no lead turn between stages:
+
+  ```yaml
+  pipeline:
+    name: article
+    stages:
+      - { name: research, bot: source-researcher, goal: "Build a sourced dossier on {{input}}" }
+      - { name: draft,    bot: article-writer-draft, goal: "Write the 800–1000 word piece from {{previous}}" }
+      - { name: check,    bot: fact-checker, goal: "Fact-check {{previous}} and fix what fails" }
+      - { name: package,  bot: delivery-packager, goal: "Finalise {{previous}} for delivery", final: true }
+  ```
+- **Bots remember.** After a productive run, durable facts (sources, decisions, where things are) go into the bot's own memory, and every turn starts with a digest of its last five runs plus its own working-state note (`bot_state`). `bots.fleets.crewProvider` puts crew work on a cheaper provider.
 - **A run is judged by what it did,** not by what it says: delivered a file, took an action, delegated, or nothing. A routine that only writes notes gets one nudge to deliver; three empty runs in a row pause it (`/bots start` resumes). Monitoring routines can declare `expects: check` to be allowed to find nothing.
 
 ## Bundles
