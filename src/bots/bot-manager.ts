@@ -11,7 +11,7 @@ import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
 import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
-import { BotJournal } from './journal.js';
+import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
 import { proposeCrew } from './fleet-onboarding.js';
@@ -62,6 +62,26 @@ export interface BotJob {
  */
 function replyTargetFor(job: BotJob): string | undefined {
   return job.trigger === 'mailbox' && job.fromBot && job.prompt ? job.fromBot : undefined;
+}
+
+export interface BotCostRow {
+  id: string;
+  name: string;
+  parent?: string;
+  today: BotUsage;
+  window: BotUsage;
+  /** Daily cap in effect (0 = unlimited). */
+  cap: number;
+  paused: boolean;
+}
+
+export interface BotCostReport {
+  days: number;
+  bots: BotCostRow[];
+  fleets: Array<{ id: string; name: string; members: number; today: BotUsage; window: BotUsage }>;
+  fleetToday: number;
+  fleetCap: number;
+  fleetPaused: boolean;
 }
 
 export interface BotSendResult {
@@ -1671,6 +1691,71 @@ export class BotManager {
 
   getJournal(botId: string, limit = 20): BotRunRecord[] {
     return this.journalFor(botId).read(botId, limit);
+  }
+
+  /** Drop dead-lettered jobs (one bot or all); the journal still has the runs. */
+  clearDlq(botId?: string): number {
+    const n = this.queue.clearDlq(botId);
+    if (botId) { if (!this.getDlq(botId).length) this.needsYou.delete(botId); }
+    else this.needsYou.clear();
+    return n;
+  }
+
+  /**
+   * Where the tokens go (ADR-022): per bot — today's spend against its cap
+   * and the totals over a window — rolled up per fleet.
+   */
+  costReport(days = 7): BotCostReport {
+    const now = Date.now();
+    const dayStart = Date.parse(new Date(now).toISOString().slice(0, 10) + 'T00:00:00Z');
+    const since = now - days * 24 * 60 * 60 * 1000;
+    const bots: BotCostRow[] = [];
+    for (const m of this.store.list()) {
+      const journal = this.journalFor(m.id);
+      const today = journal.usage(m.id, dayStart);
+      const window = journal.usage(m.id, since);
+      bots.push({ id: m.id, name: m.name, parent: m.parent, today, window, cap: this.dailyCapFor(m), paused: this.pausedForBudget.has(m.id) });
+    }
+    const fleets = bots.filter(b => !b.parent).map(lead => {
+      const members = bots.filter(b => b.parent === lead.id || b.id === lead.id);
+      const sum = (pick: (b: BotCostRow) => BotUsage) => members.reduce((acc, b) => { const u = pick(b); acc.runs += u.runs; acc.tokensIn += u.tokensIn; acc.tokensOut += u.tokensOut; acc.deliverables += u.deliverables; acc.noOutcome += u.noOutcome; acc.completed += u.completed; acc.failed += u.failed; return acc; }, { runs: 0, completed: 0, failed: 0, noOutcome: 0, deliverables: 0, tokensIn: 0, tokensOut: 0 });
+      return { id: lead.id, name: lead.name, members: members.length, today: sum(b => b.today), window: sum(b => b.window) };
+    });
+    const fleetCap = this.config.bots?.fleetDailyTokenBudget ?? 0;
+    const fleetToday = this.fleetDailyTokens.day === new Date(now).toISOString().slice(0, 10) ? this.fleetDailyTokens.tokens : 0;
+    return { days, bots, fleets, fleetToday, fleetCap, fleetPaused: this.fleetPausedDay === new Date(now).toISOString().slice(0, 10) };
+  }
+
+  /** Fleet kill switch: stop every lead and solo (crew cascade), hold their jobs. */
+  async stopAll(): Promise<{ stopped: number; halted: number; heldJobs: number }> {
+    let stopped = 0, halted = 0, heldJobs = 0;
+    for (const m of this.store.list()) {
+      if (m.parent) continue;
+      const r = await this.stop(m.id);
+      stopped += 1 + r.crewStopped;
+      if (r.halted) halted++;
+      heldJobs += r.heldJobs;
+    }
+    logger.warn({ stopped, halted, heldJobs }, 'All bots stopped (kill switch)');
+    return { stopped, halted, heldJobs };
+  }
+
+  startAll(): { started: number; resumed: number } {
+    let started = 0, resumed = 0;
+    for (const m of this.store.list()) {
+      if (m.parent || !m.enabled) continue;
+      resumed += this.start(m.id).resumed;
+      started++;
+    }
+    return { started, resumed };
+  }
+
+  listTranscripts(botId: string): Array<{ runId: string; mtimeMs: number }> {
+    return this.journalFor(botId).listTranscripts(botId).map(t => ({ runId: t.runId, mtimeMs: t.mtimeMs }));
+  }
+
+  readTranscript(botId: string, runId?: string): BotTranscript | null {
+    return this.journalFor(botId).readTranscript(botId, runId);
   }
 
   getDlq(botId?: string): DurableBotJob[] {
