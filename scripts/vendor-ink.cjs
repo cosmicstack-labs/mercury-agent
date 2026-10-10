@@ -2,17 +2,17 @@
 /**
  * Regenerate `vendor/ink/` — the patched ink build Mercury bundles (ADR-017).
  *
- *   node scripts/vendor-ink.cjs [--tarball <ink-5.2.1.tgz>] [--check]
+ *   node scripts/vendor-ink.cjs [--tarball <ink-8.0.0.tgz>] [--check]
  *
  * Pipeline, fully deterministic from a pinned stock tarball:
- *   1. obtain the stock `ink@5.2.1` tarball (the given path, or `npm pack`
+ *   1. obtain the stock `ink@8.0.0` tarball (the given path, or `npm pack`
  *      into a temp dir) and verify its registry integrity (sha512);
  *   2. extract it and copy only what the runtime needs — `build/` (minus
  *      source maps), `package.json` (trimmed of dev-only fields), `license`;
  *   3. run the Mercury patch set (`scripts/apply-ink-patch.cjs`, the single
  *      source of truth for every hunk) against the copy and stamp it as
  *      vendored (`inkPatch.vendored = true`);
- *   4. rewrite `patches/ink+5.2.1.patch` as `git diff --no-index` of stock
+ *   4. rewrite `patches/ink+8.0.0.patch` as `git diff --no-index` of stock
  *      vs patched `build/`, so the whole delta stays reviewable in one file.
  *
  * `--check` performs steps 1-3 into a temp dir and fails if the result
@@ -31,9 +31,9 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { apply, isPatched, pathsFor } = require('./apply-ink-patch.cjs');
 
 const root = path.join(__dirname, '..');
-const INK_VERSION = '5.2.1';
-/** `dist.integrity` of ink@5.2.1 on registry.npmjs.org. */
-const INK_INTEGRITY = 'sha512-BqcUyWrG9zq5HIwW6JcfFHsIYebJkWWb4fczNah1goUO0vv5vneIlfwuS85twyJ5hYR/y18FlAYUxrO9ChIWVg==';
+const INK_VERSION = '8.0.0';
+/** `dist.integrity` of ink@8.0.0 on registry.npmjs.org. */
+const INK_INTEGRITY = 'sha512-M2aFwZOqmkFxCwedy6xrP4E+DGoK57iahAFnfTqNyOyJ54O7DZzu027z/NI8EGy44Sw9O9BcbTF4QEUS2GHAtg==';
 const VENDOR_DIR = path.join(root, 'vendor', 'ink');
 const PATCH_FILE = path.join(root, 'patches', `ink+${INK_VERSION}.patch`);
 /** package.json fields that only matter for developing ink itself. */

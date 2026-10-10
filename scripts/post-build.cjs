@@ -21,12 +21,13 @@ function copyDirSync(src, dest) {
 
 // 0. ADR-017: the patched ink (vendor/ink) must be INSIDE the bundle — a
 // bare `import "ink"` would load whatever stock ink npm put in node_modules
-// and silently lose every fix (Yoga hygiene, Static.itemKey, hardware cursor).
+// and silently lose every fix (Static.itemKey, freeze gate, live-region
+// guard, hardware cursor).
 {
   const bundle = fs.readFileSync(path.join(__dirname, '..', 'dist', 'index.js'), 'utf8');
   const problems = [];
   if (/(?:from|import\()\s*["']ink["']/.test(bundle)) problems.push('dist/index.js imports "ink" at runtime (tsup alias/noExternal missing)');
-  for (const marker of ['__mercuryFrameGate', '__mercuryCursorAnchor', '__mercuryInkYogaHygiene', 'vendored: true']) {
+  for (const marker of ['__mercuryFrameGate', '__mercuryCursorAnchor', 'maxLiveRows', 'setCommitTick', 'vendored: true']) {
     if (!bundle.includes(marker)) problems.push(`vendored ink marker missing from the bundle: ${marker}`);
   }
   if (problems.length) {

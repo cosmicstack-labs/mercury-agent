@@ -2292,7 +2292,7 @@ function runPlatformDoctor(): void {
   console.log(chalk.dim('  Cross-platform runtime compatibility report'));
   console.log('');
   console.log(`  OS:                 ${chalk.white(process.platform)} (${process.arch})`);
-  console.log(`  Node.js:            ${chalk.white(process.version)} (required >= 20)`);
+  console.log(`  Node.js:            ${chalk.white(process.version)} (required >= 22)`);
   console.log(`  Terminal program:   ${chalk.white(termProgram)}`);
   console.log(`  TERM:               ${chalk.white(term)}`);
   console.log(`  Interactive TTY:    ${isTTY ? chalk.green('yes') : chalk.yellow('no')}`);

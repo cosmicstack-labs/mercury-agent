@@ -1,11 +1,80 @@
-export type Props = {
-    /**
-     * Exit (unmount) the whole Ink app.
-     */
-    readonly exit: (error?: Error) => void;
+/**
+A handle returned by `suspendTerminal()` when called without a callback.
+
+Call `resume()` to give terminal ownership back to Ink, or use `await using`
+so the suspension is resumed automatically when it leaves scope.
+*/
+export type TerminalSuspension = {
+    readonly resume: () => Promise<void>;
+    readonly [Symbol.asyncDispose]: () => Promise<void>;
 };
 /**
- * `AppContext` is a React context, which exposes a method to manually exit the app (unmount).
- */
+Temporarily hand the terminal over to a child process (e.g. `$EDITOR`, `less`,
+`fzf`), then restore Ink's terminal state and force a full redraw.
+*/
+export type SuspendTerminal = {
+    (callback: () => void | Promise<void>): Promise<void>;
+    (): Promise<TerminalSuspension>;
+};
+export type Props = {
+    /**
+    Exit (unmount) the whole Ink app.
+
+    - `exit()` — resolves `waitUntilExit()` with `undefined`.
+    - `exit(new Error('…'))` — rejects `waitUntilExit()` with the error.
+    - `exit(value)` — resolves `waitUntilExit()` with `value`.
+    */
+    readonly exit: (errorOrResult?: Error | unknown) => void;
+    /**
+    Returns a promise that settles after pending render output is flushed to stdout.
+
+    @example
+    ```jsx
+    import {useEffect} from 'react';
+    import {useApp} from 'ink';
+
+    const Example = () => {
+        const {waitUntilRenderFlush} = useApp();
+
+        useEffect(() => {
+            void (async () => {
+                await waitUntilRenderFlush();
+                runNextCommand();
+            })();
+        }, [waitUntilRenderFlush]);
+
+        return …;
+    };
+    ```
+    */
+    readonly waitUntilRenderFlush: () => Promise<void>;
+    /**
+    Temporarily release the terminal so a child process can take it over, then
+    restore Ink's terminal state and force a full redraw.
+
+    Use the callback form for the common case — Ink restores the terminal even
+    if the callback throws:
+
+    @example
+    ```jsx
+    import {useApp} from 'ink';
+
+    const {suspendTerminal} = useApp();
+
+    await suspendTerminal(async () => {
+        await runEditor();
+    });
+    ```
+
+    Or hold a suspension and resume it yourself:
+
+    @example
+    ```jsx
+    await using suspension = await suspendTerminal();
+    await runEditor();
+    ```
+    */
+    readonly suspendTerminal: SuspendTerminal;
+};
 declare const AppContext: import("react").Context<Props>;
 export default AppContext;

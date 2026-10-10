@@ -1283,8 +1283,27 @@ export class CLIChannel extends BaseChannel {
         onInterrupt: () => { this.interruptTurn(); },
         spotifyClient: this.spotifyClient,
       }),
-      { exitOnCtrlC: false, patchConsole: false, stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream, stdout: this.tuiOutput as unknown as NodeJS.WriteStream },
+      {
+        exitOnCtrlC: false,
+        patchConsole: false,
+        // Rewrite only the changed part of each line (ink 8). Replaces the
+        // diff-render hunk Mercury carried on ink 5.
+        incrementalRendering: true,
+        stdin: (this.stdinProxy ?? process.stdin) as unknown as NodeJS.ReadStream,
+        stdout: this.tuiOutput as unknown as NodeJS.WriteStream,
+      },
     );
+    // After the output wrapper had to shed writes, the screen no longer
+    // matches the renderer's baseline: clear() makes the next frame a full
+    // repaint, and the same-size 'resize' triggers it.
+    const output = this.tuiOutput;
+    const ink = this.inkInstance;
+    if (output) {
+      output.onResync = () => {
+        ink.clear();
+        output.emit('resize');
+      };
+    }
   }
 
   /**

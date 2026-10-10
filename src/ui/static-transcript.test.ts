@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -23,32 +23,25 @@ const read = (p: string) => readFileSync(join(repo, p), 'utf8');
  *     unmounted the entire static subtree (mass freeRecursive churn).
  */
 describe('ink static-transcript crash fixes', () => {
-  it('ships an ink patch that nulls freed Yoga references and clears staticNode', () => {
-    const patchPath = join(repo, 'patches', 'ink+5.2.1.patch');
-    expect(existsSync(patchPath)).toBe(true);
-    const patch = readFileSync(patchPath, 'utf8');
-    // Freed-subtree reference hygiene (reconciler).
-    expect(patch).toContain('clearYogaRefs');
-    expect(patch).toContain('cleanupRemovedNode');
-    // ink's `#text` nodes have no childNodes array — the traversal must
-    // guard (unguarded iteration crashed: "node.childNodes is not iterable").
-    expect(patch).toContain('Array.isArray(node.childNodes)');
-    // Dangling staticNode cache must be cleared when the removed subtree
-    // contains the static node — not only when the node itself is removed.
-    expect(patch).toContain('rootNode.staticNode = undefined');
-    // Key-based <Static> dedup (bounded sliding windows are safe).
-    expect(patch).toContain('itemKey');
+  it('ships ink 8, whose own reconciler nulls freed Yoga references and clears staticNode', () => {
+    // Defect 1 is fixed upstream since ink 8 (freeYogaSubtree +
+    // clearStaticNodeIfContained), so Mercury no longer patches it. Guard
+    // against a downgrade that would bring the crash back.
+    expect(JSON.parse(read('vendor/ink/package.json')).version).toBe('8.0.0');
+    const dom = read('vendor/ink/build/dom.js');
+    expect(dom).toContain('nullifyYogaNodes(removedNode)');
+    const reconciler = read('vendor/ink/build/reconciler.js');
+    expect(reconciler).toContain('clearStaticNodeIfContained(findRootNode(node), removedNode)');
+    expect(reconciler).toContain('freeYogaSubtree(removedNode)');
   });
 
-  it('has the patch applied to the vendored ink that ships in the bundle', () => {
-    // Ink is vendored and bundled (ADR-017); node_modules/ink is stock and
-    // unused at runtime. If this fails, regenerate with `npm run vendor:ink`.
-    const reconciler = read('vendor/ink/build/reconciler.js');
-    expect(reconciler).toContain('clearYogaRefs');
-    expect(reconciler).toContain('Array.isArray(node.childNodes)');
-    expect(reconciler).toContain('rootNode.staticNode = undefined');
+  it('has the key-based <Static> patch applied to the vendored ink that ships in the bundle', () => {
+    // Defect 2 is still Mercury's patch. If this fails, regenerate with
+    // `node scripts/vendor-ink.cjs`.
+    expect(read('patches/ink+8.0.0.patch')).toContain('itemKey');
     const staticComponent = read('vendor/ink/build/components/Static.js');
     expect(staticComponent).toContain('itemKey');
+    expect(staticComponent).toContain('setCommitTick');
   });
 
   it('passes itemKey to every <Static> usage in App.tsx', () => {

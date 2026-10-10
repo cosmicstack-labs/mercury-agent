@@ -1,7 +1,8 @@
-import { useContext } from 'react';
+import { use } from 'react';
 import StdoutContext from '../components/StdoutContext.js';
 /**
- * `useStdout` is a React hook, which exposes stdout stream.
- */
-const useStdout = () => useContext(StdoutContext);
-export default useStdout;
+A React hook that returns the stdout stream where Ink renders your app.
+*/
+export default function useStdout() {
+    return use(StdoutContext);
+}

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — ink 8
+
+Mercury's terminal renderer moves from a heavily patched ink 5.2.1 to ink 8.0.0, which now does most of that work itself.
+
+- **Requires Node.js 22 or newer.** Ink 7+ needs it, and Node 20 reached end of life in April 2026. On an older Node, Mercury now exits with a clear upgrade message instead of crashing at the first render.
+- **Smoother rendering** — incremental rendering rewrites only the changed part of each line, and every frame is painted atomically (synchronized output).
+- **Upstream fixes Mercury lacked** — CJK and emoji truncation, control characters stripped from rendered text, dropped keypresses when several keys arrive together, Backspace vs Delete, Windows stale frames, and many `<Static>` fixes.
+- **Smaller patch** — four Mercury hunks remain (Static `itemKey`, freeze gate, live-region guard, cursor anchor); the rest are upstream. See `docs/ink-patch.md` and ADR-019.
+- React 19.3.
+
 ## 1.3.1 — Honest Mercury
 
 The release where Mercury stops pretending. Chat answers instead of forcing tool rounds, "done" means a check actually passed, every channel shows the same evidence, and the terminal UI takes paste, Esc and IME like a real editor. Built from a full audit (`ROADMAP.md`); every change below is covered by tests, including a replay eval harness that drives the real agent loop.

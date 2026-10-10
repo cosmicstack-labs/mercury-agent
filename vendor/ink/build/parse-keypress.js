@@ -1,6 +1,7 @@
 // Copied from https://github.com/enquirer/enquirer/blob/36785f3399a41cd61e9d28d1eb9c2fcd73d69b4c/lib/keypress.js
-import { Buffer } from 'node:buffer';
-const metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
+import { kittyModifiers } from './kitty-keyboard.js';
+const textDecoder = new TextDecoder();
+const metaKeyCodeRe = /^(?:\x1b)([^\p{C}\[])$/u;
 const fnKeyRe = /^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/;
 const keyName = {
     /* xterm/gnome ESC O letter */
@@ -8,6 +9,11 @@ const keyName = {
     OQ: 'f2',
     OR: 'f3',
     OS: 'f4',
+    /* vt220-style ESC [ letter (e.g. Ctrl+F1 sends ESC [ 1 ; 5 P) */
+    '[P': 'f1',
+    '[Q': 'f2',
+    '[R': 'f3',
+    '[S': 'f4',
     /* xterm/rxvt ESC [ number ~ */
     '[11~': 'f1',
     '[12~': 'f2',
@@ -115,15 +121,265 @@ const isCtrlKey = (code) => {
         '[8^',
     ].includes(code);
 };
+// Kitty keyboard protocol: CSI codepoint [: shifted-key [: base-layout-key]] ; modifiers [: eventType] [; text-as-codepoints] u
+const kittyKeyRe = /^\x1b\[(\d+)(?::\d*(?::\d+)?)?(?:;(\d*)(?::(\d+))?(?:;([\d:]+))?)?u$/;
+// Kitty-enhanced special keys: CSI number [; modifiers [: eventType]] {letter|~}
+// These legacy CSI sequences use Kitty modifiers even without the :eventType field.
+// Examples: \x1b[1;1:1A (up arrow press), \x1b[3;1:3~ (delete release)
+const kittySpecialKeyRe = /^\x1b\[(\d+)(?:;(\d+)(?::(\d+))?)?([A-Za-z~])$/;
+// Letter-terminated special key names (CSI 1 ; mods letter)
+const kittySpecialLetterKeys = {
+    A: 'up',
+    B: 'down',
+    C: 'right',
+    D: 'left',
+    E: 'clear',
+    F: 'end',
+    H: 'home',
+    P: 'f1',
+    Q: 'f2',
+    S: 'f4',
+};
+// Number-terminated special key names (CSI number ; mods ~)
+const kittySpecialNumberKeys = {
+    2: 'insert',
+    3: 'delete',
+    5: 'pageup',
+    6: 'pagedown',
+    7: 'home',
+    8: 'end',
+    11: 'f1',
+    12: 'f2',
+    13: 'f3',
+    14: 'f4',
+    15: 'f5',
+    17: 'f6',
+    18: 'f7',
+    19: 'f8',
+    20: 'f9',
+    21: 'f10',
+    23: 'f11',
+    24: 'f12',
+    57427: 'clear',
+};
+// Map of special codepoints to key names in kitty protocol
+const kittyCodepointNames = {
+    27: 'escape',
+    // 13 (return) and 32 (space) are handled before this lookup
+    // in parseKittyKeypress so they can be marked as printable.
+    9: 'tab',
+    127: 'backspace',
+    57358: 'capslock',
+    57359: 'scrolllock',
+    57360: 'numlock',
+    57361: 'printscreen',
+    57362: 'pause',
+    57363: 'menu',
+    57376: 'f13',
+    57377: 'f14',
+    57378: 'f15',
+    57379: 'f16',
+    57380: 'f17',
+    57381: 'f18',
+    57382: 'f19',
+    57383: 'f20',
+    57384: 'f21',
+    57385: 'f22',
+    57386: 'f23',
+    57387: 'f24',
+    57388: 'f25',
+    57389: 'f26',
+    57390: 'f27',
+    57391: 'f28',
+    57392: 'f29',
+    57393: 'f30',
+    57394: 'f31',
+    57395: 'f32',
+    57396: 'f33',
+    57397: 'f34',
+    57398: 'f35',
+    57399: 'kp0',
+    57400: 'kp1',
+    57401: 'kp2',
+    57402: 'kp3',
+    57403: 'kp4',
+    57404: 'kp5',
+    57405: 'kp6',
+    57406: 'kp7',
+    57407: 'kp8',
+    57408: 'kp9',
+    57409: 'kpdecimal',
+    57410: 'kpdivide',
+    57411: 'kpmultiply',
+    57412: 'kpsubtract',
+    57413: 'kpadd',
+    57415: 'kpequal',
+    57416: 'kpseparator',
+    57417: 'left',
+    57418: 'right',
+    57419: 'up',
+    57420: 'down',
+    57421: 'pageup',
+    57422: 'pagedown',
+    57423: 'home',
+    57424: 'end',
+    57425: 'insert',
+    57426: 'delete',
+    57428: 'mediaplay',
+    57429: 'mediapause',
+    57430: 'mediaplaypause',
+    57431: 'mediareverse',
+    57432: 'mediastop',
+    57433: 'mediafastforward',
+    57434: 'mediarewind',
+    57435: 'mediatracknext',
+    57436: 'mediatrackprevious',
+    57437: 'mediarecord',
+    57438: 'lowervolume',
+    57439: 'raisevolume',
+    57440: 'mutevolume',
+    57441: 'leftshift',
+    57442: 'leftcontrol',
+    57443: 'leftalt',
+    57444: 'leftsuper',
+    57445: 'lefthyper',
+    57446: 'leftmeta',
+    57447: 'rightshift',
+    57448: 'rightcontrol',
+    57449: 'rightalt',
+    57450: 'rightsuper',
+    57451: 'righthyper',
+    57452: 'rightmeta',
+    57453: 'isoLevel3Shift',
+    57454: 'isoLevel5Shift',
+};
+// Valid Unicode codepoint range, excluding surrogates
+const isValidCodepoint = (cp) => cp >= 0 && cp <= 0x10_ffff && !(cp >= 0xd8_00 && cp <= 0xdf_ff);
+const safeFromCodePoint = (cp) => isValidCodepoint(cp) ? String.fromCodePoint(cp) : '?';
+function resolveEventType(value) {
+    if (value === 3)
+        return 'release';
+    if (value === 2)
+        return 'repeat';
+    return 'press';
+}
+function parseKittyModifiers(modifiers) {
+    return {
+        ctrl: !!(modifiers & kittyModifiers.ctrl),
+        shift: !!(modifiers & kittyModifiers.shift),
+        meta: !!(modifiers & (kittyModifiers.meta | kittyModifiers.alt)),
+        super: !!(modifiers & kittyModifiers.super),
+        hyper: !!(modifiers & kittyModifiers.hyper),
+        capsLock: !!(modifiers & kittyModifiers.capsLock),
+        numLock: !!(modifiers & kittyModifiers.numLock),
+    };
+}
+const parseKittyKeypress = (s) => {
+    const match = kittyKeyRe.exec(s);
+    if (!match)
+        return null;
+    let codepoint = parseInt(match[1], 10);
+    // Normalize keypad Enter to the same key and text as Return.
+    if (codepoint === 57414) {
+        codepoint = 13;
+    }
+    const modifiers = match[2] ? Math.max(0, parseInt(match[2], 10) - 1) : 0;
+    const eventType = match[3] ? parseInt(match[3], 10) : 1;
+    const textField = match[4];
+    // Bail on invalid primary codepoint
+    if (!isValidCodepoint(codepoint)) {
+        return null;
+    }
+    // Parse text-as-codepoints field (colon-separated Unicode codepoints)
+    let text;
+    if (textField) {
+        text = textField
+            .split(':')
+            .map(cp => safeFromCodePoint(parseInt(cp, 10)))
+            .join('');
+    }
+    // Determine key name from codepoint
+    let name;
+    let isPrintable;
+    if (codepoint === 32) {
+        name = 'space';
+        isPrintable = true;
+    }
+    else if (codepoint === 13) {
+        name = 'return';
+        isPrintable = true;
+    }
+    else if (kittyCodepointNames[codepoint]) {
+        name = kittyCodepointNames[codepoint];
+        isPrintable = false;
+    }
+    else if (codepoint < 32 ||
+        (codepoint >= 127 && codepoint <= 159) ||
+        (codepoint >= 57344 && codepoint <= 63743)) {
+        // Control codes and reserved functional keys do not identify printable characters. Ctrl+letters use their Unicode codepoints, such as 97 for 'a'.
+        name = '';
+        isPrintable = false;
+    }
+    else {
+        name = safeFromCodePoint(codepoint).toLowerCase();
+        isPrintable = true;
+    }
+    // Default text to the character from the codepoint when not explicitly
+    // provided by the protocol, so keys like space and return produce their
+    // expected text input (' ' and '\r' respectively).
+    if (isPrintable && !text) {
+        text = safeFromCodePoint(codepoint);
+    }
+    return {
+        name,
+        ...parseKittyModifiers(modifiers),
+        eventType: resolveEventType(eventType),
+        sequence: s,
+        raw: s,
+        isKittyProtocol: true,
+        isPrintable: isPrintable || text !== undefined,
+        text,
+    };
+};
+// Parse kitty-enhanced special key sequences (arrow keys, function keys, etc.)
+// These use the legacy CSI format with optional modifiers and :eventType fields.
+const parseKittySpecialKey = (s) => {
+    const match = kittySpecialKeyRe.exec(s);
+    if (!match) {
+        return null;
+    }
+    const number = parseInt(match[1], 10);
+    const modifiers = match[2] ? Math.max(0, parseInt(match[2], 10) - 1) : 0;
+    const eventType = match[3] ? parseInt(match[3], 10) : 1;
+    const terminator = match[4];
+    if (terminator !== '~' && number !== 1) {
+        return null;
+    }
+    const name = terminator === '~'
+        ? kittySpecialNumberKeys[number]
+        : kittySpecialLetterKeys[terminator];
+    if (!name) {
+        return null;
+    }
+    return {
+        name,
+        ...parseKittyModifiers(modifiers),
+        eventType: resolveEventType(eventType),
+        sequence: s,
+        raw: s,
+        isKittyProtocol: true,
+        isPrintable: false,
+    };
+};
 const parseKeypress = (s = '') => {
     let parts;
-    if (Buffer.isBuffer(s)) {
+    if (s instanceof Uint8Array) {
         if (s[0] > 127 && s[1] === undefined) {
-            s[0] -= 128;
-            s = '\x1b' + String(s);
+            // Convert the Meta byte to ASCII without modifying the caller's buffer.
+            s = '\x1b' + String.fromCharCode(s[0] - 128);
         }
         else {
-            s = String(s);
+            s = textDecoder.decode(s);
         }
     }
     else if (s !== undefined && typeof s !== 'string') {
@@ -132,28 +388,58 @@ const parseKeypress = (s = '') => {
     else if (!s) {
         s = '';
     }
+    // Try kitty keyboard protocol parsers first
+    const kittyResult = parseKittyKeypress(s);
+    if (kittyResult)
+        return kittyResult;
+    const kittySpecialResult = parseKittySpecialKey(s);
+    if (kittySpecialResult)
+        return kittySpecialResult;
+    // If the input matched the kitty CSI-u pattern but was rejected (e.g.,
+    // invalid codepoint), return a safe empty keypress instead of falling
+    // through to legacy parsing which can produce unsafe states (undefined name)
+    if (kittyKeyRe.test(s)) {
+        return {
+            name: '',
+            ctrl: false,
+            meta: false,
+            shift: false,
+            sequence: s,
+            raw: s,
+            isKittyProtocol: true,
+            isPrintable: false,
+        };
+    }
     const key = {
         name: '',
         ctrl: false,
         meta: false,
         shift: false,
-        option: false,
         sequence: s,
         raw: s,
     };
     key.sequence = key.sequence || s || key.name;
-    if (s === '\r') {
-        // carriage return
+    if (s === '\r' || s === '\x1b\r') {
+        // carriage return (or meta+return on macOS)
         key.raw = undefined;
         key.name = 'return';
+        key.meta = s.length === 2;
+    }
+    else if (s === '\x1bOM' || s === '\x1b\x1bOM') {
+        // Application keypad Enter has the same input value as Return.
+        key.raw = undefined;
+        key.name = 'return';
+        key.sequence = '\r';
+        key.meta = s.length === 4;
     }
     else if (s === '\n') {
         // enter, should have been called linefeed
         key.name = 'enter';
     }
-    else if (s === '\t') {
+    else if (s === '\t' || s === '\x1b\t') {
         // tab
         key.name = 'tab';
+        key.meta = s.length === 2;
     }
     else if (s === '\b' || s === '\x1b\b') {
         // backspace or ctrl+h
@@ -161,9 +447,8 @@ const parseKeypress = (s = '') => {
         key.meta = s.charAt(0) === '\x1b';
     }
     else if (s === '\x7f' || s === '\x1b\x7f') {
-        // TODO(vadimdemedes): `enquirer` detects delete key as backspace, but I had to split them up to avoid breaking changes in Ink. Merge them back together in the next major version.
-        // delete
-        key.name = 'delete';
+        // backspace
+        key.name = 'backspace';
         key.meta = s.charAt(0) === '\x1b';
     }
     else if (s === '\x1b' || s === '\x1b\x1b') {
@@ -171,14 +456,17 @@ const parseKeypress = (s = '') => {
         key.name = 'escape';
         key.meta = s.length === 2;
     }
-    else if (s === ' ' || s === '\x1b ') {
+    else if (/^\x1b?[ \x00]$/.test(s)) {
         key.name = 'space';
+        key.ctrl = s.endsWith('\x00');
         key.meta = s.length === 2;
     }
-    else if (s.length === 1 && s <= '\x1a') {
-        // ctrl+letter
-        key.name = String.fromCharCode(s.charCodeAt(0) + 'a'.charCodeAt(0) - 1);
+    else if (/^\x1b?[\x00-\x1f]$/.test(s)) {
+        // ctrl+letter or ctrl+punctuation
+        const codepoint = s.charCodeAt(s.length - 1);
+        key.name = String.fromCharCode(codepoint + (codepoint <= 26 ? 96 : 64));
         key.ctrl = true;
+        key.meta = s.length === 2;
     }
     else if (s.length === 1 && s >= '0' && s <= '9') {
         // number
@@ -195,13 +483,14 @@ const parseKeypress = (s = '') => {
     }
     else if ((parts = metaKeyCodeRe.exec(s))) {
         // meta+character key
+        key.name = parts[1].toLowerCase();
         key.meta = true;
         key.shift = /^[A-Z]$/.test(parts[1]);
     }
     else if ((parts = fnKeyRe.exec(s))) {
         const segs = [...s];
         if (segs[0] === '\u001b' && segs[1] === '\u001b') {
-            key.option = true;
+            key.meta = true;
         }
         // ansi escape sequence
         // reassemble the key code leaving out leading \x1b's,
@@ -212,10 +501,10 @@ const parseKeypress = (s = '') => {
         const modifier = (parts[3] || parts[5] || 1) - 1;
         // Parse the key modifier
         key.ctrl = !!(modifier & 4);
-        key.meta = !!(modifier & 10);
+        key.meta = key.meta || !!(modifier & 10);
         key.shift = !!(modifier & 1);
         key.code = code;
-        key.name = keyName[code];
+        key.name = keyName[code] ?? '';
         key.shift = isShiftKey(code) || key.shift;
         key.ctrl = isCtrlKey(code) || key.ctrl;
     }

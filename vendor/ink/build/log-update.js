@@ -1,99 +1,265 @@
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
-// Synchronized output (Cosmic Stack patch): see ink.js synchronized().
-const BSU = '\u001B[?2026h';
-const ESU = '\u001B[?2026l';
-const create = (stream, { showCursor = false, synchronize = false } = {}) => {
-    // One atomic update per write, unless ink.js already opened one.
-    const syncWrite = (data) => stream.write(synchronize && !(render.syncDepth > 0) ? BSU + data + ESU : data);
+import lineUpdate from './line-update.js';
+import { cursorPositionChanged, buildCursorSuffix, buildCursorOnlySequence, buildReturnToBottomPrefix, buildReturnToBottom, buildEraseFrame, hideCursorEscape, } from './cursor-helpers.js';
+// Count visible lines in a string, ignoring the trailing empty element
+// that `split('\n')` produces when the string ends with '\n'.
+const visibleLineCount = (lines, text) => text.endsWith('\n') ? lines.length - 1 : lines.length;
+const createStandard = (stream, { showCursor = false } = {}) => {
     let previousLineCount = 0;
     let previousOutput = '';
     let hasHiddenCursor = false;
-    // Hardware cursor (Cosmic Stack patch): after a frame is written the
-    // cursor sits on the line below the last row (column 0) — that is what
-    // the erase arithmetic assumes. `park` moves it up onto the anchor cell
-    // and shows it; `unpark` hides it and moves it back BEFORE anything else
-    // is written, so the arithmetic never sees a parked cursor. Relative
-    // moves (CUU/CUD/CHA) on purpose: the absolute row of the live region is
-    // unknown without a DSR round-trip.
-    let parked = null;
-    const targetFor = (cursor, lineCount) => {
-        if (!cursor) return null;
-        const rows = lineCount - 1; // lineCount counts the trailing blank line
-        if (!(cursor.row >= 0 && cursor.row < rows)) return null;
-        return { up: rows - cursor.row, col: Math.max(0, Math.floor(cursor.col)) };
+    let cursorPosition;
+    let isCursorDirty = false;
+    let previousCursorPosition;
+    let wasCursorShown = false;
+    const getActiveCursor = () => (isCursorDirty ? cursorPosition : undefined);
+    const hasChanges = (text, activeCursor) => {
+        const hasCursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+        return text !== previousOutput || hasCursorChanged;
     };
-    const unpark = () => {
-        if (!parked) return '';
-        const { up } = parked;
-        parked = null;
-        return ansiEscapes.cursorHide + ansiEscapes.cursorDown(up) + ansiEscapes.cursorLeft;
-    };
-    const park = (target) => {
-        if (!target) return '';
-        parked = target;
-        return ansiEscapes.cursorUp(target.up) + ansiEscapes.cursorTo(target.col) + ansiEscapes.cursorShow;
-    };
-    const render = (str, cursor) => {
+    const render = (text) => {
         if (!showCursor && !hasHiddenCursor) {
-            cliCursor.hide();
+            cliCursor.hide(stream);
             hasHiddenCursor = true;
         }
-        const output = str + '\n';
-        if (output === previousOutput) {
-            // Hardware cursor (Cosmic Stack patch): same rows, but the anchor
-            // may have moved or toggled — re-park without touching the frame.
-            const target = targetFor(cursor, previousLineCount);
-            const same = (!parked && !target) || (parked && target && parked.up === target.up && parked.col === target.col);
-            if (!same) syncWrite(unpark() + park(target));
-            return;
+        // Only use cursor if setCursorPosition was called since last render.
+        // This ensures stale positions don't persist after component unmount.
+        const activeCursor = getActiveCursor();
+        isCursorDirty = false;
+        const hasCursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+        if (!hasChanges(text, activeCursor)) {
+            return false;
         }
-        // Diff-render (Cosmic Stack patch): erase and rewrite only the rows
-        // from the first changed line onward; identical rows above stay on
-        // screen untouched. Ink 5's log-update erased and rewrote the ENTIRE
-        // frame on every render — a prompt-selection change or spinner tick
-        // repainted the whole live region, which read as a full-UI flash.
-        // The row bytes are compared verbatim (layout is deterministic), and
-        // the erase count accounts for the trailing blank line exactly like
-        // `previousLineCount` does, so `clear()` and cursor arithmetic stay
-        // in sync with the original accounting.
-        const previousRows = previousOutput === '' ? [] : previousOutput.slice(0, -1).split('\n');
-        const nextRows = output.slice(0, -1).split('\n');
-        const common = Math.min(previousRows.length, nextRows.length);
-        let firstChange = 0;
-        while (firstChange < common && previousRows[firstChange] === nextRows[firstChange]) {
-            firstChange++;
+        const lines = text.split('\n');
+        const cursorSuffix = buildCursorSuffix(lines.length - 1, activeCursor);
+        if (text === previousOutput && hasCursorChanged) {
+            stream.write(buildCursorOnlySequence({
+                cursorWasShown: wasCursorShown,
+                previousLineCount,
+                previousCursorPosition,
+                cursorPosition: activeCursor,
+            }));
         }
-        const eraseCount = previousLineCount - firstChange;
-        previousOutput = output;
-        previousLineCount = output.split('\n').length;
-        syncWrite(unpark() + ansiEscapes.eraseLines(eraseCount) + nextRows.slice(firstChange).join('\n') + '\n' + park(targetFor(cursor, previousLineCount)));
+        else {
+            previousOutput = text;
+            const returnPrefix = buildReturnToBottomPrefix(wasCursorShown, previousLineCount, previousCursorPosition);
+            stream.write(returnPrefix +
+                ansiEscapes.eraseLines(previousLineCount) +
+                text +
+                cursorSuffix);
+            previousLineCount = lines.length;
+        }
+        previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+        wasCursorShown = activeCursor !== undefined;
+        return true;
     };
-    // Resize baseline reset (Cosmic Stack patch): forget what is on screen
-    // without touching the line count — the next render erases the old
-    // frame's rows and rewrites every row instead of diffing against rows
-    // the terminal has already re-wrapped.
-    render.invalidate = () => {
-        previousOutput = '';
-    };
-    render.synchronize = synchronize;
-    render.syncDepth = 0;
     render.clear = () => {
-        syncWrite(unpark() + ansiEscapes.eraseLines(previousLineCount));
+        stream.write(buildEraseFrame(previousLineCount, previousCursorPosition));
         previousOutput = '';
         previousLineCount = 0;
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
     };
     render.done = () => {
-        const restore = unpark();
-        if (restore) stream.write(restore);
+        if (previousCursorPosition) {
+            // Leave the terminal at the output bottom before discarding the cursor position.
+            stream.write(buildReturnToBottom(previousLineCount, previousCursorPosition));
+        }
         previousOutput = '';
         previousLineCount = 0;
-        if (!showCursor) {
-            cliCursor.show();
-            hasHiddenCursor = false;
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
+        if (showCursor) {
+            return;
         }
+        cliCursor.show(stream);
+        hasHiddenCursor = false;
     };
+    render.reset = () => {
+        previousOutput = '';
+        previousLineCount = 0;
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
+    };
+    render.sync = (text) => {
+        const activeCursor = isCursorDirty ? cursorPosition : undefined;
+        isCursorDirty = false;
+        const lines = text.split('\n');
+        previousOutput = text;
+        previousLineCount = lines.length;
+        if (!activeCursor && wasCursorShown) {
+            stream.write(hideCursorEscape);
+        }
+        if (activeCursor) {
+            stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
+        }
+        previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+        wasCursorShown = activeCursor !== undefined;
+    };
+    render.setCursorPosition = (position) => {
+        cursorPosition = position;
+        isCursorDirty = true;
+    };
+    render.isCursorDirty = () => isCursorDirty;
+    render.willRender = (text) => hasChanges(text, getActiveCursor());
+    render.getCursorPosition = () => previousCursorPosition;
     return render;
 };
+const createIncremental = (stream, { showCursor = false } = {}) => {
+    let previousLines = [];
+    let previousOutput = '';
+    let previousColumns = stream.columns;
+    let hasHiddenCursor = false;
+    let cursorPosition;
+    let isCursorDirty = false;
+    let previousCursorPosition;
+    let wasCursorShown = false;
+    const getActiveCursor = () => (isCursorDirty ? cursorPosition : undefined);
+    const hasChanges = (text, activeCursor) => {
+        const hasCursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+        return text !== previousOutput || hasCursorChanged;
+    };
+    const render = (text) => {
+        if (!showCursor && !hasHiddenCursor) {
+            cliCursor.hide(stream);
+            hasHiddenCursor = true;
+        }
+        // Only use cursor if setCursorPosition was called since last render.
+        // This ensures stale positions don't persist after component unmount.
+        const activeCursor = getActiveCursor();
+        isCursorDirty = false;
+        const hasCursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+        if (!hasChanges(text, activeCursor)) {
+            return false;
+        }
+        const areColumnsUnchanged = previousColumns === stream.columns;
+        previousColumns = stream.columns;
+        const nextLines = text.split('\n');
+        const visibleCount = visibleLineCount(nextLines, text);
+        const previousVisible = visibleLineCount(previousLines, previousOutput);
+        if (text === previousOutput && hasCursorChanged) {
+            stream.write(buildCursorOnlySequence({
+                cursorWasShown: wasCursorShown,
+                previousLineCount: previousLines.length,
+                previousCursorPosition,
+                cursorPosition: activeCursor,
+            }));
+            previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+            wasCursorShown = activeCursor !== undefined;
+            return true;
+        }
+        const returnPrefix = buildReturnToBottomPrefix(wasCursorShown, previousLines.length, previousCursorPosition);
+        if (text === '\n' || previousOutput.length === 0) {
+            const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
+            stream.write(returnPrefix +
+                ansiEscapes.eraseLines(previousLines.length) +
+                text +
+                cursorSuffix);
+            wasCursorShown = activeCursor !== undefined;
+            previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+            previousOutput = text;
+            previousLines = nextLines;
+            return true;
+        }
+        const hasTrailingNewline = text.endsWith('\n');
+        // We aggregate all chunks for incremental rendering into a buffer, and then write them to stdout at the end.
+        const buffer = [];
+        buffer.push(returnPrefix);
+        // Clear extra lines if the current content's line count is lower than the previous.
+        if (visibleCount < previousVisible) {
+            const didPreviousHaveTrailingNewline = previousOutput.endsWith('\n');
+            const extraSlot = didPreviousHaveTrailingNewline ? 1 : 0;
+            buffer.push(ansiEscapes.eraseLines(previousVisible - visibleCount + extraSlot), ansiEscapes.cursorUp(visibleCount));
+        }
+        else if (previousLines.length > 1) {
+            buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+        }
+        for (let i = 0; i < visibleCount; i++) {
+            const isLastLine = i === visibleCount - 1;
+            // We do not write lines if the contents are the same. This prevents flickering during renders.
+            // New blank rows need a line feed to scroll at the terminal bottom; the trailing split entry is not a visible row.
+            if (i < previousVisible && nextLines[i] === previousLines[i]) {
+                // Don't move past the last line when there's no trailing newline,
+                // otherwise the cursor overshoots the rendered block.
+                if (!isLastLine || hasTrailingNewline) {
+                    buffer.push(ansiEscapes.cursorNextLine);
+                }
+                continue;
+            }
+            const nextLine = nextLines[i];
+            const changedLine = areColumnsUnchanged && nextLines.length === previousLines.length
+                ? lineUpdate(previousLines[i], nextLine, stream.columns)
+                : ansiEscapes.cursorTo(0) + ansiEscapes.eraseEndLine + nextLine;
+            buffer.push(changedLine +
+                // Don't append newline after the last line when the input
+                // has no trailing newline (fullscreen mode).
+                (isLastLine && !hasTrailingNewline ? '' : '\n'));
+        }
+        const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
+        buffer.push(cursorSuffix);
+        stream.write(buffer.join(''));
+        wasCursorShown = activeCursor !== undefined;
+        previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+        previousOutput = text;
+        previousLines = nextLines;
+        return true;
+    };
+    render.clear = () => {
+        stream.write(buildEraseFrame(previousLines.length, previousCursorPosition));
+        previousOutput = '';
+        previousLines = [];
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
+    };
+    render.done = () => {
+        if (previousCursorPosition) {
+            // Leave the terminal at the output bottom before discarding the cursor position.
+            stream.write(buildReturnToBottom(previousLines.length, previousCursorPosition));
+        }
+        previousOutput = '';
+        previousLines = [];
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
+        if (showCursor) {
+            return;
+        }
+        cliCursor.show(stream);
+        hasHiddenCursor = false;
+    };
+    render.reset = () => {
+        previousOutput = '';
+        previousLines = [];
+        previousCursorPosition = undefined;
+        wasCursorShown = false;
+    };
+    render.sync = (text) => {
+        const activeCursor = isCursorDirty ? cursorPosition : undefined;
+        isCursorDirty = false;
+        previousColumns = stream.columns;
+        const lines = text.split('\n');
+        previousOutput = text;
+        previousLines = lines;
+        if (!activeCursor && wasCursorShown) {
+            stream.write(hideCursorEscape);
+        }
+        if (activeCursor) {
+            stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
+        }
+        previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+        wasCursorShown = activeCursor !== undefined;
+    };
+    render.setCursorPosition = (position) => {
+        cursorPosition = position;
+        isCursorDirty = true;
+    };
+    render.isCursorDirty = () => isCursorDirty;
+    render.willRender = (text) => hasChanges(text, getActiveCursor());
+    render.getCursorPosition = () => previousCursorPosition;
+    return render;
+};
+const create = (stream, { showCursor = false, incremental = false } = {}) => incremental
+    ? createIncremental(stream, { showCursor })
+    : createStandard(stream, { showCursor });
 const logUpdate = { create };
 export default logUpdate;

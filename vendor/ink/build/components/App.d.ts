@@ -1,59 +1,26 @@
-import { EventEmitter } from 'node:events';
-import React, { PureComponent, type ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
+import { type CursorPosition } from '../log-update.js';
+import { type OutputStream } from '../stream.js';
+import { type SuspendTerminal } from './AppContext.js';
 type Props = {
     readonly children: ReactNode;
-    readonly stdin: NodeJS.ReadStream;
-    readonly stdout: NodeJS.WriteStream;
-    readonly stderr: NodeJS.WriteStream;
+    readonly stdin: NodeJS.ReadableStream;
+    readonly stdout: OutputStream;
+    readonly stderr: OutputStream;
     readonly writeToStdout: (data: string) => void;
     readonly writeToStderr: (data: string) => void;
     readonly exitOnCtrlC: boolean;
-    readonly onExit: (error?: Error) => void;
+    readonly onExit: (errorOrResult?: unknown) => void;
+    readonly onWaitUntilRenderFlush: () => Promise<void>;
+    readonly onSuspendTerminal: SuspendTerminal;
+    readonly onKittyQueryResponse: () => void;
+    readonly onRegisterInputControl: (pauseInput: () => void, resumeInput: () => void) => void;
+    readonly setCursorPosition: (position: CursorPosition | undefined) => void;
+    readonly interactive: boolean;
+    readonly renderThrottleMs: number;
 };
-type State = {
-    readonly isFocusEnabled: boolean;
-    readonly activeFocusId?: string;
-    readonly focusables: Focusable[];
-    readonly error?: Error;
-};
-type Focusable = {
-    readonly id: string;
-    readonly isActive: boolean;
-};
-export default class App extends PureComponent<Props, State> {
-    static displayName: string;
-    static getDerivedStateFromError(error: Error): {
-        error: Error;
-    };
-    state: {
-        isFocusEnabled: boolean;
-        activeFocusId: undefined;
-        focusables: never[];
-        error: undefined;
-    };
-    rawModeEnabledCount: number;
-    internal_eventEmitter: EventEmitter<[never]>;
-    isRawModeSupported(): boolean;
-    render(): React.JSX.Element;
-    componentDidMount(): void;
-    componentWillUnmount(): void;
-    componentDidCatch(error: Error): void;
-    handleSetRawMode: (isEnabled: boolean) => void;
-    handleReadable: () => void;
-    handleInput: (input: string) => void;
-    handleExit: (error?: Error) => void;
-    enableFocus: () => void;
-    disableFocus: () => void;
-    focus: (id: string) => void;
-    focusNext: () => void;
-    focusPrevious: () => void;
-    addFocusable: (id: string, { autoFocus }: {
-        autoFocus: boolean;
-    }) => void;
-    removeFocusable: (id: string) => void;
-    activateFocusable: (id: string) => void;
-    deactivateFocusable: (id: string) => void;
-    findNextFocusable: (state: State) => string | undefined;
-    findPreviousFocusable: (state: State) => string | undefined;
+declare function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, exitOnCtrlC, onExit, onWaitUntilRenderFlush, onSuspendTerminal, onKittyQueryResponse, onRegisterInputControl, setCursorPosition, interactive, renderThrottleMs, }: Props): React.ReactNode;
+declare namespace App {
+    var displayName: string;
 }
-export {};
+export default App;

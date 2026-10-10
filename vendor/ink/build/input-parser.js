@@ -1,0 +1,201 @@
+const escape = '\u{1B}';
+const pasteStart = '\u{1B}[200~';
+const pasteEnd = '\u{1B}[201~';
+const isCsiParameterByte = (byte) => byte >= 0x30 && byte <= 0x3f;
+const isCsiIntermediateByte = (byte) => byte >= 0x20 && byte <= 0x2f;
+const isCsiFinalByte = (byte) => byte >= 0x40 && byte <= 0x7e;
+const parseCsiSequence = (input, startIndex, prefixLength) => {
+    const csiPayloadStart = startIndex + prefixLength + 1;
+    let index = csiPayloadStart;
+    for (; index < input.length; index++) {
+        const byte = input.codePointAt(index);
+        if (byte === undefined) {
+            return 'pending';
+        }
+        // Preserve legacy terminal function-key sequences like ESC[[A and ESC[[5~.
+        if (byte === 0x5b && index === csiPayloadStart) {
+            continue;
+        }
+        // Shifted editing keys in rxvt end in $, which is normally a CSI intermediate byte.
+        const isRxvtShiftKey = byte === 0x24 &&
+            index === csiPayloadStart + 1 &&
+            '235678'.includes(input[csiPayloadStart]);
+        if (isRxvtShiftKey || isCsiFinalByte(byte)) {
+            return {
+                sequence: input.slice(startIndex, index + 1),
+                nextIndex: index + 1,
+            };
+        }
+        if (isCsiParameterByte(byte) || isCsiIntermediateByte(byte)) {
+            continue;
+        }
+        return undefined;
+    }
+    return 'pending';
+};
+const parseSs3Sequence = (input, startIndex, prefixLength) => {
+    let index = startIndex + prefixLength + 1;
+    for (; index < input.length; index++) {
+        const byte = input.codePointAt(index);
+        if (isCsiFinalByte(byte)) {
+            return {
+                sequence: input.slice(startIndex, index + 1),
+                nextIndex: index + 1,
+            };
+        }
+        // Modified SS3 keys can include numeric parameters separated by semicolons.
+        if (byte !== 0x3b && (byte < 0x30 || byte > 0x39)) {
+            return undefined;
+        }
+    }
+    return 'pending';
+};
+const parseControlSequence = (input, startIndex, prefixLength) => {
+    const sequenceType = input[startIndex + prefixLength];
+    if (sequenceType === undefined) {
+        return 'pending';
+    }
+    if (sequenceType === '[') {
+        return parseCsiSequence(input, startIndex, prefixLength);
+    }
+    return sequenceType === 'O'
+        ? parseSs3Sequence(input, startIndex, prefixLength)
+        : undefined;
+};
+/**
+Whether `input` is exactly one complete CSI or SS3 sequence as the parser defines it, including legacy `ESC[[A`, rxvt `ESC[2$` and parameterized SS3 forms. Partial sequences (timeout-flushed) and plain escaped code points are not.
+*/
+export const isCompleteControlSequence = (input) => {
+    if (!input.startsWith(escape)) {
+        return false;
+    }
+    const prefixLength = input[1] === escape ? 2 : 1;
+    const parsed = parseControlSequence(input, 0, prefixLength);
+    return typeof parsed === 'object' && parsed.nextIndex === input.length;
+};
+const parseEscapedCodePoint = (input, escapeIndex) => {
+    const nextCodePoint = input.codePointAt(escapeIndex + 1);
+    const nextCodePointLength = nextCodePoint !== undefined && nextCodePoint > 0xff_ff ? 2 : 1;
+    const nextIndex = escapeIndex + 1 + nextCodePointLength;
+    return {
+        sequence: input.slice(escapeIndex, nextIndex),
+        nextIndex,
+    };
+};
+const parseEscapeSequence = (input, escapeIndex) => {
+    if (escapeIndex === input.length - 1) {
+        return 'pending';
+    }
+    const next = input[escapeIndex + 1];
+    if (next === escape) {
+        if (escapeIndex + 2 >= input.length) {
+            return 'pending';
+        }
+        const doubleEscapeSequence = parseControlSequence(input, escapeIndex, 2);
+        if (doubleEscapeSequence === 'pending') {
+            return 'pending';
+        }
+        if (doubleEscapeSequence) {
+            return doubleEscapeSequence;
+        }
+        return {
+            sequence: input.slice(escapeIndex, escapeIndex + 2),
+            nextIndex: escapeIndex + 2,
+        };
+    }
+    const controlSequence = parseControlSequence(input, escapeIndex, 1);
+    return controlSequence === 'pending'
+        ? 'pending'
+        : (controlSequence ?? parseEscapedCodePoint(input, escapeIndex));
+};
+/**
+Split a chunk of non-escape text so that backspace bytes (`0x7F` and `0x08`) and Ctrl+C (`0x03`) become individual events. Ctrl+C must be recognized even when buffered with ordinary text. When a user holds the backspace key, the terminal sends repeated bytes in a single stdin chunk. Without splitting, `parseKeypress` receives the multi-byte string and fails to recognize it as a key event, corrupting the input state.
+
+Other control characters like `\r` and `\t` are NOT split because they can legitimately appear inside pasted text.
+*/
+const splitControlBytes = (text, events) => {
+    let textSegmentStart = 0;
+    for (let index = 0; index < text.length; index++) {
+        const character = text[index];
+        if (!['\u{7F}', '\u{8}', '\u{3}'].includes(character)) {
+            continue;
+        }
+        if (index > textSegmentStart) {
+            events.push(text.slice(textSegmentStart, index));
+        }
+        events.push(character);
+        textSegmentStart = index + 1;
+    }
+    if (textSegmentStart < text.length) {
+        events.push(text.slice(textSegmentStart));
+    }
+};
+const parseKeypresses = (input) => {
+    const events = [];
+    let index = 0;
+    const pendingFrom = (pendingStartIndex) => ({
+        events,
+        pending: input.slice(pendingStartIndex),
+    });
+    while (index < input.length) {
+        const escapeIndex = input.indexOf(escape, index);
+        if (escapeIndex === -1) {
+            splitControlBytes(input.slice(index), events);
+            return {
+                events,
+                pending: '',
+            };
+        }
+        if (escapeIndex > index) {
+            splitControlBytes(input.slice(index, escapeIndex), events);
+        }
+        const parsedEscapeSequence = parseEscapeSequence(input, escapeIndex);
+        if (parsedEscapeSequence === 'pending') {
+            return pendingFrom(escapeIndex);
+        }
+        if (parsedEscapeSequence.sequence === pasteStart) {
+            const afterStart = parsedEscapeSequence.nextIndex;
+            const endIndex = input.indexOf(pasteEnd, afterStart);
+            if (endIndex === -1) {
+                return pendingFrom(escapeIndex);
+            }
+            events.push({ paste: input.slice(afterStart, endIndex) });
+            index = endIndex + pasteEnd.length;
+            continue;
+        }
+        events.push(parsedEscapeSequence.sequence);
+        index = parsedEscapeSequence.nextIndex;
+    }
+    return {
+        events,
+        pending: '',
+    };
+};
+export const createInputParser = () => {
+    let pending = '';
+    return {
+        push(chunk) {
+            const parsedInput = parseKeypresses(pending + chunk);
+            pending = parsedInput.pending;
+            return parsedInput.events;
+        },
+        hasPendingEscape() {
+            // Don't trigger the escape flush timer while assembling a paste start
+            // marker (`\u001B[200` and then `~`) or while waiting for paste end.
+            return (pending.startsWith(escape) &&
+                !pending.startsWith(pasteStart) &&
+                pending !== '\u{1B}[200');
+        },
+        flushPendingEscape() {
+            if (!pending.startsWith(escape)) {
+                return undefined;
+            }
+            const pendingEscape = pending;
+            pending = '';
+            return pendingEscape;
+        },
+        reset() {
+            pending = '';
+        },
+    };
+};

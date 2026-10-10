@@ -1,0 +1,168 @@
+diff --git a/node_modules/ink/build/components/Static.d.ts b/node_modules/ink/build/components/Static.d.ts
+index ea55350..104e538 100644
+--- a/node_modules/ink/build/components/Static.d.ts
++++ b/node_modules/ink/build/components/Static.d.ts
+@@ -12,6 +12,13 @@ export type Props<T> = {
+     /**
+     Function that is called to render every item in the `items` array. The first argument is the item itself, and the second argument is the index of that item in the `items` array. Note that a `key` must be assigned to the root component.
+     */
++    /**
++     * Stable identity for an item (Cosmic Stack patch). When set, items are
++     * tracked by key instead of position, so `items` may drop its oldest
++     * entries (a bounded window) without breaking. Return `undefined` to skip
++     * an item.
++     */
++    readonly itemKey?: (item: T) => string | undefined;
+     readonly children: (item: T, index: number) => ReactNode;
+ };
+ /**
+diff --git a/node_modules/ink/build/components/Static.js b/node_modules/ink/build/components/Static.js
+index 0c519c3..4c8fb63 100644
+--- a/node_modules/ink/build/components/Static.js
++++ b/node_modules/ink/build/components/Static.js
+@@ -1,4 +1,4 @@
+-import React, { useMemo, useState, useLayoutEffect, use, } from 'react';
++import React, { useMemo, useState, useLayoutEffect, useRef, use, } from 'react';
+ import { BackgroundContext } from './BackgroundContext.js';
+ /**
+ `<Static>` component permanently renders its output above everything else. It's useful for displaying activity like completed tasks or logs—things that don't change after they're rendered (hence the name "Static").
+@@ -8,16 +8,45 @@ It's preferred to use `<Static>` for use cases like these when you can't know or
+ For example, [Tap](https://github.com/tapjs/node-tap) uses `<Static>` to display a list of completed tests. [Gatsby](https://github.com/gatsbyjs/gatsby) uses it to display a list of generated pages while still displaying a live progress bar.
+ */
+ export default function Static(props) {
+-    const { items, children: render, style: customStyle } = props;
++    const { items, children: render, style: customStyle, itemKey } = props;
+     const [index, setIndex] = useState(0);
++    // Static itemKey (Cosmic Stack patch): with `itemKey`, items are tracked by identity and
++    // each is written exactly once per instance, so a caller may keep `items`
++    // bounded by dropping the oldest (a sliding window). The positional index
++    // below assumes append-only: once old items drop off, `items.slice(index)`
++    // returns nothing and new items are never written.
++    const committedKeys = useRef(null);
++    // Bumped after committing keys so the memo recomputes and the written
++    // children unmount (the positional path does this via setIndex). Without
++    // it they stay mounted and are re-emitted as static output every render.
++    const [commitTick, setCommitTick] = useState(0);
+     const inheritedBackgroundColor = use(BackgroundContext);
+     const effectiveBackgroundColor = 
+     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions -- Empty background colors inherit from the parent too.
+     customStyle?.backgroundColor || inheritedBackgroundColor;
+-    const itemsToRender = useMemo(() => items.slice(index), [items, index]);
++    const itemsToRender = useMemo(() => {
++        if (typeof itemKey === 'function') {
++            committedKeys.current ??= new Set();
++            const committed = committedKeys.current;
++            return items.filter((item) => {
++                const key = itemKey(item);
++                return key !== undefined && !committed.has(key);
++            });
++        }
++        return items.slice(index);
++    }, [items, index, itemKey, commitTick]);
+     useLayoutEffect(() => {
++        if (typeof itemKey === 'function') {
++            if (committedKeys.current && itemsToRender.length > 0) {
++                for (const item of itemsToRender) {
++                    committedKeys.current.add(itemKey(item));
++                }
++                setCommitTick((v) => v + 1);
++            }
++            return;
++        }
+         setIndex(items.length);
+-    }, [items.length]);
++    }, [itemsToRender, itemKey, items.length]);
+     const children = itemsToRender.map((item, itemIndex) => render(item, index + itemIndex));
+     const style = useMemo(() => ({
+         position: 'absolute',
+diff --git a/node_modules/ink/build/ink.js b/node_modules/ink/build/ink.js
+index 29d1a98..be21856 100644
+--- a/node_modules/ink/build/ink.js
++++ b/node_modules/ink/build/ink.js
+@@ -23,6 +23,45 @@ import { AccessibilityContext } from './components/AccessibilityContext.js';
+ import { resolveFlags, } from './kitty-keyboard.js';
+ import { isTty } from './stream.js';
+ const noop = () => { };
++// Freeze gate (Cosmic Stack patch): while frozen, onRender writes NOTHING and
++// must not advance lastOutput or log-update's baseline, so the frame that
++// ends the freeze diffs against what is really on screen. `armed` lets
++// exactly one frame through (the "⏸ frozen" hint) if it contains `marker`.
++export const frameGate = { frozen: false, armed: false, marker: '' };
++globalThis.__mercuryFrameGate = frameGate;
++// Cursor anchor (Cosmic Stack patch): after every frame, the element marked
++// with the `internal_cursor` attribute (Mercury's CursorCell) is located in
++// the laid-out live tree and handed to ink's setCursorPosition, so the real
++// terminal cursor (and with it IME preedit/candidate windows) sits on the
++// input cell. `enabled: false` turns it off (MERCURY_HW_CURSOR=0).
++export const cursorAnchor = { enabled: true };
++globalThis.__mercuryCursorAnchor = cursorAnchor;
++// Patch manifest (Cosmic Stack): which hunks this build carries, and whether
++// it is the vendored copy (stamped by scripts/vendor-ink.cjs).
++export const inkPatch = {
++    vendored: true,
++    base: 'ink@8.0.0',
++    hunks: ['static-item-key', 'freeze-gate', 'live-region-guard', 'cursor-anchor'],
++};
++globalThis.__mercuryInkPatch = inkPatch;
++// Depth-first search for the first element with a truthy `internal_cursor`
++// attribute, accumulating Yoga offsets like render-node-to-output does.
++// <Static>, hidden and display:none subtrees are never part of the live frame. The
++// DOM attribute is read instead of a ref because refs attach in React's
++// layout phase, after the frame has already been rendered.
++const findCursorCell = (node, x, y) => {
++    const yoga = node.yogaNode;
++    if (!yoga || node.internal_static || node.isHidden || node.style?.display === 'none') return undefined;
++    const nx = x + yoga.getComputedLeft();
++    const ny = y + yoga.getComputedTop();
++    if (node.attributes?.internal_cursor) return { x: nx, y: ny };
++    if (!Array.isArray(node.childNodes)) return undefined;
++    for (const child of node.childNodes) {
++        const hit = findCursorCell(child, nx, ny);
++        if (hit) return hit;
++    }
++    return undefined;
++};
+ const yieldImmediate = async () => new Promise(resolve => {
+     setImmediate(resolve);
+ });
+@@ -233,7 +272,39 @@ export default class Ink {
+             this.lastOutputToRender = '';
+         }
+         const startTime = performance.now();
+-        const { output, outputHeight, staticOutput } = render(this.rootNode, this.isScreenReaderEnabled);
++        let { output, outputHeight, staticOutput } = render(this.rootNode, this.isScreenReaderEnabled);
++        // Freeze gate (Cosmic Stack patch): drop the frame entirely.
++        if (frameGate.frozen && !(frameGate.armed && frameGate.marker && output.includes(frameGate.marker))) {
++            return;
++        }
++        if (frameGate.armed) frameGate.armed = false;
++        // Live-region guard (Cosmic Stack patch): a live frame as tall as the viewport is
++        // written whole by stock ink, and on the primary screen every row
++        // past the viewport scrolls into scrollback, so each repaint while
++        // a reply streams stamps another copy of the live region into the
++        // user's history. Keep the newest rows (input, status bar, the live
++        // tail) and send the trimmed frame through the normal diff path.
++        const liveHeightBeforeTrim = outputHeight;
++        if (this.interactive && !this.alternateScreen && !this.isScreenReaderEnabled && !this.options.debug && this.options.stdout.isTTY) {
++            const viewportRows = getWindowSize(this.options.stdout).rows;
++            if (outputHeight >= viewportRows) {
++                const maxLiveRows = Math.max(1, viewportRows - 1);
++                output = output.split('\n').slice(-maxLiveRows).join('\n');
++                outputHeight = maxLiveRows;
++            }
++        }
++        // Cursor anchor (Cosmic Stack patch): resolved after the trim, so the
++        // row is relative to the rows actually written. Only a CHANGE is
++        // pushed: setCursorPosition marks the cursor dirty, and a dirty
++        // cursor forces a rewrite of an otherwise unchanged frame.
++        if (cursorAnchor.enabled && !this.isScreenReaderEnabled) {
++            const cell = findCursorCell(this.rootNode, 0, 0);
++            const row = cell ? cell.y - (liveHeightBeforeTrim - outputHeight) : -1;
++            const next = cell && row >= 0 ? { x: cell.x, y: row } : undefined;
++            if (next?.x !== this.cursorPosition?.x || next?.y !== this.cursorPosition?.y) {
++                this.setCursorPosition(next);
++            }
++        }
+         const renderTime = performance.now() - startTime;
+         this.renderFrame(output, outputHeight, staticOutput);
+         this.options.onRender?.({ renderTime });

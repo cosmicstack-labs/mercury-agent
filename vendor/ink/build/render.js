@@ -3,17 +3,22 @@ import process from 'node:process';
 import Ink from './ink.js';
 import instances from './instances.js';
 /**
- * Mount a component and render the output.
- */
+Mount a component and render the output.
+*/
 const render = (node, options) => {
+    const { stdout = process.stdout, stdin = process.stdin, stderr = process.stderr, exitOnCtrlC = true, patchConsole = true, ...renderOptions } = getOptions(options);
     const inkOptions = {
-        stdout: process.stdout,
-        stdin: process.stdin,
-        stderr: process.stderr,
+        stdout,
+        stdin,
+        stderr,
         debug: false,
-        exitOnCtrlC: true,
-        patchConsole: true,
-        ...getOptions(options),
+        exitOnCtrlC,
+        patchConsole,
+        maxFps: 30,
+        incrementalRendering: false,
+        concurrent: false,
+        alternateScreen: false,
+        ...renderOptions,
     };
     const instance = getInstance(inkOptions.stdout, () => new Ink(inkOptions));
     instance.render(node);
@@ -23,7 +28,10 @@ const render = (node, options) => {
             instance.unmount();
         },
         waitUntilExit: instance.waitUntilExit,
-        cleanup: () => instances.delete(inkOptions.stdout),
+        waitUntilRenderFlush: instance.waitUntilRenderFlush,
+        cleanup() {
+            instance.unmount();
+        },
         clear: instance.clear,
     };
 };
@@ -38,10 +46,17 @@ const getOptions = (stdout = {}) => {
     return stdout;
 };
 const getInstance = (stdout, createInstance) => {
-    let instance = instances.get(stdout);
-    if (!instance) {
-        instance = createInstance();
-        instances.set(stdout, instance);
+    const instance = instances.get(stdout);
+    if (instance === undefined) {
+        const newInstance = createInstance();
+        instances.set(stdout, newInstance);
+        return newInstance;
     }
+    // Ink keeps one live renderer per stdout. Reusing the same stream without
+    // unmounting is unsupported, but return the existing instance so we don't
+    // create two renderers that compete for the same output. Write the warning
+    // directly to native stderr so an existing alternate-screen renderer cannot
+    // swallow it via patchConsole.
+    process.stderr.write('Warning: render() was called again for the same stdout before the previous Ink instance was unmounted. Reusing stdout across multiple render() calls is unsupported. Call unmount() first.\n');
     return instance;
 };

@@ -14,132 +14,92 @@ const { apply, isPatched, pathsFor, isVendoredPatched, VENDORED_INK_DIR } = requ
 };
 
 /**
- * The bundled ink fixes (Yoga WASM hygiene, Static identity dedup, freeze
- * gate, live-region guard, log-update diff-render) must be applicable
- * WITHOUT patch-package — that is exactly what failed on Termux CI
- * (`sh: 1: patch-package: not found`) and left stock ink's clearTerminal
- * fallback live, failing the live-region-guard tests. These tests run the
- * applier against a synthetic ink tree carrying the real 5.2.1 anchors.
+ * The applier must patch a stock ink 8.0.0 build deterministically and fail
+ * loudly when ink changes shape. These tests run it against a synthetic ink
+ * tree carrying the real 8.0.0 anchors (copied verbatim from the tarball).
  */
 
-/** Stock-shaped ink 5.2.1 files containing only the anchors the applier matches. */
+/** Stock-shaped ink 8.0.0 files containing only the anchors the applier matches. */
 function writeStockInk(root: string): void {
   const build = join(root, 'node_modules', 'ink', 'build');
   mkdirSync(join(build, 'components'), { recursive: true });
-  writeFileSync(join(build, 'reconciler.js'), [
-    'import { appendChildNode, insertBeforeNode, removeChildNode } from "./dom.js";',
-    'const cleanupYogaNode = (node) => {',
-    '    node?.unsetMeasureFunc();',
-    '    node?.freeRecursive();',
-    '};',
-    'const somethingElse = (node) => {',
-    '        removeChildNode(node, removeNode);',
-    '        cleanupYogaNode(removeNode.yogaNode);',
-    '};',
-    '        removeChildNode(node, removeNode);',
-    '        cleanupYogaNode(removeNode.yogaNode);',
-    '};',
-    'export default createReconciler({',
-    '});',
-  ].join('\n'));
-  // Stock Static.js: no itemKey, no commitTick — the applier rewrites it wholesale.
-  writeFileSync(join(build, 'components', 'Static.js'), "import React from 'react';\nexport default function Static(props) {\n    return null;\n}\n");
-  writeFileSync(join(build, 'components', 'Static.d.ts'), '    readonly children: (item: T, index: number) => ReactNode;\n};\n');
-  writeFileSync(join(build, 'ink.js'), [
-    'import logUpdate from \'./log-update.js\';',
-    'const noop = () => { };',
-    'export default class Ink {',
-    '    constructor(options) {',
-    '        this.log = logUpdate.create(options.stdout);',
-    '    }',
-    '    resized = () => {',
-    '        this.calculateLayout();',
-    '        this.onRender();',
-    '    };',
-    '    onRender = () => {',
-    '        const { output, outputHeight, staticOutput } = render(this.rootNode);',
-    '        const hasStaticOutput = staticOutput && staticOutput !== \'\\n\';',
-    '        if (hasStaticOutput) {',
-    '            this.log.clear();',
-    '            this.options.stdout.write(staticOutput);',
-    '            this.log(output);',
-    '        }',
-    '        if (!hasStaticOutput && output !== this.lastOutput) {',
-    '            this.throttledLog(output);',
-    '        }',
-    '        this.lastOutput = output;',
-    '    };',
-    '    writeToStdout(data) {',
-    '        this.log.clear();',
-    '        this.options.stdout.write(data);',
-    '        this.log(this.lastOutput);',
-    '    }',
+  writeFileSync(join(build, 'components', 'Static.js'), [
+    "import React, { useMemo, useState, useLayoutEffect, use, } from 'react';",
+    'export default function Static(props) {',
+    '    const { items, children: render, style: customStyle } = props;',
+    '    const [index, setIndex] = useState(0);',
+    '    const itemsToRender = useMemo(() => items.slice(index), [items, index]);',
+    '    useLayoutEffect(() => {',
+    '        setIndex(items.length);',
+    '    }, [items.length]);',
+    '    return null;',
     '}',
   ].join('\n'));
-  writeFileSync(join(build, 'log-update.js'), [
-    'const create = (stream, { showCursor = false } = {}) => {',
-    '    let previousLineCount = 0;',
-    '    let previousOutput = \'\';',
-    '    let hasHiddenCursor = false;',
-    '    const render = (str) => {',
-    "        const output = str + '\\n';",
-    '        if (output === previousOutput) {',
-    '            return;',
-    '        }',
-    '        previousOutput = output;',
-    '        stream.write(ansiEscapes.eraseLines(previousLineCount) + output);',
-    "        previousLineCount = output.split('\\n').length;",
-    '    };',
-    '    render.clear = () => {',
-    '        stream.write(ansiEscapes.eraseLines(previousLineCount));',
-    '    };',
-    '    render.done = () => {',
-    '    };',
-    '    return render;',
+  writeFileSync(join(build, 'components', 'Static.d.ts'), [
+    'export type Props<T> = {',
+    '    readonly items: T[];',
+    '    readonly children: (item: T, index: number) => ReactNode;',
     '};',
+  ].join('\n'));
+  writeFileSync(join(build, 'ink.js'), [
+    "import { getWindowSize } from './utils.js';",
+    'const noop = () => { };',
+    'export default class Ink {',
+    '    onRender = () => {',
+    '        const startTime = performance.now();',
+    '        const { output, outputHeight, staticOutput } = render(this.rootNode, this.isScreenReaderEnabled);',
+    '        const renderTime = performance.now() - startTime;',
+    '        this.renderFrame(output, outputHeight, staticOutput);',
+    '    };',
+    '}',
   ].join('\n'));
 }
 
-describe('ink patch applier (patch-package-free)', () => {
-  it('fully patches a stock synthetic ink install — no patch-package needed', () => {
+describe('ink patch applier (ink 8)', () => {
+  it('patches a stock synthetic ink 8 build, idempotently', () => {
     const root = mkdtempSync(join(tmpdir(), 'mercury-ink-patch-'));
     try {
       writeStockInk(root);
       const result = apply({ root });
-      expect(result.ok).toBe(true);
-      expect(result.applied).toBe(true);
-      expect(result.error).toBeUndefined();
-      expect(isPatched(pathsFor(root))).toBe(true);
+      expect(result).toEqual({ ok: true, applied: true });
       const paths = pathsFor(root);
+      expect(isPatched(paths)).toBe(true);
       const inkJs = readFileSync(paths.inkJsPath, 'utf8');
-      const logUpdate = readFileSync(paths.logUpdatePath, 'utf8');
-      // Resize baseline reset: resized() drops both diff baselines BEFORE
-      // the re-layout + render, and log-update exposes the invalidate hook.
-      expect(logUpdate).toContain('render.invalidate = () => {');
-      const resized = inkJs.slice(inkJs.indexOf('resized = () => {'), inkJs.indexOf('onRender() {'));
-      expect(resized).toContain("this.lastOutput = '';");
-      expect(resized).toContain('this.log.invalidate()');
-      expect(resized.indexOf('this.log.invalidate()')).toBeLessThan(resized.indexOf('this.calculateLayout()'));
-      // Hardware cursor: every frame write unparks first and parks after
-      // (through syncWrite, see the synchronized-output checks below),
-      // and both log() call sites pass the resolved cell through.
-      expect(logUpdate).toContain('const render = (str, cursor) => {');
-      expect(inkJs).toContain('this.log(output, cursor);');
-      expect(inkJs).toContain('this.throttledLog(output, cursor);');
-      expect(inkJs).toContain('this.log(this.lastOutput, this.lastCursor);');
-      expect(inkJs).toContain('node.attributes?.internal_cursor');
-      expect(readFileSync(paths.reconcilerPath, 'utf8')).toContain('globalThis.__mercuryInkYogaHygiene = true;');
-      // Synchronized output: log-update brackets its own writes, ink.js
-      // brackets clear + static + frame as one update, gated on a TTY.
-      expect(logUpdate).toContain('syncWrite(unpark() + ansiEscapes.eraseLines(eraseCount)');
-      expect(logUpdate).toContain('syncWrite(unpark() + ansiEscapes.eraseLines(previousLineCount))');
-      expect(logUpdate).not.toContain('stream.write(unpark()');
-      expect(inkJs).toContain('synchronize: Boolean(options.stdout.isTTY) && !isInCi && !options.debug');
-      expect(inkJs).toMatch(/this\.synchronized\(\(\) => \{\n\s+this\.log\.clear\(\);\n\s+this\.options\.stdout\.write\(staticOutput\);/);
-      // Idempotent: a second run must recognize the applied state and no-op.
-      const again = apply({ root });
-      expect(again.ok).toBe(true);
-      expect(again.applied).toBe(false);
+      const staticJs = readFileSync(paths.staticJsPath, 'utf8');
+      // Static: keyed path next to the positional one, plus the commit tick.
+      expect(staticJs).toContain('const { items, children: render, style: customStyle, itemKey } = props;');
+      expect(staticJs).toContain('setCommitTick((v) => v + 1);');
+      expect(staticJs).toContain('return items.slice(index);');
+      expect(readFileSync(paths.staticDtsPath, 'utf8')).toContain('readonly itemKey?: (item: T) => string | undefined;');
+      // ink.js: the three steps run between render() and renderFrame(), in order.
+      const onRender = inkJs.slice(inkJs.indexOf('onRender = () => {'));
+      const gate = onRender.indexOf('frameGate.frozen');
+      const trim = onRender.indexOf('Live-region guard (Cosmic Stack patch)');
+      const cursor = onRender.indexOf('findCursorCell(this.rootNode, 0, 0)');
+      const frame = onRender.indexOf('this.renderFrame(output, outputHeight, staticOutput);');
+      expect(gate).toBeGreaterThan(0);
+      expect(gate).toBeLessThan(trim);
+      expect(trim).toBeLessThan(cursor);
+      expect(cursor).toBeLessThan(frame);
+      expect(onRender).toContain('let { output, outputHeight, staticOutput } = render(');
+      expect(inkJs).toContain("hunks: ['static-item-key', 'freeze-gate', 'live-region-guard', 'cursor-anchor'],");
+      expect(inkJs).toContain('vendored: false,');
+      // Idempotent: a second run recognises the applied state.
+      expect(apply({ root })).toEqual({ ok: true, applied: false });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails loudly, naming the hunk, when ink changed shape', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mercury-ink-patch-'));
+    try {
+      writeStockInk(root);
+      const inkJs = pathsFor(root).inkJsPath;
+      writeFileSync(inkJs, readFileSync(inkJs, 'utf8').replace('render(this.rootNode, this.isScreenReaderEnabled)', 'render(this.rootNode)'));
+      const result = apply({ root });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/^ink\.js: anchor not found/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

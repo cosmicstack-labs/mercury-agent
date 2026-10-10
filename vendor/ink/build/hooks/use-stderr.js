@@ -1,7 +1,8 @@
-import { useContext } from 'react';
+import { use } from 'react';
 import StderrContext from '../components/StderrContext.js';
 /**
- * `useStderr` is a React hook, which exposes stderr stream.
- */
-const useStderr = () => useContext(StderrContext);
-export default useStderr;
+A React hook that returns the stderr stream.
+*/
+export default function useStderr() {
+    return use(StderrContext);
+}

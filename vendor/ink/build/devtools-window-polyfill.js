@@ -1,11 +1,11 @@
-// Ignoring missing types error to avoid adding another dependency for this hack to work
-import ws from 'ws';
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-const customGlobal = global;
+const customGlobal = globalThis;
 // These things must exist before importing `react-devtools-core`
-customGlobal.WebSocket ||= ws;
-customGlobal.window ||= global;
-customGlobal.self ||= global;
+// Using ||= intentionally to set falsy values, not just null/undefined
+// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+customGlobal.window ||= globalThis;
+// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+customGlobal.self ||= globalThis;
 // Filter out Ink's internal components from devtools for a cleaner view.
 // Also, ince `react-devtools-shared` package isn't published on npm, we can't
 // use its types, that's why there are hard-coded values in `type` fields below.
@@ -61,3 +61,4 @@ customGlobal.window.__REACT_DEVTOOLS_COMPONENT_FILTERS__ = [
         isValid: true,
     },
 ];
+export {};

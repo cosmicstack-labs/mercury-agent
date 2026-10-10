@@ -12,7 +12,7 @@ import {
   INK_PATCH_MARKERS,
 } from './ink-patch-check.js';
 
-const VENDORED_MANIFEST = { vendored: true, hunks: ['yoga-hygiene', 'static-item-key', 'freeze-gate', 'live-region-guard', 'diff-render', 'resize-invalidate', 'cursor-positioning', 'synchronized-output'] };
+const VENDORED_MANIFEST = { vendored: true, hunks: ['static-item-key', 'freeze-gate', 'live-region-guard', 'cursor-anchor'] };
 
 const PATCHED_STATIC = 'export default function Static(props) { const { itemKey } = props; const [t, setCommitTick] = useState(0); }';
 const STOCK_STATIC = 'export default function Static(props) { const { items, children: render } = props; }';
@@ -57,7 +57,7 @@ describe('evaluateInkPatch (vendored build, ADR-017)', () => {
       staticSource: STOCK_STATIC, reconcilerSource: STOCK_RECONCILER,
     });
     expect(s).toEqual({ patched: true, missing: [], source: 'vendored' });
-    expect(describeInkPatch(s)).toBe('vendored (patched ink 5.2.1 bundled)');
+    expect(describeInkPatch(s)).toBe('vendored (patched ink 8.0.0 bundled)');
   });
 
   it('names every missing runtime marker of a broken vendored build', () => {
@@ -66,7 +66,6 @@ describe('evaluateInkPatch (vendored build, ADR-017)', () => {
     expect(s.missing).toEqual([
       INK_PATCH_MARKERS.frameGate,
       INK_PATCH_MARKERS.staticItemKey,
-      INK_PATCH_MARKERS.yogaHygiene,
       INK_PATCH_MARKERS.cursor,
     ]);
     expect(describeInkPatch(s)).toMatch(/^MISSING/);

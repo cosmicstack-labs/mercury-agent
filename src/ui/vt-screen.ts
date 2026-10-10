@@ -1,10 +1,14 @@
+import stringWidth from 'string-width';
+
 /**
  * A minimal VT100-style screen for tests: replays what the TUI writes and
  * returns the visible text, including scrollback. It understands exactly
  * the sequences Ink, log-update and the cursor-parking patch emit — cursor
- * moves, line/screen erases, save/restore, show/hide — and ignores colour.
+ * moves, line/screen erases, save/restore, cursor show/hide — and ignores
+ * colour. Wide (CJK) characters take two cells: the second holds '' so a
+ * cell index is always a terminal column.
  * Used to assert that transient live-region rows (spinners, "Processing")
- * never survive into the transcript.
+ * never survive into the transcript, and where the real cursor ends up.
  */
 export class VtScreen {
   /** Every line ever written (scrollback + viewport). */
@@ -12,6 +16,8 @@ export class VtScreen {
   row = 0;
   col = 0;
   private saved: { row: number; col: number } | null = null;
+  /** DECTCEM: `ESC[?25h` shows the cursor, `ESC[?25l` hides it. */
+  cursorVisible = true;
 
   constructor(public columns = 100, public rows = 40) {}
 
@@ -25,7 +31,9 @@ export class VtScreen {
   }
 
   private put(ch: string): void {
-    if (this.col >= this.columns) {
+    const width = stringWidth(ch);
+    if (width === 0) return;
+    if (this.col + width > this.columns) {
       this.row += 1;
       this.col = 0;
     }
@@ -33,7 +41,8 @@ export class VtScreen {
     const line = this.lines[this.row];
     while (line.length < this.col) line.push(' ');
     line[this.col] = ch;
-    this.col += 1;
+    if (width === 2) line[this.col + 1] = '';
+    this.col += width;
   }
 
   write(data: string): void {
@@ -73,7 +82,11 @@ export class VtScreen {
   }
 
   private csi(params: string, final: string): void {
-    if (params.startsWith('?')) return; // modes: cursor show/hide, bracketed paste, mouse
+    if (params === '?25' && (final === 'h' || final === 'l')) {
+      this.cursorVisible = final === 'h';
+      return;
+    }
+    if (params.startsWith('?')) return; // other modes: bracketed paste, mouse, sync output
     const nums = params.split(';').map((p) => (p === '' ? NaN : Number(p)));
     const n = Number.isNaN(nums[0]) ? 1 : nums[0];
     switch (final) {

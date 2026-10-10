@@ -4,5 +4,5 @@ type Result = {
     outputHeight: number;
     staticOutput: string;
 };
-declare const renderer: (node: DOMElement) => Result;
+declare const renderer: (node: DOMElement, isScreenReaderEnabled: boolean) => Result;
 export default renderer;
