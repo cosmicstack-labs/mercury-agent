@@ -442,21 +442,21 @@ app.delete('/api/bots-dlq', (c: Context) => {
 // A lead's delegated tasks
 app.get('/api/bots/:id/tasks', (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
-  if (!botManager.store.exists(c.req.param('id'))) return c.json({ error: 'Bot not found' }, 404);
-  return c.json({ tasks: botManager.tasksFor(c.req.param('id')) });
+  if (!botManager.store.exists(String(c.req.param('id') ?? ''))) return c.json({ error: 'Bot not found' }, 404);
+  return c.json({ tasks: botManager.tasksFor(String(c.req.param('id') ?? '')) });
 });
 
 // Run transcripts: list, and one run (newest when runId is "latest")
 app.get('/api/bots/:id/runs', (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
-  if (!botManager.store.exists(c.req.param('id'))) return c.json({ error: 'Bot not found' }, 404);
-  return c.json({ runs: botManager.listTranscripts(c.req.param('id')) });
+  if (!botManager.store.exists(String(c.req.param('id') ?? ''))) return c.json({ error: 'Bot not found' }, 404);
+  return c.json({ runs: botManager.listTranscripts(String(c.req.param('id') ?? '')) });
 });
 app.get('/api/bots/:id/runs/:runId', (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
-  const id = c.req.param('id');
+  const id = String(c.req.param('id') ?? '');
   if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
-  const runId = c.req.param('runId');
+  const runId = String(c.req.param('runId') ?? '');
   const t = botManager.readTranscript(id, runId === 'latest' ? undefined : runId);
   if (!t) return c.json({ error: 'Transcript not found' }, 404);
   return c.json(t);
