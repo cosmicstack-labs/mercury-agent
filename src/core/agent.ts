@@ -86,7 +86,7 @@ import { classifyStreamCompletion, isLengthTruncation, truncationContinuationPro
 import { MAX_EXECUTE_CONTINUATIONS, MAX_VERIFICATION_CONTINUATIONS, executeContinuationPrompt, shouldForceExecuteContinuation, isFailedToolResult, shouldRequireVerification, isVerificationOutputOk, verificationPrompt, responseAsksUser, EXECUTE_MUTATING_TOOLS, VERIFICATION_COMMAND_PATTERN, wakeUpPrompt } from './execute-guard.js';
 import { classifyTurnEnd, stepsExhaustedPrompt, STEPS_PAUSED_BANNER, WORK_NOT_STARTED_BANNER, VERIFICATION_FAILED_BANNER, type LoopEndCause } from './completion-verdict.js';
 import { HISTORY_TOKEN_BUDGET, HISTORY_TOKEN_BUDGET_SAVER, TOOL_TRACE_KIND, selectHistoryWindow, toModelMessage, withReasoningParts, formatToolTrace, formatToolTraceLine, summarizeToolArgs, summarizeToolResult, detectRepetitionLoop } from './context-window.js';
-import { buildSystemPrompt as assembleSystemPrompt } from './system-prompt.js';
+import { buildSystemPrompt as assembleSystemPrompt, budgetContext } from './system-prompt.js';
 import { buildStatusVerbPrompt, parseStatusVerbs, shouldRefreshStatusVerbs } from './status-verbs.js';
 import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
@@ -2439,6 +2439,7 @@ export class Agent {
       // fake user/assistant dialogue: the fake "Noted. I'll keep this in
       // mind." turns primed terse acknowledgements and polluted history.
       const contextBlocks: string[] = [];
+      contextBlocks.push(budgetContext(this.tokenBudget.getStatusText(), this.tokenBudget.getUsagePercentage()));
 
       const loopWarning = detectRepetitionLoop(recentMemory);
       if (loopWarning) contextBlocks.push(loopWarning);
@@ -4032,8 +4033,6 @@ export class Agent {
       botSection: this.botManager ? this.botManager.getSystemPromptSection() : '',
       programmingSuffix: this.programmingMode.getSystemPromptSuffix(),
       researchSuffix: this.researchMode.getSystemPromptSuffix(),
-      budgetStatus: this.tokenBudget.getStatusText(),
-      budgetUsagePercentage: this.tokenBudget.getUsagePercentage(),
       saverSuffix: this.saverMode.getSystemPromptSuffix(),
       cwd: this.capabilities.getCwd(),
       now: new Date(),
