@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Node 22 is the baseline for every Mercury release (ADR-019: the bundled
+# ink 8 renderer needs it). Build and publish on it, never on an older Node.
+NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "✗ Node $(node -v) — Mercury releases are built on Node 22 or newer (see .nvmrc). Run: nvm use" >&2
+  exit 1
+fi
+
 echo "☿ Mercury Agent — Publish"
 echo "────────────────────────────"
 

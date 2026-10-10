@@ -30,9 +30,9 @@ fi
 node_version=$(node -v 2>/dev/null || echo "unknown")
 node_major=$(echo "$node_version" | sed 's/^v\([0-9]*\).*/\1/' 2>/dev/null || echo "0")
 
-if [ "$node_major" -lt 20 ] 2>/dev/null; then
-  echo "⚠  Node.js $node_version detected — better-sqlite3 v12 requires Node >= 20."
-  echo "   Upgrade with: nvm install 20"
+if [ "$node_major" -lt 22 ] 2>/dev/null; then
+  echo "⚠  Node.js $node_version detected — Mercury requires Node >= 22."
+  echo "   Upgrade with: nvm install 22"
   missing=1
 fi
 

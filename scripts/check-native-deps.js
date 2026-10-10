@@ -36,9 +36,9 @@ if (!isWin) {
 const nodeVersion = process.version;
 const nodeMajor = parseInt(nodeVersion.replace(/^v/, '').split('.')[0], 10);
 
-if (nodeMajor < 20) {
-  console.log(`\u26A0  Node.js ${nodeVersion} detected \u2014 better-sqlite3 v12 requires Node >= 20.`);
-  console.log('   Upgrade with: nvm install 20');
+if (nodeMajor < 22) {
+  console.log(`\u26A0  Node.js ${nodeVersion} detected \u2014 Mercury requires Node >= 22.`);
+  console.log('   Upgrade with: nvm install 22');
   missing = true;
 }
 
