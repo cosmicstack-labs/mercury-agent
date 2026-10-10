@@ -83,8 +83,8 @@ function getNodeBinPath(): string {
  * index.js`), on Windows npm installs the `.cmd` shim already hands node the
  * real `%APPDATA%\npm\node_modules\...\dist\index.js`. `realpathSync` folds
  * both into the real file, so no layout assumption (`bin/../lib/...`) is
- * needed. Fallbacks: this module's own location (the bundle IS dist/index.js),
- * then the legacy nvm guess.
+ * needed. Fallbacks: the launcher next to this bundle (`dist/mercury.js` →
+ * `dist/index.js`), then the legacy nvm guess.
  */
 export function resolveDistPath(
   argv1: string | undefined,
@@ -100,7 +100,10 @@ export function resolveDistPath(
   }
   try {
     const self = fileURLToPath(moduleUrl);
-    if (/[\\/]dist[\\/]index\.(?:m?js|cjs)$/i.test(self) && existsSync(self)) return self;
+    if (/[\\/]dist[\\/](?:index|mercury)\.(?:m?js|cjs)$/i.test(self)) {
+      const launcher = join(dirname(self), 'index.js');
+      if (existsSync(launcher)) return launcher;
+    }
   } catch {
     // not a file: URL (unusual bundler) — fall through.
   }
