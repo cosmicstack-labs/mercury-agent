@@ -1627,8 +1627,8 @@ export class BotManager {
           for (let i = 2; existsSync(dest); i++) dest = join(to, `${basename(file.name, extname(file.name))} (${i})${extname(file.name)}`);
           renameSync(join(from, file.name), dest);
           moved++;
-        } catch (err: any) {
-          logger.warn({ botId: entry.name, file: file.name, err: err?.message }, 'Legacy deliverable could not be moved');
+        } catch (err) {
+          logger.warn({ botId: entry.name, file: file.name, err: (err as Error)?.message }, 'Legacy deliverable could not be moved');
         }
       }
       try { if (readdirSync(from).length === 0) rmSync(from, { recursive: true }); } catch { /* keep */ }

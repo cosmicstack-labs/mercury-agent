@@ -1114,10 +1114,12 @@ describe('bot governance (ADR-020)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const ok = (text = 'done') => ({ text, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } } as any);
+  type StepOpts = { onStepFinish?: (step: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => void };
+  const ok = (text = 'done') => ({ text, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } }) as never;
   const completes = () => mockedGenerateText.mockImplementation(async () => ok());
+  const stateOf = (botId: string) => manager.getStatusSummaries().find(s => s.id === botId)?.state;
   const waitIdle = (botId: string) => vi.waitFor(() => {
-    expect((manager as any).running.get(botId)?.size ?? 0).toBe(0);
+    expect(stateOf(botId)).not.toBe('running');
     expect(manager.getQueuedCount(botId)).toBe(0);
   });
 
@@ -1127,7 +1129,7 @@ describe('bot governance (ADR-020)', () => {
     mockedGenerateText.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(ok()); }));
     const first = manager.enqueue('ticker', { trigger: 'cron', prompt: 'cycle', routineId: 'bot:ticker:cycle' });
     expect(first.accepted).toBe(true);
-    await vi.waitFor(() => expect((manager as any).running.get('ticker')?.size).toBe(1));
+    await vi.waitFor(() => expect(stateOf('ticker')).toBe('running'));
     // Busy → the tick is dropped, never stacked (the old behaviour queued it).
     expect(manager.enqueue('ticker', { trigger: 'cron', prompt: 'cycle v2', routineId: 'bot:ticker:cycle' })).toMatchObject({ accepted: false, reasonCode: 'busy' });
     // A delegated task is NOT a tick: it still queues behind the running turn.
@@ -1151,7 +1153,7 @@ describe('bot governance (ADR-020)', () => {
     expect(manager.dailyCapFor(store.get('spender')!)).toBe(0);
     store.update('spender', m => { m.autonomy = { dailyTokenBudget: 1000 }; });
     // Usage reaches the turn through onStepFinish (the SDK callback), not the result.
-    mockedGenerateText.mockImplementation(async (opts: any) => { opts.onStepFinish?.({ usage: { inputTokens: 800, outputTokens: 50 }, toolCalls: [], toolResults: [] }); return ok(); });
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => { opts.onStepFinish?.({ usage: { inputTokens: 800, outputTokens: 50 }, toolCalls: [], toolResults: [] }); return ok(); }) as never);
     manager.enqueue('spender', { trigger: 'chat', prompt: 'a' });
     await waitIdle('spender');
     expect(alerts.some(a => a.includes('85% of today'))).toBe(true);
@@ -1166,10 +1168,10 @@ describe('bot governance (ADR-020)', () => {
     const alerts: string[] = [];
     manager.setAlert(async (m) => { alerts.push(m); });
     // Every run only writes a note into _shared — no deliverable, no action.
-    mockedGenerateText.mockImplementation(async (opts: any) => {
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
       opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ toolName: 'write_file', toolCallId: 'w', input: { path: join(store.sharedSandboxDir(), 'record.md'), content: 'x' } }], toolResults: [{ toolCallId: 'w', output: { type: 'text', value: 'Wrote file' } }] });
       return ok('Record filed.');
-    });
+    }) as never);
     store.update('writer', m => { m.schedules = [{ name: 'cycle', cron: '0 * * * *', prompt: 'cycle', minIntervalMinutes: 0 }]; });
     for (let i = 1; i <= 3; i++) {
       const r = manager.enqueue('writer', { trigger: 'cron', prompt: `cycle ${i}`, routineId: 'bot:writer:cycle' });
@@ -1199,10 +1201,10 @@ describe('bot governance (ADR-020)', () => {
     seedBot(store, 'big', { autonomy: { maxTokensPerTurn: 100 } });
     const alerts: string[] = [];
     manager.setAlert(async (m) => { alerts.push(m); });
-    mockedGenerateText.mockImplementation(async (opts: any) => {
+    mockedGenerateText.mockImplementation((async (opts: StepOpts) => {
       opts.onStepFinish?.({ usage: { inputTokens: 500, outputTokens: 5 }, toolCalls: [], toolResults: [] });
       return ok('partial');
-    });
+    }) as never);
     manager.enqueue('big', { trigger: 'chat', prompt: 'huge task' });
     await waitIdle('big');
     const [row] = manager.getJournal('big', 1);
@@ -1215,7 +1217,7 @@ describe('bot governance (ADR-020)', () => {
   });
 
   it('deliverables: human names, finals on top, crew under the lead folder, index, and legacy migration', () => {
-    seedBot(store, 'lead', { fleetRole: 'lead', name: 'Article Writer' } as any);
+    seedBot(store, 'lead', { fleetRole: 'lead' });
     store.update('lead', m => { m.name = 'Article Writer'; });
     manager.addCrew('lead', { id: 'fact-checker', name: 'Fact Checker' });
     const shared = store.sharedSandboxDir();

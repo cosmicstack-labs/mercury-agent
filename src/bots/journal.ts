@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BOT_JOURNAL_FILENAME, BOT_TRANSCRIPTS_DIRNAME, assertValidBotId } from './store.js';
+import { logger } from '../utils/logger.js';
 import type { BotRunRecord } from './types.js';
 
 /**
@@ -41,8 +42,8 @@ export class BotJournal {
         try { rmSync(join(dir, stale)); } catch { /* best effort */ }
       }
       return file;
-    } catch (err: any) {
-      console.error(`[bots] transcript write failed for ${record.botId}: ${err?.message}`);
+    } catch (err) {
+      logger.warn({ botId: record.botId, err: (err as Error)?.message }, 'Bot transcript write failed');
       return null;
     }
   }

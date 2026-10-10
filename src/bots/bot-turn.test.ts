@@ -250,6 +250,16 @@ describe('runBotTurn live thinking events', () => {
 
 import { compactMessages, computeOutcome, wrapBotTools, isReadOnlyCommand, isTransientFailure, DEFAULT_TURN_LIMITS } from './bot-turn.js';
 
+/** The streamText options the turn loop passes, as the mocks see them. */
+type MockOpts = {
+  messages: Array<{ role: string; content: string }>;
+  tools: Record<string, { execute?: (args: unknown, options: unknown) => Promise<unknown> }>;
+  abortSignal?: AbortSignal;
+  onStepFinish?: (step: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => void;
+};
+const impl = (fn: (opts: MockOpts) => unknown) => fn as never;
+const finished = (text: string, finishReason = 'stop') => streamedResult({ text, finishReason });
+
 describe('classifyFailure (ADR-020)', () => {
   it('treats network cuts and empty streams as transient, unwrapping retry wrappers', () => {
     expect(classifyFailure(new Error('terminated'))).toBe('provider_timeout');
@@ -264,12 +274,12 @@ describe('classifyFailure (ADR-020)', () => {
   });
 
   it('surfaces the stream error instead of the generic "No output generated"', async () => {
-    mockedStreamText.mockImplementationOnce(() => ({
+    mockedStreamText.mockImplementationOnce(impl(() => ({
       fullStream: (async function* () { yield { type: 'error', error: new Error('invalid_api_key: 401') }; })(),
       text: Promise.reject(new Error('No output generated. Check the stream for errors.')),
       finishReason: Promise.reject(new Error('No output generated. Check the stream for errors.')),
       usage: Promise.resolve({}),
-    }) as any);
+    })));
     const out = await runBotTurn(turnInput());
     expect(out.status).toBe('failed');
     expect(out.error).toContain('invalid_api_key');
@@ -287,7 +297,7 @@ describe('compactMessages', () => {
       toolMsg('b', big),
       toolMsg('c', 'recent'),
     ];
-    const out: any[] = compactMessages(msgs, { keepRecentToolResults: 2, maxToolResultChars: 1000 });
+    const out = compactMessages(msgs as never, { keepRecentToolResults: 2, maxToolResultChars: 1000 }) as unknown as Array<{ content: Array<{ output: { value: string } }> }>;
     expect(out[0]).toBe(msgs[0]);
     expect(out[1].content[0].output.value).toContain('more chars trimmed from an earlier step');
     expect(out[1].content[0].output.value.length).toBeLessThan(600);
@@ -295,25 +305,25 @@ describe('compactMessages', () => {
     expect(out[2].content[0].output.value.length).toBeLessThan(1100);
     expect(out[3].content[0].output.value).toBe('recent');
     // Never mutates the originals.
-    expect((msgs[2] as any).content[0].output.value).toBe(big);
+    expect((msgs[2] as { content: Array<{ output: { value: string } }> }).content[0].output.value).toBe(big);
   });
   it('is a no-op without tool results', () => {
     const msgs = [{ role: 'user', content: 'hi' }];
-    expect(compactMessages(msgs, DEFAULT_TURN_LIMITS)).toBe(msgs);
+    expect(compactMessages(msgs as never, DEFAULT_TURN_LIMITS)).toBe(msgs);
   });
 });
 
 describe('turn governor', () => {
   it('stops a turn that exceeds the per-turn token cap and reports it as turn_budget, not an escalation', async () => {
     let rounds = 0;
-    mockedStreamText.mockImplementation((opts: any) => {
+    mockedStreamText.mockImplementation(impl((opts) => {
       rounds++;
       // Each step burns 200k tokens; the cap is 300k.
       opts.onStepFinish?.({ usage: { inputTokens: 200_000, outputTokens: 10 }, toolCalls: [{ toolName: 'read_file', toolCallId: 't1', input: { path: 'a' } }], toolResults: [{ toolCallId: 't1', output: { type: 'text', value: 'ok' } }] });
       opts.onStepFinish?.({ usage: { inputTokens: 200_000, outputTokens: 10 }, toolCalls: [], toolResults: [] });
       const aborted = opts.abortSignal?.aborted;
-      return streamedResult({ text: aborted ? '' : 'still going', finishReason: aborted ? 'other' : 'tool-calls' } as any);
-    });
+      return finished(aborted ? '' : 'still going', aborted ? 'other' : 'tool-calls');
+    }));
     const out = await runBotTurn(turnInput({ trigger: 'cron', manifest: { id: 't', name: 'T', enabled: true, autonomy: { maxSteps: 2 } } }));
     expect(out.status).toBe('failed');
     expect(out.reasonCode).toBe('turn_budget');
@@ -323,10 +333,10 @@ describe('turn governor', () => {
   });
 
   it('honours a per-bot maxTokensPerTurn override', async () => {
-    mockedStreamText.mockImplementation((opts: any) => {
+    mockedStreamText.mockImplementation(impl((opts) => {
       opts.onStepFinish?.({ usage: { inputTokens: 900, outputTokens: 10 }, toolCalls: [], toolResults: [] });
-      return streamedResult({ text: 'done', finishReason: 'stop' } as any);
-    });
+      return finished('done');
+    }));
     const out = await runBotTurn(turnInput({ manifest: { id: 't', name: 'T', enabled: true, autonomy: { maxSteps: 3, maxTokensPerTurn: 500 } } }));
     expect(out.reasonCode).toBe('turn_budget');
   });
@@ -351,11 +361,11 @@ describe('outcome gate', () => {
 
   it('nudges a work run that only wrote notes exactly once, then journals none + the false claim', async () => {
     const prompts: string[] = [];
-    mockedStreamText.mockImplementation((opts: any) => {
-      prompts.push(opts.messages.at(-1).content);
+    mockedStreamText.mockImplementation(impl((opts) => {
+      prompts.push(opts.messages.at(-1)?.content ?? '');
       opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ toolName: 'write_file', toolCallId: 'w', input: { path: '/tmp/shared/cycle-record.md', content: 'x' } }], toolResults: [{ toolCallId: 'w', output: { type: 'text', value: 'Wrote file' } }] });
-      return streamedResult({ text: 'Record filed and delivered.', finishReason: 'stop' } as any);
-    });
+      return finished('Record filed and delivered.');
+    }));
     const out = await runBotTurn(turnInput({ trigger: 'cron', manifest: { id: 't', name: 'T', enabled: true, autonomy: { maxSteps: 3 } } }));
     expect(out.status).toBe('completed');
     expect(out.outcome).toBe('none');
@@ -368,7 +378,7 @@ describe('outcome gate', () => {
   });
 
   it('does not nudge a check routine or a reply-contract run', async () => {
-    mockedStreamText.mockImplementation(() => streamedResult({ text: 'All quiet.', finishReason: 'stop' } as any));
+    mockedStreamText.mockImplementation(impl(() => finished('All quiet.')));
     const check = await runBotTurn(turnInput({ trigger: 'cron', expects: 'check' }));
     expect(check.outcome).toBe('none');
     expect(check.outcomeNudged).toBe(false);
@@ -378,19 +388,19 @@ describe('outcome gate', () => {
   });
 
   it('a delivery during the turn makes the outcome deliverable with the path recorded', async () => {
-    const deliver = { execute: async () => 'Delivered to /home/u/Documents/Mercury/T/2026-10-10 Piece.md — the owner\'s outputs zone.' } as any;
+    const deliver = { execute: async () => 'Delivered to /home/u/Documents/Mercury/T/2026-10-10 Piece.md — the owner\'s outputs zone.' } as never;
     // The tool runs inside the stream (as the SDK would run it), so the
     // wrapper's capture lands before the turn computes its outcome.
-    mockedStreamText.mockImplementation(((opts: any) => ({
+    mockedStreamText.mockImplementation(impl((opts) => ({
       fullStream: (async function* () {
-        const r = await opts.tools.bot_deliver.execute({ file: 'x.md' }, {});
+        const r = await opts.tools.bot_deliver.execute!({ file: 'x.md' }, {} as never);
         opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ toolName: 'bot_deliver', toolCallId: 'd', input: { file: 'x.md' } }], toolResults: [{ toolCallId: 'd', output: { type: 'text', value: r } }] });
         yield { type: 'text-delta', text: 'Delivered.' };
       })(),
       text: Promise.resolve('Delivered.'),
       finishReason: Promise.resolve('stop'),
       usage: Promise.resolve({}),
-    })) as any);
+    })));
     const out = await runBotTurn(turnInput({ trigger: 'cron', tools: { bot_deliver: deliver } }));
     expect(out.outcome).toBe('deliverable');
     expect(out.deliverables).toEqual(['/home/u/Documents/Mercury/T/2026-10-10 Piece.md']);
@@ -401,21 +411,21 @@ describe('outcome gate', () => {
 describe('shared-folder write budget', () => {
   const sandbox = { workspace: '/tmp/ws', shared: '/tmp/shared' };
   const writes: string[] = [];
-  const write = { execute: async (args: any) => { writes.push(args.path); return `Wrote ${args.path}`; } } as any;
+  const write = { execute: async (args: { path: string }) => { writes.push(args.path); return `Wrote ${args.path}`; } } as never;
   it('warns past the soft limit and refuses past the hard limit, but never limits the private workspace', async () => {
     writes.length = 0;
-    const tools = wrapBotTools({ write_file: write }, { sandbox, limits: { ...DEFAULT_TURN_LIMITS, sharedWrites: { softFiles: 1, softBytes: 100, hardFiles: 2, hardBytes: 1000 } }, onDelivered: () => {} });
-    const a = await tools.write_file.execute!({ path: '/tmp/shared/a.md', content: 'x'.repeat(50) }, {} as any);
+    const tools = wrapBotTools({ write_file: write as never }, { sandbox, limits: { ...DEFAULT_TURN_LIMITS, sharedWrites: { softFiles: 1, softBytes: 100, hardFiles: 2, hardBytes: 1000 } }, onDelivered: () => {} });
+    const a = await tools.write_file.execute!({ path: '/tmp/shared/a.md', content: 'x'.repeat(50) }, {} as never);
     expect(String(a)).toBe('Wrote /tmp/shared/a.md');
-    const b = await tools.write_file.execute!({ path: '/tmp/shared/b.md', content: 'x'.repeat(60) }, {} as any);
+    const b = await tools.write_file.execute!({ path: '/tmp/shared/b.md', content: 'x'.repeat(60) }, {} as never);
     expect(String(b)).toContain('[Note: this run has written 2 files');
-    const c = await tools.write_file.execute!({ path: '/tmp/shared/c.md', content: 'x' }, {} as any);
+    const c = await tools.write_file.execute!({ path: '/tmp/shared/c.md', content: 'x' }, {} as never);
     expect(String(c)).toMatch(/^Error: shared-folder write budget/);
     expect(writes).toEqual(['/tmp/shared/a.md', '/tmp/shared/b.md']);
-    const p = await tools.write_file.execute!({ path: '/tmp/ws/notes.md', content: 'x'.repeat(5000) }, {} as any);
+    const p = await tools.write_file.execute!({ path: '/tmp/ws/notes.md', content: 'x'.repeat(5000) }, {} as never);
     expect(String(p)).toBe('Wrote /tmp/ws/notes.md');
     // Relative paths resolve against the private workspace, not the shared folder.
-    const r = await tools.write_file.execute!({ path: 'draft.md', content: 'x' }, {} as any);
+    const r = await tools.write_file.execute!({ path: 'draft.md', content: 'x' }, {} as never);
     expect(String(r)).toBe('Wrote draft.md');
   });
 });

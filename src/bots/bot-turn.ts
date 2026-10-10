@@ -1,5 +1,5 @@
 import { streamText, stepCountIs } from 'ai';
-import type { Tool } from 'ai';
+import type { ModelMessage, Tool } from 'ai';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
@@ -191,7 +191,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   const startedAt = Date.now();
 
   const system = buildBotSystemPrompt(input);
-  const messages: any[] = [];
+  const messages: ModelMessage[] = [];
 
   for (const m of input.mail) {
     messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
@@ -206,7 +206,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   let tokensIn = 0;
   let tokensOut = 0;
   let peakInputTokens = 0;
-  let lastResult: any = null;
+  let lastResult: { text: string; finishReason: unknown } | null = null;
   let stepsRemaining = maxSteps;
   let budgetContinuations = 0;
   let stepIndex = 0;
@@ -280,7 +280,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         // Context compaction: every step re-sends the whole conversation, so
         // 25 steps of 60KB tool results is a multi-megatoken prompt. Keep
         // the newest results verbatim (capped), stub the rest.
-        prepareStep: ({ messages: stepMessages }: any) => ({ messages: compactMessages(stepMessages, limits) }),
+        prepareStep: ({ messages: stepMessages }: { messages: ModelMessage[] }) => ({ messages: compactMessages(stepMessages, limits) }),
         experimental_onStepStart: () => {
           stepIndex++;
           emit({ kind: 'step', stepIndex, label: `step ${stepIndex}` });
@@ -300,7 +300,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
             elapsedMs: typeof durationMs === 'number' ? durationMs : undefined,
           });
         },
-        onStepFinish: ({ usage, toolCalls, toolResults }: any) => {
+        onStepFinish: ({ usage, toolCalls, toolResults }: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => {
           if (governor.signal.aborted) return;
           stepsRemaining--;
           if (usage) {
@@ -308,9 +308,9 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
             tokensOut += usage.outputTokens ?? 0;
             peakInputTokens = Math.max(peakInputTokens, usage.inputTokens ?? 0);
           }
-          for (const tc of toolCalls ?? []) {
+          for (const tc of (toolCalls ?? []) as Array<{ toolName?: string; toolCallId?: string }>) {
             if (tc?.toolName) toolsUsed.add(String(tc.toolName));
-            trace.push(traceEntry(tc, (toolResults ?? []).find((r: any) => r?.toolCallId && r.toolCallId === tc?.toolCallId)));
+            trace.push(traceEntry(tc, ((toolResults ?? []) as Array<{ toolCallId?: string; output?: ToolOutput }>).find((r) => r?.toolCallId !== undefined && r.toolCallId === tc?.toolCallId)));
           }
           const kIn = Math.round(tokensIn / 100) / 10;
           emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in` });
@@ -345,7 +345,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
           // The provider's real error. Without this, `stream.text` below
           // throws the generic "No output generated" and the journal never
           // learns it was an invalid key or a 429.
-          streamError = (part as any).error ?? streamError;
+          streamError = (part as { error?: unknown }).error ?? streamError;
         }
         if (Date.now() - lastEmit >= THINKING_EMIT_INTERVAL_MS) flushThinking();
       }
@@ -362,7 +362,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       lastResult = result;
 
       const completion = classifyStreamCompletion({
-        finishReason: (result as any)?.finishReason,
+        finishReason: result.finishReason as never,
         hasText: Boolean(result?.text),
         hasToolCalls: true,
       });
@@ -382,7 +382,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       // the budget redoing the first 25 steps. The per-turn token cap is the
       // runaway guard; past the continuation bound the paused return below
       // still applies.
-      if (stepsRemaining <= 0 && (lastResult as any)?.finishReason === 'tool-calls') {
+      if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls') {
         if (!governor.signal.aborted && budgetContinuations < MAX_AUTOMATIC_CONTINUATIONS) {
           budgetContinuations++;
           logger.warn(
@@ -433,7 +433,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
     // Step budget exhausted with tool calls still pending — pause, never
     // report success on half-done work (sub-agent completion contract).
     // Last resort only: reached past the in-process continuation bound.
-    if (stepsRemaining <= 0 && (lastResult as any)?.finishReason === 'tool-calls') {
+    if (stepsRemaining <= 0 && lastResult?.finishReason === 'tool-calls') {
       emit({ kind: 'turn-end', stepIndex, label: 'paused — step budget', status: 'done' });
       return {
         status: 'paused',
@@ -460,7 +460,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
 
     emit({ kind: 'turn-end', stepIndex, label: outcome === 'none' && expects === 'work' ? 'completed — no deliverable' : 'completed', status: 'done' });
     return { status: 'completed', output, outcome, claimedWithoutAction, ...baseOutput() };
-  } catch (err: any) {
+  } catch (err) {
     if (halted()) {
       emit({ kind: 'turn-end', stepIndex, label: 'halted', status: 'done' });
       return { status: 'halted', output: 'Turn was halted.', outcome: 'none', claimedWithoutAction: false, ...baseOutput() };
@@ -468,11 +468,12 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
     if (governorReason) {
       return governedFailure(governorReason, lastResult?.text, limits, baseOutput(), input, trace, deliveries, expects, emit, stepIndex);
     }
-    emit({ kind: 'turn-end', stepIndex, label: `failed: ${String(err?.message ?? err).slice(0, 80)}`, status: 'error' });
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ kind: 'turn-end', stepIndex, label: `failed: ${message.slice(0, 80)}`, status: 'error' });
     return {
       status: 'failed',
-      output: `Turn failed: ${err?.message ?? String(err)}`,
-      error: err?.message ?? String(err),
+      output: `Turn failed: ${message}`,
+      error: message,
       reasonCode: classifyFailure(err),
       outcome: computeOutcome({ trace, deliveries, expects, text: '', sandbox: input.sandbox }),
       claimedWithoutAction: false,
@@ -542,8 +543,8 @@ export function resolveTurnLimits(manifest: BotManifest, overrides?: Partial<Bot
 }
 
 /** Map a provider/tool error to a typed reason code (retry vs permanent). */
-export function classifyFailure(err: any): string {
-  let msg = String(err?.message ?? err ?? '').toLowerCase();
+export function classifyFailure(err: unknown): string {
+  let msg = String((err as { message?: unknown })?.message ?? err ?? '').toLowerCase();
   // Retry wrappers ("Failed after 3 attempts. Last error: …") carry the
   // real cause after the colon — classify that, not the wrapper.
   const inner = /last error:\s*(.+)$/s.exec(msg);
@@ -584,11 +585,14 @@ export function isTurnLimitFailure(reasonCode: string | undefined): boolean {
 
 // ---- outcome verdict ------------------------------------------------------
 
-function traceEntry(toolCall: any, toolResult: any): BotToolTraceEntry {
+type ToolOutput = { type?: string; value?: unknown } | string | undefined;
+
+function traceEntry(toolCall: { toolName?: string; input?: unknown } | undefined, toolResult: { output?: ToolOutput } | undefined): BotToolTraceEntry {
   const name = String(toolCall?.toolName ?? 'tool');
   const inputArgs = (toolCall?.input ?? {}) as Record<string, unknown>;
-  const text = toolResultText(toolResult?.output);
-  const failedOutput = toolResult?.output?.type === 'error-text' || toolResult?.output?.type === 'error-json';
+  const output = toolResult?.output;
+  const text = toolResultText(output);
+  const failedOutput = typeof output === 'object' && (output?.type === 'error-text' || output?.type === 'error-json');
   const ok = toolResult !== undefined && !failedOutput && !isFailedToolResult(text);
   const arg = typeof inputArgs.path === 'string' ? inputArgs.path
     : typeof inputArgs.command === 'string' ? inputArgs.command
@@ -598,13 +602,13 @@ function traceEntry(toolCall: any, toolResult: any): BotToolTraceEntry {
   return { name, ok, arg, ...(inputArgs.task === true ? { task: true } : {}) };
 }
 
-function toolResultText(output: any): string {
+function toolResultText(output: ToolOutput): string {
   if (!output) return '';
+  if (typeof output === 'string') return output;
   if (output.type === 'text' || output.type === 'error-text') return String(output.value ?? '');
   if (output.type === 'json' || output.type === 'error-json') {
     try { return JSON.stringify(output.value ?? ''); } catch { return ''; }
   }
-  if (typeof output === 'string') return output;
   return '';
 }
 
@@ -664,11 +668,13 @@ function noOutcomePrompt(input: BotTurnInput): string {
  * with a short stub. The model can re-run a tool it still needs; it cannot
  * afford to re-send 60KB of every file it ever read on every step.
  */
-export function compactMessages(messages: any[], limits: Pick<BotTurnLimits, 'keepRecentToolResults' | 'maxToolResultChars'>): any[] {
+type ToolResultPart = { type: 'tool-result'; toolName?: string; output?: ToolOutput };
+
+export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLimits, 'keepRecentToolResults' | 'maxToolResultChars'>): ModelMessage[] {
   const resultRefs: Array<{ mi: number; pi: number }> = [];
   messages.forEach((m, mi) => {
     if (m?.role !== 'tool' || !Array.isArray(m.content)) return;
-    m.content.forEach((p: any, pi: number) => {
+    (m.content as unknown as Array<{ type?: string }>).forEach((p, pi) => {
       if (p?.type === 'tool-result') resultRefs.push({ mi, pi });
     });
   });
@@ -676,9 +682,11 @@ export function compactMessages(messages: any[], limits: Pick<BotTurnLimits, 'ke
   const stubBefore = Math.max(0, resultRefs.length - limits.keepRecentToolResults);
   const out = messages.slice();
   resultRefs.forEach(({ mi, pi }, idx) => {
-    const part = out[mi].content[pi];
-    const text = toolResultText(part.output);
-    if (part.output?.type === 'content') return; // media parts: leave alone
+    const content = out[mi].content as unknown as ToolResultPart[];
+    const part = content[pi];
+    const output = part.output;
+    const text = toolResultText(output);
+    if (typeof output === 'object' && output?.type === 'content') return; // media parts: leave alone
     let next: string | null = null;
     if (idx < stubBefore) {
       if (text.length > 400) {
@@ -688,8 +696,8 @@ export function compactMessages(messages: any[], limits: Pick<BotTurnLimits, 'ke
       next = `${text.slice(0, limits.maxToolResultChars)}\n[…truncated ${text.length - limits.maxToolResultChars} chars]`;
     }
     if (next === null) return;
-    if (out[mi] === messages[mi]) out[mi] = { ...messages[mi], content: messages[mi].content.slice() };
-    out[mi].content[pi] = { ...part, output: { type: 'text', value: next } };
+    if (out[mi] === messages[mi]) out[mi] = { ...messages[mi], content: (messages[mi].content as unknown as ToolResultPart[]).slice() } as ModelMessage;
+    (out[mi].content as unknown as ToolResultPart[])[pi] = { ...part, output: { type: 'text', value: next } };
   });
   return out;
 }
@@ -709,12 +717,13 @@ export function wrapBotTools(
   const out: Record<string, Tool> = { ...tools };
   const shared = { files: new Set<string>(), bytes: 0 };
   const { sharedWrites } = ctx.limits;
-  type Exec = (args: any, options: any) => Promise<unknown>;
-  const wrap = (name: string, fn: (original: Exec, args: any, options: any) => Promise<unknown>): void => {
+  type ToolArgs = Record<string, unknown>;
+  type Exec = (args: ToolArgs, options: unknown) => Promise<unknown>;
+  const wrap = (name: string, fn: (original: Exec, args: ToolArgs, options: unknown) => Promise<unknown>): void => {
     const original = tools[name];
     if (!original || typeof original.execute !== 'function') return;
     const exec = original.execute.bind(original) as Exec;
-    out[name] = { ...original, execute: (args: any, options: any) => fn(exec, args, options) } as Tool;
+    out[name] = { ...original, execute: (args: ToolArgs, options: unknown) => fn(exec, args, options) } as Tool;
   };
 
   wrap('bot_deliver', async (exec, args, options) => {

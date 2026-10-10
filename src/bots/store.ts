@@ -57,17 +57,20 @@ export function defaultDeliverablesRoot(): string {
 }
 
 /** A folder name a person recognises: the bot's display name, filesystem-safe. */
+/** Drop filesystem-hostile characters: the reserved set plus ASCII control codes. */
+function stripUnsafeChars(text: string): string {
+  return [...text].filter((ch) => ch.charCodeAt(0) >= 32 && !'<>:"/\\|?*'.includes(ch)).join('');
+}
+
 export function deliverablesFolderName(name: string, id: string): string {
-  const clean = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const clean = stripUnsafeChars(name).replace(/\s+/g, ' ').trim().slice(0, 60);
   return clean || id;
 }
 
 /** "2026-10-10 Oxide Series D.md" — date first so a folder sorts by time, then a human title. */
 export function deliverableFileName(stemOrTitle: string, ext: string, date: Date = new Date()): string {
   const day = date.toISOString().slice(0, 10);
-  const title = stemOrTitle
-    .replace(/^\d{4}-\d{2}-\d{2}[ _-]*/, '')
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+  const title = stripUnsafeChars(stemOrTitle.replace(/^\d{4}-\d{2}-\d{2}[ _-]*/, ''))
     .replace(/[-_]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -275,8 +278,8 @@ export class BotStore {
   writeRoutineState(id: string, state: BotRoutineState): void {
     try {
       atomicWrite(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), JSON.stringify(state, null, 2) + '\n');
-    } catch (err: any) {
-      logger.warn({ botId: id, err: err?.message }, 'Could not persist routine state');
+    } catch (err) {
+      logger.warn({ botId: id, err: (err as Error)?.message }, 'Could not persist routine state');
     }
   }
 
