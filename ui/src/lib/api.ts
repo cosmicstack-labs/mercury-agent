@@ -500,6 +500,8 @@ export interface ModelDescription {
   reasoning: ReasoningChoice;
   /** Levels this provider honours; empty means no reasoning control. */
   reasoningLevels: ReasoningLevel[];
+  /** Provider's own one-liner, e.g. "Requires usage credits"; null if none. */
+  hint: string | null;
 }
 
 export interface ModelsResponse {

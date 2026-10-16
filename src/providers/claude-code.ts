@@ -24,11 +24,12 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import { createClaudeCode, type ClaudeCodeSettings } from 'ai-sdk-provider-claude-code';
+import { query, type ModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { BaseProvider, type LLMResponse, type LLMStreamChunk } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
-import { effectiveReasoning } from '../utils/model-prefs.js';
+import { effectiveReasoning, type CatalogEntry } from '../utils/model-prefs.js';
 import { logger } from '../utils/logger.js';
 import { currentClaudeToolScope, type ClaudeToolScope } from './claude-tool-scope.js';
 
@@ -41,6 +42,79 @@ const TOOL_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Model aliases the Agent SDK resolves to the latest model of each family. */
 export const CLAUDE_CODE_MODELS = ['opus', 'sonnet', 'haiku'] as const;
+
+const CATALOG_TIMEOUT_MS = 20_000;
+
+/** A never-yielding prompt stream: lets the CLI initialise without sending a turn. */
+function idlePrompt(signal: AbortSignal): AsyncIterable<never> {
+  return {
+    [Symbol.asyncIterator]: () => ({
+      next: () => new Promise<IteratorResult<never>>((resolve) =>
+        signal.addEventListener('abort', () => resolve({ done: true, value: undefined }), { once: true })),
+    }),
+  };
+}
+
+/**
+ * Turn the CLI's model list into picker ids and catalog entries. Rows that
+ * resolve to the same model (the "default" alias duplicates one of the
+ * others) are listed once, preferring the explicit row. Names come from the
+ * description's first segment, which carries the version:
+ * "Opus 5.5 with 1M context · Best for…" → "Opus 5.5 (1M context)".
+ */
+export function toClaudeCatalog(models: ModelInfo[]): { ids: string[]; entries: Record<string, CatalogEntry> } {
+  const ids: string[] = [];
+  const entries: Record<string, CatalogEntry> = {};
+  const seen = new Set<string>();
+  const ordered = [...models.filter((m) => m.value !== 'default'), ...models.filter((m) => m.value === 'default')];
+  for (const m of ordered) {
+    const resolved = m.resolvedModel ?? m.value;
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    const [head, ...rest] = (m.description ?? '').split(' · ');
+    entries[m.value] = {
+      label: head?.trim() ? head.trim().replace(/ with (.+)$/, ' ($1)') : m.displayName,
+      ...(rest.length ? { hint: rest.join(' · ') } : {}),
+      supportsEffort: m.supportsEffort === true,
+    };
+    ids.push(m.value);
+  }
+  return { ids, entries };
+}
+
+/**
+ * The models the signed-in account offers, as the CLI reports them (ids,
+ * display names, effort support). Starts the CLI but sends no prompt, so it
+ * costs nothing. Throws if the CLI is missing, signed out, or slow.
+ */
+export async function listClaudeModels(configuredPath?: string): Promise<ModelInfo[]> {
+  const executable = resolveClaudeExecutable(configuredPath);
+  if (!executable) throw new Error('Claude Code CLI not found');
+  const abortController = new AbortController();
+  const q = query({
+    prompt: idlePrompt(abortController.signal),
+    options: {
+      pathToClaudeCodeExecutable: executable,
+      abortController,
+      settingSources: [],
+      persistSession: false,
+      tools: [],
+    },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      q.supportedModels(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out listing Claude models')), CATALOG_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    abortController.abort();
+    q.close();
+  }
+}
 
 // ─── MCP bridge ──────────────────────────────────────────────────────────────
 

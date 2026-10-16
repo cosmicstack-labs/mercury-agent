@@ -24,9 +24,9 @@ vi.mock('ai-sdk-provider-claude-code', () => ({
   }),
 }));
 
-import { ClaudeCodeProvider } from './claude-code.js';
+import { ClaudeCodeProvider, toClaudeCatalog } from './claude-code.js';
 import { scopeClaudeTools } from './claude-tool-scope.js';
-import { resetModelPrefsCache, setModelPref } from '../utils/model-prefs.js';
+import { autoModelLabel, reasoningLevelsFor, resetModelPrefsCache, setModelPref, setProviderCatalog } from '../utils/model-prefs.js';
 
 const tools = {
   lookup: tool({
@@ -123,5 +123,38 @@ describe('ClaudeCodeProvider', () => {
     await model().doGenerate(callOptions([]));
     expect(created[0]!.settings).not.toHaveProperty('effort');
     expect(created[0]!.settings).not.toHaveProperty('thinking');
+  });
+});
+
+describe('toClaudeCatalog', () => {
+  // Shape of a real supportedModels() answer (Team plan, Oct 2026).
+  const models = [
+    { value: 'default', resolvedModel: 'claude-opus-5-5[1m]', displayName: 'Default (recommended)', description: 'Opus 5.5 with 1M context · Best for everyday, complex tasks', supportsEffort: true },
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5.5 with 1M context · Best for everyday, complex tasks', supportsEffort: true },
+    { value: 'claude-fable-5-1[1m]', resolvedModel: 'claude-fable-5-1', displayName: 'Fable', description: 'Fable 5.1 · Most capable for your hardest and longest-running tasks · Requires usage credits', supportsEffort: true },
+    { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks', supportsEffort: true },
+    { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' },
+  ];
+
+  it('lists each underlying model once, preferring explicit rows over the default alias', () => {
+    expect(toClaudeCatalog(models).ids).toEqual(['opus[1m]', 'claude-fable-5-1[1m]', 'sonnet', 'haiku']);
+  });
+
+  it('builds versioned names and keeps the rest of the description as a hint', () => {
+    const { entries } = toClaudeCatalog(models);
+    expect(entries['opus[1m]']).toEqual({ label: 'Opus 5.5 (1M context)', hint: 'Best for everyday, complex tasks', supportsEffort: true });
+    expect(entries['claude-fable-5-1[1m]']!.hint).toContain('Requires usage credits');
+    expect(entries.haiku).toEqual({ label: 'Haiku 4.5', hint: 'Fastest for quick answers', supportsEffort: false });
+  });
+
+  it('drives picker names and reasoning levels once registered', () => {
+    setProviderCatalog('claudeCode', toClaudeCatalog(models).entries);
+    expect(autoModelLabel('claudeCode', 'opus[1m]')).toBe('Claude Opus 5.5 (1M context)');
+    expect(autoModelLabel('claudeCode', 'sonnet')).toBe('Claude Sonnet 5');
+    // Haiku takes no effort level, so it gets no reasoning picker.
+    expect(reasoningLevelsFor('claudeCode', 'haiku')).toEqual([]);
+    expect(reasoningLevelsFor('claudeCode', 'sonnet')).toEqual(['off', 'low', 'medium', 'high']);
+    // Unknown ids (catalog not loaded yet) keep the full set.
+    expect(reasoningLevelsFor('claudeCode', 'opus')).toEqual(['off', 'low', 'medium', 'high']);
   });
 });
