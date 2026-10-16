@@ -142,7 +142,8 @@ export function providerHasReasoningControl(provider: string): boolean {
 export function reasoningLevelsFor(provider: string, model?: string): ReasoningLevel[] {
   if (provider === 'chatgptWeb') return ['low', 'medium', 'high'];
   if (provider === 'openai') return model && OPENAI_REASONING_MODEL.test(model) ? ['low', 'medium', 'high'] : [];
-  if (provider === 'ollamaLocal' || provider === 'ollamaCloud') return ['off', 'low', 'medium', 'high'];
+  // Ollama: Off -> reasoning_effort none. Claude: Off -> thinking disabled, levels -> effort.
+  if (provider === 'ollamaLocal' || provider === 'ollamaCloud' || provider === 'claudeCode') return ['off', 'low', 'medium', 'high'];
   return [];
 }
 
@@ -189,6 +190,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   mimoTokenPlan: 'MiMo Token Plan',
   githubCopilot: 'GitHub Copilot',
   mercuryCloud: 'Mercury Cloud',
+  claudeCode: 'Claude · your subscription',
 };
 
 /** True for Ollama models that run on ollama.com but are served through the local daemon. */
@@ -268,7 +270,13 @@ export function humanizeModelName(model: string): string {
   return tags.length ? `${base} (${tags.join(' · ')})` : base;
 }
 
+/** Generated name in a provider's context, e.g. the alias 'opus' → 'Claude Opus'. */
+export function autoModelLabel(provider: string, model: string): string {
+  const name = humanizeModelName(model);
+  return provider === 'claudeCode' && !/claude/i.test(name) ? `Claude ${name}` : name;
+}
+
 /** The name to show for a model: the user's label, else the generated one. */
 export function displayModelName(provider: string, model: string): string {
-  return getModelPref(provider, model).label ?? humanizeModelName(model);
+  return getModelPref(provider, model).label ?? autoModelLabel(provider, model);
 }

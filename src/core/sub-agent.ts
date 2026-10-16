@@ -19,6 +19,7 @@ import { classifyStreamCompletion } from './stream-completion.js';
 import { resolveChildTools, childMayUse, filterToolsByAllowlist } from '../utils/tool-filter.js';
 import { deriveChildContext, type PermissionContext } from '../capabilities/permission-context.js';
 import { logger } from '../utils/logger.js';
+import { scopeClaudeTools } from '../providers/claude-tool-scope.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
 export type CompletionCallback = (result: SubAgentResult) => void;
@@ -251,7 +252,7 @@ export class SubAgent {
             model: provider.getModelInstance(),
             system: systemPrompt,
             messages,
-            tools: this.resolveTools(),
+            tools: scopeClaudeTools(this.resolveTools()),
             stopWhen: stepCountIs(stepsRemaining),
             abortSignal: this.abortController.signal,
             // Stop the SDK retaining raw HTTP bodies in every step's result

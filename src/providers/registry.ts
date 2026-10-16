@@ -35,6 +35,9 @@ export async function createProvider(pc: ProviderConfig, tokenStore?: import('..
   } else if (pc.name === 'chatgptWeb') {
     const { ChatGPTWebProvider } = await import('./chatgpt-web.js');
     return new ChatGPTWebProvider(pc);
+  } else if (pc.name === 'claudeCode') {
+    const { ClaudeCodeProvider } = await import('./claude-code.js');
+    return new ClaudeCodeProvider(pc);
   } else if (pc.name === 'githubCopilot') {
     const { GitHubCopilotProvider } = await import('./github-copilot.js');
     return new GitHubCopilotProvider(pc);
@@ -84,6 +87,7 @@ export class ProviderRegistry {
       config.providers.chatgptWeb,
       config.providers.githubCopilot,
       config.providers.litellm,
+      config.providers.claudeCode,
     ];
 
     // Load only configured providers in parallel

@@ -104,6 +104,7 @@ import { handleFastPathCommand as handleFastPathCommandImpl } from './commands/f
 import { openCliMemoryMenu as openCliMemoryMenuImpl } from './commands/cli-memory-menu.js';
 import { openMemoryChoiceMenu as openMemoryChoiceMenuImpl } from './commands/memory-choice-menu.js';
 import { openCliCommandMenu as openCliCommandMenuImpl } from './commands/cli-command-menu.js';
+import { scopeClaudeTools } from '../providers/claude-tool-scope.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -1734,7 +1735,7 @@ export class Agent {
       // opting in stops the SDK printing a warning on every call.
       allowSystemInMessages: true,
       messages: this.withCachedSystem(opts.systemPrompt, opts.messages, opts.volatileSystem),
-      tools: this.capabilities.getTools(),
+      tools: scopeClaudeTools(this.capabilities.getTools()),
       maxOutputTokens: opts.maxOutputTokens,
       stopWhen: stepCountIs(opts.maxSteps),
       // forceFirstTool: the first step MUST contain a tool call — narration
@@ -3109,7 +3110,7 @@ export class Agent {
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              tools: scopeClaudeTools(this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools()),
               maxOutputTokens: providerMaxOutputTokens,
               ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
@@ -3231,7 +3232,7 @@ export class Agent {
                         ? toolTruncationContinuationPrompt(msg.content)
                         : truncationContinuationPrompt(msg.content) },
                     ], volatileSystem),
-                    tools: this.capabilities.getTools(),
+                    tools: scopeClaudeTools(this.capabilities.getTools()),
                     maxOutputTokens: effectiveMaxOutputTokens,
                     // FULL budget: a one-step round can only read files — the
                     // model could never reach the write, which is exactly the
@@ -3276,7 +3277,7 @@ export class Agent {
               // opting in stops the SDK printing a warning on every call.
               allowSystemInMessages: true,
               messages: this.withCachedSystem(systemPrompt, providerMessages, volatileSystem),
-              tools: this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools(),
+              tools: scopeClaudeTools(this.programmingMode.isPlan() ? this.capabilities.getPlanTools() : this.capabilities.getTools()),
               maxOutputTokens: providerMaxOutputTokens,
               ...(activeTools ? { activeTools } : {}),
               stopWhen: stepCountIs(effectiveMaxSteps),
@@ -3616,7 +3617,7 @@ export class Agent {
             // opting in stops the SDK printing a warning on every call.
             allowSystemInMessages: true,
             messages: this.withCachedSystem(systemPrompt, messages, volatileSystem),
-            tools: this.capabilities.getTools(),
+            tools: scopeClaudeTools(this.capabilities.getTools()),
             maxOutputTokens: effectiveMaxOutputTokens,
             stopWhen: stepCountIs(effectiveMaxSteps),
             // Mechanical enforcement, not a polite nudge: the first step of

@@ -73,7 +73,8 @@ export type ProviderName =
   | 'lmStudio'
   | 'chatgptWeb'
   | 'githubCopilot'
-  | 'litellm';
+  | 'litellm'
+  | 'claudeCode';
 
 export interface CloudConfig {
   enabled: boolean;
@@ -113,6 +114,8 @@ export interface MercuryConfig {
     chatgptWeb: ProviderConfig;
     githubCopilot: ProviderConfig;
     litellm: ProviderConfig;
+    /** Claude Pro/Max subscription via the Claude Agent SDK; baseUrl = optional path to the claude CLI. */
+    claudeCode: ProviderConfig;
   };
   channels: {
     telegram: {
@@ -420,6 +423,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('LITELLM_BASE_URL', 'http://localhost:4000/v1'),
         model: getEnv('LITELLM_MODEL', 'gpt-4o-mini'),
         enabled: getEnvBool('LITELLM_ENABLED', false),
+      },
+      claudeCode: {
+        name: 'claudeCode',
+        apiKey: '', // not used: auth is the user's Claude Code login
+        baseUrl: getEnv('CLAUDE_CODE_PATH', ''),
+        model: getEnv('CLAUDE_CODE_MODEL', 'sonnet'),
+        enabled: getEnvBool('CLAUDE_CODE_ENABLED', false),
       },
     },
     channels: {
@@ -756,6 +766,10 @@ export function getActiveProviders(config: MercuryConfig): ProviderConfig[] {
 export function isProviderConfigured(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
   if (provider.name === 'mercuryCloud') {
+    return provider.model.length > 0;
+  }
+  if (provider.name === 'claudeCode') {
+    // Auth is the local Claude Code login; nothing to check here.
     return provider.model.length > 0;
   }
   if (provider.name === 'ollamaLocal' || provider.name === 'atomicChat') {

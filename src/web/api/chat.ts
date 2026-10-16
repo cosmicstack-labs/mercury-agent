@@ -6,7 +6,7 @@ import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import {
-  getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
+  getModelPref, setModelPref, autoModelLabel, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
 } from '../../utils/model-prefs.js';
 
@@ -278,6 +278,10 @@ async function listChatGPTModels(): Promise<string[]> {
 async function listProviderModels(p: { name: string; baseUrl: string }): Promise<string[]> {
   if (p.name === 'ollamaLocal') return listOllamaModels(p.baseUrl);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
+  if (p.name === 'claudeCode') {
+    const { CLAUDE_CODE_MODELS } = await import('../../providers/claude-code.js');
+    return [...CLAUDE_CODE_MODELS];
+  }
   return [];
 }
 
@@ -285,8 +289,8 @@ async function listProviderModels(p: { name: string; baseUrl: string }): Promise
 function describeModel(provider: string, model: string) {
   const pref = getModelPref(provider, model);
   return {
-    label: pref.label ?? humanizeModelName(model),
-    autoLabel: humanizeModelName(model),
+    label: pref.label ?? autoModelLabel(provider, model),
+    autoLabel: autoModelLabel(provider, model),
     customLabel: pref.label ?? null,
     group: modelGroupLabel(provider, model),
     reasoning: effectiveReasoning(provider, model) ?? 'auto',
