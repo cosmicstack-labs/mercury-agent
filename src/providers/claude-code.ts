@@ -29,7 +29,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { BaseProvider, type LLMResponse, type LLMStreamChunk } from './base.js';
 import type { ProviderConfig } from '../utils/config.js';
-import { effectiveReasoning, type CatalogEntry } from '../utils/model-prefs.js';
+import { effectiveReasoning, humanizeModelName, type CatalogEntry } from '../utils/model-prefs.js';
 import { logger } from '../utils/logger.js';
 import { currentClaudeToolScope, type ClaudeToolScope } from './claude-tool-scope.js';
 
@@ -71,10 +71,19 @@ export function toClaudeCatalog(models: ModelInfo[]): { ids: string[]; entries: 
     const resolved = m.resolvedModel ?? m.value;
     if (seen.has(resolved)) continue;
     seen.add(resolved);
-    const [head, ...rest] = (m.description ?? '').split(' · ');
+    const description = (m.description ?? '').trim();
+    const [head = '', ...rest] = description.split(' · ').map((s) => s.trim());
+    // Usually the description leads with the versioned name ("Opus 5.5 with
+    // 1M context · Best for…"), but the CLI's generic fallback catalog has
+    // descriptions only ("Most capable for ambitious work"). Use the head as
+    // the name only when it starts with the model's family from displayName.
+    const family = (m.displayName ?? '').split(/[\s(]/)[0]!.toLowerCase();
+    const headIsName = family.length > 0 && head.toLowerCase().startsWith(family);
+    const displayName = m.displayName && !/^default\b/i.test(m.displayName) ? m.displayName : '';
+    const hint = headIsName ? rest.join(' · ') : description;
     entries[m.value] = {
-      label: head?.trim() ? head.trim().replace(/ with (.+)$/, ' ($1)') : m.displayName,
-      ...(rest.length ? { hint: rest.join(' · ') } : {}),
+      label: headIsName ? head.replace(/ with (.+)$/, ' ($1)') : displayName || humanizeModelName(m.value),
+      ...(hint ? { hint } : {}),
       supportsEffort: m.supportsEffort === true,
     };
     ids.push(m.value);

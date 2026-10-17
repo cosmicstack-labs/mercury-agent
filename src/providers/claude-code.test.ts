@@ -147,6 +147,19 @@ describe('toClaudeCatalog', () => {
     expect(entries.haiku).toEqual({ label: 'Haiku 4.5', hint: 'Fastest for quick answers', supportsEffort: false });
   });
 
+  it('falls back to the display name when the description carries no model name', () => {
+    // The CLI's generic catalog (seen when it can't load the account list).
+    const generic = [
+      { value: 'opus', displayName: 'Opus', description: 'Most capable for ambitious work', supportsEffort: true },
+      { value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: 'Best for everyday, complex tasks', supportsEffort: true },
+      { value: 'claude-sonnet-4-6', displayName: '', description: 'Efficient for routine tasks' },
+    ];
+    const { entries } = toClaudeCatalog(generic);
+    expect(entries.opus).toEqual({ label: 'Opus', hint: 'Most capable for ambitious work', supportsEffort: true });
+    expect(entries['claude-opus-4-8']!.label).toBe('Opus 4.8');
+    expect(entries['claude-sonnet-4-6']).toMatchObject({ label: 'Claude Sonnet 4 6', hint: 'Efficient for routine tasks' });
+  });
+
   it('drives picker names and reasoning levels once registered', () => {
     setProviderCatalog('claudeCode', toClaudeCatalog(models).entries);
     expect(autoModelLabel('claudeCode', 'opus[1m]')).toBe('Claude Opus 5.5 (1M context)');
