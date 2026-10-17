@@ -5,6 +5,22 @@ import type { ProviderConfig } from '../utils/config.js';
 import type { LLMResponse, LLMStreamChunk } from './base.js';
 import { logger } from '../utils/logger.js';
 import { aimlapiHeaders } from './aimlapi-attribution.js';
+import { needsSystemMessageFixup, normalizeSystemMessages } from './chat-body.js';
+
+/**
+ * fetch for self-hosted engines that render the model's own chat template
+ * (Ollama 0.40.6+, llama.cpp, LM Studio, vLLM): leaves a single leading
+ * system message, since strict templates (Qwen family) reject any other.
+ */
+async function fetchWithSingleSystemMessage(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
+  if (typeof init?.body === 'string') {
+    try {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (normalizeSystemMessages(body)) init = { ...init, body: JSON.stringify(body) };
+    } catch { /* not JSON — pass through */ }
+  }
+  return globalThis.fetch(input, init);
+}
 
 export class OpenAICompatProvider extends BaseProvider {
   readonly name: string;
@@ -23,6 +39,8 @@ export class OpenAICompatProvider extends BaseProvider {
       // `undefined` for every host but AI/ML API's, so no other provider
       // reached through this class sends anything extra.
       headers: aimlapiHeaders(config.baseUrl),
+      // Only self-hosted engines get the hook; the rest keep the SDK's fetch.
+      fetch: needsSystemMessageFixup(config.name) ? fetchWithSingleSystemMessage : undefined,
     });
     this.modelInstance = useChatApi
       ? this.client.chat(config.model)
