@@ -237,6 +237,9 @@ export function ModelSwitcher({ currentProvider, currentModel }: ModelSwitcherPr
                               {isActive && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
                               {isSwitching && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
                             </div>
+                            {p.hint && (
+                              <p className="truncate text-[11px] text-muted-foreground" title={p.hint}>{p.hint}</p>
+                            )}
                             <p className="truncate font-mono text-[10px] text-muted-foreground">{p.model}</p>
                           </button>
                           <Button

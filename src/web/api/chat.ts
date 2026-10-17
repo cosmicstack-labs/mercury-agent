@@ -6,7 +6,7 @@ import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import {
-  getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
+  getModelPref, setModelPref, autoModelLabel, modelGroupLabel, setProviderCatalog, catalogEntry,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
 } from '../../utils/model-prefs.js';
 
@@ -278,19 +278,44 @@ async function listChatGPTModels(): Promise<string[]> {
 async function listProviderModels(p: { name: string; baseUrl: string }): Promise<string[]> {
   if (p.name === 'ollamaLocal') return listOllamaModels(p.baseUrl);
   if (p.name === 'chatgptWeb') return [...(await listChatGPTModels())];
+  if (p.name === 'claudeCode') return [...(await listClaudeCodeModels(p.baseUrl))];
   return [];
+}
+
+/** The signed-in Claude account's models, from the CLI; cached since it starts a process. */
+let claudeModelCache: { at: number; ids: string[] } | null = null;
+const CLAUDE_MODEL_TTL_MS = 60 * 60 * 1000;
+
+async function listClaudeCodeModels(cliPath: string): Promise<string[]> {
+  if (claudeModelCache && Date.now() - claudeModelCache.at < CLAUDE_MODEL_TTL_MS) return claudeModelCache.ids;
+  const { CLAUDE_CODE_MODELS, listClaudeModels, toClaudeCatalog } = await import('../../providers/claude-code.js');
+  // Signed out / CLI missing: fall back to the family aliases, which always work.
+  if (recentlyFailed('claude')) return [...CLAUDE_CODE_MODELS];
+  try {
+    const { ids, entries } = toClaudeCatalog(await listClaudeModels(cliPath || undefined));
+    if (!ids.length) throw new Error('empty model list');
+    setProviderCatalog('claudeCode', entries);
+    claudeModelCache = { at: Date.now(), ids };
+    failedLookups.delete('claude');
+    return ids;
+  } catch {
+    failedLookups.set('claude', Date.now());
+    return [...CLAUDE_CODE_MODELS];
+  }
 }
 
 /** What the picker needs to show a model in plain language. */
 function describeModel(provider: string, model: string) {
   const pref = getModelPref(provider, model);
   return {
-    label: pref.label ?? humanizeModelName(model),
-    autoLabel: humanizeModelName(model),
+    label: pref.label ?? autoModelLabel(provider, model),
+    autoLabel: autoModelLabel(provider, model),
     customLabel: pref.label ?? null,
     group: modelGroupLabel(provider, model),
     reasoning: effectiveReasoning(provider, model) ?? 'auto',
     reasoningLevels: reasoningLevelsFor(provider, model),
+    /** What the provider says the model is for, e.g. "Requires usage credits". */
+    hint: catalogEntry(provider, model)?.hint ?? null,
   };
 }
 

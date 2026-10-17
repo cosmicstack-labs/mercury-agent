@@ -12,6 +12,7 @@ import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import { logger } from '../utils/logger.js';
 import type { BotManifest, BotTrigger } from './types.js';
+import { scopeClaudeTools } from '../providers/claude-tool-scope.js';
 
 /** Mailbox messages injected mid-turn (bot-to-bot or queued user input). */
 export interface BotTurnMail {
@@ -277,7 +278,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         model: provider.getModelInstance(),
         system,
         messages,
-        tools,
+        tools: scopeClaudeTools(tools),
         stopWhen: stepCountIs(stepsRemaining),
         abortSignal: governor.signal,
         experimental_include: { requestBody: false },
