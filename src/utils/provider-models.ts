@@ -126,6 +126,9 @@ export class ProviderModelFetchError extends Error {
   }
 }
 
+/** Claude Agent SDK aliases (resolve to the newest model of each family). */
+const CLAUDE_CODE_PREFERRED_MODELS = ['sonnet', 'opus', 'haiku'] as const;
+
 export function getPreferredModelsForProvider(provider: ProviderName): string[] {
   const preferredByProvider: Record<ProviderName, readonly string[]> = {
     mercuryCloud: MERCURY_CLOUD_PREFERRED_MODELS,
@@ -145,6 +148,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    claudeCode: CLAUDE_CODE_PREFERRED_MODELS,
   };
 
   return [...preferredByProvider[provider]];
@@ -269,6 +273,7 @@ function chooseRecommendedModel(
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     lmStudio: LM_STUDIO_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    claudeCode: CLAUDE_CODE_PREFERRED_MODELS,
     litellm: OPENAI_COMPAT_PREFERRED_MODELS,
   };
 
@@ -312,6 +317,7 @@ export function buildModelCatalog(
     mimoTokenPlan: MIMO_TOKEN_PLAN_PREFERRED_MODELS,
     chatgptWeb: CHATGPT_WEB_PREFERRED_MODELS,
     githubCopilot: GITHUB_COPILOT_PREFERRED_MODELS,
+    claudeCode: CLAUDE_CODE_PREFERRED_MODELS,
     litellm: OPENAI_COMPAT_PREFERRED_MODELS,
     lmStudio: LM_STUDIO_PREFERRED_MODELS,
   };

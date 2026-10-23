@@ -142,7 +142,13 @@ export function providerHasReasoningControl(provider: string): boolean {
 export function reasoningLevelsFor(provider: string, model?: string): ReasoningLevel[] {
   if (provider === 'chatgptWeb') return ['low', 'medium', 'high'];
   if (provider === 'openai') return model && OPENAI_REASONING_MODEL.test(model) ? ['low', 'medium', 'high'] : [];
+  // Ollama: Off -> reasoning_effort none. Claude: Off -> thinking disabled, levels -> effort.
   if (provider === 'ollamaLocal' || provider === 'ollamaCloud') return ['off', 'low', 'medium', 'high'];
+  if (provider === 'claudeCode') {
+    // The CLI's catalog says which models take an effort (Haiku doesn't).
+    const known = model ? catalogEntry(provider, model) : undefined;
+    return known && !known.supportsEffort ? [] : ['off', 'low', 'medium', 'high'];
+  }
   return [];
 }
 
@@ -189,6 +195,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   mimoTokenPlan: 'MiMo Token Plan',
   githubCopilot: 'GitHub Copilot',
   mercuryCloud: 'Mercury Cloud',
+  claudeCode: 'Claude · your subscription',
 };
 
 /** True for Ollama models that run on ollama.com but are served through the local daemon. */
@@ -268,7 +275,34 @@ export function humanizeModelName(model: string): string {
   return tags.length ? `${base} (${tags.join(' · ')})` : base;
 }
 
+/** Generated name in a provider's context, e.g. the alias 'opus' → 'Claude Opus'. */
+export function autoModelLabel(provider: string, model: string): string {
+  const name = catalogEntry(provider, model)?.label ?? humanizeModelName(model);
+  return provider === 'claudeCode' && !/claude/i.test(name) ? `Claude ${name}` : name;
+}
+
+// ─── Provider catalogs ───────────────────────────────────────────────────────
+
+/** What a provider itself says about one of its models. */
+export interface CatalogEntry {
+  label: string;
+  /** One short line for the picker, e.g. "Best for everyday, complex tasks". */
+  hint?: string;
+  supportsEffort?: boolean;
+}
+
+const catalogs = new Map<string, Map<string, CatalogEntry>>();
+
+/** Replace a provider's catalog (names and capabilities it reported). */
+export function setProviderCatalog(provider: string, entries: Record<string, CatalogEntry>): void {
+  catalogs.set(provider, new Map(Object.entries(entries)));
+}
+
+export function catalogEntry(provider: string, model: string): CatalogEntry | undefined {
+  return catalogs.get(provider)?.get(model);
+}
+
 /** The name to show for a model: the user's label, else the generated one. */
 export function displayModelName(provider: string, model: string): string {
-  return getModelPref(provider, model).label ?? humanizeModelName(model);
+  return getModelPref(provider, model).label ?? autoModelLabel(provider, model);
 }
