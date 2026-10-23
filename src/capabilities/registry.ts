@@ -61,6 +61,9 @@ import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } fro
 import { createDispatchBotTool } from '../bots/tools/dispatch-bot.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
+import { isMcpToolName } from './mcp/naming.js';
+import type { McpManager } from './mcp/manager.js';
+import type { McpServerStatus } from './mcp/types.js';
 
 export interface ChatCommandContext {
   toolNames: () => string[];
@@ -76,6 +79,7 @@ export interface ChatCommandContext {
   memoryGetSubconscious: (limit?: number) => import('../memory/user-memory.js').UserMemoryRecord[];
   memoryIsShareLearning: () => boolean;
   memorySetShareLearning: (enabled: boolean) => void;
+  mcpStatus?: () => McpServerStatus[];
 }
 
 export class CapabilityRegistry {
@@ -92,6 +96,7 @@ export class CapabilityRegistry {
   private chatCommandContext?: ChatCommandContext;
   private currentCwd = process.cwd();
   private researchModeGetter: (() => boolean) | null = null;
+  private mcp?: McpManager;
 
   /**
    * Mercury Bots dispatch handler — set once the BotManager exists
@@ -279,14 +284,27 @@ export class CapabilityRegistry {
     logger.info('Interaction tools registered');
   }
 
+  attachMcp(manager: McpManager): void {
+    this.mcp = manager;
+  }
+
+  getMcpManager(): McpManager | undefined {
+    return this.mcp;
+  }
+
+  private allTools(): Record<string, Tool> {
+    return this.mcp ? { ...this.tools, ...this.mcp.getTools() } : this.tools;
+  }
+
   getTools(): Record<string, Tool> {
-    if (this.permissions.getCurrentSenderRole() !== 'member') return this.tools;
+    const all = this.allTools();
+    if (this.permissions.getCurrentSenderRole() !== 'member') return all;
     // Members on a channel that distinguishes roles (e.g. Telegram) must not be
     // able to install skills: `install_skill` is the escalation path from chat
     // access to arbitrary local execution and is documented as admin-only.
     const filtered: Record<string, Tool> = {};
-    for (const [name, tool] of Object.entries(this.tools)) {
-      if (name !== 'install_skill') filtered[name] = tool;
+    for (const [name, tool] of Object.entries(all)) {
+      if (name !== 'install_skill' && !isMcpToolName(name)) filtered[name] = tool;
     }
     return filtered;
   }
@@ -308,7 +326,7 @@ export class CapabilityRegistry {
   }
 
   getToolNames(): string[] {
-    return Object.keys(this.tools);
+    return Object.keys(this.allTools());
   }
 
   getSkillContext(): string {

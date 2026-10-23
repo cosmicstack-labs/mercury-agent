@@ -86,9 +86,24 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
+import { McpManager, probeMcpServer, validateMcpConfig, type McpServerStatus } from './capabilities/mcp/index.js';
+import {
+  addServer as addMcpServer,
+  allowTools as allowMcpTools,
+  buildServerConfig as buildMcpServerConfig,
+  disallowTools as disallowMcpTools,
+  formatServerList as formatMcpServerList,
+  formatStatusLine as formatMcpStatusLine,
+  formatStdioCommand as formatMcpStdioCommand,
+  formatToolLines as formatMcpToolLines,
+  getServer as getMcpServer,
+  removeServer as removeMcpServer,
+  setServerEnabled as setMcpServerEnabled,
+} from './capabilities/mcp/admin.js';
+import { runMcpDoctor, summarizeMcpConfig } from './capabilities/mcp/doctor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let pkgVersion: string;
@@ -2580,6 +2595,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     memoryGetSubconscious: (limit?: number) => userMemory ? userMemory.getSubconscious(limit) : [],
     memoryIsShareLearning: () => userMemory ? userMemory.isShareLearning() : false,
     memorySetShareLearning: (enabled: boolean) => { if (userMemory) userMemory.setShareLearning(enabled); },
+    mcpStatus: () => capabilities.getMcpManager()?.status() ?? [],
   });
 
   capabilities.setSendFileHandler(async (filePath: string, channel?: string) => {
@@ -2641,6 +2657,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   }
 
   capabilities.registerAll();
+
+  const mcpConfig = validateMcpConfig(config.mcp);
+  for (const problem of mcpConfig.problems) logger.warn({ problem }, 'MCP server skipped');
+  for (const warning of mcpConfig.warnings) logger.warn({ warning }, 'MCP config warning');
+  const mcpManager = new McpManager(mcpConfig.servers, {
+    gate: (request) => capabilities.permissions.checkMcpTool(request),
+  });
+  capabilities.attachMcp(mcpManager);
+  setWebMcpManager(mcpManager);
+  void mcpManager.connectAll();
 
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
@@ -3744,6 +3770,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       // Release the bots' SQLite queue handle — on Windows an open handle
       // keeps queue.db locked against any later uninstall/replace.
       try { botManager?.dispose(); } catch { /* best effort */ }
+      await mcpManager.close();
       await agent.shutdown();
       clearCloudRuntimeOnline();
       releaseRuntimeProcess(runtimeMode);
@@ -3978,6 +4005,7 @@ program
   .description('Reconfigure Mercury setup (name, providers, channels, permissions defaults)')
   .option('--platform', 'Show platform compatibility diagnostics')
   .option('--storage', 'Show SQLite backend, database files and row counts')
+  .option('--mcp', 'Connect to each configured MCP server and report its status')
   .action(async (opts) => {
     {
       // Keys that cannot be right — say so before anything is tried.
@@ -3993,6 +4021,14 @@ program
       runStorageDoctor();
       return;
     }
+    if (opts.mcp) {
+      const mcpDoctor = await runMcpDoctor(loadConfig().mcp);
+      for (const line of mcpDoctor.lines) console.log(line);
+      if (!mcpDoctor.ok) process.exitCode = 1;
+      return;
+    }
+    const mcpSummary = summarizeMcpConfig(loadConfig().mcp);
+    if (mcpSummary) console.log(chalk.dim(`  ${mcpSummary}`));
     // The daemon reads providers, keys and channels at boot: a reconfigure
     // that only wrote the file looked like it did nothing until a manual
     // `mercury restart`. Restart it ourselves when something changed.
@@ -5062,6 +5098,191 @@ program
     console.log(chalk.dim(`  Login at http://localhost:${loadConfig().web.port}`));
     console.log('');
   });
+
+interface McpAddOptions {
+  stdio?: string;
+  http?: string;
+  env: string[];
+  header: string[];
+  cwd?: string;
+  allow?: string;
+  autoApprove?: string;
+  allowPrivate?: boolean;
+  disabled?: boolean;
+  yes?: boolean;
+}
+
+async function confirmMcp(question: string): Promise<boolean> {
+  try {
+    const answer = (await ask(chalk.white(`  ${question} [y/N] `))).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } catch (err) {
+    if (err instanceof InputClosedError) return false;
+    throw err;
+  }
+}
+
+function printMcpProbe(status: McpServerStatus): void {
+  const line = formatMcpStatusLine(status);
+  console.log(status.state === 'connected' ? chalk.green(`  ✓ ${line}`) : chalk.red(`  ✗ ${line}`));
+  if (status.state === 'connected') {
+    for (const toolLine of formatMcpToolLines(status)) console.log(chalk.dim(`    ${toolLine}`));
+  }
+  if (status.stderrTail) {
+    console.log(chalk.dim('  stderr:'));
+    for (const stderrLine of status.stderrTail.trim().split('\n').slice(-20)) console.log(chalk.dim(`    ${stderrLine}`));
+  }
+}
+
+function mcpAction<A extends unknown[]>(fn: (...args: A) => Promise<void> | void): (...args: A) => Promise<void> {
+  return async (...args: A) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      console.log(chalk.red(`  ${err instanceof Error ? err.message : String(err)}`));
+      console.log('');
+      process.exitCode = 1;
+    }
+  };
+}
+
+function saveMcpChange(config: MercuryConfig, message: string): void {
+  saveConfig(config);
+  console.log(chalk.green(`  ✓ ${message}`));
+  restartDaemonIfRunning('Restarting the background daemon to apply the change...');
+  console.log('');
+}
+
+const collectRepeated = (value: string, previous: string[]): string[] => [...previous, value];
+
+const mcpCmd = program.command('mcp').description('Manage MCP servers whose tools Mercury can use');
+
+mcpCmd
+  .command('list')
+  .description('Show configured MCP servers')
+  .action(mcpAction(() => {
+    console.log('');
+    for (const line of formatMcpServerList(loadConfig())) {
+      console.log(line.startsWith('  ') ? chalk.dim(`  ${line}`) : `  ${line}`);
+    }
+    console.log('');
+  }));
+
+mcpCmd
+  .command('add <id> [args...]')
+  .description('Add an MCP server: --stdio <command> [-- args...] or --http <url>')
+  .option('--stdio <command>', 'command that starts a local stdio server')
+  .option('--http <url>', 'Streamable HTTP endpoint of a remote server')
+  .option('--env <KEY=VALUE>', 'environment variable for a stdio server, ${env:NAME} for secrets (repeatable)', collectRepeated, [])
+  .option('--header <Name: value>', 'HTTP header, ${env:NAME} for secrets (repeatable)', collectRepeated, [])
+  .option('--cwd <dir>', 'working directory for a stdio server')
+  .option('--allow <tools>', 'comma-separated tools the agent may see, or *')
+  .option('--auto-approve <tools>', 'comma-separated tools that run without asking')
+  .option('--allow-private', 'allow a private or loopback address for an HTTP server')
+  .option('--disabled', 'save the server without enabling it')
+  .option('-y, --yes', 'do not ask for confirmation')
+  .action(mcpAction(async (id: string, args: string[], opts: McpAddOptions) => {
+    const config = loadConfig();
+    const server = buildMcpServerConfig({ ...opts, args });
+    const warnings = addMcpServer(config, id, server);
+    console.log('');
+    for (const warning of warnings) console.log(chalk.yellow(`  ⚠ ${warning}`));
+    if (server.transport === 'stdio') {
+      console.log(chalk.white(`  Mercury will start this command: ${formatMcpStdioCommand(server)}`));
+      if (!opts.yes && !(await confirmMcp('Add this server?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    if (server.enabled !== false) {
+      console.log(chalk.dim('  Testing the connection...'));
+      const status = await probeMcpServer(id, server);
+      printMcpProbe(status);
+      if (status.state !== 'connected' && !opts.yes && !(await confirmMcp('Save it anyway?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    if (!server.tools?.allow?.length) {
+      console.log(chalk.dim(`  No tools are enabled yet. Enable some with \`mercury mcp allow ${id} <tool...>\`.`));
+    }
+    saveMcpChange(config, `MCP server "${id}" saved.`);
+  }));
+
+mcpCmd
+  .command('remove <id>')
+  .description('Remove an MCP server')
+  .action(mcpAction((id: string) => {
+    const config = loadConfig();
+    removeMcpServer(config, id);
+    console.log('');
+    saveMcpChange(config, `MCP server "${id}" removed.`);
+  }));
+
+mcpCmd
+  .command('enable <id>')
+  .description('Enable an MCP server')
+  .option('-y, --yes', 'do not ask for confirmation')
+  .action(mcpAction(async (id: string, opts: { yes?: boolean }) => {
+    const config = loadConfig();
+    const server = getMcpServer(config, id);
+    console.log('');
+    if (server.transport === 'stdio') {
+      console.log(chalk.white(`  Mercury will start this command: ${formatMcpStdioCommand(server)}`));
+      if (!opts.yes && !(await confirmMcp('Enable this server?'))) {
+        console.log(chalk.dim('  Cancelled.'));
+        console.log('');
+        return;
+      }
+    }
+    setMcpServerEnabled(config, id, true);
+    saveMcpChange(config, `MCP server "${id}" enabled.`);
+  }));
+
+mcpCmd
+  .command('disable <id>')
+  .description('Disable an MCP server without removing it')
+  .action(mcpAction((id: string) => {
+    const config = loadConfig();
+    setMcpServerEnabled(config, id, false);
+    console.log('');
+    saveMcpChange(config, `MCP server "${id}" disabled.`);
+  }));
+
+mcpCmd
+  .command('allow <id> <tools...>')
+  .description('Let the agent see these tools (quote "*" to allow all)')
+  .action(mcpAction((id: string, tools: string[]) => {
+    const config = loadConfig();
+    const server = allowMcpTools(config, id, tools);
+    console.log('');
+    saveMcpChange(config, `${id}: allowed ${server.tools?.allow?.join(', ') || 'nothing'}.`);
+  }));
+
+mcpCmd
+  .command('disallow <id> <tools...>')
+  .description('Hide these tools from the agent')
+  .action(mcpAction((id: string, tools: string[]) => {
+    const config = loadConfig();
+    const server = disallowMcpTools(config, id, tools);
+    console.log('');
+    const deny = server.tools?.deny?.length ? `, denied ${server.tools.deny.join(', ')}` : '';
+    saveMcpChange(config, `${id}: allowed ${server.tools?.allow?.join(', ') || 'nothing'}${deny}.`);
+  }));
+
+mcpCmd
+  .command('test <id>')
+  .description('Connect to an MCP server and list its tools')
+  .action(mcpAction(async (id: string) => {
+    const server = getMcpServer(loadConfig(), id);
+    console.log('');
+    const status = await probeMcpServer(id, server);
+    printMcpProbe(status);
+    console.log('');
+    if (status.state !== 'connected') process.exitCode = 1;
+  }));
 
 const cloud = program.command('cloud').description('Manage Mercury Cloud connection');
 

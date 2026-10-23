@@ -77,11 +77,10 @@ function urlHostIsPrivate(hostname: string): boolean {
   return false;
 }
 
-function privateBlockReason(host: string): Error {
-  return new Error(
-    `Blocked: ${host} is a private/internal address (SSRF protection). ` +
-      'Set MERCURY_ALLOW_PRIVATE_FETCH=1 to allow fetching internal hosts.',
-  );
+const DEFAULT_PRIVATE_HINT = 'Set MERCURY_ALLOW_PRIVATE_FETCH=1 to allow fetching internal hosts.';
+
+function privateBlockReason(host: string, hint = DEFAULT_PRIVATE_HINT): Error {
+  return new Error(`Blocked: ${host} is a private/internal address (SSRF protection). ${hint}`);
 }
 
 function lookupHost(hostname: string): Promise<string[]> {
@@ -99,7 +98,7 @@ function lookupHost(hostname: string): Promise<string[]> {
 type PinnedAddress = { address: string; family: number };
 type ResolvedTarget = { url: URL; pinned?: PinnedAddress };
 
-async function resolveAndValidate(rawUrl: string): Promise<ResolvedTarget> {
+async function resolveAndValidate(rawUrl: string, allowPrivate = false, privateHint?: string): Promise<ResolvedTarget> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -109,8 +108,11 @@ async function resolveAndValidate(rawUrl: string): Promise<ResolvedTarget> {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Blocked scheme: ${parsed.protocol} — only http and https are allowed`);
   }
+  if (allowPrivate) {
+    return { url: parsed };
+  }
   if (urlHostIsPrivate(parsed.hostname)) {
-    throw privateBlockReason(parsed.hostname);
+    throw privateBlockReason(parsed.hostname, privateHint);
   }
   if (ALLOW_PRIVATE_FETCH) {
     return { url: parsed };
@@ -129,7 +131,7 @@ async function resolveAndValidate(rawUrl: string): Promise<ResolvedTarget> {
   // connection would have picked.
   const offending = addresses.find((ip) => isPrivateAddress(ip));
   if (offending) {
-    throw privateBlockReason(parsed.hostname);
+    throw privateBlockReason(parsed.hostname, privateHint);
   }
   const chosen = addresses[0]!;
   return { url: parsed, pinned: { address: chosen, family: isIP(chosen) } };
@@ -194,4 +196,57 @@ export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?
     }
   }
   throw new Error('Blocked: too many redirects');
+}
+
+export type GuardedFetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+export class PinTable {
+  private readonly pins = new Map<string, { pin: { address: string; family: number }; count: number }>();
+
+  acquire(host: string, pin: { address: string; family: number }): void {
+    const entry = this.pins.get(host);
+    this.pins.set(host, { pin, count: (entry?.count ?? 0) + 1 });
+  }
+
+  release(host: string): void {
+    const entry = this.pins.get(host);
+    if (!entry) return;
+    if (entry.count <= 1) this.pins.delete(host);
+    else entry.count -= 1;
+  }
+
+  get(host: string): { address: string; family: number } | undefined {
+    return this.pins.get(host)?.pin;
+  }
+}
+
+const guardedFetchPins = new PinTable();
+
+const guardedFetchAgent = new Agent({
+  connect: {
+    lookup: ((hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
+      const pinned = guardedFetchPins.get(hostname);
+      if (!pinned) {
+        (lookup as unknown as (host: string, opts: unknown, cb: unknown) => void)(hostname, options, callback);
+        return;
+      }
+      if (options?.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
+      else callback(null, pinned.address, pinned.family);
+    }) as never,
+  },
+});
+
+export function createGuardedFetch(options: { allowPrivate?: boolean; privateHint?: string } = {}): GuardedFetchLike {
+  return async (input, init = {}) => {
+    const href = typeof input === 'string' ? input : input.href;
+    const { url, pinned } = await resolveAndValidate(href, options.allowPrivate === true, options.privateHint);
+    const host = url.hostname;
+    if (pinned) guardedFetchPins.acquire(host, pinned);
+    try {
+      const guardedInit: FetchInitWithDispatcher = { ...init, redirect: 'manual', dispatcher: guardedFetchAgent };
+      return await fetch(url, guardedInit);
+    } finally {
+      if (pinned) guardedFetchPins.release(host);
+    }
+  };
 }

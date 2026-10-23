@@ -49,6 +49,7 @@ import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../../spo
 import { getCloudTokenStore } from '../../cloud/token-store.js';
 import { updateCliProviderStatus } from '../provider-status.js';
 import { whatsNewText } from '../../utils/whats-new.js';
+import { formatMcpChatStatus } from '../../capabilities/mcp/admin.js';
 
 export async function handleChatCommand(agent: Agent, content: string, channelType: string, channelId: string): Promise<boolean> {
   const trimmed = content.trim();
@@ -918,6 +919,11 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       ...tools.sort().map(t => `• \`${t}\``),
     ];
     await channel.send(grouped.join('\n'), channelId);
+    return true;
+  }
+
+  if (cmd === '/mcp' || cmd.startsWith('/mcp ')) {
+    await channel.send(formatMcpChatStatus(ctx.mcpStatus?.() ?? [], trimmed.slice('/mcp'.length).trim()), channelId);
     return true;
   }
 

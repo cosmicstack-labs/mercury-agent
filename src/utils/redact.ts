@@ -47,9 +47,18 @@ function maskMatch(match: string): string {
   return `${match.slice(0, 4)}****${match.slice(-4)}`;
 }
 
+const registeredSecrets = new Set<string>();
+
+export function registerSecretValue(value: string): void {
+  if (typeof value === 'string' && value.length >= 8) registeredSecrets.add(value);
+}
+
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
+  for (const secret of registeredSecrets) {
+    if (out.includes(secret)) out = out.split(secret).join('****');
+  }
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, maskMatch);
   }

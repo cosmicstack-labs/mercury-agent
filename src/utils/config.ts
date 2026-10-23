@@ -5,6 +5,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { config as loadDotenv } from 'dotenv';
 import { logger } from './logger.js';
 import type { SignalAccessUser, SignalPendingRequest, DiscordAccessUser, DiscordPendingRequest, SlackAccessUser, SlackPendingRequest } from '../types/channel.js';
+import type { McpConfig } from '../capabilities/mcp/types.js';
 import {
   LEGACY_SEED_API_URL,
   LEGACY_SEED_WS_URL,
@@ -260,6 +261,7 @@ export interface MercuryConfig {
     enabled: boolean;
     port: number;
   };
+  mcp?: McpConfig;
 }
 
 function getEnv(key: string, fallback: string = ''): string {

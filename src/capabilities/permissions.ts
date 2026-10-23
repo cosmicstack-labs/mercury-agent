@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { redactSecrets } from '../utils/redact.js';
 import { BLOCKED_COMMANDS } from './shell/blocklist.js';
 import {
   evaluateArgvPolicy,
@@ -19,7 +20,40 @@ import {
   type ContextScope,
 } from './permission-context.js';
 
+import type { McpGateRequest, McpGateResult } from './mcp/types.js';
+
 export type { PermissionContext } from './permission-context.js';
+
+const MCP_ARGS_MAX_LINES = 12;
+const MCP_ARGS_MAX_CHARS = 800;
+
+export function formatMcpArgs(args: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(args ?? {}, null, 2) ?? '{}';
+  } catch {
+    text = String(args);
+  }
+  text = redactSecrets(text);
+  const lines = text.split('\n');
+  let out = lines.slice(0, MCP_ARGS_MAX_LINES).join('\n');
+  let truncated = lines.length > MCP_ARGS_MAX_LINES;
+  if (out.length > MCP_ARGS_MAX_CHARS) {
+    out = out.slice(0, MCP_ARGS_MAX_CHARS);
+    truncated = true;
+  }
+  return truncated ? `${out}\n… (arguments truncated)` : out;
+}
+
+function protectedConfigPaths(): string[] {
+  const home = getMercuryHome();
+  return [
+    join(home, 'mercury.yaml'),
+    join(home, 'permissions.yaml'),
+    join(home, '.env'),
+    join(homedir(), '.mercury', '.env'),
+  ];
+}
 
 /** Result of a shell permission check. */
 export interface ShellCheckResult {
@@ -353,6 +387,7 @@ export class PermissionManager {
   private binaryResolver: BinaryResolver = pinnedBinary;
   private approvedCommandsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
+  private approvedMcpByContext = new Map<string, Set<string>>();
   /** Hard-linked files the user answered "always" for, per interaction context. */
   private approvedHardlinkReadsByContext = new Map<string, Set<string>>();
   /**
@@ -719,6 +754,9 @@ export class PermissionManager {
   }
 
   private async checkScopedAccess(path: string, mode: 'read' | 'write'): Promise<FsAccessResult> {
+    if (mode === 'write' && this.isProtectedConfigPath(path)) {
+      return this.confirmConfigWrite(path);
+    }
     if (mode === 'read' && this.isElevated('fs_read')) {
       return { allowed: true };
     }
@@ -929,6 +967,59 @@ export class PermissionManager {
     }
 
     return { allowed: false, reason: 'Command not in auto-approve list — requires approval', needsApproval: true };
+  }
+
+  async checkMcpTool(request: McpGateRequest): Promise<McpGateResult> {
+    const { serverId, toolName } = request;
+    const label = `${serverId}/${toolName}`;
+    if (request.autoApprove) return { allowed: true };
+    if (this.failClosed) {
+      return { allowed: false, reason: `Fail-closed: MCP tool ${label} is not in tools.autoApprove` };
+    }
+    const ctx = this.ctx();
+    if (this.approvedMcpByContext.get(ctx.channelId)?.has(label)) return { allowed: true };
+    if (!this.askHandler || ctx.channelType === 'internal') {
+      return {
+        allowed: false,
+        reason: `MCP tool ${label} needs approval; add "${toolName}" to tools.autoApprove for server "${serverId}" to run it unattended`,
+      };
+    }
+    const answer = await this.askHandler(
+      `MCP tool call\nServer: ${serverId}\nTool:   ${toolName}\nArguments:\n${formatMcpArgs(request.args)}`,
+    );
+    if (answer === 'yes') return { allowed: true };
+    if (answer === 'always') {
+      const approved = this.approvedMcpByContext.get(ctx.channelId) ?? new Set<string>();
+      approved.add(label);
+      this.approvedMcpByContext.set(ctx.channelId, approved);
+      return { allowed: true };
+    }
+    return { allowed: false, reason: `User denied MCP tool ${label}` };
+  }
+
+  private isProtectedConfigPath(path: string): boolean {
+    const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+    const normalize = (p: string) => (caseInsensitive ? p.toLowerCase() : p);
+    const protectedPaths = new Set(
+      protectedConfigPaths().flatMap((p) => [resolve(p), this.canonicalizePath(resolve(p))]).map(normalize),
+    );
+    const resolved = resolve(path);
+    return [resolved, this.canonicalizePath(resolved)].some((candidate) => protectedPaths.has(normalize(candidate)));
+  }
+
+  private async confirmConfigWrite(path: string): Promise<FsAccessResult> {
+    const resolved = resolve(path);
+    if (this.failClosed || !this.askHandler || this.ctx().channelType === 'internal') {
+      return {
+        allowed: false,
+        reason: `Permission denied: ${resolved} is a Mercury config file and can only be changed with the owner's confirmation`,
+      };
+    }
+    const answer = await this.askHandler(
+      `Write to Mercury config file: ${resolved}\n(it controls MCP servers, permissions and secrets)`,
+    );
+    if (answer === 'yes' || answer === 'always') return { allowed: true };
+    return { allowed: false, reason: `User denied write to ${path}` };
   }
 
   /**

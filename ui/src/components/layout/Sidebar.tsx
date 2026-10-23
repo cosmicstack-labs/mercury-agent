@@ -16,6 +16,7 @@ import {
   Cpu,
   Bot,
   Puzzle,
+  Plug,
   Shield,
   Clock,
   BarChart3,
@@ -63,6 +64,7 @@ const NAV_SECTIONS = [
     items: [
       { to: "/providers", icon: Cpu, label: "Providers" },
       { to: "/skills", icon: Puzzle, label: "Skills" },
+      { to: "/mcp", icon: Plug, label: "MCP" },
       { to: "/permissions", icon: Shield, label: "Permissions" },
       { to: "/schedules", icon: Clock, label: "Schedules" },
       { to: "/usage", icon: BarChart3, label: "Usage" },

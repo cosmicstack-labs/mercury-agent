@@ -119,6 +119,8 @@ export const SLASH_COMMANDS: readonly string[] = [
   '/halt',
   '/reset',
   '/tools',
+  '/mcp',
+  '/mcp tools ',
   '/skills',
   '/skills search ',
   '/skills view ',

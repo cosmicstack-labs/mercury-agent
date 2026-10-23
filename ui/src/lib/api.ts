@@ -281,6 +281,10 @@ export const usage = {
 };
 
 // ── Schedules ──
+export const mcp = {
+  list: () => get<{ available: boolean; servers: McpServer[] }>("/api/mcp"),
+};
+
 export const schedules = {
   list: () => get<{ schedules: Schedule[]; total: number }>("/api/schedules"),
   update: (id: string, data: Partial<Schedule>) =>
@@ -789,6 +793,25 @@ export interface UsageData {
   byChannel: Record<string, number>;
 }
 
+export interface McpTool {
+  name: string;
+  exposedName: string;
+  allowed: boolean;
+  autoApprove: boolean;
+  skipped: string | null;
+}
+
+export interface McpServer {
+  id: string;
+  transport: "stdio" | "http";
+  enabled: boolean;
+  state: "disabled" | "connecting" | "connected" | "reconnecting" | "failed";
+  target: string;
+  error: string | null;
+  toolCount: number;
+  tools: McpTool[];
+}
+
 export interface Schedule {
   id: string;
   description: string;
@@ -911,6 +934,7 @@ const api = {
   permissions,
   usage,
   schedules,
+  mcp,
   spotify,
   boards,
   bots: {

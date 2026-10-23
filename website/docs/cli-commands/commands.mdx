@@ -15,6 +15,7 @@ title: Full Command Reference
 | `mercury status` | Show config, providers, daemon PID, and budget |
 | `mercury doctor` | Reconfigure settings — press Enter to keep current values |
 | `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
+| `mercury doctor --mcp` | Connect to every enabled MCP server and report its status |
 | `mercury setup` | Re-run the setup wizard (same as doctor) |
 | `mercury help` | Show the full manual (tools, commands, config paths) |
 | `mercury service install` | Install as system service (auto-start on boot) |
@@ -41,3 +42,21 @@ The `mercury skills` command tree talks to [skills.mercuryagent.sh](https://skil
 | `mercury skills doctor` | Check install root, registry connectivity, cache |
 
 Shared flags: `--json`, `--registry <url>`, `-q`, `-y`. Environment overrides: `MERCURY_SKILLS_REGISTRY`, `MERCURY_SKILLS_INSTALL_ROOT`.
+
+## MCP servers
+
+The `mercury mcp` commands manage the [MCP servers](../integrations/mcp) whose tools Mercury can use. Changes are saved to `~/.mercury/mercury.yaml` and the background daemon is restarted to apply them.
+
+| Command | Description |
+|---------|-------------|
+| `mercury mcp list` | Show configured servers, tool filters and env/header settings (secrets masked) |
+| `mercury mcp add <id> --stdio <command> [-- args...]` | Add a local server; shows the command and asks before saving |
+| `mercury mcp add <id> --http <url>` | Add a remote Streamable HTTP server |
+| `mercury mcp test <id>` | Connect once and list every tool as allowed, hidden or skipped |
+| `mercury mcp allow <id> <tools...>` | Show these tools to the agent (`'*'` for all) |
+| `mercury mcp disallow <id> <tools...>` | Hide these tools again |
+| `mercury mcp enable <id>` | Enable a server (asks before starting a stdio command) |
+| `mercury mcp disable <id>` | Disable a server without removing it |
+| `mercury mcp remove <id>` | Remove a server |
+
+`add` options: `--env KEY=VALUE`, `--header 'Name: value'`, `--cwd <dir>`, `--allow <tools>`, `--auto-approve <tools>`, `--allow-private`, `--disabled`, `-y`. Use `${env:NAME}` (in single quotes) for secrets kept in `~/.mercury/.env`.

@@ -53,6 +53,7 @@ const sidebars: SidebarsConfig = {
         'integrations/slack',
         'integrations/signal',
         'integrations/spotify',
+        'integrations/mcp',
         'integrations/coding-workspace',
         'integrations/sub-agents',
       ],

@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CapabilityRegistry } from '../capabilities/registry.js';
+import { isMcpToolName } from '../capabilities/mcp/naming.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import type { MercuryConfig } from '../utils/config.js';
@@ -150,7 +151,7 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
   const deny = new Set(gate.deny ?? []);
   const out: Record<string, any> = {};
   for (const [name, tool] of Object.entries(all)) {
-    if (ALWAYS_STRIPPED.has(name)) continue;
+    if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name)) continue;
     if (deny.has(name)) continue;
     if (allow.length > 0 && !allow.includes(name)) continue;
     out[name] = tool;

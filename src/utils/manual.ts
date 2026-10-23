@@ -146,6 +146,8 @@ export function getManual(): string {
     ['/telegram demote <id>', 'CLI chat only: demote a Telegram admin to member'],
     ['/telegram reset', 'CLI chat only: reset all Telegram access'],
     ['/tools', 'List currently loaded tools'],
+    ['/mcp', 'Show MCP servers and whether they are connected'],
+    ['/mcp tools <server>', 'List the tools of an MCP server and which ones the agent may use'],
     ['/skills', 'List installed skills'],
     ['/skills search <query>', 'Search skills.mercuryagent.sh'],
     ['/skills view <id>', 'Show details + registry URL for a skill'],

@@ -54,7 +54,8 @@ function truncate(maxLen: number): (v: string) => string {
 export function formatToolStep(toolName: string, args: Record<string, any>): string {
   const config = TOOL_LABELS[toolName];
   if (!config) {
-    return toolName;
+    const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(toolName);
+    return mcp ? `🔌 ${mcp[1]} › ${mcp[2]}` : toolName;
   }
 
   let detail = '';

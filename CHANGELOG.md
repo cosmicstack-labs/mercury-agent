@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-025.
 - **The web dashboard works on the Windows standalone binary.** Mercury looked for its `web/` folder inside the binary's virtual filesystem, because it only recognised Bun's macOS/Linux marker (`$bunfs`) and not Windows' (`~BUN`), so the dashboard reported "web UI not found". Found and fixed by @farena-ai in #189; the same check is now shared by the login page and the memory-graph fallback.
 
 ## 1.3.9 — hotfix: `mercury doctor` and dashboard saves take effect

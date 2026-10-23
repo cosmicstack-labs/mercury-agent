@@ -71,6 +71,7 @@
     "@ai-sdk/openai": "^3.0.53",
     "@grammyjs/auto-retry": "^2.0.2",
     "@hono/node-server": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.3.1",
     "@slack/bolt": "^4.7.3",
     "@types/ws": "^8.18.1",
     "ai": "^6.0.168",

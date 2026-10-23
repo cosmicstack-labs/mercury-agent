@@ -3,9 +3,18 @@ import { describe, expect, it } from 'vitest';
 // Secret-shaped fixtures are assembled at runtime: contiguous literals in
 // this file would trip GitHub push protection's secret scanner.
 const join = (...parts: string[]) => parts.join('');
-import { redactSecrets, redactDeep } from './redact.js';
+import { redactSecrets, redactDeep, registerSecretValue } from './redact.js';
 
 describe('secret redaction', () => {
+  it('masks registered secret values wherever they appear', () => {
+    const secret = join('plain-registered-', 'value-0042');
+    expect(redactSecrets(`token is ${secret}.`)).toBe(`token is ${secret}.`);
+    registerSecretValue(secret);
+    expect(redactSecrets(`token is ${secret}, again ${secret}`)).toBe('token is ****, again ****');
+    registerSecretValue('short');
+    expect(redactSecrets('a short word')).toBe('a short word');
+  });
+
   it('masks API keys while keeping a recognizable prefix/suffix', () => {
     const out = redactSecrets(join('export OPENAI_API_KEY=sk-proj-', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '1234567890abcd'));
     expect(out).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
