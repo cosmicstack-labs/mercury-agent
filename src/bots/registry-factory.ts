@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { CapabilityRegistry } from '../capabilities/registry.js';
 import type { SkillLoader } from '../skills/loader.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
@@ -120,7 +120,17 @@ export function createBotCapabilityRegistry(deps: BotRegistryDeps): CapabilityRe
   // Relative paths and shell commands resolve inside the bot's workspace,
   // never the daemon's cwd (a bot with a wide grant wrote "sandbox/…" files
   // into whatever repo the daemon happened to be started from).
-  registry.setCwd(deps.sandbox?.workspace ?? process.cwd());
+  const workspace = deps.sandbox?.workspace ?? deps.botDir;
+  registry.setCwd(workspace);
+  // "_shared/…" and "sandbox/…" (the names a bot's instructions use) always
+  // mean its real folders, whatever its cwd. And a bot can only move its cwd
+  // within its own folders: with a wide grant (e.g. "~"), a cwd inside a code
+  // checkout turned every relative write into a write to that repo.
+  const roots: Array<readonly [string, string]> = [['sandbox', workspace]];
+  if (deps.sandbox) roots.push([BOT_SHARED_SANDBOX_DIRNAME, deps.sandbox.shared]);
+  registry.setPathRoots(roots);
+  const ownDirs = [workspace, deps.botDir, ...(deps.sandbox ? [deps.sandbox.shared] : [])].map((d) => resolve(d));
+  registry.setCwdGuard((dir) => ownDirs.some((base) => isWithin(base, resolve(dir))));
   registry.registerAll();
 
   const tools = filterBotTools(registry.getTools(), deps.manifest, deps.permissions);
@@ -210,4 +220,9 @@ function buildBotScopes(paths: BotPathScope[] | undefined, botDir: string): Arra
     scopes.push({ path: resolved, read: p.read ?? false, write: p.write ?? false, execute: p.execute || undefined });
   }
   return scopes;
+}
+
+function isWithin(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }

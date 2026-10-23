@@ -153,7 +153,7 @@ function superviseChild(start: () => ChildProcess, timeoutMs: number, options: E
   });
 }
 
-export function createRunCommandTool(permissions: PermissionManager, getCwd: () => string, setCwd: (dir: string) => void) {
+export function createRunCommandTool(permissions: PermissionManager, getCwd: () => string, setCwd: (dir: string) => boolean | void) {
   return tool({
     description: `Run a shell command in the current working directory. Use the cd tool to change directories first — cd commands within this tool only affect chained commands (e.g., "cd /path && ls"), not subsequent calls.
 Blocked commands (sudo, rm -rf /, etc.) are never executed.
@@ -247,7 +247,7 @@ The optional timeout parameter sets how long (in seconds) the command can run be
 }
 
 /** `cd` in the argv lane: change the tool cwd in-process (it is a shell builtin). */
-function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, setCwd: (dir: string) => void): string {
+function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, setCwd: (dir: string) => boolean | void): string {
   const target = plan.argv[1] ?? homedir();
   const resolved = isAbsolute(target) ? resolve(target) : resolve(cwd, target);
   try {
@@ -255,11 +255,13 @@ function runBuiltin(plan: Extract<ArgvPlan, { kind: 'builtin' }>, cwd: string, s
   } catch {
     return `Error: Directory not found: ${resolved}`;
   }
-  setCwd(resolved);
+  if (setCwd(resolved) === false) {
+    return `Error: you can only change directory inside your own work folders. Use absolute paths to work with ${resolved}.`;
+  }
   return `Changed directory to ${resolved}`;
 }
 
-function detectCd(command: string, currentCwd: string, setCwd: (dir: string) => void): void {
+function detectCd(command: string, currentCwd: string, setCwd: (dir: string) => boolean | void): void {
   const trimmed = command.trim();
 
   const cdOnly = trimmed.match(/^cd\s+(.+)$/);

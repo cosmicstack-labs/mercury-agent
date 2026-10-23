@@ -10,7 +10,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
-import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
+import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression, BOT_SHARED_SANDBOX_DIRNAME } from './store.js';
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
@@ -32,6 +32,7 @@ import { mergePathScopes } from './registry-factory.js';
 import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
 import { SkillLoader } from '../skills/loader.js';
 import { logger } from '../utils/logger.js';
+import { resolveToolPath, type CwdSource } from '../capabilities/filesystem/resolve-path.js';
 import type {
   BotLiveState,
   BotManifest,
@@ -1933,7 +1934,13 @@ export class BotManager {
     const options = typeof opts === 'string' ? { saveAs: opts } : opts;
     const manifest = this.store.get(botId);
     if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
-    const candidate = resolve(filePath.replace(/^~(?=$|\/|\\)/, homedir()));
+    // Relative paths are relative to the bot's sandbox (with "_shared/…"
+    // meaning the fleet folder), never to wherever the daemon was started.
+    const sandbox = this.store.sandboxDir(botId);
+    const getCwd: CwdSource = Object.assign(() => sandbox, {
+      roots: () => [['sandbox', sandbox], [BOT_SHARED_SANDBOX_DIRNAME, this.store.sharedSandboxDir()]] as const,
+    });
+    const candidate = resolveToolPath(filePath.replace(/^~(?=$|\/|\\)/, homedir()), getCwd);
     const allowedBases = [this.store.sharedSandboxDir(), this.store.sandboxDir(botId)];
     const inside = allowedBases.some((base) => {
       const rel = relative(resolve(base), candidate);
