@@ -14,7 +14,7 @@
  * (what Mercury did) and permission answers.
  */
 import { parseJsonLenient } from './json.js';
-import { looksLikeSecret, ownerWords } from './text.js';
+import { looksLikeIdentity, looksLikeSecret, ownerWords } from './text.js';
 import { generateText } from 'ai';
 import { logger } from '../utils/logger.js';
 import type { Session, SessionMessage } from '../sessions/types.js';
@@ -134,7 +134,7 @@ Rules:
 5. Never infer personality types (MBTI, Big Five, enneagram), health, religion, politics, sexuality, ethnicity, or anything about a third person beyond what the owner said. Never record passwords, codes, API keys, tokens, card or account numbers, even if the owner pasted them. Never speculate about mood as a stable trait; a passing state is kind "situation".
 6. The brief is for the agent's system prompt. "about": <= 300 words, what the owner does, works on, prefers and cares about; stated facts plainly, inferred ones hedged. "howToWork": <= 180 words of direct instructions derived from the held traits and confirmed preferences (reply length, when to ask before acting and where, options vs a recommendation, tone, what to explain and what to assume per domain, what always needs confirmation, when not to disturb). Address the agent ("Keep replies short…"). Write instructions in plain terms; never quote the statistics (no character counts, percentages, session or message counts, or clock times) and never repeat channel mechanics (how voice replies are formatted is already handled elsewhere). Leave both empty strings when nothing is held.
 8. At most 12 operations and 6 merges per pass: the strongest, best-evidenced ones.
-9. Refer to the owner by name or as "they"; never assume gender, age or location unless the owner stated it.
+9. Refer to the owner by name or as "they"; never assume gender, age or location unless the owner stated it. Their name, email and handles are in Mercury's configuration already; never create a belief that only states who they are or how to reach them.
 7. Statements are about the owner, written in the third person without their name ("Prefers…", "Works on…"). Excerpts are quotes or short descriptions of actions, never your own reasoning.`;
 
 export function buildReflectionPrompt(input: {
@@ -353,7 +353,7 @@ function validateOp(item: unknown, knownIds: Set<string>): BeliefOperation | nul
     const kind = typeof item.kind === 'string' && KINDS.has(item.kind as BeliefKind) ? (item.kind as BeliefKind) : null;
     const statement = typeof item.statement === 'string' ? item.statement.trim() : '';
     if (!kind || kind === 'episode' || statement.length < 8 || statement.length > 240) return null;
-    if (looksLikeSecret(statement) || looksLikeSecret(String(item.detail ?? ''))) return null;
+    if (looksLikeSecret(statement) || looksLikeIdentity(statement) || looksLikeSecret(String(item.detail ?? ''))) return null;
     const context = typeof item.context === 'string' && CONTEXT_SHAPE.test(item.context.trim()) ? item.context.trim() : '*';
     const out: BeliefOperation = { ...base, kind, statement, context, evidenceKind: op === 'owner_stated' ? 'owner' : 'reflection' };
     if (kind === 'trait') {

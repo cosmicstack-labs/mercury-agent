@@ -113,6 +113,9 @@ import { openCliCommandMenu as openCliCommandMenuImpl } from './commands/cli-com
 import { collectTurnSignals, parseToolTraceLines } from '../learning/signals.js';
 import { extractBeliefOperations, type ExtractTurn } from '../learning/extract.js';
 import { composeLearnedNote, pendingQuestion } from '../learning/announce.js';
+
+/** Minimum gap between two "☿ Noted" lines on one channel. */
+const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
 import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
@@ -577,6 +580,8 @@ export class Agent {
   /** Owner Model (ADR-026): per chat, the belief announced by the last `☿ Noted:` line,
    * so a plain "forget that" undoes it. Set by the per-turn learner; cleared on undo. */
   readonly lastNotedBeliefId = new Map<string, string>();
+  /** When the last "☿ Noted" went out per channel: at most one every few minutes, so an upgrade's backlog never floods a chat. */
+  private readonly lastNotedAt = new Map<string, number>();
   readonly programmingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
@@ -2347,10 +2352,11 @@ export class Agent {
         logger.debug({ err: (err as Error).message }, 'belief retrieval failed');
       }
 
-      const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
-      if (memoryContext.context) {
-        blocks.push(`Second Brain — memory retrieved for this message:\n${memoryContext.context}`);
-      }
+      // The beliefs above are the only local recall (ADR-026: one source);
+      // their statements are what the pool search dedupes against.
+      const localRecall = this.lastInjectedBeliefIds
+        .map((id) => this.userMemory?.beliefs.get(id)?.statement)
+        .filter((s): s is string => typeof s === 'string');
 
       // Local-first, then pool: query the cloud SharedMemoryPool for additional
       // context the second brain didn't surface. Gated by config, fails open
@@ -2360,11 +2366,10 @@ export class Agent {
       const ck = this.config.memory.collaborativeKnowledge;
       const cloud = this.config.cloud;
       const tokenStore = getCloudTokenStore();
-      const localRecallIsStrong = memoryContext.records.length >= 3;
+      const localRecallIsStrong = localRecall.length >= 3;
       if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl && !localRecallIsStrong) {
         try {
           const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
-          const localSummaries = memoryContext.records.map((r) => r.summary);
           const poolHits = await searchPool(
             cloud.apiUrl,
             cloud.jwt,
@@ -2385,7 +2390,7 @@ export class Agent {
               }
             },
           );
-          const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+          const deduped = dedupeAgainstLocal(poolHits, localRecall);
           const poolBlock = formatPoolContextBlock(deduped, 1500);
           if (poolBlock) blocks.push(poolBlock);
         } catch (err) {
@@ -4426,21 +4431,9 @@ export class Agent {
     }
 
     if (this.userMemory) {
-      try {
-        const consolidation = this.userMemory.consolidate();
-        if (consolidation.profileUpdated || consolidation.reflectionCount > 0) {
-          logger.info({ consolidation }, 'Second brain consolidated');
-        }
-
-        const pruning = this.userMemory.prune();
-        if (pruning.movedToSubconscious > 0 || pruning.hardDeleted > 0 || pruning.promoted > 0) {
-          logger.info({ pruning }, 'Second brain pruned');
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Second brain heartbeat error');
-      }
       // The reflection pass (ADR-026): one model call over the owner's turns
-      // since the last pass; a no-op when nothing new was said.
+      // since the last pass, then decay; a no-op when nothing new was said.
+      // It is the only maintenance the Second Brain gets — one source.
       await this.reflectNow().catch((err) => logger.warn({ err }, 'Reflection pass failed'));
     }
 
@@ -4486,9 +4479,10 @@ export class Agent {
     const parts = [this.identity.getSystemPrompt(this.config.identity)];
     if (this.userMemory) {
       try {
-        const profile = this.userMemory.getProfile().trim();
-        const active = this.userMemory.getActiveSummary().trim();
-        if (profile || active) parts.push(`# What you know about ${this.config.identity.owner || 'your owner'} (from your Second Brain)\n${[profile, active].filter(Boolean).join('\n').slice(0, 4000)}`);
+        const ownerName = this.config.identity.owner || 'your owner';
+        const sections = this.ownerSections(this.userMemory.beliefs, ownerName);
+        const text = [sections?.about, sections?.howToWork].filter((s): s is string => Boolean(s && s.trim())).join('\n\n');
+        if (text) parts.push(`# What you know about ${ownerName} (from your Second Brain)\n${text.slice(0, 4000)}`);
       } catch { /* memory unavailable: identity alone */ }
     }
     return parts.join('\n\n');
@@ -4589,6 +4583,9 @@ export class Agent {
 
       const note = composeLearnedNote(results, { beliefs });
       if (!note || !ctx.channel || !ctx.msg) return;
+      const notedAt = this.lastNotedAt.get(ctx.msg.channelId) ?? 0;
+      if (Date.now() - notedAt < NOTE_COOLDOWN_MS) return;
+      this.lastNotedAt.set(ctx.msg.channelId, Date.now());
       // After the reply, never ahead of it (capped so a stuck delivery can't hold the note forever).
       await Promise.race([
         ctx.delivered ?? Promise.resolve(),

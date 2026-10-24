@@ -13,7 +13,7 @@ function belief(partial: Partial<Belief> & Pick<Belief, 'id' | 'statement'>): Be
   return {
     ownerKey: 'user:owner', kind: 'preference', dimension: null, level: null, detail: null, context: '*', support: 2, against: 0,
     supportSessions: 2, timescale: 'stable', status: 'held', ownerStated: false, validFrom: now, validTo: null, supersededBy: null,
-    lastSupportedAt: now, lastUsedAt: null, createdAt: now, updatedAt: now, ...partial,
+    lastSupportedAt: now, lastUsedAt: null, createdAt: now, updatedAt: now, shareable: false, ...partial,
   };
 }
 

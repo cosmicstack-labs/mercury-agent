@@ -163,7 +163,28 @@ Hermes' `USER.md` but generated from beliefs and annotated with confidence.
 - Decay keys on `last_supported_at`; use refreshes it weakly.
 - The soul migration that overwrites edited files is removed.
 
-### 3.8 Validation
+### 3.8 One source, and what an existing owner sees
+
+- `UserMemoryStore` is a facade over `BeliefStore`. Every reader and writer the old API had
+  (`getRecent`, `search`, `getByType`, `retrieveRelevant`, `remember`, `updateMemory`,
+  `softDeleteMemory`, `getShareable*`, `clear`, `getSummary`) maps onto beliefs, so `/memory`, the
+  dashboard, the `save_memory` / `search_memory` tools, the bots and cloud sync all see one store.
+  `consolidate()` is a no-op kept for callers; `prune()` is the decay pass. The `memories` table is a
+  read-only archive: the quarantine queue and the persons graph still read it, nothing writes it.
+- **Identity is config.** `identity.owner` in `mercury.yaml` is the one place the owner's name is
+  set; the extractor and reflection prompts and both validators refuse beliefs that only state who
+  the owner is or how to reach them (`looksLikeIdentity`).
+- **Upgrade path.** On the first boot with a pre-Owner-Model database that has rows, the store
+  copies it to `second-brain.pre-owner-model.db` before migrating (once; never overwritten). The
+  migration is idempotent (`belief_meta legacy_migrated`), wrapped in try/catch so a failure boots
+  Mercury with an empty belief store instead of crashing, and marks `reflection_force` so the
+  migrated candidates are judged against real sessions two minutes after boot. "☿ Noted" lines are
+  rate-limited to one per channel every three minutes so the backlog never floods a chat.
+  Restoring a quarantined row creates a confirmed belief the owner vouched for (new id).
+- Not yet moved: the persons graph (`memory_persons` keys into `memories`); it keeps reading the
+  archive until relationship beliefs feed it.
+
+### 3.9 Validation
 
 - Unit tests on the belief store: support/against maths, decay, contest, supersession, forget.
 - Scripted-provider eval scenarios (`src/eval`): "owner corrects brevity twice → next reply is

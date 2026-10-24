@@ -9,7 +9,7 @@
  * junk came from.
  */
 import { parseJsonLenient } from './json.js';
-import { looksLikeSecret, ownerWords } from './text.js';
+import { looksLikeIdentity, looksLikeSecret, ownerWords } from './text.js';
 import { generateText } from 'ai';
 import type { Belief, BeliefKind, BeliefOperation, BeliefStore, BeliefTimescale } from '../memory/beliefs.js';
 import { SCOPED_DIMENSIONS, TRAIT_DIMENSIONS } from '../memory/beliefs.js';
@@ -123,6 +123,7 @@ RULES
 - Output [] when nothing durable was learned. That is the right answer for most turns: questions, tasks, chit-chat and anything Mercury could re-derive from the conversation itself teach nothing about the owner.
 - Never infer personality types, health, religion, politics, sexuality, or anything about a third person beyond what the owner stated. Never record passwords, codes, API keys, tokens, card or account numbers, even if the owner pasted them. If the owner states such a thing about themselves, store it as kind "fact" with the owner's words; never generalise it.
 - Passing states (frustrated, in a hurry, tired, exploring) are kind "situation" with timescale "situational"; never a trait.
+- The owner's name, email, handles and phone number are already in Mercury's configuration; never create a belief that states who the owner is or how to reach them.
 - When the owner corrects how Mercury behaved ("don't ask before running tests here", "shorter", "stop explaining"), emit "correction" on the belief Mercury acted on if one is listed, otherwise "owner_stated" with kind "trait" (e.g. autonomy = just-do-it with context project:<cwd>; brevity = terse).
 - The TURN SIGNALS are hints computed by code; use them to decide, but the excerpt must still quote the owner.
 - If a PENDING QUESTION is listed and the owner answered it, emit "correction" or "support" on the belief that won and "contradict" on the one that lost.
@@ -210,7 +211,7 @@ export function validateOperation(raw: unknown, existingIds: ReadonlySet<string>
     const kind = str(r.kind);
     if (!kind || !KINDS.has(kind)) return null;
     const statement = validStatement(r.statement);
-    if ((statement && looksLikeSecret(statement)) || looksLikeSecret(String(r.excerpt ?? ''))) return null;
+    if ((statement && (looksLikeSecret(statement) || looksLikeIdentity(statement))) || looksLikeSecret(String(r.excerpt ?? ''))) return null;
     if (!statement) return null;
     const trait = traitFields(r, kind as BeliefKind);
     if (trait === 'invalid') return null;

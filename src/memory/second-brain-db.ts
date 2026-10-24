@@ -829,7 +829,7 @@ export class SecondBrainDB {
 
   /** Rows the belief migration set aside as junk (ADR-026 §3.7): hidden from prompts, shown on the dashboard for review. */
   listQuarantined(userKey: string, limit: number = 500): MemoryRow[] {
-    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND scope = 'quarantine' ORDER BY updated_at DESC LIMIT ?`);
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND scope = 'quarantine' AND dismissed = 0 ORDER BY updated_at DESC LIMIT ?`);
     return stmt.all(userKey, limit) as MemoryRow[];
   }
 

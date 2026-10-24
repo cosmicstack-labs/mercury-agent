@@ -175,7 +175,10 @@ describe.skipIf(!sqliteAvailable)('web brain API — beliefs (ADR-026)', () => {
     expect(restored.success).toBe(true);
     expect(restored.memory!.scope).toBe('durable');
     expect((await jreq(await app.request('/api/brain/quarantine'))).total).toBe(0);
-    expect(mem.getRecent(50).some((m) => m.id === 'legacy-junk-1')).toBe(true);
+    // Restored rows become beliefs the owner vouched for (new id, confirmed, never decays).
+    expect(restored.memory!.id).not.toBe('legacy-junk-1');
+    expect(mem.getRecent(50).some((m) => m.id === restored.memory!.id)).toBe(true);
+    expect(mem.beliefs.get(restored.memory!.id)?.status).toBe('confirmed');
   });
 
   it('GET /api/brain/memory/:id looks the row up by id, not by text search', async () => {

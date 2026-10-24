@@ -27,10 +27,14 @@ What it learns are *working traits* that change how Mercury behaves: reply lengt
 
 ## How it works
 
-1. **Extraction** — After each conversation, Mercury pulls 0–3 facts and stores them with type, confidence, importance, and durability scores.
-2. **Retrieval** — Before each message, the top 5 relevant memories (within a 900-char budget) are injected into context. Mercury references them naturally.
-3. **Consolidation** — Every 60 minutes, Mercury builds a profile summary, an active-state summary, and generates `reflection` memories from detected patterns.
-4. **Pruning** — Active-scope memories stale after 21 days. Inferred memories decay. Low-confidence durable memories are dismissed after 120 days. Memories reinforced 3+ times are promoted to durable.
+1. **Extraction** — After each turn, a strict extractor turns what you said and did into belief operations: create, support, contradict, or nothing at all. Mercury's own replies are never evidence about you.
+2. **Retrieval** — Before each message, up to 5 beliefs relevant to it (with their confidence and context) go into the prompt, and the "About you" / "How to work with you" brief sits in every prompt.
+3. **Reflection** — After every hour of activity and at shutdown, one model pass reads your messages across sessions: it infers working traits, merges duplicates, flags contradictions, rewrites the brief, and lets faded beliefs retire.
+4. **Decay** — Confidence fades per kind (a fact over a year, a preference over months, a trait over weeks) unless the belief is seen again; what you stated outright never fades. A belief retires only when it faded *and* was contradicted or went stale for two half-lives.
+
+**One source.** Every view of your memory — `/memory`, the dashboard, the `search_memory` and `save_memory` tools, the bots, cloud sync — reads and writes the same belief store. Who you are (your name, email, handles) lives in `identity.owner` in `mercury.yaml`, the one place it is set; Mercury never stores it as a belief.
+
+**Upgrading from an older Mercury.** The first boot after the upgrade copies `second-brain.db` to `second-brain.pre-owner-model.db` next to it, then moves your memories into beliefs: real ones become candidates (or held, when they had been seen more than once); rows that were Mercury's own replies, credentials or templated filler are quarantined, never deleted, and wait in the dashboard under *Quarantined* with a Restore button. Nothing you could see before disappears, `/memory` and the dashboard keep working, and a reflection pass two minutes after that boot judges the migrated candidates against your real sessions.
 
 ## Memory Tiers
 

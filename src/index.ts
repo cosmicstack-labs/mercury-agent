@@ -3853,7 +3853,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           await Promise.race([agent.reflectNow(), new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref())]);
         } catch { /* best effort */ }
         try {
-          userMemory.consolidate();
           userMemory.close();
         } catch {}
       }

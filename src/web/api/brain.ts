@@ -397,8 +397,9 @@ brain.post('/api/brain/quarantine/:id/restore', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const id = c.req.param('id');
-  if (!mem.restoreQuarantined(id)) return c.json({ error: 'Quarantined memory not found' }, 404);
-  const restored = mem.getById(id);
+  const beliefId = mem.restoreQuarantined(id);
+  if (!beliefId) return c.json({ error: 'Quarantined memory not found' }, 404);
+  const restored = mem.getById(beliefId);
   return c.json({ success: true, memory: restored ? memToJson(restored) : null });
 });
 

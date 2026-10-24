@@ -61,6 +61,8 @@ export interface Belief {
   lastUsedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /** Offered to the cloud shared pool (the owner's share-learning toggle). */
+  shareable: boolean;
 }
 
 export interface Evidence {
@@ -91,6 +93,7 @@ export interface BeliefOperation {
   weight?: number;
   sessionId?: string;
   turnRef?: string;
+  shareable?: boolean;
 }
 
 export interface ApplyResult {
@@ -118,7 +121,7 @@ interface BeliefRow {
   statement: string; detail: string | null; context: string; support: number; against: number;
   support_sessions: number; timescale: BeliefTimescale; status: BeliefStatus; owner_stated: number;
   valid_from: number; valid_to: number | null; superseded_by: string | null; last_supported_at: number;
-  last_used_at: number | null; created_at: number; updated_at: number;
+  last_used_at: number | null; created_at: number; updated_at: number; shareable?: number;
 }
 
 export class BeliefStore {
@@ -176,6 +179,8 @@ export class BeliefStore {
       CREATE INDEX IF NOT EXISTS idx_belief_evidence_belief ON belief_evidence(belief_id, at);
       CREATE TABLE IF NOT EXISTS belief_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    const cols = this.db.prepare('PRAGMA table_info(beliefs)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'shareable')) this.db.exec('ALTER TABLE beliefs ADD COLUMN shareable INTEGER NOT NULL DEFAULT 0');
   }
 
   // ── confidence ─────────────────────────────────────────────────────────
@@ -212,7 +217,7 @@ export class BeliefStore {
         kind: op.kind, dimension: op.dimension ?? null, level: op.level ?? null, statement: op.statement.trim(),
         detail: op.detail?.trim() ?? null, context: op.context ?? '*', timescale: op.timescale ?? (op.kind === 'situation' ? 'situational' : op.kind === 'episode' ? 'episodic' : 'stable'),
         support: weight, against: 0, supportSessions: op.sessionId ? 1 : 0, ownerStated,
-        status: ownerStated ? 'confirmed' : 'candidate',
+        status: ownerStated ? 'confirmed' : 'candidate', shareable: op.shareable === true,
       }, now);
       this.addEvidence(belief.id, op.evidenceKind ?? (ownerStated ? 'owner' : 'said'), op, weight, now);
       this.settleContest(belief, now);
@@ -253,7 +258,7 @@ export class BeliefStore {
       const replacement = this.insert({
         kind: op.kind ?? target.kind, dimension: op.dimension ?? target.dimension, level: op.level ?? null, statement: op.statement.trim(),
         detail: op.detail?.trim() ?? null, context: op.context ?? target.context, timescale: op.timescale ?? target.timescale,
-        support: 2, against: 0, supportSessions: op.sessionId ? 1 : 0, ownerStated: true, status: 'confirmed',
+        support: 2, against: 0, supportSessions: op.sessionId ? 1 : 0, ownerStated: true, status: 'confirmed', shareable: op.shareable === true || target.shareable,
       }, now);
       this.update(target.id, { supersededBy: replacement.id }, now);
       this.addEvidence(replacement.id, 'owner', op, 2, now);
@@ -453,6 +458,79 @@ export class BeliefStore {
     return this.get(keep.id);
   }
 
+  // ── facade support (UserMemoryStore delegates here; ADR-026 single source) ──
+
+  /** Live beliefs (any status except retired/forgotten), newest first. */
+  recent(limit = 10): Belief[] {
+    return this.list({ limit });
+  }
+
+  /** FTS over statements and details for the given statuses (candidates included by default). */
+  search(query: string, limit = 10, statuses: BeliefStatus[] = ['candidate', 'held', 'confirmed', 'contested']): Belief[] {
+    const terms = query.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((t) => t.length > 2).slice(0, 24);
+    if (terms.length === 0) return [];
+    const match = terms.map((t) => `"${t}"`).join(' OR ');
+    try {
+      const rows = this.db.prepare(`
+        SELECT b.* FROM beliefs_fts f JOIN beliefs b ON b.rowid = f.rowid
+        WHERE beliefs_fts MATCH ? AND b.owner_key = ? AND b.status IN (${statuses.map(() => '?').join(',')})
+        ORDER BY bm25(beliefs_fts) LIMIT ?`).all(match, this.ownerKey, ...statuses, limit) as BeliefRow[];
+      return rows.map(toBelief);
+    } catch {
+      return [];
+    }
+  }
+
+  setShareable(id: string, shareable: boolean, now = Date.now()): boolean {
+    if (!this.get(id)) return false;
+    this.update(id, { shareable }, now);
+    return true;
+  }
+
+  shareable(limit = 50): Belief[] {
+    const rows = this.db.prepare(`SELECT * FROM beliefs WHERE owner_key = ? AND shareable = 1 AND status NOT IN ('forgotten','retired') ORDER BY updated_at DESC LIMIT ?`).all(this.ownerKey, limit) as BeliefRow[];
+    return rows.map(toBelief);
+  }
+
+  shareableSince(since: number, limit = 500): Belief[] {
+    const rows = this.db.prepare(`SELECT * FROM beliefs WHERE owner_key = ? AND shareable = 1 AND status NOT IN ('forgotten','retired') AND updated_at > ? ORDER BY updated_at ASC LIMIT ?`).all(this.ownerKey, since, limit) as BeliefRow[];
+    return rows.map(toBelief);
+  }
+
+  countShareable(): number {
+    const row = this.db.prepare(`SELECT COUNT(*) as n FROM beliefs WHERE owner_key = ? AND shareable = 1 AND status NOT IN ('forgotten','retired')`).get(this.ownerKey) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  countsByKind(): Record<string, number> {
+    const rows = this.db.prepare(`SELECT kind, COUNT(*) as n FROM beliefs WHERE owner_key = ? AND status IN ('candidate','held','confirmed','contested') GROUP BY kind`).all(this.ownerKey) as Array<{ kind: string; n: number }>;
+    return Object.fromEntries(rows.map((r) => [r.kind, Number(r.n)]));
+  }
+
+  /** The owner edited a belief by hand (dashboard): the text changes, the owner's word is final. */
+  edit(id: string, patch: { statement?: string; detail?: string | null; kind?: BeliefKind; context?: string }, now = Date.now()): Belief | null {
+    const b = this.get(id);
+    if (!b || b.status === 'forgotten') return null;
+    const changes: Parameters<BeliefStore['update']>[1] = {};
+    if (patch.statement && patch.statement.trim().length >= 4) changes.statement = patch.statement.trim();
+    if (patch.detail !== undefined) changes.detail = patch.detail;
+    if (patch.kind) changes.kind = patch.kind;
+    if (patch.context) changes.context = patch.context;
+    if (Object.keys(changes).length === 0) return b;
+    this.update(id, { ...changes, ownerStated: true, status: b.status === 'retired' ? 'confirmed' : (b.status === 'candidate' || b.status === 'held' || b.status === 'contested' ? 'confirmed' : b.status), lastSupportedAt: now }, now);
+    this.addEvidence(id, 'owner', { excerpt: 'edited by the owner' }, 1, now);
+    return this.get(id);
+  }
+
+  /** Everything about this owner, gone. Used by "Clear All Memories". */
+  clearAll(): number {
+    const n = this.db.prepare('SELECT COUNT(*) as n FROM beliefs WHERE owner_key = ?').get(this.ownerKey) as { n: number } | undefined;
+    this.db.prepare('DELETE FROM belief_evidence WHERE belief_id IN (SELECT id FROM beliefs WHERE owner_key = ?)').run(this.ownerKey);
+    this.db.prepare('DELETE FROM beliefs WHERE owner_key = ?').run(this.ownerKey);
+    this.db.prepare('DELETE FROM belief_meta WHERE key LIKE ?').run(`${this.ownerKey}:brief%`);
+    return Number(n?.n ?? 0);
+  }
+
   // ── internals ──────────────────────────────────────────────────────────
 
   private findSameClaim(statement: string, kind: BeliefKind, context: string, dimension?: string): Belief | null {
@@ -493,16 +571,16 @@ export class BeliefStore {
     return !!row;
   }
 
-  private insert(b: Omit<Belief, 'id' | 'ownerKey' | 'validFrom' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'lastUsedAt' | 'createdAt' | 'updatedAt'>, now: number): Belief {
+  private insert(b: Omit<Belief, 'id' | 'ownerKey' | 'validFrom' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'lastUsedAt' | 'createdAt' | 'updatedAt' | 'shareable'> & { shareable?: boolean }, now: number): Belief {
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO beliefs (id, owner_key, kind, dimension, level, statement, detail, context, support, against, support_sessions, timescale, status, owner_stated, valid_from, valid_to, superseded_by, last_supported_at, last_used_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`)
-      .run(id, this.ownerKey, b.kind, b.dimension, b.level, b.statement, b.detail, b.context, b.support, b.against, b.supportSessions, b.timescale, b.status, b.ownerStated ? 1 : 0, now, now, now, now);
+    this.db.prepare(`INSERT INTO beliefs (id, owner_key, kind, dimension, level, statement, detail, context, support, against, support_sessions, timescale, status, owner_stated, valid_from, valid_to, superseded_by, last_supported_at, last_used_at, created_at, updated_at, shareable)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?)`)
+      .run(id, this.ownerKey, b.kind, b.dimension, b.level, b.statement, b.detail, b.context, b.support, b.against, b.supportSessions, b.timescale, b.status, b.ownerStated ? 1 : 0, now, now, now, now, b.shareable ? 1 : 0);
     return this.get(id)!;
   }
 
-  private update(id: string, patch: Partial<Pick<Belief, 'support' | 'against' | 'supportSessions' | 'status' | 'ownerStated' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'level' | 'statement' | 'detail'>>, now = Date.now()): void {
-    const cols: Record<string, string> = { support: 'support', against: 'against', supportSessions: 'support_sessions', status: 'status', ownerStated: 'owner_stated', validTo: 'valid_to', supersededBy: 'superseded_by', lastSupportedAt: 'last_supported_at', level: 'level', statement: 'statement', detail: 'detail' };
+  private update(id: string, patch: Partial<Pick<Belief, 'support' | 'against' | 'supportSessions' | 'status' | 'ownerStated' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'level' | 'statement' | 'detail' | 'kind' | 'context' | 'shareable'>>, now = Date.now()): void {
+    const cols: Record<string, string> = { support: 'support', against: 'against', supportSessions: 'support_sessions', status: 'status', ownerStated: 'owner_stated', validTo: 'valid_to', supersededBy: 'superseded_by', lastSupportedAt: 'last_supported_at', level: 'level', statement: 'statement', detail: 'detail', kind: 'kind', context: 'context', shareable: 'shareable' };
     const sets: string[] = ['updated_at = ?'];
     const params: unknown[] = [now];
     for (const [k, v] of Object.entries(patch)) {
@@ -526,6 +604,20 @@ export class BeliefStore {
    * saved as the owner's preferences) and turn the rest into beliefs. Junk is
    * hidden (scope 'quarantine'), never deleted: the dashboard lists it.
    */
+  migrationDone(): boolean {
+    return this.getMeta('legacy_migrated') === '1';
+  }
+
+  /** Rows the pre-Owner-Model Second Brain holds for this owner (0 on a fresh install). */
+  legacyRowCount(): number {
+    try {
+      const row = this.db.prepare('SELECT COUNT(*) as n FROM memories WHERE user_key = ?').get(this.ownerKey) as { n: number } | undefined;
+      return Number(row?.n ?? 0);
+    } catch {
+      return 0;
+    }
+  }
+
   migrateLegacyMemories(now = Date.now()): { quarantined: number; converted: number; skipped: boolean } {
     if (this.getMeta('legacy_migrated') === '1') return { quarantined: 0, converted: 0, skipped: true };
     const rows = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active','durable','subconscious')`).all(this.ownerKey) as Array<Record<string, unknown>>;
@@ -576,7 +668,7 @@ function toBelief(r: BeliefRow): Belief {
     context: r.context, support: Number(r.support), against: Number(r.against), supportSessions: Number(r.support_sessions), timescale: r.timescale,
     status: r.status, ownerStated: !!r.owner_stated, validFrom: Number(r.valid_from), validTo: r.valid_to == null ? null : Number(r.valid_to),
     supersededBy: r.superseded_by, lastSupportedAt: Number(r.last_supported_at), lastUsedAt: r.last_used_at == null ? null : Number(r.last_used_at),
-    createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+    createdAt: Number(r.created_at), updatedAt: Number(r.updated_at), shareable: Number(r.shareable ?? 0) === 1,
   };
 }
 

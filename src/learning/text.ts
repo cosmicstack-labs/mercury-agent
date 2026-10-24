@@ -21,3 +21,14 @@ const SECRET_SHAPE_RE = /\b(sk|pk|ghp|gho|xox[abp]|AKIA)[-_a-z0-9]{12,}\b|\b[a-z
 export function looksLikeSecret(text: string): boolean {
   return SECRET_RE.test(text) || SECRET_SHAPE_RE.test(text);
 }
+
+const IDENTITY_RE = /^(?:the owner'?s?|their|owner|user'?s?|user)?\s*(?:full |first |last )?(?:name|email|e-mail|handle|username|phone number|address)\b|\b(?:is named|is called|goes by|name is)\b|[\w.+-]+@[\w-]+\.[\w.]+/i;
+
+/**
+ * Who the owner is — name, email, handles — lives in `identity.owner` in the
+ * config, the one place it is set. A belief that only restates it would be a
+ * second source, so these never become beliefs.
+ */
+export function looksLikeIdentity(text: string): boolean {
+  return IDENTITY_RE.test(text.trim());
+}

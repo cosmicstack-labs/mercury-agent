@@ -30,12 +30,22 @@ describe('ownerWords', () => {
   });
 });
 
-import { looksLikeSecret } from './text.js';
+import { looksLikeIdentity, looksLikeSecret } from './text.js';
 describe('looksLikeSecret', () => {
   it('flags credentials and leaves ordinary statements alone', () => {
     expect(looksLikeSecret('Temp mail account with password MercuryTemp2026!')).toBe(true);
     expect(looksLikeSecret('uses api key sk-abcdefghijklmnopqrstuvwxyz123456')).toBe(true);
     expect(looksLikeSecret('Prefers one command over many manual steps')).toBe(false);
     expect(looksLikeSecret('Works on Mercury Agent at Cosmic Stack')).toBe(false);
+  });
+});
+
+describe('looksLikeIdentity', () => {
+  it('keeps who the owner is out of the belief store (config is the one source)', () => {
+    expect(looksLikeIdentity("The owner's name is Salman")).toBe(true);
+    expect(looksLikeIdentity('Email is salman@example.org')).toBe(true);
+    expect(looksLikeIdentity('Goes by hotheadhacker on GitHub')).toBe(true);
+    expect(looksLikeIdentity('Prefers terse replies in the evening')).toBe(false);
+    expect(looksLikeIdentity('Works on Mercury, an AI agent')).toBe(false);
   });
 });
