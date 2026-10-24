@@ -12,6 +12,7 @@ import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
 import { CursorCell } from './cursor-anchor.js';
 import { isNarrow, ruleWidth, sidePanelWidth, fitTail, hintColumns } from './layout.js';
+import { fitSegments, statusSegments, type StatusSegment } from './status-bar.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
@@ -885,46 +886,15 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
   const pct = state.tokenInfo?.percentage ?? 0;
-  const pctColor = saverActive ? saverColor : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
 
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
   const isWorkspace = state.mode === 'workspace' && state.workspace;
 
-  // Build colored segments — each has {text, color}. Rendered inline with │.
-  const segments: { text: string; color: string }[] = [];
-
-  // 1. Token bar
-  if (state.tokenInfo) {
-    if (saverActive) segments.push({ text: '⚡', color: saverColor });
-    segments.push({
-      text: `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`,
-      color: pctColor,
-    });
-    if (saverActive && state.saverInfo!.savedToday > 0) {
-      segments.push({ text: `~${formatCompact(state.saverInfo!.savedToday)}`, color: 'green' });
-    }
-  }
-
-  // 2. Provider
-  if (state.provider) {
-    segments.push({ text: `${state.provider.name} · ${state.provider.model}`, color: 'magenta' });
-  }
-
-  // 2a. Permission mode (Ask Me / Allow All)
-  segments.push({ text: state.permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me', color: state.permissionMode === 'allow-all' ? 'yellow' : 'gray' });
-
-  // 2b. Optimus (desktop plugin) listening / working right now
-  if (state.desktopActivity) {
-    segments.push({ text: state.desktopActivity, color: 'yellow' });
-  }
-
-  // 3. Session
-  if (state.currentSession) {
-    segments.push({ text: `${state.currentSession.alias} [${state.currentSession.shortId}]`, color: 'cyan' });
-  }
-
-  // 4. Workspace
+  // Shared status-row builder (src/ui/status-bar.ts): priority order with
+  // compact forms, so a long model or session name never crowds the rest.
+  const extras: StatusSegment[] = [];
+  if (saverActive) extras.push({ text: `⚡ saver${state.saverInfo!.savedToday > 0 ? ` ~${formatCompact(state.saverInfo!.savedToday)}` : ''}`, compact: '⚡', color: saverColor, priority: 4 });
   if (isWorkspace && state.workspace) {
     const ws = state.workspace;
     let wsStr = `⎇ ${ws.branch}`;
@@ -932,33 +902,20 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
     if (ws.behind > 0) wsStr += ` ↓${ws.behind}`;
     if (ws.stagedCount > 0) wsStr += ` S${ws.stagedCount}`;
     if (ws.unstagedCount > 0) wsStr += ` M${ws.unstagedCount}`;
-    segments.push({ text: wsStr, color: 'blue' });
+    extras.push({ text: wsStr, compact: `⎇ ${ws.branch}`, color: 'blue', priority: 2 });
   }
-
-  // 5. Background tasks
-  if (!isWorkspace && runningBg > 0) {
-    segments.push({ text: `⏳ ${runningBg}bg`, color: 'cyan' });
-  }
-
-  // 6. Sub-agents
-  if (!isWorkspace && runningAgents > 0) {
-    segments.push({ text: `🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`, color: 'magenta' });
-  }
-
-  // Calculate total width and drop segments from the right if they don't fit
-  const sepStr = ' │ ';
-  const maxLen = Math.max(20, cols - 2);
-  let totalLen = segments.reduce((sum, s, i) => sum + s.text.length + (i > 0 ? sepStr.length : 0), 0);
-  const visible = [...segments];
-  while (totalLen > maxLen && visible.length > 1) {
-    const removed = visible.pop()!;
-    totalLen -= removed.text.length + sepStr.length;
-  }
-  if (totalLen > maxLen && visible.length > 0) {
-    const last = visible[visible.length - 1];
-    const excess = totalLen - maxLen;
-    last.text = last.text.slice(0, Math.max(1, last.text.length - excess - 1)) + '…';
-  }
+  if (!isWorkspace && runningBg > 0) extras.push({ text: `⏳ ${runningBg} in background`, compact: `⏳${runningBg}`, color: 'cyan', priority: 3 });
+  if (!isWorkspace && runningAgents > 0) extras.push({ text: `🤖 ${runningAgents} agent${runningAgents !== 1 ? 's' : ''}`, compact: `🤖${runningAgents}`, color: 'magenta', priority: 3 });
+  const visible = fitSegments(statusSegments({
+    provider: state.provider,
+    permission: state.permissionMode,
+    tokensPct: state.tokenInfo ? pct : null,
+    desktop: state.desktopActivity,
+    updateAvailable: state.updateAvailable,
+    session: state.currentSession,
+    extras,
+  }), Math.max(20, cols - 2));
+  const sepStr = ' · ';
 
   return (
     <Box flexDirection="column" flexShrink={0}>

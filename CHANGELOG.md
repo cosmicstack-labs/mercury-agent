@@ -31,6 +31,7 @@
 - Telegram and Signal can switch back from Allow All to Ask Me (the switch used to be ignored until restart).
 
 ### Bottom bar
+- **One useful row, not a dump.** The row under the input now has two halves. Left: what is happening — a spinner, the phase (Thinking, the running tool, Writing) and the elapsed time while a turn runs, a notice when there is one, two short hints when idle. Right: where you are — permission mode, model, today's token use, Code mode, Optimus, an update, and the session last — fitted to the terminal width in priority order with compact forms (`claude-haiku-4-5` not `claude-haiku-4-5-20251001`, `⚡12%` not `⚡ 12% today`), so a long model or session name never crowds out the rest; what does not fit is dropped, lowest priority first, never cut mid-word. The attached terminal and the foreground TUI share one builder.
 - **The bar updates live.** The attached terminal (what `mercury` opens) read the model once on connect and never again; model switches, Code mode, permission changes and Optimus activity never reached it. The runtime now pushes a status update on every model switch and checks every 2 seconds for anything else. The bar shows the thread, model, Code mode, Ask Me / Allow All, today's token use and Optimus activity; the foreground and Mercury Code bars show the permission mode too.
 - The launch pad's budget row works again (it read field names the runtime never sent).
 

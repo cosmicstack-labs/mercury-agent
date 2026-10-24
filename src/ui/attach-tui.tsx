@@ -30,6 +30,7 @@ import {
 } from './input-composer.js';
 import { CursorCell } from './cursor-anchor.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
+import { activityLine, fitSegments, phaseFromStep, splitRow, statusSegments } from './status-bar.js';
 
 /**
  * Attach TUI — the terminal face of `mercury attach`. Native scrollback
@@ -157,6 +158,10 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   const busy = streaming || steps.some((s) => !s.done);
   const tick = useTick(busy);
   const frame = spinnerFrame(tick);
+  // When the current turn started (for the elapsed counter in the status row).
+  const turnStartedAt = React.useRef<number | null>(null);
+  if (busy && turnStartedAt.current === null) turnStartedAt.current = Date.now();
+  if (!busy) turnStartedAt.current = null;
   const [notice, setNotice] = React.useState<string | null>(null);
 
   const [input, setInput] = React.useState('');
@@ -573,16 +578,27 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     );
   }
 
-  const providerLabel = provider && provider.name ? `${provider.name}${provider.model ? ` ${provider.model}` : ''}` : 'connected';
-  // Bottom bar: thread · model · Code mode · permissions · today's tokens · Optimus.
-  const statusBar = [
-    `⚿ ${thread ? `${thread.alias} [${thread.shortId}]` : ''}`,
-    providerLabel,
-    runtimeStatus && runtimeStatus.mode !== 'off' ? `CODE ${runtimeStatus.mode.toUpperCase()}` : '',
-    runtimeStatus?.permission === 'allow-all' ? 'Allow All' : runtimeStatus?.permission === 'ask-me' ? 'Ask Me' : '',
-    tokenInfo && tokenInfo.budget > 0 ? `⚡ ${Math.min(999, Math.round((tokenInfo.used / tokenInfo.budget) * 100))}%` : '',
-    runtimeStatus?.desktop ?? '',
-  ].filter(Boolean).join(' · ');
+  // Status row under the input (src/ui/status-bar.ts): left = what is
+  // happening now, right = where you are, fitted to the width in priority
+  // order so a long model or session name never crowds out the rest.
+  const runningStep = [...steps].reverse().find((s) => !s.done);
+  const left = activityLine({
+    busy,
+    phase: phaseFromStep(runningStep?.label, streamTail.length > 0),
+    elapsedSec: turnStartedAt.current ? (Date.now() - turnStartedAt.current) / 1000 : 0,
+    spinner: frame,
+    hints: terminalSize.cols < 70 ? '↵ send · /help' : '↵ send · /help · ctrl+c detach',
+  });
+  const rowCols = Math.max(20, terminalSize.cols - 6);
+  const split = splitRow(rowCols, left.text);
+  const right = fitSegments(statusSegments({
+    provider: provider && provider.name ? provider : null,
+    permission: runtimeStatus?.permission === 'allow-all' || runtimeStatus?.permission === 'ask-me' ? runtimeStatus.permission : null,
+    tokensPct: tokenInfo && tokenInfo.budget > 0 ? (tokenInfo.used / tokenInfo.budget) * 100 : null,
+    codeMode: runtimeStatus?.mode ?? 'off',
+    desktop: runtimeStatus?.desktop ?? '',
+    session: thread ? { alias: thread.alias, shortId: thread.shortId } : null,
+  }), split.right);
   // The live tail looks exactly like the settled block it becomes: the same
   // MERCURY header and indent, the same markdown pass (an unclosed fence is
   // closed for rendering only). It used to be drawn with a cyan "│" bar that
@@ -625,7 +641,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
       {prompt && <AttachPromptView prompt={prompt} activeIdx={promptIdx} />}
       {notice && (
         <Box paddingX={1} flexShrink={0}>
-          <Text color="yellow">{notice}</Text>
+          <Text color="yellow" wrap="truncate-end">{notice}</Text>
         </Box>
       )}
       {/* Shared-composer pickers — identical behavior and visuals to the main TUI. */}
@@ -645,10 +661,19 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           </Box>
         </Box>
       </Box>
-      <Box paddingX={3} flexShrink={0}>
-        <Text dimColor wrap="truncate-end">↵ send · /model · /permissions · ctrl+c detach</Text>
+      <Box paddingX={3} flexShrink={0} height={1} overflow="hidden">
+        <Box width={split.left} flexShrink={0}>
+          <Text color={left.color} dimColor={left.dim} wrap="truncate-end">{left.text}</Text>
+        </Box>
         <Spacer />
-        <Text color="blue" wrap="truncate-end">{statusBar}</Text>
+        <Box flexShrink={0}>
+          {right.map((seg, idx) => (
+            <React.Fragment key={`${seg.priority}:${idx}`}>
+              {idx > 0 && <Text color="gray"> · </Text>}
+              <Text color={seg.color}>{seg.text}</Text>
+            </React.Fragment>
+          ))}
+        </Box>
       </Box>
     </Box>
   );
