@@ -623,19 +623,17 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           </Box>
         </Box>
       )}
-      {steps.length > 0 && (
+      {/* What is happening right now (spinner, phase, elapsed) lives on the
+          status row under the input; up here only the finished steps stay,
+          so nothing is said twice. */}
+      {steps.some((step) => step.done) && (
         <Box flexDirection="column" paddingX={2} flexShrink={0}>
-          {steps.map((step) => (
+          {steps.filter((step) => step.done).map((step) => (
             <Box key={step.key}>
-              <Text color={step.done ? 'green' : 'cyan'}>{step.done ? '✓' : frame}</Text>
+              <Text color="green">✓</Text>
               <Text dimColor> {step.label}</Text>
             </Box>
           ))}
-        </Box>
-      )}
-      {streaming && tailLines.length === 0 && steps.length === 0 && (
-        <Box paddingX={2} flexShrink={0}>
-          <Text color="cyan">{frame}</Text><Text dimColor> working…</Text>
         </Box>
       )}
       {prompt && <AttachPromptView prompt={prompt} activeIdx={promptIdx} />}

@@ -39,10 +39,13 @@ describe('attach TUI live rendering', () => {
     emit!({ type: 'thinking', data: {} });
     await sleep(150);
     const a = screen.text().join('\n');
-    expect(a).toContain('working…');
-    const glyphA = a.match(/([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) working/)?.[1];
+    // The live phase is said once, on the status row under the input; the
+    // old "working…" line above the input is gone.
+    expect(a).not.toContain('working…');
+    expect(a).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking · \d+s/);
+    const glyphA = a.match(/([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) Thinking/)?.[1];
     await sleep(350);
-    const glyphB = screen.text().join('\n').match(/([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) working/)?.[1];
+    const glyphB = screen.text().join('\n').match(/([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) Thinking/)?.[1];
     expect(glyphA).toBeDefined();
     expect(glyphB).not.toBe(glyphA);
     emit!({ type: 'text_delta', data: { text: 'Here is the reply, still streaming.' } });

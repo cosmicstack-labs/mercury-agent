@@ -67,6 +67,8 @@ describe('system prompt assembly', () => {
   it('plain chat gets the work contract; Mercury Code keeps its own', () => {
     const chat = buildSystemPrompt(base);
     expect(chat).toContain('**How you work:**');
+    // Decisions go through ask_user (an arrow-key picker), not a question in prose.
+    expect(chat).toContain('Ask with ask_user');
     const code = buildSystemPrompt({ ...base, programmingSuffix: '\n\nCODE' });
     expect(code).not.toContain('**How you work:**');
   });

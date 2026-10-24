@@ -23,6 +23,8 @@
 
 ### Chat
 - **Regular chat works like an agent again.** Its instructions forbade helper scripts and batching ("call write_file for each one individually"), so a task like converting an EPUB to Markdown was done file by file by hand. Chat now reaches for the strongest existing tool (pandoc, ffmpeg, a Python library) or one script, does a quick web search when it isn't sure what the best tool is, and checks the output before saying it is done. It also gets a short working contract like Mercury Code's: do the work, plan multi-step tasks, report what was checked.
+- **`/model` and `/cloud` offer the arrow-key picker in the attached terminal again.** The picker was only wired to the foreground terminal; since the default launch attaches, `/model` printed a list and left you typing `/models use <name>`. Both now open the same ↑↓ picker on your own screens (attached terminal and dashboard), and Esc keeps the current model instead of silently taking the first option.
+- **Yes-or-no and "which one?" questions come as a picker, not prose.** Chat now asks decisions through its question tool (↑↓ and Enter) and keeps prose for questions that need free text (a name, a path).
 
 ### Permissions
 - **Mercury asks for your permission mode again, once, and remembers it.** Since 1.3.1 the default `mercury` launch attaches to the background runtime, which never showed the "Ask Me / Allow All" prompt, so every new user was silently in Ask Me. Setup now asks; existing users are asked once in the attached terminal; the choice is saved and applied to your terminal, attached terminal, Mercury Code and the dashboard.
@@ -34,6 +36,7 @@
 - **One useful row, not a dump.** The row under the input now has two halves. Left: what is happening — a spinner, the phase (Thinking, the running tool, Writing) and the elapsed time while a turn runs, a notice when there is one, two short hints when idle. Right: where you are — permission mode, model, today's token use, Code mode, Optimus, an update, and the session last — fitted to the terminal width in priority order with compact forms (`claude-haiku-4-5` not `claude-haiku-4-5-20251001`, `⚡12%` not `⚡ 12% today`), so a long model or session name never crowds out the rest; what does not fit is dropped, lowest priority first, never cut mid-word. The attached terminal and the foreground TUI share one builder.
 - **The bar updates live.** The attached terminal (what `mercury` opens) read the model once on connect and never again; model switches, Code mode, permission changes and Optimus activity never reached it. The runtime now pushes a status update on every model switch and checks every 2 seconds for anything else. The bar shows the thread, model, Code mode, Ask Me / Allow All, today's token use and Optimus activity; the foreground and Mercury Code bars show the permission mode too.
 - The launch pad's budget row works again (it read field names the runtime never sent).
+- **Said once.** While a turn runs, the spinner, phase and elapsed time live on the status row only; the attached terminal no longer repeats a "working…" line and a spinning step above the input. Finished steps still show with a ✓.
 
 ## 1.4.0 — Pluggy Mercury: plugins, WhatsApp calls, and Optimus uses your computer
 
