@@ -17,6 +17,9 @@ vi.mock('../../utils/ssrf.js', () => ({
 }));
 
 import { createFetchUrlTool } from './fetch-url.js';
+
+// Parallel, the first search engine, uses the global fetch: unavailable here.
+vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
 import { guardedFetch } from '../../utils/ssrf.js';
 import { isBrokenSearchSkill } from '../../skills/loader.js';
 

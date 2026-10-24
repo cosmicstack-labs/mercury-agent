@@ -44,12 +44,20 @@ const defaultFetch = routes({ 'search.brave.com': BRAVE, 'news.google.com': GOOG
 
 vi.mock('../../utils/ssrf.js', () => ({ guardedFetch: vi.fn() }));
 
-import { createWebSearchTool, directLink, parseBrave, parseDdg, parseRss, relevant, resetBraveCooldown, searchQueryFromUrl, webSearch } from './web-search.js';
+import { createWebSearchTool, directLink, looksLikeArticle, parseBrave, parseDdg, parseParallel, parseRss, relevant, resetBraveCooldown, searchQueryFromUrl, webSearch } from './web-search.js';
 import { guardedFetch } from '../../utils/ssrf.js';
 
 vi.mocked(guardedFetch).mockImplementation(defaultFetch as never);
+
+// Parallel (the first engine) is called with the global fetch. By default it
+// is unavailable here, so the older tests exercise the fallback chain; the
+// Parallel tests below answer it.
+const parallelDown = async () => new Response('', { status: 503 });
+const fetchMock = vi.fn(parallelDown);
+vi.stubGlobal('fetch', fetchMock);
+const parallelReply = (results: unknown[]) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }], structuredContent: { search_id: 's', results } } }), { status: 200 });
 // Tests that swap the fetch mock must not leak it (or a Brave cooldown) into the next test.
-afterEach(() => { vi.mocked(guardedFetch).mockClear(); vi.mocked(guardedFetch).mockImplementation(defaultFetch as never); resetBraveCooldown(); });
+afterEach(() => { vi.mocked(guardedFetch).mockClear(); vi.mocked(guardedFetch).mockImplementation(defaultFetch as never); resetBraveCooldown(); fetchMock.mockReset(); fetchMock.mockImplementation(parallelDown); });
 
 describe('web_search', () => {
   it('parses Google News items, strips the source suffix, keeps the date', () => {
@@ -148,7 +156,7 @@ describe('web_search', () => {
     const out = await t.execute({ query: '', kind: 'news' }, {});
     expect(out).toMatch(/News results from Google News[\s\S]*1\. Envoy meets leader in Moscow \(BBC · Wed, 21 Oct 2026\)/);
     vi.mocked(guardedFetch).mockImplementation(async () => new Response('', { status: 500 }));
-    expect(await t.execute({ query: 'x' }, {})).toMatch(/^Error: web search found nothing: no source found anything \(Brave: HTTP 500; DuckDuckGo: HTTP 500/);
+    expect(await t.execute({ query: 'x' }, {})).toMatch(/^Error: web search found nothing: no source found anything \(Parallel: HTTP 503; Brave: HTTP 500; DuckDuckGo: HTTP 500/);
   });
 
   it('parses DuckDuckGo html and lite pages: real links out of the redirect, ads dropped', () => {
@@ -183,13 +191,13 @@ describe('web_search', () => {
     const r = await webSearch('typescript satisfies operator', { max: 8 });
     expect(r.engine).toBe('Brave + DuckDuckGo');
     expect(r.results).toHaveLength(4);
-    expect(r.trail).toEqual(['Brave: 1 result', 'DuckDuckGo: 3 results']);
+    expect(r.trail).toEqual(['Parallel: HTTP 503', 'Brave: 1 result', 'DuckDuckGo: 3 results']);
   });
 
   it('a bot challenge reads as "blocked" in the trail', async () => {
     vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': 429, 'duckduckgo.com': '<html>anomaly</html>', 'wikipedia.org': WIKI }) as never);
     const r = await webSearch('canberra');
-    expect(r.trail.slice(0, 4)).toEqual(['Brave: blocked (HTTP 429)', 'DuckDuckGo: blocked (bot challenge)', 'DuckDuckGo Lite: blocked (bot challenge)', 'Wikipedia: 2 results']);
+    expect(r.trail.slice(0, 5)).toEqual(['Parallel: HTTP 503', 'Brave: blocked (HTTP 429)', 'DuckDuckGo: blocked (bot challenge)', 'DuckDuckGo Lite: blocked (bot challenge)', 'Wikipedia: 2 results']);
   });
 
 
@@ -205,6 +213,49 @@ describe('web_search', () => {
     const r = await webSearch('canberra');
     expect(ddgCalls).toBe(2);
     expect(r.engine).toBe('DuckDuckGo');
-    expect(r.trail).toEqual(['Brave: blocked (HTTP 429)', 'DuckDuckGo: 4 results']);
+    expect(r.trail).toEqual(['Parallel: HTTP 503', 'Brave: blocked (HTTP 429)', 'DuckDuckGo: 4 results']);
+  });
+
+  it('Parallel answers first: one keyless MCP tools/call, results with excerpts and dates', async () => {
+    fetchMock.mockImplementation(async () => parallelReply([
+      { url: 'https://www.linkedin.com/company/cosmic-stack', title: 'Cosmic Stack', publish_date: '2026-05-14', excerpts: ['* Name: Cosmic Stack\n * description\n - Cosmic Stack is a technology company focused on agentic AI, building [Mercury Agent](https://mercuryagent.sh).'] },
+      { url: 'https://cosmicstack.ai', title: 'Cosmic Stack', publish_date: null, excerpts: ['Cosmic Stack builds open agentic AI.'] },
+      { url: 'https://github.com/cosmicstack-labs', title: 'Cosmic Stack Labs', excerpts: [] },
+      { url: 'https://x.com/cosmicstack', title: 'Cosmic Stack on X', excerpts: ['Cosmic Stack news'] },
+    ]));
+    const r = await webSearch('cosmic stack linkedin');
+    expect(r.engine).toBe('Parallel');
+    expect(r.trail).toEqual(['Parallel: 4 results']);
+    expect(r.results[0]).toEqual({ title: 'Cosmic Stack', url: 'https://www.linkedin.com/company/cosmic-stack', date: '2026-05-14', snippet: 'Name: Cosmic Stack description - Cosmic Stack is a technology company focused on agentic AI, building Mercury Agent.' });
+    // Nothing else was asked: Parallel had enough.
+    expect(vi.mocked(guardedFetch)).not.toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://search.parallel.ai/mcp');
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'web_search', arguments: { objective: 'cosmic stack linkedin', search_queries: ['cosmic stack linkedin'] } } });
+  });
+
+  it('parses Parallel replies sent as server-sent events, and surfaces MCP errors', () => {
+    const sse = `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: { results: [{ url: 'https://nodejs.org/en/blog/release', title: 'Node.js releases' }] } } })}\n\n`;
+    expect(parseParallel(sse, 5)).toEqual([{ title: 'Node.js releases', url: 'https://nodejs.org/en/blog/release', snippet: '', date: undefined }]);
+    expect(() => parseParallel(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'rate limited' } }), 5)).toThrow('rate limited');
+  });
+
+  it('news from Parallel keeps article links and drops section fronts; Bing News fills in', async () => {
+    expect(looksLikeArticle('https://www.greaterkashmir.com/kashmir')).toBe(false);
+    expect(looksLikeArticle('https://www.greaterkashmir.com/latest-news')).toBe(false);
+    expect(looksLikeArticle('https://www.democracynow.org/2026/10/23/headlines')).toBe(true);
+    expect(looksLikeArticle('https://kashmirlife.net/jammu-kashmir-government-warns-officers-over-delays')).toBe(false);
+    expect(looksLikeArticle('https://kashmirlife.net/news/jammu-kashmir-government-warns-officers-over-delays')).toBe(true);
+    expect(looksLikeArticle('https://www.greaterkashmir.com/kashmir/attacks-on-infrastructure-unacceptable-12742822')).toBe(true);
+    fetchMock.mockImplementation(async () => parallelReply([
+      { url: 'https://www.greaterkashmir.com/kashmir', title: 'Kashmir News: Live Breaking News' },
+      { url: 'https://www.greaterkashmir.com/kashmir/power-shutdown-in-kashmir-announced-12742577', title: 'Kashmir power shutdown announced', publish_date: '2026-10-23' },
+    ]));
+    const bingNewsFeed = `<rss><channel><item><title>Kashmir story</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3a%2f%2fkashmirlife.net%2fstory</link></item></channel></rss>`;
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'bing.com/news': bingNewsFeed }) as never);
+    const r = await webSearch('kashmir', { kind: 'news' });
+    expect(r.engine).toBe('Parallel + Bing News');
+    expect(r.results.map((x) => x.url)).toEqual(['https://www.greaterkashmir.com/kashmir/power-shutdown-in-kashmir-announced-12742577', 'https://kashmirlife.net/story']);
   });
 });

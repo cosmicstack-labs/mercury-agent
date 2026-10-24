@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Web search
+- **Parallel search first.** `web_search` now asks [Parallel's public search](https://search.parallel.ai/mcp) first, for web and news: a keyless MCP endpoint built for agents that answers in about a second with excerpts and publish dates. Brave, DuckDuckGo, Wikipedia, Hacker News and the news feeds stay as fallbacks, in that order. News keeps only links to individual articles, so section fronts like "/kashmir" are dropped and Bing News fills in.
 - **News links open the article.** News search used Google News first, whose links are Google redirects (`news.google.com/rss/articles/…`) that can't be turned into the publisher's address. Bing News now comes first and its links are unwrapped to the real article; Google News is the fallback, and its links are marked as redirects.
 - **Two web indexes, combined.** Brave and DuckDuckGo (its html and lite pages) both answer some automated requests and block others, by client fingerprint and rate. `web_search` now asks them in turn, retries a DuckDuckGo challenge once after a short pause, and combines relevant results until it has enough, instead of stopping at the first engine with one hit.
 - **Search never depends on the model.** Results come only from Mercury's own search tools, never from a provider's built-in web search, so search works the same with every model.

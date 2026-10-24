@@ -5,10 +5,11 @@ import { guardedFetch } from '../../utils/ssrf.js';
 /**
  * web_search: free, keyless search for the model.
  *
- *   web  → Brave Search, DuckDuckGo (html, then lite), then Wikipedia, Hacker News,
- *           Bing News, Google News, Bing RSS
- *   news → Bing News (direct article links), then Google News (top stories, or
- *           when Bing has nothing; its links are Google redirects), Hacker News
+ *   web  → Parallel (search.parallel.ai, keyless MCP), then Brave Search,
+ *           DuckDuckGo (html, then lite), Wikipedia, Hacker News, Bing News,
+ *           Google News, Bing RSS
+ *   news → Parallel, then Bing News (direct article links), Google News (its
+ *           links are Google redirects), Hacker News
  *
  * Every answer must mention the query (relevant()); an engine serving junk
  * counts as empty and the next one is tried.
@@ -139,6 +140,89 @@ export function parseBrave(html: string, max: number): SearchResult[] {
     out.push({ title: decode(title), url: unescape(url), snippet: decode(snippet).slice(0, 300) });
   }
   return out;
+}
+
+/**
+ * Parallel's public search over MCP (https://search.parallel.ai/mcp): a real
+ * web index built for agents, keyless, answering in about a second with
+ * excerpts and publish dates. Plain JSON-RPC over HTTP: one tools/call to
+ * its web_search tool, no session needed. A fixed public HTTPS endpoint, so
+ * it is called directly rather than through guardedFetch (GET-only).
+ */
+export const PARALLEL_MCP_URL = 'https://search.parallel.ai/mcp';
+
+interface ParallelHit { url?: string; title?: string; publish_date?: string | null; excerpts?: string[] }
+
+/** The MCP reply, as plain JSON or as a server-sent-events body. */
+export function parseParallel(body: string, max: number): SearchResult[] {
+  let text = body.trim();
+  if (!text.startsWith('{')) {
+    const data = text.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).filter(Boolean);
+    text = data[data.length - 1] ?? '';
+  }
+  const msg = JSON.parse(text) as { error?: { message?: string }; result?: { isError?: boolean; structuredContent?: { results?: ParallelHit[] }; content?: Array<{ type?: string; text?: string }> } };
+  if (msg.error) throw new Error(msg.error.message ?? 'MCP error');
+  if (msg.result?.isError) throw new Error(msg.result.content?.[0]?.text?.slice(0, 160) ?? 'search error');
+  let hits = msg.result?.structuredContent?.results;
+  if (!hits) {
+    const t = msg.result?.content?.find((c) => c.type === 'text')?.text;
+    hits = t ? (JSON.parse(t) as { results?: ParallelHit[] }).results : undefined;
+  }
+  return (hits ?? []).filter((h) => h.url && /^https?:\/\//.test(h.url)).slice(0, max).map((h) => ({
+    title: (h.title ?? h.url!).replace(/\s+/g, ' ').trim(),
+    url: h.url!,
+    // Excerpts are markdown cut from the page: flatten links and markup.
+    snippet: (h.excerpts?.[0] ?? '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[#*>`_]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
+    date: h.publish_date ?? undefined,
+  }));
+}
+
+async function parallelSearch(objective: string, queries: string[], max: number): Promise<SearchResult[]> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(PARALLEL_MCP_URL, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'User-Agent': 'Mercury-Agent' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'web_search', arguments: { objective: objective.slice(0, 400), search_queries: queries } } }),
+    });
+    if (res.status === 429) throw new Error('rate-limited (HTTP 429)');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return parseParallel(await res.text(), max);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Keyword queries for Parallel: the query itself, cut to its first eight words. */
+function parallelQueries(query: string): string[] {
+  return [query.replace(/["']/g, '').split(/\s+/).filter(Boolean).slice(0, 8).join(' ')];
+}
+
+async function parallel(query: string, max: number): Promise<SearchResult[]> {
+  if (!query.trim()) return [];
+  return parallelSearch(query, parallelQueries(query), max);
+}
+
+/**
+ * A link to one story rather than a section front ("/kashmir", "/latest-news"):
+ * a dated path, or at least two path segments with a long slug. News answers
+ * should open the article.
+ */
+export function looksLikeArticle(url: string): boolean {
+  let path: string;
+  try { path = new URL(url).pathname; } catch { return false; }
+  const parts = path.split('/').filter(Boolean);
+  if (/\/(19|20)\d{2}\/\d{1,2}\//.test(path) || /\d{5,}/.test(path)) return true;
+  const last = parts[parts.length - 1] ?? '';
+  return parts.length >= 2 && (last.split('-').length >= 4 || last.length >= 30);
+}
+
+async function parallelNews(query: string, max: number): Promise<SearchResult[]> {
+  const q = query.trim() || 'top news today';
+  const hits = await parallelSearch(`Latest news articles about: ${q}. Prefer individual articles published in the last few days, from news sites.`, [...parallelQueries(q), `${parallelQueries(q)[0]} news`], max * 2);
+  return hits.filter((h) => looksLikeArticle(h.url)).slice(0, max);
 }
 
 /**
@@ -360,8 +444,8 @@ export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; ma
   // source never decides the answer. Every engine tried is recorded in the
   // trail, so "nothing found" and "everything was blocked" read differently.
   const engines: Array<[string, (q: string, n: number) => Promise<SearchResult[]>]> = opts.kind === 'news'
-    ? [['Bing News', bingNews], ['Google News', googleNews], ['Hacker News', hackerNews]]
-    : [['Brave', brave], ['DuckDuckGo', ddgHtml], ['DuckDuckGo Lite', ddgLite], ['Wikipedia', wikipedia], ['Hacker News', hackerNews], ['Bing News', bingNews], ['Google News', googleNews], ['Bing', bing]];
+    ? [['Parallel', parallelNews], ['Bing News', bingNews], ['Google News', googleNews], ['Hacker News', hackerNews]]
+    : [['Parallel', parallel], ['Brave', brave], ['DuckDuckGo', ddgHtml], ['DuckDuckGo Lite', ddgLite], ['Wikipedia', wikipedia], ['Hacker News', hackerNews], ['Bing News', bingNews], ['Google News', googleNews], ['Bing', bing]];
   const want = Math.min(ENOUGH, max);
   const trail: string[] = [];
   const used: string[] = [];
