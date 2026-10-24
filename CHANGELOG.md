@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.2 — search that finds things, and a research prompt that asks only when you mean it
 
 ### Web search
 - **Three web sources, the ones that work.** `web_search` asks [Parallel's public search](https://search.parallel.ai/mcp) first (keyless MCP built for agents, about a second, with excerpts and dates), then DuckDuckGo's html page, then its lite page. Brave, Wikipedia, Hacker News and Bing's web feed are gone from web search: Brave refuses automated requests and the others answered general questions badly. News keeps Parallel (article links only, section fronts dropped), then Bing News, Google News and Hacker News.
