@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Owner Model: Mercury learns how to work with you (ADR-026)
+- **Memory became beliefs with evidence.** Every claim about you now carries support and counter-evidence, a confidence that fades unless it is seen again, the context it applies in, and a status: candidate → held → confirmed by you; contested; retired; forgotten. What you say outright beats what Mercury inferred and never fades. Nothing is deleted behind your back.
+- **It learns working traits, not personality types:** reply length, when to ask before acting (per project or domain), options vs a recommendation, tone, your expertise and risk appetite per domain, when you are usually around, how you give feedback. It never infers health, religion, politics, sexuality or personality types, never stores credentials, and never generalises about other people beyond what you said.
+- **Two loops.** After each turn a strict extractor turns the turn into belief operations (or nothing; Mercury's own replies are never evidence about you). Every hour of activity, and at shutdown, a reflection pass reads your messages and behaviour across sessions, infers traits, merges duplicates, flags contradictions and rewrites the owner brief.
+- **The model finally sees it:** "About you" and "How to work with you" sit in every prompt, plus the beliefs relevant to each message. Beliefs it acted on without objection gain support; a correction retires the old belief and holds the new one.
+- **You hear about it.** Behaviour-changing learning ends the reply with one line: `☿ Noted: … Say "forget that" to undo.` Contradictions are asked about once. `/memory learned|beliefs|contested|confirm|correct|forget|settle`, `/forget <text>`, "forget that", the `forget_memory` / `confirm_belief` / `correct_belief` tools, a dashboard view with Confirm/Forget, and an editable `~/.mercury/soul/owner.md` whose notes are read back.
+- **Hygiene:** the old extractor saved Mercury's own replies as your preferences (about half of a typical store). Those rows are quarantined, not deleted (dashboard → Quarantined, with Restore); real memories became beliefs. The prose fallback is gone, merging works, conflicts no longer delete at random, and soul files you edited are never overwritten by migration.
+
 ### Chat
 - **Regular chat works like an agent again.** Its instructions forbade helper scripts and batching ("call write_file for each one individually"), so a task like converting an EPUB to Markdown was done file by file by hand. Chat now reaches for the strongest existing tool (pandoc, ffmpeg, a Python library) or one script, does a quick web search when it isn't sure what the best tool is, and checks the output before saying it is done. It also gets a short working contract like Mercury Code's: do the work, plan multi-step tasks, report what was checked.
 

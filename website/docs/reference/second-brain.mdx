@@ -3,7 +3,27 @@ id: second-brain
 title: Second Brain
 ---
 
-Mercury has a persistent, structured memory that grows with every conversation. When enabled, it automatically extracts, stores, and retrieves facts about you — your preferences, goals, projects, habits, the people in your life, and the relationships between them.
+Mercury has a persistent, structured memory that grows with every conversation. When enabled, it learns what is true about you — and how you like to work — as beliefs with evidence, retrieves what is relevant to each message, and tells you when it learned something that changes how it behaves.
+
+## The Owner Model: beliefs, not just facts
+
+Since 1.4.1 Mercury holds **beliefs** about you rather than a pile of facts. A belief is a claim ("prefers one command over many manual steps") with evidence for and against it, a confidence that fades unless it is seen again, the context it applies in (everywhere, one project, one channel, one domain), and a status: **candidate** (seen once) → **held** (seen in two sessions) → **confirmed** (you said so). Two beliefs that cannot both be true are **contested** and Mercury asks you once. What you state outright never fades; what Mercury inferred does, unless it keeps being true.
+
+What it learns are *working traits* that change how Mercury behaves: reply length, when to ask before acting (per project or domain), options vs a recommendation, tone, your expertise and risk appetite per domain, when you are usually around, and how you give feedback. It never infers personality types, health, religion, politics or sexuality, never stores passwords or keys, and never generalises about other people beyond what you said.
+
+**How it learns.** After each turn, a small model call turns the turn into belief operations — or nothing, which is the usual outcome. Mercury's own replies are never evidence about you. Every hour of activity (and at shutdown) a reflection pass reads your messages across sessions, infers traits, merges duplicates, flags contradictions and rewrites the owner brief. The brief — *About you* and *How to work with you* — is in every prompt, together with the beliefs relevant to the current message.
+
+**What you see.** When something behaviour-changing is learned, the reply ends with one line: `☿ Noted: you'd rather I just run things here without asking. Say "forget that" to undo.` From any chat:
+
+| Command | What it does |
+|---|---|
+| `/memory learned [days]` | What Mercury learned recently, numbered |
+| `/memory beliefs` | Traits by dimension, then confirmed preferences |
+| `/memory contested` | Pairs Mercury can't settle; `/memory settle <n> a\|b` |
+| `/memory confirm <n>` · `/memory forget <n>` · `/memory correct <n> <what is true>` | Act on a numbered item |
+| `/forget <text>` · "forget that" | Forget the best match, or the last `☿ Noted` line |
+
+`~/.mercury/soul/owner.md` holds the same brief in plain text; anything you write under **My notes** is read back as something you stated. The dashboard's Memory page shows what was learned with Confirm / Forget, and a **Quarantined** list: rows the old extractor saved by mistake (Mercury's own replies stored as your preferences), hidden but restorable.
 
 ## How it works
 

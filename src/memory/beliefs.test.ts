@@ -67,15 +67,24 @@ describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
     const r = store.apply({ op: 'create', kind: 'trait', dimension: 'brevity', level: 'terse', statement: 'Prefers short replies', excerpt: 'shorter', sessionId: 's1' }, t0)!;
     store.apply({ op: 'support', beliefId: r.belief.id, excerpt: 'tl;dr', sessionId: 's2' }, t0 + 1);
     const fresh = store.confidence(store.get(r.belief.id)!, t0 + 1);
-    const later = store.confidence(store.get(r.belief.id)!, t0 + 120 * DAY);
+    const later = store.confidence(store.get(r.belief.id)!, t0 + 130 * DAY);
     expect(later).toBeLessThan(fresh);
     expect(later).toBeLessThan(RETIRE_BELOW);
-    expect(store.decayPass(t0 + 120 * DAY)).toBe(1);
+    expect(store.decayPass(t0 + 130 * DAY)).toBe(1);
     expect(store.get(r.belief.id)!.status).toBe('retired');
     expect(store.get(r.belief.id)!.validTo).not.toBeNull();
     // Re-supported: comes back.
-    store.apply({ op: 'support', beliefId: r.belief.id, excerpt: 'keep it short', sessionId: 's3' }, t0 + 121 * DAY);
+    store.apply({ op: 'support', beliefId: r.belief.id, excerpt: 'keep it short', sessionId: 's3' }, t0 + 131 * DAY);
     expect(store.get(r.belief.id)!.status).toBe('held');
+  });
+
+  it('an undisputed fact rests for a long time instead of being retired', () => {
+    const { store } = make();
+    const t0 = Date.now();
+    const r = store.apply({ op: 'create', kind: 'fact', statement: 'User is named Salman Qureshi', excerpt: 'x', sessionId: 's1' }, t0)!;
+    expect(store.decayPass(t0 + 200 * DAY)).toBe(0);
+    expect(store.get(r.belief.id)!.status).toBe('candidate');
+    expect(store.confidence(store.get(r.belief.id)!, t0 + 200 * DAY)).toBeGreaterThan(RETIRE_BELOW);
   });
 
   it('a correction retires the old belief and holds the replacement as owner-stated', () => {
@@ -160,7 +169,8 @@ describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
     const quarantined = db.connection.prepare("SELECT id FROM memories WHERE scope = 'quarantine' ORDER BY id").all() as Array<{ id: string }>;
     expect(quarantined.map((q) => q.id)).toEqual(['m1', 'm2', 'm3']);
     const beliefs = store.list({ statuses: ['candidate', 'held', 'confirmed'] });
-    expect(beliefs.map((b) => [b.kind, b.status]).sort()).toEqual([['fact', 'held'], ['preference', 'candidate']]);
+    expect(beliefs.map((b) => [b.kind, b.status]).sort()).toEqual([['fact', 'candidate'], ['preference', 'candidate']]);
+    expect(store.getMeta('reflection_force')).toBe('1');
     expect(store.migrateLegacyMemories(now).skipped).toBe(true);
     expect(isLegacyJunk({ summary: 'User likes interactive 3D animations in web projects', type: 'preference', evidence_kind: 'inferred', confidence: 0.85, categories: '["technical"]' })).toBe(false);
   });

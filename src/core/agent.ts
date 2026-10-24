@@ -642,6 +642,12 @@ export class Agent {
       await this.heartbeat();
     });
 
+    // After a migration (or when asked), reflect soon after boot instead of
+    // waiting an hour, so migrated candidates are judged against real sessions.
+    if (this.userMemory?.beliefs.getMeta('reflection_force') === '1') {
+      setTimeout(() => { void this.reflectNow(); }, 2 * 60 * 1000).unref();
+    }
+
     setAskUserHandler(async (question, choices, channelId, channelType) => {
       return this.presentChoice(question, choices, channelId, channelType);
     });
@@ -4393,6 +4399,8 @@ export class Agent {
     if (!this.userMemory) return;
     if (this.reflectionInFlight) return this.reflectionInFlight;
     const userMemory = this.userMemory;
+    const force = userMemory.beliefs.getMeta('reflection_force') === '1';
+    if (force) userMemory.beliefs.setMeta('reflection_force', '0');
     this.reflectionInFlight = runReflection({
       beliefs: userMemory.beliefs,
       sessions: this.sessions,
@@ -4401,7 +4409,7 @@ export class Agent {
       learningPaused: () => userMemory.isLearningPaused(),
       ownerName: this.config.identity.owner || 'the owner',
       agentId: this.config.cloud.agentId || undefined,
-    }).then((result) => {
+    }, { force }).then((result) => {
       if (result.ran) this.syncTokenInfoToCli();
     }).finally(() => {
       this.reflectionInFlight = null;

@@ -1,3 +1,4 @@
+import { ownerWords } from './text.js';
 /**
  * Turn signals: the behavioural evidence one chat turn leaves behind,
  * computed without a model call (docs/owner-model.md §3.3). The per-turn
@@ -128,7 +129,7 @@ export function parseToolTraceLines(lines: readonly string[]): Array<{ tool: str
 }
 
 export function collectTurnSignals(input: TurnSignalInput): TurnSignals {
-  const message = input.message ?? '';
+  const message = ownerWords(input.message ?? '');
   const now = input.now ?? new Date();
   const used: string[] = [];
   const failed: string[] = [];
@@ -137,7 +138,7 @@ export function collectTurnSignals(input: TurnSignalInput): TurnSignals {
     if (t.failed && !failed.includes(t.tool)) failed.push(t.tool);
   }
   return {
-    correction: detectCorrection(message, input.previousUserMessages ?? []),
+    correction: detectCorrection(message, (input.previousUserMessages ?? []).map(ownerWords) ?? []),
     brevity: detectBrevityRequest(message),
     autonomy: detectAutonomyRequest(message),
     decisionStyle: detectDecisionStyle(message),

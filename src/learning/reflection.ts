@@ -13,6 +13,8 @@
  * Assistant text is never an input: only the owner's own turns, tool traces
  * (what Mercury did) and permission answers.
  */
+import { parseJsonLenient } from './json.js';
+import { looksLikeSecret, ownerWords } from './text.js';
 import { generateText } from 'ai';
 import { logger } from '../utils/logger.js';
 import type { Session, SessionMessage } from '../sessions/types.js';
@@ -81,7 +83,7 @@ export interface ReflectionResult {
 }
 
 export const REFLECTION_COST_TOKENS = 6000;
-export const REFLECTION_MAX_OUTPUT = 1500;
+export const REFLECTION_MAX_OUTPUT = 3000;
 const TURNS_TOKEN_CAP = 6000;
 const TURN_MAX_CHARS = 600;
 const MAX_TRAIT_LINES = 60;
@@ -129,8 +131,10 @@ Rules:
 2. Prefer fewer, stronger beliefs. Support an existing belief rather than creating a near-duplicate; list true duplicates in "merges" (keep the better-worded, better-supported one).
 3. A trait you infer from this batch alone is a candidate: create it with weight 1 unless the pattern repeats across several sessions (then weight up to 2). Hedge in the brief ("seems to", "so far").
 4. "contested": two existing beliefs that cannot both be true in the same context. Do not create a new trait level that contradicts a held one on the same dimension and context; contradict the old one instead, with the evidence.
-5. Never infer personality types (MBTI, Big Five, enneagram), health, religion, politics, sexuality, ethnicity, or anything about a third person beyond what the owner said. Never speculate about mood as a stable trait; a passing state is kind "situation".
-6. The brief is for the agent's system prompt. "about": <= 300 words, what the owner does, works on, prefers and cares about; stated facts plainly, inferred ones hedged. "howToWork": <= 180 words of direct instructions derived from the held traits and confirmed preferences (reply length, when to ask before acting and where, options vs a recommendation, tone, what to explain and what to assume per domain, what always needs confirmation, when not to disturb). Address the agent ("Keep replies short…"). Leave both empty strings when nothing is held.
+5. Never infer personality types (MBTI, Big Five, enneagram), health, religion, politics, sexuality, ethnicity, or anything about a third person beyond what the owner said. Never record passwords, codes, API keys, tokens, card or account numbers, even if the owner pasted them. Never speculate about mood as a stable trait; a passing state is kind "situation".
+6. The brief is for the agent's system prompt. "about": <= 300 words, what the owner does, works on, prefers and cares about; stated facts plainly, inferred ones hedged. "howToWork": <= 180 words of direct instructions derived from the held traits and confirmed preferences (reply length, when to ask before acting and where, options vs a recommendation, tone, what to explain and what to assume per domain, what always needs confirmation, when not to disturb). Address the agent ("Keep replies short…"). Write instructions in plain terms; never quote the statistics (no character counts, percentages, session or message counts, or clock times) and never repeat channel mechanics (how voice replies are formatted is already handled elsewhere). Leave both empty strings when nothing is held.
+8. At most 12 operations and 6 merges per pass: the strongest, best-evidenced ones.
+9. Refer to the owner by name or as "they"; never assume gender, age or location unless the owner stated it.
 7. Statements are about the owner, written in the third person without their name ("Prefers…", "Works on…"). Excerpts are quotes or short descriptions of actions, never your own reasoning.`;
 
 export function buildReflectionPrompt(input: {
@@ -144,14 +148,15 @@ export function buildReflectionPrompt(input: {
 }): string {
   const window = input.since > 0 ? `${iso(input.since)} to ${iso(input.now)}` : `everything up to ${iso(input.now)}`;
   const s = input.stats;
-  const histogram = s.hourHistogram.map((n, h) => (n ? `${String(h).padStart(2, '0')}h:${n}` : '')).filter(Boolean).join(' ') || 'none';
+  const histogram = describeHours(s.hourHistogram);
+  const lengthWord = s.medianOwnerLength === 0 ? 'none' : s.medianOwnerLength < 30 ? 'very short (a few words)' : s.medianOwnerLength < 90 ? 'short (a sentence)' : s.medianOwnerLength < 300 ? 'medium (a paragraph)' : 'long (several paragraphs)';
   const tools = Object.entries(s.toolsUsed).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([t, n]) => `${t}×${n}`).join(', ') || 'none';
   const sessions = s.sessions.slice(0, 20).map((x) => `- ${x.id.slice(0, 8)} [${x.channel}] "${x.title.slice(0, 60)}": ${x.ownerMessages} owner messages, ${iso(x.firstAt)} → ${iso(x.lastAt)}`).join('\n') || '- none';
   return `Owner: ${input.ownerName}. Window: ${window}.
 
 ## Statistics (computed, not inferred)
-Sessions with new owner messages: ${s.sessions.length}; owner messages: ${s.ownerMessages}; median owner message length: ${s.medianOwnerLength} chars.
-Owner messages by local hour: ${histogram}
+Sessions with new owner messages: ${s.sessions.length}; owner messages: ${s.ownerMessages}; typical owner message: ${lengthWord}.
+When the owner writes (local time): ${histogram}
 Tools the agent used (from traces): ${tools}
 Corrections by the owner (regex, approximate): ${s.corrections}; asks for shorter replies: ${s.brevityAsks.shorter}; asks for more detail: ${s.brevityAsks.longer}.
 Permission answers: allowed ${s.permissionAnswers.allowed}, denied ${s.permissionAnswers.denied}, "always/allow all" ${s.permissionAnswers.always}.
@@ -191,7 +196,7 @@ export function collectSince(sessions: Session[], since: number): { turns: Owner
       const channel = typeof m.metadata?.channelType === 'string' ? m.metadata.channelType : 'unknown';
       if (m.role === 'user' && m.kind === 'message') {
         if (channel === 'internal') continue;
-        const content = m.content.trim();
+        const content = ownerWords(m.content);
         if (!content || content.startsWith('/')) continue;
         const cwd = typeof m.metadata?.workCwd === 'string' ? m.metadata.workCwd : typeof m.metadata?.cwd === 'string' ? m.metadata.cwd : undefined;
         turns.push({ sessionId: session.id, at: m.timestamp, channel, ...(cwd ? { cwd } : {}), content });
@@ -299,16 +304,7 @@ export function describeBeliefs(beliefs: BeliefStore, now = Date.now()): { trait
  * validation are dropped. `knownIds` limits references to beliefs we showed.
  */
 export function parseReflectionOutput(text: string, knownIds: Set<string>): ReflectionOutput | null {
-  let raw = text.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(raw);
-  if (fence) raw = fence[1].trim();
-  if (!raw.startsWith('{')) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  const parsed = parseJsonLenient(text);
   if (!isRecord(parsed)) return null;
   const ops: BeliefOperation[] = [];
   if (parsed.ops !== undefined) {
@@ -357,6 +353,7 @@ function validateOp(item: unknown, knownIds: Set<string>): BeliefOperation | nul
     const kind = typeof item.kind === 'string' && KINDS.has(item.kind as BeliefKind) ? (item.kind as BeliefKind) : null;
     const statement = typeof item.statement === 'string' ? item.statement.trim() : '';
     if (!kind || kind === 'episode' || statement.length < 8 || statement.length > 240) return null;
+    if (looksLikeSecret(statement) || looksLikeSecret(String(item.detail ?? ''))) return null;
     const context = typeof item.context === 'string' && CONTEXT_SHAPE.test(item.context.trim()) ? item.context.trim() : '*';
     const out: BeliefOperation = { ...base, kind, statement, context, evidenceKind: op === 'owner_stated' ? 'owner' : 'reflection' };
     if (kind === 'trait') {
@@ -521,4 +518,18 @@ function hashLines(lines: string[]): string {
     h = Math.imul(h, 16777619) >>> 0;
   }
   return h.toString(16);
+}
+
+/** Hours as words ("mostly late morning and early evening"), never as numbers the brief could echo. */
+export function describeHours(hist: number[]): string {
+  const total = hist.reduce((a, b) => a + b, 0);
+  if (total === 0) return 'no messages';
+  const bands: Array<[string, number, number]> = [['early morning', 5, 8], ['morning', 8, 12], ['midday', 12, 14], ['afternoon', 14, 18], ['evening', 18, 22], ['late night', 22, 29]];
+  const share = bands.map(([name, from, to]) => {
+    let n = 0;
+    for (let h = from; h < to; h++) n += hist[h % 24] ?? 0;
+    return [name, n / total] as const;
+  }).filter(([, p]) => p >= 0.15).sort((a, b) => b[1] - a[1]);
+  if (share.length === 0) return 'spread across the day';
+  return `mostly ${share.map(([n]) => n).slice(0, 3).join(' and ')}`;
 }

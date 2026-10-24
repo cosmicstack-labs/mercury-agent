@@ -269,7 +269,8 @@ describe.skipIf(!sqliteAvailable)('reflection: applying and the owner brief', ()
     store.apply({ op: 'support', beliefId: a.belief.id, excerpt: 'options please', sessionId: 's2' }, T0 + 1);
     const b = store.apply({ op: 'create', kind: 'trait', dimension: 'decision-style', level: 'recommendation', statement: 'Wants a recommendation', context: 'domain:infra', excerpt: 'what should I do', sessionId: 's1' }, T0 + 2)!;
     store.apply({ op: 'support', beliefId: b.belief.id, excerpt: 'just tell me', sessionId: 's2' }, T0 + 3);
-    const stale = store.apply({ op: 'create', kind: 'fact', statement: 'Was travelling last spring for a conference', excerpt: 'x', sessionId: 's1' }, T0 - 200 * 86_400_000)!;
+    // An episode from 200 days ago (half-life 30 days) is stale; an undisputed fact would rest instead.
+    const stale = store.apply({ op: 'create', kind: 'episode', statement: 'Was travelling last spring for a conference', excerpt: 'x', sessionId: 's1' }, T0 - 200 * 86_400_000)!;
     const counts = applyReflection(store, { ops: [], merges: [], contested: [{ aId: a.belief.id, bId: b.belief.id }], brief: null }, T0 + 10);
     expect(counts.contested).toBe(1);
     expect(store.get(a.belief.id)!.status).toBe('contested');

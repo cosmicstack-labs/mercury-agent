@@ -104,6 +104,11 @@ export interface ApplyResult {
 }
 
 const HALF_LIFE_DAYS: Record<BeliefTimescale, number> = { stable: 60, situational: 0.5, episodic: 30 };
+/** Stable beliefs fade at different speeds: who the owner is barely changes; how they want to work does. */
+const KIND_HALF_LIFE_DAYS: Partial<Record<BeliefKind, number>> = { fact: 365, relationship: 365, preference: 120, goal: 90, project: 90, trait: 60 };
+function halfLifeDays(b: Belief): number {
+  return b.timescale === 'stable' ? (KIND_HALF_LIFE_DAYS[b.kind] ?? HALF_LIFE_DAYS.stable) : HALF_LIFE_DAYS[b.timescale];
+}
 const DAY = 86_400_000;
 export const RETIRE_BELOW = 0.35;
 const HELD_AT_SESSIONS = 2;
@@ -180,7 +185,7 @@ export class BeliefStore {
     const mean = (b.support + 1) / (b.support + b.against + 2);
     if (b.ownerStated || b.status === 'confirmed') return Math.min(0.98, Math.max(mean, 0.85));
     const ageDays = Math.max(0, now - b.lastSupportedAt) / DAY;
-    const decay = Math.pow(0.5, ageDays / HALF_LIFE_DAYS[b.timescale]);
+    const decay = Math.pow(0.5, ageDays / halfLifeDays(b));
     return mean * decay;
   }
 
@@ -304,7 +309,10 @@ export class BeliefStore {
   decayPass(now = Date.now()): number {
     let retired = 0;
     for (const b of this.list({ statuses: ['candidate', 'held', 'contested'] })) {
-      if (this.confidence(b, now) < RETIRE_BELOW) {
+      // Retire only what faded past the floor AND was either contradicted or
+      // not seen for two half-lives; a true fact nobody disputed just rests.
+      const stale = (now - b.lastSupportedAt) / DAY >= 2 * halfLifeDays(b);
+      if (this.confidence(b, now) < RETIRE_BELOW && (b.against > 0 || stale)) {
         this.update(b.id, { status: 'retired', validTo: now }, now);
         retired++;
       }
@@ -540,13 +548,17 @@ export class BeliefStore {
           kind, dimension: null, level: null, statement: summary, detail: (r.detail as string | null) ?? null, context: '*',
           timescale: kind === 'episode' ? 'episodic' : 'stable', support: direct ? support + 1 : support, against: 0,
           supportSessions: Math.min(support, HELD_AT_SESSIONS), ownerStated: false,
-          status: direct || support >= HELD_AT_SESSIONS ? 'held' : 'candidate',
+          // The old extractor's "direct" was unreliable: only what it saw
+          // twice starts as held; the first reflection pass promotes the rest.
+          status: support >= HELD_AT_SESSIONS ? 'held' : 'candidate',
         }, Number(r.created_at ?? now));
         this.db.prepare('UPDATE beliefs SET last_supported_at = ?, created_at = ?, updated_at = ? WHERE id = ?').run(Number(r.last_seen_at ?? r.updated_at ?? now), Number(r.created_at ?? now), Number(r.updated_at ?? now), belief.id);
         this.addEvidence(belief.id, 'migration', { excerpt: `from memory ${String(r.id)}` }, support, Number(r.created_at ?? now));
         converted++;
       }
       this.setMeta('legacy_migrated', '1');
+      // Ask for a reflection pass soon after boot so the migrated candidates get judged against real sessions.
+      if (converted > 0) this.setMeta('reflection_force', '1');
     });
     logger.info({ quarantined, converted }, 'Legacy memories migrated to beliefs');
     return { quarantined, converted, skipped: false };
@@ -588,6 +600,11 @@ export function isLegacyJunk(r: Record<string, unknown>): boolean {
   if (ASSISTANT_VOICE.test(summary)) return true;
   if (/^[-*#`>|{}[\]"]/.test(summary)) return true;
   if (/\bI'm (Claude|an AI)|as an AI\b|my actual capabilities|my limitations/i.test(summary)) return true;
+  // Claims whose subject is the assistant, not the owner, and throwaway test identities.
+  if (/^(the )?(assistant|agent|mercury)\b.*\b(identifies|serving|serves|is an ai|can(not)?|will)\b/i.test(summary)) return true;
+  if (/\b(assistant|mercury)'s creators?\b|owner and creator of the assistant/i.test(summary)) return true;
+  if (/\bmercury-[a-z0-9]{6,}@/i.test(summary)) return true;
+  if (/\b(password|passwd|api[ _-]?key|secret|token|otp)\b\s*[:=]?\s*\S/i.test(summary)) return true;
   const fallbackShape = r.type === 'preference' && r.evidence_kind === 'inferred' && Number(r.confidence) === 0.75 && String(r.categories ?? '') === '["general"]';
   if (fallbackShape && !/^(user|owner|the user|prefers|likes|dislikes|wants|salman)/i.test(summary)) return true;
   return false;
