@@ -44,7 +44,7 @@ const defaultFetch = routes({ 'search.brave.com': BRAVE, 'news.google.com': GOOG
 
 vi.mock('../../utils/ssrf.js', () => ({ guardedFetch: vi.fn() }));
 
-import { createWebSearchTool, parseBrave, parseRss, relevant, resetBraveCooldown, searchQueryFromUrl, webSearch } from './web-search.js';
+import { createWebSearchTool, directLink, parseBrave, parseDdg, parseRss, relevant, resetBraveCooldown, searchQueryFromUrl, webSearch } from './web-search.js';
 import { guardedFetch } from '../../utils/ssrf.js';
 
 vi.mocked(guardedFetch).mockImplementation(defaultFetch as never);
@@ -148,6 +148,88 @@ describe('web_search', () => {
     const out = await t.execute({ query: '', kind: 'news' }, {});
     expect(out).toMatch(/News results from Google News[\s\S]*1\. Envoy meets leader in Moscow \(BBC · Wed, 21 Oct 2026\)/);
     vi.mocked(guardedFetch).mockImplementation(async () => new Response('', { status: 500 }));
-    expect(await t.execute({ query: 'x' }, {})).toMatch(/^Error: web search is unavailable/);
+    expect(await t.execute({ query: 'x' }, {})).toMatch(/^Error: web search found nothing: no source found anything \(Brave: HTTP 500; DuckDuckGo: HTTP 500/);
+  });
+
+  it('parses DuckDuckGo html and lite pages: real links out of the redirect, ads dropped', () => {
+    const html = `<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpandoc.org%2Fepub.html&amp;rut=abc">Pandoc - Creating an ebook with pandoc</a>
+      <a class="result__snippet" href="x">Starting with version 1.6, <b>pandoc</b> can produce EPUB.</a>
+      <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1">Sponsored</a>`;
+    expect(parseDdg(html, 5)).toEqual([{ title: 'Pandoc - Creating an ebook with pandoc', url: 'https://pandoc.org/epub.html', snippet: 'Starting with version 1.6, pandoc can produce EPUB.' }]);
+    const lite = `<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.linkedin.com%2Fcompany%2Fcosmic-stack&amp;rut=x" class='result-link'>Cosmic Stack - LinkedIn</a>
+      <td class='result-snippet'>Cosmic Stack builds Mercury.</td>`;
+    expect(parseDdg(lite, 5)[0]).toEqual({ title: 'Cosmic Stack - LinkedIn', url: 'https://www.linkedin.com/company/cosmic-stack', snippet: 'Cosmic Stack builds Mercury.' });
+  });
+
+  it('news links open the article: Bing News redirects are unwrapped', () => {
+    expect(directLink('http://www.bing.com/news/apiclick.aspx?ref=FexRss&aid=&tid=1&url=https%3a%2f%2fkashmirlife.net%2fstory&c=2')).toBe('https://kashmirlife.net/story');
+    expect(directLink('https://kashmirlife.net/story')).toBe('https://kashmirlife.net/story');
+    const feed = `<rss><channel><item><title>Kashmir story</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3a%2f%2fkashmirlife.net%2fstory</link></item></channel></rss>`;
+    expect(parseRss(feed, 3)[0].url).toBe('https://kashmirlife.net/story');
+  });
+
+  it('news asks Bing News first, so links are direct; Google News is the fallback', async () => {
+    const bingNewsFeed = `<rss><channel><item><title>Kashmir story</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3a%2f%2fkashmirlife.net%2fstory</link></item></channel></rss>`;
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'bing.com/news': bingNewsFeed, 'news.google.com': GOOGLE_NEWS }) as never);
+    const r = await webSearch('kashmir', { kind: 'news' });
+    expect(r.engine).toBe('Bing News');
+    expect(r.results[0].url).toBe('https://kashmirlife.net/story');
+  });
+
+  it('combines engines until there are enough results, and records what each one did', async () => {
+    const oneHit = `<a href="https://www.typescriptlang.org/satisfies" target="_self" class="l1"><div class="title search-snippet-title" title="TypeScript satisfies operator">x</div></a><div class="content">satisfies</div>`;
+    const ddgPage = `<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fa">TypeScript satisfies explained</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fb">The satisfies operator in TypeScript</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fc">TypeScript satisfies vs as</a>`;
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': oneHit, 'html.duckduckgo.com': ddgPage }) as never);
+    const r = await webSearch('typescript satisfies operator', { max: 8 });
+    expect(r.engine).toBe('Brave + DuckDuckGo');
+    expect(r.results).toHaveLength(4);
+    expect(r.trail).toEqual(['Brave: 1 result', 'DuckDuckGo: 3 results']);
+  });
+
+  it('a bot challenge reads as "blocked" in the trail', async () => {
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': 429, 'duckduckgo.com': '<html>anomaly</html>', 'wikipedia.org': WIKI }) as never);
+    const r = await webSearch('canberra');
+    expect(r.trail.slice(0, 4)).toEqual(['Brave: blocked (HTTP 429)', 'DuckDuckGo: blocked (bot challenge)', 'DuckDuckGo Lite: blocked (bot challenge)', 'Wikipedia: 2 results']);
+  });
+
+  it('when the web indexes are blocked, the owner\'s own provider search answers (Anthropic first)', async () => {
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': 429, 'wikipedia.org': WIKI }) as never);
+    const realFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      if (String(url).includes('anthropic')) return new Response(JSON.stringify({ content: [
+        { type: 'web_search_tool_result', content: [
+          { type: 'web_search_result', title: 'Dario Amodei', url: 'https://darioamodei.com/', page_age: 'October 2026' },
+          { type: 'web_search_result', title: 'Anthropic leadership', url: 'https://www.anthropic.com/company' },
+        ] },
+        { type: 'text', text: 'Dario Amodei is the CEO.', citations: [{ url: 'https://darioamodei.com/', cited_text: 'Dario Amodei, CEO of Anthropic' }] },
+      ] }), { status: 200 });
+      return new Response('no', { status: 500 });
+    }) as typeof fetch;
+    try {
+      const r = await webSearch('canberra', { providers: [{ name: 'anthropic', apiKey: 'sk-ant-test-key', baseUrl: 'https://api.anthropic.com' }, { name: 'openai', apiKey: 'sk-test-key-openai', baseUrl: 'https://api.openai.com/v1' }] });
+      expect(r.engine).toBe('Anthropic web search + Wikipedia');
+      expect(r.results[0]).toMatchObject({ title: 'Dario Amodei', url: 'https://darioamodei.com/', snippet: 'Dario Amodei, CEO of Anthropic' });
+      expect(r.trail.at(-1)).toBe('Anthropic web search: 2 results');
+      expect(calls).toEqual(['https://api.anthropic.com/v1/messages']); // OpenAI not needed
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('a strong free answer never touches the paid provider search', async () => {
+    const page = Array.from({ length: 5 }, (_, i) => `<a href="https://example.dev/${i}" target="_self" class="l1"><div class="title search-snippet-title" title="Canberra page ${i}">x</div></a>`).join('');
+    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': page }) as never);
+    const realFetch = globalThis.fetch;
+    let paid = 0;
+    globalThis.fetch = (async () => { paid++; return new Response('{}'); }) as typeof fetch;
+    try {
+      const r = await webSearch('canberra', { providers: [{ name: 'anthropic', apiKey: 'sk-ant-test-key', baseUrl: '' }] });
+      expect(r.engine).toBe('Brave');
+      expect(paid).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
