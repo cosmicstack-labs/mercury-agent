@@ -1,7 +1,6 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { guardedFetch } from '../../utils/ssrf.js';
-import { providerSearch, type ProviderKey } from './provider-search.js';
 
 /**
  * web_search: free, keyless search for the model.
@@ -172,8 +171,10 @@ export function parseDdg(html: string, max: number): SearchResult[] {
   return out;
 }
 
-async function ddg(kind: 'html' | 'lite', query: string, max: number): Promise<SearchResult[]> {
-  if (!query.trim()) return [];
+/** DuckDuckGo lets roughly every other automated request through: one retry after a short pause. */
+const DDG_RETRY_MS = 1500;
+
+async function ddgOnce(kind: 'html' | 'lite', query: string, max: number): Promise<SearchResult[]> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
@@ -184,6 +185,17 @@ async function ddg(kind: 'html' | 'lite', query: string, max: number): Promise<S
     return parseDdg(body, max);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function ddg(kind: 'html' | 'lite', query: string, max: number): Promise<SearchResult[]> {
+  if (!query.trim()) return [];
+  try {
+    return await ddgOnce(kind, query, max);
+  } catch (err) {
+    if (!/challenge/.test((err as Error).message)) throw err;
+    await new Promise((r) => setTimeout(r, DDG_RETRY_MS));
+    return ddgOnce(kind, query, max);
   }
 }
 const ddgHtml = (q: string, n: number) => ddg('html', q, n);
@@ -334,16 +346,7 @@ function why(err: unknown): string {
   return m;
 }
 
-/**
- * The provider keys web_search may fall back to, set at boot from the owner's
- * config (Anthropic first, then OpenAI). Empty means free engines only.
- */
-let providerKeys: ProviderKey[] = [];
-export function setSearchProviders(keys: ProviderKey[]): void {
-  providerKeys = keys.filter((k) => k.apiKey && k.apiKey.length > 8);
-}
-
-export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; max?: number; providers?: ProviderKey[] } = {}): Promise<SearchOutcome> {
+export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; max?: number } = {}): Promise<SearchOutcome> {
   const max = Math.max(1, Math.min(opts.max ?? 8, 15));
   // Every engine is free and keyless; no library. Brave and DuckDuckGo are
   // the real web indexes, and both block some automated requests (by client
@@ -381,28 +384,6 @@ export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; ma
       if (gathered.length >= want) break;
     } catch (err) {
       trail.push(`${name}: ${why(err)}`);
-    }
-  }
-  // The free engines could not answer well: both web indexes blocked us, or
-  // what came back is too thin. Ask the owner's own model provider, which
-  // runs an official search API (a small cost, only on this path).
-  const realIndexAnswered = used.some((n) => n === 'Brave' || n.startsWith('DuckDuckGo'));
-  if (opts.kind !== 'news' && query.trim() && (gathered.length < want || !realIndexAnswered)) {
-    for (const key of opts.providers ?? providerKeys) {
-      const name = key.name === 'anthropic' ? 'Anthropic web search' : 'OpenAI web search';
-      try {
-        const before = gathered.length;
-        // Provider results lead: they come from a real index, the rest were fallbacks.
-        const fromProvider = await providerSearch(key, query, max);
-        gathered = dedupe([...fromProvider, ...gathered]);
-        const added = gathered.length - before;
-        if (!added) { trail.push(`${name}: no results`); continue; }
-        used.unshift(name);
-        trail.push(`${name}: ${added} result${added === 1 ? '' : 's'}`);
-        break;
-      } catch (err) {
-        trail.push(`${name}: ${why(err)}`);
-      }
     }
   }
   if (!gathered.length) throw new Error(`no source found anything (${trail.join('; ')})`);

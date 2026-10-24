@@ -192,44 +192,19 @@ describe('web_search', () => {
     expect(r.trail.slice(0, 4)).toEqual(['Brave: blocked (HTTP 429)', 'DuckDuckGo: blocked (bot challenge)', 'DuckDuckGo Lite: blocked (bot challenge)', 'Wikipedia: 2 results']);
   });
 
-  it('when the web indexes are blocked, the owner\'s own provider search answers (Anthropic first)', async () => {
-    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': 429, 'wikipedia.org': WIKI }) as never);
-    const realFetch = globalThis.fetch;
-    const calls: string[] = [];
-    globalThis.fetch = (async (url: string) => {
-      calls.push(String(url));
-      if (String(url).includes('anthropic')) return new Response(JSON.stringify({ content: [
-        { type: 'web_search_tool_result', content: [
-          { type: 'web_search_result', title: 'Dario Amodei', url: 'https://darioamodei.com/', page_age: 'October 2026' },
-          { type: 'web_search_result', title: 'Anthropic leadership', url: 'https://www.anthropic.com/company' },
-        ] },
-        { type: 'text', text: 'Dario Amodei is the CEO.', citations: [{ url: 'https://darioamodei.com/', cited_text: 'Dario Amodei, CEO of Anthropic' }] },
-      ] }), { status: 200 });
-      return new Response('no', { status: 500 });
-    }) as typeof fetch;
-    try {
-      const r = await webSearch('canberra', { providers: [{ name: 'anthropic', apiKey: 'sk-ant-test-key', baseUrl: 'https://api.anthropic.com' }, { name: 'openai', apiKey: 'sk-test-key-openai', baseUrl: 'https://api.openai.com/v1' }] });
-      expect(r.engine).toBe('Anthropic web search + Wikipedia');
-      expect(r.results[0]).toMatchObject({ title: 'Dario Amodei', url: 'https://darioamodei.com/', snippet: 'Dario Amodei, CEO of Anthropic' });
-      expect(r.trail.at(-1)).toBe('Anthropic web search: 2 results');
-      expect(calls).toEqual(['https://api.anthropic.com/v1/messages']); // OpenAI not needed
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-  });
 
-  it('a strong free answer never touches the paid provider search', async () => {
-    const page = Array.from({ length: 5 }, (_, i) => `<a href="https://example.dev/${i}" target="_self" class="l1"><div class="title search-snippet-title" title="Canberra page ${i}">x</div></a>`).join('');
-    vi.mocked(guardedFetch).mockImplementation(routes({ 'search.brave.com': page }) as never);
-    const realFetch = globalThis.fetch;
-    let paid = 0;
-    globalThis.fetch = (async () => { paid++; return new Response('{}'); }) as typeof fetch;
-    try {
-      const r = await webSearch('canberra', { providers: [{ name: 'anthropic', apiKey: 'sk-ant-test-key', baseUrl: '' }] });
-      expect(r.engine).toBe('Brave');
-      expect(paid).toBe(0);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+
+  it('a DuckDuckGo challenge is retried once after a short pause', async () => {
+    const page = `<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fcanberra">Canberra guide</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fcanberra2">Visit Canberra</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fcanberra3">Canberra history</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.dev%2Fcanberra4">Canberra map</a>`;
+    let ddgCalls = 0;
+    vi.mocked(guardedFetch).mockImplementation((async (url: string) => {
+      if (url.includes('search.brave.com')) return new Response('', { status: 429 });
+      if (url.includes('html.duckduckgo.com')) return ++ddgCalls === 1 ? new Response('<html>anomaly</html>', { status: 202 }) : new Response(page, { status: 200 });
+      return new Response('', { status: 404 });
+    }) as never);
+    const r = await webSearch('canberra');
+    expect(ddgCalls).toBe(2);
+    expect(r.engine).toBe('DuckDuckGo');
+    expect(r.trail).toEqual(['Brave: blocked (HTTP 429)', 'DuckDuckGo: 4 results']);
   });
 });

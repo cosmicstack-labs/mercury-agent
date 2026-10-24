@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
 import { publishStatus, setStatusPublisher } from './core/provider-status.js';
-import { setSearchProviders } from './capabilities/web/web-search.js';
 import { loadPermissionMode, savePermissionMode } from './capabilities/permission-mode-store.js';
 import chalk from 'chalk';
 
@@ -3480,12 +3479,6 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider, model) => agent.switchProvider(provider, model));
   setWebCurrentProvider(() => agent.getCurrentProvider());
-  // web_search's last resort when the free engines are blocked: the official
-  // search of a provider the owner already configured (Anthropic, then OpenAI).
-  setSearchProviders((['anthropic', 'openai'] as const)
-    .map((name) => config.providers[name])
-    .filter((p) => p && p.enabled && p.apiKey)
-    .map((p) => ({ name: p.name as 'anthropic' | 'openai', apiKey: p.apiKey, baseUrl: p.baseUrl })));
   // Live bottom bar for attached terminals and the dashboard: one snapshot,
   // pushed on every model switch and checked every 2 s for anything else.
   const statusSnapshot = (): Record<string, unknown> => {

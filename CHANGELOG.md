@@ -4,8 +4,8 @@
 
 ### Web search
 - **News links open the article.** News search used Google News first, whose links are Google redirects (`news.google.com/rss/articles/…`) that can't be turned into the publisher's address. Bing News now comes first and its links are unwrapped to the real article; Google News is the fallback, and its links are marked as redirects.
-- **Two web indexes, combined.** Brave and DuckDuckGo (its html and lite pages) both answer some automated requests and block others, by client fingerprint and rate. `web_search` now asks them in turn and combines relevant results until it has enough, instead of stopping at the first engine with one hit.
-- **When the free engines are blocked, your own provider searches.** If Brave and DuckDuckGo both refuse, or what came back is too thin, `web_search` uses the official web search of a provider you already set up: Anthropic (Claude Haiku with the web search tool), then OpenAI. No new key; a small cost only on this path.
+- **Two web indexes, combined.** Brave and DuckDuckGo (its html and lite pages) both answer some automated requests and block others, by client fingerprint and rate. `web_search` now asks them in turn, retries a DuckDuckGo challenge once after a short pause, and combines relevant results until it has enough, instead of stopping at the first engine with one hit.
+- **Search never depends on the model.** Results come only from Mercury's own search tools, never from a provider's built-in web search, so search works the same with every model.
 - **You can see what happened.** Every result ends with the trail, for example `Searched: Brave: blocked (HTTP 429) → DuckDuckGo: 5 results`, so "nothing found" and "everything was blocked" read differently.
 
 ## 1.4.1 — Mercury learns how you work, saves its own skills, and searches again
