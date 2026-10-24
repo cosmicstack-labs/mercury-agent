@@ -218,14 +218,22 @@ chat.post('/api/chat/permission/:id', async (c) => {
   }
 
   const permId = c.req.param('id');
-  const body = await c.req.json<{ action: string; targetId?: string }>();
+  const body = await c.req.json<{ action?: string; targetId?: string }>().catch(() => ({} as { action?: string; targetId?: string }));
+  // One endpoint answers every prompt a screen shows: permission/continue/
+  // mode approvals AND choice pickers (/model, /permissions, ask_user). It
+  // used to resolve approvals only, so a picker answered in the attached
+  // terminal never reached the runtime: the command hung until the 2-minute
+  // timeout and the screen showed "Thinking" the whole time. An empty action
+  // is Esc: the picker is cancelled (its caller treats that as "no change").
   if (!body.action) {
+    if (webChannel.cancelInteraction(permId, body.targetId)) return c.json({ resolved: true, cancelled: true });
     return c.json({ error: 'Action required' }, 400);
   }
 
   // Prompts are bound to the chat session that raised them; without the
   // targetId the session check in resolveInteraction always fails.
-  const resolved = webChannel.resolveApproval(permId, body.action, body.targetId);
+  const resolved = webChannel.resolveApproval(permId, body.action, body.targetId)
+    || webChannel.resolveChoice(permId, body.action, body.targetId);
   if (resolved) {
     return c.json({ resolved: true });
   }

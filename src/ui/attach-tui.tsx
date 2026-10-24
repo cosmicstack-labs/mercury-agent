@@ -711,7 +711,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           ))}
         </Box>
       )}
-      {busy && (
+      {busy && !prompt && (
         <Box paddingX={2} flexShrink={0}>
           <Text color={live.color}>{live.text}</Text>
         </Box>
