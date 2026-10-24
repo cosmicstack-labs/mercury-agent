@@ -7,6 +7,7 @@ import { BeliefStore, RETIRE_BELOW, ftsMatch, isLegacyJunk } from './beliefs.js'
 
 const sqliteAvailable = isBetterSqlite3Available();
 const dirs: string[] = [];
+const dbs: SecondBrainDB[] = [];
 const DAY = 86_400_000;
 
 function make(): { store: BeliefStore; db: SecondBrainDB } {
@@ -14,12 +15,17 @@ function make(): { store: BeliefStore; db: SecondBrainDB } {
   dirs.push(dir);
   const db = new SecondBrainDB(join(dir, 'sb.db'));
   db.init();
+  dbs.push(db);
   const store = new BeliefStore(db.connection, 'user:owner');
   store.init();
   return { store, db };
 }
 
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+// Close before removing: Windows refuses to unlink an open database file.
+afterEach(() => {
+  while (dbs.length) { try { dbs.pop()!.close(); } catch { /* already closed */ } }
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
 
 describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
   it('a belief starts as a candidate and is held after support from two sessions', () => {

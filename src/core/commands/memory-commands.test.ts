@@ -21,6 +21,7 @@ import { handleChatCommand } from './chat-command.js';
 
 const sqliteAvailable = isBetterSqlite3Available();
 const dirs: string[] = [];
+const dbs: SecondBrainDB[] = [];
 const DAY = 86_400_000;
 
 function make(): { store: BeliefStore; deps: BeliefCommandDeps } {
@@ -28,6 +29,7 @@ function make(): { store: BeliefStore; deps: BeliefCommandDeps } {
   dirs.push(dir);
   const db = new SecondBrainDB(join(dir, 'sb.db'));
   db.init();
+  dbs.push(db);
   const store = new BeliefStore(db.connection, 'user:owner');
   store.init();
   return { store, deps: { beliefs: store, listings: new Map(), lastNoted: new Map() } };
@@ -40,7 +42,11 @@ function heldPreference(store: BeliefStore, statement: string, excerpt: string, 
   return store.get(r.belief.id)!;
 }
 
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+// Close before removing: Windows refuses to unlink an open database file.
+afterEach(() => {
+  while (dbs.length) { try { dbs.pop()!.close(); } catch { /* already closed */ } }
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
 
 describe.skipIf(!sqliteAvailable)('memory commands (ADR-026)', () => {
   it('/memory learned lists recent beliefs numbered, with status, confidence, age and excerpt', () => {

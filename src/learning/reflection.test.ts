@@ -13,6 +13,7 @@ import { buildOwnerSections, createOwnerSectionsMemo, parseOwnerNotes, readStore
 
 const sqliteAvailable = isBetterSqlite3Available();
 const dirs: string[] = [];
+const dbs: SecondBrainDB[] = [];
 const T0 = Date.UTC(2026, 9, 20, 9, 0, 0); // 2026-10-20 09:00 UTC
 const HOUR = 3_600_000;
 
@@ -25,12 +26,17 @@ function tmp(prefix: string): string {
 function makeStore(): BeliefStore {
   const db = new SecondBrainDB(join(tmp('mercury-reflection-'), 'sb.db'));
   db.init();
+  dbs.push(db);
   const store = new BeliefStore(db.connection, 'user:owner');
   store.init();
   return store;
 }
 
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+// Close before removing: Windows refuses to unlink an open database file.
+afterEach(() => {
+  while (dbs.length) { try { dbs.pop()!.close(); } catch { /* already closed */ } }
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
 
 let seq = 0;
 function msg(sessionId: string, role: SessionMessage['role'], content: string, at: number, extra: Partial<SessionMessage> = {}): SessionMessage {
