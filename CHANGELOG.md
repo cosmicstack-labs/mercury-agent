@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1 — Mercury learns how you work, saves its own skills, and searches again
 
 ### Owner Model: Mercury learns how to work with you (ADR-026)
 - **Memory became beliefs with evidence.** Every claim about you now carries support and counter-evidence, a confidence that fades unless it is seen again, the context it applies in, and a status: candidate → held → confirmed by you; contested; retired; forgotten. What you say outright beats what Mercury inferred and never fades. Nothing is deleted behind your back.
