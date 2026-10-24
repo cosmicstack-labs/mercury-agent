@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
+import { publishStatus, setStatusPublisher } from './core/provider-status.js';
+import { loadPermissionMode, savePermissionMode } from './capabilities/permission-mode-store.js';
 import chalk from 'chalk';
 
 import {
@@ -89,7 +91,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
 
@@ -2212,6 +2214,21 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
   }
 
+  // Permission mode: asked once here and remembered by every surface
+  // (terminal, attached terminal, dashboard). /permissions changes it later.
+  console.log('');
+  const currentMode = loadPermissionMode();
+  const permissionChoice = await selectWithArrowKeys(
+    currentMode ? `Permissions (now: ${currentMode === 'allow-all' ? 'Allow All' : 'Ask Me'})` : 'How should Mercury handle risky actions?',
+    [
+      { value: 'ask-me', label: 'Ask Me — confirm before it writes files or runs commands' },
+      { value: 'allow-all', label: 'Allow All — just do it (blocked commands stay blocked)' },
+    ],
+  );
+  const permissionMode = permissionChoice === 'allow-all' ? 'allow-all' : 'ask-me';
+  savePermissionMode(permissionMode);
+  console.log(chalk.dim(`  ${permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me'} saved · change any time with /permissions`));
+
   saveConfig(config);
 
   const home = getMercuryHome();
@@ -2547,7 +2564,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const channels = new ChannelRegistry(config, { cliOnly: daemonOwnsRuntime });
   const webChannel = new WebChannel(config.identity.name);
   channels.register('web', webChannel);
+  // Bits of the bottom-bar status that are pushed rather than read.
+  const liveStatus = { desktop: '' };
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget, undefined, userMemory ?? undefined);
+  // "Always" on a shell prompt covers the command family in the owner's own
+  // terminal, attached terminal and dashboard; remote Mercury Cloud requests
+  // stay exact-match.
+  capabilities.permissions.setFamilyApprovalPolicy((ctx) =>
+    ctx.channelType === 'cli' || (ctx.channelType === 'web' && !webChannel.hasCloudEventHandler(ctx.channelId)));
 
   let supervisor: SubAgentSupervisor | undefined;
   if (config.subagents.enabled) {
@@ -2698,6 +2722,8 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     setDesktopActivityHook((label) => {
       const cli = channels.get('cli');
       if (cli instanceof CLIChannel) cli.setDesktopActivity(label);
+      liveStatus.desktop = label ?? '';
+      publishStatus();
     });
     pluginManager.setRunsPlugins(true);
     pluginManager.setNotifier((m) => agent.notifyAllChannels(m));
@@ -3453,6 +3479,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider, model) => agent.switchProvider(provider, model));
   setWebCurrentProvider(() => agent.getCurrentProvider());
+  // Live bottom bar for attached terminals and the dashboard: one snapshot,
+  // pushed on every model switch and checked every 2 s for anything else.
+  const statusSnapshot = (): Record<string, unknown> => {
+    const current = agent.getCurrentProvider();
+    return {
+      provider: getProviderLabel(current.name as ProviderName),
+      model: current.model,
+      mode: agent.programmingMode.getState(),
+      permission: webChannel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me',
+      tokensUsed: tokenBudget.getDailyUsed(),
+      tokenBudget: tokenBudget.getBudget(),
+      desktop: liveStatus.desktop,
+    };
+  };
+  setWebStatusSnapshot(statusSnapshot);
+  let lastStatusKey = '';
+  const pushStatus = (): void => {
+    const snapshot = statusSnapshot();
+    const key = JSON.stringify(snapshot);
+    if (key === lastStatusKey) return;
+    lastStatusKey = key;
+    webChannel.broadcastStatus(snapshot);
+  };
+  setStatusPublisher(pushStatus);
+  setInterval(pushStatus, 2000).unref();
   // IDE provider registry powers features like commit message generation.
   // It does not require a supervisor, so wire it up unconditionally.
   setWebIDEProviders(providers);
@@ -3650,6 +3701,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      } else {
+        // Switching back used to be ignored: Allow All stayed on until restart.
+        capabilities.permissions.setAutoApproveAll(false);
+        logger.info({ chatId }, 'Telegram: Ask Me mode set for session');
       }
     });
   }
@@ -3660,6 +3715,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info('Signal: Allow All mode set for session');
+      } else {
+        // Switching back used to be ignored: Allow All stayed on until restart.
+        capabilities.permissions.setAutoApproveAll(false);
+        logger.info('Signal: Ask Me mode set for session');
       }
     });
   }
@@ -3729,7 +3788,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cliChannel.setCurrentSession(selected);
     }
 
-    const mode = cliChannel && await cliChannel.askPermissionMode?.();
+    // Ask once, then remember (also covers Mercury Code). /permissions changes it.
+    const savedMode = loadPermissionMode();
+    const mode = savedMode ?? (cliChannel ? await cliChannel.askPermissionMode?.() : undefined);
+    if (!savedMode && (mode === 'allow-all' || mode === 'ask-me') && process.stdout.isTTY) savePermissionMode(mode);
+    if (savedMode && cliChannel) console.log(chalk.dim(`  Permissions: ${savedMode === 'allow-all' ? 'Allow All' : 'Ask Me'} · /permissions to change`));
+    cliChannel?.setPermissionModeStatus(mode === 'allow-all' ? 'allow-all' : 'ask-me');
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
       capabilities.permissions.addTempScope('/', true, true);

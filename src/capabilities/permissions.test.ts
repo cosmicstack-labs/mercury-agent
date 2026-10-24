@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PermissionManager, splitShellSegments } from './permissions.js';
+import { PermissionManager, splitShellSegments, commandFamily } from './permissions.js';
 
 describe('splitShellSegments', () => {
   it('passes simple commands through as a single segment', () => {
@@ -581,6 +581,36 @@ describe('argv lane (ADR-016)', () => {
     }
     expect(ask).toHaveBeenCalledTimes(3);
     expect(ask).toHaveBeenCalledWith('Run command: git log | head');
+  });
+
+  it('"Always" covers the same command family for the rest of the chat', async () => {
+    const { permissions, ask } = makePermissions();
+    permissions.setCurrentContext('cli', 'cli');
+    ask.mockResolvedValueOnce('always');
+    await expect(permissions.checkShellCommand('pandoc book.epub -o book.md')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand('pandoc other.epub -t gfm -o other.md')).resolves.toMatchObject({ allowed: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+    // A different program still asks.
+    ask.mockResolvedValueOnce('no');
+    await expect(permissions.checkShellCommand('python3 convert.py')).resolves.toMatchObject({ allowed: false });
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('remote (cloud) requests keep "Always" to the exact command', async () => {
+    const { permissions, ask } = makePermissions();
+    ask.mockResolvedValueOnce('always').mockResolvedValue('no');
+    await expect(permissions.checkShellCommand('pandoc a.epub -o a.md')).resolves.toMatchObject({ allowed: true });
+    await expect(permissions.checkShellCommand('pandoc b.epub -o b.md')).resolves.toMatchObject({ allowed: false });
+  });
+
+  it('never generalises wrappers that can run anything', () => {
+    expect(commandFamily('pandoc a.epub -o a.md')).toBe('pandoc');
+    expect(commandFamily('git commit -m "x"')).toBe('git commit');
+    expect(commandFamily('LANG=C npm test -- --watch')).toBe('npm test');
+    expect(commandFamily('npm install left-pad')).toBeNull();
+    for (const cmd of ['sudo rm -rf /tmp/x', 'sh -c "anything"', 'env FOO=1 node x.js', 'xargs rm', 'bash script.sh']) {
+      expect(commandFamily(cmd)).toBeNull();
+    }
   });
 
   it('sees through quoting: a quoted path outside the cwd and readable scopes prompts', async () => {

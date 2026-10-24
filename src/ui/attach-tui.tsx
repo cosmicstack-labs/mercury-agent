@@ -68,6 +68,8 @@ interface StepInfo {
   done: boolean;
 }
 
+const LOCAL_PERMISSION_MODE_PROMPT = 'local:permission-mode';
+
 interface AttachPrompt {
   id: string;
   kind: 'permission' | 'continue' | 'choice';
@@ -138,6 +140,17 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   const [promptIdx, setPromptIdx] = React.useState(0);
   const [provider, setProvider] = React.useState<{ name: string; model: string } | null>(null);
   const [tokenInfo, setTokenInfo] = React.useState<{ used: number; budget: number } | null>(null);
+  // Live runtime status for the bottom bar (pushed by the runtime on every
+  // model switch, mode or permission change, and checked every 2 s).
+  const [runtimeStatus, setRuntimeStatus] = React.useState<{ mode: string; permission: string; desktop: string } | null>(null);
+  const applyStatus = React.useCallback((raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return;
+    const st = raw as Record<string, unknown>;
+    if (typeof st.provider === 'string' && st.provider) setProvider({ name: st.provider, model: String(st.model ?? '') });
+    const used = Number(st.tokensUsed); const budget = Number(st.tokenBudget);
+    if (Number.isFinite(used) && Number.isFinite(budget) && budget > 0) setTokenInfo({ used, budget });
+    setRuntimeStatus({ mode: String(st.mode ?? 'off'), permission: String(st.permission ?? ''), desktop: String(st.desktop ?? '') });
+  }, []);
   const launchTip = React.useMemo(() => rotateTip('chat')?.tip ?? null, []);
   // One shared 100 ms ticker drives every spinner while something is in flight.
   // (A hook: it must run on every render, before the pick-screen return.)
@@ -215,7 +228,15 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
             name: String(event.data.provider ?? ''),
             model: String(event.data.model ?? ''),
           });
+          applyStatus(event.data.status);
           setNotice(null);
+          break;
+        case 'status':
+          applyStatus(event.data);
+          break;
+        case 'provider':
+          // The model that actually answered this turn (fallbacks included).
+          if (event.data.name) setProvider({ name: String(event.data.name), model: String(event.data.model ?? '') });
           break;
         case 'thinking':
           setStreaming(true);
@@ -343,8 +364,40 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     const active = prompt;
     if (!active) return;
     setPrompt(null);
+    if (active.id === LOCAL_PERMISSION_MODE_PROMPT) {
+      if (value === 'allow-all' || value === 'ask-me') {
+        const ok = await client.setPermissionMode(value);
+        setNotice(ok
+          ? `${value === 'allow-all' ? 'Allow All' : 'Ask Me'} saved · change any time with /permissions`
+          : '⚠ could not save the permission mode — try /permissions');
+      }
+      return;
+    }
     await client.resolvePermission(active.id, value);
   }, [client, prompt]);
+
+  // First time in a chat with no saved permission mode (users from before
+  // the setup wizard asked): ask once, here, and remember it.
+  const askedModeRef = React.useRef(false);
+  React.useEffect(() => {
+    if (phase !== 'chat' || askedModeRef.current) return;
+    askedModeRef.current = true;
+    // Older runtimes (and test doubles) don't expose it: then nothing to ask.
+    if (typeof client.permissionMode !== 'function') return;
+    client.permissionMode().then((mode) => {
+      if (mode !== null) return;
+      setPrompt((current) => current ?? {
+        id: LOCAL_PERMISSION_MODE_PROMPT,
+        kind: 'choice',
+        text: 'How should Mercury handle risky actions? (asked once, change with /permissions)',
+        options: [
+          { value: 'ask-me', label: 'Ask Me: confirm before writing files or running commands' },
+          { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
+        ],
+      });
+      setPromptIdx(0);
+    }).catch(() => {});
+  }, [phase, client]);
 
   useInput((ch, key) => {
     if (ch === '\u0003' || (key.ctrl && (key as any).name === 'c')) {
@@ -521,6 +574,15 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   }
 
   const providerLabel = provider && provider.name ? `${provider.name}${provider.model ? ` ${provider.model}` : ''}` : 'connected';
+  // Bottom bar: thread · model · Code mode · permissions · today's tokens · Optimus.
+  const statusBar = [
+    `⚿ ${thread ? `${thread.alias} [${thread.shortId}]` : ''}`,
+    providerLabel,
+    runtimeStatus && runtimeStatus.mode !== 'off' ? `CODE ${runtimeStatus.mode.toUpperCase()}` : '',
+    runtimeStatus?.permission === 'allow-all' ? 'Allow All' : runtimeStatus?.permission === 'ask-me' ? 'Ask Me' : '',
+    tokenInfo && tokenInfo.budget > 0 ? `⚡ ${Math.min(999, Math.round((tokenInfo.used / tokenInfo.budget) * 100))}%` : '',
+    runtimeStatus?.desktop ?? '',
+  ].filter(Boolean).join(' · ');
   // The live tail looks exactly like the settled block it becomes: the same
   // MERCURY header and indent, the same markdown pass (an unclosed fence is
   // closed for rendering only). It used to be drawn with a cyan "│" bar that
@@ -584,9 +646,9 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         </Box>
       </Box>
       <Box paddingX={3} flexShrink={0}>
-        <Text dimColor>↵ send · ↑↓ history/suggest · tab complete · ctrl+c detach</Text>
+        <Text dimColor wrap="truncate-end">↵ send · /model · /permissions · ctrl+c detach</Text>
         <Spacer />
-        <Text color="blue" wrap="truncate-end">⚿ {thread ? `${thread.alias} [${thread.shortId}]` : ''} · {providerLabel}{pid != null ? ` · PID ${pid}` : ''}</Text>
+        <Text color="blue" wrap="truncate-end">{statusBar}</Text>
       </Box>
     </Box>
   );

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from '
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
+import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
@@ -57,6 +58,13 @@ export function setCurrentProviderCallback(fn: () => { name: string; model: stri
   currentProviderFn = fn;
 }
 
+let statusSnapshotFn: (() => Record<string, unknown>) | null = null;
+
+/** The runtime's live status (model, mode, permissions, tokens…) for the connected frame. */
+export function setStatusSnapshotCallback(fn: () => Record<string, unknown>): void {
+  statusSnapshotFn = fn;
+}
+
 type ChatWebSettings = {
   bypassPermissions: boolean;
   restrictUser: boolean;
@@ -88,7 +96,10 @@ function saveSettings(settings: ChatWebSettings): void {
 export function setWebChannel(ch: WebChannel): void {
   webChannel = ch;
   const settings = loadSettings();
-  webChannel.setBypassPermissions(settings.bypassPermissions);
+  // The owner's saved permission mode wins; the old per-dashboard flag is
+  // only used until a mode has been chosen.
+  const saved = loadPermissionMode();
+  webChannel.setBypassPermissions(saved ? saved === 'allow-all' : settings.bypassPermissions);
   webChannel.setRestrictUser(settings.restrictUser);
 }
 
@@ -115,7 +126,9 @@ chat.get('/api/chat/events', (c) => {
 
       // Send connected event with proper SSE named event format
       const providerInfo = currentProviderFn ? currentProviderFn() : { name: '', model: '' };
-      send(`event: connected\ndata: ${JSON.stringify({ id: clientId, provider: providerInfo.name, model: providerInfo.model })}\n\n`);
+      let status: Record<string, unknown> | undefined;
+      try { status = statusSnapshotFn?.(); } catch { status = undefined; }
+      send(`event: connected\ndata: ${JSON.stringify({ id: clientId, provider: providerInfo.name, model: providerInfo.model, ...(status ? { status } : {}) })}\n\n`);
 
       const keepalive = setInterval(() => {
         send(`: keepalive\n\n`);
@@ -177,7 +190,7 @@ chat.post('/api/chat/send', async (c) => {
 chat.get('/api/chat/settings', async (c) => {
   if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
   const stored = loadSettings();
-  return c.json({ ...webChannel.getSettings(), workspace: stored.workspace });
+  return c.json({ ...webChannel.getSettings(), workspace: stored.workspace, permissionMode: loadPermissionMode() });
 });
 
 chat.put('/api/chat/settings', async (c) => {
@@ -193,7 +206,8 @@ chat.put('/api/chat/settings', async (c) => {
   webChannel.setBypassPermissions(next.bypassPermissions);
   webChannel.setRestrictUser(next.restrictUser);
   saveSettings(next);
-  return c.json({ success: true, ...next });
+  if (typeof body.bypassPermissions === 'boolean') savePermissionMode(body.bypassPermissions ? 'allow-all' : 'ask-me');
+  return c.json({ success: true, ...next, permissionMode: loadPermissionMode() });
 });
 
 // ─── Permission Resolution ───────────────────────────────────

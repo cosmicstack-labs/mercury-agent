@@ -17,6 +17,7 @@ import { getWebPort, readAttachToken } from '../web/auth.js';
 
 export type AttachEventType =
   | 'connected'
+  | 'status'
   | 'thinking'
   | 'provider'
   | 'heartbeat'
@@ -177,9 +178,11 @@ export class AttachClient {
     try {
       const res = await this.request('/api/status');
       if (!res.ok) return null;
-      const b = await res.json() as Record<string, unknown> & { tokens?: { used?: number; budget?: number } };
-      const used = Number(b.tokensUsed ?? b.tokens?.used ?? NaN);
-      const budget = Number(b.tokenBudget ?? b.tokens?.budget ?? NaN);
+      // /api/status reports { tokens: { dailyUsed, dailyBudget } }; the old
+      // field names never matched, so the launch pad budget row never showed.
+      const b = await res.json() as Record<string, unknown> & { tokens?: { used?: number; budget?: number; dailyUsed?: number; dailyBudget?: number } };
+      const used = Number(b.tokens?.dailyUsed ?? b.tokensUsed ?? b.tokens?.used ?? NaN);
+      const budget = Number(b.tokens?.dailyBudget ?? b.tokenBudget ?? b.tokens?.budget ?? NaN);
       return Number.isFinite(used) && Number.isFinite(budget) ? { used, budget } : null;
     } catch { return null; }
   }
@@ -271,6 +274,28 @@ export class AttachClient {
     } catch (err) {
       return { ok: false, error: String((err as Error)?.message || err) };
     }
+  }
+
+  /** The owner's saved permission mode; null = never chosen, undefined = unknown (old runtime / error). */
+  async permissionMode(): Promise<'allow-all' | 'ask-me' | null | undefined> {
+    try {
+      const res = await this.request('/api/chat/settings');
+      if (!res.ok) return undefined;
+      const body = await res.json() as { permissionMode?: unknown };
+      if (!('permissionMode' in body)) return undefined;
+      return body.permissionMode === 'allow-all' || body.permissionMode === 'ask-me' ? body.permissionMode : null;
+    } catch { return undefined; }
+  }
+
+  async setPermissionMode(mode: 'allow-all' | 'ask-me'): Promise<boolean> {
+    try {
+      const res = await this.request('/api/chat/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bypassPermissions: mode === 'allow-all' }),
+      });
+      return res.ok;
+    } catch { return false; }
   }
 
   async resolvePermission(id: string, action: string): Promise<boolean> {

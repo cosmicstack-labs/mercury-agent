@@ -352,6 +352,18 @@ export class PermissionManager {
   private rootCache: PermissionContext | null = null;
   private binaryResolver: BinaryResolver = pinnedBinary;
   private approvedCommandsByContext = new Map<string, Set<string>>();
+  /** "Always" on a shell prompt: command families (`pandoc`, `git commit`) allowed for the rest of that chat. */
+  private approvedFamiliesByContext = new Map<string, Set<string>>();
+  /**
+   * Which contexts may widen "Always" to a command family. Default: only the
+   * local terminal. The runtime also allows the owner's attached terminal and
+   * dashboard (web, but not remote Mercury Cloud requests, which stay exact).
+   */
+  private familyApprovalAllowed: (ctx: { channelType: string; channelId: string }) => boolean = (ctx) => ctx.channelType === 'cli';
+
+  setFamilyApprovalPolicy(fn: (ctx: { channelType: string; channelId: string }) => boolean): void {
+    this.familyApprovalAllowed = fn;
+  }
   /** "Always allow" choices for plugin tools, per channel (see approvePluginTool). */
   private approvedPluginToolsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
@@ -931,6 +943,22 @@ export class PermissionManager {
       }
     }
 
+    // "Always" on an earlier prompt in this chat covers the same command
+    // family (every segment), after the hard blocks and the cwd gate above.
+    const families = this.familyApprovalAllowed(ctx) ? this.approvedFamiliesByContext.get(ctx.channelId) : undefined;
+    if (families && families.size > 0) {
+      const needsApprovalList = shell.needsApproval ?? [];
+      const covered = segments.every((segment) => {
+        const family = commandFamily(segment);
+        return family !== null && families.has(family)
+          && !needsApprovalList.some((pattern) => this.matchPattern(segment, pattern));
+      });
+      if (covered) {
+        logger.info({ cmd: trimmed }, 'Shell command auto-approved (command family approved with Always in this chat)');
+        return { allowed: true, needsApproval: false, lane: 'shell' };
+      }
+    }
+
     // Argv lane: the only path to a prompt-free approval in Ask Me mode.
     const argvLane = this.classifyArgvLane(trimmed, cwd);
     if (argvLane.ok) {
@@ -961,6 +989,15 @@ export class PermissionManager {
         const approved = this.approvedCommandsByContext.get(ctx.channelId) ?? new Set<string>();
         approved.add(trimmed);
         this.approvedCommandsByContext.set(ctx.channelId, approved);
+        // Also remember the command family (`pandoc`, `git commit`) so the
+        // next pandoc call in this chat doesn't ask again. Wrappers that can
+        // run anything (sudo, sh -c, env, xargs…) are never generalised.
+        const familyList = segments.map(commandFamily);
+        if (this.familyApprovalAllowed(ctx) && familyList.every((f): f is string => f !== null)) {
+          const set = this.approvedFamiliesByContext.get(ctx.channelId) ?? new Set<string>();
+          for (const f of familyList) set.add(f);
+          this.approvedFamiliesByContext.set(ctx.channelId, set);
+        }
         return { allowed: true, needsApproval: false, lane: 'shell' };
       }
       return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1191,4 +1228,31 @@ export class PermissionManager {
       },
     };
   }
+}
+
+const NEVER_GENERALISE = new Set(['sudo', 'su', 'doas', 'eval', 'exec', 'sh', 'bash', 'zsh', 'fish', 'dash', 'env', 'xargs', 'nohup', 'time', 'watch', 'command', 'builtin', 'powershell', 'pwsh', 'cmd']);
+const EXACT_ONLY_SUBCOMMANDS = new Set(['install', 'i', 'add', 'exec', 'dlx', 'x', 'global', 'upgrade', 'update', 'run-script']);
+const SUBCOMMAND_TOOLS = new Set(['git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'pnpx', 'docker', 'cargo', 'go', 'kubectl', 'brew', 'pip', 'pip3', 'uv', 'gh', 'deno', 'poetry', 'apt', 'apt-get', 'systemctl', 'launchctl']);
+
+/**
+ * The family an "Always" answer covers: the program (`pandoc`), or the
+ * program and its subcommand for multi-command tools (`git commit`, `npm
+ * install`). Null for wrappers that can run anything, and for segments with
+ * no plain program name.
+ */
+export function commandFamily(segment: string): string | null {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  const first = tokens[i];
+  if (!first || /[^A-Za-z0-9._/+-]/.test(first)) return null;
+  const base = first.split('/').pop() ?? '';
+  if (!base || NEVER_GENERALISE.has(base)) return null;
+  if (SUBCOMMAND_TOOLS.has(base)) {
+    const sub = tokens[i + 1];
+    // Installing or executing arbitrary packages stays exact-match only.
+    if (sub && EXACT_ONLY_SUBCOMMANDS.has(sub)) return null;
+    return sub && /^[A-Za-z][A-Za-z0-9:_-]*$/.test(sub) ? `${base} ${sub}` : base;
+  }
+  return base;
 }

@@ -17,7 +17,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity';
+  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status';
   data?: Record<string, unknown>;
 }
 
@@ -100,6 +100,11 @@ export class WebChannel extends BaseChannel {
    * session — the dashboard / third-party backends consume these for live
    * bot views. Bot turns never carry text deltas, only activity labels.
    */
+  /** Runtime status for every attached screen's bottom bar (no target: all clients). */
+  broadcastStatus(status: Record<string, unknown>): void {
+    this.broadcast({ type: 'status', data: { ...status } });
+  }
+
   broadcastBotActivity(ev: { botId: string; jobId: string; kind: string; label: string; detail?: string; stepIndex: number; elapsedMs: number; status?: string }): void {
     this.broadcast({ type: 'bot_activity', data: { ...ev } });
   }

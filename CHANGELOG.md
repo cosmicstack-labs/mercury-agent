@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Chat
+- **Regular chat works like an agent again.** Its instructions forbade helper scripts and batching ("call write_file for each one individually"), so a task like converting an EPUB to Markdown was done file by file by hand. Chat now reaches for the strongest existing tool (pandoc, ffmpeg, a Python library) or one script, does a quick web search when it isn't sure what the best tool is, and checks the output before saying it is done. It also gets a short working contract like Mercury Code's: do the work, plan multi-step tasks, report what was checked.
+
+### Permissions
+- **Mercury asks for your permission mode again, once, and remembers it.** Since 1.3.1 the default `mercury` launch attaches to the background runtime, which never showed the "Ask Me / Allow All" prompt, so every new user was silently in Ask Me. Setup now asks; existing users are asked once in the attached terminal; the choice is saved and applied to your terminal, attached terminal, Mercury Code and the dashboard.
+- **`/permissions` works everywhere you are the owner** (attached terminal and dashboard too, not just the foreground terminal), including `/permissions allow-all` and `/permissions ask-me`.
+- **"Always" on a command prompt now covers that command for the rest of the chat** (every `pandoc …`, `git commit …`), not just the exact string. Installs, wrappers like `sudo`/`sh -c`, and remote Mercury Cloud requests stay exact-match.
+- Telegram and Signal can switch back from Allow All to Ask Me (the switch used to be ignored until restart).
+
+### Bottom bar
+- **The bar updates live.** The attached terminal (what `mercury` opens) read the model once on connect and never again; model switches, Code mode, permission changes and Optimus activity never reached it. The runtime now pushes a status update on every model switch and checks every 2 seconds for anything else. The bar shows the thread, model, Code mode, Ask Me / Allow All, today's token use and Optimus activity; the foreground and Mercury Code bars show the permission mode too.
+- The launch pad's budget row works again (it read field names the runtime never sent).
+
 ## 1.4.0 — Pluggy Mercury: plugins, WhatsApp calls, and Optimus uses your computer
 
 The first stable release since 1.3.8. It also carries the 1.3.9 hotfix below, which only shipped on the dev channel.

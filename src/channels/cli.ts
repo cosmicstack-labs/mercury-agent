@@ -2163,6 +2163,12 @@ export class CLIChannel extends BaseChannel {
   }
 
   /** Status-bar note for a desktop plugin's activity (Optimus listening / working); null clears it. */
+  /** The permission mode shown on the bottom bar. */
+  setPermissionModeStatus(mode: PermissionMode): void {
+    if (this.state.permissionMode === mode) return;
+    this.update({ permissionMode: mode });
+  }
+
   setDesktopActivity(text: string | null): void {
     if (this.state.desktopActivity === text) return;
     this.update({ desktopActivity: text });

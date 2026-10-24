@@ -64,6 +64,20 @@ describe('system prompt assembly', () => {
     expect(p).toContain("The user's GitHub username is hotheadhacker.");
   });
 
+  it('plain chat gets the work contract; Mercury Code keeps its own', () => {
+    const chat = buildSystemPrompt(base);
+    expect(chat).toContain('**How you work:**');
+    const code = buildSystemPrompt({ ...base, programmingSuffix: '\n\nCODE' });
+    expect(code).not.toContain('**How you work:**');
+  });
+
+  it('steers bulk and conversion work to real tools, not file-by-file', () => {
+    const p = buildSystemPrompt(base);
+    expect(p).toContain('pandoc');
+    expect(p).toContain('Never read and rewrite many files one by one yourself.');
+    expect(p).not.toContain('Do NOT create one-time-use helper scripts');
+  });
+
   it('includes skills, bots and mode suffixes verbatim', () => {
     const p = buildSystemPrompt({ ...base, skillContext: 'SKILLS: tweet-notifier', botSection: '\n\nBOTS', programmingSuffix: '\n\nCODE', researchSuffix: '\n\nRESEARCH' });
     for (const s of ['SKILLS: tweet-notifier', 'BOTS', 'CODE', 'RESEARCH', 'Tweet Notification System Available']) expect(p).toContain(s);

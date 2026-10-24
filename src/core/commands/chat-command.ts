@@ -44,10 +44,11 @@ import { CLIChannel } from '../../channels/cli.js';
 import { formatToolStep, formatNarrative, type NarrativeStep } from '../../utils/tool-label.js';
 import { getTelegramHelp, getDiscordHelp, getSlackHelp } from '../../utils/manual.js';
 import { WebChannel } from '../../channels/web.js';
+import { describePermissionMode, loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import type { ArrowSelectOption } from '../../utils/arrow-select.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../../spotify/ui.js';
 import { getCloudTokenStore } from '../../cloud/token-store.js';
-import { updateCliProviderStatus } from '../provider-status.js';
+import { publishStatus, updateCliProviderStatus } from '../provider-status.js';
 import { whatsNewText } from '../../utils/whats-new.js';
 
 export async function handleChatCommand(agent: Agent, content: string, channelType: string, channelId: string): Promise<boolean> {
@@ -151,20 +152,60 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  // Direct form: /permissions allow-all | /permissions ask-me (owner's terminal or dashboard).
+  const directMode = /^\/permissions\s+(allow-all|ask-me)$/.exec(cmd)?.[1] as 'allow-all' | 'ask-me' | undefined;
+  if (directMode && (channel instanceof WebChannel || (channelType === 'cli' && channel instanceof CLIChannel))) {
+    if (channel instanceof WebChannel) channel.setBypassPermissions(directMode === 'allow-all');
+    else {
+      agent.capabilities.permissions.setAutoApproveAll(directMode === 'allow-all');
+      if (directMode === 'allow-all') agent.capabilities.permissions.addTempScope('/', true, true);
+      if (channel instanceof CLIChannel) channel.setPermissionModeStatus(directMode);
+    }
+    savePermissionMode(directMode);
+    publishStatus();
+    await channel.send(`${describePermissionMode(directMode)} Saved.`, channelId);
+    return true;
+  }
+
   if (cmd === '/permissions') {
     if (channelType === 'cli' && channel instanceof CLIChannel) {
       const mode = await channel.askPermissionMode?.();
       if (mode === 'allow-all') {
         agent.capabilities.permissions.setAutoApproveAll(true);
         agent.capabilities.permissions.addTempScope('/', true, true);
-        await channel.send('Allow All mode active for this session. All scopes, commands, and loops auto-approved. Resets on restart.', channelId);
       } else {
         agent.capabilities.permissions.setAutoApproveAll(false);
-        await channel.send('Ask Me mode active. Risky actions will prompt for confirmation.', channelId);
       }
+      const chosen = mode === 'allow-all' ? 'allow-all' : 'ask-me';
+      savePermissionMode(chosen);
+      channel.setPermissionModeStatus(chosen);
+      publishStatus();
+      await channel.send(`${describePermissionMode(chosen)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
       return true;
     }
-    await channel.send('Use /permissions in CLI to switch permission mode. On Telegram, use the /permissions button or command.', channelId);
+    // The attached terminal and the dashboard are the owner's own screens
+    // (channel type 'web'): offer the same choice and remember it.
+    if (channel instanceof WebChannel) {
+      const current = loadPermissionMode() ?? (channel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me');
+      const picked = await channel.presentChoicePrompt(
+        `How should Mercury handle risky actions? (now: ${current === 'allow-all' ? 'Allow All' : 'Ask Me'})`,
+        [
+          { value: 'ask-me', label: 'Ask Me: ask before writing files or running commands' },
+          { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
+        ],
+        channelId,
+      );
+      if (picked !== 'ask-me' && picked !== 'allow-all') {
+        await channel.send('No change. Type /permissions allow-all or /permissions ask-me to switch directly.', channelId);
+        return true;
+      }
+      channel.setBypassPermissions(picked === 'allow-all');
+      savePermissionMode(picked);
+      publishStatus();
+      await channel.send(`${describePermissionMode(picked)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
+      return true;
+    }
+    await channel.send('On Telegram, use the /permissions button or command. Your own terminal and dashboard use /permissions too.', channelId);
     return true;
   }
 

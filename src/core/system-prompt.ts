@@ -31,11 +31,24 @@ export interface SystemPromptInputs {
 export const GITHUB_TOOL_NAMES = ['create_pr', 'review_pr', 'list_issues', 'create_issue', 'github_api'] as const;
 
 export const TOOL_USAGE_GUIDELINES = `**Tool Usage Guidelines:**
-- Use write_file, create_file, and edit_file tools DIRECTLY to create and modify files. Do NOT create intermediary scripts (Python, bash, Node.js) whose sole purpose is to generate other files — you have native file tools for this.
-- Use run_command for: building, testing, installing dependencies, running the project, git operations, and other system tasks that require a shell.
-- Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
-- Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
-- When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
+- Create or change a single file with write_file, create_file or edit_file. Never write a file through run_command with echo/cat/tee/heredoc, and never write a generator script just to emit one file you could write directly.
+- Use run_command for building, testing, installing dependencies, running the project, git, and for real work on data: converting formats, processing many files, extracting, transforming, downloading.
+- Pick the strongest tool for the job before doing anything by hand. For conversions and bulk work (EPUB/PDF/DOCX/HTML to Markdown, images, audio/video, CSV/JSON, renaming or reorganising many files) use an established CLI or library — pandoc, ffmpeg, ImageMagick, jq, a Python package such as ebooklib, markdownify or pypdf — through run_command, or one short script that handles every file in one run. Never read and rewrite many files one by one yourself.
+- Not sure what the best tool is? Spend one web_search finding out. Check it is installed (e.g. \`command -v pandoc\`, \`python3 -c "import ebooklib"\`) and install it or fall back to the next best option.
+- After a bulk or conversion step, check the output (count the files, open a sample) before saying it is done.`;
+
+/**
+ * How to work in plain chat (programming mode off). Mercury Code has its
+ * own contract (programming-mode.ts); without this, chat answered tasks as
+ * a narrator: no plan, the slowest tool, and no check of the result.
+ * Stable text: it is part of the cached prompt prefix.
+ */
+export const CHAT_WORK_CONTRACT = `**How you work:**
+- When the user asks for something to be done, do it with your tools; don't describe how they could do it.
+- First work out the end result they want, then the fastest reliable way to get there (an existing command, library or service beats manual steps).
+- For tasks with several steps, keep a short plan with update_plan and work through it.
+- Report what you did and what you checked, briefly. If something failed or you could not confirm it, say so plainly.
+- Plain questions and conversation don't need tools: just answer.`;
 
 /**
  * Token budget line for the per-turn (volatile) system block. It changes on
@@ -117,6 +130,7 @@ export function buildSystemPrompt(i: SystemPromptInputs): string {
   let prompt = sections.join('\n\n');
   if (i.botSection) prompt += i.botSection;
   if (i.programmingSuffix) prompt += i.programmingSuffix;
+  else prompt += '\n\n' + CHAT_WORK_CONTRACT;
   if (i.researchSuffix) prompt += i.researchSuffix;
   if (i.saverSuffix) prompt += i.saverSuffix;
   prompt += '\n\n' + environmentSection(i.now, i.timezone, i.platform, i.cwd);

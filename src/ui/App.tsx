@@ -911,6 +911,9 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
     segments.push({ text: `${state.provider.name} · ${state.provider.model}`, color: 'magenta' });
   }
 
+  // 2a. Permission mode (Ask Me / Allow All)
+  segments.push({ text: state.permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me', color: state.permissionMode === 'allow-all' ? 'yellow' : 'gray' });
+
   // 2b. Optimus (desktop plugin) listening / working right now
   if (state.desktopActivity) {
     segments.push({ text: state.desktopActivity, color: 'yellow' });
@@ -2733,6 +2736,7 @@ export function MercuryCodeView({
   }
   rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT });
   if (state.provider) rightSegs.push({ text: `${state.provider.name} ${state.provider.model}`, color: 'magenta' });
+  rightSegs.push({ text: state.permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me', color: state.permissionMode === 'allow-all' ? 'yellow' : 'gray' });
   // Developer status HUD: token budget is otherwise invisible in Mercury
   // Code (TokenBarView only renders in chat surfaces).
   if (state.tokenInfo) rightSegs.push({ text: `⚡ ${Math.round(state.tokenInfo.percentage)}%`, color: 'green' });

@@ -257,10 +257,10 @@ export function getManual(): string {
   const perms = [
     'Commands are blocked (never run), auto-approved, or need approval.',
     'Use interactive approval prompts: ↑/↓ + Enter (or Y/N/A shortcuts).',
-    'Choose "Always" when prompted to permanently approve a command type.',
+    'Choose "Always" on a command prompt to allow that command (e.g. every `pandoc …`) for the rest of the chat. Installs stay one at a time.',
     'Edit ~/.mercury/permissions.yaml to customize manually.',
     'File access is scoped — new paths need approval (Yes/No/Always).',
-    'At session start, choose "Ask Me" (confirm each action) or "Allow All" (auto-approve everything).',
+    'Choose "Ask Me" (confirm risky actions) or "Allow All" once, at setup; Mercury remembers it. Change it any time with /permissions (or /permissions allow-all | ask-me).',
     'Scheduled tasks always run in Allow All mode.',
   ];
 
