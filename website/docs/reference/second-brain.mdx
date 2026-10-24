@@ -148,6 +148,18 @@ GET    /api/brain/graph
 
 Goals and projects are not a separate resource — they are memories filtered by `type=goal` or `type=project` against `/api/brain/memory`.
 
+## Which model learns
+
+Extraction and reflection are strict-JSON jobs; a weak free-tier model misses most of what you say or returns nothing. Point them at a capable provider without changing your chat model:
+
+```yaml
+memory:
+  learning:
+    provider: anthropic   # any name from `providers`; falls back to the default when unusable
+```
+
+(`LEARNING_PROVIDER=anthropic` does the same.) A Haiku-class model is plenty; each turn costs one small call and each hour of activity one reflection.
+
 ## Enable / Disable
 
 Second Brain is **enabled by default**. To disable it:

@@ -167,7 +167,14 @@ Hermes' `USER.md` but generated from beliefs and annotated with confidence.
 - Decay keys on `last_supported_at`; use refreshes it weakly.
 - The soul migration that overwrites edited files is removed.
 
-### 3.8 One source, and what an existing owner sees
+### 3.8 Which model learns
+
+`memory.learning.provider` (or `LEARNING_PROVIDER`) names the provider for extraction and reflection;
+unset or unusable → the chat default. Both loops are strict-JSON tasks: on the free tier the extractor
+returned `[]` or invalid JSON most of the time, so an owner on a free default learned almost nothing.
+A Haiku-class model is enough and keeps the chat model choice untouched.
+
+### 3.9 One source, and what an existing owner sees
 
 - `UserMemoryStore` is a facade over `BeliefStore`. Every reader and writer the old API had
   (`getRecent`, `search`, `getByType`, `retrieveRelevant`, `remember`, `updateMemory`,
@@ -188,7 +195,7 @@ Hermes' `USER.md` but generated from beliefs and annotated with confidence.
 - Not yet moved: the persons graph (`memory_persons` keys into `memories`); it keeps reading the
   archive until relationship beliefs feed it.
 
-### 3.9 Validation
+### 3.10 Validation
 
 - Unit tests on the belief store: support/against maths, decay, contest, supersession, forget.
 - Scripted-provider eval scenarios (`src/eval`): "owner corrects brevity twice → next reply is

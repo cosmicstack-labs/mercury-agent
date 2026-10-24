@@ -4412,6 +4412,30 @@ export class Agent {
    * only calls the model when at least one session has a new owner message
    * since the last pass; concurrent calls share one run.
    */
+  /**
+   * The provider the Owner Model learns on (ADR-026): `memory.learning.provider`
+   * when it names a usable provider, else the chat default. Resolved per call so
+   * a key added at runtime or a changed default is picked up.
+   */
+  private learningProviders(): { getDefault(): ReturnType<ProviderRegistry['getDefault']> } {
+    return {
+      getDefault: () => {
+        const requested = this.config.memory.learning?.provider?.trim();
+        if (requested) {
+          const getUsable = typeof this.providers.getUsable === 'function' ? this.providers.getUsable.bind(this.providers) : (name?: string) => (name ? this.providers.get(name) : undefined);
+          const provider = getUsable(requested);
+          if (provider) return provider;
+          if (!this.warnedLearningProvider) {
+            this.warnedLearningProvider = true;
+            logger.warn({ requested }, 'memory.learning.provider is not registered or not usable — learning on the default provider');
+          }
+        }
+        return this.providers.getDefault();
+      },
+    };
+  }
+  private warnedLearningProvider = false;
+
   async reflectNow(): Promise<void> {
     if (!this.userMemory) return;
     if (this.reflectionInFlight) return this.reflectionInFlight;
@@ -4421,7 +4445,7 @@ export class Agent {
     this.reflectionInFlight = runReflection({
       beliefs: userMemory.beliefs,
       sessions: this.sessions,
-      providers: this.providers,
+      providers: this.learningProviders(),
       tokenBudget: this.tokenBudget,
       learningPaused: () => userMemory.isLearningPaused(),
       ownerName: this.config.identity.owner || 'the owner',
@@ -4563,7 +4587,7 @@ export class Agent {
 
     try {
       const ops = await extractBeliefOperations({
-        providers: this.providers,
+        providers: this.learningProviders(),
         tokenBudget: this.tokenBudget,
         beliefs,
         learningPaused: () => this.userMemory?.isLearningPaused() ?? true,

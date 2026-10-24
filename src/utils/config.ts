@@ -185,6 +185,16 @@ export interface MercuryConfig {
        *  true when the agent is paired with Mercury Cloud. */
       poolSearch?: boolean;
     };
+    /** The Owner Model's learning calls (ADR-026): per-turn extraction and the reflection pass. */
+    learning?: {
+      /**
+       * Provider to run extraction and reflection on, by name from `providers`.
+       * Unset (or not usable) → the default chat provider. These are strict
+       * JSON tasks, so a capable mid-tier model (e.g. anthropic with a Haiku
+       * model) learns far better than a free tier.
+       */
+      provider?: string;
+    };
   };
   heartbeat: {
     intervalMinutes: number;
@@ -489,6 +499,9 @@ export function getDefaultConfig(): MercuryConfig {
       collaborativeKnowledge: {
         shareLearning: getEnvBool('SHARE_LEARNING', false),
         poolSearch: getEnvBool('POOL_SEARCH', true),
+      },
+      learning: {
+        ...(process.env.LEARNING_PROVIDER ? { provider: process.env.LEARNING_PROVIDER } : {}),
       },
     },
     heartbeat: {
