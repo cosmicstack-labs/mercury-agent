@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SEPARATOR, activityLine, fitSegments, phaseFromStep, shortModel, shortSession, splitRow, statusSegments } from './status-bar.js';
+import { SEPARATOR, activityLine, budgetBar, fitSegments, phaseFromStep, shortModel, shortSession, splitRow, statusSegments } from './status-bar.js';
 
 const row = (segs: Array<{ text: string }>) => segs.map((s) => s.text).join(SEPARATOR);
 
@@ -28,20 +28,30 @@ describe('status bar: fitting the right half', () => {
     session: { alias: 'quiet-harbour', shortId: 'ab12' },
   };
 
-  it('at full width shows everything, permission first and the session last', () => {
+  it('at full width shows everything: permission, the budget meter, the model, the session last', () => {
     const segs = fitSegments(statusSegments(inputs), 120);
-    expect(row(segs)).toBe('Ask Me · mercuryCloud · minimax-m3.1-flash:free · ⚡ 12% today · quiet-harbour');
+    expect(row(segs)).toBe('Ask Me · ⚡ █░░░░░░░ 12% · mercuryCloud · minimax-m3.1-flash:free · quiet-harbour');
   });
 
-  it('when narrow, compacts the least important first, then drops the session, never the permission mode', () => {
-    const at60 = row(fitSegments(statusSegments(inputs), 44));
-    expect(at60).toBe('Ask · minimax-m3.1-flash · ⚡12% · quiet-har…');
-    const at32 = row(fitSegments(statusSegments(inputs), 32));
-    expect(at32).toBe('Ask · minimax-m3.1-flash · ⚡12%');
-    expect(row(fitSegments(statusSegments(inputs), 30))).toBe('Ask · minimax-m3.1-flash');
-    const at12 = row(fitSegments(statusSegments(inputs), 12));
-    expect(at12).toBe('Ask · ⚡12%');
+  it('when narrow, compacts the least important first, then drops the session and the model; permission and budget stay', () => {
+    expect(row(fitSegments(statusSegments(inputs), 60))).toBe('Ask Me · ⚡ █░░░░░░░ 12% · minimax-m3.1-flash · quiet-har…');
+    expect(row(fitSegments(statusSegments(inputs), 44))).toBe('Ask · ⚡12% · minimax-m3.1-flash · quiet-har…');
+    expect(row(fitSegments(statusSegments(inputs), 32))).toBe('Ask · ⚡12% · minimax-m3.1-flash');
+    expect(row(fitSegments(statusSegments(inputs), 12))).toBe('Ask · ⚡12%');
     expect(row(fitSegments(statusSegments(inputs), 4))).toBe('Ask');
+  });
+
+  it('the budget meter fills with use: green, yellow from 70 %, red from 90 %', () => {
+    expect(budgetBar(0)).toBe('░░░░░░░░');
+    expect(budgetBar(50)).toBe('████░░░░');
+    expect(budgetBar(100)).toBe('████████');
+    expect(budgetBar(140)).toBe('████████');
+    const seg = (pct: number) => statusSegments({ tokensPct: pct })[0];
+    expect(seg(12)).toMatchObject({ text: '⚡ █░░░░░░░ 12%', compact: '⚡12%', color: 'green' });
+    expect(seg(75)).toMatchObject({ text: '⚡ ██████░░ 75%', color: 'yellow' });
+    expect(seg(95)).toMatchObject({ text: '⚡ ████████ 95%', color: 'red' });
+    // Unknown budget: no meter rather than a wrong one.
+    expect(statusSegments({ tokensPct: null })).toEqual([]);
   });
 
   it('a long model never pushes tokens or permission off the row', () => {
@@ -54,14 +64,8 @@ describe('status bar: fitting the right half', () => {
 
   it('live things come first: Optimus, then Allow All in yellow, Code mode and an update', () => {
     const segs = fitSegments(statusSegments({ ...inputs, permission: 'allow-all', desktop: '🎙 Optimus listening', codeMode: 'auto', updateAvailable: 'v1.5.0' }), 200);
-    expect(row(segs)).toBe('🎙 Optimus listening · Allow All · mercuryCloud · minimax-m3.1-flash:free · ⚡ 12% today · CODE AUTO · ⬆ v1.5.0 · quiet-harbour');
+    expect(row(segs)).toBe('🎙 Optimus listening · Allow All · ⚡ █░░░░░░░ 12% · mercuryCloud · minimax-m3.1-flash:free · CODE AUTO · ⬆ v1.5.0 · quiet-harbour');
     expect(segs[1].color).toBe('yellow');
-  });
-
-  it('token colour follows the budget', () => {
-    expect(statusSegments({ tokensPct: 95 })[0].color).toBe('red');
-    expect(statusSegments({ tokensPct: 75 })[0].color).toBe('yellow');
-    expect(statusSegments({ tokensPct: 10 })[0].color).toBe('cyan');
   });
 });
 

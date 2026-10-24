@@ -4,9 +4,9 @@
  *
  *   left  — what is happening now: a spinner + phase + elapsed while a turn
  *           runs, a notice when there is one, otherwise nothing.
- *   right — where you are: permission mode, model, today's token use, Code
- *           mode, Optimus, an update — each in priority order with a compact
- *           form, and the session alias last. Segments that do not fit are
+ *   right — where you are: permission mode, today's budget meter (green →
+ *           yellow → red), model, Code mode, Optimus, an update — each in
+ *           priority order with a compact form, and the session alias last. Segments that do not fit are
  *           dropped from the lowest priority up; nothing is ever cut
  *           mid-word, and a long model or session name never pushes the
  *           useful parts off the row.
@@ -73,11 +73,18 @@ function fit(text: string, max: number): string {
   return text.slice(0, max - 1).replace(/[-_ .:]+$/, '') + '…';
 }
 
+/** Budget colour, as the completion footer has always shown it: green, then yellow from 70 %, red from 90 %. */
 export function tokenColor(pct: number): string {
-  return pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
+  return pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
 }
 
-/** The right-hand segments in priority order (not yet fitted). */
+/** A small meter for today's budget: `█░░░░░░░` at 12 %. */
+export function budgetBar(pct: number, cells = 8): string {
+  const filled = Math.round((Math.max(0, Math.min(100, pct)) / 100) * cells);
+  return '█'.repeat(filled) + '░'.repeat(cells - filled);
+}
+
+/** The right-hand segments in priority order (not yet fitted): desktop 0, permission 1, budget 2, model 3, Code 4, update 5, extras, session 9. */
 export function statusSegments(i: StatusInputs): StatusSegment[] {
   const out: StatusSegment[] = [];
   if (i.desktop) out.push({ text: i.desktop, color: 'yellow', priority: 0 });
@@ -90,12 +97,14 @@ export function statusSegments(i: StatusInputs): StatusSegment[] {
       text: model ? `${i.provider.name} · ${model}` : i.provider.name,
       compact,
       color: 'magenta',
-      priority: 2,
+      priority: 3,
     });
   }
+  // Today's budget outranks the model: the owner asked for the meter to stay
+  // on the row, and the model is one /model away.
   if (typeof i.tokensPct === 'number' && Number.isFinite(i.tokensPct)) {
     const pct = Math.max(0, Math.min(999, Math.round(i.tokensPct)));
-    out.push({ text: `⚡ ${pct}% today`, compact: `⚡${pct}%`, color: tokenColor(pct), priority: 3 });
+    out.push({ text: `⚡ ${budgetBar(pct)} ${pct}%`, compact: `⚡${pct}%`, color: tokenColor(pct), priority: 2 });
   }
   if (i.codeMode && i.codeMode !== 'off') out.push({ text: `CODE ${i.codeMode.toUpperCase()}`, compact: 'CODE', color: 'cyan', priority: 4 });
   if (i.updateAvailable) out.push({ text: `⬆ v${i.updateAvailable.replace(/^v/, '')}`, compact: '⬆', color: 'green', priority: 5 });
