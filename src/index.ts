@@ -3788,11 +3788,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cliChannel.setCurrentSession(selected);
     }
 
-    // Ask once, then remember (also covers Mercury Code). /permissions changes it.
+    // Every session starts by asking (also Mercury Code): the saved mode is
+    // listed first so Enter keeps it. The pick is remembered as the default
+    // for next time; /permissions changes it mid-session.
     const savedMode = loadPermissionMode();
-    const mode = savedMode ?? (cliChannel ? await cliChannel.askPermissionMode?.() : undefined);
-    if (!savedMode && (mode === 'allow-all' || mode === 'ask-me') && process.stdout.isTTY) savePermissionMode(mode);
-    if (savedMode && cliChannel) console.log(chalk.dim(`  Permissions: ${savedMode === 'allow-all' ? 'Allow All' : 'Ask Me'} · /permissions to change`));
+    const mode = cliChannel && process.stdout.isTTY
+      ? await cliChannel.askPermissionMode(savedMode ?? undefined)
+      : savedMode ?? 'ask-me';
+    if ((mode === 'allow-all' || mode === 'ask-me') && process.stdout.isTTY) savePermissionMode(mode);
     cliChannel?.setPermissionModeStatus(mode === 'allow-all' ? 'allow-all' : 'ask-me');
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);

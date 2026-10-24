@@ -85,7 +85,7 @@ async function pickOnOwnerScreen(agent: Agent, channel: CLIChannel | WebChannel,
  */
 async function offerPermissionMode(agent: Agent, channel: CLIChannel | WebChannel, channelId: string, question: string): Promise<void> {
   if (channel instanceof CLIChannel) {
-    const mode = await channel.askPermissionMode?.();
+    const mode = await channel.askPermissionMode(loadPermissionMode() ?? undefined);
     if (mode === 'allow-all') {
       agent.capabilities.permissions.setAutoApproveAll(true);
       agent.capabilities.permissions.addTempScope('/', true, true);

@@ -373,6 +373,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         .map((m) => ({ id: m.id, role: m.role as TranscriptMessage['role'], content: m.content })));
     } else {
       // "New session": create it server-side so send + SSE target the same id.
+      newSessionRef.current = true;
       const created = await client.createThread();
       setThread(created
         ? { id: created.id, shortId: created.shortId, alias: created.alias, title: created.title }
@@ -421,10 +422,11 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     await client.resolvePermission(active.id, value);
   }, [client, prompt]);
 
-  // Entering a chat: say which permission mode is in effect, in one line.
-  // First time with no saved mode (users from before the setup wizard
-  // asked): ask once, here, and remember it.
+  // Entering a chat. A NEW session (or no saved mode yet) asks for the
+  // permission mode, the current one listed first so Enter keeps it; a
+  // resumed session just says which mode is in effect, in one dim line.
   const askedModeRef = React.useRef(false);
+  const newSessionRef = React.useRef(false);
   React.useEffect(() => {
     if (phase !== 'chat' || askedModeRef.current) return;
     askedModeRef.current = true;
@@ -432,8 +434,8 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     if (typeof client.permissionMode !== 'function') return;
     client.permissionMode().then((mode) => {
       if (mode === undefined) return;
-      if (mode !== null) {
-        setRuntimeStatus((st) => ({ mode: st?.mode ?? 'off', permission: mode, desktop: st?.desktop ?? '' }));
+      if (mode !== null) setRuntimeStatus((st) => ({ mode: st?.mode ?? 'off', permission: mode, desktop: st?.desktop ?? '' }));
+      if (mode !== null && !newSessionRef.current) {
         setHistory((prev) => [...prev, {
           id: `a_mode_${Date.now().toString(36)}`,
           role: 'system',
@@ -443,14 +445,18 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         }]);
         return;
       }
+      const options = [
+        { value: 'ask-me', label: 'Ask Me: confirm before writing files or running commands' },
+        { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
+      ];
+      if (mode === 'allow-all') options.reverse();
       setPrompt((current) => current ?? {
         id: LOCAL_PERMISSION_MODE_PROMPT,
         kind: 'choice',
-        text: 'How should Mercury handle risky actions? (asked once, change with /permissions)',
-        options: [
-          { value: 'ask-me', label: 'Ask Me: confirm before writing files or running commands' },
-          { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
-        ],
+        text: mode
+          ? `Permission mode for this session? (now: ${mode === 'allow-all' ? 'Allow All' : 'Ask Me'} — Enter keeps it)`
+          : 'How should Mercury handle risky actions? (change any time with /permissions)',
+        options,
       });
       setPromptIdx(0);
     }).catch(() => {});

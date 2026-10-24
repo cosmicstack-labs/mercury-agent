@@ -2682,32 +2682,29 @@ export function MercuryCodeView({
   const git = mc.git;
   // '' = not read yet (async refresh pending); hide the segment until then.
   const hasGit = git.branch !== '' && git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
-  const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: THEME_ACCENT }];
-  if (state.desktopActivity) rightSegs.push({ text: state.desktopActivity, color: 'yellow' });
+  // Same row builder as chat (src/ui/status-bar.ts): permission, budget
+  // meter, model (no provider name), mode, then the folder and branch;
+  // fitted to the width in priority order so nothing collides or wraps.
+  // Optimus activity, when there is any, is the last thing dropped.
+  const extras: StatusSegment[] = [];
   if (hasGit) {
     const gitBits = [`⎇ ${git.branch}`];
     if (git.ahead > 0) gitBits.push(`↑${git.ahead}`);
     if (git.behind > 0) gitBits.push(`↓${git.behind}`);
     if (git.dirty > 0) gitBits.push(`±${git.dirty}`);
-    rightSegs.push({ text: gitBits.join(' '), color: 'blue' });
+    extras.push({ text: gitBits.join(' '), compact: `⎇ ${git.branch}`, color: 'blue', priority: 6 });
   }
-  rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT });
-  if (state.provider) rightSegs.push({ text: `${state.provider.name} ${state.provider.model}`, color: 'magenta' });
-  rightSegs.push({ text: state.permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me', color: state.permissionMode === 'allow-all' ? 'yellow' : 'gray' });
-  // Developer status HUD: token budget is otherwise invisible in Mercury
-  // Code (TokenBarView only renders in chat surfaces).
-  if (state.tokenInfo) rightSegs.push({ text: `⚡ ${Math.round(state.tokenInfo.percentage)}%`, color: 'green' });
-  // Update-available indicator: one dim segment, no extra row — ignorable via
-  // /update ignore, so it must never crowd the bar.
-  if (state.updateAvailable) rightSegs.push({ text: `⬆ v${state.updateAvailable}`, color: 'yellow' });
-  // Fit: drop whole segments from the right when the terminal is narrow.
+  extras.push({ text: mc.dirName, color: THEME_ACCENT, priority: 7 });
+  extras.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT, priority: 4 });
+  const rightSegs = fitSegments(statusSegments({
+    provider: state.provider,
+    permission: state.permissionMode,
+    tokensPct: state.tokenInfo ? state.tokenInfo.percentage : null,
+    desktop: state.desktopActivity,
+    updateAvailable: state.updateAvailable,
+    extras,
+  }), Math.max(10, cols - 6 - (ctrlCHint || state.tuiFrozen ? 40 : 0)));
   const SEP = ' · ';
-  let segWidth = 4; // paddingX on both sides
-  rightSegs.forEach((seg, i) => { segWidth += seg.text.length + (i > 0 ? SEP.length : 0); });
-  while (segWidth > cols - 2 && rightSegs.length > 1) {
-    const removed = rightSegs.pop()!;
-    segWidth -= removed.text.length + SEP.length;
-  }
   // Freeze hint lives in the status bar (not a new row) so the live region's
   // height stays constant — a new row would re-introduce scrollback churn.
   const leftHint = ctrlCHint
@@ -2717,8 +2714,8 @@ export function MercuryCodeView({
     : mc.exitConfirm || state.permissionPrompt
     ? '' // the prompt / confirm box already shows its own controls
     : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
-      ? 'esc interrupt' // the live feedback block above is showing progress
-      : 'esc esc exit'; // Enter sends and /help lists commands: not worth a row of hints
+      ? '' // the live feedback block above is showing progress (esc interrupts)
+      : ''; // idle: the row is status only
 
   const showHints = finalizedMessages.length === 0 && streamTail.length === 0;
 
@@ -2745,7 +2742,7 @@ export function MercuryCodeView({
         <Spacer />
         <Text wrap="truncate-end">
           {rightSegs.map((seg, i) => (
-            <React.Fragment key={seg.text}>
+            <React.Fragment key={`${seg.priority}:${i}`}>
               {i > 0 && <Text color="gray">{SEP}</Text>}
               <Text color={seg.color}>{seg.text}</Text>
             </React.Fragment>

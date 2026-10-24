@@ -38,10 +38,15 @@ describe('attach TUI live rendering', () => {
     stdin.push('\r'); // "new session" is the only pick row
     await sleep(300);
     expect(emit).not.toBeNull();
-    // Entering the session says which permission mode is in effect, once, as a dim line.
+    // A new session asks for its permission mode, the current one first so
+    // Enter keeps it; no "—:" header rows anywhere.
     const entry = screen.text().join('\n');
-    expect(entry).toContain('Ask Me mode: Mercury asks before writing files or running commands');
+    expect(entry).toContain('Permission mode for this session? (now: Ask Me — Enter keeps it)');
+    expect(entry.indexOf('Ask Me: confirm')).toBeLessThan(entry.indexOf('Allow All: just do it'));
     expect(entry).not.toContain('—:');
+    stdin.push('\r'); // keep Ask Me
+    await sleep(200);
+    expect(screen.text().join('\n')).not.toContain('Permission mode for this session?');
     emit!({ type: 'thinking', data: {} });
     await sleep(150);
     const a = screen.text().join('\n');

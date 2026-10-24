@@ -2080,15 +2080,23 @@ export class CLIChannel extends BaseChannel {
     return this.enqueuePrompt({ type: 'ask', message: question }, String);
   }
 
-  async askPermissionMode(): Promise<PermissionMode> {
-    if (!process.stdout.isTTY) return 'ask-me';
+  /**
+   * The Ask Me / Allow All prompt for this session. `current` (the saved
+   * mode) is listed first, so Enter keeps it and ↓ Enter switches.
+   */
+  async askPermissionMode(current?: PermissionMode): Promise<PermissionMode> {
+    if (!process.stdout.isTTY) return current ?? 'ask-me';
+    const options = [
+      { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
+      { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
+    ];
+    if (current === 'ask-me') options.reverse();
     return this.enqueuePrompt({
       type: 'mode',
-      message: 'Choose how Mercury handles risky actions this session.',
-      options: [
-        { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
-        { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
-      ],
+      message: current
+        ? `Permission mode for this session? (now: ${current === 'allow-all' ? 'Allow All' : 'Ask Me'} — Enter keeps it)`
+        : 'Choose how Mercury handles risky actions this session.',
+      options,
     }, (val) => val as PermissionMode);
   }
 
