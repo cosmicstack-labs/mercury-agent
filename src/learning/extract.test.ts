@@ -133,6 +133,9 @@ describe('extractBeliefOperations', () => {
     expect(d.calls).toBe(0);
     expect(shouldExtract(d, { ownerMessage: 'hello there' })).toBe(false);
     expect(shouldExtract(d, { ownerMessage: 'please stop asking before tests' })).toBe(true);
+    // A correction that happens to open with "no" is the most valuable turn there is.
+    expect(shouldExtract(d, { ownerMessage: "No no, I said British spelling. Fix the blog post and stop using 'color'." })).toBe(true);
+    expect(shouldExtract(d, { ownerMessage: 'ok do it' })).toBe(false);
   });
 
   it('calls the model once, records usage, and returns validated ops referencing only known beliefs', async () => {
@@ -168,5 +171,15 @@ describe('extractBeliefOperations', () => {
     const b = belief({ id: 'b', statement: 'Works on Mercury' });
     const found = relevantBeliefs({ searchRelevant: () => [{ ...a, confidence: 0.9 }], findSimilar: () => [a, b] }, 'short answers mercury');
     expect(found.map((x) => x.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('parseBeliefOperations excerpt fallback', () => {
+  it('an op the model emitted without an excerpt cites the owner message instead of being dropped', () => {
+    const text = JSON.stringify([{ op: 'owner_stated', kind: 'trait', dimension: 'brevity', level: 'terse', statement: 'Prefers short answers on the phone', context: '*' }]);
+    expect(parseBeliefOperations(text, new Set())).toEqual([]);
+    const ops = parseBeliefOperations(text, new Set(), { defaultExcerpt: '[Voice call: …] Always keep the answer short, I read these on my phone.' });
+    expect(ops).toHaveLength(1);
+    expect(ops[0].excerpt).toBe('[Voice call: …] Always keep the answer short, I read these on my phone.');
   });
 });

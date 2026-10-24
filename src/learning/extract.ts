@@ -27,6 +27,13 @@ const CONTEXT_MAX = 160;
 
 /** Greetings and acknowledgements: nothing to learn, no model call. */
 export const TRIVIAL_MESSAGE = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
+/** A message that opens like a greeting but goes on ("No no, I said British spelling…") is a turn, often a correction. */
+export const TRIVIAL_MAX_CHARS = 40;
+
+export function isTrivialMessage(message: string): boolean {
+  const m = message.trim();
+  return m.length <= TRIVIAL_MAX_CHARS && TRIVIAL_MESSAGE.test(m);
+}
 
 export interface ExtractTurn {
   role: 'owner' | 'mercury';
@@ -186,13 +193,19 @@ function validContext(v: unknown): string {
  * JSON array yields []; every element is checked for op, kind, dimension and
  * level, statement length, excerpt and (for references) a known belief id.
  */
-export function parseBeliefOperations(text: string, existingIds: ReadonlySet<string>, ref: { sessionId?: string; turnRef?: string } = {}): BeliefOperation[] {
+export function parseBeliefOperations(text: string, existingIds: ReadonlySet<string>, ref: { sessionId?: string; turnRef?: string; defaultExcerpt?: string } = {}): BeliefOperation[] {
   const parsed = parseJsonLenient(text);
   if (!Array.isArray(parsed)) return [];
   const out: BeliefOperation[] = [];
+  const fallback = ref.defaultExcerpt?.replace(/\s+/g, ' ').trim().slice(0, EXCERPT_MAX);
   for (const raw of parsed) {
     if (out.length >= MAX_OPS_PER_TURN) break;
-    const op = validateOperation(raw, existingIds);
+    // Models drop the excerpt now and then; the owner's own message is the
+    // evidence anyway, so an op without one cites that rather than being lost.
+    const withExcerpt = fallback && raw && typeof raw === 'object' && !str((raw as Record<string, unknown>).excerpt)
+      ? { ...(raw as Record<string, unknown>), excerpt: fallback }
+      : raw;
+    const op = validateOperation(withExcerpt, existingIds);
     if (op) out.push({ ...op, sessionId: ref.sessionId, turnRef: ref.turnRef });
   }
   return out;
@@ -265,7 +278,7 @@ function traitFields(r: Record<string, unknown>, kind: BeliefKind): { dimension:
 export function shouldExtract(deps: Pick<ExtractDeps, 'tokenBudget' | 'learningPaused'>, input: Pick<ExtractInput, 'ownerMessage' | 'channelAccess'>): boolean {
   if (deps.learningPaused()) return false;
   if (input.channelAccess === 'general') return false;
-  if (TRIVIAL_MESSAGE.test(input.ownerMessage.trim())) return false;
+  if (isTrivialMessage(input.ownerMessage)) return false;
   if (!deps.tokenBudget.canAfford(EXTRACT_MIN_BUDGET)) return false;
   return true;
 }
@@ -287,7 +300,7 @@ export async function extractBeliefOperations(deps: ExtractDeps, input: ExtractI
     provider: provider.name, model: provider.getModel(), inputTokens, outputTokens, totalTokens: inputTokens + outputTokens,
     channelType: 'internal', agentId: deps.agentId,
   });
-  const ops = parseBeliefOperations(result.text ?? '', new Set(existing.map((b) => b.id)), { sessionId: input.sessionId, turnRef: input.turnRef });
+  const ops = parseBeliefOperations(result.text ?? '', new Set(existing.map((b) => b.id)), { sessionId: input.sessionId, turnRef: input.turnRef, defaultExcerpt: ownerWords(input.ownerMessage) });
   if (ops.length > 0) logger.debug({ ops: ops.map((o) => `${o.op}${o.kind ? `:${o.kind}` : ''}`) }, 'Belief operations extracted');
   return ops;
 }

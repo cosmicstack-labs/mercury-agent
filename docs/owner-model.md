@@ -174,6 +174,13 @@ unset or unusable → the chat default. Both loops are strict-JSON tasks: on the
 returned `[]` or invalid JSON most of the time, so an owner on a free default learned almost nothing.
 A Haiku-class model is enough and keeps the chat model choice untouched.
 
+Measured on Haiku 4.5 (October 2026), four turn types × 2 runs: before the fixes below, 0 of 6 model
+calls produced an operation; after, every substantive turn did (brevity=terse, autonomy=just-do-it
+scoped to the project, the goal behind a crash report), and acknowledgements cost no call.
+Two leaks: the trivial-message gate matched any message *starting* with "no"/"ok" (corrections!), and
+a missing `excerpt` field — which the model omits now and then — discarded the whole operation. The
+gate now applies only to short messages; a missing excerpt falls back to the owner's message.
+
 ### 3.9 One source, and what an existing owner sees
 
 - `UserMemoryStore` is a facade over `BeliefStore`. Every reader and writer the old API had
