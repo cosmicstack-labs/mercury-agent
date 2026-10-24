@@ -8,6 +8,10 @@
 - **Search never depends on the model.** Results come only from Mercury's own search tools, never from a provider's built-in web search, so search works the same with every model.
 - **You can see what happened.** Every result ends with the trail, for example `Searched: Brave: blocked (HTTP 429) → DuckDuckGo: 5 results`, so "nothing found" and "everything was blocked" read differently.
 
+### Chat
+- **The research prompt asks only when you want research.** It used to fire on words ("latest", "recent", "explain", "today's news"), so "convert the latest epub" or "explain how my build works and fix it" got a research question. The words now only decide whether to check; one short model call decides whether you asked for an in-depth, multi-source write-up. Instructions, quick questions and today's news never get the prompt, and a failed or slow check means no prompt.
+- **Quick answer comes first.** The picker starts on "Quick answer", so an accidental Enter never starts a long research run.
+
 ## 1.4.1 — Mercury learns how you work, saves its own skills, and searches again
 
 ### Owner Model: Mercury learns how to work with you (ADR-026)

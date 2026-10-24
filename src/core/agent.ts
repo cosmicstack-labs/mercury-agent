@@ -40,6 +40,7 @@ import { getTelegramHelp, getDiscordHelp, getSlackHelp } from '../utils/manual.j
 import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
+import { classifyResearchIntent } from './research-intent.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
@@ -911,20 +912,41 @@ export class Agent {
     const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
     const promptChannel = this.channels.getChannelForMessage(msg);
     const inMercuryCode = promptChannel instanceof CLIChannel && promptChannel.getTuiState().mercuryCode != null;
+    // The word filter only decides whether to ask the model; the model
+    // decides whether the owner actually wants a research article. An
+    // instruction ("do X with the latest file") or a quick question never
+    // gets the prompt, and a failed or slow check means no prompt.
     if (isUserMessage && !inMercuryCode && !this.researchMode.isActive() && looksResearchy(trimmed)) {
-      this.promptResearchMode(msg, workKey).catch((err) => {
-        logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
-        this.queueMessage(msg, workKey);
-        this.processQueue();
+      void this.wantsResearch(trimmed).then((wanted) => {
+        if (!wanted) {
+          this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+          return;
+        }
+        this.promptResearchMode(msg, workKey).catch((err) => {
+          logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
+          this.queueMessage(msg, workKey);
+          this.processQueue();
+        });
       });
       return;
     }
 
+    this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+  }
+
+  /** After the research check: the Mercury Code hand-off, then the queue. */
+  private routeIncoming(
+    msg: ChannelMessage,
+    workKey: string | undefined,
+    trimmed: string,
+    isUserMessage: boolean,
+    inMercuryCode: boolean,
+    promptChannel: ReturnType<ChannelRegistry['getChannelForMessage']>,
+  ): void {
     // Mercury Code hand-off: in the normal chat TUI, a coding-shaped task may
     // belong in the coding TUI. Ask once; no answer within the timeout is
     // treated as "No" and the request proceeds in normal chat — never blocked.
-    // The research prompt above takes precedence when both match (the message
-    // returned there already).
+    // The research prompt takes precedence when both match.
     if (isUserMessage && !inMercuryCode && promptChannel instanceof CLIChannel && looksLikeCodingTask(trimmed)) {
       this.promptMercuryCodeHandoff(promptChannel, msg, workKey).catch((err) => {
         logger.warn({ err: err.message }, 'Mercury Code hand-off prompt failed — proceeding with normal message');
@@ -1066,6 +1088,22 @@ export class Agent {
     });
   }
 
+  /** One small model call: does this message ask for a full research article? */
+  private async wantsResearch(text: string): Promise<boolean> {
+    let model: ReturnType<ReturnType<ProviderRegistry['getDefault']>['getModelInstance']>;
+    try {
+      model = this.learningProviders().getDefault().getModelInstance();
+    } catch {
+      return false;
+    }
+    const verdict = await classifyResearchIntent(text, async (system, user) => {
+      const result = await generateText({ model, system, messages: [{ role: 'user', content: user }], maxOutputTokens: 8 });
+      return result.text;
+    });
+    logger.debug({ verdict }, 'Research intent');
+    return verdict === 'research';
+  }
+
   private async promptResearchMode(msg: ChannelMessage, workKey?: string): Promise<void> {
     const channel = this.channels.getChannelForMessage(msg);
     if (!channel) {
@@ -1080,14 +1118,16 @@ export class Agent {
     // Time-weighted default (same contract as the Mercury Code hand-off): an
     // unanswered prompt must never hold a chat message hostage. No answer
     // within the window → "Quick answer", nothing remembered, and the next
-    // research-shaped question asks again.
+    // research-shaped question asks again. Quick answer is listed FIRST, so
+    // the picker starts on it and an accidental Enter never starts a long
+    // research run.
     const choice = await this.presentChoiceWithTimeout(
       `This looks like a research question. ${explanation}\n\nHow do you want to proceed?`,
-      ['Full research mode (deep, multi-source article)', 'Quick answer (normal conversation)'],
+      ['Quick answer (normal conversation)', 'Full research mode (deep, multi-source article)'],
       msg.channelId,
       msg.channelType,
       MERCURY_CODE_HANDOFF_TIMEOUT_MS,
-      1, // unanswered = Quick answer (not remembered — nobody chose)
+      0, // unanswered = Quick answer (not remembered — nobody chose)
     );
 
     if (choice.toLowerCase().startsWith('full')) {
