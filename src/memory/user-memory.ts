@@ -1,6 +1,7 @@
 import type { MercuryConfig } from '../utils/config.js';
 import { getMemoryDir } from '../utils/config.js';
 import { SecondBrainDB, type MemoryRow, type PersonListRow } from './second-brain-db.js';
+import { BeliefStore } from './beliefs.js';
 import { join } from 'node:path';
 import { logger } from '../utils/logger.js';
 
@@ -91,6 +92,8 @@ export class UserMemoryStore {
   private lastConsolidateAt: number = 0;
   /** When true, new memories are marked shareable for cloud fetch. */
   private shareLearning: boolean;
+  /** What Mercury believes about this owner, with evidence (ADR-026). Shares the database. */
+  readonly beliefs: BeliefStore;
 
   constructor(config: MercuryConfig, userKey: string = 'user:owner', dbPath?: string) {
     this.userKey = userKey;
@@ -99,6 +102,14 @@ export class UserMemoryStore {
     const resolvedDbPath = dbPath ?? join(getMemoryDir(), 'second-brain', 'second-brain.db');
     this.db = new SecondBrainDB(resolvedDbPath);
     this.db.init();
+    this.beliefs = new BeliefStore(this.db.connection, userKey);
+    this.beliefs.init();
+    try {
+      const migrated = this.beliefs.migrateLegacyMemories();
+      if (!migrated.skipped) logger.info(migrated, 'Second Brain: legacy memories migrated into beliefs');
+    } catch (err) {
+      logger.warn({ err }, 'Second Brain: belief migration failed (continuing with legacy memories)');
+    }
   }
 
   /** Toggle whether new memories are marked shareable. */

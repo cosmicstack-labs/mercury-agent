@@ -109,6 +109,11 @@ export class SecondBrainDB {
     return this.db.backend;
   }
 
+  /** The shared connection, for stores that keep their own tables in this file (beliefs). */
+  get connection(): SqliteDatabase {
+    return this.db;
+  }
+
   init(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (

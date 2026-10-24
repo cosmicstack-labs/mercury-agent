@@ -8,9 +8,9 @@ website/static/install.ps1
 *.log
 .DS_Store
 *.tsbuildinfo
-config/
-soul/
-memory/
+/config/
+/soul/
+/memory/
 # Claude Code worktrees / local state
 .claude/
 
