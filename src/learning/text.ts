@@ -32,3 +32,10 @@ const IDENTITY_RE = /^(?:the owner'?s?|their|owner|user'?s?|user)?\s*(?:full |fi
 export function looksLikeIdentity(text: string): boolean {
   return IDENTITY_RE.test(text.trim());
 }
+
+const SELF_ASK_RE = /\b(what|anything|something|everything|things)\b[^.?!]{0,40}\b(know|remember|learn(?:ed|t)?|notice[d]?)\b[^.?!]{0,30}\babout me\b|\bdo you (?:still )?(?:remember|know) (?:me|who i am|my )|\bwhat (?:are|do you think are) my (?:preferences|habits|traits|goals|projects)\b|\btell me about (?:myself|me)\b|\bwhat have you learn(?:ed|t)\b|\bwhat did you (?:learn|note|save)\b/i;
+
+/** The owner is asking what Mercury knows about them: show the strongest beliefs, not just FTS hits. */
+export function asksAboutSelf(text: string): boolean {
+  return SELF_ASK_RE.test(ownerWords(text));
+}

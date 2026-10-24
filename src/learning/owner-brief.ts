@@ -36,6 +36,10 @@ export const OWNER_FILE = 'owner.md';
 export const OWNER_NOTES_HEADING = '## My notes';
 /** ~4 chars per token: the About section is capped at ~400 tokens, How-to-work at ~250. */
 const ABOUT_MAX_CHARS = 1600;
+/** How many unverified beliefs the About section may show when nothing is held yet. */
+const ABOUT_FALLBACK_LIMIT = 20;
+/** Below this many held beliefs the About section pads itself with candidates. */
+const ABOUT_MIN_SURE = 6;
 const HOW_MAX_CHARS = 1000;
 const MAX_NOTE_LINES = 40;
 
@@ -51,13 +55,19 @@ type Usable = Belief & { confidence: number };
  */
 export function buildOwnerSections(beliefs: BeliefStore, ownerName: string, now = Date.now()): OwnerSections {
   const usable = beliefs.usable(now);
+  // Little or nothing held yet (a fresh install, or the first days after an
+  // upgrade): the "About" section pads with the strongest candidates, each hedged,
+  // so the model is not blind to what it has read. "How to work" stays
+  // empty until a trait has actually been held — unverified instructions
+  // would be worse than none.
+  const forAbout = usable.length >= ABOUT_MIN_SURE ? usable : beliefs.strongest(ABOUT_FALLBACK_LIMIT, now);
   const brief = readStoredBrief(beliefs);
   if (brief && brief.sig === beliefStateSignature(beliefs)) {
     const about = brief.about.trim().slice(0, ABOUT_MAX_CHARS * 2);
     const howToWork = brief.howToWork.trim().slice(0, HOW_MAX_CHARS * 2);
-    if (about || howToWork) return { about: about || aboutFromBeliefs(usable), howToWork: howToWork || howToWorkFromBeliefs(usable, ownerName) };
+    if (about || howToWork) return { about: about || aboutFromBeliefs(forAbout), howToWork: howToWork || howToWorkFromBeliefs(usable, ownerName) };
   }
-  return { about: aboutFromBeliefs(usable), howToWork: howToWorkFromBeliefs(usable, ownerName) };
+  return { about: aboutFromBeliefs(forAbout), howToWork: howToWorkFromBeliefs(usable, ownerName) };
 }
 
 export function readStoredBrief(beliefs: BeliefStore): StoredBrief | null {

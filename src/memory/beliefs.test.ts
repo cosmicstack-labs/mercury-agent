@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SecondBrainDB, isBetterSqlite3Available } from './second-brain-db.js';
-import { BeliefStore, RETIRE_BELOW, isLegacyJunk } from './beliefs.js';
+import { BeliefStore, RETIRE_BELOW, ftsMatch, isLegacyJunk } from './beliefs.js';
 
 const sqliteAvailable = isBetterSqlite3Available();
 const dirs: string[] = [];
@@ -152,6 +152,29 @@ describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
     expect(hits.map((b) => b.id)).toEqual([r.belief.id]);
   });
 
+  it('retrieval shows sure beliefs first and fills with candidates, and stopwords never match', () => {
+    const { store } = make();
+    const sure = store.apply({ op: 'owner_stated', kind: 'preference', statement: 'Prefers pandoc for document conversion', excerpt: 'x' })!;
+    const maybe = store.apply({ op: 'create', kind: 'project', statement: 'Is converting the pandoc manual into an epub this week', excerpt: 'y' })!;
+    const hits = store.searchRelevant('can you convert this with pandoc for me');
+    expect(hits.map((b) => b.id)).toEqual([sure.belief.id, maybe.belief.id]);
+    expect(hits[1].status).toBe('candidate');
+    // Only stopwords: no query at all, so nothing matches rather than everything.
+    expect(store.searchRelevant('what do you want me to do with this')).toEqual([]);
+    expect(ftsMatch('the and for you')).toBeNull();
+    expect(ftsMatch('Convert the EPUB, please — the epub!')).toBe('"convert" OR "epub"');
+  });
+
+  it('strongest() lists sure beliefs before candidates for "what do you know about me"', () => {
+    const { store } = make();
+    store.apply({ op: 'create', kind: 'goal', statement: 'Wants Mercury to run the launch', excerpt: 'a' });
+    const sure = store.apply({ op: 'owner_stated', kind: 'fact', statement: 'Runs Cosmic Stack', excerpt: 'b' })!;
+    const top = store.strongest(5);
+    expect(top[0].id).toBe(sure.belief.id);
+    expect(top).toHaveLength(2);
+    expect(top[1].status).toBe('candidate');
+  });
+
   it('migrates legacy memories: junk is quarantined, real ones become beliefs, and it runs once', () => {
     const { store, db } = make();
     const now = Date.now();
@@ -162,12 +185,15 @@ describe.skipIf(!sqliteAvailable)('BeliefStore', () => {
       { id: 'm3', type: 'preference', summary: '**Memory extracted:**', evidence_kind: 'inferred', confidence: 0.75, evidence_count: 1 },
       { id: 'm4', type: 'preference', summary: 'User prefers pragmatic, incremental implementation over full specification adoption', evidence_kind: 'inferred', confidence: 0.8, evidence_count: 1 },
       { id: 'm5', type: 'identity', summary: "User's name is Salman and he founded Cosmic Stack", evidence_kind: 'direct', confidence: 0.95, evidence_count: 1 },
+      { id: 'm6', type: 'identity', summary: 'User founded Cosmic Stack, an AI agency', evidence_kind: 'direct', confidence: 0.95, evidence_count: 1 },
     ];
     for (const r of rows) db.insert({ ...base, ...r } as never);
     const first = store.migrateLegacyMemories(now);
-    expect(first).toEqual({ quarantined: 3, converted: 2, skipped: false });
-    const quarantined = db.connection.prepare("SELECT id FROM memories WHERE scope = 'quarantine' ORDER BY id").all() as Array<{ id: string }>;
-    expect(quarantined.map((q) => q.id)).toEqual(['m1', 'm2', 'm3']);
+    // m5 names the owner: identity lives in the config, so it waits in quarantine instead.
+    expect(first).toEqual({ quarantined: 4, converted: 2, skipped: false });
+    const quarantined = db.connection.prepare("SELECT id, provenance FROM memories WHERE scope = 'quarantine' ORDER BY id").all() as Array<{ id: string; provenance: string }>;
+    expect(quarantined.map((q) => q.id)).toEqual(['m1', 'm2', 'm3', 'm5']);
+    expect(quarantined.find((q) => q.id === 'm5')?.provenance).toBe('migration:identity');
     const beliefs = store.list({ statuses: ['candidate', 'held', 'confirmed'] });
     expect(beliefs.map((b) => [b.kind, b.status]).sort()).toEqual([['fact', 'candidate'], ['preference', 'candidate']]);
     expect(store.getMeta('reflection_force')).toBe('1');

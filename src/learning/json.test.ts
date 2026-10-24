@@ -30,7 +30,7 @@ describe('ownerWords', () => {
   });
 });
 
-import { looksLikeIdentity, looksLikeSecret } from './text.js';
+import { asksAboutSelf, looksLikeIdentity, looksLikeSecret } from './text.js';
 describe('looksLikeSecret', () => {
   it('flags credentials and leaves ordinary statements alone', () => {
     expect(looksLikeSecret('Temp mail account with password MercuryTemp2026!')).toBe(true);
@@ -47,5 +47,16 @@ describe('looksLikeIdentity', () => {
     expect(looksLikeIdentity('Goes by hotheadhacker on GitHub')).toBe(true);
     expect(looksLikeIdentity('Prefers terse replies in the evening')).toBe(false);
     expect(looksLikeIdentity('Works on Mercury, an AI agent')).toBe(false);
+  });
+});
+
+describe('asksAboutSelf', () => {
+  it('spots the owner asking what Mercury knows about them', () => {
+    expect(asksAboutSelf('What do you know about me?')).toBe(true);
+    expect(asksAboutSelf('do you remember my preferences')).toBe(true);
+    expect(asksAboutSelf('what have you learned so far')).toBe(true);
+    expect(asksAboutSelf('[Voice call: …] tell me about myself')).toBe(true);
+    expect(asksAboutSelf('convert this epub with pandoc')).toBe(false);
+    expect(asksAboutSelf('what do you know about Rust lifetimes')).toBe(false);
   });
 });

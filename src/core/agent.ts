@@ -113,6 +113,7 @@ import { openCliCommandMenu as openCliCommandMenuImpl } from './commands/cli-com
 import { collectTurnSignals, parseToolTraceLines } from '../learning/signals.js';
 import { extractBeliefOperations, type ExtractTurn } from '../learning/extract.js';
 import { composeLearnedNote, pendingQuestion } from '../learning/announce.js';
+import { asksAboutSelf, ownerWords } from '../learning/text.js';
 
 /** Minimum gap between two "☿ Noted" lines on one channel. */
 const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
@@ -2339,14 +2340,25 @@ export class Agent {
       // ones, with confidence, so the model can lean on them and the next
       // turn can credit them as "acted on without objection".
       try {
-        const relevant = this.userMemory.beliefs.searchRelevant(msg.content, 5);
+        const words = ownerWords(msg.content);
+        const selfAsk = asksAboutSelf(words);
+        const relevant = selfAsk
+          ? this.userMemory.beliefs.strongest(12)
+          : this.userMemory.beliefs.searchRelevant(words, 5);
         if (relevant.length > 0) {
+          // Only sure beliefs earn "acted on without objection" credit;
+          // a candidate the model happened to see proves nothing yet.
           const ids = relevant.map((b) => b.id);
           this.userMemory.beliefs.markUsed(ids);
-          this.lastInjectedBeliefIds = ids;
-          blocks.push('Beliefs about the owner relevant to this message:\n' + relevant
-            .map((b) => `- (confidence ${b.confidence.toFixed(2)}, ${b.status}${b.context !== '*' ? `, ${b.context}` : ''}) ${b.statement}`)
-            .join('\n'));
+          this.lastInjectedBeliefIds = relevant.filter((b) => b.status === 'held' || b.status === 'confirmed').map((b) => b.id);
+          const line = (b: typeof relevant[number]) => {
+            const status = b.status === 'candidate' ? 'unverified, seen once' : b.status;
+            return `- (confidence ${b.confidence.toFixed(2)}, ${status}${b.context !== '*' ? `, ${b.context}` : ''}) ${b.statement}`;
+          };
+          const heading = selfAsk
+            ? 'The owner is asking what you know about them. Your strongest beliefs (say which are unverified; the search_memory tool finds more):'
+            : 'Beliefs about the owner relevant to this message (treat "unverified" ones as hunches, not facts):';
+          blocks.push(heading + '\n' + relevant.map(line).join('\n'));
         }
       } catch (err) {
         logger.debug({ err: (err as Error).message }, 'belief retrieval failed');

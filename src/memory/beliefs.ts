@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from '../utils/sqlite-driver.js';
 import { logger } from '../utils/logger.js';
+import { looksLikeIdentity } from '../learning/text.js';
 
 export type BeliefKind = 'fact' | 'preference' | 'trait' | 'situation' | 'relationship' | 'goal' | 'project' | 'episode';
 export type BeliefStatus = 'candidate' | 'held' | 'confirmed' | 'contested' | 'retired' | 'forgotten';
@@ -114,6 +115,23 @@ function halfLifeDays(b: Belief): number {
 }
 const DAY = 86_400_000;
 export const RETIRE_BELOW = 0.35;
+
+/** Words that match almost every belief and only add noise to an OR query. */
+const STOPWORDS = new Set(['the', 'and', 'for', 'that', 'this', 'with', 'you', 'your', 'are', 'was', 'were', 'have', 'has', 'had', 'can', 'could', 'would', 'should', 'will', 'what', 'when', 'where', 'which', 'who', 'how', 'why', 'not', 'but', 'all', 'any', 'some', 'just', 'like', 'about', 'from', 'into', 'than', 'then', 'them', 'they', 'their', 'there', 'here', 'also', 'very', 'much', 'more', 'most', 'does', 'did', 'doing', 'done', 'please', 'thanks', 'okay', 'yeah', 'hey', 'want', 'need', 'make', 'get', 'got', 'let', 'use', 'using', 'one', 'two', 'now', 'out', 'its', 'our', 'mine', 'yours', 'me', 'my', 'we', 'us', 'it', 'is', 'be', 'do', 'to', 'of', 'in', 'on', 'at', 'by', 'or', 'an', 'as', 'if', 'so', 'no', 'up', 'am']);
+
+/** An FTS5 OR-query from free text: lower-cased, punctuation out, stopwords out, deduped, capped. */
+export function ftsMatch(text: string, opts: { minLength?: number; max?: number } = {}): string | null {
+  const minLength = opts.minLength ?? 3;
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const raw of text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)) {
+    if (raw.length < minLength || STOPWORDS.has(raw) || seen.has(raw)) continue;
+    seen.add(raw);
+    terms.push(raw);
+    if (terms.length >= (opts.max ?? 24)) break;
+  }
+  return terms.length === 0 ? null : terms.map((t) => `"${t}"`).join(' OR ');
+}
 const HELD_AT_SESSIONS = 2;
 
 interface BeliefRow {
@@ -351,32 +369,53 @@ export class BeliefStore {
       .sort((a, b) => b.confidence - a.confidence);
   }
 
-  /** Beliefs relevant to a message (FTS over statement + detail), usable ones only. */
+  /**
+   * Beliefs relevant to a message (FTS over statement + detail). Held and
+   * confirmed ones come first; when there is room, candidates follow (the
+   * caller labels them unverified). Without the candidates, everything
+   * learned today — and every migrated memory — would be invisible to chat
+   * until a later session supported it.
+   */
   searchRelevant(query: string, limit = 5, now = Date.now()): Array<Belief & { confidence: number }> {
-    const terms = query.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((t) => t.length > 2).slice(0, 24);
-    if (terms.length === 0) return [];
-    const match = terms.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
-    let rows: BeliefRow[] = [];
-    try {
-      rows = this.db.prepare(`
-        SELECT b.* FROM beliefs_fts f JOIN beliefs b ON b.rowid = f.rowid
-        WHERE beliefs_fts MATCH ? AND b.owner_key = ? AND b.status IN ('held','confirmed')
-        ORDER BY bm25(beliefs_fts) LIMIT ?`).all(match, this.ownerKey, limit * 3) as BeliefRow[];
-    } catch (err) {
-      logger.debug({ err: (err as Error).message }, 'belief FTS query failed');
-      return [];
-    }
-    return rows.map(toBelief)
+    const match = ftsMatch(query);
+    if (!match) return [];
+    const run = (statuses: BeliefStatus[], n: number): Array<Belief & { confidence: number }> => {
+      try {
+        const rows = this.db.prepare(`
+          SELECT b.* FROM beliefs_fts f JOIN beliefs b ON b.rowid = f.rowid
+          WHERE beliefs_fts MATCH ? AND b.owner_key = ? AND b.status IN (${statuses.map(() => '?').join(',')})
+          ORDER BY bm25(beliefs_fts) LIMIT ?`).all(match, this.ownerKey, ...statuses, n) as BeliefRow[];
+        return rows.map(toBelief)
+          .map((b) => ({ ...b, confidence: this.confidence(b, now) }))
+          .filter((b) => b.confidence >= RETIRE_BELOW);
+      } catch (err) {
+        logger.debug({ err: (err as Error).message }, 'belief FTS query failed');
+        return [];
+      }
+    };
+    const sure = run(['held', 'confirmed'], limit * 3).slice(0, limit);
+    if (sure.length >= limit) return sure;
+    const seen = new Set(sure.map((b) => b.id));
+    const maybe = run(['candidate'], limit * 3).filter((b) => !seen.has(b.id)).slice(0, limit - sure.length);
+    return [...sure, ...maybe];
+  }
+
+  /** The strongest beliefs overall, for "what do you know about me?": sure ones first, then candidates. */
+  strongest(limit = 12, now = Date.now()): Array<Belief & { confidence: number }> {
+    const sure = this.usable(now).slice(0, limit);
+    if (sure.length >= limit) return sure;
+    const maybe = this.list({ statuses: ['candidate'], limit: 200 })
       .map((b) => ({ ...b, confidence: this.confidence(b, now) }))
       .filter((b) => b.confidence >= RETIRE_BELOW)
-      .slice(0, limit);
+      .sort((a, b) => b.confidence - a.confidence || b.lastSupportedAt - a.lastSupportedAt)
+      .slice(0, limit - sure.length);
+    return [...sure, ...maybe];
   }
 
   /** Candidates that may be the same claim (for the merge judge). */
   findSimilar(statement: string, kind?: BeliefKind, limit = 5): Belief[] {
-    const terms = statement.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((t) => t.length > 3).slice(0, 16);
-    if (terms.length === 0) return [];
-    const match = terms.map((t) => `"${t}"`).join(' OR ');
+    const match = ftsMatch(statement, { minLength: 4, max: 16 });
+    if (!match) return [];
     try {
       const rows = this.db.prepare(`
         SELECT b.* FROM beliefs_fts f JOIN beliefs b ON b.rowid = f.rowid
@@ -467,9 +506,8 @@ export class BeliefStore {
 
   /** FTS over statements and details for the given statuses (candidates included by default). */
   search(query: string, limit = 10, statuses: BeliefStatus[] = ['candidate', 'held', 'confirmed', 'contested']): Belief[] {
-    const terms = query.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((t) => t.length > 2).slice(0, 24);
-    if (terms.length === 0) return [];
-    const match = terms.map((t) => `"${t}"`).join(' OR ');
+    const match = ftsMatch(query);
+    if (!match) return [];
     try {
       const rows = this.db.prepare(`
         SELECT b.* FROM beliefs_fts f JOIN beliefs b ON b.rowid = f.rowid
@@ -628,6 +666,14 @@ export class BeliefStore {
         const summary = String(r.summary ?? '');
         if (isLegacyJunk(r)) {
           quarantine.run('migration:junk', now, String(r.id));
+          quarantined++;
+          continue;
+        }
+        // Who the owner is lives in the config (identity.owner), one source;
+        // legacy rows that only restate a name, email or handle wait in
+        // quarantine rather than becoming a second, often contradictory, copy.
+        if (looksLikeIdentity(String(r.summary ?? ''))) {
+          quarantine.run('migration:identity', now, String(r.id));
           quarantined++;
           continue;
         }
