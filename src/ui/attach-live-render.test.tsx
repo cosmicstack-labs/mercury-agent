@@ -27,6 +27,7 @@ describe('attach TUI live rendering', () => {
       currentModel: async () => ({ name: 'anthropic', model: 'x' }),
       budget: async () => null,
       permissionMode: async () => 'ask-me',
+      setPermissionMode: async () => true,
       createThread: async () => ({ id: 't1', shortId: 't1', alias: 'new', title: 'New' }),
       streamEvents: async (id: string, onEvent: (e: { type: string; data: Record<string, unknown> }) => void) => { streamedIds.push(id); emit = onEvent; await new Promise(() => {}); },
       send: async () => ({ ok: true }),

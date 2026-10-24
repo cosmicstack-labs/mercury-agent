@@ -411,7 +411,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     setPrompt(null);
     if (active.id === LOCAL_PERMISSION_MODE_PROMPT) {
       if (value === 'allow-all' || value === 'ask-me') {
-        const ok = await client.setPermissionMode(value);
+        const ok = typeof client.setPermissionMode === 'function' ? await client.setPermissionMode(value) : false;
         // Saved: the status row shows the mode from now on, so no extra line
         // above the input saying the same thing. Only a failure is announced.
         if (ok) setRuntimeStatus((st) => ({ mode: st?.mode ?? 'off', permission: value, desktop: st?.desktop ?? '' }));

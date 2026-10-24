@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import React from 'react';
 import { EventEmitter } from 'node:events';
 import { VtScreen } from './vt-screen.js';
-import { LAUNCH_WORDMARK, LAUNCH_WORDMARK_WIDTH, launchPadRows } from './launch-pad.js';
 
 class FakeStdout extends EventEmitter { isTTY = true; constructor(public screen: VtScreen) { super(); } get columns() { return this.screen.columns; } get rows() { return this.screen.rows; } write(c: string) { this.screen.write(c); return true; } }
 class FakeStdin extends EventEmitter { isTTY = true; private q: string[] = []; setEncoding() {} setRawMode() {} resume() {} pause() {} ref() {} unref() {} read() { return this.q.shift() ?? null; } push(c: string) { this.q.push(c); this.emit('readable'); } }
@@ -40,7 +39,10 @@ async function renderPick(cols: number, rows: number) {
  * session" is the first, default row.
  */
 describe('attach TUI session picker', () => {
-  it('counts the launch pad rows the way it renders them', () => {
+  // Imported inside the tests, after CI=0 is set: a static import would load
+  // Ink first, and Ink in CI mode only draws the final frame (an empty screen).
+  it('counts the launch pad rows the way it renders them', async () => {
+    const { LAUNCH_WORDMARK, LAUNCH_WORDMARK_WIDTH, launchPadRows } = await import('./launch-pad.js');
     expect(launchPadRows(100, 'a tip')).toBe(1 + LAUNCH_WORDMARK.length + 1 + 1 + 5 + 1 + 1 + 1 + 2);
     expect(launchPadRows(100, null)).toBe(launchPadRows(100, 'a tip') - 2);
     // Below the wordmark's width the header is two plain lines.
