@@ -24,6 +24,7 @@ const ALWAYS_STRIPPED = new Set([
   'list_agents',
   'stop_agent',
   'install_skill',       // no skill installs from an unattended bot
+  'create_skill',        // self-made skills come from the owner's own sessions (ADR-027)
   'schedule_task',       // bot schedules are managed via bot.yaml, not tools
   'list_scheduled_tasks',
   'cancel_scheduled_task',

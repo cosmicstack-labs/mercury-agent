@@ -3,6 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getMercuryHome } from '../utils/config.js';
 import type { SkillDiscovery, Skill, SkillMeta } from './types.js';
+import { recordSelfMadeUse, SELF_MADE_CATEGORY, SELF_MADE_LABEL } from './self-made.js';
 import { IntentRouter } from './intent-router.js';
 import { logger } from '../utils/logger.js';
 import { DEFAULT_SKILL_SEEDS, PREVIOUS_SEED_CONTENTS, getCategoryLabel } from './default-skills.js';
@@ -62,6 +63,7 @@ export class SkillLoader {
     //   - nested: <skillsDir>/<category>/<slug>/SKILL.md (mercury skills install)
     // User-installed nested skills win over flat ones on name collision (registered last).
     const skillPaths = this.findSkillFiles();
+    const parsedSkills: Array<{ meta: SkillMeta; path: string }> = [];
     for (const skillPath of skillPaths) {
       try {
         const raw = readFileSync(skillPath, 'utf-8');
@@ -71,15 +73,20 @@ export class SkillLoader {
           name: parsed.meta.name,
           description: parsed.meta.description,
         });
-        this.intentRouter.registerSkillMeta(parsed.meta);
-        logger.info({ skill: parsed.meta.name, path: skillPath, category: parsed.meta.category, intents: parsed.meta.intents?.length }, 'Skill discovered');
+        parsedSkills.push({ meta: parsed.meta, path: skillPath });
       } catch (err) {
         logger.warn({ path: skillPath, err }, 'Failed to load skill');
       }
     }
 
-    // Build intent index from discovered skills (basic info for fallback matching)
+    // Reset the router with the bare list first, then enrich every entry with
+    // its category, intents and tags. (The other order wiped the metadata on
+    // every scan, so grouping and intent routing silently fell back to names.)
     this.intentRouter.buildIndex([...this.discovered.values()]);
+    for (const { meta, path } of parsedSkills) {
+      this.intentRouter.registerSkillMeta(meta);
+      logger.info({ skill: meta.name, path, category: meta.category, intents: meta.intents?.length }, 'Skill discovered');
+    }
 
     return [...this.discovered.values()];
   }
@@ -164,6 +171,16 @@ export class SkillLoader {
     return [...this.discovered.values()];
   }
 
+  /** The primary skills root (where self-made skills are written). */
+  rootDir(): string {
+    return this.skillsDir;
+  }
+
+  /** Count a use of a self-made skill (no-op for curated ones). */
+  noteUse(name: string): void {
+    recordSelfMadeUse(this.skillsDir, name);
+  }
+
   getSkillSummariesText(): string {
     const skills = this.getDiscovered();
     if (skills.length === 0) return '';
@@ -177,7 +194,7 @@ export class SkillLoader {
     if (hasCategories && categories.size > 1) {
       // Group by category
       for (const [category, catSkills] of categories) {
-        const label = getCategoryLabel(category);
+        const label = category === SELF_MADE_CATEGORY ? SELF_MADE_LABEL : getCategoryLabel(category);
         text += `\n**${label}:**\n`;
         for (const s of catSkills) {
           const discovered = this.discovered.get(s.name);

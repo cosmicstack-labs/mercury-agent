@@ -59,6 +59,20 @@ export const CHAT_WORK_CONTRACT = `**How you work:**
 - Plain questions and conversation don't need tools: just answer.`;
 
 /**
+ * Self-made skills (ADR-027): shown only when create_skill is available, i.e.
+ * in the owner's own interactive sessions, never for bots or members.
+ */
+export const SELF_MADE_SKILLS_GUIDE = `**Skills you make yourself:**
+- Before a task with many steps, check the skills list for one that fits and use it.
+- If none fits and you would do the same procedure again for other inputs (a recurring report, a conversion pipeline, a deploy, a site or device you operate), plan it as a procedure first: inputs, steps, checks. Do the task. Once it actually worked, save the procedure with create_skill — exact commands, tools, paths, the pitfalls you hit — and tell the owner in one line.
+- Never make a skill for a one-off, for something one tool call does, for anything you did not verify end-to-end, or with credentials inside. Improve an existing self-made skill (same name) rather than adding a near-duplicate.
+- Self-made skills are listed under "Self-made" and count as unverified until used again: follow them, but trust the result, not the text, and fix the skill when a step fails.`;
+
+export function selfMadeSkillsSection(toolNames: readonly string[]): string {
+  return toolNames.includes('create_skill') ? SELF_MADE_SKILLS_GUIDE : '';
+}
+
+/**
  * Token budget line for the per-turn (volatile) system block. It changes on
  * every turn, so it must never sit in the stable prompt: there it broke the
  * provider's prefix cache for the tool schemas and everything after it,
@@ -162,6 +176,8 @@ export function buildSystemPrompt(i: SystemPromptInputs): string {
   if (i.saverSuffix) prompt += i.saverSuffix;
   prompt += '\n\n' + environmentSection(i.now, i.timezone, i.platform, i.cwd);
   prompt += '\n\n' + TOOL_USAGE_GUIDELINES;
+  const selfMade = selfMadeSkillsSection(i.toolNames);
+  if (selfMade) prompt += '\n\n' + selfMade;
   prompt += '\n\n' + memorySection(i.memorySummary);
   const tweet = tweetNotifierSection(i.skillContext);
   if (tweet) prompt += '\n\n' + tweet;

@@ -15,6 +15,12 @@
 - **Pick the model that learns.** `memory.learning.provider: anthropic` (or `LEARNING_PROVIDER`) runs extraction and reflection on a capable provider while chat keeps its own; unset falls back to the default.
 - **Safe upgrade.** The first boot after upgrading backs `second-brain.db` up to `second-brain.pre-owner-model.db` before migrating, the migration runs once and never crashes the boot, every memory you could see before is still listed (or waits in Quarantined), and "☿ Noted" lines are limited to one per channel every few minutes.
 
+### Self-made skills (ADR-027)
+- **Mercury turns long work into skills.** After a multi-step task it would do again (a recurring report, a conversion pipeline, a deploy, a site or device it operates) has worked end-to-end, Mercury saves the procedure with the new `create_skill` tool — exact commands, paths, checks and pitfalls — and tells you in one line. Next time it is one `use_skill` away.
+- **Kept apart from your skills.** Self-made skills live in `~/.mercury/skills/self-made/`, carry `origin: mercury`, are listed under their own "Self-made" label and count as unverified until used again. Drafts are rejected unless they are a real, verified, credential-free procedure; a self-made skill never shadows an installed one.
+- **Skill categories and intents work again.** Discovery registered each skill's category, intents and tags and then rebuilt the index, wiping them; the prompt fell back to a flat list and intent routing matched on names only. Fixed by building the index first.
+- **No junk shelf.** `/skills self-made` shows each one with use counts; unused ones go dormant after 30 days (disabled, never deleted) and the shelf is capped at 40. `/skills self-made enable|disable|remove <name>`. Bots and channel members cannot create skills.
+
 ### Chat
 - **Regular chat works like an agent again.** Its instructions forbade helper scripts and batching ("call write_file for each one individually"), so a task like converting an EPUB to Markdown was done file by file by hand. Chat now reaches for the strongest existing tool (pandoc, ffmpeg, a Python library) or one script, does a quick web search when it isn't sure what the best tool is, and checks the output before saying it is done. It also gets a short working contract like Mercury Code's: do the work, plan multi-step tasks, report what was checked.
 

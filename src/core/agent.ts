@@ -4466,6 +4466,17 @@ export class Agent {
       logger.info({ pruned }, 'Episodic memory pruned');
     }
 
+    if (this.skillLoader) {
+      // Self-made skills nobody used again go dormant (ADR-027); cheap, file-only.
+      try {
+        const { selfMadeHygiene } = await import('../skills/self-made.js');
+        const { dormant } = selfMadeHygiene(this.skillLoader.rootDir());
+        if (dormant.length > 0) this.skillLoader.discover();
+      } catch (err) {
+        logger.debug({ err }, 'self-made skill hygiene failed');
+      }
+    }
+
     if (this.userMemory) {
       // The reflection pass (ADR-026): one model call over the owner's turns
       // since the last pass, then decay; a no-op when nothing new was said.
@@ -4917,6 +4928,8 @@ Is this productive iteration or a stuck loop?`,
               '`/skills install <id>` — install from the registry',
               '`/skills install <url>` — install raw SKILL.md from a URL',
               '`/skills remove <id>` — uninstall',
+              '`/skills self-made` — the skills Mercury wrote for itself, with use counts',
+              '`/skills self-made enable|disable|remove <name>`',
               '',
               'Browse the full catalog at https://skills.mercuryagent.sh',
             ].join('\n'),
@@ -4941,6 +4954,38 @@ Is this productive iteration or a stuck loop?`,
             '',
             '_Run `/skills search <query>` to find more on the registry._',
           ];
+          await channel.send(lines.join('\n'), channelId);
+          return;
+        }
+
+        case 'self-made':
+        case 'self':
+        case 'mine': {
+          const { listSelfMade } = await import('../skills/self-made.js');
+          const root = this.skillLoader?.rootDir();
+          if (!root) { await channel.send('Skills are not available in this session.', channelId); return; }
+          const action = (args[0] || '').toLowerCase();
+          const target = args.slice(1).join(' ').trim();
+          if ((action === 'enable' || action === 'disable' || action === 'remove') && target) {
+            const entry = listSelfMade(root).find((s) => s.name === target);
+            if (!entry) { await channel.send(`No self-made skill named "${target}".`, channelId); return; }
+            if (action === 'remove') { this.skillLoader!.deleteSkill(target); await channel.send(`Removed self-made skill "${target}".`, channelId); return; }
+            this.skillLoader!.setSkillActive(target, action === 'enable');
+            await channel.send(`${action === 'enable' ? 'Enabled' : 'Disabled'} self-made skill "${target}".`, channelId);
+            return;
+          }
+          const entries = listSelfMade(root);
+          if (entries.length === 0) {
+            await channel.send('No self-made skills yet. After a long task works, Mercury saves the procedure here (create_skill) so the next time is one step.', channelId);
+            return;
+          }
+          const fmt = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : 'never');
+          const lines = [`**${entries.length} self-made skill${entries.length > 1 ? 's' : ''}** (Mercury wrote these; unverified until used again):`, ''];
+          for (const s of entries) {
+            lines.push(`${s.active ? '•' : '◦'} **${s.name}** — ${s.description}`);
+            lines.push(`   made ${fmt(s.made)} · used ${s.uses}× · last ${fmt(s.lastUsed)}${s.active ? '' : ' · dormant'}`);
+          }
+          lines.push('', '_`/skills self-made enable|disable|remove <name>`. Unused ones go dormant after 30 days; nothing is deleted on its own._');
           await channel.send(lines.join('\n'), channelId);
           return;
         }

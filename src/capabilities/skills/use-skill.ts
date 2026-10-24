@@ -2,6 +2,7 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { SkillLoader } from '../../skills/loader.js';
 import type { PermissionManager } from '../permissions.js';
+import { SELF_MADE_CATEGORY } from '../../skills/self-made.js';
 
 export function createUseSkillTool(skillLoader: SkillLoader, permissions: PermissionManager) {
   return tool({
@@ -18,8 +19,12 @@ export function createUseSkillTool(skillLoader: SkillLoader, permissions: Permis
       if (skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
         permissions.elevateForSkill(skill['allowed-tools']);
       }
+      if (skill.category === SELF_MADE_CATEGORY) skillLoader.noteUse(skill.name);
 
       let result = `## Skill: ${skill.name}\n\n${skill.instructions}`;
+      if (skill.category === SELF_MADE_CATEGORY) {
+        result += '\n\n_Self-made skill: you wrote this after it worked once. Follow it, but trust the result, not the text — if a step fails, fix it and save the corrected procedure with create_skill under the same name._';
+      }
 
       if (skill['allowed-tools'] && skill['allowed-tools'].length > 0) {
         result += `\n\nAllowed tools: ${skill['allowed-tools'].join(', ')}`;

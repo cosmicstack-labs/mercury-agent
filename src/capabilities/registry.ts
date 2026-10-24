@@ -14,6 +14,7 @@ import { createRunCommandTool } from './shell/run-command.js';
 import { createCdTool } from './shell/cd.js';
 import { createApproveCommandTool } from './shell/approve-command.js';
 import { createInstallSkillTool } from './skills/install-skill.js';
+import { createCreateSkillTool } from './skills/create-skill.js';
 import { createListSkillsTool } from './skills/list-skills.js';
 import { createUseSkillTool } from './skills/use-skill.js';
 import { createScheduleTaskTool } from './scheduler/schedule-task.js';
@@ -245,6 +246,7 @@ export class CapabilityRegistry {
 
     if (this.skillLoader) {
       this.tools.install_skill = createInstallSkillTool(this.skillLoader);
+      this.tools.create_skill = createCreateSkillTool(this.skillLoader);
       this.tools.list_skills = createListSkillsTool(this.skillLoader);
       this.tools.use_skill = createUseSkillTool(this.skillLoader, this.permissions);
       logger.info('Skill tools registered');
@@ -324,7 +326,7 @@ export class CapabilityRegistry {
     if (this.permissions.getCurrentSenderRole() === 'member') {
       const filtered: Record<string, Tool> = {};
       for (const [name, tool] of Object.entries(this.tools)) {
-        if (name !== 'install_skill') filtered[name] = tool;
+        if (name !== 'install_skill' && name !== 'create_skill') filtered[name] = tool;
       }
       return filtered;
     }
