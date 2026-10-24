@@ -66,16 +66,18 @@ describe('status bar: fitting the right half', () => {
 });
 
 describe('status bar: the left half', () => {
-  it('shows the phase and elapsed time while busy, a notice above all, and hints when idle', () => {
+  it('shows the phase and elapsed time while busy, a notice above all, and nothing when idle', () => {
     expect(activityLine({ busy: true, phase: 'run_command', elapsedSec: 7, spinner: '⠙' })).toEqual({ text: '⠙ run_command · 7s', color: 'cyan', dim: false });
     expect(activityLine({ busy: true, elapsedSec: 95 }).text).toBe('⠋ Thinking · 1m 35s');
     expect(activityLine({ busy: true, elapsedSec: 95 }).color).toBe('red');
     expect(activityLine({ busy: true, notice: '⚠ send failed' }).text).toBe('⚠ send failed');
-    expect(activityLine({ busy: false, hints: '↵ send · /help' })).toEqual({ text: '↵ send · /help', color: 'gray', dim: true });
+    // No key hints: Enter sends, /help lists commands, and the row is for status.
+    expect(activityLine({ busy: false }).text).toBe('');
   });
 
-  it('splits the row so the left never takes more than its share', () => {
-    expect(splitRow(80, '↵ send · /help')).toEqual({ left: 14, right: 65 });
+  it('splits the row so the left never takes more than its share, and gives it all to the right when idle', () => {
+    expect(splitRow(80, '⠙ Thinking · 4s')).toEqual({ left: 15, right: 64 });
+    expect(splitRow(80, '')).toEqual({ left: 0, right: 79 });
     expect(splitRow(40, 'x'.repeat(60))).toEqual({ left: 22, right: 17 });
   });
 

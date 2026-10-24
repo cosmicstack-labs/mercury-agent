@@ -3,7 +3,7 @@
  * foreground TUI share it). Two halves:
  *
  *   left  — what is happening now: a spinner + phase + elapsed while a turn
- *           runs, a notice when there is one, otherwise two short key hints.
+ *           runs, a notice when there is one, otherwise nothing.
  *   right — where you are: permission mode, model, today's token use, Code
  *           mode, Optimus, an update — each in priority order with a compact
  *           form, and the session alias last. Segments that do not fit are
@@ -152,8 +152,6 @@ export interface ActivityInputs {
   notice?: string | null;
   /** The spinner glyph for this tick. */
   spinner?: string;
-  /** Idle hints, already short ("↵ send · /help"). */
-  hints?: string;
 }
 
 export interface ActivityLine {
@@ -162,7 +160,11 @@ export interface ActivityLine {
   dim: boolean;
 }
 
-/** The left half: notice > live phase + elapsed > hints. */
+/**
+ * The left half: notice > live phase + elapsed > nothing. Idle, the row says
+ * nothing on the left: Enter sends and /help lists the commands, and a row of
+ * key hints under every message was noise people stopped reading.
+ */
 export function activityLine(i: ActivityInputs): ActivityLine {
   if (i.notice) return { text: i.notice, color: 'yellow', dim: false };
   if (i.busy) {
@@ -172,7 +174,7 @@ export function activityLine(i: ActivityInputs): ActivityLine {
     const tone = secs >= 90 ? 'red' : secs >= 30 ? 'yellow' : 'cyan';
     return { text: `${i.spinner ?? '⠋'} ${phase} · ${time}`, color: tone, dim: false };
   }
-  return { text: i.hints ?? '', color: 'gray', dim: true };
+  return { text: '', color: 'gray', dim: true };
 }
 
 /**

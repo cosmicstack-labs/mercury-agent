@@ -2718,7 +2718,7 @@ export function MercuryCodeView({
     ? '' // the prompt / confirm box already shows its own controls
     : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
       ? 'esc interrupt' // the live feedback block above is showing progress
-      : '↵ send · esc esc exit · /help';
+      : 'esc esc exit'; // Enter sends and /help lists commands: not worth a row of hints
 
   const showHints = finalizedMessages.length === 0 && streamTail.length === 0;
 

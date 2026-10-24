@@ -372,9 +372,10 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     if (active.id === LOCAL_PERMISSION_MODE_PROMPT) {
       if (value === 'allow-all' || value === 'ask-me') {
         const ok = await client.setPermissionMode(value);
-        setNotice(ok
-          ? `${value === 'allow-all' ? 'Allow All' : 'Ask Me'} saved · change any time with /permissions`
-          : '⚠ could not save the permission mode — try /permissions');
+        // Saved: the status row shows the mode from now on, so no extra line
+        // above the input saying the same thing. Only a failure is announced.
+        if (ok) setRuntimeStatus((st) => ({ mode: st?.mode ?? 'off', permission: value, desktop: st?.desktop ?? '' }));
+        else setNotice('⚠ could not save the permission mode — try /permissions');
       }
       return;
     }
@@ -587,7 +588,6 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     phase: phaseFromStep(runningStep?.label, streamTail.length > 0),
     elapsedSec: turnStartedAt.current ? (Date.now() - turnStartedAt.current) / 1000 : 0,
     spinner: frame,
-    hints: terminalSize.cols < 70 ? '↵ send · /help' : '↵ send · /help · ctrl+c detach',
   });
   const rowCols = Math.max(20, terminalSize.cols - 6);
   const split = splitRow(rowCols, left.text);
@@ -664,14 +664,16 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           <Text color={left.color} dimColor={left.dim} wrap="truncate-end">{left.text}</Text>
         </Box>
         <Spacer />
-        <Box flexShrink={0}>
+        {/* One Text so the right half can only ever be truncated, never
+            wrapped onto a second (hidden) line that cut it off mid-way. */}
+        <Text wrap="truncate-end">
           {right.map((seg, idx) => (
             <React.Fragment key={`${seg.priority}:${idx}`}>
               {idx > 0 && <Text color="gray"> · </Text>}
               <Text color={seg.color}>{seg.text}</Text>
             </React.Fragment>
           ))}
-        </Box>
+        </Text>
       </Box>
     </Box>
   );
