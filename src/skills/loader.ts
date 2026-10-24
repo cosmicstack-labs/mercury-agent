@@ -8,6 +8,18 @@ import { IntentRouter } from './intent-router.js';
 import { logger } from '../utils/logger.js';
 import { DEFAULT_SKILL_SEEDS, PREVIOUS_SEED_CONTENTS, getCategoryLabel } from './default-skills.js';
 
+/**
+ * The web-search skill dir holds a skill that tells the model to fetch a
+ * search engine's HTML results page and never mentions the web_search tool.
+ * Those pages answer automated requests with a bot challenge, so such a
+ * skill only ever returns nothing.
+ */
+export function isBrokenSearchSkill(dirName: string, content: string): boolean {
+  if (dirName !== 'web-search') return false;
+  if (/\bweb_search\b/.test(content)) return false;
+  return /(html|lite)\.duckduckgo\.com|duckduckgo\.com\/html|google\.[a-z.]+\/search\?|bing\.com\/search\?q=/i.test(content);
+}
+
 const SKILL_FILE = 'SKILL.md';
 const DISABLED_FILE = '.disabled';
 
@@ -431,6 +443,14 @@ Describe what this skill enables Mercury to do. When invoked via the use_skill t
           if (current !== seed.content && (PREVIOUS_SEED_CONTENTS[seed.dirName] ?? []).includes(current)) {
             writeFileSync(skillFile, seed.content, 'utf-8');
             logger.info({ skill: seed.dirName }, 'Upgraded default skill');
+          } else if (current !== seed.content && isBrokenSearchSkill(seed.dirName, current)) {
+            // A web-search skill that scrapes a search engine's HTML page
+            // (usually DuckDuckGo, which now answers bots with a challenge)
+            // never works. Keep the owner's copy beside it and use the
+            // built-in one, which calls the web_search tool.
+            writeFileSync(`${skillFile}.replaced.bak`, current, 'utf-8');
+            writeFileSync(skillFile, seed.content, 'utf-8');
+            logger.info({ skill: seed.dirName, backup: `${skillFile}.replaced.bak` }, 'Replaced a web-search skill that scrapes a blocked search page');
           }
         } catch { /* leave it */ }
         continue;
