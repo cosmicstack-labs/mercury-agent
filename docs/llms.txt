@@ -16,6 +16,7 @@ Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `ir
 
 ## Blog
 
+- [How Optimus works: an agent that uses your computer](https://mercuryagent.sh/blog/how-optimus-works.md) (2026-10-24): Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.
 - [Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk](https://mercuryagent.sh/blog/mercury-1-4.md) (2026-10-23): Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
 - [The new bottleneck in AI coding isn't code generation. It's verification.](https://mercuryagent.sh/blog/ai-coding-verification-bottleneck.md) (2026-10-20): A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
 - [Agents exceeded their permissions: how to scope them](https://mercuryagent.sh/blog/agent-permissions-least-privilege.md) (2026-10-17): CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.

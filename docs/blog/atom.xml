@@ -2,12 +2,25 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-10-23T00:00:00.000Z</updated>
+    <updated>2026-10-24T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
+    <entry>
+        <title type="html"><![CDATA[How Optimus works: an agent that uses your computer]]></title>
+        <id>https://mercuryagent.sh/blog/how-optimus-works</id>
+        <link href="https://mercuryagent.sh/blog/how-optimus-works"/>
+        <updated>2026-10-24T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.]]></summary>
+        <author>
+            <name>Salman Qureshi</name>
+            <uri>https://github.com/hotheadhacker</uri>
+        </author>
+        <category label="Engineering" term="Engineering"/>
+        <category label="Product" term="Product"/>
+    </entry>
     <entry>
         <title type="html"><![CDATA[Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk]]></title>
         <id>https://mercuryagent.sh/blog/mercury-1-4</id>

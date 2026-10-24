@@ -5,6 +5,22 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/how-optimus-works",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/how-optimus-works",
+            "title": "How Optimus works: an agent that uses your computer",
+            "summary": "Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.",
+            "date_modified": "2026-10-24T00:00:00.000Z",
+            "author": {
+                "name": "Salman Qureshi",
+                "url": "https://github.com/hotheadhacker"
+            },
+            "tags": [
+                "Engineering",
+                "Product"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/mercury-1-4",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-1-4",

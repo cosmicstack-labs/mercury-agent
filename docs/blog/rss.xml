@@ -4,11 +4,20 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Fri, 23 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Sat, 24 Oct 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[How Optimus works: an agent that uses your computer]]></title>
+            <link>https://mercuryagent.sh/blog/how-optimus-works</link>
+            <guid>https://mercuryagent.sh/blog/how-optimus-works</guid>
+            <pubDate>Sat, 24 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.]]></description>
+            <category>Engineering</category>
+            <category>Product</category>
+        </item>
         <item>
             <title><![CDATA[Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk]]></title>
             <link>https://mercuryagent.sh/blog/mercury-1-4</link>

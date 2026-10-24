@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkwebsite=self.webpackChunkwebsite||[]).push([["6431"],{9328(e){e.exports=JSON.parse('{"metadata":{"permalink":"/blog","page":1,"postsPerPage":8,"totalPages":1,"totalCount":8,"blogDescription":"News, engineering notes and field reports from the team building Mercury, the open-source AI agent you can leave running.","blogTitle":"Mercury Blog"}}')}}]);
