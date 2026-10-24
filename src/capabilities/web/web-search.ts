@@ -5,9 +5,9 @@ import { guardedFetch } from '../../utils/ssrf.js';
 /**
  * web_search: free, keyless search for the model.
  *
- *   web  → Parallel (search.parallel.ai, keyless MCP), then Brave Search,
- *           DuckDuckGo (html, then lite), Wikipedia, Hacker News, Bing News,
- *           Google News, Bing RSS
+ *   web  → Parallel (search.parallel.ai, keyless MCP), then DuckDuckGo's
+ *           html page, then its lite page: the three keyless web indexes
+ *           that answer automated requests
  *   news → Parallel, then Bing News (direct article links), Google News (its
  *           links are Google redirects), Hacker News
  *
@@ -16,8 +16,8 @@ import { guardedFetch } from '../../utils/ssrf.js';
  *
  * Read-only and through the same SSRF guard as fetch_url. Returns titles,
  * links, snippets and dates; the model follows up with fetch_url to read a
- * page. (DuckDuckGo's HTML endpoint answers automated requests with a 202
- * challenge, which is why the old search skill often came back empty.)
+ * page. Brave, Mojeek and Startpage refuse automated requests, and Bing's
+ * web RSS serves unrelated pages, so none of them are used.
  */
 
 export interface SearchResult {
@@ -105,41 +105,10 @@ async function fetchText(url: string): Promise<string> {
   }
 }
 
-/**
- * Bing's web RSS feed. Kept as a late fallback only: since autumn 2026 it
- * answers automated requests with results unrelated to the query, which the
- * relevance check below throws away.
- */
-async function bing(query: string, max: number): Promise<SearchResult[]> {
-  return parseRss(await fetchText(`https://www.bing.com/search?q=${encodeURIComponent(query)}&format=rss&count=${Math.min(20, max + 2)}`), max);
-}
-
 /** Bing News RSS: relevant, recent, keyless. */
 async function bingNews(query: string, max: number): Promise<SearchResult[]> {
   if (!query.trim()) return [];
   return parseRss(await fetchText(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`), max);
-}
-
-/**
- * Brave Search's results page: a real, independent web index that answers a
- * plain browser request without a key or a challenge. Parsed from the HTML,
- * so a markup change shows up as "no results" and the chain moves on.
- */
-export function parseBrave(html: string, max: number): SearchResult[] {
-  const out: SearchResult[] = [];
-  const anchor = /<a href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-  let m: RegExpExecArray | null;
-  while ((m = anchor.exec(html)) && out.length < max) {
-    const [, url, inner] = m;
-    const title = /class="title search-snippet-title[^"]*"[^>]*title="([^"]*)"/.exec(inner)?.[1];
-    if (!title || /^https?:\/\/([a-z]+\.)?search\.brave\.com/.test(url)) continue;
-    const after = html.slice(anchor.lastIndex, anchor.lastIndex + 4000);
-    const nextResult = after.search(/<a href="https?:\/\/[^"]+"[^>]*>[\s\S]{0,3000}?search-snippet-title/);
-    const scope = nextResult > 0 ? after.slice(0, nextResult) : after;
-    const snippet = /class="content[^"]*">([\s\S]*?)<\/div>/.exec(scope)?.[1] ?? '';
-    out.push({ title: decode(title), url: unescape(url), snippet: decode(snippet).slice(0, 300) });
-  }
-  return out;
 }
 
 /**
@@ -226,51 +195,104 @@ async function parallelNews(query: string, max: number): Promise<SearchResult[]>
 }
 
 /**
- * DuckDuckGo's no-JavaScript result pages (html. and lite.). Links come as
- * duckduckgo.com/l/?uddg=<the page>; ads point back at duckduckgo.com and
- * are dropped. DuckDuckGo answers some automated requests with a challenge
- * page (HTTP 202, "anomaly"), which counts as a failure so the chain moves on.
+ * DuckDuckGo's two no-JavaScript result pages, the keyless web index behind
+ * Parallel. Both wrap every result link as
+ * //duckduckgo.com/l/?uddg=<the page>&rut=…, and both mark ads: the html page
+ * with a `result--ad` block linking to duckduckgo.com/y.js, the lite page
+ * with a sponsored row. Parsed exactly from their markup:
+ *
+ *   html.duckduckgo.com/html/  <div class="result results_links …">
+ *                                <a class="result__a" href=…>title</a>
+ *                                <a class="result__snippet" href=…>snippet</a>
+ *   lite.duckduckgo.com/lite/  <a class='result-link' href=…>title</a>
+ *                              <td class='result-snippet'>snippet</td>
+ *
+ * DuckDuckGo answers some automated requests with a challenge (HTTP 202 or
+ * an "anomaly" page). That, and a page with no results and no "No results"
+ * notice (the markup changed), count as failures, so the trail says so.
  */
-export function parseDdg(html: string, max: number): SearchResult[] {
+
+/** The page behind DuckDuckGo's redirect, or null for ads and DuckDuckGo's own links. */
+export function ddgTarget(href: string): string | null {
+  const raw = unescape(href.trim());
+  let u: URL;
+  try { u = new URL(raw.startsWith('//') ? `https:${raw}` : raw, 'https://duckduckgo.com'); } catch { return null; }
+  const target = /(^|\.)duckduckgo\.com$/.test(u.hostname) ? u.searchParams.get('uddg') : u.href;
+  if (!target || !/^https?:\/\//i.test(target)) return null;
+  try {
+    const t = new URL(target);
+    return /(^|\.)duckduckgo\.com$/.test(t.hostname) ? null : t.href;
+  } catch {
+    return null;
+  }
+}
+
+export function parseDdgHtml(html: string, max: number): SearchResult[] {
   const out: SearchResult[] = [];
-  const anchor = /<a[^>]*class=["'](?:result__a|result-link)["'][^>]*>[\s\S]*?<\/a>|<a[^>]*href="[^"]*"[^>]*class=["'](?:result__a|result-link)["'][^>]*>[\s\S]*?<\/a>/g;
-  const found = [...html.matchAll(anchor)];
-  for (let i = 0; i < found.length && out.length < max; i++) {
-    const tagText = found[i][0];
-    const href = /href="([^"]+)"/.exec(tagText)?.[1];
-    if (!href) continue;
-    let url = unescape(href);
-    try {
-      const u = new URL(url.startsWith('//') ? `https:${url}` : url);
-      url = u.searchParams.get('uddg') ?? u.href;
-    } catch { continue; }
-    if (!/^https?:\/\//.test(url) || /^https?:\/\/([a-z]+\.)?duckduckgo\.com\//.test(url)) continue;
-    const title = decode(tagText.replace(/^<a[^>]*>/, '').replace(/<\/a>$/, ''));
-    const start = (found[i].index ?? 0) + tagText.length;
-    const end = i + 1 < found.length ? found[i + 1].index ?? html.length : Math.min(html.length, start + 4000);
-    const scope = html.slice(start, end);
-    const snippet = /class=["'](?:result__snippet|result-snippet)["'][^>]*>([\s\S]*?)<\/(?:a|td|div)>/.exec(scope)?.[1] ?? '';
-    if (title) out.push({ title, url, snippet: decode(snippet).slice(0, 300) });
+  const blocks = [...html.matchAll(/<div class="(result\b[^"]*)"/g)].filter((m) => /\b(results_links|web-result)\b/.test(m[1]));
+  for (let i = 0; i < blocks.length && out.length < max; i++) {
+    if (/\bresult--ad\b/.test(blocks[i][1])) continue;
+    const block = html.slice(blocks[i].index ?? 0, blocks[i + 1]?.index ?? html.length);
+    const a = /<a\b[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/.exec(block);
+    const href = a && /href="([^"]*)"/.exec(a[0])?.[1];
+    const url = href ? ddgTarget(href) : null;
+    const title = a ? decode(a[1]) : '';
+    if (!url || !title) continue;
+    const snippet = /<(?:a|div)\b[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/.exec(block)?.[1] ?? '';
+    out.push({ title, url, snippet: decode(snippet).slice(0, 300) });
   }
   return out;
 }
 
-/** DuckDuckGo lets roughly every other automated request through: one retry after a short pause. */
-const DDG_RETRY_MS = 1500;
+export function parseDdgLite(html: string, max: number): SearchResult[] {
+  const out: SearchResult[] = [];
+  const links = [...html.matchAll(/<a\b[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>/g)];
+  for (let i = 0; i < links.length && out.length < max; i++) {
+    const at = links[i].index ?? 0;
+    // A sponsored result sits in a row marked as such.
+    if (/sponsored/i.test(html.slice(Math.max(0, html.lastIndexOf('<tr', at)), at))) continue;
+    const href = /href=['"]([^'"]*)['"]/.exec(links[i][0])?.[1];
+    const url = href ? ddgTarget(href) : null;
+    const title = decode(links[i][1]);
+    if (!url || !title) continue;
+    const scope = html.slice(at, links[i + 1]?.index ?? html.length);
+    const snippet = /<td\b[^>]*class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/.exec(scope)?.[1] ?? '';
+    out.push({ title, url, snippet: decode(snippet).slice(0, 300) });
+  }
+  return out;
+}
+
+/** Either page: the html page has result__a links, the lite page result-link. */
+export function parseDdg(html: string, max: number): SearchResult[] {
+  return /class="result__a"/.test(html) ? parseDdgHtml(html, max) : parseDdgLite(html, max);
+}
+
+const DDG_CHALLENGE = /anomaly|challenge-form|bots use DuckDuckGo too/i;
+const DDG_NO_RESULTS = /No results\.|no-results|No more results/i;
 
 async function ddgOnce(kind: 'html' | 'lite', query: string, max: number): Promise<SearchResult[]> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
-    const res = await guardedFetch(`https://${kind}.duckduckgo.com/${kind}/?q=${encodeURIComponent(query)}`, ac.signal, { 'User-Agent': UA, Accept: 'text/html' });
+    const res = await guardedFetch(`https://${kind}.duckduckgo.com/${kind}/?q=${encodeURIComponent(query)}`, ac.signal, {
+      'User-Agent': UA,
+      Accept: 'text/html',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Referer: `https://${kind}.duckduckgo.com/`,
+    });
     const body = await res.text();
-    if (res.status === 202 || /anomaly/i.test(body)) throw new Error('bot challenge');
+    if (res.status === 202 || DDG_CHALLENGE.test(body)) throw new Error('bot challenge');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return parseDdg(body, max);
+    const results = kind === 'html' ? parseDdgHtml(body, max) : parseDdgLite(body, max);
+    if (!results.length && !DDG_NO_RESULTS.test(body)) throw new Error('page not recognised');
+    return results;
   } finally {
     clearTimeout(timer);
   }
 }
+
+/** DuckDuckGo lets roughly every other automated request through: one retry after a short pause. */
+const DDG_RETRY_MS = 1500;
 
 async function ddg(kind: 'html' | 'lite', query: string, max: number): Promise<SearchResult[]> {
   if (!query.trim()) return [];
@@ -285,26 +307,6 @@ async function ddg(kind: 'html' | 'lite', query: string, max: number): Promise<S
 const ddgHtml = (q: string, n: number) => ddg('html', q, n);
 const ddgLite = (q: string, n: number) => ddg('lite', q, n);
 
-/** Brave rate-limits per IP: after a 429 it is skipped for a minute rather than tried (and waited on) every query. */
-const BRAVE_COOLDOWN_MS = 60_000;
-let braveBlockedUntil = 0;
-export function resetBraveCooldown(): void { braveBlockedUntil = 0; }
-
-async function brave(query: string, max: number): Promise<SearchResult[]> {
-  if (!query.trim()) return [];
-  if (Date.now() < braveBlockedUntil) throw new Error('rate-limited, resting for a minute');
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-  try {
-    const res = await guardedFetch(`https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`, ac.signal, { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'en-US,en;q=0.9' });
-    if (res.status === 429) braveBlockedUntil = Date.now() + BRAVE_COOLDOWN_MS;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return parseBrave(await res.text(), max);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function googleNews(query: string, max: number): Promise<SearchResult[]> {
   const url = query.trim()
     ? `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`
@@ -314,21 +316,6 @@ async function googleNews(query: string, max: number): Promise<SearchResult[]> {
 
 async function fetchJson(url: string): Promise<unknown> {
   return JSON.parse(await fetchText(url));
-}
-
-/** Wikipedia's search API: keyless JSON, strong for facts, people, places, concepts. */
-export async function wikipedia(query: string, max: number): Promise<SearchResult[]> {
-  if (!query.trim()) return [];
-  const data = await fetchJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=${Math.min(10, max)}&srprop=snippet|timestamp`) as {
-    query?: { search?: Array<{ title: string; snippet?: string; timestamp?: string }> };
-  };
-  return (data.query?.search ?? []).map((hit) => ({
-    title: hit.title,
-    url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hit.title.replace(/ /g, '_'))}`,
-    snippet: decode(hit.snippet ?? '').slice(0, 300),
-    source: 'Wikipedia',
-    date: hit.timestamp,
-  }));
 }
 
 /** Hacker News via Algolia: keyless JSON, strong for software, startups and tech news. */
@@ -413,9 +400,9 @@ function dedupe(results: SearchResult[]): SearchResult[] {
 
 export interface SearchOutcome {
   results: SearchResult[];
-  /** The engines whose results are in the answer, e.g. "Brave + DuckDuckGo". */
+  /** The engines whose results are in the answer, e.g. "Parallel + DuckDuckGo". */
   engine: string;
-  /** What each engine tried did: "Brave: blocked (HTTP 429)", "DuckDuckGo: 6 results". */
+  /** What each engine tried did: "Parallel: timed out", "DuckDuckGo: 6 results". */
   trail: string[];
 }
 
@@ -432,11 +419,10 @@ function why(err: unknown): string {
 
 export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; max?: number } = {}): Promise<SearchOutcome> {
   const max = Math.max(1, Math.min(opts.max ?? 8, 15));
-  // Every engine is free and keyless; no library. Brave and DuckDuckGo are
-  // the real web indexes, and both block some automated requests (by client
-  // fingerprint and rate), so having two, plus DuckDuckGo's lite page, keeps
-  // web search answering. Wikipedia, Hacker News and the news feeds follow.
-  // Bing's web RSS is last: it serves unrelated pages to bots.
+  // Every engine is free and keyless; no library. Web: Parallel's search,
+  // then DuckDuckGo's html page, then its lite page (DuckDuckGo blocks some
+  // automated requests, so each page gets one retry). News: Parallel's
+  // article links, then Bing News (direct links), Google News, Hacker News.
   //
   // How a search is judged: an engine's answer counts only for the results
   // that mention the query (relevant()). Engines are asked in order and their
@@ -445,7 +431,7 @@ export async function webSearch(query: string, opts: { kind?: 'web' | 'news'; ma
   // trail, so "nothing found" and "everything was blocked" read differently.
   const engines: Array<[string, (q: string, n: number) => Promise<SearchResult[]>]> = opts.kind === 'news'
     ? [['Parallel', parallelNews], ['Bing News', bingNews], ['Google News', googleNews], ['Hacker News', hackerNews]]
-    : [['Parallel', parallel], ['Brave', brave], ['DuckDuckGo', ddgHtml], ['DuckDuckGo Lite', ddgLite], ['Wikipedia', wikipedia], ['Hacker News', hackerNews], ['Bing News', bingNews], ['Google News', googleNews], ['Bing', bing]];
+    : [['Parallel', parallel], ['DuckDuckGo', ddgHtml], ['DuckDuckGo Lite', ddgLite]];
   const want = Math.min(ENOUGH, max);
   const trail: string[] = [];
   const used: string[] = [];

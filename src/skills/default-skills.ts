@@ -27,6 +27,59 @@ export const PREVIOUS_SEED_CONTENTS: Record<string, string[]> = {
   'web-search': [`---
 name: web-search
 description: Search the web and the news with the web_search tool, read the best sources, and answer with links.
+version: 1.2.0
+category: web
+categories:
+  - web
+  - research
+intents:
+  - search the web
+  - look up
+  - find online
+  - what is
+  - current news
+  - search for
+  - find information about
+  - research
+  - web search
+  - latest news
+  - what's happening
+tags:
+  - search
+  - web
+  - research
+  - news
+allowed-tools:
+  - web_search
+  - fetch_url
+---
+
+# Web Search
+
+Use this skill when the user asks for current events, external facts, or web research.
+
+## Workflow
+
+1. Call web_search with a focused query of a few key words (names, product, place, year).
+   For news and recent events use kind "news" (an empty query gives today's top stories).
+2. Open the most relevant one to three results with fetch_url when the snippets aren't enough.
+3. Nothing useful? Rephrase once (synonyms, the official name, fewer words) and search again
+   before saying you could not find it.
+4. Cross-check key facts across at least 2 sources when possible.
+5. Return a concise answer with source links and clear caveats.
+
+## Rules
+
+- Prefer reliable sources (official docs, primary sources, reputable publications).
+- If information is uncertain or conflicting, say so explicitly.
+- Include source URLs in the response (on phone chats, keep it to the one or two that matter).
+- Avoid fabricated citations.
+- Never fetch a search engine's results page (DuckDuckGo, Google, Bing) with fetch_url: they block
+  automated reads. web_search already tries several free engines (Brave, Wikipedia, Hacker News,
+  news feeds) and keeps only results that match the query.
+`, `---
+name: web-search
+description: Search the web and the news with the web_search tool, read the best sources, and answer with links.
 version: 1.1.0
 category: web
 categories:
@@ -128,7 +181,7 @@ export const DEFAULT_SKILL_SEEDS: DefaultSkillSeed[] = [
     content: `---
 name: web-search
 description: Search the web and the news with the web_search tool, read the best sources, and answer with links.
-version: 1.2.0
+version: 1.3.0
 category: web
 categories:
   - web
@@ -176,8 +229,23 @@ Use this skill when the user asks for current events, external facts, or web res
 - Include source URLs in the response (on phone chats, keep it to the one or two that matter).
 - Avoid fabricated citations.
 - Never fetch a search engine's results page (DuckDuckGo, Google, Bing) with fetch_url: they block
-  automated reads. web_search already tries several free engines (Brave, Wikipedia, Hacker News,
-  news feeds) and keeps only results that match the query.
+  automated reads. web_search already does it properly.
+
+## Where results come from
+
+web_search needs no key and works with any model. For web searches it asks, in order:
+
+1. Parallel search (search.parallel.ai), a search index built for agents, with excerpts and dates.
+2. DuckDuckGo's html page.
+3. DuckDuckGo's lite page.
+
+News searches ask Parallel (article links only), then Bing News, Google News and Hacker News.
+Only results that mention the query are kept, and sources are combined until there are enough.
+
+Every result ends with a "Searched:" trail, for example
+"Parallel: timed out → DuckDuckGo: 8 results". If web_search returns an error, every source failed:
+tell the user which ones and why (blocked, timed out, no results) instead of guessing an answer,
+then try one shorter or rephrased query.
 `,
   },
   {

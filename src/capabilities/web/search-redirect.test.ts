@@ -1,16 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const hit = (url: string, title: string) => `<a href="${url}" target="_self" class="l1"><div class="title search-snippet-title" title="${title}">x</div></a><div class="content">AI news today.</div>`;
-const BRAVE = [
-  hit('https://www.theverge.com/ai', 'Latest AI news - The Verge'),
-  hit('https://www.reuters.com/technology/ai', 'AI News | Reuters'),
-  hit('https://www.technologyreview.com/ai', 'AI - MIT Technology Review'),
-  hit('https://techcrunch.com/ai', 'AI news | TechCrunch'),
-].join('');
+const PARALLEL_REPLY = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: { results: [
+  { url: 'https://www.theverge.com/ai', title: 'Latest AI news - The Verge', excerpts: ['All the AI news.'] },
+  { url: 'https://www.reuters.com/technology/ai', title: 'AI News | Reuters', excerpts: ['AI news today.'] },
+  { url: 'https://www.technologyreview.com/ai', title: 'AI - MIT Technology Review', excerpts: ['AI news today.'] },
+  { url: 'https://techcrunch.com/ai', title: 'AI news | TechCrunch', excerpts: ['AI news today.'] },
+] } } });
 
 vi.mock('../../utils/ssrf.js', () => ({
   guardedFetch: vi.fn(async (url: string) => {
-    if (url.includes('search.brave.com')) return new Response(BRAVE, { status: 200 });
     if (url.includes('duckduckgo.com')) return new Response('<html>anomaly challenge</html>', { status: 202 });
     return new Response('<html><body><p>An article</p></body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
   }),
@@ -18,8 +16,8 @@ vi.mock('../../utils/ssrf.js', () => ({
 
 import { createFetchUrlTool } from './fetch-url.js';
 
-// Parallel, the first search engine, uses the global fetch: unavailable here.
-vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
+// Parallel, the first search engine, uses the global fetch: it answers here.
+vi.stubGlobal('fetch', vi.fn(async () => new Response(PARALLEL_REPLY, { status: 200 })));
 import { guardedFetch } from '../../utils/ssrf.js';
 import { isBrokenSearchSkill } from '../../skills/loader.js';
 
@@ -31,7 +29,7 @@ describe('fetch_url on a search results page', () => {
   it('answers with web_search results instead of the bot challenge page', async () => {
     const t = createFetchUrlTool() as unknown as { execute: (a: unknown, o: unknown) => Promise<string> };
     const out = await t.execute({ url: 'https://html.duckduckgo.com/html/?q=latest+AI+news' }, {});
-    expect(out).toMatch(/^Web results from Brave for "latest AI news":/);
+    expect(out).toMatch(/^Web results from Parallel for "latest AI news":/);
     expect(out).toContain('1. Latest AI news - The Verge');
     expect(out).toContain('Call web_search directly next time');
     const urls = vi.mocked(guardedFetch).mock.calls.map((c) => String(c[0]));

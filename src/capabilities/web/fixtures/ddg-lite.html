@@ -1,0 +1,723 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=1;">
+  <meta name="referrer" content="origin">
+  <meta name="HandheldFriendly" content="true" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>pandoc epub to markdown at DuckDuckGo</title>
+  <link title="DuckDuckGo (Lite)" type="application/opensearchdescription+xml" rel="search" href="//duckduckgo.com/opensearch_lite_v2.xml">
+  <link href="//duckduckgo.com/favicon.ico" rel="shortcut icon" />
+  <link rel="icon" href="//duckduckgo.com/favicon.ico" type="image/x-icon" />
+  <link id="icon60" rel="apple-touch-icon" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_60x60.png?v=2"/>
+  <link id="icon76" rel="apple-touch-icon" sizes="76x76" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_76x76.png?v=2"/>
+  <link id="icon120" rel="apple-touch-icon" sizes="120x120" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_120x120.png?v=2"/>
+  <link id="icon152" rel="apple-touch-icon" sizes="152x152" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_152x152.png?v=2"/>
+  <link rel="image_src" href="//duckduckgo.com/assets/icons/meta/DDG-icon_256x256.png">
+  <link rel="stylesheet" media="handheld, all" href="//duckduckgo.com/dist/lr.48ddfe4eadf6a534e93f.css" type="text/css"/>
+</head>
+
+<body>
+  <p class='extra'>&nbsp;</p>
+  <div class="header">
+    DuckDuckGo
+  </div>
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="pandoc epub to markdown">
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+
+      <div class="filters">
+        <select class="submit" name="kl">
+          
+            <option value="" >All Regions</option>
+          
+            <option value="ar-es" >Argentina</option>
+          
+            <option value="au-en" >Australia</option>
+          
+            <option value="at-de" >Austria</option>
+          
+            <option value="be-fr" >Belgium (fr)</option>
+          
+            <option value="be-nl" >Belgium (nl)</option>
+          
+            <option value="br-pt" >Brazil</option>
+          
+            <option value="bg-bg" >Bulgaria</option>
+          
+            <option value="ca-en" >Canada (en)</option>
+          
+            <option value="ca-fr" >Canada (fr)</option>
+          
+            <option value="ct-ca" >Catalonia</option>
+          
+            <option value="cl-es" >Chile</option>
+          
+            <option value="cn-zh" >China</option>
+          
+            <option value="co-es" >Colombia</option>
+          
+            <option value="hr-hr" >Croatia</option>
+          
+            <option value="cz-cs" >Czech Republic</option>
+          
+            <option value="dk-da" >Denmark</option>
+          
+            <option value="ee-et" >Estonia</option>
+          
+            <option value="fi-fi" >Finland</option>
+          
+            <option value="fr-fr" >France</option>
+          
+            <option value="de-de" >Germany</option>
+          
+            <option value="gr-el" >Greece</option>
+          
+            <option value="hk-tzh" >Hong Kong</option>
+          
+            <option value="hu-hu" >Hungary</option>
+          
+            <option value="is-is" >Iceland</option>
+          
+            <option value="in-en" >India (en)</option>
+          
+            <option value="id-en" >Indonesia (en)</option>
+          
+            <option value="ie-en" >Ireland</option>
+          
+            <option value="il-en" >Israel (en)</option>
+          
+            <option value="it-it" >Italy</option>
+          
+            <option value="jp-jp" >Japan</option>
+          
+            <option value="kr-kr" >Korea</option>
+          
+            <option value="lv-lv" >Latvia</option>
+          
+            <option value="lt-lt" >Lithuania</option>
+          
+            <option value="my-en" >Malaysia (en)</option>
+          
+            <option value="mx-es" >Mexico</option>
+          
+            <option value="nl-nl" >Netherlands</option>
+          
+            <option value="nz-en" >New Zealand</option>
+          
+            <option value="no-no" >Norway</option>
+          
+            <option value="pk-en" >Pakistan (en)</option>
+          
+            <option value="pe-es" >Peru</option>
+          
+            <option value="ph-en" >Philippines (en)</option>
+          
+            <option value="pl-pl" >Poland</option>
+          
+            <option value="pt-pt" >Portugal</option>
+          
+            <option value="ro-ro" >Romania</option>
+          
+            <option value="ru-ru" >Russia</option>
+          
+            <option value="xa-ar" >Saudi Arabia</option>
+          
+            <option value="sg-en" >Singapore</option>
+          
+            <option value="sk-sk" >Slovakia</option>
+          
+            <option value="sl-sl" >Slovenia</option>
+          
+            <option value="za-en" >South Africa</option>
+          
+            <option value="es-ca" >Spain (ca)</option>
+          
+            <option value="es-es" >Spain (es)</option>
+          
+            <option value="se-sv" >Sweden</option>
+          
+            <option value="ch-de" >Switzerland (de)</option>
+          
+            <option value="ch-fr" >Switzerland (fr)</option>
+          
+            <option value="tw-tzh" >Taiwan</option>
+          
+            <option value="th-en" >Thailand (en)</option>
+          
+            <option value="tr-tr" >Turkey</option>
+          
+            <option value="us-en" >US (English)</option>
+          
+            <option value="us-es" >US (Spanish)</option>
+          
+            <option value="ua-uk" >Ukraine</option>
+          
+            <option value="uk-en" >United Kingdom</option>
+          
+            <option value="vn-en" >Vietnam (en)</option>
+          
+        </select>
+
+        <select class="submit" name="df">
+          
+            <option value="" selected>Any Time</option>
+          
+            <option value="d" >Past Day</option>
+          
+            <option value="w" >Past Week</option>
+          
+            <option value="m" >Past Month</option>
+          
+            <option value="y" >Past Year</option>
+          
+        </select>
+      </div>
+  </form>
+
+  
+    <p class="extra">&nbsp;</p>
+    <table border="0">
+      <tr>
+        <td>
+          
+        </td>
+        <td>
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="pandoc epub to markdown">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="l">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="11">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="4-142623474753119617845835499511333817539">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+        </td>
+      </tr>
+    </table>
+  
+
+  
+
+  <p class='extra'>&nbsp;</p>
+
+  <table border="0">
+    
+  </table>
+
+  <table border="0">
+    
+      
+      <!-- Web results are present -->
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    1.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.reddit.com%2Fr%2Fpandoc%2Fcomments%2Fsg6sqx%2Fconvert_epub_to_markdown%2F&amp;rut=77770eaab0e7a6560c5e5f6bbbe12bcb2c8b4338d157bd0f6381eb95a455fd1d" class='result-link'>Convert epub to markdown : r/pandoc - Reddit</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Hi, I want to convert an ebook in <b>epub</b> format to <b>markdown</b>. I want to improve text formatting, add syntax highlighting for source code and improve other stuff. Than I want to convert it back to <b>epub</b>. How can I do this in <b>Pandoc</b>?
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.reddit.com/r/pandoc/comments/sg6sqx/convert_epub_to_markdown/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    2.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpandoc.org%2Fepub.html&amp;rut=8ae184922fd55e2ca39c4dcc6050bdb50aa30b59fdc4146d85ba38160c8a5da6" class='result-link'>Pandoc - Creating an ebook with pandoc</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Creating an ebook with <b>pandoc</b> Starting with version 1.6, <b>pandoc</b> can produce output in the <b>EPUB</b> electronic book format. <b>EPUB</b> books can be viewed on iPads, Nooks, and other electronic book readers, including many smart phones. (They can also be converted to Kindle books using the GUI only KindlePreviewer on Windows and Mac OSX.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>pandoc.org/epub.html</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    3.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fadamdexter%2Fepub2md%2Dpandoc&amp;rut=c5fb60367c86f2835a4eef2b4229e6bd6b50e89ce62759409fe4a6c38e9f6972" class='result-link'>GitHub - adamdexter/epub2md-pandoc: A simple tool that converts epub ...</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    A simple tool that converts <b>epub</b> files to <b>mark</b> <b>down,</b> optimizing for use as Claude AI project knowledge and RAG. - adamdexter/epub2md-<b>pandoc</b>
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>github.com/adamdexter/epub2md-pandoc</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    4.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fezmarkdown.com%2Fepub%2Dto%2Dmarkdown&amp;rut=74d41cc52b469f5b6b2aef8f8274be33b77f6c75893ff0076fec3cc38946b378" class='result-link'>EPUB to Markdown Converter Online | EZMarkdown</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Recover editable <b>Markdown</b> from <b>EPUB</b> ebook content. Does this run locally in my browser? This conversion uses the server-side <b>Pandoc</b> engine. File size, request frequency, and execution time are limited, and temporary files are cleaned up after conversion.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>ezmarkdown.com/epub-to-markdown</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    5.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpandoc.org%2FMANUAL.html&amp;rut=a1ad61b56e5cbe61eef13c19bb1f138ef42e6086b919173b29c82cfd0e9420c4" class='result-link'>Pandoc - Pandoc User&#x27;s Guide</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Pandoc</b> User&#x27;s Guide Synopsis <b>pandoc</b> [options] [input-file]… Description <b>Pandoc</b> is a Haskell library for converting from one markup format to another, and a command-line tool that uses this library. <b>Pandoc</b> can convert between numerous markup and word processing formats, including, but not limited <b>to</b>, various flavors of <b>Markdown</b>, HTML, LaTeX and Word docx. For the full lists of input and ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>pandoc.org/MANUAL.html</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    6.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fskills.rest%2Fskill%2Fepub%2Dto%2Dmarkdown&amp;rut=b7bb374cafac6b375bc3be4241705f4a0f65d1a4c80a7500623f7f469d894c28" class='result-link'>epub-to-markdown: Convert EPUB ebook files to Markdown using pandoc ...</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Convert <b>EPUB</b> ebook files to <b>Markdown</b> using <b>pandoc</b> with gfm-raw_html output. Browse installation instructions, technical dependencies, and related skills by zocomputer.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>skills.rest/skill/epub-to-markdown</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    7.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcommunity.obsidian.md%2Fplugins%2Fepub%2Dreading%2Dimporter&amp;rut=1b4b47c30121be800fa6fbe6db817faf39d2a670217001550f672913d0a03641" class='result-link'>EPUB Transfer to Markdown - Obsidian Plugin</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    It does use local filesystem access to read the selected <b>EPUB</b>, write <b>Markdown</b> files, and export <b>EPUB</b> files into your vault. It also runs local command-line tools such as <b>pandoc</b>, and on Windows it may run PowerShell for <b>EPUB</b> extraction or Outlook draft creation.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>community.obsidian.md/plugins/epub-reading-importer</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    8.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fuxiew%2Fepub2MD&amp;rut=ae73de5c4ab2198b823ec9f2bfe711280afeeb4445e7629c5f302fcef54c0339" class='result-link'>GitHub - uxiew/epub2MD: convert epub file to markdown files</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    convert <b>epub</b> file to <b>markdown</b> files. Contribute to uxiew/epub2MD development by creating an account on GitHub.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>github.com/uxiew/epub2MD</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    9.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.zamzar.com%2Fconvert%2Fepub%2Dto%2Dmd%2F&amp;rut=6b2b736760912eda87501188d6f0ab96bc0822bcddcdbbac68b5a9600a3edcfc" class='result-link'>EPUB to MD - Convert your EPUB to MD for Free Online - Zamzar</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Do you want to convert a <b>EPUB</b> file to a MD file ? Don&#x27;t download software - use Zamzar to convert it for free online. Click to convert your <b>EPUB</b> file now.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.zamzar.com/convert/epub-to-md/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    10.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fuseotools.com%2Fepub%2Dto%2Dmarkdown&amp;rut=7a6f1d7b9df5b6c6d28eb4567a15a9fafd5f2a31e4d235ab3319b15c2eb33846" class='result-link'>EPUB to Markdown Converter - Free, Formatting Kept</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    The words of a book as plain text An <b>EPUB</b> is a zipped set of web pages, awkward to edit or search outside a reader. <b>Pandoc</b> reads the chapters in order and writes one GitHub-flavoured <b>Markdown</b> file with headings, paragraphs, block quotes, lists and emphasis, which opens in any text editor, note-taking app or writing tool.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>useotools.com/epub-to-markdown</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+    
+
+    
+      
+      <tr>
+        <td colspan=2>
+          
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="pandoc epub to markdown">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="l">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="11">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="4-142623474753119617845835499511333817539">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+          
+        </td>
+      </tr>
+    
+  </table>
+
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="pandoc epub to markdown" >
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+      
+        <input name="kl" value="wt-wt" type="hidden">
+      
+  </form>
+
+  <p class='extra'>&nbsp;</p>
+
+  
+    <img src="//duckduckgo.com/t/sl_l"/>
+  
+  <div id='end-spacer'>&nbsp;</div>
+
+</body>
+</html>
