@@ -81,13 +81,28 @@ describe('/model on the attached terminal (web channel)', () => {
     expect(switched).not.toHaveBeenCalled();
   });
 
-  it('/new says which permission mode the fresh session runs in', async () => {
-    const { channel, sent } = sseChannel('sess-1');
+  it('/new asks which permission mode the fresh session runs in; Esc keeps the current one', async () => {
+    const { channel, events, sent } = sseChannel('sess-1');
     const agent = agentWith(channel, async (name) => ({ ok: true, message: name }));
     (agent as unknown as { handleSessionCommand: () => Promise<void> }).handleSessionCommand = async () => { await channel.send('New session: quiet-harbour', 'sess-1'); };
-    expect(await handleChatCommand(agent, '/new', 'web', 'sess-1')).toBe(true);
+
+    const done = handleChatCommand(agent, '/new', 'web', 'sess-1');
+    await tick();
     expect(sent[0]).toBe('New session: quiet-harbour');
-    expect(sent[1]).toMatch(/^(Ask Me|Allow All): Mercury .* Change it with \/permissions\.$/);
+    const prompt = events.find((e) => e.type === 'choice_prompt')!;
+    expect(prompt.data.question).toMatch(/^Permission mode for this session\? \(now: (Ask Me|Allow All)\)$/);
+    expect(channel.cancelInteraction(String(prompt.data.id), 'sess-1')).toBe(true);
+    expect(await done).toBe(true);
+    expect(sent[1]).toMatch(/^(Ask Me|Allow All): Mercury .* Unchanged\. \/permissions switches any time\.$/);
+
+    // Picking applies at once: the web channel's bypass flag follows the pick.
+    const again = handleChatCommand(agent, '/new', 'web', 'sess-1');
+    await tick();
+    const second = events.filter((e) => e.type === 'choice_prompt').at(-1)!;
+    expect(channel.resolveChoice(String(second.data.id), 'allow-all', 'sess-1')).toBe(true);
+    expect(await again).toBe(true);
+    expect(channel.getSettings().bypassPermissions).toBe(true);
+    expect(sent.at(-1)).toMatch(/^Allow All: .* Saved: Mercury remembers this/);
   });
 
   it('with no attached screen for that session there is no picker, just the list', async () => {

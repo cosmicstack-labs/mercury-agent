@@ -78,6 +78,47 @@ async function pickOnOwnerScreen(agent: Agent, channel: CLIChannel | WebChannel,
   return labels.includes(picked) ? picked : null;
 }
 
+/**
+ * The Ask Me / Allow All picker on an owner screen (/permissions, and a
+ * fresh /new session). The current mode is named in the question; Esc keeps
+ * it. A pick is applied, saved and pushed to every status row.
+ */
+async function offerPermissionMode(agent: Agent, channel: CLIChannel | WebChannel, channelId: string, question: string): Promise<void> {
+  if (channel instanceof CLIChannel) {
+    const mode = await channel.askPermissionMode?.();
+    if (mode === 'allow-all') {
+      agent.capabilities.permissions.setAutoApproveAll(true);
+      agent.capabilities.permissions.addTempScope('/', true, true);
+    } else {
+      agent.capabilities.permissions.setAutoApproveAll(false);
+    }
+    const chosen = mode === 'allow-all' ? 'allow-all' : 'ask-me';
+    savePermissionMode(chosen);
+    channel.setPermissionModeStatus(chosen);
+    publishStatus();
+    await channel.send(`${describePermissionMode(chosen)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
+    return;
+  }
+  // The attached terminal and the dashboard (channel type 'web').
+  const current = loadPermissionMode() ?? (channel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me');
+  const picked = await channel.presentChoicePrompt(
+    `${question} (now: ${current === 'allow-all' ? 'Allow All' : 'Ask Me'})`,
+    [
+      { value: 'ask-me', label: 'Ask Me: ask before writing files or running commands' },
+      { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
+    ],
+    channelId,
+  );
+  if (picked !== 'ask-me' && picked !== 'allow-all') {
+    await channel.send(`${describePermissionMode(current)} Unchanged. /permissions switches any time.`, channelId);
+    return;
+  }
+  channel.setBypassPermissions(picked === 'allow-all');
+  savePermissionMode(picked);
+  publishStatus();
+  await channel.send(`${describePermissionMode(picked)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
+}
+
 export async function handleChatCommand(agent: Agent, content: string, channelType: string, channelId: string): Promise<boolean> {
   const trimmed = content.trim();
   const cmd = trimmed.toLowerCase();
@@ -96,12 +137,9 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
   // Unlike /reset this never halts agents, clears queues, or wipes state.
   if (cmd === '/new') {
     await agent.handleSessionCommand('/session new', channelType as ChannelType, channelId);
-    // A fresh session on the owner's own screen says which permission mode it runs in.
-    if (isOwnerScreen(channel, channelType)) {
-      const mode = loadPermissionMode()
-        ?? (channel instanceof WebChannel && channel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me');
-      await channel.send(`${describePermissionMode(mode)} Change it with /permissions.`, channelId);
-    }
+    // A fresh session on the owner's own screen asks which permission mode
+    // to run in (the current one is shown; Esc keeps it).
+    if (isOwnerScreen(channel, channelType)) await offerPermissionMode(agent, channel, channelId, 'Permission mode for this session?');
     return true;
   }
 
@@ -201,41 +239,8 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
   }
 
   if (cmd === '/permissions') {
-    if (channelType === 'cli' && channel instanceof CLIChannel) {
-      const mode = await channel.askPermissionMode?.();
-      if (mode === 'allow-all') {
-        agent.capabilities.permissions.setAutoApproveAll(true);
-        agent.capabilities.permissions.addTempScope('/', true, true);
-      } else {
-        agent.capabilities.permissions.setAutoApproveAll(false);
-      }
-      const chosen = mode === 'allow-all' ? 'allow-all' : 'ask-me';
-      savePermissionMode(chosen);
-      channel.setPermissionModeStatus(chosen);
-      publishStatus();
-      await channel.send(`${describePermissionMode(chosen)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
-      return true;
-    }
-    // The attached terminal and the dashboard are the owner's own screens
-    // (channel type 'web'): offer the same choice and remember it.
-    if (channel instanceof WebChannel) {
-      const current = loadPermissionMode() ?? (channel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me');
-      const picked = await channel.presentChoicePrompt(
-        `How should Mercury handle risky actions? (now: ${current === 'allow-all' ? 'Allow All' : 'Ask Me'})`,
-        [
-          { value: 'ask-me', label: 'Ask Me: ask before writing files or running commands' },
-          { value: 'allow-all', label: 'Allow All: just do it (blocked commands stay blocked)' },
-        ],
-        channelId,
-      );
-      if (picked !== 'ask-me' && picked !== 'allow-all') {
-        await channel.send('No change. Type /permissions allow-all or /permissions ask-me to switch directly.', channelId);
-        return true;
-      }
-      channel.setBypassPermissions(picked === 'allow-all');
-      savePermissionMode(picked);
-      publishStatus();
-      await channel.send(`${describePermissionMode(picked)} Saved: Mercury remembers this. Change it any time with /permissions.`, channelId);
+    if (isOwnerScreen(channel, channelType)) {
+      await offerPermissionMode(agent, channel, channelId, 'How should Mercury handle risky actions?');
       return true;
     }
     await channel.send('On Telegram, use the /permissions button or command. Your own terminal and dashboard use /permissions too.', channelId);

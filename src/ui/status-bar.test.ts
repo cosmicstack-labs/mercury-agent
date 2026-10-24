@@ -54,6 +54,13 @@ describe('status bar: fitting the right half', () => {
     expect(statusSegments({ tokensPct: null })).toEqual([]);
   });
 
+  it('Optimus activity outranks everything: when the row is overloaded it is the last thing kept', () => {
+    const busy = { ...inputs, desktop: '🎙 Optimus listening' };
+    expect(row(fitSegments(statusSegments(busy), 30))).toBe('🎙 Optimus listening · Ask');
+    expect(row(fitSegments(statusSegments(busy), 20))).toBe('🎙 Optimus listening');
+    expect(row(fitSegments(statusSegments({ ...busy, desktop: '🖥 Optimus working: opening Finder' }), 40))).toBe('🖥 Optimus working: opening Finder · Ask');
+  });
+
   it('a long model never pushes tokens or permission off the row', () => {
     const segs = fitSegments(statusSegments({ ...inputs, provider: { name: 'aimlapi', model: 'anthropic/claude-sonnet-4.6-extended-thinking-preview-2026' } }), 40);
     const text = row(segs);

@@ -100,6 +100,19 @@ export interface LaunchPadProps {
   tip?: string | null;
 }
 
+/**
+ * How many terminal rows the pad takes (details hidden), so a screen that
+ * stacks something under it can fit the whole thing: Ink drops rows off the
+ * TOP when the output is taller than the terminal, and the first casualty
+ * was the wordmark. Mirrors the render below row for row.
+ */
+export function launchPadRows(cols: number, tip?: string | null): number {
+  const showWordmark = cols >= LAUNCH_WORDMARK_WIDTH + 4;
+  const header = showWordmark ? 1 + LAUNCH_WORDMARK.length + 1 : 2; // paddingTop + mark + tagline | mark line + tagline
+  const checks = 5; // provider, skills, web, budget, workspace
+  return header + 1 + checks + 1 + 1 + 1 + (tip ? 2 : 0); // blank, checks, blank, "Type to start", "/code … Tab", tip pair
+}
+
 export function LaunchPad({ state, cols, showDetails, tip }: LaunchPadProps) {
   // The wordmark needs its width plus the side padding; below that the
   // header is a single text line (Termux portrait, split panes).

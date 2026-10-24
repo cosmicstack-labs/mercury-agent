@@ -1,6 +1,6 @@
 import React from 'react';
 import { parseAttachHandoff } from './attach-handoff.js';
-import { LaunchPad } from './launch-pad.js';
+import { LaunchPad, launchPadRows } from './launch-pad.js';
 import { useTick, spinnerFrame } from './tick-store.js';
 import { rotateTip } from './tips.js';
 import type { TuiState } from '../channels/cli.js';
@@ -30,7 +30,7 @@ import {
 } from './input-composer.js';
 import { CursorCell } from './cursor-anchor.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
-import { activityLine, fitSegments, phaseFromStep, statusSegments } from './status-bar.js';
+import { activityLine, fitSegments, phaseFromStep, splitRow, statusSegments } from './status-bar.js';
 
 /**
  * Attach TUI — the terminal face of `mercury attach`. Native scrollback
@@ -185,7 +185,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
 
   React.useEffect(() => {
     client.listThreads()
-      .then((list) => { setThreads(list.slice(0, 6)); setThreadsLoaded(true); })
+      .then((list) => { setThreads(list.slice(0, 12)); setThreadsLoaded(true); })
       .catch(() => setThreadsLoaded(true));
   }, [client]);
 
@@ -225,6 +225,15 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   // Same input width as the main TUI's chat/Code input (App.tsx).
   const terminalSize = useTerminalSize();
   const inputWidth = Math.max(12, terminalSize.cols - 4);
+  // The pick screen must fit the terminal: pad + 3 header rows + the list
+  // (new-session row, sessions, maybe a "… more" row) + the key hint. On a
+  // short terminal the tip goes first, then sessions fold into "… N more".
+  const pickTip = terminalSize.rows - launchPadRows(terminalSize.cols, launchTip) - 5 >= 3 ? launchTip : null;
+  const pickThreads = React.useMemo(() => {
+    const free = terminalSize.rows - launchPadRows(terminalSize.cols, pickTip) - 5; // header(3) + new row + hint
+    if (threads.length <= free) return threads;
+    return threads.slice(0, Math.max(1, free - 1)); // leave a row for "… N more"
+  }, [threads, terminalSize.rows, terminalSize.cols, pickTip]);
 
   // Live event stream for the attached session.
   React.useEffect(() => {
@@ -455,16 +464,14 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     }
 
     if (phase === 'pick') {
-      if (threadsLoaded && threads.length >= 0) {
-        const rows = threads.length + 1; // threads + "new session"
+      if (threadsLoaded) {
+        // Row 0 is "Start a new session" (the default), then recent sessions.
+        const rows = pickThreads.length + 1;
         if (key.upArrow) setPickIdx((i) => Math.max(0, i - 1));
         else if (key.downArrow) setPickIdx((i) => Math.min(rows - 1, i + 1));
         else if (key.return) {
-          if (pickIdx < threads.length) {
-            void startThread(threads[pickIdx]);
-          } else {
-            void startThread(null);
-          }
+          if (pickIdx === 0) void startThread(null);
+          else void startThread(pickThreads[pickIdx - 1]);
         } else if (key.escape) {
           exit();
         }
@@ -583,6 +590,9 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   if (phase === 'pick') {
     // The same launch pad the main TUI opens with (ADR-024 made attach the
     // default launch; the first screen must not get plainer for it).
+    // Everything below the pad is budgeted to the terminal height: Ink drops
+    // rows off the top when the output is taller than the screen, and the
+    // wordmark was what went. Sessions beyond the budget fold into one line.
     const padState = {
       version: version ?? 'dev',
       agentName: 'Mercury',
@@ -591,9 +601,17 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
       web: { enabled: true, port: Number(new URL(client.getBaseUrl()).port) || 6174 },
       tokenInfo: tokenInfo ? { used: tokenInfo.used, budget: tokenInfo.budget, percentage: tokenInfo.budget > 0 ? Math.round((tokenInfo.used / tokenInfo.budget) * 100) : 0 } : null,
     } as unknown as TuiState;
+    const hidden = threads.length - pickThreads.length;
+    const rowFor = (idx: number, label: React.ReactNode, title?: string) => (
+      <Box key={`row:${idx}`}>
+        <Text color={idx === pickIdx ? 'cyan' : 'gray'}>{idx === pickIdx ? '› ' : '  '}</Text>
+        <Text bold={idx === pickIdx} color={idx === pickIdx ? 'white' : 'gray'}>{label}</Text>
+        {title ? <Text dimColor> {title}</Text> : null}
+      </Box>
+    );
     return (
       <Box flexDirection="column" paddingX={1}>
-        <LaunchPad state={padState} cols={terminalSize.cols} showDetails={false} tip={launchTip} />
+        <LaunchPad state={padState} cols={terminalSize.cols} showDetails={false} tip={pickTip} />
         <Text bold color="cyan">⚿ Attached to the running Mercury</Text>
         {pid != null && <Text dimColor>runtime PID {pid} · Ctrl+C detaches (Mercury keeps running)</Text>}
         <Text> </Text>
@@ -601,19 +619,9 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           <Text dimColor>Loading sessions…</Text>
         ) : (
           [
-            ...threads.map((t, idx) => (
-              <Box key={t.id}>
-                <Text color={idx === pickIdx ? 'cyan' : 'gray'}>{idx === pickIdx ? '› ' : '  '}</Text>
-                <Text bold={idx === pickIdx} color={idx === pickIdx ? 'white' : 'gray'}>
-                  {t.alias} [{t.shortId}]
-                </Text>
-                <Text dimColor> {t.title}</Text>
-              </Box>
-            )),
-            <Box key="__new__">
-              <Text color={threads.length === pickIdx ? 'cyan' : 'gray'}>{threads.length === pickIdx ? '› ' : '  '}</Text>
-              <Text bold={threads.length === pickIdx} color={threads.length === pickIdx ? 'white' : 'gray'}>Start a new session</Text>
-            </Box>,
+            rowFor(0, 'Start a new session'),
+            ...pickThreads.map((t, idx) => rowFor(idx + 1, `${t.alias} [${t.shortId}]`, t.title)),
+            ...(hidden > 0 ? [<Text key="more" dimColor>  … {hidden} more · /sessions in the chat</Text>] : []),
           ]
         )}
         <Text dimColor>↑↓ select · Enter attach</Text>
@@ -633,15 +641,24 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     elapsedSec: turnStartedAt.current ? (Date.now() - turnStartedAt.current) / 1000 : 0,
     spinner: frame,
   });
+  // Left: which session this is (alias, then its title). Right: mode,
+  // budget, model — and Optimus while it is listening or working, which
+  // outranks everything: it is the last segment the fit ever drops, and the
+  // session shrinks to its alias to make room.
   const rowCols = Math.max(20, terminalSize.cols - 6);
+  const desktopActive = Boolean(runtimeStatus?.desktop);
+  const sessionLabel = !thread ? ''
+    : desktopActive || !thread.title || thread.title === 'New session' ? `⚿ ${thread.alias}`
+    : `⚿ ${thread.alias} · ${thread.title}`;
+  const split = splitRow(rowCols, sessionLabel, desktopActive ? 0.25 : 0.45);
   const right = fitSegments(statusSegments({
     provider: provider && provider.name ? provider : null,
     permission: runtimeStatus?.permission === 'allow-all' || runtimeStatus?.permission === 'ask-me' ? runtimeStatus.permission : null,
     tokensPct: tokenInfo && tokenInfo.budget > 0 ? (tokenInfo.used / tokenInfo.budget) * 100 : null,
     codeMode: runtimeStatus?.mode ?? 'off',
     desktop: runtimeStatus?.desktop ?? '',
-    session: thread ? { alias: thread.alias, shortId: thread.shortId } : null,
-  }), rowCols);
+    session: null, // shown on the left instead
+  }), split.right);
   // The live tail looks exactly like the settled block it becomes: the same
   // MERCURY header and indent, the same markdown pass (an unclosed fence is
   // closed for rendering only). It used to be drawn with a cyan "│" bar that
@@ -708,10 +725,12 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         </Box>
       </Box>
       <Box paddingX={3} flexShrink={0} height={1} overflow="hidden">
+        <Box width={split.left} flexShrink={0}>
+          <Text color="blue" wrap="truncate-end">{sessionLabel}</Text>
+        </Box>
         <Spacer />
-        {/* Status only, right-aligned. One Text so it can only ever be
-            truncated, never wrapped onto a second (hidden) line that cut it
-            off mid-way. */}
+        {/* One Text so the right half can only ever be truncated, never
+            wrapped onto a second (hidden) line that cut it off mid-way. */}
         <Text wrap="truncate-end">
           {right.map((seg, idx) => (
             <React.Fragment key={`${seg.priority}:${idx}`}>
