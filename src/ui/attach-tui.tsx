@@ -4,7 +4,7 @@ import { LaunchPad, launchPadRows } from './launch-pad.js';
 import { useTick, spinnerFrame } from './tick-store.js';
 import { rotateTip } from './tips.js';
 import type { TuiState } from '../channels/cli.js';
-import { Box, Text, Spacer, Static, useApp, useInput } from 'ink';
+import { Box, Text, Static, useApp, useInput } from 'ink';
 import type { AttachClient, AttachEvent, AttachThread } from '../cli/attach.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { useTerminalSize } from './use-terminal-size.js';
@@ -656,6 +656,10 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
   const sessionLabel = !thread ? ''
     : desktopActive || !thread.title || thread.title === 'New session' ? `⚿ ${thread.alias}`
     : `⚿ ${thread.alias} · ${thread.title}`;
+  // One continuous row, left-aligned: session first, then the status right
+  // after it. Two halves pinned to opposite edges left a hole in the middle
+  // on any wide terminal. The status gets what it needs first; the session
+  // label takes what is left (shortened, or dropped on a very narrow row).
   const split = splitRow(rowCols, sessionLabel, desktopActive ? 0.25 : 0.45);
   const right = fitSegments(statusSegments({
     provider: provider && provider.name ? provider : null,
@@ -665,6 +669,11 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     desktop: runtimeStatus?.desktop ?? '',
     session: null, // shown on the left instead
   }), split.right);
+  const rightWidth = right.reduce((n, seg, i) => n + seg.text.length + (i > 0 ? 3 : 0), 0);
+  const sessionRoom = rowCols - rightWidth - (right.length > 0 ? 3 : 0);
+  const sessionText = sessionRoom >= 6
+    ? (sessionLabel.length <= sessionRoom ? sessionLabel : sessionLabel.slice(0, sessionRoom - 1) + '…')
+    : '';
   // The live tail looks exactly like the settled block it becomes: the same
   // MERCURY header and indent, the same markdown pass (an unclosed fence is
   // closed for rendering only). It used to be drawn with a cyan "│" bar that
@@ -731,16 +740,13 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         </Box>
       </Box>
       <Box paddingX={3} flexShrink={0} height={1} overflow="hidden">
-        <Box width={split.left} flexShrink={0}>
-          <Text color="blue" wrap="truncate-end">{sessionLabel}</Text>
-        </Box>
-        <Spacer />
-        {/* One Text so the right half can only ever be truncated, never
-            wrapped onto a second (hidden) line that cut it off mid-way. */}
+        {/* One Text so the row can only ever be truncated, never wrapped
+            onto a second (hidden) line that cut it off mid-way. */}
         <Text wrap="truncate-end">
+          {sessionText && <Text color="blue">{sessionText}</Text>}
           {right.map((seg, idx) => (
             <React.Fragment key={`${seg.priority}:${idx}`}>
-              {idx > 0 && <Text color="gray"> · </Text>}
+              {(idx > 0 || sessionText) && <Text color="gray"> · </Text>}
               <Text color={seg.color}>{seg.text}</Text>
             </React.Fragment>
           ))}
