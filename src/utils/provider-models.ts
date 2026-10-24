@@ -58,6 +58,11 @@ const ATLASCLOUD_PREFERRED_MODELS = [
   'deepseek-ai/deepseek-v4-pro',
 ] as const;
 
+const CHEAPER_INFERENCE_PREFERRED_MODELS = [
+  'gpt-5.4-mini',
+  'gpt-5.4',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -135,6 +140,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    cheaperinference: CHEAPER_INFERENCE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -260,6 +266,7 @@ function chooseRecommendedModel(
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    cheaperinference: CHEAPER_INFERENCE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -304,6 +311,7 @@ export function buildModelCatalog(
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    cheaperinference: CHEAPER_INFERENCE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -336,6 +344,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Grok key. Please re-enter it.';
   } else if (provider === 'atlascloud') {
     errorMessage = 'Mercury could not fetch models for this Atlas Cloud key. Please re-enter it.';
+  } else if (provider === 'cheaperinference') {
+    errorMessage = 'Mercury could not fetch models for this Cheaper Inference key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'aimlapi') {
@@ -380,6 +390,9 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
           && !lower.includes('audio')
           && !lower.includes('tts')
           && !lower.includes('whisper');
+      }
+      if (provider === 'cheaperinference') {
+        return id.length > 0 && (surface == null || surface === 'text');
       }
       return isOpenAIChatModel(id);
     })

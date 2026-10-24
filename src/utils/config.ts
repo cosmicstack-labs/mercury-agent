@@ -64,6 +64,7 @@ export type ProviderName =
   | 'deepseek'
   | 'grok'
   | 'atlascloud'
+  | 'cheaperinference'
   | 'ollamaCloud'
   | 'ollamaLocal'
   | 'atomicChat'
@@ -108,6 +109,7 @@ export interface MercuryConfig {
     deepseek: ProviderConfig;
     grok: ProviderConfig;
     atlascloud: ProviderConfig;
+    cheaperinference: ProviderConfig;
     ollamaCloud: ProviderConfig;
     ollamaLocal: ProviderConfig;
     atomicChat: ProviderConfig;
@@ -356,6 +358,13 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('ATLASCLOUD_BASE_URL', 'https://api.atlascloud.ai/v1'),
         model: getEnv('ATLASCLOUD_MODEL', 'qwen/qwen3.5-flash'),
         enabled: getEnvBool('ATLASCLOUD_ENABLED', true),
+      },
+      cheaperinference: {
+        name: 'cheaperinference',
+        apiKey: getEnv('CHEAPER_INFERENCE_API_KEY', ''),
+        baseUrl: getEnv('CHEAPER_INFERENCE_BASE_URL', 'https://api.cheaperinference.com/v1'),
+        model: getEnv('CHEAPER_INFERENCE_MODEL', 'gpt-5.4-mini'),
+        enabled: getEnvBool('CHEAPER_INFERENCE_ENABLED', true),
       },
       ollamaCloud: {
         name: 'ollamaCloud',
@@ -771,6 +780,9 @@ export function isProviderConfigured(provider: ProviderConfig): boolean {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0;
   }
   if (provider.name === 'atlascloud') {
+    return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
+  }
+  if (provider.name === 'cheaperinference') {
     return provider.apiKey.length > 0 && provider.baseUrl.length > 0 && provider.model.length > 0;
   }
   if (provider.name === 'openaiCompat' || provider.name === 'litellm') {
