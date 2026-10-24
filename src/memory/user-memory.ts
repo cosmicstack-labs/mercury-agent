@@ -422,6 +422,22 @@ export class UserMemoryStore {
     return this.db.getSubconscious(this.userKey).slice(0, limit).map(row => this.toRecord(row));
   }
 
+  getById(id: string): UserMemoryRecord | null {
+    const row = this.db.getById(id);
+    return row && row.user_key === this.userKey ? this.toRecord(row) : null;
+  }
+
+  /** Legacy rows the belief migration quarantined (ADR-026 §3.7), for the dashboard's review queue. */
+  listQuarantined(limit: number = 500): UserMemoryRecord[] {
+    return this.db.listQuarantined(this.userKey, limit).map(row => this.toRecord(row));
+  }
+
+  restoreQuarantined(id: string): boolean {
+    const row = this.db.getById(id);
+    if (!row || row.user_key !== this.userKey) return false;
+    return this.db.restoreQuarantined(id);
+  }
+
   close(): void {
     this.db.close();
   }

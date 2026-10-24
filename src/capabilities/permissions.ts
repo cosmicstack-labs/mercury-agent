@@ -341,6 +341,7 @@ export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
   private askHandler?: (prompt: string) => Promise<string>;
+  private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
    * legacy setters below. Sub-agents never read it while they run — they
@@ -517,7 +518,24 @@ export class PermissionManager {
   }
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
-    this.askHandler = handler;
+    // Every answer the owner gives is evidence for the Owner Model (autonomy,
+    // risk per action type); the learning loop drains it once per turn.
+    this.askHandler = async (prompt: string) => {
+      const answer = await handler(prompt);
+      if (answer === 'yes' || answer === 'no' || answer === 'always') {
+        const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
+        this.turnAnswers.push({ action, answer });
+        if (this.turnAnswers.length > 20) this.turnAnswers.shift();
+      }
+      return answer;
+    };
+  }
+
+  /** Permission answers given since the last drain (the learning loop reads them each turn). */
+  drainAnswers(): Array<{ action: string; answer: 'yes' | 'no' | 'always' }> {
+    const out = this.turnAnswers;
+    this.turnAnswers = [];
+    return out;
   }
 
   async requestApproval(prompt: string): Promise<boolean> {

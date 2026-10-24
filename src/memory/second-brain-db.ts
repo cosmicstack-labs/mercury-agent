@@ -827,6 +827,19 @@ export class SecondBrainDB {
     return row.count;
   }
 
+  /** Rows the belief migration set aside as junk (ADR-026 §3.7): hidden from prompts, shown on the dashboard for review. */
+  listQuarantined(userKey: string, limit: number = 500): MemoryRow[] {
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND scope = 'quarantine' ORDER BY updated_at DESC LIMIT ?`);
+    return stmt.all(userKey, limit) as MemoryRow[];
+  }
+
+  /** The owner reviewed a quarantined row and wants it back: it becomes a durable memory again. */
+  restoreQuarantined(id: string): boolean {
+    const now = Date.now();
+    const stmt = this.db.prepare(`UPDATE memories SET scope = 'durable', dismissed = 0, provenance = 'restored', updated_at = ?, last_seen_at = ? WHERE id = ? AND scope = 'quarantine'`);
+    return stmt.run(now, now, id).changes > 0;
+  }
+
   close(): void {
     this.db.close();
   }

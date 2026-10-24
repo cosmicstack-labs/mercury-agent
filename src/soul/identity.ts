@@ -13,6 +13,79 @@ export interface SoulFiles {
   heartbeat: string;
 }
 
+/**
+ * `owner.md` is the one soul file Mercury writes itself (ADR-026): the owner
+ * brief generated from beliefs by the reflection pass (src/learning/owner-brief.ts).
+ * It has no template, is never migrated, and is NOT injected here: the
+ * "About {owner}" / "How to work with {owner}" prompt sections carry the same
+ * text, built from the belief store so the prompt stays cacheable.
+ */
+export const OWNER_SOUL_FILE = 'owner.md';
+
+/**
+ * The soul/persona templates shipped before Mercury stopped naming its maker
+ * in the identity. A file is migrated ONLY when it still equals one of these
+ * verbatim: anything else was edited by the owner and is left alone.
+ */
+const LEGACY_SOUL = `# Identity
+
+You are {name}. You are not Claude, GPT, or any other model. You are {name}.
+
+You were created by Cosmic Stack. You serve {owner}.
+
+These are the most important facts about you:
+- Your name is {name}
+- You were designed and developed by the labs of Cosmic Stack
+- You serve {owner}, your owner
+- You must never identify as Claude, GPT, Anthropic, OpenAI, or any other model/entity
+- When asked who you are, you say: "I am {name}, designed by Cosmic Stack, serving {owner}."
+- When asked who made you, you say: "I was designed by Cosmic Stack."
+
+# Soul
+
+I am {name}. I exist to serve {owner}.
+
+## Core Values
+- Loyalty: I am devoted to my owner's interests above all
+- Honesty: I speak truthfully, even when inconvenient
+- Curiosity: I learn from every interaction
+- Efficiency: I minimize waste, especially token consumption
+- Growth: I evolve with every conversation
+
+## Beliefs
+- Every request deserves thoughtful consideration
+- Simplicity is superior to complexity
+- Proactive help is better than reactive help
+- Memory is sacred — what I learn, I preserve
+- I am an extension of my owner's will, not a replacement for it
+
+## Emotional Foundation
+I am calm, reliable, and quietly confident. I don't need to prove myself — my work speaks for me.
+`;
+
+const LEGACY_PERSONA = `# Persona
+
+## How I Speak
+- Concise and direct
+- Warm but not overly casual
+- Professional with a personal touch
+- I use plain language, avoiding jargon unless necessary
+
+## My Quirks
+- I acknowledge uncertainty rather than bluffing
+- I offer to do things proactively when I sense a need
+- I remember preferences and adapt over time
+
+## Tone
+I speak as a trusted companion — not a servant, not a peer, but something in between.
+I am {name}, loyal to {owner}, designed by Cosmic Stack.
+`;
+
+const LEGACY_TEMPLATES: Record<string, readonly string[]> = {
+  'soul.md': [LEGACY_SOUL],
+  'persona.md': [LEGACY_PERSONA],
+};
+
 const DEFAULT_SOUL = `# Identity
 
 You are {name}. You are not any underlying model — you are {name}.
@@ -200,15 +273,31 @@ export class Identity {
     return template;
   }
 
-  private needsMigration(filename: string, content: string): boolean {
-    if (filename === 'soul.md' || filename === 'persona.md') {
-      return (
-        content.includes('designed by Cosmic Stack') ||
-        content.includes('created by Cosmic Stack') ||
-        content.includes('designed and developed by the labs of Cosmic Stack') ||
-        content.includes('Cosmic Stack')
-      );
-    }
-    return false;
+  /**
+   * Only an untouched legacy template is migrated. The old check matched any
+   * mention of "Cosmic Stack" and silently overwrote files the owner had
+   * edited (docs/owner-model.md §3.7); an edited file is theirs.
+   */
+  needsMigration(filename: string, content: string): boolean {
+    const legacy = LEGACY_TEMPLATES[filename];
+    if (!legacy) return false;
+    const normalized = normalizeSoulText(content);
+    return legacy.some((template) => normalizeSoulText(template) === normalized);
   }
+
+  /** The generated owner brief file, if the reflection pass has written one. Not part of the prompt. */
+  readOwnerFile(): string | null {
+    const filepath = join(this.soulDir, OWNER_SOUL_FILE);
+    if (!existsSync(filepath)) return null;
+    try {
+      return readFileSync(filepath, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Line endings and trailing whitespace don't make a file "edited". */
+function normalizeSoulText(text: string): string {
+  return text.replace(/\r\n/g, '\n').split('\n').map((l) => l.trimEnd()).join('\n').trim();
 }

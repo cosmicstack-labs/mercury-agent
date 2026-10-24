@@ -3847,6 +3847,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
       } catch { /* best effort */ }
       if (userMemory) {
+        // One last reflection pass over the sessions of this run (ADR-026);
+        // bounded so a slow provider cannot hold the shutdown.
+        try {
+          await Promise.race([agent.reflectNow(), new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref())]);
+        } catch { /* best effort */ }
         try {
           userMemory.consolidate();
           userMemory.close();

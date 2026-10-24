@@ -229,6 +229,38 @@ export const brain = {
       ),
   },
   graph: () => get<GraphData>("/api/brain/graph"),
+  // Owner Model (ADR-026): what Mercury believes about the owner, with evidence.
+  beliefs: {
+    list: (params?: { status?: string; kind?: string; dimension?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.status) qs.set("status", params.status);
+      if (params?.kind) qs.set("kind", params.kind);
+      if (params?.dimension) qs.set("dimension", params.dimension);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      return get<{ beliefs: Belief[]; total: number; counts: BeliefCounts }>(`/api/brain/beliefs?${qs}`);
+    },
+    learned: (days?: number, limit?: number) => {
+      const qs = new URLSearchParams();
+      if (days) qs.set("days", String(days));
+      if (limit) qs.set("limit", String(limit));
+      return get<{ beliefs: Belief[]; total: number; days: number }>(`/api/brain/beliefs/learned?${qs}`);
+    },
+    contested: () =>
+      get<{ pairs: Array<{ a: Belief; b: Belief | null }>; total: number }>("/api/brain/beliefs/contested"),
+    get: (id: string) => get<Belief & { evidence: BeliefEvidence[] }>(`/api/brain/beliefs/${id}`),
+    confirm: (id: string) => post<{ success: boolean; belief: Belief }>(`/api/brain/beliefs/${id}/confirm`),
+    forget: (id: string) => post<{ success: boolean; forgotten: string }>(`/api/brain/beliefs/${id}/forget`),
+    correct: (id: string, statement: string) =>
+      post<{ success: boolean; belief: Belief; replaced: Belief }>(`/api/brain/beliefs/${id}/correct`, { statement }),
+    settle: (winnerId: string, loserId: string) =>
+      post<{ success: boolean; winner: Belief; loser: Belief }>("/api/brain/beliefs/settle", { winnerId, loserId }),
+  },
+  quarantine: {
+    list: (limit?: number) =>
+      get<{ memories: Memory[]; total: number }>(`/api/brain/quarantine${limit ? `?limit=${limit}` : ""}`),
+    restore: (id: string) =>
+      post<{ success: boolean; memory: Memory | null }>(`/api/brain/quarantine/${id}/restore`),
+  },
 };
 
 // ── Agents / Tasks ──
@@ -678,6 +710,37 @@ export interface MemoryCreate {
   importance?: number;
   durability?: string;
 }
+
+export type BeliefStatus = "candidate" | "held" | "confirmed" | "contested" | "retired" | "forgotten";
+
+export interface Belief {
+  id: string;
+  kind: string;
+  dimension: string | null;
+  level: string | null;
+  statement: string;
+  detail: string | null;
+  context: string;
+  support: number;
+  against: number;
+  status: BeliefStatus;
+  ownerStated: boolean;
+  confidence: number;
+  lastSupportedAt: number;
+  createdAt: number;
+  updatedAt: number;
+  evidence?: BeliefEvidence[];
+}
+
+export interface BeliefEvidence {
+  id: string;
+  kind: string;
+  excerpt: string;
+  weight: number;
+  at: number;
+}
+
+export type BeliefCounts = Record<BeliefStatus, number>;
 
 export interface Person {
   id: string;

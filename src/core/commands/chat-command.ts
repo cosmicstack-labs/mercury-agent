@@ -50,6 +50,7 @@ import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../../spo
 import { getCloudTokenStore } from '../../cloud/token-store.js';
 import { publishStatus, updateCliProviderStatus } from '../provider-status.js';
 import { whatsNewText } from '../../utils/whats-new.js';
+import { FORGET_THAT_RE, MEMORY_SUBCOMMAND_HELP, handleBeliefCommand } from './memory-commands.js';
 
 export async function handleChatCommand(agent: Agent, content: string, channelType: string, channelId: string): Promise<boolean> {
   const trimmed = content.trim();
@@ -428,6 +429,28 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     }
 
     await channel.send('Usage: `/cloud models` to list, `/cloud use <model-id>` to switch', channelId);
+    return true;
+  }
+
+  // Owner Model (ADR-026): /memory learned|beliefs|contested|confirm|forget|correct|settle,
+  // /forget <text>, and a plain "forget that" right after a `☿ Noted:` line.
+  if (cmd.startsWith('/memory ') || cmd === '/forget' || cmd.startsWith('/forget ') || FORGET_THAT_RE.test(trimmed)) {
+    if (!agent.userMemory) {
+      if (FORGET_THAT_RE.test(trimmed)) return false; // nothing noted without a memory store; let the model answer
+      await channel.send('Second brain is not available, so there is nothing to recall or forget.', channelId);
+      return true;
+    }
+    const reply = handleBeliefCommand(
+      { beliefs: agent.userMemory.beliefs, listings: agent.lastBeliefListing, lastNoted: agent.lastNotedBeliefId },
+      channelId,
+      trimmed,
+    );
+    if (reply === null) {
+      if (FORGET_THAT_RE.test(trimmed)) return false; // no `☿ Noted:` to undo in this chat
+      await channel.send(MEMORY_SUBCOMMAND_HELP, channelId);
+      return true;
+    }
+    await channel.send(reply, channelId);
     return true;
   }
 

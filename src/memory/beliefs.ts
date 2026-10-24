@@ -193,7 +193,14 @@ export class BeliefStore {
       if (!op.statement || !op.kind) return null;
       const existing = this.findSameClaim(op.statement, op.kind, op.context ?? '*', op.dimension);
       if (existing) {
-        return this.apply({ ...op, op: op.op === 'owner_stated' ? 'owner_stated' : 'support', beliefId: existing.id, statement: undefined }, now);
+        if (op.op !== 'owner_stated') return this.apply({ ...op, op: 'support', beliefId: existing.id, statement: undefined }, now);
+        // The owner stated a claim Mercury already held or suspected: confirm it (once).
+        if (existing.ownerStated || existing.status === 'confirmed') return { belief: existing, change: 'unchanged', behaviorChanging: false };
+        this.update(existing.id, { status: 'confirmed', ownerStated: true, support: existing.support + weight, lastSupportedAt: now, validTo: null }, now);
+        this.addEvidence(existing.id, op.evidenceKind ?? 'owner', op, weight, now);
+        for (const rival of this.rivals(this.get(existing.id)!)) this.update(rival.id, { status: 'retired', validTo: now, supersededBy: existing.id }, now);
+        const belief = this.get(existing.id)!;
+        return { belief, change: 'confirmed', behaviorChanging: isBehavioral(belief) };
       }
       const ownerStated = op.op === 'owner_stated';
       const belief = this.insert({
@@ -215,7 +222,7 @@ export class BeliefStore {
       let status = target.status;
       if (status === 'candidate' && (supportSessions >= HELD_AT_SESSIONS || target.ownerStated)) status = 'held';
       if (status === 'retired') status = supportSessions >= HELD_AT_SESSIONS ? 'held' : 'candidate';
-      this.update(target.id, { support: target.support + weight, supportSessions, status, lastSupportedAt: now, validTo: null });
+      this.update(target.id, { support: target.support + weight, supportSessions, status, lastSupportedAt: now, validTo: null }, now);
       this.addEvidence(target.id, op.evidenceKind ?? 'said', op, weight, now);
       const belief = this.get(target.id)!;
       const nowHeld = !wasHeld && status === 'held';
@@ -228,7 +235,7 @@ export class BeliefStore {
         // What the owner said stands until they say otherwise; log the counter-evidence only.
       } else if (target.status === 'held' && against >= 1.5) status = 'contested';
       else if (target.status === 'candidate' && against >= target.support) status = 'retired';
-      this.update(target.id, { against, status, validTo: status === 'retired' ? now : target.validTo });
+      this.update(target.id, { against, status, validTo: status === 'retired' ? now : target.validTo }, now);
       this.addEvidence(target.id, op.evidenceKind ?? 'corrected', op, weight, now);
       const belief = this.get(target.id)!;
       return { belief, change: status === 'contested' ? 'contested' : 'contradicted', behaviorChanging: status === 'contested' && isBehavioral(belief) };
@@ -236,14 +243,14 @@ export class BeliefStore {
     if (op.op === 'correction') {
       // The owner corrected a belief: retire it and hold the replacement as owner-stated.
       if (!op.statement) return this.apply({ ...op, op: 'contradict', weight: 2, evidenceKind: 'corrected' }, now);
-      this.update(target.id, { status: 'retired', validTo: now, against: target.against + 2 });
+      this.update(target.id, { status: 'retired', validTo: now, against: target.against + 2 }, now);
       this.addEvidence(target.id, 'corrected', op, 2, now);
       const replacement = this.insert({
         kind: op.kind ?? target.kind, dimension: op.dimension ?? target.dimension, level: op.level ?? null, statement: op.statement.trim(),
         detail: op.detail?.trim() ?? null, context: op.context ?? target.context, timescale: op.timescale ?? target.timescale,
         support: 2, against: 0, supportSessions: op.sessionId ? 1 : 0, ownerStated: true, status: 'confirmed',
       }, now);
-      this.update(target.id, { supersededBy: replacement.id });
+      this.update(target.id, { supersededBy: replacement.id }, now);
       this.addEvidence(replacement.id, 'owner', op, 2, now);
       return { belief: this.get(replacement.id)!, change: 'replaced', behaviorChanging: isBehavioral(replacement), replaced: this.get(target.id)! };
     }
@@ -254,10 +261,10 @@ export class BeliefStore {
   confirm(id: string, now = Date.now()): Belief | null {
     const b = this.get(id);
     if (!b || b.status === 'forgotten') return null;
-    this.update(id, { status: 'confirmed', ownerStated: true, support: b.support + 2, lastSupportedAt: now, validTo: null });
+    this.update(id, { status: 'confirmed', ownerStated: true, support: b.support + 2, lastSupportedAt: now, validTo: null }, now);
     this.addEvidence(id, 'owner', { excerpt: 'confirmed by the owner' }, 2, now);
     // A confirmed belief settles any contest on the same dimension/context.
-    for (const rival of this.rivals(this.get(id)!)) this.update(rival.id, { status: 'retired', validTo: now, supersededBy: id });
+    for (const rival of this.rivals(this.get(id)!)) this.update(rival.id, { status: 'retired', validTo: now, supersededBy: id }, now);
     return this.get(id);
   }
 
@@ -265,7 +272,7 @@ export class BeliefStore {
   forget(id: string, now = Date.now()): boolean {
     const b = this.get(id);
     if (!b) return false;
-    this.update(id, { status: 'forgotten', validTo: now });
+    this.update(id, { status: 'forgotten', validTo: now }, now);
     this.addEvidence(id, 'owner', { excerpt: 'forgotten at the owner\'s request' }, 0, now);
     return true;
   }
@@ -274,7 +281,7 @@ export class BeliefStore {
   settle(winnerId: string, loserId: string, now = Date.now()): void {
     this.confirm(winnerId, now);
     const loser = this.get(loserId);
-    if (loser && loser.status !== 'forgotten') this.update(loserId, { status: 'retired', validTo: now, supersededBy: winnerId });
+    if (loser && loser.status !== 'forgotten') this.update(loserId, { status: 'retired', validTo: now, supersededBy: winnerId }, now);
   }
 
   markUsed(ids: string[], now = Date.now()): void {
@@ -288,7 +295,7 @@ export class BeliefStore {
       const b = this.get(id);
       if (!b || b.status === 'forgotten' || b.status === 'retired') continue;
       if (sessionId && this.sessionSupported(id, sessionId)) continue;
-      this.update(id, { support: b.support + 0.25, lastSupportedAt: now });
+      this.update(id, { support: b.support + 0.25, lastSupportedAt: now }, now);
       this.addEvidence(id, 'acted-on-ok', { excerpt: 'acted on without objection', sessionId }, 0.25, now);
     }
   }
@@ -298,7 +305,7 @@ export class BeliefStore {
     let retired = 0;
     for (const b of this.list({ statuses: ['candidate', 'held', 'contested'] })) {
       if (this.confidence(b, now) < RETIRE_BELOW) {
-        this.update(b.id, { status: 'retired', validTo: now });
+        this.update(b.id, { status: 'retired', validTo: now }, now);
         retired++;
       }
     }
@@ -409,6 +416,35 @@ export class BeliefStore {
     this.db.prepare('INSERT INTO belief_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`${this.ownerKey}:${key}`, value);
   }
 
+  /**
+   * Two beliefs are the same claim (the reflection pass decided): the loser is
+   * retired and superseded by the keeper, and its support, sessions and
+   * owner-stated status move to the keeper. Returns the keeper, or null when
+   * either side is missing, forgotten, or they are the same belief.
+   */
+  merge(keepId: string, mergeId: string, now = Date.now()): Belief | null {
+    if (keepId === mergeId) return null;
+    const keep = this.get(keepId);
+    const lose = this.get(mergeId);
+    if (!keep || !lose || keep.status === 'forgotten' || lose.status === 'forgotten') return null;
+    if (lose.status === 'retired' && lose.supersededBy === keep.id) return keep;
+    const ownerStated = keep.ownerStated || lose.ownerStated;
+    const supportSessions = keep.supportSessions + lose.supportSessions;
+    let status = keep.status;
+    if (ownerStated) status = 'confirmed';
+    else if (status === 'candidate' && supportSessions >= HELD_AT_SESSIONS) status = 'held';
+    else if (status === 'retired') status = supportSessions >= HELD_AT_SESSIONS ? 'held' : 'candidate';
+    this.db.transaction(() => {
+      this.update(keep.id, {
+        support: keep.support + lose.support, against: keep.against + lose.against, supportSessions, ownerStated, status,
+        lastSupportedAt: Math.max(keep.lastSupportedAt, lose.lastSupportedAt), validTo: null,
+      }, now);
+      this.addEvidence(keep.id, 'reflection', { excerpt: `merged with "${lose.statement}"` }, lose.support, now);
+      this.update(lose.id, { status: 'retired', validTo: now, supersededBy: keep.id }, now);
+    });
+    return this.get(keep.id);
+  }
+
   // ── internals ──────────────────────────────────────────────────────────
 
   private findSameClaim(statement: string, kind: BeliefKind, context: string, dimension?: string): Belief | null {
@@ -434,12 +470,12 @@ export class BeliefStore {
     if (!b.dimension || !b.level) return;
     for (const rival of this.rivals(b)) {
       if (b.ownerStated) {
-        this.update(rival.id, { status: 'retired', validTo: now, supersededBy: b.id });
+        this.update(rival.id, { status: 'retired', validTo: now, supersededBy: b.id }, now);
       } else if (rival.ownerStated || rival.status === 'confirmed') {
-        this.update(b.id, { status: 'retired', validTo: now, supersededBy: rival.id });
+        this.update(b.id, { status: 'retired', validTo: now, supersededBy: rival.id }, now);
       } else if (rival.status === 'held' || rival.status === 'contested') {
-        this.update(rival.id, { status: 'contested' });
-        this.update(b.id, { status: 'contested' });
+        this.update(rival.id, { status: 'contested' }, now);
+        this.update(b.id, { status: 'contested' }, now);
       }
     }
   }
@@ -457,10 +493,10 @@ export class BeliefStore {
     return this.get(id)!;
   }
 
-  private update(id: string, patch: Partial<Pick<Belief, 'support' | 'against' | 'supportSessions' | 'status' | 'ownerStated' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'level' | 'statement' | 'detail'>>): void {
+  private update(id: string, patch: Partial<Pick<Belief, 'support' | 'against' | 'supportSessions' | 'status' | 'ownerStated' | 'validTo' | 'supersededBy' | 'lastSupportedAt' | 'level' | 'statement' | 'detail'>>, now = Date.now()): void {
     const cols: Record<string, string> = { support: 'support', against: 'against', supportSessions: 'support_sessions', status: 'status', ownerStated: 'owner_stated', validTo: 'valid_to', supersededBy: 'superseded_by', lastSupportedAt: 'last_supported_at', level: 'level', statement: 'statement', detail: 'detail' };
     const sets: string[] = ['updated_at = ?'];
-    const params: unknown[] = [Date.now()];
+    const params: unknown[] = [now];
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       sets.push(`${cols[k]} = ?`);

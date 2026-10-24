@@ -24,6 +24,14 @@ export interface SystemPromptInputs {
   timezone: string;
   /** Second Brain summary, or null when Second Brain is disabled. */
   memorySummary: { total: number; learningPaused: boolean } | null;
+  /**
+   * The owner brief (ADR-026): "About {owner}" and "How to work with {owner}",
+   * built from the belief store and regenerated only when beliefs change so
+   * the cached prefix holds. Null/undefined when nothing is held yet.
+   */
+  ownerSections?: { about: string; howToWork: string } | null;
+  /** The owner's name for the brief headings; defaults to "the owner". */
+  ownerName?: string;
   toolNames: readonly string[];
   github: { defaultOwner?: string; defaultRepo?: string; username?: string };
 }
@@ -88,6 +96,23 @@ export function memorySection(summary: SystemPromptInputs['memorySummary']): str
   return text;
 }
 
+/**
+ * What Mercury believes about its owner and how to work with them, right
+ * after the identity so it reads as part of who Mercury is. Empty when there
+ * is nothing held: a bare heading would only invite the model to invent.
+ */
+export function ownerSection(sections: SystemPromptInputs['ownerSections'], ownerName = 'the owner'): string {
+  if (!sections) return '';
+  const about = sections.about.trim();
+  const how = sections.howToWork.trim();
+  if (!about && !how) return '';
+  const name = ownerName.trim() || 'the owner';
+  const parts: string[] = [];
+  if (about) parts.push(`## About ${name}\n\nWhat you know about ${name} from past conversations (stated facts are plain; "seems" marks what you inferred and have not confirmed):\n${about}`);
+  if (how) parts.push(`## How to work with ${name}\n\nLearned from how ${name} works with you; follow these unless ${name} says otherwise in the moment:\n${how}`);
+  return parts.join('\n\n');
+}
+
 export function tweetNotifierSection(skillContext: string): string {
   if (!skillContext.includes('tweet-notifier')) return '';
   return `**Tweet Notification System Available** — The tweet-notifier skill is installed.
@@ -126,6 +151,8 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 /** Assemble the stable system prompt. Section order is part of the cache key; keep it stable. */
 export function buildSystemPrompt(i: SystemPromptInputs): string {
   const sections: string[] = [i.identityPrompt];
+  const owner = ownerSection(i.ownerSections, i.ownerName);
+  if (owner) sections.push(owner);
   if (i.skillContext) sections.push(i.skillContext);
   let prompt = sections.join('\n\n');
   if (i.botSection) prompt += i.botSection;

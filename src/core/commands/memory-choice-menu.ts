@@ -34,7 +34,7 @@ import {
   removeSlackUser,
   clearSlackAccess,
 } from '../../utils/config.js';
-
+import { MEMORY_SUBCOMMAND_HELP, handleBeliefCommand } from './memory-commands.js';
 
 export async function openMemoryChoiceMenu(agent: Agent, channel: any, channelId: string): Promise<void> {
   if (!agent.userMemory) return;
@@ -43,6 +43,10 @@ export async function openMemoryChoiceMenu(agent: Agent, channel: any, channelId
   const shareLabel = agent.userMemory.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
   const action = await channel.presentChoicePrompt('Memory', [
     { value: 'overview', label: 'Overview' },
+    { value: 'learned', label: 'What I learned' },
+    { value: 'beliefs', label: 'What I believe about you' },
+    { value: 'contested', label: 'Contested' },
+    { value: 'forget', label: 'Forget…' },
     { value: 'recent', label: 'Recent Memories' },
     { value: 'shared', label: 'Shared Memories' },
     { value: 'toggle', label: learningLabel },
@@ -55,6 +59,21 @@ export async function openMemoryChoiceMenu(agent: Agent, channel: any, channelId
 
   if (action === 'overview') {
     await agent.sendMemoryOverview(channel, channelId);
+    return;
+  }
+
+  // Owner Model (ADR-026) views share the chat-command implementation.
+  if (action === 'learned' || action === 'beliefs' || action === 'contested') {
+    const deps = { beliefs: agent.userMemory.beliefs, listings: agent.lastBeliefListing, lastNoted: agent.lastNotedBeliefId };
+    await channel.send(handleBeliefCommand(deps, channelId, `/memory ${action}`) ?? MEMORY_SUBCOMMAND_HELP, channelId);
+    return;
+  }
+
+  if (action === 'forget') {
+    // Channels with a choice prompt but no free-text prompt: show the list and explain the verb.
+    const deps = { beliefs: agent.userMemory.beliefs, listings: agent.lastBeliefListing, lastNoted: agent.lastNotedBeliefId };
+    const listing = handleBeliefCommand(deps, channelId, '/memory learned 30') ?? MEMORY_SUBCOMMAND_HELP;
+    await channel.send(`${listing}\n\nOr say /forget <a few words> to forget by text.`, channelId);
     return;
   }
 

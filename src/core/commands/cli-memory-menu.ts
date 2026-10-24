@@ -36,6 +36,7 @@ import {
   clearSlackAccess,
 } from '../../utils/config.js';
 import type { ArrowSelectOption } from '../../utils/arrow-select.js';
+import { MEMORY_SUBCOMMAND_HELP, handleBeliefCommand } from './memory-commands.js';
 
 export async function openCliMemoryMenu(agent: Agent, channel: CLIChannel, channelId: string, select?: (title: string, options: ArrowSelectOption[]) => Promise<string>): Promise<void> {
   if (!agent.userMemory) return;
@@ -46,6 +47,10 @@ export async function openCliMemoryMenu(agent: Agent, channel: CLIChannel, chann
       const shareLabel = agent.userMemory!.isShareLearning() ? 'Shared Learning: ON' : 'Shared Learning: OFF';
       const action = await sel('Memory', [
         { value: 'overview', label: 'Overview' },
+        { value: 'learned', label: 'What I learned' },
+        { value: 'beliefs', label: 'What I believe about you' },
+        { value: 'contested', label: 'Contested' },
+        { value: 'forget', label: 'Forget…' },
         { value: 'recent', label: 'Recent Memories' },
         { value: 'shared', label: 'Shared Memories' },
         { value: 'search', label: 'Search' },
@@ -59,6 +64,23 @@ export async function openCliMemoryMenu(agent: Agent, channel: CLIChannel, chann
 
       if (action === 'overview') {
         await agent.sendMemoryOverview(channel, channelId);
+        continue;
+      }
+
+      // Owner Model (ADR-026) views share the chat-command implementation.
+      const beliefDeps = { beliefs: agent.userMemory!.beliefs, listings: agent.lastBeliefListing, lastNoted: agent.lastNotedBeliefId };
+      if (action === 'learned' || action === 'beliefs' || action === 'contested') {
+        await channel.send(handleBeliefCommand(beliefDeps, channelId, `/memory ${action}`) ?? MEMORY_SUBCOMMAND_HELP, channelId);
+        continue;
+      }
+
+      if (action === 'forget') {
+        const text = await channel.prompt('Forget what? (a few words, or a number from the last list): ');
+        if (!text) continue;
+        const reply = /^\d+$/.test(text.trim())
+          ? handleBeliefCommand(beliefDeps, channelId, `/memory forget ${text.trim()}`)
+          : handleBeliefCommand(beliefDeps, channelId, `/forget ${text}`);
+        await channel.send(reply ?? MEMORY_SUBCOMMAND_HELP, channelId);
         continue;
       }
 

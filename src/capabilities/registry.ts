@@ -22,6 +22,9 @@ import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
 import { createSaveMemoryTool } from './system/save-memory.js';
 import { createSearchMemoryTool } from './system/search-memory.js';
+import { createForgetMemoryTool } from './system/forget-memory.js';
+import { createConfirmBeliefTool } from './system/confirm-belief.js';
+import { createCorrectBeliefTool } from './system/correct-belief.js';
 import { createGitStatusTool } from './git/git-status.js';
 import { createGitDiffTool } from './git/git-diff.js';
 import { createGitLogTool } from './git/git-log.js';
@@ -262,7 +265,11 @@ export class CapabilityRegistry {
     if (this.userMemory) {
       this.tools.save_memory = createSaveMemoryTool(this.userMemory);
       this.tools.search_memory = createSearchMemoryTool(this.userMemory);
-      logger.info('Second Brain tools registered (save_memory, search_memory)');
+      // Owner Model (ADR-026): the owner's verbs over what Mercury believes about them.
+      this.tools.forget_memory = createForgetMemoryTool(this.userMemory);
+      this.tools.confirm_belief = createConfirmBeliefTool(this.userMemory);
+      this.tools.correct_belief = createCorrectBeliefTool(this.userMemory);
+      logger.info('Second Brain tools registered (save_memory, search_memory, forget_memory, confirm_belief, correct_belief)');
     }
 
     if (manifest.capabilities.git?.enabled) {

@@ -72,6 +72,8 @@ export function describeTool(name: string): string {
   if (name === 'fetch_url') return 'reading a web page';
   if (name === 'search_memory') return 'checking what I know about you';
   if (name === 'save_memory') return 'making a note';
+  if (name === 'forget_memory') return 'forgetting that';
+  if (name === 'confirm_belief' || name === 'correct_belief') return 'updating what I know about you';
   if (name === 'use_skill' || name === 'list_skills') return 'using a skill';
   if (name === 'read_file' || name === 'list_dir') return 'looking through your files';
   if (name === 'run_command') return 'running a command';
