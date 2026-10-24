@@ -90,15 +90,12 @@ export function statusSegments(i: StatusInputs): StatusSegment[] {
   if (i.desktop) out.push({ text: i.desktop, color: 'yellow', priority: 0 });
   if (i.permission === 'allow-all') out.push({ text: 'Allow All', compact: 'Allow', color: 'yellow', priority: 1 });
   else if (i.permission === 'ask-me') out.push({ text: 'Ask Me', compact: 'Ask', color: 'gray', priority: 1 });
+  // The model only: the provider name made the row too long, and the model
+  // name already says who serves it (claude-…, gpt-…, minimax-…).
   if (i.provider?.model || i.provider?.name) {
     const model = i.provider.model ? shortModel(i.provider.model) : '';
     const compact = i.provider.model ? shortModel(i.provider.model, { compact: true }) : i.provider.name;
-    out.push({
-      text: model ? `${i.provider.name} · ${model}` : i.provider.name,
-      compact,
-      color: 'magenta',
-      priority: 3,
-    });
+    out.push({ text: model || i.provider.name, compact, color: 'magenta', priority: 3 });
   }
   // Today's budget outranks the model: the owner asked for the meter to stay
   // on the row, and the model is one /model away.

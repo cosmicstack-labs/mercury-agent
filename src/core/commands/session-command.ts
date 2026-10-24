@@ -5,12 +5,19 @@
 import type { Agent } from '../agent.js';
 import type { ChannelMessage, ChannelType } from '../../types/channel.js';
 import { CLIChannel } from '../../channels/cli.js';
+import { WebChannel } from '../../channels/web.js';
 import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../../sessions/index.js';
 
 export async function handleSessionCommand(agent: Agent, content: string, channelType: ChannelType, channelId: string): Promise<void> {
   const channel = agent.channels.get(channelType);
   if (!channel) return;
   const bindingId = channelType === 'cli' ? 'current' : channelId;
+  // The attached terminal / dashboard listens on the session id it started
+  // with; after a re-bind it must follow, or it waits forever on the old one.
+  // Sent after the reply so the reply still reaches the old subscription.
+  const followSession = (session: { id: string; shortId: string; alias: string; title: string }) => {
+    if (channelType === 'web' && channel instanceof WebChannel && session.id !== channelId) channel.sendSessionSwitched(channelId, session);
+  };
   const format = (session: { alias: string; shortId: string; title: string }) => `${session.alias}  [${session.shortId}]  ${session.title}`;
   const transcript = (session: ReturnType<SessionRepository['get']>) => {
     const recent = session.messages
@@ -43,6 +50,7 @@ export async function handleSessionCommand(agent: Agent, content: string, channe
       agent.sessions.bind(session.id, channelType, bindingId);
       syncCliSession(session);
       await channel.send(`New session: ${format(session)}`, channelId);
+      followSession(session);
       return;
     }
     if (!argument || argument.toLowerCase() === 'current') {
@@ -69,6 +77,7 @@ export async function handleSessionCommand(agent: Agent, content: string, channe
         `Deleted session ${session.alias} [${session.shortId}].${agent.sessionSyncEnabled ? ' Cloud deletion is queued.' : ''}${replacement ? ` New session: ${format(replacement)}` : ''}`,
         channelId,
       );
+      if (replacement) followSession(replacement);
       return;
     }
     if (argument.toLowerCase().startsWith('archive ')) {
@@ -86,6 +95,7 @@ export async function handleSessionCommand(agent: Agent, content: string, channe
     agent.sessions.bind(session.id, channelType, bindingId);
     syncCliSession(session);
     await channel.send(`Switched session: ${format(session)}\n\n${transcript(session)}`, channelId);
+    followSession(session);
   } catch (error) {
     const message = error instanceof SessionResolutionError ? error.message : error instanceof Error ? error.message : String(error);
     await channel.send(message, channelId);

@@ -33,6 +33,7 @@ export type AttachEventType =
   | 'choice_resolved'
   | 'loop_warning'
   | 'error'
+  | 'session_switched'
   // Client-transport pseudo-events (never sent by the server).
   | 'attach_disconnected'
   | 'attach_auth_error';

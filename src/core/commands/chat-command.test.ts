@@ -81,6 +81,15 @@ describe('/model on the attached terminal (web channel)', () => {
     expect(switched).not.toHaveBeenCalled();
   });
 
+  it('/new says which permission mode the fresh session runs in', async () => {
+    const { channel, sent } = sseChannel('sess-1');
+    const agent = agentWith(channel, async (name) => ({ ok: true, message: name }));
+    (agent as unknown as { handleSessionCommand: () => Promise<void> }).handleSessionCommand = async () => { await channel.send('New session: quiet-harbour', 'sess-1'); };
+    expect(await handleChatCommand(agent, '/new', 'web', 'sess-1')).toBe(true);
+    expect(sent[0]).toBe('New session: quiet-harbour');
+    expect(sent[1]).toMatch(/^(Ask Me|Allow All): Mercury .* Change it with \/permissions\.$/);
+  });
+
   it('with no attached screen for that session there is no picker, just the list', async () => {
     const { channel, events } = sseChannel('other-session');
     const switched = vi.fn(async (name: string) => ({ ok: true, message: name }));

@@ -30,7 +30,7 @@ import {
 } from './input-composer.js';
 import { CursorCell } from './cursor-anchor.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
-import { activityLine, fitSegments, phaseFromStep, splitRow, statusSegments } from './status-bar.js';
+import { activityLine, fitSegments, phaseFromStep, statusSegments } from './status-bar.js';
 
 /**
  * Attach TUI — the terminal face of `mercury attach`. Native scrollback
@@ -89,15 +89,25 @@ const attachItemKey = (message: TranscriptMessage): string => message.id;
 
 function AttachMessageBlock({ message }: { message: TranscriptMessage }): React.ReactNode {
   const isUser = message.role === 'user';
+  // A system note (the permission mode on entry) is one dim line, no header.
+  if (message.role === 'system') {
+    return (
+      <Box flexDirection="column" marginBottom={1} paddingX={2} flexShrink={0}>
+        {message.content.split('\n').map((line, idx) => (
+          <Box key={`${message.id}:${idx}`} flexShrink={0}><Text dimColor>{line.length > 0 ? line : ' '}</Text></Box>
+        ))}
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column" marginBottom={1} flexShrink={0}>
       <Box flexShrink={0}>
-        <Text bold color={isUser ? 'yellow' : message.role === 'system' ? 'gray' : 'cyan'}>
-          {isUser ? 'YOU' : message.role === 'system' ? '—' : 'MERCURY'}:
+        <Text bold color={isUser ? 'yellow' : 'cyan'}>
+          {isUser ? 'YOU' : 'MERCURY'}:
         </Text>
       </Box>
       <Box marginLeft={2} flexDirection="column" flexShrink={0}>
-        {(isUser || message.role === 'system' ? message.content : renderMarkdown(message.content)).split('\n').map((line, idx) => (
+        {(isUser ? message.content : renderMarkdown(message.content)).split('\n').map((line, idx) => (
           <Box key={`${message.id}:${idx}`} flexShrink={0}>
             <Text>{line.length > 0 ? line : ' '}</Text>
           </Box>
@@ -239,6 +249,23 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         case 'status':
           applyStatus(event.data);
           break;
+        case 'session_switched': {
+          // /new, /session <ref> or a deleted current session re-bound this
+          // screen: follow it, or every reply from now on goes somewhere we
+          // are not listening and the spinner never stops.
+          const id = String(event.data.id ?? '');
+          if (!id || id === thread.id) break;
+          setStreaming(false);
+          setStreamTail('');
+          setSteps([]);
+          setThread({
+            id,
+            shortId: String(event.data.shortId ?? id.slice(0, 8)),
+            alias: String(event.data.alias ?? 'session'),
+            title: String(event.data.title ?? ''),
+          });
+          break;
+        }
         case 'provider':
           // The model that actually answered this turn (fallbacks included).
           if (event.data.name) setProvider({ name: String(event.data.name), model: String(event.data.model ?? '') });
@@ -360,8 +387,11 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
       setStreaming(false);
       return;
     }
-    if (!thread.id && result.sessionId) {
-      setThread({ ...thread, id: result.sessionId, alias: 'session', title: 'New session' });
+    if (result.sessionId && result.sessionId !== thread.id) {
+      // The runtime routed this to another session (re-bound meanwhile):
+      // follow it so its reply reaches this screen.
+      const known = (await client.listThreads().catch(() => [] as ThreadInfo[])).find((t) => t.id === result.sessionId);
+      setThread(known ?? { ...thread, id: result.sessionId, shortId: result.sessionId.slice(0, 8), alias: thread.id ? 'session' : 'new session', title: thread.title || 'New session' });
     }
   }, [client, thread, onHandoff, exit]);
 
@@ -382,8 +412,9 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     await client.resolvePermission(active.id, value);
   }, [client, prompt]);
 
-  // First time in a chat with no saved permission mode (users from before
-  // the setup wizard asked): ask once, here, and remember it.
+  // Entering a chat: say which permission mode is in effect, in one line.
+  // First time with no saved mode (users from before the setup wizard
+  // asked): ask once, here, and remember it.
   const askedModeRef = React.useRef(false);
   React.useEffect(() => {
     if (phase !== 'chat' || askedModeRef.current) return;
@@ -391,7 +422,18 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     // Older runtimes (and test doubles) don't expose it: then nothing to ask.
     if (typeof client.permissionMode !== 'function') return;
     client.permissionMode().then((mode) => {
-      if (mode !== null) return;
+      if (mode === undefined) return;
+      if (mode !== null) {
+        setRuntimeStatus((st) => ({ mode: st?.mode ?? 'off', permission: mode, desktop: st?.desktop ?? '' }));
+        setHistory((prev) => [...prev, {
+          id: `a_mode_${Date.now().toString(36)}`,
+          role: 'system',
+          content: mode === 'allow-all'
+            ? 'Allow All mode: Mercury acts without asking (blocked commands stay blocked) · /permissions to change'
+            : 'Ask Me mode: Mercury asks before writing files or running commands · /permissions to change',
+        }]);
+        return;
+      }
       setPrompt((current) => current ?? {
         id: LOCAL_PERMISSION_MODE_PROMPT,
         kind: 'choice',
@@ -579,18 +621,19 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     );
   }
 
-  // Status row under the input (src/ui/status-bar.ts): left = what is
-  // happening now, right = where you are, fitted to the width in priority
-  // order so a long model or session name never crowds out the rest.
+  // What is happening now (spinner, phase, elapsed) is drawn in the chat,
+  // above the input, where the reply will appear. The row under the input
+  // (src/ui/status-bar.ts) is status only — where you are — fitted to the
+  // width in priority order so a long model or session name never crowds
+  // out the rest.
   const runningStep = [...steps].reverse().find((s) => !s.done);
-  const left = activityLine({
+  const live = activityLine({
     busy,
     phase: phaseFromStep(runningStep?.label, streamTail.length > 0),
     elapsedSec: turnStartedAt.current ? (Date.now() - turnStartedAt.current) / 1000 : 0,
     spinner: frame,
   });
   const rowCols = Math.max(20, terminalSize.cols - 6);
-  const split = splitRow(rowCols, left.text);
   const right = fitSegments(statusSegments({
     provider: provider && provider.name ? provider : null,
     permission: runtimeStatus?.permission === 'allow-all' || runtimeStatus?.permission === 'ask-me' ? runtimeStatus.permission : null,
@@ -598,7 +641,7 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
     codeMode: runtimeStatus?.mode ?? 'off',
     desktop: runtimeStatus?.desktop ?? '',
     session: thread ? { alias: thread.alias, shortId: thread.shortId } : null,
-  }), split.right);
+  }), rowCols);
   // The live tail looks exactly like the settled block it becomes: the same
   // MERCURY header and indent, the same markdown pass (an unclosed fence is
   // closed for rendering only). It used to be drawn with a cyan "│" bar that
@@ -623,9 +666,9 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
           </Box>
         </Box>
       )}
-      {/* What is happening right now (spinner, phase, elapsed) lives on the
-          status row under the input; up here only the finished steps stay,
-          so nothing is said twice. */}
+      {/* Finished steps with a ✓, then one live line: spinner, phase and
+          elapsed time (cyan, yellow after 30 s, red after 90 s). Said here,
+          in the chat, and nowhere else. */}
       {steps.some((step) => step.done) && (
         <Box flexDirection="column" paddingX={2} flexShrink={0}>
           {steps.filter((step) => step.done).map((step) => (
@@ -634,6 +677,11 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
               <Text dimColor> {step.label}</Text>
             </Box>
           ))}
+        </Box>
+      )}
+      {busy && (
+        <Box paddingX={2} flexShrink={0}>
+          <Text color={live.color}>{live.text}</Text>
         </Box>
       )}
       {prompt && <AttachPromptView prompt={prompt} activeIdx={promptIdx} />}
@@ -660,12 +708,10 @@ export function AttachTui({ client, pid, version, onExit, onHandoff }: { client:
         </Box>
       </Box>
       <Box paddingX={3} flexShrink={0} height={1} overflow="hidden">
-        <Box width={split.left} flexShrink={0}>
-          <Text color={left.color} dimColor={left.dim} wrap="truncate-end">{left.text}</Text>
-        </Box>
         <Spacer />
-        {/* One Text so the right half can only ever be truncated, never
-            wrapped onto a second (hidden) line that cut it off mid-way. */}
+        {/* Status only, right-aligned. One Text so it can only ever be
+            truncated, never wrapped onto a second (hidden) line that cut it
+            off mid-way. */}
         <Text wrap="truncate-end">
           {right.map((seg, idx) => (
             <React.Fragment key={`${seg.priority}:${idx}`}>

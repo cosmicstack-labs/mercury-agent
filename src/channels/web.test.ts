@@ -133,6 +133,21 @@ describe('WebChannel durable streaming', () => {
     await expect(decision).resolves.toBe('');
   });
 
+  it('tells only the screen listening on the old session to follow a re-bind', () => {
+    const channel = new WebChannel('Mercury');
+    const seen: Record<string, string[]> = { old: [], other: [] };
+    for (const [key, sessionId] of [['old', 'sess-old'], ['other', 'sess-other']] as const) {
+      channel.addSSEClient({
+        enqueue(value: Uint8Array) { seen[key].push(new TextDecoder().decode(value)); },
+        close() {},
+      } as unknown as ReadableStreamDefaultController, sessionId);
+    }
+    channel.sendSessionSwitched('sess-old', { id: 'sess-new', shortId: 'sess-new', alias: 'obsidian-cedar', title: 'New session' });
+    expect(seen.old.join('')).toContain('event: session_switched');
+    expect(seen.old.join('')).toContain('"alias":"obsidian-cedar"');
+    expect(seen.other).toEqual([]);
+  });
+
   it('scopes allow-all mode to its Cloud session', async () => {
     const channel = new WebChannel('Mercury');
     channel.setSessionPermissionMode('session-allowed', 'allow-all');

@@ -18,6 +18,7 @@ describe('attach TUI live rendering', () => {
     const { render } = await import('ink');
     const { AttachTui } = await import('./attach-tui.js');
     let emit: ((e: { type: string; data: Record<string, unknown> }) => void) | null = null;
+    const streamedIds: string[] = [];
     const client = {
       getBaseUrl: () => 'http://127.0.0.1:6174',
       listThreads: async () => [],
@@ -25,8 +26,9 @@ describe('attach TUI live rendering', () => {
       listBots: async () => [],
       currentModel: async () => ({ name: 'anthropic', model: 'x' }),
       budget: async () => null,
+      permissionMode: async () => 'ask-me',
       createThread: async () => ({ id: 't1', shortId: 't1', alias: 'new', title: 'New' }),
-      streamEvents: async (_id: string, onEvent: (e: { type: string; data: Record<string, unknown> }) => void) => { emit = onEvent; await new Promise(() => {}); },
+      streamEvents: async (id: string, onEvent: (e: { type: string; data: Record<string, unknown> }) => void) => { streamedIds.push(id); emit = onEvent; await new Promise(() => {}); },
       send: async () => ({ ok: true }),
       resolvePermission: async () => true,
     } as never;
@@ -36,6 +38,10 @@ describe('attach TUI live rendering', () => {
     stdin.push('\r'); // "new session" is the only pick row
     await sleep(300);
     expect(emit).not.toBeNull();
+    // Entering the session says which permission mode is in effect, once, as a dim line.
+    const entry = screen.text().join('\n');
+    expect(entry).toContain('Ask Me mode: Mercury asks before writing files or running commands');
+    expect(entry).not.toContain('—:');
     emit!({ type: 'thinking', data: {} });
     await sleep(150);
     const a = screen.text().join('\n');
@@ -54,6 +60,15 @@ describe('attach TUI live rendering', () => {
     expect(b).toContain('MERCURY:');
     expect(b).toContain('Here is the reply, still streaming.');
     expect(b).not.toContain('│ Here');
+    // /new re-bound this screen: it follows the new session (status row shows
+    // the new alias, the event stream re-subscribes to the new id) and the
+    // spinner stops instead of waiting forever on the old session.
+    emit!({ type: 'session_switched', data: { id: 't2', shortId: 't2', alias: 'obsidian-cedar', title: 'New session' } });
+    await sleep(300);
+    const c = screen.text().join('\n');
+    expect(c).toContain('obsidian-cedar');
+    expect(c).not.toMatch(/Thinking · \d+s/);
+    expect(streamedIds).toEqual(['t1', 't2']);
     app.unmount();
   }, 20000);
 });

@@ -30,7 +30,7 @@ describe('status bar: fitting the right half', () => {
 
   it('at full width shows everything: permission, the budget meter, the model, the session last', () => {
     const segs = fitSegments(statusSegments(inputs), 120);
-    expect(row(segs)).toBe('Ask Me · ⚡ █░░░░░░░ 12% · mercuryCloud · minimax-m3.1-flash:free · quiet-harbour');
+    expect(row(segs)).toBe('Ask Me · ⚡ █░░░░░░░ 12% · minimax-m3.1-flash:free · quiet-harbour');
   });
 
   it('when narrow, compacts the least important first, then drops the session and the model; permission and budget stay', () => {
@@ -64,7 +64,7 @@ describe('status bar: fitting the right half', () => {
 
   it('live things come first: Optimus, then Allow All in yellow, Code mode and an update', () => {
     const segs = fitSegments(statusSegments({ ...inputs, permission: 'allow-all', desktop: '🎙 Optimus listening', codeMode: 'auto', updateAvailable: 'v1.5.0' }), 200);
-    expect(row(segs)).toBe('🎙 Optimus listening · Allow All · ⚡ █░░░░░░░ 12% · mercuryCloud · minimax-m3.1-flash:free · CODE AUTO · ⬆ v1.5.0 · quiet-harbour');
+    expect(row(segs)).toBe('🎙 Optimus listening · Allow All · ⚡ █░░░░░░░ 12% · minimax-m3.1-flash:free · CODE AUTO · ⬆ v1.5.0 · quiet-harbour');
     expect(segs[1].color).toBe('yellow');
   });
 });

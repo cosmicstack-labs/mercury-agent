@@ -2079,7 +2079,9 @@ export class Agent {
     saveConfig(this.config);
     updateCliProviderStatus(this.channels.get('cli'), providerName, model);
 
-    return { ok: true, message: `Default model switched to **${providerName}** · **${model}**. Saved for future sessions.` };
+    // "Saved for future sessions" read as "takes effect next session"; it
+    // applies to the next message and stays the default after a restart.
+    return { ok: true, message: `✓ Switched to **${model}** (${providerName}). In effect from your next message, and kept as the default.` };
   }
 
   /** Returns the currently active provider name and model. */

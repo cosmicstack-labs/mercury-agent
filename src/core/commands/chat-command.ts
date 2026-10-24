@@ -96,6 +96,12 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
   // Unlike /reset this never halts agents, clears queues, or wipes state.
   if (cmd === '/new') {
     await agent.handleSessionCommand('/session new', channelType as ChannelType, channelId);
+    // A fresh session on the owner's own screen says which permission mode it runs in.
+    if (isOwnerScreen(channel, channelType)) {
+      const mode = loadPermissionMode()
+        ?? (channel instanceof WebChannel && channel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me');
+      await channel.send(`${describePermissionMode(mode)} Change it with /permissions.`, channelId);
+    }
     return true;
   }
 
