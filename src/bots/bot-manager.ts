@@ -1743,6 +1743,7 @@ export class BotManager {
         lastRunAt: last?.at,
         lastRunState: last?.state,
         needsYou: this.needsYou.has(m.id),
+        hasAvatar: this.store.hasAvatar(m.id),
         fleetRole: m.fleetRole,
         parent: m.parent,
         crewWorking: m.fleetRole === 'lead'

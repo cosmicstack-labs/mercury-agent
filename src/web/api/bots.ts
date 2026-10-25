@@ -6,6 +6,7 @@ import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, importBotBundle } from '../../bots/bundle.js';
+import { decodeAvatarInput, detectImage } from '../../bots/avatar.js';
 
 const app = new Hono();
 
@@ -394,6 +395,60 @@ app.put('/api/bots/:id/persona', async (c: any) => {
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'Bot not found' }, 404);
   }
+});
+
+// Avatar (a bot's face) — bytes in, bytes out. Stored as one extension-less
+// file in the bot's profile dir, so the format is always the real one and
+// deleting the bot deletes its face. Clients that get no avatar draw a
+// monogram from the id; `hasAvatar` in the roster tells them which without a
+// probe per bot.
+app.get('/api/bots/:id/avatar', (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const bytes = botManager.store.readAvatar(id);
+  if (!bytes) return c.json({ error: 'Bot has no avatar' }, 404);
+
+  const mime = detectImage(bytes);
+  if (!mime) {
+    // On disk but unreadable as an image: say so rather than serve a broken face.
+    return c.json({ error: 'Stored avatar is not a readable image' }, 500);
+  }
+  const etag = `W/"${bytes.length}-${Math.round(botManager.store.avatarMtimeMs(id))}"`;
+  if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
+  return c.body(new Uint8Array(bytes), 200, {
+    'Content-Type': mime,
+    'Content-Length': String(bytes.length),
+    'Cache-Control': 'private, max-age=0, must-revalidate',
+    ETag: etag,
+  });
+});
+
+app.put('/api/bots/:id/avatar', async (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const body = await c.req.json().catch(() => null);
+  const avatar = decodeAvatarInput(body);
+  if (!avatar.ok) return c.json({ error: avatar.error }, 400);
+  try {
+    botManager.store.writeAvatar(id, avatar.bytes);
+    // The roster carries `hasAvatar`, so every open dashboard learns the face
+    // changed without another request.
+    broadcastRoster();
+    return c.json({ ok: true, mime: avatar.mime, bytes: avatar.bytes.length });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? 'Could not store the avatar' }, 400);
+  }
+});
+
+app.delete('/api/bots/:id/avatar', (c: any) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const id = c.req.param('id');
+  if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
+  const removed = botManager.store.removeAvatar(id);
+  if (removed) broadcastRoster();
+  return c.json({ ok: true, removed });
 });
 
 // Permissions.yaml — the single source of truth (tool gate, path scopes,

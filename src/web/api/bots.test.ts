@@ -206,3 +206,100 @@ describe('web bots API — deliverables folder (where results land)', () => {
     expect((await app.request('/api/bots/ghost/folder')).status).toBe(404);
   });
 });
+
+describe('web bots API — avatars', () => {
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const put = (id: string, body: unknown) =>
+    app.request(`/api/bots/${id}/avatar`, { method: 'PUT', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    store.create({ id: 'painter', name: 'Painter' });
+  });
+
+  it('stores a face and serves it back with the type the bytes have', async () => {
+    expect((await put('painter', { data: PNG.toString('base64') })).status).toBe(200);
+
+    const res = await app.request('/api/bots/painter/avatar');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('Cache-Control')).toContain('private');
+    const served = Buffer.from(await res.arrayBuffer());
+    expect(served.equals(PNG)).toBe(true);
+  });
+
+  it('advertises the avatar in the roster so a client need not probe', async () => {
+    const before = await jreq(await app.request('/api/bots'));
+    expect(before.bots.find((b: any) => b.id === 'painter').hasAvatar).toBe(false);
+
+    await put('painter', { data: PNG.toString('base64') });
+
+    const after = await jreq(await app.request('/api/bots'));
+    expect(after.bots.find((b: any) => b.id === 'painter').hasAvatar).toBe(true);
+  });
+
+  it('answers 404 when there is no avatar yet', async () => {
+    const res = await app.request('/api/bots/painter/avatar');
+    expect(res.status).toBe(404);
+    await expect(jreq(res)).resolves.toEqual({ error: 'Bot has no avatar' });
+  });
+
+  it('replaces the previous face in place', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00]);
+    const res = await put('painter', { data: jpeg.toString('base64') });
+    expect(res.status).toBe(200);
+    await expect(jreq(res)).resolves.toMatchObject({ ok: true, mime: 'image/jpeg' });
+
+    const served = await app.request('/api/bots/painter/avatar');
+    expect(served.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(existsSync(store.avatarPath('painter'))).toBe(true);
+    // one face, never two: the file name carries no extension to accumulate
+    expect(readFileSync(store.avatarPath('painter')).length).toBe(jpeg.length);
+  });
+
+  it('refuses a document, a text file, and an oversized image', async () => {
+    await expect(jreq(await put('painter', { data: Buffer.from('%PDF-1.4\n').toString('base64') })))
+      .resolves.toEqual({ error: 'avatar must be a png, jpeg, webp or gif image' });
+    await expect(jreq(await put('painter', { data: Buffer.from('hello').toString('base64') })))
+      .resolves.toEqual({ error: 'avatar must be a png, jpeg, webp or gif image' });
+    await expect(jreq(await put('painter', {}))).resolves.toEqual({ error: 'avatar needs base64 "data"' });
+
+    const huge = Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]);
+    const res = await put('painter', { data: huge.toString('base64') });
+    expect(res.status).toBe(400);
+    expect((await jreq(res)).error).toContain('the limit is 2 MB');
+    expect(store.hasAvatar('painter')).toBe(false);
+  });
+
+  it('validates the cache with an ETag instead of resending the face', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    const first = await app.request('/api/bots/painter/avatar');
+    const etag = first.headers.get('ETag');
+    expect(etag).toBeTruthy();
+
+    const again = await app.request('/api/bots/painter/avatar', { headers: { 'If-None-Match': etag! } });
+    expect(again.status).toBe(304);
+  });
+
+  it('deletes the face and says whether there was one', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+
+    await expect(jreq(await app.request('/api/bots/painter/avatar', { method: 'DELETE' }))).resolves.toEqual({ ok: true, removed: true });
+    expect(store.hasAvatar('painter')).toBe(false);
+    await expect(jreq(await app.request('/api/bots/painter/avatar', { method: 'DELETE' }))).resolves.toEqual({ ok: true, removed: false });
+  });
+
+  it('answers 404 for a bot that does not exist', async () => {
+    expect((await app.request('/api/bots/ghost/avatar')).status).toBe(404);
+    expect((await put('ghost', { data: PNG.toString('base64') })).status).toBe(404);
+    expect((await app.request('/api/bots/ghost/avatar', { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('keeps the avatar inside the bot profile dir, so deleting the bot takes it', async () => {
+    await put('painter', { data: PNG.toString('base64') });
+    expect(store.avatarPath('painter')).toBe(join(root, 'bots', 'painter', 'avatar'));
+
+    manager.store.delete('painter');
+    expect(existsSync(join(root, 'bots', 'painter'))).toBe(false);
+  });
+});
