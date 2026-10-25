@@ -11,6 +11,10 @@ await vi.hoisted(async () => {
 const { storeInlineAttachments, uploadsDir, MAX_IMAGE_BYTES } = await import('./uploads.js');
 const { withAttachments } = await import('../../core/attachments.js');
 const { existsSync, readFileSync, statSync } = await import('node:fs');
+const { sep } = await import('node:path');
+
+/** Windows joins with \\; assertions stay portable by comparing posix-style. */
+const posix = (value: string) => value.split(sep).join('/');
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -28,7 +32,8 @@ describe('storeInlineAttachments', () => {
     expect(attachment.kind).toBe('image');
     expect(attachment.mime).toBe('image/png');
     expect(attachment.name).toBe('My photo.png');
-    expect(attachment.path.startsWith(`${uploadsDir(new Date('2026-03-09T10:00:00Z'))}/`)).toBe(true);
+    const expectedDir = posix(uploadsDir(new Date('2026-03-09T10:00:00Z')));
+    expect(posix(attachment.path).startsWith(`${expectedDir}/`)).toBe(true);
     expect(existsSync(attachment.path)).toBe(true);
     expect(statSync(attachment.path).size).toBe(PNG.length);
     expect(statSync(attachment.path).mode & 0o777).toBe(0o600);

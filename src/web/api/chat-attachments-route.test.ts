@@ -13,6 +13,10 @@ await vi.hoisted(async () => {
 import chat, { setSessionRepository, setWebChannel } from './chat.js';
 import { WebChannel } from '../../channels/web.js';
 import type { ChannelMessage } from '../../types/channel.js';
+import { sep } from 'node:path';
+
+/** Windows joins with \\; assertions stay portable by comparing posix-style. */
+const posix = (value: string) => value.split(sep).join('/');
 
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -58,7 +62,7 @@ describe('POST /api/chat/send with attachments', () => {
     const attachments = seen[0].metadata?.attachments as Array<{ kind: string; path: string; mime: string }>;
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({ kind: 'image', mime: 'image/png' });
-    expect(attachments[0].path).toMatch(/\/uploads\/\d{4}-\d{2}\/.+\.png$/);
+    expect(posix(attachments[0].path)).toMatch(/\/uploads\/\d{4}-\d{2}\/.+\.png$/);
   });
 
   it('accepts a photo with no text at all', async () => {
