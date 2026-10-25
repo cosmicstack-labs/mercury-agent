@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { storeInlineAttachments } from './uploads.js';
 import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
@@ -159,8 +160,17 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Web channel not initialized' }, 503);
   }
 
-  const body = await c.req.json<{ content: string; sessionId?: string; threadId?: string }>();
-  if (!body.content?.trim()) {
+  const body = await c.req.json<{
+    content?: string;
+    sessionId?: string;
+    threadId?: string;
+    /** Base64 files: photos and PDFs become real attachments for this turn. */
+    attachments?: unknown;
+  }>();
+  const content = body.content?.trim() ?? '';
+  const upload = storeInlineAttachments(body.attachments);
+  if (!upload.ok) return c.json({ error: upload.error }, 400);
+  if (!content && upload.attachments.length === 0) {
     return c.json({ error: 'Message content required' }, 400);
   }
 
@@ -178,8 +188,12 @@ chat.post('/api/chat/send', async (c) => {
       }
     }
     session ??= sessions.getOrCreateBound('web', 'web:default');
-    webChannel.emitMessageInThread(body.content.trim(), session.id, session.id);
-    return c.json({ sent: true, sessionId: session.id });
+    webChannel.emitMessageInThread(content, session.id, session.id, undefined, undefined, undefined, upload.attachments);
+    return c.json({
+      sent: true,
+      sessionId: session.id,
+      ...(upload.attachments.length > 0 ? { attachments: upload.attachments.map(a => ({ name: a.name, kind: a.kind })) } : {}),
+    });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

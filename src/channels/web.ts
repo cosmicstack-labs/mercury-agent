@@ -1,5 +1,5 @@
 import { BaseChannel } from './base.js';
-import type { ChannelMessage } from '../types/channel.js';
+import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
@@ -344,7 +344,11 @@ export class WebChannel extends BaseChannel {
     this.emitMessageInThread(content, 'web:default');
   }
 
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string): void {
+  /**
+   * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
+   * present is what lets the runtime hand a photo to a vision model instead of a path.
+   */
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[]): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -362,6 +366,7 @@ export class WebChannel extends BaseChannel {
         ...(requestId ? { requestId } : {}),
         ...(externalConversationId ? { externalConversationId } : {}),
         ...(messageId ? { canonicalMessageId: messageId } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       },
     };
     this.emit(msg);

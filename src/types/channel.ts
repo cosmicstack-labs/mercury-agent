@@ -39,6 +39,19 @@ export interface ChannelMessage {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * A file the owner attached to a message. The runtime reads `path` at turn time
+ * and hands images/PDFs to the model when it can take them
+ * (`src/core/attachments.ts`); other kinds stay a path in the transcript.
+ */
+export interface ChannelAttachment {
+  /** `image` and `document` are the kinds the runtime can hand to a model. */
+  kind: 'image' | 'document';
+  path: string;
+  mime?: string;
+  name?: string;
+}
+
 export interface ChannelConfig {
   type: ChannelType;
   enabled: boolean;
