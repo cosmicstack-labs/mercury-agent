@@ -36,7 +36,8 @@ describe('storeInlineAttachments', () => {
     expect(posix(attachment.path).startsWith(`${expectedDir}/`)).toBe(true);
     expect(existsSync(attachment.path)).toBe(true);
     expect(statSync(attachment.path).size).toBe(PNG.length);
-    expect(statSync(attachment.path).mode & 0o777).toBe(0o600);
+    // POSIX mode: Windows ignores it (NTFS ACLs), so the assertion is POSIX-only.
+    if (process.platform !== 'win32') expect(statSync(attachment.path).mode & 0o777).toBe(0o600);
   });
 
   it('accepts a data: URL prefix', () => {
