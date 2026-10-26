@@ -68,10 +68,11 @@ describe('POST /api/chat/send with attachments', () => {
   it('accepts a photo with no text at all', async () => {
     const { seen } = recordingChannel();
 
-    const res = await send({ content: '   ', attachments: [{ data: PNG_BASE64 }] });
+    const res = await send({ content: '   ', attachments: [{ name: 'dot.png', data: PNG_BASE64 }] });
 
     expect(res.status).toBe(200);
-    expect(seen[0].content).toBe('');
+    // An empty text block is rejected by models: the files are named instead.
+    expect(seen[0].content).toBe('(Attached: dot.png)');
     expect((seen[0].metadata?.attachments as unknown[]).length).toBe(1);
   });
 
@@ -104,5 +105,18 @@ describe('POST /api/chat/send with attachments', () => {
     await expect(res.json()).resolves.toEqual({ sent: true, sessionId: 'sess-1' });
     expect(seen[0].content).toBe('hello');
     expect(seen[0].metadata?.attachments).toBeUndefined();
+  });
+
+  it('removes the stored files when the message cannot be sent', async () => {
+    const { channel } = recordingChannel();
+    channel.setRestrictUser(true);
+    const { readdirSync, existsSync } = await import('node:fs');
+    const { uploadsDir } = await import('./uploads.js');
+    const before = existsSync(uploadsDir()) ? readdirSync(uploadsDir()).length : 0;
+
+    const res = await send({ content: 'look', attachments: [{ data: PNG_BASE64 }] });
+
+    expect(res.status).toBe(500);
+    expect(readdirSync(uploadsDir()).length).toBe(before);
   });
 });

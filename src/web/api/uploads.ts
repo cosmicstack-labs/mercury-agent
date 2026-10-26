@@ -90,7 +90,8 @@ function decode(data: string): Buffer | null {
   const payload = data.startsWith('data:') ? data.slice(data.indexOf(',') + 1) : data;
   if (!payload) return null;
   const bytes = Buffer.from(payload, 'base64');
-  // Buffer.from is forgiving: re-encoding catches truncated or mis-typed input.
+  // Buffer.from is forgiving and skips bad characters; the magic-byte check
+  // in sniff() rejects anything that did not decode to a real file.
   if (bytes.length === 0) return null;
   return bytes;
 }

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { storeInlineAttachments } from './uploads.js';
 import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
@@ -188,13 +188,17 @@ chat.post('/api/chat/send', async (c) => {
       }
     }
     session ??= sessions.getOrCreateBound('web', 'web:default');
-    webChannel.emitMessageInThread(content, session.id, session.id, undefined, undefined, undefined, upload.attachments);
+    // Models reject an empty text block, so a photo sent alone says what it is.
+    const text = content || `(Attached: ${upload.attachments.map(a => a.name).join(', ')})`;
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments);
     return c.json({
       sent: true,
       sessionId: session.id,
       ...(upload.attachments.length > 0 ? { attachments: upload.attachments.map(a => ({ name: a.name, kind: a.kind })) } : {}),
     });
   } catch (err: any) {
+    // The message never reached the runtime: don't leave its files behind.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ error: err.message }, 500);
   }
 });
