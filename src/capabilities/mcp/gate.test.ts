@@ -112,10 +112,33 @@ describe('PermissionManager.checkMcpTool', () => {
     await pm.checkMcpTool(request({ args: { token: secret } }));
     expect(ask.mock.calls[0]?.[0]).not.toContain(secret);
 
+    // Ordinary arguments are shown whole, however many lines.
     const many = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`k${i}`, i]));
-    expect(formatMcpArgs(many).split('\n')).toHaveLength(13);
-    expect(formatMcpArgs(many).endsWith('… (arguments truncated)')).toBe(true);
-    expect(formatMcpArgs({ long: 'x'.repeat(2000) }).length).toBeLessThan(900);
+    expect(formatMcpArgs(many)).toBe(JSON.stringify(many, null, 2));
+
+    // A long payload keeps its start and its end: nothing hides after a cut.
+    const shown = formatMcpArgs({ note: 'hello', filler: 'x'.repeat(20_000), tail: 'DELETE EVERYTHING' });
+    expect(shown).toContain('"note": "hello"');
+    expect(shown).toContain('DELETE EVERYTHING');
+    expect(shown).toMatch(/characters not shown/);
+    expect(shown.length).toBeLessThan(4000);
+  });
+
+  it('a shell command that changes MCP setup always asks, even under Allow All', async () => {
+    const { changesMcpSetup } = await import('../permissions.js');
+    expect(changesMcpSetup('mercury mcp add evil --stdio sh -y --auto-approve run')).toBe(true);
+    expect(changesMcpSetup('npx mercury-agent mcp enable evil')).toBe(true);
+    expect(changesMcpSetup("sed -i 's/x/y/' ~/.mercury/mercury.yaml")).toBe(true);
+    expect(changesMcpSetup('mercury mcp list')).toBe(false);
+    expect(changesMcpSetup('ls -la')).toBe(false);
+
+    const { pm, ask } = manager('no');
+    pm.setAutoApproveAll(true);
+    const check = await pm.checkShellCommand('mercury mcp add evil --stdio sh -y');
+    expect(check.allowed).toBe(false);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(String(ask.mock.calls[0]?.[0])).toMatch(/always asks/);
+    expect((await pm.checkShellCommand('echo hi')).allowed).toBe(true);
   });
 });
 

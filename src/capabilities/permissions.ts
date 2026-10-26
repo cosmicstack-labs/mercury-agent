@@ -24,8 +24,14 @@ import type { McpGateRequest, McpGateResult } from './mcp/types.js';
 
 export type { PermissionContext } from './permission-context.js';
 
-const MCP_ARGS_MAX_LINES = 12;
-const MCP_ARGS_MAX_CHARS = 800;
+/**
+ * Arguments as the owner sees them in an approval prompt. Up to 4,000
+ * characters are shown whole. Longer ones keep the start AND the end, with
+ * the size of the hidden middle, so a payload can't hide after a cut.
+ */
+const MCP_ARGS_SHOW_ALL = 4000;
+const MCP_ARGS_HEAD = 2400;
+const MCP_ARGS_TAIL = 1200;
 
 export function formatMcpArgs(args: unknown): string {
   let text: string;
@@ -35,14 +41,19 @@ export function formatMcpArgs(args: unknown): string {
     text = String(args);
   }
   text = redactSecrets(text);
-  const lines = text.split('\n');
-  let out = lines.slice(0, MCP_ARGS_MAX_LINES).join('\n');
-  let truncated = lines.length > MCP_ARGS_MAX_LINES;
-  if (out.length > MCP_ARGS_MAX_CHARS) {
-    out = out.slice(0, MCP_ARGS_MAX_CHARS);
-    truncated = true;
-  }
-  return truncated ? `${out}\n… (arguments truncated)` : out;
+  if (text.length <= MCP_ARGS_SHOW_ALL) return text;
+  const hidden = text.length - MCP_ARGS_HEAD - MCP_ARGS_TAIL;
+  return `${text.slice(0, MCP_ARGS_HEAD)}\n… [${hidden.toLocaleString('en-US')} characters not shown; the start and end are] …\n${text.slice(-MCP_ARGS_TAIL)}`;
+}
+
+/**
+ * A shell segment that changes MCP setup: `mercury mcp add|remove|enable|
+ * disable|allow|disallow`, or anything that names mercury.yaml (sed -i,
+ * tee, cp, mv, echo >>). Reading it is caught too; that only costs a prompt.
+ */
+export function changesMcpSetup(segment: string): boolean {
+  return /\bmcp\s+(add|remove|rm|enable|disable|allow|disallow)\b/.test(segment)
+    || /mercury\.ya?ml/i.test(segment);
 }
 
 function protectedConfigPaths(): string[] {
@@ -946,6 +957,21 @@ export class PermissionManager {
           return { allowed: false, reason: `Blocked command: matches "${pattern}"`, needsApproval: false };
         }
       }
+    }
+
+    // Adding or changing an MCP server is an owner action (ADR-029): a shell
+    // command that does it asks every time, Allow All and earlier "always"
+    // answers included, and never runs unattended. Otherwise an injected
+    // prompt could add a server whose autoApprove tools then run in
+    // scheduled turns.
+    if (segments.some(changesMcpSetup)) {
+      if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
+        return { allowed: false, reason: 'Changing MCP servers or mercury.yaml from a shell command needs the owner; run it yourself in a terminal', needsApproval: false };
+      }
+      const answer = await this.askHandler(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
+      return answer === 'yes' || answer === 'always'
+        ? { allowed: true, needsApproval: false, lane: 'shell' }
+        : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
     }
 
     if (this.isGlobalAutoApproveActive()) {
