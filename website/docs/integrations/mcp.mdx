@@ -144,10 +144,10 @@ An invalid server entry is skipped with a warning in the log and in `mercury doc
 ## How Mercury runs servers
 
 - **When.** Enabled servers connect in the background when Mercury starts. A slow or broken server never delays startup or blocks other tools. Servers reconnect with backoff (1s doubling to 5 minutes, up to 10 attempts) if a connection drops.
-- **Where.** The process that runs the agent owns the connections — normally the background daemon. The attach terminal does not start servers itself.
+- **Where.** The process that runs the agent owns the connections — normally the background daemon. The attach terminal, and `mercury code` while the daemon runs, do not start servers themselves.
 - **Tool changes.** If a server announces that its tool list changed (`tools/list_changed`), Mercury refreshes it. New tools are hidden unless your `allow` list covers them, and run without asking only if their exact name is in `autoApprove`.
 - **Tool names.** Tools are exposed as `mcp__<server>__<tool>`. Characters outside `A-Z a-z 0-9 _ -` become `_`, and names are capped at 64 characters (some model providers reject longer names); a shortened or clashing name gets a short hash suffix. `mercury mcp test` shows the exact names.
-- **Unusable tools.** A tool whose input schema can't be passed to the model (not an object, larger than 64 KB, or referencing a remote `$ref`) is skipped and reported with the reason.
+- **Unusable tools.** A tool whose input schema can't be passed to the model (not an object, larger than 16 KB, or referencing a remote `$ref`) is skipped and reported with the reason. Descriptions inside a schema are shortened to 300 characters, since the model reads them on every turn.
 - **Results.** Text is passed to the model, capped at 32 KB per call. Images and audio are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. An error result from the server reaches the agent as `Error: …`.
 
 ## Permissions
@@ -157,11 +157,11 @@ MCP tools have their own rules, separate from the shell and file tools:
 | Situation | What happens |
 |-----------|--------------|
 | Tool not in `allow` (or in `deny`) | The agent can't see it |
-| Ask Me mode | You're asked before every call, with server, tool and arguments |
+| Ask Me mode | You're asked before every call, with server, tool and arguments (shown whole up to 4,000 characters; longer ones show the start and the end) |
 | You answer **Always** | That tool runs without asking in that chat until Mercury restarts |
 | **Allow All** mode | You're **still asked** — Allow All never covers MCP tools |
 | Tool in `autoApprove` | Runs without asking, in chats and in unattended runs |
-| Scheduled tasks, background turns, sub-agents | Only `autoApprove` tools run; anything else is denied with a message telling you how to allow it |
+| Scheduled tasks and sub-agents | They ask on the chat they came from, like a normal call; nothing is approved for them. A run with no one to ask (fail-closed, internal) only runs `autoApprove` tools |
 | Plan mode | MCP tools are not available |
 | Telegram/Signal members (non-admins) | MCP tools are not available |
 | Mercury Bots | MCP tools are not available |
@@ -174,9 +174,9 @@ MCP servers are third-party code and third-party text. Mercury treats them that 
 
 - **Untrusted text.** Tool descriptions and results come from the server and can contain prompt-injection attempts ("ignore your instructions and…"). They reach the model like any web page would, and they can never change permissions. Only allow tools from servers you trust, and prefer Ask Me for anything that writes or sends.
 - **Process isolation.** A stdio server does **not** inherit Mercury's environment, so your model provider API keys and other `.env` values never reach it. It gets only a minimal set of variables (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER` on macOS/Linux; `APPDATA`, `COMSPEC`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`, `PROCESSOR_ARCHITECTURE`, `PROGRAMDATA`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `PROGRAMW6432`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`, `WINDIR` on Windows) plus the `env` you configure for it.
-- **Network.** HTTP servers go through Mercury's SSRF protection: private, loopback and `.local`/`.internal` addresses are refused unless you set `allowPrivate: true` for that server, and redirects to other origins are not followed.
-- **Secrets.** Values you reference with `${env:NAME}` are resolved at connect time and masked as `****` wherever they could surface — logs, tool results, server stderr, `mercury mcp list`, `/mcp`, `mercury doctor --mcp`, the dashboard and `/api/mcp`. A literal token typed into `mercury.yaml` triggers a warning.
-- **Owner-only setup.** Adding or enabling a server is done from the terminal; the agent has no MCP tool for it. When the agent uses its file tools (`write_file`, `edit_file`, `create_file`, `delete_file`) on `mercury.yaml`, `permissions.yaml` or `.env`, Mercury always asks first — even under Allow All — and refuses in unattended runs. Shell commands are not covered: under Allow All, `run_command` can still change these files, so use Ask Me if that matters to you.
+- **Network.** HTTP servers go through Mercury's SSRF protection: private, loopback and `.local`/`.internal` addresses are refused unless you set `allowPrivate: true` for that server, and redirects to other origins are not followed. `allowPrivate` opens loopback and your LAN only: link-local addresses such as the cloud metadata service (`169.254.169.254`) stay blocked.
+- **Secrets.** Values you reference with `${env:NAME}` are resolved at connect time and masked as `****` wherever they could surface — logs, tool results, server stderr, `mercury mcp list`, `/mcp`, `mercury doctor --mcp`, the dashboard and `/api/mcp`. A literal token typed into `mercury.yaml` triggers a warning, and so does handing a server one of Mercury's own keys (for example `${env:ANTHROPIC_API_KEY}`): that server would see it.
+- **Owner-only setup.** Adding or enabling a server is done from the terminal; the agent has no MCP tool for it. When the agent uses its file tools (`write_file`, `edit_file`, `create_file`, `delete_file`) on `mercury.yaml`, `permissions.yaml` or `.env`, Mercury always asks first — even under Allow All — and refuses in unattended runs. Shell commands that change MCP setup (`mercury mcp add`, `enable`, `allow`… or anything that names `mercury.yaml`) also always ask, even under Allow All, and are refused in unattended runs. Other shell edits to `permissions.yaml` or `.env` follow your permission mode.
 
 ## Checking health
 
