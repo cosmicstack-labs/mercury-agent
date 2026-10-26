@@ -7,10 +7,11 @@
  * official catalog.
  */
 import { builtinModules } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkTree, loadManifest, verifyPackage } from './installer.js';
+import { MAX_RENDERER_BYTES } from './renderers.js';
 import { mercuryVersion, resolvedSettings } from './store.js';
 import { listLiveTools, listPluginCommands, unpublishPlugin } from './tool-bridge.js';
 import { InProcessRuntime } from './runtime/in-process.js';
@@ -93,6 +94,29 @@ export async function runConformance(dir: string): Promise<ConformanceReport> {
   } catch (err) {
     fail('compatibility and integrity', (err as Error).message);
     return done(manifest);
+  }
+
+  // Plugin API 1.3: every declared renderer must be a real HTML file inside the package,
+  // small enough to serve, and no two may claim the same language.
+  if ((manifest.contributes.renderers ?? []).length > 0) {
+    const claims = new Set<string>();
+    try {
+      const details = manifest.contributes.renderers.map((renderer) => {
+        if (claims.has(renderer.language)) throw new Error(`two renderers claim "${renderer.language}"`);
+        claims.add(renderer.language);
+        if (!/\.html?$/.test(renderer.asset)) throw new Error(`renderer "${renderer.language}" must point at an .html asset, not "${renderer.asset}"`);
+        const file = join(dir, renderer.asset);
+        if (!existsSync(file) || !statSync(file).isFile()) throw new Error(`renderer asset "${renderer.asset}" is missing from the package`);
+        const size = statSync(file).size;
+        if (size > MAX_RENDERER_BYTES) {
+          throw new Error(`renderer "${renderer.language}" is ${(size / 1024).toFixed(0)} KB; the limit is ${MAX_RENDERER_BYTES / 1024} KB`);
+        }
+        return `${renderer.language} (${(size / 1024).toFixed(0)} KB, sandboxed)`;
+      });
+      pass('renderers', details.join(', '));
+    } catch (err) {
+      fail('renderers', (err as Error).message);
+    }
   }
 
   if (manifest.kind === 'in-process' && manifest.entry) {
