@@ -67,6 +67,28 @@ function literalSecretWarnings(id: string, field: 'env' | 'headers', values: Rec
   return warnings;
 }
 
+/**
+ * Mercury's own credentials. `${env:NAME}` can read any variable, so a server
+ * config naming one of these would hand it to a third-party server: allowed
+ * (it may be deliberate), but always called out.
+ */
+const MERCURY_OWN_SECRETS = new Set([
+  'AIMLAPI_API_KEY', 'ANTHROPIC_API_KEY', 'ATLASCLOUD_API_KEY', 'BOTS_WEBHOOK_SECRET', 'DEEPSEEK_API_KEY',
+  'DISCORD_BOT_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GROK_API_KEY', 'LITELLM_API_KEY', 'LM_STUDIO_API_KEY',
+  'MERCURY_CLOUD_ACCESS_KEY', 'MERCURY_CLOUD_AGENT_API_KEY', 'MERCURY_CLOUD_REFRESH_TOKEN', 'MIMO_API_KEY',
+  'MIMO_TOKEN_PLAN_API_KEY', 'OLLAMA_CLOUD_API_KEY', 'OPENAI_API_KEY', 'OPENAI_COMPAT_API_KEY', 'OPENROUTER_API_KEY',
+  'SLACK_APP_TOKEN', 'SLACK_BOT_TOKEN', 'SPOTIFY_CLIENT_SECRET', 'TELEGRAM_BOT_TOKEN',
+]);
+
+function ownSecretWarnings(id: string, server: McpServerConfig): string[] {
+  const values = [...(server.args ?? []), ...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})];
+  const named = new Set<string>();
+  for (const value of values) {
+    for (const match of value.matchAll(ENV_REF)) if (MERCURY_OWN_SECRETS.has(match[1])) named.add(match[1]);
+  }
+  return [...named].map((name) => `mcp.servers.${id} is given ${name}, one of Mercury's own keys; the server "${id}" will see it. Use a separate key unless you mean this.`);
+}
+
 function hiddenAutoApproveWarnings(id: string, server: McpServerConfig): string[] {
   const allow = server.tools?.allow ?? [];
   const deny = server.tools?.deny ?? [];
@@ -107,6 +129,7 @@ export function validateMcpConfig(raw: unknown): McpConfigValidation {
       ...literalSecretWarnings(id, 'env', server.env),
       ...literalSecretWarnings(id, 'headers', server.headers),
       ...hiddenAutoApproveWarnings(id, server),
+      ...ownSecretWarnings(id, server),
     );
   }
   return result;

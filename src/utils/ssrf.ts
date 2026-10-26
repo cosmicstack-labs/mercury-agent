@@ -62,6 +62,21 @@ function isPrivateIpv6(ip: string): boolean {
   return false;
 }
 
+/**
+ * Link-local addresses, where cloud metadata services live (169.254.169.254,
+ * fd00:ec2::254 is unique-local and stays private). `allowPrivate` opens
+ * loopback and the LAN, never these: a metadata endpoint hands out the
+ * machine's cloud credentials.
+ */
+export function isLinkLocalAddress(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const v4 = lower.startsWith('::ffff:') ? lower.slice('::ffff:'.length) : lower;
+  if (isIP(v4) === 4) return v4.startsWith('169.254.');
+  return isIP(lower) === 6 && /^fe[89ab]/.test(lower.split(':')[0] ?? '');
+}
+
+const METADATA_HOSTS = new Set(['metadata.google.internal', 'metadata', 'instance-data', 'instance-data.ec2.internal']);
+
 export function isPrivateAddress(ip: string): boolean {
   const family = isIP(ip);
   if (family === 4) return isPrivateIpv4(ip);
@@ -109,7 +124,17 @@ async function resolveAndValidate(rawUrl: string, allowPrivate = false, privateH
     throw new Error(`Blocked scheme: ${parsed.protocol} — only http and https are allowed`);
   }
   if (allowPrivate) {
-    return { url: parsed };
+    // Loopback and the LAN are allowed; link-local (cloud metadata) never is.
+    const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (METADATA_HOSTS.has(host)) throw new Error(`Blocked: ${host} is a cloud metadata service`);
+    const literal = isIP(host);
+    if (literal !== 0) {
+      if (isLinkLocalAddress(host)) throw new Error(`Blocked: ${host} is link-local (cloud metadata)`);
+      return { url: parsed, pinned: { address: host, family: literal } };
+    }
+    const resolved = await lookupHost(host);
+    if (resolved.some(isLinkLocalAddress)) throw new Error(`Blocked: ${host} resolves to a link-local (cloud metadata) address`);
+    return { url: parsed, ...(resolved[0] ? { pinned: { address: resolved[0], family: isIP(resolved[0]) } } : {}) };
   }
   if (urlHostIsPrivate(parsed.hostname)) {
     throw privateBlockReason(parsed.hostname, privateHint);

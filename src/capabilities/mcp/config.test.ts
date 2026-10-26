@@ -82,6 +82,20 @@ describe('validateMcpConfig', () => {
   });
 });
 
+describe('Mercury\'s own keys', () => {
+  it('warns when a server is handed one of Mercury\'s provider keys, never for its own token', () => {
+    const result = validateMcpConfig({
+      servers: {
+        docs: { transport: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ${env:ANTHROPIC_API_KEY}' } },
+        gh: { transport: 'stdio', command: 'npx', env: { GITHUB_TOKEN: '${env:GITHUB_TOKEN}' } },
+      },
+    });
+    expect(result.warnings).toEqual([
+      'mcp.servers.docs is given ANTHROPIC_API_KEY, one of Mercury\'s own keys; the server "docs" will see it. Use a separate key unless you mean this.',
+    ]);
+  });
+});
+
 describe('autoApprove warnings', () => {
   it('warns when an auto-approved tool is not allowed or is denied', () => {
     const result = validateMcpConfig({

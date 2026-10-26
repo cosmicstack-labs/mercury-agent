@@ -58,6 +58,10 @@ describe('createGuardedFetch', () => {
 
   it('still rejects non-http schemes', async () => {
     await expect(createGuardedFetch({ allowPrivate: true })('file:///etc/passwd')).rejects.toThrow(/Blocked scheme/);
+    // allowPrivate opens loopback and the LAN, never cloud metadata.
+    await expect(createGuardedFetch({ allowPrivate: true })('http://169.254.169.254/latest/meta-data/')).rejects.toThrow(/link-local/);
+    await expect(createGuardedFetch({ allowPrivate: true })('http://[fe80::1]/')).rejects.toThrow(/link-local/);
+    await expect(createGuardedFetch({ allowPrivate: true })('http://metadata.google.internal/')).rejects.toThrow(/metadata/);
   });
 });
 
