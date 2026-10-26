@@ -28,4 +28,14 @@ describe('MCP tool naming', () => {
     expect(second).not.toBe(first);
     expect(second).toMatch(/^mcp__docs__get_page_[0-9a-f]{6}$/);
   });
+
+  it('is never mistaken for a plugin tool, and no plugin can take the id "mcp"', async () => {
+    const { isPluginToolName, pluginToolAllowed } = await import('../../plugins/tool-bridge.js');
+    const { RESERVED_PLUGIN_IDS, RESERVED_COMMANDS } = await import('../../plugins/types.js');
+    expect(isPluginToolName('mcp__github__search_issues')).toBe(false);
+    expect(pluginToolAllowed('mcp__github__search_issues', ['mcp__*', 'mcp__github__search_issues'])).toBe(false);
+    expect(isPluginToolName('whatsapp__send_message')).toBe(true);
+    expect(RESERVED_PLUGIN_IDS.has('mcp')).toBe(true);
+    expect(RESERVED_COMMANDS.has('mcp')).toBe(true);
+  });
 });
