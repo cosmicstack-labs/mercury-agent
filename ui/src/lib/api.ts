@@ -815,6 +815,8 @@ export interface BotStatus {
   fleetRole?: "lead" | "crew";
   parent?: string;
   crewWorking?: number;
+  /** A custom face exists (`GET /api/bots/:id/avatar`); draw a monogram otherwise. */
+  hasAvatar?: boolean;
 }
 
 export interface BotManifest {
@@ -1081,6 +1083,10 @@ const api = {
     message: (id: string, message: string) =>
       post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${id}/message`, { message }),
     patch: (id: string, body: Partial<BotManifest>) => patch<unknown>(`/api/bots/${id}`, body),
+    /** The bot's face: base64 or a `data:` URL, 2 MB at most — the core sniffs the bytes, never the name. */
+    setAvatar: (id: string, data: string) =>
+      put<{ ok: boolean; mime: string; bytes: number }>(`/api/bots/${id}/avatar`, { data }),
+    clearAvatar: (id: string) => del<{ ok: boolean; removed: boolean }>(`/api/bots/${id}/avatar`),
     enable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/enable`),
     disable: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/disable`),
     stop: (id: string) => post<{ ok: boolean }>(`/api/bots/${id}/stop`),
