@@ -37,6 +37,12 @@ export interface ProviderConfig {
   enabled: boolean;
   /** Optional per-provider cap on output tokens per request. */
   maxOutputTokens?: number;
+  /**
+   * The owner says this endpoint's model reads images. `modelSeesImages` otherwise
+   * guesses from the model name, which cannot know about a self-hosted model — a
+   * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
+   */
+  vision?: boolean;
 }
 
 export interface TelegramAccessUser {
@@ -396,6 +402,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OPENAI_COMPAT_BASE_URL', ''),
         model: getEnv('OPENAI_COMPAT_MODEL', ''),
         enabled: getEnvBool('OPENAI_COMPAT_ENABLED', false),
+        vision: getEnvBool('OPENAI_COMPAT_VISION', false),
       },
       mimo: {
         name: 'mimo',
@@ -414,6 +421,7 @@ export function getDefaultConfig(): MercuryConfig {
       lmStudio: {
         name: 'lmStudio',
         apiKey: getEnv('LM_STUDIO_API_KEY', ''),
+        vision: getEnvBool('LM_STUDIO_VISION', false),
         baseUrl: getEnv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:1234/v1'),
         model: getEnv('LM_STUDIO_MODEL', ''),
         enabled: getEnvBool('LM_STUDIO_ENABLED', false),
@@ -438,6 +446,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('LITELLM_BASE_URL', 'http://localhost:4000/v1'),
         model: getEnv('LITELLM_MODEL', 'gpt-4o-mini'),
         enabled: getEnvBool('LITELLM_ENABLED', false),
+        vision: getEnvBool('LITELLM_VISION', false),
       },
     },
     channels: {
