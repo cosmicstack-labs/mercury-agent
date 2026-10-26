@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { budgetContext, buildSystemPrompt, environmentSection, type SystemPromptInputs } from './system-prompt.js';
+import { budgetContext, buildSystemPrompt, environmentSection, ownerSection, type SystemPromptInputs } from './system-prompt.js';
 
 const base: SystemPromptInputs = {
   identityPrompt: 'You are Mercury.',
@@ -64,8 +64,45 @@ describe('system prompt assembly', () => {
     expect(p).toContain("The user's GitHub username is hotheadhacker.");
   });
 
+  it('plain chat gets the work contract; Mercury Code keeps its own', () => {
+    const chat = buildSystemPrompt(base);
+    expect(chat).toContain('**How you work:**');
+    // Decisions go through ask_user (an arrow-key picker), not a question in prose.
+    expect(chat).toContain('Ask with ask_user');
+    const code = buildSystemPrompt({ ...base, programmingSuffix: '\n\nCODE' });
+    expect(code).not.toContain('**How you work:**');
+  });
+
+  it('steers bulk and conversion work to real tools, not file-by-file', () => {
+    const p = buildSystemPrompt(base);
+    expect(p).toContain('pandoc');
+    expect(p).toContain('Never read and rewrite many files one by one yourself.');
+    expect(p).not.toContain('Do NOT create one-time-use helper scripts');
+  });
+
   it('includes skills, bots and mode suffixes verbatim', () => {
     const p = buildSystemPrompt({ ...base, skillContext: 'SKILLS: tweet-notifier', botSection: '\n\nBOTS', programmingSuffix: '\n\nCODE', researchSuffix: '\n\nRESEARCH' });
     for (const s of ['SKILLS: tweet-notifier', 'BOTS', 'CODE', 'RESEARCH', 'Tweet Notification System Available']) expect(p).toContain(s);
+  });
+
+  it('places the owner brief right after the identity and before skills; omits it when empty', () => {
+    const sections = { about: 'Facts:\n- Founder of Cosmic Stack', howToWork: '- Keep replies short; lead with the result.' };
+    const p = buildSystemPrompt({ ...base, skillContext: 'SKILLS: x', ownerSections: sections, ownerName: 'Salman' });
+    const identity = p.indexOf('You are Mercury.');
+    const about = p.indexOf('## About Salman');
+    const how = p.indexOf('## How to work with Salman');
+    const skills = p.indexOf('SKILLS: x');
+    expect(identity).toBe(0);
+    expect(about).toBeGreaterThan(identity);
+    expect(how).toBeGreaterThan(about);
+    expect(skills).toBeGreaterThan(how);
+    expect(p).toContain('- Founder of Cosmic Stack');
+    expect(p).toContain('- Keep replies short; lead with the result.');
+    // Nothing held yet: no heading at all, so the model has nothing to embroider.
+    expect(ownerSection(null, 'Salman')).toBe('');
+    expect(ownerSection({ about: '', howToWork: '  ' }, 'Salman')).toBe('');
+    expect(buildSystemPrompt({ ...base, ownerSections: null })).not.toContain('## About');
+    // A name is always rendered, even when the config has none.
+    expect(ownerSection({ about: 'x', howToWork: '' })).toContain('## About the owner');
   });
 });

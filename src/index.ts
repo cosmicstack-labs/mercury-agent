@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
+import { publishStatus, setStatusPublisher } from './core/provider-status.js';
+import { loadPermissionMode, savePermissionMode } from './capabilities/permission-mode-store.js';
 import chalk from 'chalk';
 
 import {
@@ -53,6 +55,9 @@ import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory } 
 import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
 import { UserMemoryStore } from './memory/user-memory.js';
 import { BotManager } from './bots/bot-manager.js';
+import { getPluginManager, peekPluginManager, setProviderLookup } from './plugins/manager.js';
+import { setCallLearning, setChannelHost, setDesktopActivityHook, setVoiceBriefing, setWorkStopper } from './plugins/channel-bridge.js';
+import { registerPluginsCli } from './cli/plugins-cli.js';
 import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
 import { runStorageDoctor } from './utils/storage-doctor.js';
@@ -86,7 +91,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager } from './web/server.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
 import { McpManager, probeMcpServer, validateMcpConfig, type McpServerStatus } from './capabilities/mcp/index.js';
@@ -2224,6 +2229,21 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
     console.log(chalk.dim('  Web dashboard disabled. You can enable it later with `mercury doctor`.'));
   }
 
+  // Permission mode: asked once here and remembered by every surface
+  // (terminal, attached terminal, dashboard). /permissions changes it later.
+  console.log('');
+  const currentMode = loadPermissionMode();
+  const permissionChoice = await selectWithArrowKeys(
+    currentMode ? `Permissions (now: ${currentMode === 'allow-all' ? 'Allow All' : 'Ask Me'})` : 'How should Mercury handle risky actions?',
+    [
+      { value: 'ask-me', label: 'Ask Me — confirm before it writes files or runs commands' },
+      { value: 'allow-all', label: 'Allow All — just do it (blocked commands stay blocked)' },
+    ],
+  );
+  const permissionMode = permissionChoice === 'allow-all' ? 'allow-all' : 'ask-me';
+  savePermissionMode(permissionMode);
+  console.log(chalk.dim(`  ${permissionMode === 'allow-all' ? 'Allow All' : 'Ask Me'} saved · change any time with /permissions`));
+
   saveConfig(config);
 
   const home = getMercuryHome();
@@ -2423,6 +2443,9 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     }
     process.on('uncaughtException', (err) => {
       try { line(`UNCAUGHT: ${err?.stack || err}`); } catch { /* disk full */ }
+      // A throw from a plugin's own code (a stray timer, an event handler)
+      // disables that plugin instead of taking Mercury down with it.
+      try { if (peekPluginManager()?.attributeFault(err)) return; } catch { /* fall through to exit */ }
       try { writeCrashFlag({ reason: `Uncaught: ${String(err?.message || err)}`.slice(0, 300), timestamp: Date.now() }); } catch {}
       // A TUI-crashed process must not linger headless: it would hold the
       // runtime pid files and silently block every future launch. Print,
@@ -2434,6 +2457,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     });
     process.on('unhandledRejection', (reason) => {
       try { line(`REJECTION: ${reason instanceof Error ? reason.stack : String(reason)}`); } catch {}
+      try { if (peekPluginManager()?.attributeFault(reason)) return; } catch { /* keep going */ }
       // A rejected boot (e.g. "runtime already running") must fail loudly,
       // not exit(0) as if nothing happened.
       const message = String(reason instanceof Error ? reason.message : reason || '');
@@ -2555,7 +2579,14 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const channels = new ChannelRegistry(config, { cliOnly: daemonOwnsRuntime });
   const webChannel = new WebChannel(config.identity.name);
   channels.register('web', webChannel);
+  // Bits of the bottom-bar status that are pushed rather than read.
+  const liveStatus = { desktop: '' };
   const capabilities = new CapabilityRegistry(skillLoader, scheduler, tokenBudget, undefined, userMemory ?? undefined);
+  // "Always" on a shell prompt covers the command family in the owner's own
+  // terminal, attached terminal and dashboard; remote Mercury Cloud requests
+  // stay exact-match.
+  capabilities.permissions.setFamilyApprovalPolicy((ctx) =>
+    ctx.channelType === 'cli' || (ctx.channelType === 'web' && !webChannel.hasCloudEventHandler(ctx.channelId)));
 
   let supervisor: SubAgentSupervisor | undefined;
   if (config.subagents.enabled) {
@@ -2623,6 +2654,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       return;
     }
 
+    // Any other chat channel (plugin channels such as WhatsApp): the file goes
+    // back to the chat that asked for it.
+    if (channelType !== 'cli' && channelType !== 'web' && channelType !== 'internal') {
+      const current = channels.get(channelType as Parameters<typeof channels.get>[0]);
+      if (current) {
+        await current.sendFile(filePath, channelId);
+        return;
+      }
+    }
+
     if (config.channels.telegram.enabled && telegram && getTelegramApprovedUsers(config).length > 0) {
       await telegram.sendFile(filePath);
       return;
@@ -2685,6 +2726,34 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
 
   if (supervisor) {
     agent.setSupervisor(supervisor);
+  }
+
+  // Plugins run only in the process that owns the runtime (ADR-024); an
+  // attached terminal forwards /plugins to it. Boot is fire-and-forget:
+  // a broken plugin is disabled, never a reason for Mercury not to start.
+  const pluginManager = daemonOwnsRuntime ? undefined : getPluginManager();
+  if (pluginManager) {
+    // Plugin API 1.1: channels provided by plugins (e.g. WhatsApp) join the registry while they run.
+    setChannelHost({
+      register: (type, channel) => channels.register(type, channel),
+      unregister: (type, channel) => channels.unregister(type, channel),
+    });
+    // Plugins that use a Mercury provider (e.g. OpenAI for WhatsApp calls)
+    // get the same credentials this runtime uses: one place to set a key.
+    setProviderLookup((id) => (config.providers as unknown as Record<string, { apiKey?: string; baseUrl?: string } | undefined>)[id]);
+    // Calls know what chats know (identity, about, the owner's profile) and learn like chats do.
+    setVoiceBriefing(() => agent.voiceBriefing());
+    setCallLearning((ownerSaid, mercurySaid) => agent.learnFromConversation(ownerSaid, mercurySaid));
+    setWorkStopper((prefix) => agent.stopWorkFor(prefix, 'Stopped by the owner on a voice call.'));
+    setDesktopActivityHook((label) => {
+      const cli = channels.get('cli');
+      if (cli instanceof CLIChannel) cli.setDesktopActivity(label);
+      liveStatus.desktop = label ?? '';
+      publishStatus();
+    });
+    pluginManager.setRunsPlugins(true);
+    pluginManager.setNotifier((m) => agent.notifyAllChannels(m));
+    void pluginManager.boot().catch((err) => logger.error({ err }, 'Plugin boot failed'));
   }
 
   // Mercury Bots: fleet manager runs outside the main message queue.
@@ -3436,6 +3505,31 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebBgTasks(agent.backgroundTasks);
   setWebModelSwitch((provider, model) => agent.switchProvider(provider, model));
   setWebCurrentProvider(() => agent.getCurrentProvider());
+  // Live bottom bar for attached terminals and the dashboard: one snapshot,
+  // pushed on every model switch and checked every 2 s for anything else.
+  const statusSnapshot = (): Record<string, unknown> => {
+    const current = agent.getCurrentProvider();
+    return {
+      provider: getProviderLabel(current.name as ProviderName),
+      model: current.model,
+      mode: agent.programmingMode.getState(),
+      permission: webChannel.getSettings().bypassPermissions ? 'allow-all' : 'ask-me',
+      tokensUsed: tokenBudget.getDailyUsed(),
+      tokenBudget: tokenBudget.getBudget(),
+      desktop: liveStatus.desktop,
+    };
+  };
+  setWebStatusSnapshot(statusSnapshot);
+  let lastStatusKey = '';
+  const pushStatus = (): void => {
+    const snapshot = statusSnapshot();
+    const key = JSON.stringify(snapshot);
+    if (key === lastStatusKey) return;
+    lastStatusKey = key;
+    webChannel.broadcastStatus(snapshot);
+  };
+  setStatusPublisher(pushStatus);
+  setInterval(pushStatus, 2000).unref();
   // IDE provider registry powers features like commit message generation.
   // It does not require a supervisor, so wire it up unconditionally.
   setWebIDEProviders(providers);
@@ -3616,6 +3710,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     if (channelType === 'web' && webChannel) {
       return webChannel.askPermission(prompt, channelId);
     }
+    // Any other channel that can ask (plugin channels such as WhatsApp).
+    const asking = channels.get(channelType as Parameters<typeof channels.get>[0]) as { askPermission?: (p: string, id?: string) => Promise<string> } | undefined;
+    if (channelType !== 'cli' && typeof asking?.askPermission === 'function') {
+      return asking.askPermission(prompt, channelId);
+    }
     if (cliChannel) {
       return cliChannel.askPermission(prompt);
     }
@@ -3628,6 +3727,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info({ chatId }, 'Telegram: Allow All mode set for session');
+      } else {
+        // Switching back used to be ignored: Allow All stayed on until restart.
+        capabilities.permissions.setAutoApproveAll(false);
+        logger.info({ chatId }, 'Telegram: Ask Me mode set for session');
       }
     });
   }
@@ -3638,6 +3741,10 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         capabilities.permissions.setAutoApproveAll(true);
         capabilities.permissions.addTempScope('/', true, true);
         logger.info('Signal: Allow All mode set for session');
+      } else {
+        // Switching back used to be ignored: Allow All stayed on until restart.
+        capabilities.permissions.setAutoApproveAll(false);
+        logger.info('Signal: Ask Me mode set for session');
       }
     });
   }
@@ -3707,7 +3814,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cliChannel.setCurrentSession(selected);
     }
 
-    const mode = cliChannel && await cliChannel.askPermissionMode?.();
+    // Every session starts by asking (also Mercury Code): the saved mode is
+    // listed first so Enter keeps it. The pick is remembered as the default
+    // for next time; /permissions changes it mid-session.
+    const savedMode = loadPermissionMode();
+    const mode = cliChannel && process.stdout.isTTY
+      ? await cliChannel.askPermissionMode(savedMode ?? undefined)
+      : savedMode ?? 'ask-me';
+    if ((mode === 'allow-all' || mode === 'ask-me') && process.stdout.isTTY) savePermissionMode(mode);
+    cliChannel?.setPermissionModeStatus(mode === 'allow-all' ? 'allow-all' : 'ask-me');
     if (mode === 'allow-all') {
       capabilities.permissions.setAutoApproveAll(true);
       capabilities.permissions.addTempScope('/', true, true);
@@ -3761,8 +3876,12 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
         await agent.notifyAllChannels('⚠ Mercury is shutting down. If I was working on something, it has been interrupted. Send a message after restart to continue.');
       } catch { /* best effort */ }
       if (userMemory) {
+        // One last reflection pass over the sessions of this run (ADR-026);
+        // bounded so a slow provider cannot hold the shutdown.
         try {
-          userMemory.consolidate();
+          await Promise.race([agent.reflectNow(), new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref())]);
+        } catch { /* best effort */ }
+        try {
           userMemory.close();
         } catch {}
       }
@@ -3771,6 +3890,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       // keeps queue.db locked against any later uninstall/replace.
       try { botManager?.dispose(); } catch { /* best effort */ }
       await mcpManager.close();
+      try { await pluginManager?.shutdown(); } catch { /* best effort */ }
       await agent.shutdown();
       clearCloudRuntimeOnline();
       releaseRuntimeProcess(runtimeMode);
@@ -3846,6 +3966,10 @@ function removeBootCrashHandlers(): void {
 }
 installBootCrashHandlers();
 
+// --safe-mode must reach the daemon child too, which is spawned with this
+// process's environment but its own argv.
+if (process.argv.includes('--safe-mode')) process.env.MERCURY_PLUGINS = 'off';
+
 const program = new Command();
 
 program
@@ -3853,6 +3977,7 @@ program
   .description('Mercury — Soul-driven AI agent with permission-hardened tools, token budgets, and multi-channel access.')
   .version(pkgVersion)
   .option('-v, --verbose', 'Show debug logs')
+  .option('--safe-mode', 'Start with every plugin turned off (also MERCURY_PLUGINS=off)')
   .action(async () => {
     if (!isSetupComplete()) {
       await configure();
@@ -3885,6 +4010,7 @@ program
   .option('-f, --foreground', 'Run in foreground (attached to terminal)')
   .option('-d, --detached', 'Run in background (daemon mode) — same as default')
   .option('--daemon', 'Internal flag for daemon child process')
+  .option('--safe-mode', 'Start with every plugin turned off')
   .action(async (opts) => {
     if (opts.daemon) {
       await runWithWatchdog(() => runAgent(true));
@@ -4006,6 +4132,7 @@ program
   .option('--platform', 'Show platform compatibility diagnostics')
   .option('--storage', 'Show SQLite backend, database files and row counts')
   .option('--mcp', 'Connect to each configured MCP server and report its status')
+  .option('--plugins', 'Check installed plugins and why any are turned off')
   .action(async (opts) => {
     {
       // Keys that cannot be right — say so before anything is tried.
@@ -4029,6 +4156,11 @@ program
     }
     const mcpSummary = summarizeMcpConfig(loadConfig().mcp);
     if (mcpSummary) console.log(chalk.dim(`  ${mcpSummary}`));
+    if (opts.plugins) {
+      const { runPluginDoctor } = await import('./cli/plugins-cli.js');
+      await runPluginDoctor();
+      return;
+    }
     // The daemon reads providers, keys and channels at boot: a reconfigure
     // that only wrote the file looked like it did nothing until a manual
     // `mercury restart`. Restart it ourselves when something changed.
@@ -5283,6 +5415,7 @@ mcpCmd
     console.log('');
     if (status.state !== 'connected') process.exitCode = 1;
   }));
+registerPluginsCli(program);
 
 const cloud = program.command('cloud').description('Manage Mercury Cloud connection');
 

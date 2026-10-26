@@ -40,6 +40,7 @@ import { getTelegramHelp, getDiscordHelp, getSlackHelp } from '../utils/manual.j
 import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
+import { classifyResearchIntent } from './research-intent.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
@@ -96,7 +97,13 @@ import { createTaskSurface } from './task-surface.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-command.js';
+import { modelSeesImages, withAttachments } from './attachments.js';
+import { AlertGate } from './alert-gate.js';
+import { setPluginImagesAllowed } from '../plugins/tool-bridge.js';
+import { handleCallCommand } from '../plugins/call-schedule.js';
+import { handlePluginsCommand, tryPluginCommand, hasPluginDialog, answerPluginDialog } from '../plugins/commands.js';
 import { handleChatCommand as handleChatCommandImpl } from './commands/chat-command.js';
+import { formatCounts, formatLearnedLine } from './commands/memory-commands.js';
 import { handleBgCommand as handleBgCommandImpl } from './commands/bg-command.js';
 import { handleSaverCommand as handleSaverCommandImpl } from './commands/saver-command.js';
 import { handleSessionCommand as handleSessionCommandImpl } from './commands/session-command.js';
@@ -104,6 +111,16 @@ import { handleFastPathCommand as handleFastPathCommandImpl } from './commands/f
 import { openCliMemoryMenu as openCliMemoryMenuImpl } from './commands/cli-memory-menu.js';
 import { openMemoryChoiceMenu as openMemoryChoiceMenuImpl } from './commands/memory-choice-menu.js';
 import { openCliCommandMenu as openCliCommandMenuImpl } from './commands/cli-command-menu.js';
+import { collectTurnSignals, parseToolTraceLines } from '../learning/signals.js';
+import { extractBeliefOperations, type ExtractTurn } from '../learning/extract.js';
+import { composeLearnedNote, pendingQuestion } from '../learning/announce.js';
+import { asksAboutSelf, ownerWords } from '../learning/text.js';
+
+/** Minimum gap between two "☿ Noted" lines on one channel. */
+const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
+import { runReflection } from '../learning/reflection.js';
+import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
+import type { ApplyResult } from '../memory/beliefs.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -525,6 +542,7 @@ export function looksLikeCodingTask(text: string): boolean {
   return (intent.test(t) && artifact.test(t)) || pathOrCommand.test(t) || fence.test(t);
 }
 
+
 export class Agent {
   readonly lifecycle: Lifecycle;
   readonly scheduler: Scheduler;
@@ -558,6 +576,14 @@ export class Agent {
   pendingPersonaNewlyCreated = false;
   /** Bot awaiting a daily token budget answer (final onboarding step). */
   pendingBudgetFor: string | null = null;
+  /** Owner Model (ADR-026): per chat, the numbering of the last belief list printed
+   * (`/memory learned|beliefs|contested`), so `/memory confirm <n>` knows what n is. */
+  readonly lastBeliefListing = new Map<string, string[]>();
+  /** Owner Model (ADR-026): per chat, the belief announced by the last `☿ Noted:` line,
+   * so a plain "forget that" undoes it. Set by the per-turn learner; cleared on undo. */
+  readonly lastNotedBeliefId = new Map<string, string>();
+  /** When the last "☿ Noted" went out per channel: at most one every few minutes, so an upgrade's backlog never floods a chat. */
+  private readonly lastNotedAt = new Map<string, number>();
   readonly programmingMode: ProgrammingMode;
   readonly researchMode: ResearchMode;
   readonly saverMode: SaverMode;
@@ -576,6 +602,13 @@ export class Agent {
   private currentWorkKey: string | null = null;
   private outboxRetryTimer: ReturnType<typeof setInterval> | null = null;
   private replayingOutbox = false;
+  /** Beliefs injected into the current turn's prompt (set by retrieveMemoryContext, ADR-026). */
+  lastInjectedBeliefIds: string[] = [];
+  /** "About {owner}" / "How to work with {owner}", recomputed only when the beliefs change (keeps the prompt prefix cacheable). */
+  private readonly ownerSections = createOwnerSectionsMemo();
+  private reflectionInFlight: Promise<void> | null = null;
+  /** Beliefs the previous turn acted on; credited as "acted on without objection" once the next owner message shows no correction. */
+  private pendingActedOn: { ids: string[]; sessionId?: string } | null = null;
 
   constructor(
     public config: MercuryConfig,
@@ -615,6 +648,12 @@ export class Agent {
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
     });
+
+    // After a migration (or when asked), reflect soon after boot instead of
+    // waiting an hour, so migrated candidates are judged against real sessions.
+    if (this.userMemory?.beliefs.getMeta('reflection_force') === '1') {
+      setTimeout(() => { void this.reflectNow(); }, 2 * 60 * 1000).unref();
+    }
 
     setAskUserHandler(async (question, choices, channelId, channelType) => {
       return this.presentChoice(question, choices, channelId, channelType);
@@ -749,6 +788,45 @@ export class Agent {
       return;
     }
 
+    // A plugin setup or menu waiting for an answer in this chat ("2", "+91…").
+    if (!trimmed.startsWith('/') && hasPluginDialog(msg.channelId)) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel) {
+        answerPluginDialog(trimmed, msg, channel).catch((err) => {
+          logger.error({ err: err instanceof Error ? err.message : err }, 'plugin dialog failed');
+        });
+        return;
+      }
+    }
+
+    // /call and /calls: scheduled calls, worked out in code (no model turn).
+    if (/^\/calls?(\s|$)/.test(trimmed)) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel) {
+        void channel.send(handleCallCommand(trimmed, msg.senderRole === 'member'), msg.channelId).catch(() => {});
+      }
+      return;
+    }
+
+    // /plugins is fast-path like /bots: installing or toggling a plugin must
+    // work while a turn is running (that's often when you notice you need it).
+    if (/^\/plugins?(\s|$)/.test(trimmed)) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel) {
+        handlePluginsCommand(trimmed, msg, channel).catch((err) => {
+          logger.error({ err: err instanceof Error ? err.message : err, content: trimmed.slice(0, 50) }, '/plugins command failed');
+        });
+      }
+      return;
+    }
+
+    // Slash commands contributed by plugins. Built-in names are reserved,
+    // so a plugin can never take over /help, /stop, /bots and so on.
+    if (trimmed.startsWith('/')) {
+      const channel = this.channels.getChannelForMessage(msg);
+      if (channel && tryPluginCommand(trimmed, msg, channel)) return;
+    }
+
     // /bot <id> <message> — talk to a named bot from ANY channel (TUI,
     // Telegram, web). Durable enqueue; the run's output is delivered back
     // to the requesting chat via the job's source (Telegram first).
@@ -834,20 +912,41 @@ export class Agent {
     const isUserMessage = msg.channelType !== 'internal' && msg.senderId !== 'system' && !trimmed.startsWith('/');
     const promptChannel = this.channels.getChannelForMessage(msg);
     const inMercuryCode = promptChannel instanceof CLIChannel && promptChannel.getTuiState().mercuryCode != null;
+    // The word filter only decides whether to ask the model; the model
+    // decides whether the owner actually wants a research article. An
+    // instruction ("do X with the latest file") or a quick question never
+    // gets the prompt, and a failed or slow check means no prompt.
     if (isUserMessage && !inMercuryCode && !this.researchMode.isActive() && looksResearchy(trimmed)) {
-      this.promptResearchMode(msg, workKey).catch((err) => {
-        logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
-        this.queueMessage(msg, workKey);
-        this.processQueue();
+      void this.wantsResearch(trimmed).then((wanted) => {
+        if (!wanted) {
+          this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+          return;
+        }
+        this.promptResearchMode(msg, workKey).catch((err) => {
+          logger.warn({ err: err.message }, 'Research-mode prompt failed — proceeding with normal message');
+          this.queueMessage(msg, workKey);
+          this.processQueue();
+        });
       });
       return;
     }
 
+    this.routeIncoming(msg, workKey, trimmed, isUserMessage, inMercuryCode, promptChannel);
+  }
+
+  /** After the research check: the Mercury Code hand-off, then the queue. */
+  private routeIncoming(
+    msg: ChannelMessage,
+    workKey: string | undefined,
+    trimmed: string,
+    isUserMessage: boolean,
+    inMercuryCode: boolean,
+    promptChannel: ReturnType<ChannelRegistry['getChannelForMessage']>,
+  ): void {
     // Mercury Code hand-off: in the normal chat TUI, a coding-shaped task may
     // belong in the coding TUI. Ask once; no answer within the timeout is
     // treated as "No" and the request proceeds in normal chat — never blocked.
-    // The research prompt above takes precedence when both match (the message
-    // returned there already).
+    // The research prompt takes precedence when both match.
     if (isUserMessage && !inMercuryCode && promptChannel instanceof CLIChannel && looksLikeCodingTask(trimmed)) {
       this.promptMercuryCodeHandoff(promptChannel, msg, workKey).catch((err) => {
         logger.warn({ err: err.message }, 'Mercury Code hand-off prompt failed — proceeding with normal message');
@@ -989,6 +1088,22 @@ export class Agent {
     });
   }
 
+  /** One small model call: does this message ask for a full research article? */
+  private async wantsResearch(text: string): Promise<boolean> {
+    let model: ReturnType<ReturnType<ProviderRegistry['getDefault']>['getModelInstance']>;
+    try {
+      model = this.learningProviders().getDefault().getModelInstance();
+    } catch {
+      return false;
+    }
+    const verdict = await classifyResearchIntent(text, async (system, user) => {
+      const result = await generateText({ model, system, messages: [{ role: 'user', content: user }], maxOutputTokens: 8 });
+      return result.text;
+    });
+    logger.debug({ verdict }, 'Research intent');
+    return verdict === 'research';
+  }
+
   private async promptResearchMode(msg: ChannelMessage, workKey?: string): Promise<void> {
     const channel = this.channels.getChannelForMessage(msg);
     if (!channel) {
@@ -1003,14 +1118,16 @@ export class Agent {
     // Time-weighted default (same contract as the Mercury Code hand-off): an
     // unanswered prompt must never hold a chat message hostage. No answer
     // within the window → "Quick answer", nothing remembered, and the next
-    // research-shaped question asks again.
+    // research-shaped question asks again. Quick answer is listed FIRST, so
+    // the picker starts on it and an accidental Enter never starts a long
+    // research run.
     const choice = await this.presentChoiceWithTimeout(
       `This looks like a research question. ${explanation}\n\nHow do you want to proceed?`,
-      ['Full research mode (deep, multi-source article)', 'Quick answer (normal conversation)'],
+      ['Quick answer (normal conversation)', 'Full research mode (deep, multi-source article)'],
       msg.channelId,
       msg.channelType,
       MERCURY_CODE_HANDOFF_TIMEOUT_MS,
-      1, // unanswered = Quick answer (not remembered — nobody chose)
+      0, // unanswered = Quick answer (not remembered — nobody chose)
     );
 
     if (choice.toLowerCase().startsWith('full')) {
@@ -1518,6 +1635,14 @@ export class Agent {
     status: 'running' | 'done' | 'error',
     durationMs?: number,
   ): void {
+    // Channels that narrate progress themselves (plugin channels: a voice call
+    // speaks "still searching the web…") hear about every tool start.
+    if (status === 'running' && this.currentMessage) {
+      const current = this.channels.getChannelForMessage(this.currentMessage) as { toolStarted?: (channelId: string, toolName: string) => void } | undefined;
+      if (typeof current?.toolStarted === 'function') {
+        try { current.toolStarted(this.currentMessage.channelId, toolName); } catch { /* best effort */ }
+      }
+    }
     const ch = this.channels.get('cli');
     if (!(ch instanceof CLIChannel)) return;
     if (status === 'running') {
@@ -1591,6 +1716,14 @@ export class Agent {
         (channel as CLIChannel).sendHeartbeat(heartbeatText);
       } else if (channel instanceof WebChannel) {
         (channel as WebChannel).sendHeartbeat(heartbeatText, msg.channelId);
+      } else if (channel && (channel as { quietProgress?: boolean }).quietProgress) {
+        // Phone chats (plugin channels like WhatsApp): keep "typing…" alive, and
+        // say once, early, that this one is taking a while and what it's doing.
+        void channel.typing(msg.channelId).catch(() => {});
+        if (heartbeatCount === 1) {
+          const doing = this.currentActivity ? this.currentActivity.replace(/[.…]+$/, '') : 'working on it';
+          void channel.send(`⏳ This one takes a moment. Still on it: ${doing.charAt(0).toLowerCase()}${doing.slice(1)}…`, msg.channelId).catch(() => {});
+        }
       } else if (channel) {
         void channel.send(heartbeatText, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
       }
@@ -1986,7 +2119,9 @@ export class Agent {
     saveConfig(this.config);
     updateCliProviderStatus(this.channels.get('cli'), providerName, model);
 
-    return { ok: true, message: `Default model switched to **${providerName}** · **${model}**. Saved for future sessions.` };
+    // "Saved for future sessions" read as "takes effect next session"; it
+    // applies to the next message and stays the default after a restart.
+    return { ok: true, message: `✓ Switched to **${model}** (${providerName}). In effect from your next message, and kept as the default.` };
   }
 
   /** Returns the currently active provider name and model. */
@@ -2108,6 +2243,10 @@ export class Agent {
     if (channel instanceof TelegramChannel || channel instanceof SignalChannel || channel instanceof DiscordChannel || channel instanceof SlackChannel) {
       channel.endTask(msg.channelId);
       channel.resetStepCounter(msg.channelId);
+    } else if (channel && typeof (channel as { endTask?: unknown }).endTask === 'function') {
+      // Any other channel that wants to know a turn finished (plugin channels: a
+      // voice call waits for the turn's answer).
+      try { (channel as unknown as { endTask: (id: string) => void }).endTask(msg.channelId); } catch { /* best effort */ }
     }
   }
 
@@ -2237,11 +2376,41 @@ export class Agent {
    */
   private async retrieveMemoryContext(msg: ChannelMessage): Promise<string[]> {
     const blocks: string[] = [];
+    this.lastInjectedBeliefIds = [];
     if (this.userMemory) {
-      const memoryContext = this.userMemory.retrieveRelevant(msg.content, { maxRecords: 5, maxChars: 900 });
-      if (memoryContext.context) {
-        blocks.push(`Second Brain — memory retrieved for this message:\n${memoryContext.context}`);
+      // Beliefs relevant to this message (ADR-026): up to 5 held/confirmed
+      // ones, with confidence, so the model can lean on them and the next
+      // turn can credit them as "acted on without objection".
+      try {
+        const words = ownerWords(msg.content);
+        const selfAsk = asksAboutSelf(words);
+        const relevant = selfAsk
+          ? this.userMemory.beliefs.strongest(12)
+          : this.userMemory.beliefs.searchRelevant(words, 5);
+        if (relevant.length > 0) {
+          // Only sure beliefs earn "acted on without objection" credit;
+          // a candidate the model happened to see proves nothing yet.
+          const ids = relevant.map((b) => b.id);
+          this.userMemory.beliefs.markUsed(ids);
+          this.lastInjectedBeliefIds = relevant.filter((b) => b.status === 'held' || b.status === 'confirmed').map((b) => b.id);
+          const line = (b: typeof relevant[number]) => {
+            const status = b.status === 'candidate' ? 'unverified, seen once' : b.status;
+            return `- (confidence ${b.confidence.toFixed(2)}, ${status}${b.context !== '*' ? `, ${b.context}` : ''}) ${b.statement}`;
+          };
+          const heading = selfAsk
+            ? 'The owner is asking what you know about them. Your strongest beliefs (say which are unverified; the search_memory tool finds more):'
+            : 'Beliefs about the owner relevant to this message (treat "unverified" ones as hunches, not facts):';
+          blocks.push(heading + '\n' + relevant.map(line).join('\n'));
+        }
+      } catch (err) {
+        logger.debug({ err: (err as Error).message }, 'belief retrieval failed');
       }
+
+      // The beliefs above are the only local recall (ADR-026: one source);
+      // their statements are what the pool search dedupes against.
+      const localRecall = this.lastInjectedBeliefIds
+        .map((id) => this.userMemory?.beliefs.get(id)?.statement)
+        .filter((s): s is string => typeof s === 'string');
 
       // Local-first, then pool: query the cloud SharedMemoryPool for additional
       // context the second brain didn't surface. Gated by config, fails open
@@ -2251,11 +2420,10 @@ export class Agent {
       const ck = this.config.memory.collaborativeKnowledge;
       const cloud = this.config.cloud;
       const tokenStore = getCloudTokenStore();
-      const localRecallIsStrong = memoryContext.records.length >= 3;
+      const localRecallIsStrong = localRecall.length >= 3;
       if (ck?.poolSearch !== false && cloud?.enabled && cloud?.jwt && cloud?.apiUrl && !localRecallIsStrong) {
         try {
           const { searchPool, formatPoolContextBlock, dedupeAgainstLocal } = await import('../cloud/pool-search.js');
-          const localSummaries = memoryContext.records.map((r) => r.summary);
           const poolHits = await searchPool(
             cloud.apiUrl,
             cloud.jwt,
@@ -2276,7 +2444,7 @@ export class Agent {
               }
             },
           );
-          const deduped = dedupeAgainstLocal(poolHits, localSummaries);
+          const deduped = dedupeAgainstLocal(poolHits, localRecall);
           const poolBlock = formatPoolContextBlock(deduped, 1500);
           if (poolBlock) blocks.push(poolBlock);
         } catch (err) {
@@ -2557,7 +2725,7 @@ export class Agent {
         content: msg.content,
         timestamp: msg.timestamp,
         externalMessageId: msg.id,
-        metadata: { channelType: msg.channelType, channelId: msg.channelId, ...(requestId ? { requestId } : {}) },
+        metadata: { channelType: msg.channelType, channelId: msg.channelId, workCwd: this.capabilities.getCwd(), ...(requestId ? { requestId } : {}) },
       });
       // One read of the session per turn (it used to be re-read three times).
       const activeSession = this.sessions.get(canonicalSession.id);
@@ -2585,7 +2753,19 @@ export class Agent {
       const loopWarning = detectRepetitionLoop(recentMemory);
       if (loopWarning) contextBlocks.push(loopWarning);
 
-      contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
+      // Chat channels can carry an access level and guidance (plugin API 1.1,
+      // e.g. WhatsApp): "general" means no tools, no personal memory and no
+      // learning from the turn; the guidance tells the model where it is and
+      // how to write for it.
+      // A scheduled task the owner approved with specific plugin tools runs them unattended.
+      this.capabilities.permissions.setTurnPluginGrants(
+        msg.senderId === 'system' && Array.isArray(msg.metadata?.allowTools) ? (msg.metadata.allowTools as unknown[]).filter((t): t is string => typeof t === 'string') : [],
+      );
+      const generalAccess = msg.metadata?.channelAccess === 'general';
+      this.capabilities.setToolsDisabled(generalAccess);
+      const guidance = typeof msg.metadata?.channelGuidance === 'string' ? msg.metadata.channelGuidance.slice(0, 2000) : '';
+      if (guidance) contextBlocks.unshift(guidance);
+      if (!generalAccess) contextBlocks.push(...(await this.retrieveMemoryContext(msg)));
 
       for (const m of recentMemory) messages.push(toModelMessage(m));
 
@@ -3011,7 +3191,8 @@ export class Agent {
                         }
                       }
                     } else {
-                      void channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+                      if ((channel as { quietProgress?: boolean }).quietProgress) void channel.typing(msg.channelId).catch(() => {});
+                      else void channel.send(`  [Using: ${names}]`, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
                     }
                     this.markProgress();
                   }
@@ -3088,7 +3269,9 @@ export class Agent {
           // DeepSeek thinking models require prior reasoning_content to be
           // passed back with assistant turns (issue #24); other providers
           // get plain text.
-          const providerMessages = deepseekProviderOptions ? withReasoningParts(messages) : messages;
+          // Photos and PDFs from the chat go to models that can take them.
+          setPluginImagesAllowed(modelSeesImages(provider.name, provider.getModel()));
+          const providerMessages = withAttachments(deepseekProviderOptions ? withReasoningParts(messages) : messages, msg, provider.name, provider.getModel());
           // Per-provider output ceiling: a 32K request is rejected outright by
           // providers with smaller limits and burned a halve-and-retry round.
           const providerMaxOutputTokens = Math.min(effectiveMaxOutputTokens, provider.getMaxOutputTokens() ?? Infinity);
@@ -3541,6 +3724,7 @@ export class Agent {
       while (
         !loopAbortController.signal.aborted
         && this.programmingMode.isExecute()
+        && !this.capabilities.areToolsDisabled()
         && executeGuardRounds < (narrationSecondWind ? MAX_EXECUTE_CONTINUATIONS * 2 : MAX_EXECUTE_CONTINUATIONS)
         // A turn that ends by asking the user something in plain text is a
         // legitimate pause — forcing rounds here looped the model forever
@@ -3798,6 +3982,7 @@ export class Agent {
         !loopAbortController.signal.aborted
         && turnEnd() === 'text-stop'
         && this.programmingMode.isExecute()
+        && !this.capabilities.areToolsDisabled()
         && verificationContinuations < MAX_VERIFICATION_CONTINUATIONS
         && shouldRequireVerification({
           taskText: msg.content,
@@ -3884,6 +4069,7 @@ export class Agent {
       if (
         !loopAbortController.signal.aborted
         && this.programmingMode.isExecute()
+        && !this.capabilities.areToolsDisabled()
         && !responseAsksUser(result.text || '')
         && shouldForceExecuteContinuation({
           taskText: msg.content,
@@ -3910,6 +4096,7 @@ export class Agent {
       if (
         !loopAbortController.signal.aborted
         && this.programmingMode.isExecute()
+        && !this.capabilities.areToolsDisabled()
         && lastVerification != null
         && !verifiedAfterLastMutation()
         && !responseAsksUser(result.text || '')
@@ -4025,8 +4212,12 @@ export class Agent {
         channelType: msg.channelType,
       });
 
-      if (msg.channelType !== 'internal') {
-        this.extractMemory(msg.content, finalText).catch(err => {
+      // The learning loop runs fire-and-forget; a "☿ Noted" line, when one is
+      // due, waits for the reply to be delivered first so it never lands ahead of it.
+      let replyDelivered: () => void = () => {};
+      const delivered = new Promise<void>((resolve) => { replyDelivered = resolve; });
+      if (msg.channelType !== 'internal' && msg.metadata?.channelAccess !== 'general') {
+        this.extractMemory(msg.content, finalText, { msg, channel, sessionId: canonicalSessionId, toolTrace: turnToolTrace, delivered }).catch(err => {
           logger.warn({ err }, 'Memory extraction failed');
         });
         this.scheduleStatusVerbRefresh(channel, msg.content);
@@ -4061,8 +4252,10 @@ export class Agent {
           alreadyStreamed: !requiresFinalSend(msg.channelType, cliResponseStreamed),
           forceBanner: isMercuryCodeExecution,
         });
+        replyDelivered();
         this.markProgress();
       } else {
+        replyDelivered();
         logger.debug('Internal prompt processed, no channel response needed');
       }
 
@@ -4127,6 +4320,8 @@ export class Agent {
       stallWatchdog.stop();
       stopHeartbeat();
       this.finalizeChannelTask(msg);
+      this.capabilities.setToolsDisabled(false);
+      this.capabilities.permissions.setTurnPluginGrants([]);
       this.currentMessage = null;
       this.currentAbort = null;
       this.currentAbortReason = null;
@@ -4170,8 +4365,11 @@ export class Agent {
   /** Stable system prompt; assembly lives in core/system-prompt.ts. */
   private buildSystemPrompt(): string {
     const summary = this.userMemory ? this.userMemory.getSummary() : null;
+    const ownerName = this.config.identity.owner || 'the owner';
     return assembleSystemPrompt({
       identityPrompt: this.identity.getSystemPrompt(this.config.identity),
+      ownerSections: this.userMemory ? this.ownerSections(this.userMemory.beliefs, ownerName) : null,
+      ownerName,
       skillContext: this.capabilities.getSkillContext(),
       botSection: this.botManager ? this.botManager.getSystemPromptSection() : '',
       programmingSuffix: this.programmingMode.getSystemPromptSuffix(),
@@ -4187,7 +4385,7 @@ export class Agent {
     });
   }
 
-  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string): Promise<void> {
+  async processInternalPrompt(prompt: string, channelId?: string, channelType?: string, opts: { allowTools?: string[]; scheduledTaskId?: string } = {}): Promise<void> {
     const syntheticMsg: ChannelMessage = {
       id: `internal-${Date.now().toString(36)}`,
       channelId: channelId || 'internal',
@@ -4195,6 +4393,9 @@ export class Agent {
       senderId: 'system',
       content: prompt,
       timestamp: Date.now(),
+      ...(opts.allowTools?.length || opts.scheduledTaskId
+        ? { metadata: { ...(opts.allowTools?.length ? { allowTools: opts.allowTools } : {}), ...(opts.scheduledTaskId ? { scheduledTaskId: opts.scheduledTaskId } : {}) } }
+        : {}),
     };
     this.enqueueMessage(syntheticMsg);
   }
@@ -4242,10 +4443,61 @@ export class Agent {
       if (!prompt) {
         prompt = `Execute scheduled task: ${manifest.description}`;
       }
-      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType);
+      await this.processInternalPrompt(prompt, manifest.sourceChannelId, manifest.sourceChannelType, { allowTools: manifest.allowTools, scheduledTaskId: manifest.id });
     } catch (err) {
       logger.error({ err, task: manifest.id }, 'Scheduled task execution failed');
     }
+  }
+
+  /**
+   * Run the reflection pass now (heartbeat, and shutdown from index.ts). It
+   * only calls the model when at least one session has a new owner message
+   * since the last pass; concurrent calls share one run.
+   */
+  /**
+   * The provider the Owner Model learns on (ADR-026): `memory.learning.provider`
+   * when it names a usable provider, else the chat default. Resolved per call so
+   * a key added at runtime or a changed default is picked up.
+   */
+  private learningProviders(): { getDefault(): ReturnType<ProviderRegistry['getDefault']> } {
+    return {
+      getDefault: () => {
+        const requested = this.config.memory.learning?.provider?.trim();
+        if (requested) {
+          const getUsable = typeof this.providers.getUsable === 'function' ? this.providers.getUsable.bind(this.providers) : (name?: string) => (name ? this.providers.get(name) : undefined);
+          const provider = getUsable(requested);
+          if (provider) return provider;
+          if (!this.warnedLearningProvider) {
+            this.warnedLearningProvider = true;
+            logger.warn({ requested }, 'memory.learning.provider is not registered or not usable — learning on the default provider');
+          }
+        }
+        return this.providers.getDefault();
+      },
+    };
+  }
+  private warnedLearningProvider = false;
+
+  async reflectNow(): Promise<void> {
+    if (!this.userMemory) return;
+    if (this.reflectionInFlight) return this.reflectionInFlight;
+    const userMemory = this.userMemory;
+    const force = userMemory.beliefs.getMeta('reflection_force') === '1';
+    if (force) userMemory.beliefs.setMeta('reflection_force', '0');
+    this.reflectionInFlight = runReflection({
+      beliefs: userMemory.beliefs,
+      sessions: this.sessions,
+      providers: this.learningProviders(),
+      tokenBudget: this.tokenBudget,
+      learningPaused: () => userMemory.isLearningPaused(),
+      ownerName: this.config.identity.owner || 'the owner',
+      agentId: this.config.cloud.agentId || undefined,
+    }, { force }).then((result) => {
+      if (result.ran) this.syncTokenInfoToCli();
+    }).finally(() => {
+      this.reflectionInFlight = null;
+    });
+    return this.reflectionInFlight;
   }
 
   private async heartbeat(): Promise<void> {
@@ -4256,20 +4508,22 @@ export class Agent {
       logger.info({ pruned }, 'Episodic memory pruned');
     }
 
-    if (this.userMemory) {
+    if (this.skillLoader) {
+      // Self-made skills nobody used again go dormant (ADR-027); cheap, file-only.
       try {
-        const consolidation = this.userMemory.consolidate();
-        if (consolidation.profileUpdated || consolidation.reflectionCount > 0) {
-          logger.info({ consolidation }, 'Second brain consolidated');
-        }
-
-        const pruning = this.userMemory.prune();
-        if (pruning.movedToSubconscious > 0 || pruning.hardDeleted > 0 || pruning.promoted > 0) {
-          logger.info({ pruning }, 'Second brain pruned');
-        }
+        const { selfMadeHygiene } = await import('../skills/self-made.js');
+        const { dormant } = selfMadeHygiene(this.skillLoader.rootDir());
+        if (dormant.length > 0) this.skillLoader.discover();
       } catch (err) {
-        logger.warn({ err }, 'Second brain heartbeat error');
+        logger.debug({ err }, 'self-made skill hygiene failed');
       }
+    }
+
+    if (this.userMemory) {
+      // The reflection pass (ADR-026): one model call over the owner's turns
+      // since the last pass, then decay; a no-op when nothing new was said.
+      // It is the only maintenance the Second Brain gets — one source.
+      await this.reflectNow().catch((err) => logger.warn({ err }, 'Reflection pass failed'));
     }
 
     const notifications: string[] = [];
@@ -4304,140 +4558,132 @@ export class Agent {
     }
   }
 
-  private async extractMemory(userMessage: string, agentResponse: string): Promise<void> {
+  /** Learn from a conversation that didn't happen as chat turns (e.g. a voice call). */
+  learnFromConversation(ownerSaid: string, mercurySaid: string): void {
+    void this.extractMemory(ownerSaid, mercurySaid, {}).catch((err) => logger.warn({ err }, 'Learning from a call failed'));
+  }
+
+  /** Who Mercury is, for a voice that isn't the main model: identity, about, and the owner's profile. */
+  voiceBriefing(): string {
+    const parts = [this.identity.getSystemPrompt(this.config.identity)];
+    if (this.userMemory) {
+      try {
+        const ownerName = this.config.identity.owner || 'your owner';
+        const sections = this.ownerSections(this.userMemory.beliefs, ownerName);
+        const text = [sections?.about, sections?.howToWork].filter((s): s is string => Boolean(s && s.trim())).join('\n\n');
+        if (text) parts.push(`# What you know about ${ownerName} (from your Second Brain)\n${text.slice(0, 4000)}`);
+      } catch { /* memory unavailable: identity alone */ }
+    }
+    return parts.join('\n\n');
+  }
+
+  /**
+   * The per-turn learning loop (ADR-026, docs/owner-model.md §3.4): the
+   * turn's signals plus one small model call become belief operations
+   * applied to the belief store, and at most one "☿ Noted" line goes back
+   * on the channel after the reply. The legacy `memories` table is no
+   * longer written here; only the explicit save_memory tool writes it.
+   */
+  private async extractMemory(
+    userMessage: string,
+    agentResponse: string,
+    ctx: {
+      msg?: ChannelMessage;
+      channel?: { send(content: string, targetId?: string): Promise<void> };
+      sessionId?: string;
+      /** The turn's tool-trace lines (formatToolTraceLine). */
+      toolTrace?: readonly string[];
+      /** Resolves once the reply reached the channel; the note is sent after it. */
+      delivered?: Promise<void>;
+    } = {},
+  ): Promise<void> {
     if (!this.userMemory) return;
     if (this.userMemory.isLearningPaused()) return;
+    const beliefs = this.userMemory.beliefs;
+    const channelAccess = typeof ctx.msg?.metadata?.channelAccess === 'string' ? ctx.msg.metadata.channelAccess : undefined;
+    if (channelAccess === 'general') return;
 
-    const trivial = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|bye|goodbye|good morning|good evening)\b/i;
-    if (trivial.test(userMessage.trim())) return;
+    // The session's earlier turns, role-labelled: context for the extractor
+    // and the source for "same request again" detection.
+    const history: ExtractTurn[] = [];
+    if (ctx.sessionId && ctx.msg) {
+      try {
+        const thisTurn = new Set([ctx.msg.id, `${ctx.msg.id}:assistant`, `${ctx.msg.id}:tools`]);
+        for (const m of this.sessions.get(ctx.sessionId).messages) {
+          if (m.kind !== 'message' || (m.role !== 'user' && m.role !== 'assistant')) continue;
+          if (m.externalMessageId && thisTurn.has(m.externalMessageId)) continue;
+          history.push({ role: m.role === 'user' ? 'owner' : 'mercury', content: m.content });
+        }
+      } catch (err) {
+        logger.debug({ err }, 'Session history unavailable for learning');
+      }
+    }
+    const signals = collectTurnSignals({
+      message: userMessage,
+      previousUserMessages: history.filter((t) => t.role === 'owner').map((t) => t.content),
+      toolTrace: parseToolTraceLines(ctx.toolTrace ?? []),
+      allowAllActive: this.capabilities.permissions.isAutoApproveAll(),
+      permissionAnswers: this.capabilities.permissions.drainAnswers(),
+      channelType: ctx.msg?.channelType,
+      sessionId: ctx.sessionId,
+      cwd: this.capabilities.getCwd(),
+    });
 
-    if (!this.tokenBudget.canAfford(800)) return;
+    // Validation loop (§3.1): the beliefs the previous turn acted on earn
+    // weak support once the owner's next message in the same session shows
+    // no correction. Then remember what this turn acted on.
+    const pending = this.pendingActedOn;
+    if (pending && pending.ids.length > 0 && pending.sessionId && pending.sessionId === ctx.sessionId && !signals.correction.detected) {
+      try { beliefs.actedOnOk(pending.ids, pending.sessionId); } catch (err) { logger.debug({ err }, 'actedOnOk failed'); }
+    }
+    this.pendingActedOn = ctx.sessionId ? { ids: [...(this.lastInjectedBeliefIds ?? [])], sessionId: ctx.sessionId } : null;
 
     try {
-      const provider = this.providers.getDefault();
-      const result = await generateText({
-        model: provider.getModelInstance(),
-        system: `You extract structured memory from conversations. Output a JSON array of 0-3 memory candidates.
-
-Each candidate: { type, categories, summary (concise fact, 12-220 chars), detail (optional explanation), evidenceKind ("direct" if explicitly stated, "inferred" if deduced), confidence (0-1), importance (0-1), durability (0-1) }
-
-TYPE DEFINITIONS (pick the single most specific one):
-- identity: who the user IS — their name, role, job title, self-description
-- relationship: other people the user knows — MUST include the person's name in summary
-- preference: likes, dislikes, style choices, opinions
-- goal: aspirations, targets, things they want to achieve
-- project: specific ongoing work, initiatives, things being built
-- habit: routines, recurring behaviors, schedules
-- decision: choices made, commitments, selected approaches
-- constraint: limitations, rules they follow, things they avoid
-- episode: notable one-time events worth remembering
-
-CATEGORIES (pick 1-3 domain buckets that best fit this memory):
-- personal: the user's private life, non-work
-- health: medical, physical, mental wellbeing
-- family: family members, family relationships
-- work: job, professional, career
-- finance: money, spending, investments
-- technical: programming, tools, engineering
-- education: learning, study, courses
-- social: friends, social life, community
-- travel: trips, places, geography
-- general: anything that doesn't fit the above
-
-RULES:
-- Each semantic fact must appear EXACTLY ONCE. Never store the same information under multiple types.
-- If a fact is about someone else's role/relationship to the user, use "relationship" (not "identity").
-- "identity" is ONLY for the user themselves.
-- For relationships, always name the person: "Salman is user's co-developer" not "User works with a co-developer".
-- Only extract specific, durable, user-specific information.
-- Do NOT extract trivial observations, greetings, or assistant behavior.
-- "categories" must be an array of 1-3 lowercase strings from the list above. If none fit, suggest a new single-word lowercase category.
-- Output pure JSON array, no markdown fences.`,
-        messages: [
-          { role: 'user', content: `User: ${userMessage}\nAssistant: ${agentResponse}` },
-        ],
-        maxOutputTokens: 400,
-      });
-
-      this.tokenBudget.recordUsage({
-        provider: provider.name,
-        model: provider.getModel(),
-        inputTokens: result.usage?.inputTokens ?? 0,
-        outputTokens: result.usage?.outputTokens ?? 0,
-        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
-        channelType: 'internal',
+      const ops = await extractBeliefOperations({
+        providers: this.learningProviders(),
+        tokenBudget: this.tokenBudget,
+        beliefs,
+        learningPaused: () => this.userMemory?.isLearningPaused() ?? true,
         agentId: this.config.cloud.agentId || undefined,
+      }, {
+        ownerMessage: userMessage,
+        mercuryReply: agentResponse,
+        recentTurns: history.slice(-6),
+        signals,
+        ownerName: this.config.identity.owner || 'the owner',
+        pendingQuestion: pendingQuestion(beliefs),
+        channelAccess,
+        sessionId: ctx.sessionId,
+        turnRef: ctx.msg?.id,
       });
       this.syncTokenInfoToCli();
+      if (ops.length === 0) return;
 
-      const text = result.text.trim();
-      if (!text) return;
-
-      let candidates: Array<{
-        type: string;
-        categories?: string[];
-        summary: string;
-        detail?: string;
-        evidenceKind?: string;
-        confidence: number;
-        importance: number;
-        durability: number;
-      }>;
-
-      try {
-        const jsonStr = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-        const parsed = JSON.parse(jsonStr);
-        // Handle both single object and array of objects
-        candidates = Array.isArray(parsed) ? parsed : [parsed];
-      } catch {
-        const facts = text
-          .split('\n')
-          .map(l => l.replace(/^-\s*/, '').trim())
-          // Skip JSON-like lines (key-value pairs, braces, brackets)
-          .filter(f => f.length > 10 && f.length < 200 && !/^["{\[\]}]|":\s*"/.test(f));
-        candidates = facts.slice(0, 3).map(f => ({
-          type: 'preference',
-          categories: ['general'],
-          summary: f,
-          confidence: 0.75,
-          importance: 0.7,
-          durability: 0.7,
-          evidenceKind: 'inferred',
-        }));
-      }
-
-      const validTypes = ['identity', 'preference', 'goal', 'project', 'habit', 'decision', 'constraint', 'relationship', 'episode'];
-      const typed = candidates
-        .filter(c => c.summary && c.summary.length >= 12 && c.summary.length <= 220)
-        .filter(c => validTypes.includes(c.type))
-        .map(c => {
-          // Normalise categories: must be array of strings, 1-3, lowercase, trimmed.
-          let cats: string[] = ['general'];
-          if (Array.isArray(c.categories) && c.categories.length > 0) {
-            const cleaned = c.categories
-              .map((cat: unknown) => String(cat).trim().toLowerCase())
-              .filter((cat: string) => cat.length > 0)
-              .slice(0, 3);
-            if (cleaned.length > 0) cats = cleaned;
-          }
-          return {
-            type: c.type as any,
-            categories: cats,
-            summary: c.summary,
-            detail: c.detail,
-            evidenceKind: (c.evidenceKind === 'direct' ? 'direct' : 'inferred') as 'direct' | 'inferred',
-            confidence: Math.min(1, Math.max(0, c.confidence ?? 0.7)),
-            importance: Math.min(1, Math.max(0, c.importance ?? 0.7)),
-            durability: Math.min(1, Math.max(0, c.durability ?? 0.7)),
-          };
-        });
-
-      if (typed.length > 0) {
-        const remembered = this.userMemory.remember(typed, 'conversation');
-        if (remembered.length > 0) {
-          logger.info({ count: remembered.length, types: remembered.map(r => r.type) }, 'Second brain memories stored');
+      const results: ApplyResult[] = [];
+      for (const op of ops) {
+        try {
+          const r = beliefs.apply(op);
+          if (r) results.push(r);
+        } catch (err) {
+          logger.warn({ err, op: op.op }, 'Belief operation failed');
         }
       }
+      if (results.length > 0) logger.info({ changes: results.map((r) => `${r.change}:${r.belief.kind}`) }, 'Beliefs updated from turn');
+
+      const note = composeLearnedNote(results, { beliefs });
+      if (!note || !ctx.channel || !ctx.msg) return;
+      const notedAt = this.lastNotedAt.get(ctx.msg.channelId) ?? 0;
+      if (Date.now() - notedAt < NOTE_COOLDOWN_MS) return;
+      this.lastNotedAt.set(ctx.msg.channelId, Date.now());
+      // After the reply, never ahead of it (capped so a stuck delivery can't hold the note forever).
+      await Promise.race([
+        ctx.delivered ?? Promise.resolve(),
+        new Promise<void>((resolve) => { setTimeout(resolve, 20_000).unref(); }),
+      ]);
+      await ctx.channel.send(note, ctx.msg.channelId);
+      // "forget that" right after the note undoes exactly this belief.
+      const noted = results.find((r) => r.behaviorChanging)?.belief.id;
+      if (noted) this.lastNotedBeliefId.set(ctx.msg.channelId, noted);
     } catch (err) {
       logger.warn({ err }, 'Memory extraction error');
     }
@@ -4449,6 +4695,27 @@ RULES:
    * next start does not auto-resume killed tasks. Crash recovery is
    * unaffected — this is only invoked on intentional exits.
    */
+  /**
+   * Stop only the work started from one place (e.g. a desktop voice session,
+   * "desktop:call:<id>"): the running turn if it's theirs, and anything
+   * queued for it. Other chats keep going. Returns whether anything stopped.
+   */
+  stopWorkFor(channelPrefix: string, reason = 'Stopped by the owner.'): boolean {
+    const before = this.messageQueue.length;
+    this.messageQueue = this.messageQueue.filter((i) => !i.message.channelId.startsWith(channelPrefix));
+    let stopped = this.messageQueue.length !== before;
+    if (this.currentMessage?.channelId.startsWith(channelPrefix) && this.currentAbort && !this.currentAbort.signal.aborted) {
+      this.currentAbortReason = 'stopped';
+      this.currentAbort.abort();
+      if (this.currentWorkKey) {
+        try { this.workLedger.markCancelled(this.currentWorkKey, reason); } catch { /* entry may not exist */ }
+      }
+      stopped = true;
+    }
+    if (stopped) logger.info({ channelPrefix }, 'Work stopped for one channel');
+    return stopped;
+  }
+
   cancelActiveWork(reason = 'Cancelled by the user.'): number {
     try {
       return this.workLedger.cancelActive(reason);
@@ -4476,10 +4743,18 @@ RULES:
    * what happened to their task.
    */
   async notifyAllChannels(message: string): Promise<void> {
+    const outcome = await this.alertGate.run(message, () => this.broadcastToChannels(message));
+    if (outcome !== 'sent') logger.warn({ outcome, message: message.slice(0, 120) }, 'Broadcast not sent');
+  }
+
+  /** Broadcasts never nest or repeat (see AlertGate). */
+  private alertGate = new AlertGate();
+
+  private async broadcastToChannels(message: string): Promise<void> {
     const active = this.channels.getActiveChannels();
     const sends = active.map((type) => {
       const ch = this.channels.get(type);
-      if (!ch) return Promise.resolve();
+      if (!ch || ch.noBroadcast) return Promise.resolve();
       return ch.send(message).catch((e) => {
         logger.warn({ e, channel: type }, 'Failed to notify channel before exit');
       });
@@ -4695,6 +4970,8 @@ Is this productive iteration or a stuck loop?`,
               '`/skills install <id>` — install from the registry',
               '`/skills install <url>` — install raw SKILL.md from a URL',
               '`/skills remove <id>` — uninstall',
+              '`/skills self-made` — the skills Mercury wrote for itself, with use counts',
+              '`/skills self-made enable|disable|remove <name>`',
               '',
               'Browse the full catalog at https://skills.mercuryagent.sh',
             ].join('\n'),
@@ -4719,6 +4996,38 @@ Is this productive iteration or a stuck loop?`,
             '',
             '_Run `/skills search <query>` to find more on the registry._',
           ];
+          await channel.send(lines.join('\n'), channelId);
+          return;
+        }
+
+        case 'self-made':
+        case 'self':
+        case 'mine': {
+          const { listSelfMade } = await import('../skills/self-made.js');
+          const root = this.skillLoader?.rootDir();
+          if (!root) { await channel.send('Skills are not available in this session.', channelId); return; }
+          const action = (args[0] || '').toLowerCase();
+          const target = args.slice(1).join(' ').trim();
+          if ((action === 'enable' || action === 'disable' || action === 'remove') && target) {
+            const entry = listSelfMade(root).find((s) => s.name === target);
+            if (!entry) { await channel.send(`No self-made skill named "${target}".`, channelId); return; }
+            if (action === 'remove') { this.skillLoader!.deleteSkill(target); await channel.send(`Removed self-made skill "${target}".`, channelId); return; }
+            this.skillLoader!.setSkillActive(target, action === 'enable');
+            await channel.send(`${action === 'enable' ? 'Enabled' : 'Disabled'} self-made skill "${target}".`, channelId);
+            return;
+          }
+          const entries = listSelfMade(root);
+          if (entries.length === 0) {
+            await channel.send('No self-made skills yet. After a long task works, Mercury saves the procedure here (create_skill) so the next time is one step.', channelId);
+            return;
+          }
+          const fmt = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : 'never');
+          const lines = [`**${entries.length} self-made skill${entries.length > 1 ? 's' : ''}** (Mercury wrote these; unverified until used again):`, ''];
+          for (const s of entries) {
+            lines.push(`${s.active ? '•' : '◦'} **${s.name}** — ${s.description}`);
+            lines.push(`   made ${fmt(s.made)} · used ${s.uses}× · last ${fmt(s.lastUsed)}${s.active ? '' : ' · dormant'}`);
+          }
+          lines.push('', '_`/skills self-made enable|disable|remove <name>`. Unused ones go dormant after 30 days; nothing is deleted on its own._');
           await channel.send(lines.join('\n'), channelId);
           return;
         }
@@ -5059,6 +5368,21 @@ Is this productive iteration or a stuck loop?`,
       for (const [type, count] of typeEntries) {
         lines.push(`  ${type}: ${count}`);
       }
+    }
+    // Owner Model (ADR-026): the honest numbers and the last few things learned.
+    try {
+      const beliefs = this.userMemory.beliefs;
+      const now = Date.now();
+      lines.push('', formatCounts(beliefs.counts()));
+      const recent = beliefs.recentlyLearned(now - 30 * 86_400_000, 3);
+      if (recent.length > 0) {
+        lines.push('Recently learned:');
+        recent.forEach((b, i) => lines.push(`  ${formatLearnedLine(beliefs, i + 1, b, now)}`));
+        this.lastBeliefListing.set(channelId, recent.map((b) => b.id));
+      }
+      lines.push('More: /memory learned, /memory beliefs, /memory contested; /memory confirm|forget|correct <n>.');
+    } catch (err) {
+      logger.debug({ err }, 'belief overview unavailable');
     }
     await channel.send(lines.join('\n'), channelId);
   }

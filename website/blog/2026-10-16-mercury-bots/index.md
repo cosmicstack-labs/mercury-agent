@@ -5,7 +5,6 @@ description: "Always-on agents shipped everywhere this autumn. How Mercury Bots 
 authors: [salman]
 tags: [product, engineering, runtime]
 image: ./cover.jpg
-featured: true
 keywords: [mercury bots, always-on ai agents, ai agent fleet, self-hosted ai agent, openclaw alternative, hermes agent comparison, grok bot, openai dots, meta muse]
 ---
 

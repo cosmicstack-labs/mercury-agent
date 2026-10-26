@@ -1,0 +1,622 @@
+{
+  "manifestVersion": 1,
+  "id": "whatsapp",
+  "name": "WhatsApp",
+  "version": "0.1.1",
+  "description": "Chat with Mercury on WhatsApp and talk to it by voice call: OpenAI by default, or Gemini, Grok, ElevenLabs, Azure, Qwen, or your own Mercury model with Deepgram/Cartesia/MiniMax/Sarvam voices. Runs on a spare number as a linked device (unofficial protocol).",
+  "kind": "out-of-process",
+  "author": "Cosmic Stack",
+  "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/whatsapp",
+  "license": "MIT",
+  "engines": {
+    "mercury": ">=1.3.9 <2.0.0",
+    "pluginApi": "^1.1.0"
+  },
+  "server": {
+    "command": "bin/mercury-wa",
+    "args": [],
+    "platforms": {
+      "win32-x64": {
+        "command": "bin/mercury-wa.exe",
+        "args": []
+      }
+    }
+  },
+  "contributes": {
+    "tools": [
+      {
+        "name": "call_owner",
+        "description": "Ring the owner on WhatsApp right now and talk to them by voice (only the owner can be called; rate-limited). Use for things that matter now; send a message for everything else. To call LATER (\"call me at 9pm\", \"in 20 minutes\"), use schedule_call instead. For \"call me when X is done\", do X, then call this.",
+        "readOnly": false,
+        "timeoutMs": 120000
+      },
+      {
+        "name": "send_to_chat",
+        "readOnly": true,
+        "timeoutMs": 30000,
+        "description": "Send the owner a WhatsApp message: links, lists, prices, addresses, anything worth keeping. Only the owner receives it, so no approval is needed. On a voice call, use it instead of reading links or long details aloud, then say you've sent them to the chat."
+      }
+    ],
+    "channel": {
+      "type": "whatsapp"
+    }
+  },
+  "permissions": {
+    "network": [
+      "*.aliyuncs.com",
+      "*.openai.azure.com",
+      "*.whatsapp.com",
+      "*.whatsapp.net",
+      "api.cartesia.ai",
+      "api.deepgram.com",
+      "api.elevenlabs.io",
+      "api.minimax.io",
+      "api.openai.com",
+      "api.sarvam.ai",
+      "api.x.ai",
+      "generativelanguage.googleapis.com",
+      "streaming.assemblyai.com",
+      "web.whatsapp.com"
+    ],
+    "secrets": [
+      "GEMINI_API_KEY",
+      "ELEVENLABS_API_KEY",
+      "AZURE_OPENAI_API_KEY",
+      "DASHSCOPE_API_KEY",
+      "DEEPGRAM_API_KEY",
+      "ASSEMBLYAI_API_KEY",
+      "SARVAM_API_KEY",
+      "CARTESIA_API_KEY",
+      "MINIMAX_API_KEY"
+    ],
+    "providers": {
+      "openai": {
+        "unlocks": "Voice calls",
+        "when": {
+          "voiceEngine": "openai"
+        },
+        "alternative": "Or pick another voice in /plugins whatsapp → 🎙 Voice calls."
+      },
+      "grok": {
+        "unlocks": "Voice calls with Grok",
+        "when": {
+          "voiceEngine": "grok"
+        },
+        "alternative": "Or pick another voice in /plugins whatsapp → 🎙 Voice calls."
+      }
+    }
+  },
+  "settings": {
+    "version": 1,
+    "fields": {
+      "owner": {
+        "type": "string",
+        "description": "Your own WhatsApp number. Only this number can talk to Mercury.",
+        "default": "",
+        "label": "Which number will you chat from?",
+        "setup": true,
+        "required": true,
+        "format": "phone"
+      },
+      "access": {
+        "type": "enum",
+        "label": "What can Mercury do in your chat?",
+        "description": "You can change this anytime in /plugins whatsapp.",
+        "options": [
+          "general",
+          "extended"
+        ],
+        "default": "general",
+        "setup": true,
+        "optionLabels": {
+          "general": "General: chat and general knowledge only. No tools, files or personal memory.",
+          "extended": "Extended: memory, files, tools and actions. Anything risky still asks you first."
+        }
+      },
+      "members": {
+        "type": "string",
+        "description": "Other numbers allowed to chat with Mercury, comma separated (they can't run admin commands).",
+        "default": "",
+        "label": "Other numbers allowed to chat",
+        "format": "text"
+      },
+      "memberAccess": {
+        "type": "enum",
+        "description": "What members may do (never more than you).",
+        "options": [
+          "general",
+          "extended"
+        ],
+        "default": "general",
+        "label": "What can those numbers do?",
+        "optionLabels": {
+          "general": "General: chat only",
+          "extended": "Extended (never more than you)"
+        }
+      },
+      "allowGroups": {
+        "type": "boolean",
+        "description": "Answer in WhatsApp groups (owner and members only).",
+        "default": false,
+        "label": "Answer in WhatsApp groups",
+        "optionLabels": {
+          "true": "On: Mercury answers in groups when someone mentions it",
+          "false": "Off: Mercury only answers in one-to-one chats"
+        }
+      },
+      "answerCalls": {
+        "type": "boolean",
+        "description": "Answer voice calls from the owner.",
+        "default": true,
+        "label": "Answer your voice calls",
+        "setup": false,
+        "group": "voice",
+        "optionLabels": {
+          "true": "On: Mercury picks up when you call it",
+          "false": "Off: your calls to Mercury ring out"
+        }
+      },
+      "voiceEngine": {
+        "type": "enum",
+        "label": "Who handles your calls?",
+        "setup": true,
+        "default": "openai",
+        "description": "Who listens and speaks on calls. Change anytime in /plugins whatsapp.",
+        "options": [
+          "openai",
+          "gemini",
+          "grok",
+          "elevenlabs",
+          "azure",
+          "qwen",
+          "mercury"
+        ],
+        "optionLabels": {
+          "openai": "⭐ OpenAI Realtime: recommended for the best calls (uses your OpenAI key)",
+          "gemini": "Google Gemini Live: cheapest, free tier, Hindi and Urdu",
+          "grok": "xAI Grok Voice: uses your Grok provider",
+          "elevenlabs": "ElevenLabs Realtime (experimental)",
+          "azure": "Azure OpenAI Realtime",
+          "qwen": "Alibaba Qwen-Omni Realtime",
+          "mercury": "My own model: your Mercury model thinks; pick who listens and speaks"
+        },
+        "group": "voice",
+        "setupWhenMissing": "provider:openai"
+      },
+      "voiceModel": {
+        "type": "string",
+        "label": "OpenAI voice model",
+        "default": "gpt-realtime-2.1",
+        "description": "gpt-realtime-2.1, or gpt-realtime-2.1-mini (about 3x cheaper).",
+        "when": {
+          "voiceEngine": [
+            "openai"
+          ]
+        },
+        "group": "voice"
+      },
+      "voice": {
+        "type": "enum",
+        "description": "Mercury's voice on calls.",
+        "options": [
+          "marin",
+          "cedar",
+          "alloy",
+          "ash",
+          "ballad",
+          "coral",
+          "echo",
+          "sage",
+          "shimmer",
+          "verse"
+        ],
+        "default": "marin",
+        "label": "OpenAI voice",
+        "when": {
+          "voiceEngine": [
+            "openai",
+            "azure"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiKey": {
+        "type": "secret",
+        "secret": "GEMINI_API_KEY",
+        "label": "Gemini API key",
+        "setup": true,
+        "required": true,
+        "description": "From aistudio.google.com/apikey.",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiModel": {
+        "type": "string",
+        "label": "Gemini Live model",
+        "default": "gemini-3.8-live",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiVoice": {
+        "type": "string",
+        "label": "Gemini voice",
+        "default": "Kore",
+        "description": "e.g. Kore, Puck, Charon, Aoede.",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ]
+        },
+        "group": "voice"
+      },
+      "grokModel": {
+        "type": "string",
+        "label": "Grok voice model",
+        "default": "grok-voice-latest",
+        "when": {
+          "voiceEngine": [
+            "grok"
+          ]
+        },
+        "group": "voice"
+      },
+      "grokVoice": {
+        "type": "enum",
+        "label": "Grok voice",
+        "default": "eve",
+        "options": [
+          "eve",
+          "ara",
+          "leo",
+          "rex",
+          "sal",
+          "atlas",
+          "naksh",
+          "celeste",
+          "ursa",
+          "sirius",
+          "lumen"
+        ],
+        "when": {
+          "voiceEngine": [
+            "grok"
+          ]
+        },
+        "group": "voice"
+      },
+      "elevenlabsKey": {
+        "type": "secret",
+        "secret": "ELEVENLABS_API_KEY",
+        "label": "ElevenLabs API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": [
+              "elevenlabs"
+            ]
+          },
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "elevenlabs"
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "elevenlabs"
+          }
+        ],
+        "group": "voice"
+      },
+      "elevenlabsModel": {
+        "type": "enum",
+        "label": "ElevenLabs Realtime model",
+        "default": "eleven_realtime_v1_mini",
+        "options": [
+          "eleven_realtime_v1_mini",
+          "eleven_realtime_v1_max"
+        ],
+        "when": {
+          "voiceEngine": [
+            "elevenlabs"
+          ]
+        },
+        "group": "voice"
+      },
+      "elevenlabsVoice": {
+        "type": "string",
+        "label": "ElevenLabs voice",
+        "default": "brian",
+        "when": {
+          "voiceEngine": [
+            "elevenlabs"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureKey": {
+        "type": "secret",
+        "secret": "AZURE_OPENAI_API_KEY",
+        "label": "Azure OpenAI API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureEndpoint": {
+        "type": "string",
+        "label": "Azure endpoint",
+        "setup": true,
+        "required": true,
+        "description": "e.g. myresource.openai.azure.com",
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureDeployment": {
+        "type": "string",
+        "label": "Azure realtime deployment name",
+        "setup": true,
+        "default": "gpt-realtime-2.1",
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenKey": {
+        "type": "secret",
+        "secret": "DASHSCOPE_API_KEY",
+        "label": "Alibaba Model Studio (DashScope) API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenEndpoint": {
+        "type": "string",
+        "label": "Qwen endpoint host",
+        "default": "dashscope-intl.aliyuncs.com",
+        "description": "Your workspace host, e.g. {workspace}.ap-southeast-1.maas.aliyuncs.com",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenModel": {
+        "type": "string",
+        "label": "Qwen model",
+        "default": "qwen3.8-omni-flash-realtime",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenVoice": {
+        "type": "string",
+        "label": "Qwen voice",
+        "default": "Tina",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ]
+        },
+        "group": "voice"
+      },
+      "sttProvider": {
+        "type": "enum",
+        "label": "Who listens (speech to text)",
+        "setup": true,
+        "default": "deepgram",
+        "options": [
+          "deepgram",
+          "assemblyai",
+          "elevenlabs",
+          "sarvam"
+        ],
+        "optionLabels": {
+          "deepgram": "Deepgram Nova-3: fast, cheap, Hindi and Urdu",
+          "assemblyai": "AssemblyAI Universal-3.6 Pro: Hindi and Urdu",
+          "elevenlabs": "ElevenLabs Scribe v2",
+          "sarvam": "Sarvam Saaras: Indian languages, incl. Urdu"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ]
+        },
+        "group": "voice"
+      },
+      "sttLanguage": {
+        "type": "enum",
+        "label": "Language you'll speak",
+        "default": "auto",
+        "options": [
+          "auto",
+          "en",
+          "hi",
+          "ur"
+        ],
+        "optionLabels": {
+          "auto": "Detect automatically",
+          "en": "English",
+          "hi": "Hindi",
+          "ur": "Urdu"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ]
+        },
+        "group": "voice"
+      },
+      "deepgramKey": {
+        "type": "secret",
+        "secret": "DEEPGRAM_API_KEY",
+        "label": "Deepgram API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "deepgram"
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "deepgram"
+          }
+        ],
+        "group": "voice"
+      },
+      "assemblyaiKey": {
+        "type": "secret",
+        "secret": "ASSEMBLYAI_API_KEY",
+        "label": "AssemblyAI API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "sttProvider": "assemblyai"
+        },
+        "group": "voice"
+      },
+      "sarvamKey": {
+        "type": "secret",
+        "secret": "SARVAM_API_KEY",
+        "label": "Sarvam API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "sarvam"
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "sarvam"
+          }
+        ],
+        "group": "voice"
+      },
+      "ttsProvider": {
+        "type": "enum",
+        "label": "Who speaks (voice)",
+        "setup": true,
+        "default": "cartesia",
+        "options": [
+          "cartesia",
+          "elevenlabs",
+          "minimax",
+          "sarvam",
+          "deepgram"
+        ],
+        "optionLabels": {
+          "cartesia": "Cartesia Sonic-3.6: very fast, Hindi, Hinglish and Urdu",
+          "elevenlabs": "ElevenLabs Flash: 17k+ voices (Hindi, no Urdu)",
+          "minimax": "MiniMax speech-2.8 (Hindi, no Urdu)",
+          "sarvam": "Sarvam Bulbul: Indian voices (no Urdu)",
+          "deepgram": "Deepgram Aura-2 (English and a few others)"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ]
+        },
+        "group": "voice"
+      },
+      "cartesiaKey": {
+        "type": "secret",
+        "secret": "CARTESIA_API_KEY",
+        "label": "Cartesia API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "ttsProvider": "cartesia"
+        },
+        "group": "voice"
+      },
+      "minimaxKey": {
+        "type": "secret",
+        "secret": "MINIMAX_API_KEY",
+        "label": "MiniMax API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "ttsProvider": "minimax"
+        },
+        "group": "voice"
+      },
+      "ttsVoice": {
+        "type": "string",
+        "label": "Voice ID",
+        "description": "Leave empty for the provider's default voice.",
+        "default": "",
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ]
+        },
+        "group": "voice"
+      },
+      "maxCallsPerHour": {
+        "type": "number",
+        "description": "Most times Mercury may call you in an hour.",
+        "default": 4,
+        "label": "Most calls from Mercury per hour",
+        "group": "voice",
+        "examples": [
+          "2",
+          "4",
+          "8"
+        ]
+      },
+      "maxCallMinutes": {
+        "type": "number",
+        "description": "Longest a call can last, in minutes.",
+        "default": 15,
+        "label": "Longest call, in minutes",
+        "group": "voice",
+        "examples": [
+          "10",
+          "15",
+          "30"
+        ]
+      }
+    },
+    "groups": {
+      "voice": {
+        "label": "🎙 Voice calls",
+        "description": "Who listens and speaks when you call Mercury (or it calls you). OpenAI is recommended for the best results; every other option works too.",
+        "readyUnless": [
+          "provider:openai",
+          "provider:grok"
+        ]
+      }
+    }
+  }
+}

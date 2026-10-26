@@ -11,6 +11,8 @@ import type {
 
 export const BOT_MANIFEST_FILENAME = 'bot.yaml';
 export const BOT_PERSONA_FILENAME = 'persona.md';
+/** A bot's face. Extension-less on purpose: the format is sniffed from the bytes. */
+export const BOT_AVATAR_FILENAME = 'avatar';
 export const BOT_PERMISSIONS_FILENAME = 'permissions.yaml';
 /** Fleet-shared sandbox folder (every bot gets read/write/execute). The
  * underscore prefix keeps store.list() from ever treating it as a bot. */
@@ -306,6 +308,62 @@ export class BotStore {
       atomicWrite(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), JSON.stringify(state, null, 2) + '\n');
     } catch (err) {
       logger.warn({ botId: id, err: (err as Error)?.message }, 'Could not persist routine state');
+    }
+  }
+
+  /**
+   * The bot's avatar, kept next to the persona so deleting a bot takes its face
+   * with it and an exported/imported profile stays whole. No extension: the
+   * bytes decide the format (see `core/media-type.ts`), so a re-uploaded webp
+   * cannot end up labelled png by a stale filename.
+   */
+  avatarPath(id: string): string {
+    return join(this.botDir(id), BOT_AVATAR_FILENAME);
+  }
+
+  hasAvatar(id: string): boolean {
+    try {
+      return existsSync(this.avatarPath(id));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Last write time of the avatar, for cache validators. 0 when there is none. */
+  avatarMtimeMs(id: string): number {
+    try {
+      return statSync(this.avatarPath(id)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  readAvatar(id: string): Buffer | null {
+    try {
+      return readFileSync(this.avatarPath(id));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Replaces any previous avatar; the write is atomic so a half-written face never serves. */
+  writeAvatar(id: string, bytes: Buffer): void {
+    const file = this.avatarPath(id);
+    mkdirSync(join(file, '..'), { recursive: true });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, bytes, { mode: 0o600 });
+    renameSync(tmp, file);
+    this.locationCache.delete(id);
+  }
+
+  removeAvatar(id: string): boolean {
+    try {
+      const file = this.avatarPath(id);
+      if (!existsSync(file)) return false;
+      rmSync(file, { force: true });
+      return true;
+    } catch {
+      return false;
     }
   }
 

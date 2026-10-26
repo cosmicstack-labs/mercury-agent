@@ -135,8 +135,8 @@ const config: Config = {
     },
     // Bump with every release, together with RELEASE in src/components/Home/data.ts.
     announcementBar: {
-      id: 'release-1-3-1',
-      content: '☿ Mercury 1.3.1, <strong>Steady Mercury</strong>, is out: one runtime, instant attach, bots that stay online and deliver. <a href="/docs/releases/1.3.1">Read the release notes →</a>',
+      id: 'release-1-4-0',
+      content: '☿ Mercury 1.4.0, <strong>Pluggy Mercury</strong>, is out: plugins, WhatsApp voice calls, and Optimus, which uses your computer. <a href="/docs/releases/1.4.0">Read the release notes →</a>',
       isCloseable: true,
     },
     navbar: {

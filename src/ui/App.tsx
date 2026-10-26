@@ -12,6 +12,7 @@ import { normalizeTerminalText, getViewportWindow } from './terminal-viewport.js
 import { useTerminalSize as useSharedTerminalSize } from './use-terminal-size.js';
 import { CursorCell } from './cursor-anchor.js';
 import { isNarrow, ruleWidth, sidePanelWidth, fitTail, hintColumns } from './layout.js';
+import { fitSegments, statusSegments, type StatusSegment } from './status-bar.js';
 import { useTick, spinnerFrame, elapsedSeconds, SPINNER_FRAMES } from './tick-store.js';
 import { loadInputHistory, saveInputHistory } from './input-history-store.js';
 import { buildMercuryMessageLines, buildMercuryBrandLines, buildStreamTailLines, parseChunkIndex, splitFinalMessage, splitStreamingMessage, type MercuryTranscriptLine } from './mercury-transcript.js';
@@ -880,43 +881,20 @@ function HeaderBanner({ cols }: { cols: number }): React.ReactNode {
 }
 
 function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
-  if (!state.tokenInfo && !state.provider && !state.currentSession) return null;
+  if (!state.tokenInfo && !state.provider && !state.currentSession && !state.desktopActivity) return null;
 
   const saverActive = !!(state.saverInfo && state.saverInfo.state !== 'off');
   const saverColor = state.saverInfo?.state === 'auto' ? 'yellow' : 'green';
   const pct = state.tokenInfo?.percentage ?? 0;
-  const pctColor = saverActive ? saverColor : pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'cyan';
 
   const runningAgents = state.subAgents.filter((a) => a.status === 'running' || a.status === 'paused').length;
   const runningBg = state.backgroundTasks.filter((t) => t.status === 'running').length;
   const isWorkspace = state.mode === 'workspace' && state.workspace;
 
-  // Build colored segments — each has {text, color}. Rendered inline with │.
-  const segments: { text: string; color: string }[] = [];
-
-  // 1. Token bar
-  if (state.tokenInfo) {
-    if (saverActive) segments.push({ text: '⚡', color: saverColor });
-    segments.push({
-      text: `${pct < 25 ? '○' : pct < 50 ? '◔' : pct < 75 ? '◑' : pct < 100 ? '◕' : '●'}[${'█'.repeat(Math.min(10, Math.round(pct / 10)))}${'░'.repeat(10 - Math.min(10, Math.round(pct / 10)))}] ${pct}%`,
-      color: pctColor,
-    });
-    if (saverActive && state.saverInfo!.savedToday > 0) {
-      segments.push({ text: `~${formatCompact(state.saverInfo!.savedToday)}`, color: 'green' });
-    }
-  }
-
-  // 2. Provider
-  if (state.provider) {
-    segments.push({ text: `${state.provider.name} · ${state.provider.model}`, color: 'magenta' });
-  }
-
-  // 3. Session
-  if (state.currentSession) {
-    segments.push({ text: `${state.currentSession.alias} [${state.currentSession.shortId}]`, color: 'cyan' });
-  }
-
-  // 4. Workspace
+  // Shared status-row builder (src/ui/status-bar.ts): priority order with
+  // compact forms, so a long model or session name never crowds the rest.
+  const extras: StatusSegment[] = [];
+  if (saverActive) extras.push({ text: `⚡ saver${state.saverInfo!.savedToday > 0 ? ` ~${formatCompact(state.saverInfo!.savedToday)}` : ''}`, compact: '⚡', color: saverColor, priority: 4 });
   if (isWorkspace && state.workspace) {
     const ws = state.workspace;
     let wsStr = `⎇ ${ws.branch}`;
@@ -924,33 +902,20 @@ function TokenBarView({ state, cols }: { state: TuiState; cols: number }) {
     if (ws.behind > 0) wsStr += ` ↓${ws.behind}`;
     if (ws.stagedCount > 0) wsStr += ` S${ws.stagedCount}`;
     if (ws.unstagedCount > 0) wsStr += ` M${ws.unstagedCount}`;
-    segments.push({ text: wsStr, color: 'blue' });
+    extras.push({ text: wsStr, compact: `⎇ ${ws.branch}`, color: 'blue', priority: 2 });
   }
-
-  // 5. Background tasks
-  if (!isWorkspace && runningBg > 0) {
-    segments.push({ text: `⏳ ${runningBg}bg`, color: 'cyan' });
-  }
-
-  // 6. Sub-agents
-  if (!isWorkspace && runningAgents > 0) {
-    segments.push({ text: `🤖 ${runningAgents}agent${runningAgents !== 1 ? 's' : ''}`, color: 'magenta' });
-  }
-
-  // Calculate total width and drop segments from the right if they don't fit
-  const sepStr = ' │ ';
-  const maxLen = Math.max(20, cols - 2);
-  let totalLen = segments.reduce((sum, s, i) => sum + s.text.length + (i > 0 ? sepStr.length : 0), 0);
-  const visible = [...segments];
-  while (totalLen > maxLen && visible.length > 1) {
-    const removed = visible.pop()!;
-    totalLen -= removed.text.length + sepStr.length;
-  }
-  if (totalLen > maxLen && visible.length > 0) {
-    const last = visible[visible.length - 1];
-    const excess = totalLen - maxLen;
-    last.text = last.text.slice(0, Math.max(1, last.text.length - excess - 1)) + '…';
-  }
+  if (!isWorkspace && runningBg > 0) extras.push({ text: `⏳ ${runningBg} in background`, compact: `⏳${runningBg}`, color: 'cyan', priority: 3 });
+  if (!isWorkspace && runningAgents > 0) extras.push({ text: `🤖 ${runningAgents} agent${runningAgents !== 1 ? 's' : ''}`, compact: `🤖${runningAgents}`, color: 'magenta', priority: 3 });
+  const visible = fitSegments(statusSegments({
+    provider: state.provider,
+    permission: state.permissionMode,
+    tokensPct: state.tokenInfo ? pct : null,
+    desktop: state.desktopActivity,
+    updateAvailable: state.updateAvailable,
+    session: state.currentSession,
+    extras,
+  }), Math.max(20, cols - 2));
+  const sepStr = ' · ';
 
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -2717,30 +2682,29 @@ export function MercuryCodeView({
   const git = mc.git;
   // '' = not read yet (async refresh pending); hide the segment until then.
   const hasGit = git.branch !== '' && git.branch !== 'no-git' && git.branch !== 'not-a-git-repo';
-  const rightSegs: Array<{ text: string; color: string }> = [{ text: mc.dirName, color: THEME_ACCENT }];
+  // Same row builder as chat (src/ui/status-bar.ts): permission, budget
+  // meter, model (no provider name), mode, then the folder and branch;
+  // fitted to the width in priority order so nothing collides or wraps.
+  // Optimus activity, when there is any, is the last thing dropped.
+  const extras: StatusSegment[] = [];
   if (hasGit) {
     const gitBits = [`⎇ ${git.branch}`];
     if (git.ahead > 0) gitBits.push(`↑${git.ahead}`);
     if (git.behind > 0) gitBits.push(`↓${git.behind}`);
     if (git.dirty > 0) gitBits.push(`±${git.dirty}`);
-    rightSegs.push({ text: gitBits.join(' '), color: 'blue' });
+    extras.push({ text: gitBits.join(' '), compact: `⎇ ${git.branch}`, color: 'blue', priority: 6 });
   }
-  rightSegs.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT });
-  if (state.provider) rightSegs.push({ text: `${state.provider.name} ${state.provider.model}`, color: 'magenta' });
-  // Developer status HUD: token budget is otherwise invisible in Mercury
-  // Code (TokenBarView only renders in chat surfaces).
-  if (state.tokenInfo) rightSegs.push({ text: `⚡ ${Math.round(state.tokenInfo.percentage)}%`, color: 'green' });
-  // Update-available indicator: one dim segment, no extra row — ignorable via
-  // /update ignore, so it must never crowd the bar.
-  if (state.updateAvailable) rightSegs.push({ text: `⬆ v${state.updateAvailable}`, color: 'yellow' });
-  // Fit: drop whole segments from the right when the terminal is narrow.
+  extras.push({ text: mc.dirName, color: THEME_ACCENT, priority: 7 });
+  extras.push({ text: modeLabel, color: mode === 'execute' ? 'green' : mode === 'plan' ? 'yellow' : THEME_ACCENT, priority: 4 });
+  const rightSegs = fitSegments(statusSegments({
+    provider: state.provider,
+    permission: state.permissionMode,
+    tokensPct: state.tokenInfo ? state.tokenInfo.percentage : null,
+    desktop: state.desktopActivity,
+    updateAvailable: state.updateAvailable,
+    extras,
+  }), Math.max(10, cols - 6 - (ctrlCHint || state.tuiFrozen ? 40 : 0)));
   const SEP = ' · ';
-  let segWidth = 4; // paddingX on both sides
-  rightSegs.forEach((seg, i) => { segWidth += seg.text.length + (i > 0 ? SEP.length : 0); });
-  while (segWidth > cols - 2 && rightSegs.length > 1) {
-    const removed = rightSegs.pop()!;
-    segWidth -= removed.text.length + SEP.length;
-  }
   // Freeze hint lives in the status bar (not a new row) so the live region's
   // height stays constant — a new row would re-introduce scrollback churn.
   const leftHint = ctrlCHint
@@ -2750,8 +2714,8 @@ export function MercuryCodeView({
     : mc.exitConfirm || state.permissionPrompt
     ? '' // the prompt / confirm box already shows its own controls
     : state.isThinking || state.toolSteps.some((s) => s.status === 'running') || state.subAgents.some((a) => a.status === 'running')
-      ? 'esc interrupt' // the live feedback block above is showing progress
-      : '↵ send · esc esc exit · /help';
+      ? '' // the live feedback block above is showing progress (esc interrupts)
+      : ''; // idle: the row is status only
 
   const showHints = finalizedMessages.length === 0 && streamTail.length === 0;
 
@@ -2778,7 +2742,7 @@ export function MercuryCodeView({
         <Spacer />
         <Text wrap="truncate-end">
           {rightSegs.map((seg, i) => (
-            <React.Fragment key={seg.text}>
+            <React.Fragment key={`${seg.priority}:${i}`}>
               {i > 0 && <Text color="gray">{SEP}</Text>}
               <Text color={seg.color}>{seg.text}</Text>
             </React.Fragment>

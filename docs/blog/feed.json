@@ -5,6 +5,71 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/how-optimus-works",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/how-optimus-works",
+            "title": "How Optimus works: an agent that uses your computer",
+            "summary": "Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.",
+            "date_modified": "2026-10-24T00:00:00.000Z",
+            "author": {
+                "name": "Salman Qureshi",
+                "url": "https://github.com/hotheadhacker"
+            },
+            "tags": [
+                "Engineering",
+                "Product"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/mercury-1-4",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-1-4",
+            "title": "Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk",
+            "summary": "Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.",
+            "date_modified": "2026-10-23T00:00:00.000Z",
+            "author": {
+                "name": "Salman Qureshi",
+                "url": "https://github.com/hotheadhacker"
+            },
+            "tags": [
+                "News",
+                "Releases",
+                "Product"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
+            "title": "The new bottleneck in AI coding isn't code generation. It's verification.",
+            "summary": "A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.",
+            "date_modified": "2026-10-20T00:00:00.000Z",
+            "author": {
+                "name": "tashiriskhan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Engineering",
+                "News"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/agent-permissions-least-privilege",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/agent-permissions-least-privilege",
+            "title": "Agents exceeded their permissions: how to scope them",
+            "summary": "CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.",
+            "date_modified": "2026-10-17T00:00:00.000Z",
+            "author": {
+                "name": "tashiriskhan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Security",
+                "News"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/mercury-bots",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-bots",

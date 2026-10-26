@@ -109,6 +109,11 @@ export class SecondBrainDB {
     return this.db.backend;
   }
 
+  /** The shared connection, for stores that keep their own tables in this file (beliefs). */
+  get connection(): SqliteDatabase {
+    return this.db;
+  }
+
   init(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
@@ -820,6 +825,19 @@ export class SecondBrainDB {
     const stmt = this.db.prepare(`SELECT COUNT(*) as count FROM memories WHERE user_key = ? AND dismissed = 0 AND scope IN ('active', 'durable')`);
     const row = stmt.get(userKey) as { count: number };
     return row.count;
+  }
+
+  /** Rows the belief migration set aside as junk (ADR-026 §3.7): hidden from prompts, shown on the dashboard for review. */
+  listQuarantined(userKey: string, limit: number = 500): MemoryRow[] {
+    const stmt = this.db.prepare(`SELECT * FROM memories WHERE user_key = ? AND scope = 'quarantine' AND dismissed = 0 ORDER BY updated_at DESC LIMIT ?`);
+    return stmt.all(userKey, limit) as MemoryRow[];
+  }
+
+  /** The owner reviewed a quarantined row and wants it back: it becomes a durable memory again. */
+  restoreQuarantined(id: string): boolean {
+    const now = Date.now();
+    const stmt = this.db.prepare(`UPDATE memories SET scope = 'durable', dismissed = 0, provenance = 'restored', updated_at = ?, last_seen_at = ? WHERE id = ? AND scope = 'quarantine'`);
+    return stmt.run(now, now, id).changes > 0;
   }
 
   close(): void {

@@ -22,6 +22,12 @@ export interface Channel {
   askPermissionMode?(): Promise<PermissionMode>;
   isReady(): boolean;
   onMessage(handler: (msg: ChannelMessage) => void): void;
+  /**
+   * No chat of its own (e.g. the desktop voice channel): broadcasts skip it
+   * and it's never picked for notifications. Its own send() forwards to the
+   * owner's chats, so including it in a broadcast would loop.
+   */
+  readonly noBroadcast?: boolean;
 }
 
 export abstract class BaseChannel implements Channel {

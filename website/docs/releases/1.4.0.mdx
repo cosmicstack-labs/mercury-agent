@@ -1,0 +1,136 @@
+---
+title: "v1.4.0 — Pluggy Mercury"
+sidebar_label: "v1.4.0"
+description: "Mercury gets a plugin system and two official plugins: WhatsApp chat and voice calls in both directions, and Optimus, which lets Mercury use your computer by chat or out loud. Plus built-in web search and photos, PDFs and voice notes from chat."
+keywords: [mercury, mercury-agent, release, 1.4.0, plugins, whatsapp, voice calls, optimus, computer use, web search]
+---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta property="og:title" content="Mercury Agent v1.4.0 — Pluggy Mercury" />
+  <meta property="og:description" content="Plugins · WhatsApp chat and voice calls · Optimus: Mercury uses your computer · Built-in web search · Photos, PDFs and voice notes from chat" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://mercuryagent.sh/docs/releases/1.4.0" />
+  <meta property="og:site_name" content="Mercury Agent — Soul-driven" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@mercuryagent" />
+  <meta name="twitter:title" content="Mercury Agent v1.4.0 — Pluggy Mercury" />
+  <meta name="twitter:description" content="Plugins · WhatsApp chat and voice calls · Optimus: Mercury uses your computer · Built-in web search · Photos, PDFs and voice notes from chat" />
+  <link rel="canonical" href="https://mercuryagent.sh/docs/releases/1.4.0" />
+</Head>
+
+# v1.4.0 — Pluggy Mercury
+
+> **Mercury picks up the phone, and picks up the mouse.**
+
+`1.4.0` is the first stable release since `1.3.8`. Its headline is the **plugin system**: optional features you install only if you want them, each running in its own process so a bad plugin can't take Mercury down. Two official plugins ship with it. **WhatsApp** lets you chat with Mercury and talk to it by voice call, and Mercury can call you. **Optimus** lets Mercury use your computer: it sees the screen, moves the pointer and types like a person, by chat or out loud with a talk key. Both are in the stable plugin catalog for macOS (Apple silicon and Intel), Windows x64 and Linux (x64 and arm64).
+
+`1.3.9` only shipped on the dev channel; its fix is folded in here.
+
+## At a glance
+
+| | |
+|---|---|
+| **Plugins** (#203, ADR-025) | `/plugins install`, `enable`, `disable`, `update`, `rollback`, `uninstall`, from a checksum-verified catalog. Out-of-process plugins can't crash Mercury. |
+| **Plugin API 1.2** | Tools can return images to the model (kept out of chat history), `permissions.desktop`, and `whatsapp` and `desktop` channel types. |
+| **One place for keys** | Plugins use Mercury's own providers. Set an OpenAI key once and voice works everywhere. |
+| **Guided setup, flatter menus** | Setup on install. `/plugins <id>` lists every setting, explains what each choice does, and asks for follow-up settings right after you save. |
+| **WhatsApp 0.1.1** (#202) | Chat from a spare number, voice calls in both directions, scheduled calls, approvals by voice or chat, access levels. |
+| **Optimus 0.4.7** (new) | Mercury uses your computer: sees, points, scrolls and types like a person, with a talk key, a mute key, "stop", and an honest "done". |
+| **Built-in `web_search`** | Free and keyless. News and current events get looked up, not guessed. |
+| **Photos, PDFs, voice notes** | Mercury sees photos and PDFs you send in chat, and listens to voice notes. |
+
+## Plugins
+
+Features only some people want were heading into the single binary, making it bigger and riskier for everyone. Now they're plugins ([ADR-025](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md)):
+
+- **Install from the catalog.** `/plugins install whatsapp` in any chat, `mercury plugins install whatsapp` in a shell, or **Configure → Plugins** in the dashboard. The catalog at `https://mercuryagent.sh/plugins/catalog.json` pins each version to a SHA-256 checksum.
+- **Isolated.** An out-of-process plugin is a separate program speaking MCP over stdio. If it crashes, Mercury restarts it; after repeated crashes or 5 failures in a row it's turned off and you're told why. A plugin reaches only the network hosts and reads only the secrets it declared, and install shows them before you confirm.
+- **Hot-plugged and reversible.** Install, enable, disable and uninstall take effect without a restart. Installing into a running Mercury now starts the plugin immediately. `/plugins rollback <id>` brings back the previous version with its settings. `mercury start --safe-mode` starts with every plugin off.
+- **Guided setup and a flatter menu.** Setup runs right after install, one question at a time, and skips questions that don't apply. `/plugins <id>` lists every setting with its current value. Yes/no options say what each answer does ("On: Mercury picks up when you call it"), follow-up settings appear right after you save (pick Gemini, then the Gemini key), and every question has a way back.
+- **Mercury's own providers.** A plugin that needs OpenAI or Grok uses the provider you already set up in Mercury. Keys a plugin asks for itself are stored with Mercury's keys and shared with other plugins that declare them. A missing key is explained once, with what it turns off.
+- **Plugin API 1.2.** Tools can return images to the model, sent with that tool result only and never stored in history, logs or memory. `permissions.desktop` flags a plugin that controls the computer. Channel types are `whatsapp` and `desktop`. See [Writing plugins](/docs/reference/plugins).
+
+Docs: [Plugins](/docs/cli-commands/plugins).
+
+## WhatsApp 0.1.1
+
+Chat with Mercury on WhatsApp, with Mercury running on a **spare number** as a linked device. It uses an unofficial protocol, so don't link your main number.
+
+- **Voice calls both ways.** Call the spare number and talk to Mercury, or let Mercury call you when something matters. Only your number can call.
+- **Scheduled calls.** "Call me at 9pm about the deploy", "call me back in 20 minutes", from chat, the terminal or a call. Also `/call` and `/calls`. Times are worked out in code and confirmed exactly; one retry if you miss it; calls survive restarts. "Call me when it's done" does the work, then calls.
+- **Mercury works during the call.** It looks things up with `web_search`, uses its tools and memory, and keeps you posted while it works. Approvals are asked by voice and posted in the chat at once; the first answer wins, and a spoken yes only counts in your own words.
+- **Links and files during a call.** Mercury sends links and details to the chat instead of reading them out, and can see photos and documents you send while you talk.
+- **Voice engine choice.** OpenAI Realtime by default (your Mercury OpenAI provider), or Gemini Live, Grok Voice, ElevenLabs, Azure, Qwen-Omni, or your own Mercury model with a speech-to-text and a text-to-speech provider.
+- **Access levels.** General (chat only) or Extended (memory, files, tools). Members never get more than you.
+- **Link, check and unlink from the dashboard**, with a QR code or a pairing code.
+- **Voice notes, photos and PDFs** you send are understood.
+
+Docs: [WhatsApp](/docs/integrations/whatsapp).
+
+## Optimus 0.4.7
+
+Mercury uses your computer. Ask in any chat, or press the talk key and say it.
+
+- **Sees and acts like a person.** Screenshots of the display the mouse is on; the pointer glides, scrolling is smooth, and text is typed key by key, so it works in every editor. A "Mercury is driving" ring and label follow the pointer, and never appear in its own screenshots.
+- **Listening mode.** The talk key (default `ctrl+alt+m`, Control+Option+M on a Mac) starts a voice session with spoken replies and live narration of each step. Press it while Optimus works and everything stops.
+- **Mute key** (default `ctrl+alt+shift+m`): stop listening, keep working. Nothing you say is sent while muted.
+- **"Stop" stops.** Saying "stop" halts every screen action and the task at once. Silence (60 seconds by default) ends a session, so the mic never streams for nothing.
+- **A soft tick-tock while it works**, and the TUI status bar shows when Optimus is listening, working or muted.
+- **Honest about "done".** Steps report *Sent*, not *done*; Mercury checks the screen before saying a task is finished, and failed steps are reported as failed.
+- **You stay in control.** Off until you allow it. Anything that submits, sends, pays, deletes or installs needs your approval. Move the mouse and it hands control back. It never types passwords or card numbers.
+- **Voice settings shared with WhatsApp**: the same engines, and a key added for one works for the other.
+- **No signing hassle.** Installs locally with no Apple Developer ID. On macOS, Optimus builds `Optimus.app` signed with a certificate made on your Mac, and you grant Accessibility, Screen Recording and Microphone once.
+
+Docs: [Optimus](/docs/integrations/optimus).
+
+## Also new
+
+- **Built-in `web_search`**, free and keyless (web and news), through the SSRF guard. The built-in web-search skill uses it.
+- **Photos and PDFs** from chat are attached to the turn for models that accept them, and **voice notes** are transcribed with your OpenAI provider.
+- **Mercury always knows it comes from Cosmic Stack.**
+- **Model picker** in the web dashboard: plain-language model names, renaming, a reasoning picker, every local Ollama model, and ChatGPT Plus/Pro plan models.
+- **Blog "Listen to article"** player, using the reader's built-in voices.
+
+## Fixed
+
+- **`mercury doctor` applies what you changed** (from 1.3.9). Doctor restarts the running daemon when the configuration actually changed, and dashboard saves say "restart to apply" with a **Restart** button.
+- **The web dashboard works on the Windows standalone binary.** Mercury didn't recognise the Windows marker for its embedded files and reported "web UI not found". Found and fixed by @farena-ai in #189.
+- ChatGPT OAuth turns no longer fail after a tool call.
+- Long messages no longer fail memory search ("Expression tree is too large").
+- New dashboard chats no longer land in the previous conversation; dashboard permission prompts render and resolve.
+- One failing alert no longer fans out into hundreds of repeated messages on a plugin channel.
+- Plugin installs work with GNU tar on Windows.
+
+## Known limitations
+
+- **WhatsApp uses an unofficial protocol.** A WhatsApp update can break it, and automated use can get the number restricted. Use a spare number.
+- **Optimus on Linux Wayland** is limited: screenshots go through the desktop's screen-sharing prompt, and mouse, keyboard and the talk key only reach X11 (XWayland) apps. X11 sessions get full control.
+- **Optimus on Windows** can't control windows running as administrator (Task Manager, installers).
+- **Out-of-process plugins can't add slash commands** yet.
+
+## Upgrade
+
+**npm:**
+
+```bash
+npm install -g @cosmicstack/mercury-agent@1.4.0
+mercury restart
+```
+
+**Standalone binaries:** rerun the installer from [mercuryagent.sh](https://mercuryagent.sh), or run `mercury upgrade`.
+
+```bash
+curl -fsSL https://mercuryagent.sh/install.sh | sh   # macOS / Linux
+irm https://mercuryagent.sh/install.ps1 | iex          # Windows
+```
+
+Then add the plugins you want:
+
+```text
+/plugins install whatsapp
+/plugins install optimus
+```
+
+`~/.mercury` carries over untouched. Plugins live in `~/.mercury/plugins/`.

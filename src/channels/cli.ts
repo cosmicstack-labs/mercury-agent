@@ -461,6 +461,8 @@ export interface TuiState {
   /** A newer Mercury version the background check found — shown as a tiny
    * bottom-bar indicator (⬆ vX) in Mercury Code until ignored. */
   updateAvailable: string | null;
+  /** What a desktop plugin (Optimus) is doing right now, e.g. "🎙 Optimus listening"; null when idle. */
+  desktopActivity: string | null;
   /** Active Mercury Bot chat — transcript is swapped to the bot's thread. */
   botChat: { botId: string; botName: string } | null;
   /** Per-bot real-time activity (what each bot is doing RIGHT NOW) — rendered
@@ -505,6 +507,7 @@ const defaultState: TuiState = {
   statusVerbs: null,
   tuiFrozen: false,
   updateAvailable: null,
+  desktopActivity: null,
   botChat: null,
   botLiveActivity: {},
   botStreamTails: {},
@@ -2077,15 +2080,23 @@ export class CLIChannel extends BaseChannel {
     return this.enqueuePrompt({ type: 'ask', message: question }, String);
   }
 
-  async askPermissionMode(): Promise<PermissionMode> {
-    if (!process.stdout.isTTY) return 'ask-me';
+  /**
+   * The Ask Me / Allow All prompt for this session. `current` (the saved
+   * mode) is listed first, so Enter keeps it and ↓ Enter switches.
+   */
+  async askPermissionMode(current?: PermissionMode): Promise<PermissionMode> {
+    if (!process.stdout.isTTY) return current ?? 'ask-me';
+    const options = [
+      { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
+      { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
+    ];
+    if (current === 'ask-me') options.reverse();
     return this.enqueuePrompt({
       type: 'mode',
-      message: 'Choose how Mercury handles risky actions this session.',
-      options: [
-        { value: 'allow-all', label: 'Allow All — auto-approve everything (scopes, commands, loop continuation)' },
-        { value: 'ask-me', label: 'Ask Me — confirm before file writes, shell commands, and scope changes' },
-      ],
+      message: current
+        ? `Permission mode for this session? (now: ${current === 'allow-all' ? 'Allow All' : 'Ask Me'} — Enter keeps it)`
+        : 'Choose how Mercury handles risky actions this session.',
+      options,
     }, (val) => val as PermissionMode);
   }
 
@@ -2157,6 +2168,18 @@ export class CLIChannel extends BaseChannel {
       case 'continue': return false;
       default: return prompt?.options ? 'no' : '';
     }
+  }
+
+  /** Status-bar note for a desktop plugin's activity (Optimus listening / working); null clears it. */
+  /** The permission mode shown on the bottom bar. */
+  setPermissionModeStatus(mode: PermissionMode): void {
+    if (this.state.permissionMode === mode) return;
+    this.update({ permissionMode: mode });
+  }
+
+  setDesktopActivity(text: string | null): void {
+    if (this.state.desktopActivity === text) return;
+    this.update({ desktopActivity: text });
   }
 
   setSkills(skills: SkillInfo[]): void {

@@ -375,6 +375,7 @@ export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
   private askHandler?: (prompt: string) => Promise<string>;
+  private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
    * legacy setters below. Sub-agents never read it while they run — they
@@ -386,6 +387,20 @@ export class PermissionManager {
   private rootCache: PermissionContext | null = null;
   private binaryResolver: BinaryResolver = pinnedBinary;
   private approvedCommandsByContext = new Map<string, Set<string>>();
+  /** "Always" on a shell prompt: command families (`pandoc`, `git commit`) allowed for the rest of that chat. */
+  private approvedFamiliesByContext = new Map<string, Set<string>>();
+  /**
+   * Which contexts may widen "Always" to a command family. Default: only the
+   * local terminal. The runtime also allows the owner's attached terminal and
+   * dashboard (web, but not remote Mercury Cloud requests, which stay exact).
+   */
+  private familyApprovalAllowed: (ctx: { channelType: string; channelId: string }) => boolean = (ctx) => ctx.channelType === 'cli';
+
+  setFamilyApprovalPolicy(fn: (ctx: { channelType: string; channelId: string }) => boolean): void {
+    this.familyApprovalAllowed = fn;
+  }
+  /** "Always allow" choices for plugin tools, per channel (see approvePluginTool). */
+  private approvedPluginToolsByContext = new Map<string, Set<string>>();
   private approvedWritesByContext = new Map<string, Set<string>>();
   private approvedMcpByContext = new Map<string, Set<string>>();
   /** Hard-linked files the user answered "always" for, per interaction context. */
@@ -538,7 +553,24 @@ export class PermissionManager {
   }
 
   onAsk(handler: (prompt: string) => Promise<string>): void {
-    this.askHandler = handler;
+    // Every answer the owner gives is evidence for the Owner Model (autonomy,
+    // risk per action type); the learning loop drains it once per turn.
+    this.askHandler = async (prompt: string) => {
+      const answer = await handler(prompt);
+      if (answer === 'yes' || answer === 'no' || answer === 'always') {
+        const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
+        this.turnAnswers.push({ action, answer });
+        if (this.turnAnswers.length > 20) this.turnAnswers.shift();
+      }
+      return answer;
+    };
+  }
+
+  /** Permission answers given since the last drain (the learning loop reads them each turn). */
+  drainAnswers(): Array<{ action: string; answer: 'yes' | 'no' | 'always' }> {
+    const out = this.turnAnswers;
+    this.turnAnswers = [];
+    return out;
   }
 
   async requestApproval(prompt: string): Promise<boolean> {
@@ -549,6 +581,42 @@ export class PermissionManager {
     if (!this.askHandler) return false;
     const result = await this.askHandler(prompt);
     return result === 'yes' || result === 'always';
+  }
+
+  /**
+   * Approval for a plugin tool call (src/plugins). Same rules as the shell
+   * approval lane:
+   * - fail-closed (bots): the tool already passed the bot's explicit
+   *   permissions.yaml allow list (filterBotTools), so it runs; there is no
+   *   one to ask and no prompt mid-run.
+   * - internal/scheduled turns: only an allow-all context approves.
+   * - session Allow All approves, except web requests (never inherit local).
+   * - "always" is remembered per channel for this plugin tool.
+   * - otherwise the user sees the plugin, tool and arguments.
+   */
+  /** Plugin tools pre-approved for the current turn only (a scheduled task's allowTools). */
+  private turnPluginGrants = new Set<string>();
+
+  setTurnPluginGrants(tools: string[]): void {
+    this.turnPluginGrants = new Set(tools);
+  }
+
+  async approvePluginTool(toolKey: string, prompt: string): Promise<boolean> {
+    const ctx = this.ctx();
+    if (this.failClosed) return true;
+    if (this.turnPluginGrants.has(toolKey)) return true;
+    if (ctx.channelType === 'internal') return ctx.autoApprove;
+    if (this.isGlobalAutoApproveActive()) return true;
+    if (this.approvedPluginToolsByContext.get(ctx.channelId)?.has(toolKey)) return true;
+    if (!this.askHandler) return false;
+    const result = await this.askHandler(prompt);
+    if (result === 'always') {
+      const approved = this.approvedPluginToolsByContext.get(ctx.channelId) ?? new Set<string>();
+      approved.add(toolKey);
+      this.approvedPluginToolsByContext.set(ctx.channelId, approved);
+      return true;
+    }
+    return result === 'yes';
   }
 
   /** Session-level Allow All (user choice). Inside a sub-agent it only changes that sub-agent. */
@@ -931,6 +999,22 @@ export class PermissionManager {
       }
     }
 
+    // "Always" on an earlier prompt in this chat covers the same command
+    // family (every segment), after the hard blocks and the cwd gate above.
+    const families = this.familyApprovalAllowed(ctx) ? this.approvedFamiliesByContext.get(ctx.channelId) : undefined;
+    if (families && families.size > 0) {
+      const needsApprovalList = shell.needsApproval ?? [];
+      const covered = segments.every((segment) => {
+        const family = commandFamily(segment);
+        return family !== null && families.has(family)
+          && !needsApprovalList.some((pattern) => this.matchPattern(segment, pattern));
+      });
+      if (covered) {
+        logger.info({ cmd: trimmed }, 'Shell command auto-approved (command family approved with Always in this chat)');
+        return { allowed: true, needsApproval: false, lane: 'shell' };
+      }
+    }
+
     // Argv lane: the only path to a prompt-free approval in Ask Me mode.
     const argvLane = this.classifyArgvLane(trimmed, cwd);
     if (argvLane.ok) {
@@ -961,6 +1045,15 @@ export class PermissionManager {
         const approved = this.approvedCommandsByContext.get(ctx.channelId) ?? new Set<string>();
         approved.add(trimmed);
         this.approvedCommandsByContext.set(ctx.channelId, approved);
+        // Also remember the command family (`pandoc`, `git commit`) so the
+        // next pandoc call in this chat doesn't ask again. Wrappers that can
+        // run anything (sudo, sh -c, env, xargs…) are never generalised.
+        const familyList = segments.map(commandFamily);
+        if (this.familyApprovalAllowed(ctx) && familyList.every((f): f is string => f !== null)) {
+          const set = this.approvedFamiliesByContext.get(ctx.channelId) ?? new Set<string>();
+          for (const f of familyList) set.add(f);
+          this.approvedFamiliesByContext.set(ctx.channelId, set);
+        }
         return { allowed: true, needsApproval: false, lane: 'shell' };
       }
       return { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1244,4 +1337,31 @@ export class PermissionManager {
       },
     };
   }
+}
+
+const NEVER_GENERALISE = new Set(['sudo', 'su', 'doas', 'eval', 'exec', 'sh', 'bash', 'zsh', 'fish', 'dash', 'env', 'xargs', 'nohup', 'time', 'watch', 'command', 'builtin', 'powershell', 'pwsh', 'cmd']);
+const EXACT_ONLY_SUBCOMMANDS = new Set(['install', 'i', 'add', 'exec', 'dlx', 'x', 'global', 'upgrade', 'update', 'run-script']);
+const SUBCOMMAND_TOOLS = new Set(['git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'pnpx', 'docker', 'cargo', 'go', 'kubectl', 'brew', 'pip', 'pip3', 'uv', 'gh', 'deno', 'poetry', 'apt', 'apt-get', 'systemctl', 'launchctl']);
+
+/**
+ * The family an "Always" answer covers: the program (`pandoc`), or the
+ * program and its subcommand for multi-command tools (`git commit`, `npm
+ * install`). Null for wrappers that can run anything, and for segments with
+ * no plain program name.
+ */
+export function commandFamily(segment: string): string | null {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  const first = tokens[i];
+  if (!first || /[^A-Za-z0-9._/+-]/.test(first)) return null;
+  const base = first.split('/').pop() ?? '';
+  if (!base || NEVER_GENERALISE.has(base)) return null;
+  if (SUBCOMMAND_TOOLS.has(base)) {
+    const sub = tokens[i + 1];
+    // Installing or executing arbitrary packages stays exact-match only.
+    if (sub && EXACT_ONLY_SUBCOMMANDS.has(sub)) return null;
+    return sub && /^[A-Za-z][A-Za-z0-9:_-]*$/.test(sub) ? `${base} ${sub}` : base;
+  }
+  return base;
 }

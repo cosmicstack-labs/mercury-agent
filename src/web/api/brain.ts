@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { loadConfig, getMemoryDir, saveConfig } from '../../utils/config.js';
 import { isBetterSqlite3Available } from '../../memory/second-brain-db.js';
 import { UserMemoryStore } from '../../memory/user-memory.js';
+import type { Belief, BeliefKind, BeliefStatus, BeliefStore, Evidence } from '../../memory/beliefs.js';
 import { join } from 'node:path';
 
 let userMemory: UserMemoryStore | null = null;
@@ -148,9 +149,9 @@ brain.get('/api/brain/memory/:id', async (c) => {
   const mem = ensureMemory();
   if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
   const id = c.req.param('id');
-  const records = mem.search(id, 1);
-  if (!records || records.length === 0) return c.json({ error: 'Memory not found' }, 404);
-  return c.json({ ...memToJson(records[0]), available: true });
+  const record = mem.getById(id);
+  if (!record) return c.json({ error: 'Memory not found' }, 404);
+  return c.json({ ...memToJson(record), available: true });
 });
 
 brain.delete('/api/brain/memory/:id', async (c) => {
@@ -266,6 +267,140 @@ brain.get('/api/brain/graph', async (c) => {
   }
 
   return c.json({ nodes: [], edges: [], available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+});
+
+// ── Owner Model (ADR-026): beliefs, the review queue and the quarantine ───
+
+const BELIEF_STATUSES: BeliefStatus[] = ['candidate', 'held', 'confirmed', 'contested', 'retired', 'forgotten'];
+const BELIEF_KINDS: BeliefKind[] = ['fact', 'preference', 'trait', 'situation', 'relationship', 'goal', 'project', 'episode'];
+
+function beliefToJson(store: BeliefStore, b: Belief, now = Date.now()) {
+  return { ...b, confidence: Number(store.confidence(b, now).toFixed(3)) };
+}
+
+function evidenceToJson(e: Evidence) {
+  return { id: e.id, kind: e.kind, excerpt: e.excerpt, weight: e.weight, at: e.at, sessionId: e.sessionId, turnRef: e.turnRef };
+}
+
+/** `?status=held,confirmed` → ['held','confirmed'], unknown values dropped; undefined when absent. */
+function parseList<T extends string>(raw: string | undefined, allowed: readonly T[]): T[] | undefined {
+  if (!raw) return undefined;
+  const picked = raw.split(',').map((s) => s.trim()).filter((s): s is T => (allowed as readonly string[]).includes(s));
+  return picked.length > 0 ? picked : undefined;
+}
+
+brain.get('/api/brain/beliefs', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ beliefs: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const store = mem.beliefs;
+  const statuses = parseList(c.req.query('status'), BELIEF_STATUSES);
+  const kinds = parseList(c.req.query('kind'), BELIEF_KINDS);
+  const dimension = c.req.query('dimension') || undefined;
+  const limit = Math.min(parseInt(c.req.query('limit') || '200'), 1000);
+  const now = Date.now();
+  const beliefs = store.list({ statuses, kinds, dimension, limit }).map((b) => beliefToJson(store, b, now));
+  return c.json({ beliefs, total: beliefs.length, counts: store.counts(), available: true });
+});
+
+brain.get('/api/brain/beliefs/learned', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ beliefs: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const store = mem.beliefs;
+  const days = Math.min(Math.max(parseInt(c.req.query('days') || '7') || 7, 1), 365);
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 500);
+  const now = Date.now();
+  const beliefs = store.recentlyLearned(now - days * 86_400_000, limit).map((b) => ({
+    ...beliefToJson(store, b, now),
+    evidence: store.evidenceFor(b.id, 1).map(evidenceToJson),
+  }));
+  return c.json({ beliefs, total: beliefs.length, days, available: true });
+});
+
+brain.get('/api/brain/beliefs/contested', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ pairs: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const store = mem.beliefs;
+  const now = Date.now();
+  const pairs = store.contested().map(({ a, b }) => ({ a: beliefToJson(store, a, now), b: b ? beliefToJson(store, b, now) : null }));
+  return c.json({ pairs, total: pairs.length, available: true });
+});
+
+brain.post('/api/brain/beliefs/settle', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const body = await c.req.json().catch(() => ({}));
+  const winnerId = typeof body.winnerId === 'string' ? body.winnerId : '';
+  const loserId = typeof body.loserId === 'string' ? body.loserId : '';
+  if (!winnerId || !loserId || winnerId === loserId) return c.json({ error: 'winnerId and loserId are required and must differ' }, 400);
+  const store = mem.beliefs;
+  const winner = store.get(winnerId);
+  if (!winner || winner.status === 'forgotten') return c.json({ error: 'Winner not found' }, 404);
+  if (!store.get(loserId)) return c.json({ error: 'Loser not found' }, 404);
+  store.settle(winnerId, loserId);
+  return c.json({ success: true, winner: beliefToJson(store, store.get(winnerId)!), loser: beliefToJson(store, store.get(loserId)!) });
+});
+
+brain.get('/api/brain/beliefs/:id', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const store = mem.beliefs;
+  const b = store.get(c.req.param('id'));
+  if (!b) return c.json({ error: 'Belief not found' }, 404);
+  return c.json({ ...beliefToJson(store, b), evidence: store.evidenceFor(b.id, 50).map(evidenceToJson), available: true });
+});
+
+brain.post('/api/brain/beliefs/:id/confirm', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const store = mem.beliefs;
+  const b = store.confirm(c.req.param('id'));
+  if (!b) return c.json({ error: 'Belief not found' }, 404);
+  return c.json({ success: true, belief: beliefToJson(store, b) });
+});
+
+brain.post('/api/brain/beliefs/:id/forget', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const store = mem.beliefs;
+  const id = c.req.param('id');
+  const before = store.get(id);
+  if (!before) return c.json({ error: 'Belief not found' }, 404);
+  store.forget(id);
+  return c.json({ success: true, forgotten: before.statement });
+});
+
+brain.post('/api/brain/beliefs/:id/correct', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const body = await c.req.json().catch(() => ({}));
+  const statement = typeof body.statement === 'string' ? body.statement.trim() : '';
+  if (statement.length < 3) return c.json({ error: 'statement is required' }, 400);
+  const store = mem.beliefs;
+  const id = c.req.param('id');
+  const before = store.get(id);
+  if (!before || before.status === 'forgotten') return c.json({ error: 'Belief not found' }, 404);
+  const result = store.apply({ op: 'correction', beliefId: id, statement, excerpt: statement, evidenceKind: 'owner' });
+  if (!result) return c.json({ error: 'Correction failed' }, 500);
+  return c.json({ success: true, replaced: beliefToJson(store, result.replaced ?? before), belief: beliefToJson(store, result.belief) });
+});
+
+// Legacy rows the migration set aside (scope = 'quarantine'); never deleted, restorable.
+brain.get('/api/brain/quarantine', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ memories: [], total: 0, available: false, error: SQLITE_DEPENDENCY_ERROR }, 503);
+  const limit = Math.min(parseInt(c.req.query('limit') || '200'), 1000);
+  const memories = mem.listQuarantined(limit).map(memToJson);
+  return c.json({ memories, total: memories.length, available: true });
+});
+
+brain.post('/api/brain/quarantine/:id/restore', async (c) => {
+  const mem = ensureMemory();
+  if (!mem) return c.json({ error: SQLITE_DEPENDENCY_ERROR, available: false }, 503);
+  const id = c.req.param('id');
+  const beliefId = mem.restoreQuarantined(id);
+  if (!beliefId) return c.json({ error: 'Quarantined memory not found' }, 404);
+  const restored = mem.getById(beliefId);
+  return c.json({ success: true, memory: restored ? memToJson(restored) : null });
 });
 
 export default brain;

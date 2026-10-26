@@ -14,6 +14,7 @@ import { createRunCommandTool } from './shell/run-command.js';
 import { createCdTool } from './shell/cd.js';
 import { createApproveCommandTool } from './shell/approve-command.js';
 import { createInstallSkillTool } from './skills/install-skill.js';
+import { createCreateSkillTool } from './skills/create-skill.js';
 import { createListSkillsTool } from './skills/list-skills.js';
 import { createUseSkillTool } from './skills/use-skill.js';
 import { createScheduleTaskTool } from './scheduler/schedule-task.js';
@@ -22,6 +23,9 @@ import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
 import { createSaveMemoryTool } from './system/save-memory.js';
 import { createSearchMemoryTool } from './system/search-memory.js';
+import { createForgetMemoryTool } from './system/forget-memory.js';
+import { createConfirmBeliefTool } from './system/confirm-belief.js';
+import { createCorrectBeliefTool } from './system/correct-belief.js';
 import { createGitStatusTool } from './git/git-status.js';
 import { createGitDiffTool } from './git/git-diff.js';
 import { createGitLogTool } from './git/git-log.js';
@@ -34,6 +38,10 @@ import { createListIssuesTool } from './github/list-issues.js';
 import { createCreateIssueTool } from './github/create-issue.js';
 import { createGithubApiTool } from './github/github-api.js';
 import { createFetchUrlTool } from './web/fetch-url.js';
+import { createWebSearchTool } from './web/web-search.js';
+import { activeCallScheduler, describeTime } from '../plugins/call-schedule.js';
+import { tool, zodSchema } from 'ai';
+import { z } from 'zod';
 import {
   createSpotifySearchTool,
   createSpotifyPlayTool,
@@ -58,10 +66,10 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { SubAgentSupervisor } from '../core/supervisor.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { createDelegateTaskTool, createListAgentsTool, createStopAgentTool } from './subagents/index.js';
+import { getPluginTools } from '../plugins/tool-bridge.js';
 import { createDispatchBotTool } from '../bots/tools/dispatch-bot.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { logger } from '../utils/logger.js';
-import { isMcpToolName } from './mcp/naming.js';
 import type { McpManager } from './mcp/manager.js';
 import type { McpServerStatus } from './mcp/types.js';
 
@@ -150,6 +158,21 @@ export class CapabilityRegistry {
     return { channelId: ctx.channelId, channelType: ctx.channelType };
   }
 
+  private toolsDisabled = false;
+
+  /**
+   * No tools at all for the current turn (a chat channel at "general"
+   * access). Enforced here so every code path that asks for tools, including
+   * the plan and narration-guard paths, gets none.
+   */
+  setToolsDisabled(disabled: boolean): void {
+    this.toolsDisabled = disabled;
+  }
+
+  areToolsDisabled(): boolean {
+    return this.toolsDisabled;
+  }
+
   getCwd(): string {
     return this.currentCwd;
   }
@@ -227,6 +250,7 @@ export class CapabilityRegistry {
 
     if (this.skillLoader) {
       this.tools.install_skill = createInstallSkillTool(this.skillLoader);
+      this.tools.create_skill = createCreateSkillTool(this.skillLoader);
       this.tools.list_skills = createListSkillsTool(this.skillLoader);
       this.tools.use_skill = createUseSkillTool(this.skillLoader, this.permissions);
       logger.info('Skill tools registered');
@@ -247,7 +271,11 @@ export class CapabilityRegistry {
     if (this.userMemory) {
       this.tools.save_memory = createSaveMemoryTool(this.userMemory);
       this.tools.search_memory = createSearchMemoryTool(this.userMemory);
-      logger.info('Second Brain tools registered (save_memory, search_memory)');
+      // Owner Model (ADR-026): the owner's verbs over what Mercury believes about them.
+      this.tools.forget_memory = createForgetMemoryTool(this.userMemory);
+      this.tools.confirm_belief = createConfirmBeliefTool(this.userMemory);
+      this.tools.correct_belief = createCorrectBeliefTool(this.userMemory);
+      logger.info('Second Brain tools registered (save_memory, search_memory, forget_memory, confirm_belief, correct_belief)');
     }
 
     if (manifest.capabilities.git?.enabled) {
@@ -270,6 +298,7 @@ export class CapabilityRegistry {
     }
 
     this.tools.fetch_url = createFetchUrlTool({ isResearchMode: () => this.isResearchMode() });
+    this.tools.web_search = createWebSearchTool();
     logger.info('Web fetch tool registered');
 
     if (this.supervisor) {
@@ -297,20 +326,48 @@ export class CapabilityRegistry {
   }
 
   getTools(): Record<string, Tool> {
-    const all = this.allTools();
-    if (this.permissions.getCurrentSenderRole() !== 'member') return all;
+    if (this.toolsDisabled) return {};
+    // Scheduled calls (when a calling channel plugin is running): owner only.
+    if (this.permissions.getCurrentSenderRole() !== 'member' && activeCallScheduler()) {
+      return { ...this.getToolsInner(), ...callTools() };
+    }
+    return this.getToolsInner();
+  }
+
+  private getToolsInner(): Record<string, Tool> {
     // Members on a channel that distinguishes roles (e.g. Telegram) must not be
     // able to install skills: `install_skill` is the escalation path from chat
     // access to arbitrary local execution and is documented as admin-only.
-    const filtered: Record<string, Tool> = {};
-    for (const [name, tool] of Object.entries(all)) {
-      if (name !== 'install_skill' && !isMcpToolName(name)) filtered[name] = tool;
+    // Plugin and MCP tools are owner-installed, so members don't get them either.
+    if (this.permissions.getCurrentSenderRole() === 'member') {
+      const filtered: Record<string, Tool> = {};
+      for (const [name, tool] of Object.entries(this.tools)) {
+        if (name !== 'install_skill' && name !== 'create_skill') filtered[name] = tool;
+      }
+      return filtered;
     }
-    return filtered;
+    // MCP tools sit beside the built-ins (members never get them: above).
+    return this.withPluginTools(this.allTools(), false);
+  }
+
+  /**
+   * Built-in tools plus the live plugin tools (src/plugins). Read on every
+   * call, so enabling or disabling a plugin takes effect on the next turn.
+   * A built-in tool always wins a name clash.
+   */
+  private withPluginTools(base: Record<string, Tool>, readOnlyOnly: boolean): Record<string, Tool> {
+    const plugin = getPluginTools(this.permissions, { readOnlyOnly });
+    if (Object.keys(plugin).length === 0) return base;
+    const merged: Record<string, Tool> = { ...base };
+    for (const [name, tool] of Object.entries(plugin)) {
+      if (!(name in merged)) merged[name] = tool;
+    }
+    return merged;
   }
 
   /** Return tools filtered for plan mode — read-only tools only */
   getPlanTools(): Record<string, Tool> {
+    if (this.toolsDisabled) return {};
     const blocked = new Set([
       'write_file', 'create_file', 'delete_file', 'edit_file',
       'run_command', 'cd',
@@ -322,7 +379,9 @@ export class CapabilityRegistry {
     for (const [name, tool] of Object.entries(this.tools)) {
       if (!blocked.has(name)) filtered[name] = tool;
     }
-    return filtered;
+    // Plan mode: only plugin tools their manifest declares read-only.
+    if (this.permissions.getCurrentSenderRole() === 'member') return filtered;
+    return this.withPluginTools(filtered, true);
   }
 
   getToolNames(): string[] {
@@ -332,4 +391,45 @@ export class CapabilityRegistry {
   getSkillContext(): string {
     return this.skillLoader?.getSkillSummariesText() || '';
   }
+}
+
+/** Tools for scheduled calls (the time is worked out in code, not by the model). */
+function callTools(): Record<string, Tool> {
+  return {
+    schedule_call: tool({
+      description:
+        'Schedule Mercury to call the owner on WhatsApp later, e.g. "call me at 9pm about the deploy", "call me back in 20 minutes", "call me tomorrow 8:30am". ' +
+        'Pass the time exactly as the owner said it (e.g. "9pm", "after 9 PM", "in 20 minutes", "tomorrow 8:30am"); it is converted in code. ' +
+        'Tell the owner the confirmation it returns (it has the exact time). For "call me when X is done", do X first, then call call_owner.',
+      inputSchema: zodSchema(z.object({
+        when: z.string().min(1).max(80).describe('The time as the owner said it'),
+        topic: z.string().max(300).optional().describe('What the call is about, in a few words'),
+      })),
+      execute: async ({ when, topic }) => {
+        const s = activeCallScheduler();
+        if (!s) return 'Calls need the WhatsApp plugin, linked and running.';
+        try {
+          return s.schedule(when, topic ?? '').confirmation;
+        } catch (err) {
+          return `Couldn't schedule: ${(err as Error).message}`;
+        }
+      },
+    }),
+    list_scheduled_calls: tool({
+      description: 'List the calls Mercury has scheduled to the owner.',
+      inputSchema: zodSchema(z.object({})),
+      execute: async () => {
+        const list = activeCallScheduler()?.list() ?? [];
+        return list.length ? list.map((c, i) => `${i + 1}. ${describeTime(new Date(c.at))}: ${c.topic} (id ${c.id})`).join('\n') : 'No calls scheduled.';
+      },
+    }),
+    cancel_scheduled_call: tool({
+      description: 'Cancel a scheduled call by its number in list_scheduled_calls, its id, or "all".',
+      inputSchema: zodSchema(z.object({ which: z.string().min(1).max(40) })),
+      execute: async ({ which }) => {
+        const n = activeCallScheduler()?.cancel(which.toLowerCase()) ?? 0;
+        return n ? `Cancelled ${n} call${n === 1 ? '' : 's'}.` : 'No scheduled call matches that.';
+      },
+    }),
+  };
 }

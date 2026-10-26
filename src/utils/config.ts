@@ -93,6 +93,11 @@ export interface MercuryConfig {
     name: string;
     owner: string;
     creator?: string;
+    /**
+     * Background Mercury should always know and can talk about: who made it,
+     * the team, what it's for. Included in every chat and call.
+     */
+    about?: string;
   };
   cloud: CloudConfig;
   providers: {
@@ -180,6 +185,16 @@ export interface MercuryConfig {
        *  context after retrieving from its local second brain. Defaults to
        *  true when the agent is paired with Mercury Cloud. */
       poolSearch?: boolean;
+    };
+    /** The Owner Model's learning calls (ADR-026): per-turn extraction and the reflection pass. */
+    learning?: {
+      /**
+       * Provider to run extraction and reflection on, by name from `providers`.
+       * Unset (or not usable) → the default chat provider. These are strict
+       * JSON tasks, so a capable mid-tier model (e.g. anthropic with a Haiku
+       * model) learns far better than a free tier.
+       */
+      provider?: string;
     };
   };
   heartbeat: {
@@ -289,6 +304,7 @@ export function getDefaultConfig(): MercuryConfig {
       name: getEnv('MERCURY_NAME', 'Mercury'),
       owner: getEnv('MERCURY_OWNER', ''),
       creator: getEnv('MERCURY_CREATOR', ''),
+      about: getEnv('MERCURY_ABOUT', ''),
     },
     cloud: {
       enabled: getEnvBool('MERCURY_CLOUD_ENABLED', false),
@@ -485,6 +501,9 @@ export function getDefaultConfig(): MercuryConfig {
       collaborativeKnowledge: {
         shareLearning: getEnvBool('SHARE_LEARNING', false),
         poolSearch: getEnvBool('POOL_SEARCH', true),
+      },
+      learning: {
+        ...(process.env.LEARNING_PROVIDER ? { provider: process.env.LEARNING_PROVIDER } : {}),
       },
     },
     heartbeat: {

@@ -22,7 +22,9 @@ describe('CapabilityRegistry.getTools sender role gating', () => {
     registry.permissions.setCurrentSenderRole('member');
     const member = registry.getTools();
     expect(member.install_skill).toBeUndefined();
-    expect(Object.keys(member).length).toBe(Object.keys(admin).length - 1);
+    // create_skill (ADR-027) is owner-only for the same reason.
+    expect(member.create_skill).toBeUndefined();
+    expect(Object.keys(member).length).toBe(Object.keys(admin).length - 2);
     expect(member.use_skill).toBeDefined();
   });
 });

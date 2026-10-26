@@ -15,6 +15,10 @@ import {
   Moon,
   Pin,
   Clock,
+  Sparkles,
+  ShieldAlert,
+  Check,
+  RotateCcw,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -48,7 +52,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn, formatDate } from "@/lib/utils";
-import api, { type Memory, type BrainStatus, type MemoryCreate } from "@/lib/api";
+import api, { type Memory, type BrainStatus, type MemoryCreate, type Belief, type BeliefCounts } from "@/lib/api";
 
 /* ── Constants ─────────────────────────────────────────────── */
 
@@ -656,6 +660,133 @@ function AddMemoryDialog({
   );
 }
 
+/* ── Beliefs (Owner Model, ADR-026) ─────────────────────────── */
+
+const STATUS_COLORS: Record<string, string> = {
+  candidate: "bg-muted text-muted-foreground",
+  held: "bg-[#00d4ff]/15 text-[#00d4ff]",
+  confirmed: "bg-emerald-500/15 text-emerald-400",
+  contested: "bg-amber-500/15 text-amber-400",
+  retired: "bg-muted text-muted-foreground/60",
+  forgotten: "bg-muted text-muted-foreground/60",
+};
+
+function BeliefItem({
+  belief,
+  index,
+  onConfirm,
+  onForget,
+}: {
+  belief: Belief;
+  index: number;
+  onConfirm: (id: string) => void;
+  onForget: (id: string) => void;
+}) {
+  const excerpt = belief.evidence?.[0]?.excerpt;
+  const canConfirm = belief.status !== "confirmed" && belief.status !== "retired";
+  return (
+    <motion.div custom={index} variants={fadeUp} initial="hidden" animate="visible" exit="exit" layout>
+      <Card className="group transition-colors hover:border-[#00d4ff]/20">
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0 space-y-1.5">
+              <div className="flex items-start gap-2.5">
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-xs font-semibold capitalize",
+                    STATUS_COLORS[belief.status] ?? "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {belief.status}
+                </span>
+                <p className="text-sm font-medium text-foreground leading-relaxed">
+                  {belief.statement}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground/70">
+                <span className="capitalize">{belief.kind}{belief.dimension ? ` · ${belief.dimension}` : ""}</span>
+                <span>{Math.round(belief.confidence * 100)}% conf</span>
+                {belief.context !== "*" && <span>{belief.context}</span>}
+                <span>{formatDate(belief.updatedAt)}</span>
+                {excerpt && <span className="italic truncate max-w-[24rem]">from: &ldquo;{excerpt}&rdquo;</span>}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+              {canConfirm && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-emerald-400"
+                  title="Confirm: yes, that's right"
+                  onClick={() => onConfirm(belief.id)}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  Confirm
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                title="Forget this for good"
+                onClick={() => onForget(belief.id)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Forget
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+}
+
+function QuarantinedItem({
+  memory,
+  index,
+  onRestore,
+}: {
+  memory: Memory;
+  index: number;
+  onRestore: (id: string) => void;
+}) {
+  return (
+    <motion.div custom={index} variants={fadeUp} initial="hidden" animate="visible" exit="exit" layout>
+      <Card className="group border-dashed transition-colors hover:border-amber-400/30">
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0 space-y-1.5">
+              <div className="flex items-start gap-2.5">
+                <span
+                  className={cn(
+                    "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-xs font-semibold capitalize",
+                    TYPE_COLORS[memory.type] ?? "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {memory.type}
+                </span>
+                <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">{memory.summary}</p>
+              </div>
+              <span className="text-xs text-muted-foreground/50">{formatDate(memory.createdAt)}</span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              title="Restore as a durable memory"
+              onClick={() => onRestore(memory.id)}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Restore
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+}
+
 /* ── Collapsible Section ────────────────────────────────────── */
 
 function MemorySection({
@@ -732,6 +863,10 @@ export function MemoryPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // Owner Model (ADR-026): what Mercury learned lately, and the migration's quarantine.
+  const [learned, setLearned] = useState<Belief[]>([]);
+  const [beliefCounts, setBeliefCounts] = useState<BeliefCounts | null>(null);
+  const [quarantined, setQuarantined] = useState<Memory[]>([]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -835,10 +970,59 @@ export function MemoryPage() {
     [query, activeTypes]
   );
 
+  /* Beliefs + quarantine (non-critical: the page works without them) */
+  const fetchBeliefs = useCallback(async () => {
+    try {
+      const [l, all, q] = await Promise.all([
+        api.brain.beliefs.learned(30, 50),
+        api.brain.beliefs.list({ limit: 1 }),
+        api.brain.quarantine.list(200),
+      ]);
+      setLearned(l.beliefs);
+      setBeliefCounts(all.counts);
+      setQuarantined(q.memories);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
+  const handleConfirmBelief = async (id: string) => {
+    try {
+      const { belief } = await api.brain.beliefs.confirm(id);
+      setLearned((prev) => prev.map((b) => (b.id === id ? { ...b, ...belief, evidence: b.evidence } : b)));
+      toast("success", "Confirmed");
+    } catch (err: unknown) {
+      toast("error", err instanceof Error ? err.message : "Failed to confirm");
+    }
+  };
+
+  const handleForgetBelief = async (id: string) => {
+    try {
+      await api.brain.beliefs.forget(id);
+      setLearned((prev) => prev.filter((b) => b.id !== id));
+      toast("success", "Forgotten");
+    } catch (err: unknown) {
+      toast("error", err instanceof Error ? err.message : "Failed to forget");
+    }
+  };
+
+  const handleRestoreQuarantined = async (id: string) => {
+    try {
+      await api.brain.quarantine.restore(id);
+      setQuarantined((prev) => prev.filter((m) => m.id !== id));
+      toast("success", "Restored as a durable memory");
+      fetchStatus();
+      fetchMemories("conscious", 0, false);
+    } catch (err: unknown) {
+      toast("error", err instanceof Error ? err.message : "Failed to restore");
+    }
+  };
+
   /* Initial load */
   useEffect(() => {
     fetchStatus();
-  }, [fetchStatus]);
+    fetchBeliefs();
+  }, [fetchStatus, fetchBeliefs]);
 
   /* Debounced search + filter */
   useEffect(() => {
@@ -1039,6 +1223,50 @@ export function MemoryPage() {
       {/* Memory sections */}
       {!loading && !error && (
         <div className="space-y-6">
+          {/* What Mercury learned (Owner Model, ADR-026) */}
+          <MemorySection
+            title="What Mercury learned"
+            icon={<Sparkles className="h-4 w-4 text-emerald-400" />}
+            count={learned.length}
+            defaultOpen={learned.length > 0}
+            actions={
+              beliefCounts && (
+                <span className="text-xs text-muted-foreground/70 tabular-nums">
+                  {beliefCounts.held} held · {beliefCounts.confirmed} confirmed · {beliefCounts.candidate} candidate · {beliefCounts.contested} contested · {beliefCounts.retired} retired
+                </span>
+              )
+            }
+          >
+            {learned.length > 0 ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground/70 px-1">
+                  Beliefs learned or changed in the last 30 days. Confirm what is right; forget what is not.
+                </p>
+                <motion.div className="space-y-3" variants={stagger} initial="hidden" animate="visible">
+                  <AnimatePresence mode="popLayout">
+                    {learned.map((belief, i) => (
+                      <BeliefItem
+                        key={belief.id}
+                        belief={belief}
+                        index={i}
+                        onConfirm={handleConfirmBelief}
+                        onForget={handleForgetBelief}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="flex flex-col items-center justify-center py-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    Nothing learned in the last 30 days. Beliefs form as you work with Mercury.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </MemorySection>
+
           {/* Conscious Section */}
           <MemorySection
             title="Conscious"
@@ -1168,6 +1396,35 @@ export function MemoryPage() {
                       ? "No subconscious memories match your search."
                       : "No subconscious memories yet. Memories move here after 30 days of not being referenced."}
                   </p>
+                </CardContent>
+              </Card>
+            )}
+          </MemorySection>
+
+          {/* Quarantined (legacy rows the belief migration set aside) */}
+          <MemorySection
+            title="Quarantined"
+            icon={<ShieldAlert className="h-4 w-4 text-amber-400" />}
+            count={quarantined.length}
+            defaultOpen={false}
+          >
+            {quarantined.length > 0 ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground/70 px-1">
+                  Old rows that looked like Mercury&apos;s own replies or prose fragments rather than facts about you. Hidden from prompts, never deleted. Restore any that are real.
+                </p>
+                <motion.div className="space-y-3" variants={stagger} initial="hidden" animate="visible">
+                  <AnimatePresence mode="popLayout">
+                    {quarantined.map((memory, i) => (
+                      <QuarantinedItem key={memory.id} memory={memory} index={i} onRestore={handleRestoreQuarantined} />
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="flex flex-col items-center justify-center py-8 text-center">
+                  <p className="text-sm text-muted-foreground">Nothing is quarantined.</p>
                 </CardContent>
               </Card>
             )}

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
+import { storeInlineAttachments } from './uploads.js';
 import type { WebChannel } from '../../channels/web.js';
 import type { ProgrammingMode, ProgrammingModeState } from '../../core/programming-mode.js';
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, extname, basename, relative, resolve } from 'node:path';
 import { getMercuryHome, loadConfig, getActiveProviders } from '../../utils/config.js';
 import type { SessionRepository } from '../../sessions/index.js';
+import { loadPermissionMode, savePermissionMode } from '../../capabilities/permission-mode-store.js';
 import {
   getModelPref, setModelPref, humanizeModelName, modelGroupLabel,
   reasoningLevelsFor, effectiveReasoning, isReasoningLevel, isValidModelRef, type ReasoningLevel,
@@ -57,6 +59,13 @@ export function setCurrentProviderCallback(fn: () => { name: string; model: stri
   currentProviderFn = fn;
 }
 
+let statusSnapshotFn: (() => Record<string, unknown>) | null = null;
+
+/** The runtime's live status (model, mode, permissions, tokens…) for the connected frame. */
+export function setStatusSnapshotCallback(fn: () => Record<string, unknown>): void {
+  statusSnapshotFn = fn;
+}
+
 type ChatWebSettings = {
   bypassPermissions: boolean;
   restrictUser: boolean;
@@ -88,7 +97,10 @@ function saveSettings(settings: ChatWebSettings): void {
 export function setWebChannel(ch: WebChannel): void {
   webChannel = ch;
   const settings = loadSettings();
-  webChannel.setBypassPermissions(settings.bypassPermissions);
+  // The owner's saved permission mode wins; the old per-dashboard flag is
+  // only used until a mode has been chosen.
+  const saved = loadPermissionMode();
+  webChannel.setBypassPermissions(saved ? saved === 'allow-all' : settings.bypassPermissions);
   webChannel.setRestrictUser(settings.restrictUser);
 }
 
@@ -115,7 +127,9 @@ chat.get('/api/chat/events', (c) => {
 
       // Send connected event with proper SSE named event format
       const providerInfo = currentProviderFn ? currentProviderFn() : { name: '', model: '' };
-      send(`event: connected\ndata: ${JSON.stringify({ id: clientId, provider: providerInfo.name, model: providerInfo.model })}\n\n`);
+      let status: Record<string, unknown> | undefined;
+      try { status = statusSnapshotFn?.(); } catch { status = undefined; }
+      send(`event: connected\ndata: ${JSON.stringify({ id: clientId, provider: providerInfo.name, model: providerInfo.model, ...(status ? { status } : {}) })}\n\n`);
 
       const keepalive = setInterval(() => {
         send(`: keepalive\n\n`);
@@ -146,8 +160,17 @@ chat.post('/api/chat/send', async (c) => {
     return c.json({ error: 'Web channel not initialized' }, 503);
   }
 
-  const body = await c.req.json<{ content: string; sessionId?: string; threadId?: string }>();
-  if (!body.content?.trim()) {
+  const body = await c.req.json<{
+    content?: string;
+    sessionId?: string;
+    threadId?: string;
+    /** Base64 files: photos and PDFs become real attachments for this turn. */
+    attachments?: unknown;
+  }>();
+  const content = body.content?.trim() ?? '';
+  const upload = storeInlineAttachments(body.attachments);
+  if (!upload.ok) return c.json({ error: upload.error }, 400);
+  if (!content && upload.attachments.length === 0) {
     return c.json({ error: 'Message content required' }, 400);
   }
 
@@ -165,9 +188,17 @@ chat.post('/api/chat/send', async (c) => {
       }
     }
     session ??= sessions.getOrCreateBound('web', 'web:default');
-    webChannel.emitMessageInThread(body.content.trim(), session.id, session.id);
-    return c.json({ sent: true, sessionId: session.id });
+    // Models reject an empty text block, so a photo sent alone says what it is.
+    const text = content || `(Attached: ${upload.attachments.map(a => a.name).join(', ')})`;
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments);
+    return c.json({
+      sent: true,
+      sessionId: session.id,
+      ...(upload.attachments.length > 0 ? { attachments: upload.attachments.map(a => ({ name: a.name, kind: a.kind })) } : {}),
+    });
   } catch (err: any) {
+    // The message never reached the runtime: don't leave its files behind.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ error: err.message }, 500);
   }
 });
@@ -177,7 +208,7 @@ chat.post('/api/chat/send', async (c) => {
 chat.get('/api/chat/settings', async (c) => {
   if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
   const stored = loadSettings();
-  return c.json({ ...webChannel.getSettings(), workspace: stored.workspace });
+  return c.json({ ...webChannel.getSettings(), workspace: stored.workspace, permissionMode: loadPermissionMode() });
 });
 
 chat.put('/api/chat/settings', async (c) => {
@@ -193,7 +224,8 @@ chat.put('/api/chat/settings', async (c) => {
   webChannel.setBypassPermissions(next.bypassPermissions);
   webChannel.setRestrictUser(next.restrictUser);
   saveSettings(next);
-  return c.json({ success: true, ...next });
+  if (typeof body.bypassPermissions === 'boolean') savePermissionMode(body.bypassPermissions ? 'allow-all' : 'ask-me');
+  return c.json({ success: true, ...next, permissionMode: loadPermissionMode() });
 });
 
 // ─── Permission Resolution ───────────────────────────────────
@@ -204,14 +236,22 @@ chat.post('/api/chat/permission/:id', async (c) => {
   }
 
   const permId = c.req.param('id');
-  const body = await c.req.json<{ action: string; targetId?: string }>();
+  const body = await c.req.json<{ action?: string; targetId?: string }>().catch(() => ({} as { action?: string; targetId?: string }));
+  // One endpoint answers every prompt a screen shows: permission/continue/
+  // mode approvals AND choice pickers (/model, /permissions, ask_user). It
+  // used to resolve approvals only, so a picker answered in the attached
+  // terminal never reached the runtime: the command hung until the 2-minute
+  // timeout and the screen showed "Thinking" the whole time. An empty action
+  // is Esc: the picker is cancelled (its caller treats that as "no change").
   if (!body.action) {
+    if (webChannel.cancelInteraction(permId, body.targetId)) return c.json({ resolved: true, cancelled: true });
     return c.json({ error: 'Action required' }, 400);
   }
 
   // Prompts are bound to the chat session that raised them; without the
   // targetId the session check in resolveInteraction always fails.
-  const resolved = webChannel.resolveApproval(permId, body.action, body.targetId);
+  const resolved = webChannel.resolveApproval(permId, body.action, body.targetId)
+    || webChannel.resolveChoice(permId, body.action, body.targetId);
   if (resolved) {
     return c.json({ resolved: true });
   }

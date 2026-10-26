@@ -71,6 +71,13 @@ export class ChannelRegistry {
     logger.info({ channel: type }, 'Channel registered');
   }
 
+  /** Remove a channel, only if it is still the one registered (plugin channels come and go). */
+  unregister(type: ChannelType, channel: Channel): void {
+    if (this.channels.get(type) !== channel) return;
+    this.channels.delete(type);
+    logger.info({ channel: type }, 'Channel unregistered');
+  }
+
   get(type: ChannelType): Channel | undefined {
     return this.channels.get(type);
   }
@@ -112,9 +119,11 @@ export class ChannelRegistry {
     if (discord?.isReady()) return discord;
     const slack = this.channels.get('slack');
     if (slack?.isReady()) return slack;
+    const whatsapp = this.channels.get('whatsapp');
+    if (whatsapp?.isReady()) return whatsapp;
     const cli = this.channels.get('cli');
     if (cli?.isReady()) return cli;
-    return this.channels.values().next().value;
+    return [...this.channels.values()].find((c) => !c.noBroadcast);
   }
 
   private incomingHandler?: (msg: ChannelMessage) => void;

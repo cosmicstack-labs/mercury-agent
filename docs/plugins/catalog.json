@@ -1,0 +1,154 @@
+{
+  "catalogVersion": 1,
+  "updatedAt": "2026-10-23T12:40:54Z",
+  "plugins": [
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp",
+      "description": "Chat with Mercury on WhatsApp and talk to it by voice call: OpenAI by default, or Gemini, Grok, ElevenLabs, Azure, Qwen, or your own Mercury model with Deepgram/Cartesia/MiniMax/Sarvam voices. Runs on a spare number as a linked device (unofficial protocol).",
+      "version": "0.1.1",
+      "kind": "out-of-process",
+      "tier": "official",
+      "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/whatsapp",
+      "engines": {
+        "mercury": ">=1.3.9 <2.0.0",
+        "pluginApi": "^1.1.0"
+      },
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.4.0/mercury-plugin-whatsapp-darwin-arm64.tgz",
+          "sha256": "a40d93d187d9c977266459756d8e379e2064828bfa3ed254ba29e2271d3d2aa8",
+          "size": 4192524
+        },
+        "darwin-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.4.0/mercury-plugin-whatsapp-darwin-x64.tgz",
+          "sha256": "6927d2d72aa16f045f747c64412422fa07a38313ace069878df5ae434c3a79c6",
+          "size": 4538454
+        },
+        "linux-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.4.0/mercury-plugin-whatsapp-linux-x64.tgz",
+          "sha256": "a9cf89171ea993ba5bcb3c33f90e543cccd2d17259679285eff67435890e212e",
+          "size": 4872414
+        },
+        "linux-arm64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.4.0/mercury-plugin-whatsapp-linux-arm64.tgz",
+          "sha256": "8d9037bda09d991130567ed81ef26126b8e8d91199c0adb7257e3da9efe280ff",
+          "size": 4690055
+        },
+        "win32-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.4.0/mercury-plugin-whatsapp-win32-x64.tgz",
+          "sha256": "dd1ccaf4134481e85ebea850f13404c1b0ab46db04a22616f68225bba93b4d84",
+          "size": 4467679
+        }
+      },
+      "tools": [
+        "call_owner",
+        "send_to_chat"
+      ],
+      "permissions": {
+        "network": [
+          "*.aliyuncs.com",
+          "*.openai.azure.com",
+          "*.whatsapp.com",
+          "*.whatsapp.net",
+          "api.cartesia.ai",
+          "api.deepgram.com",
+          "api.elevenlabs.io",
+          "api.minimax.io",
+          "api.openai.com",
+          "api.sarvam.ai",
+          "api.x.ai",
+          "generativelanguage.googleapis.com",
+          "streaming.assemblyai.com",
+          "web.whatsapp.com"
+        ],
+        "secrets": [
+          "GEMINI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "AZURE_OPENAI_API_KEY",
+          "DASHSCOPE_API_KEY",
+          "DEEPGRAM_API_KEY",
+          "ASSEMBLYAI_API_KEY",
+          "SARVAM_API_KEY",
+          "CARTESIA_API_KEY",
+          "MINIMAX_API_KEY"
+        ]
+      }
+    },
+    {
+      "id": "optimus",
+      "name": "Optimus",
+      "description": "Mercury uses your computer like a person: sees the screen, moves the mouse, types and opens apps, by chat or out loud with a talk key. macOS, Windows and Linux. Asks before anything that submits, sends, pays or deletes.",
+      "version": "0.4.9",
+      "kind": "out-of-process",
+      "tier": "official",
+      "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/optimus",
+      "engines": {
+        "mercury": ">=1.3.9 <2.0.0",
+        "pluginApi": "^1.2.0"
+      },
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/optimus-v0.4.9/mercury-plugin-optimus-darwin-arm64.tgz",
+          "sha256": "332811d2caf284eab36d60481aa8de2975bb9f452c35c9e598f5758773104d09",
+          "size": 1420311
+        },
+        "darwin-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/optimus-v0.4.9/mercury-plugin-optimus-darwin-x64.tgz",
+          "sha256": "87c0e3616bdf71a3cb210d300407cf7f1d1aa107737e52c5210401e2081329d3",
+          "size": 1564194
+        },
+        "linux-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/optimus-v0.4.9/mercury-plugin-optimus-linux-x64.tgz",
+          "sha256": "2e50725e3c78965e06b570b48b3e51c8c5ede7c23166cb828b7ce2a83e998a8f",
+          "size": 3237323
+        },
+        "linux-arm64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/optimus-v0.4.9/mercury-plugin-optimus-linux-arm64.tgz",
+          "sha256": "27b83db999467673cbe3627f24a7bf45dbc05aa6685d54ae0555092e030ef560",
+          "size": 3078243
+        },
+        "win32-x64": {
+          "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/optimus-v0.4.9/mercury-plugin-optimus-win32-x64.tgz",
+          "sha256": "57466529f66ecda44932f0d5827fe909590dbe4b74c3a61899dd9913d5700d94",
+          "size": 1458467
+        }
+      },
+      "tools": [
+        "look",
+        "act",
+        "act_consequential",
+        "open",
+        "windows",
+        "permissions",
+        "listen"
+      ],
+      "permissions": {
+        "network": [
+          "*.aliyuncs.com",
+          "*.openai.azure.com",
+          "api.cartesia.ai",
+          "api.deepgram.com",
+          "api.elevenlabs.io",
+          "api.minimax.io",
+          "api.openai.com",
+          "api.sarvam.ai",
+          "api.x.ai",
+          "generativelanguage.googleapis.com",
+          "streaming.assemblyai.com"
+        ],
+        "secrets": [
+          "GEMINI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "AZURE_OPENAI_API_KEY",
+          "DASHSCOPE_API_KEY",
+          "DEEPGRAM_API_KEY",
+          "ASSEMBLYAI_API_KEY",
+          "SARVAM_API_KEY",
+          "CARTESIA_API_KEY",
+          "MINIMAX_API_KEY"
+        ]
+      }
+    }
+  ]
+}

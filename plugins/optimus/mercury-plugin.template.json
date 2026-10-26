@@ -1,0 +1,832 @@
+{
+  "manifestVersion": 1,
+  "id": "optimus",
+  "name": "Optimus",
+  "version": "0.4.9",
+  "description": "Mercury uses your computer like a person: sees the screen, moves the mouse, types and opens apps, by chat or out loud with a talk key. macOS, Windows and Linux. Asks before anything that submits, sends, pays or deletes.",
+  "kind": "out-of-process",
+  "author": "Cosmic Stack",
+  "homepage": "https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins/optimus",
+  "license": "MIT",
+  "engines": {
+    "mercury": ">=1.3.9 <2.0.0",
+    "pluginApi": "^1.2.0"
+  },
+  "server": {
+    "command": "bin/mercury-optimus",
+    "args": [],
+    "platforms": {
+      "win32-x64": {
+        "command": "bin/mercury-optimus.exe",
+        "args": []
+      }
+    }
+  },
+  "contributes": {
+    "tools": [
+      {
+        "name": "look",
+        "description": "See the screen: a screenshot of the display the mouse is on (or `display` N), with the active window. Use `zoom` [x0,y0,x1,y1] for a closer look at part of the last screenshot (coordinates stay in the full screenshot).",
+        "readOnly": true,
+        "timeoutMs": 30000
+      },
+      {
+        "name": "act",
+        "description": "Use the mouse and keyboard like a person: click, type, paste, press keys, scroll, drag, draw freehand. Returns a fresh screenshot. Pass `actions` as a list. To write text (posts, emails, articles) click the box, then use type: it types key by key like a person, so it works in every editor (up to 3,000 characters per type action; longer text in parts). Use paste only if typing fails. \"Sent\" means the input was sent, not that it worked: check the returned screenshot, and before telling the owner a task is done, look and confirm the result. FAILED means nothing (or not everything) happened. Only for ordinary, reversible steps. Anything that submits, sends, posts, pays, buys, deletes, installs or changes settings must go through act_consequential instead. Never type passwords, card numbers or 2FA codes: ask the owner to do that part. Never play games with anti-cheat (Vanguard, Easy Anti-Cheat, BattlEye): decline.",
+        "readOnly": true,
+        "timeoutMs": 300000
+      },
+      {
+        "name": "act_consequential",
+        "description": "Same as act, for the step that commits something: submit a form, send a message or email, post, pay or buy, delete, install, change a setting. The owner approves it first, so say what it will do.",
+        "readOnly": false,
+        "timeoutMs": 300000
+      },
+      {
+        "name": "open",
+        "description": "Open an app by name (\"Chrome\", \"Notes\", \"Freeform\"), a URL, or a file/folder path. Faster and more reliable than clicking through menus. If the app isn't installed, the reply lists what is. For drawing use Freeform (Mac), Paint (Windows) or a web canvas like https://excalidraw.com.",
+        "readOnly": true,
+        "timeoutMs": 30000
+      },
+      {
+        "name": "windows",
+        "description": "List open windows (app and title), front first.",
+        "readOnly": true,
+        "timeoutMs": 15000
+      },
+      {
+        "name": "permissions",
+        "description": "Check what the OS lets Optimus do (macOS: Accessibility and Screen Recording). With request=true, shows the system prompts and opens the right Settings page.",
+        "readOnly": true,
+        "timeoutMs": 60000
+      },
+      {
+        "name": "listen",
+        "description": "Start a voice conversation on this computer right now (as if the owner pressed the talk key): Mercury listens through the microphone and answers out loud. Use when the owner asks to talk instead of type.",
+        "readOnly": true,
+        "timeoutMs": 30000
+      }
+    ],
+    "channel": {
+      "type": "desktop"
+    }
+  },
+  "permissions": {
+    "network": [
+      "*.aliyuncs.com",
+      "*.openai.azure.com",
+      "api.cartesia.ai",
+      "api.deepgram.com",
+      "api.elevenlabs.io",
+      "api.minimax.io",
+      "api.openai.com",
+      "api.sarvam.ai",
+      "api.x.ai",
+      "generativelanguage.googleapis.com",
+      "streaming.assemblyai.com"
+    ],
+    "secrets": [
+      "GEMINI_API_KEY",
+      "ELEVENLABS_API_KEY",
+      "AZURE_OPENAI_API_KEY",
+      "DASHSCOPE_API_KEY",
+      "DEEPGRAM_API_KEY",
+      "ASSEMBLYAI_API_KEY",
+      "SARVAM_API_KEY",
+      "CARTESIA_API_KEY",
+      "MINIMAX_API_KEY"
+    ],
+    "desktop": true,
+    "providers": {
+      "openai": {
+        "unlocks": "Talking to Optimus",
+        "when": {
+          "voiceEngine": "openai",
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "alternative": "Or pick another voice in /plugins optimus → 🎙 Voice, or use chat mode."
+      },
+      "grok": {
+        "unlocks": "Talking to Optimus with Grok",
+        "when": {
+          "voiceEngine": "grok",
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "alternative": "Or pick another voice in /plugins optimus → 🎙 Voice."
+      }
+    }
+  },
+  "settings": {
+    "version": 1,
+    "fields": {
+      "allowControl": {
+        "type": "boolean",
+        "label": "Control this computer",
+        "description": "Optimus sees your screen and uses the mouse and keyboard in any app. It asks before anything that submits, sends, pays, deletes or installs, and stops the moment you move the mouse.",
+        "default": false,
+        "setup": true,
+        "required": true,
+        "optionLabels": {
+          "true": "On: Optimus can see your screen and use the mouse and keyboard",
+          "false": "Off: Optimus does nothing until you turn it on"
+        }
+      },
+      "mode": {
+        "type": "enum",
+        "options": [
+          "both",
+          "chat",
+          "voice"
+        ],
+        "default": "both",
+        "setup": true,
+        "required": true,
+        "label": "How you talk to Optimus",
+        "description": "Chat: type to Mercury as usual. Listening: press a key, talk, and hear Mercury answer while it works on your screen.",
+        "optionLabels": {
+          "both": "⭐ Both: chat, plus a key to talk out loud (recommended)",
+          "chat": "💬 Chat only: type to Mercury as usual",
+          "voice": "🎙 Listening: press a key, talk, and hear Mercury answer"
+        }
+      },
+      "pace": {
+        "type": "enum",
+        "options": [
+          "natural",
+          "fast"
+        ],
+        "default": "natural",
+        "label": "How Optimus moves and types",
+        "description": "Natural: the pointer glides and text is typed key by key at a human pace. Fast: the same, quicker.",
+        "optionLabels": {
+          "natural": "Natural: like a person (recommended)",
+          "fast": "Fast: same moves, less waiting"
+        }
+      },
+      "showOverlay": {
+        "type": "boolean",
+        "default": true,
+        "label": "\"Mercury is driving\" ring by the pointer",
+        "description": "A ring around the pointer and a small label while Optimus moves the mouse, so it's clear the agent is in control. Never appears in Optimus's own screenshots.",
+        "optionLabels": {
+          "true": "On: a ring and label follow the pointer while Mercury drives",
+          "false": "Off: no ring or label"
+        }
+      },
+      "hotkey": {
+        "type": "string",
+        "default": "ctrl+alt+m",
+        "setup": true,
+        "label": "Talk key",
+        "description": "Press it to start listening, press again to stop (or say goodbye). While Mercury is speaking, pressing it interrupts. Examples: ctrl+alt+m, ctrl+shift+space, f9. On a Mac, alt is Option and cmd is Command.",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        }
+      },
+      "muteHotkey": {
+        "type": "string",
+        "default": "ctrl+alt+shift+m",
+        "label": "Mute key",
+        "description": "While talking: Optimus stops listening (nothing you say is sent anywhere) but keeps working and still speaks. Press again, or press the talk key, to unmute. Saying \"mute\" also mutes. Examples: ctrl+alt+shift+m, ctrl+alt+n, f10.",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        }
+      },
+      "voiceEngine": {
+        "type": "enum",
+        "label": "Who listens and speaks?",
+        "setup": true,
+        "default": "openai",
+        "description": "Who listens to you and speaks back. Change anytime in /plugins optimus.",
+        "options": [
+          "openai",
+          "gemini",
+          "grok",
+          "elevenlabs",
+          "azure",
+          "qwen",
+          "mercury"
+        ],
+        "optionLabels": {
+          "openai": "⭐ OpenAI Realtime: recommended for the best results (uses your OpenAI key)",
+          "gemini": "Google Gemini Live: cheapest, free tier, Hindi and Urdu",
+          "grok": "xAI Grok Voice: uses your Grok provider",
+          "elevenlabs": "ElevenLabs Realtime (experimental)",
+          "azure": "Azure OpenAI Realtime",
+          "qwen": "Alibaba Qwen-Omni Realtime",
+          "mercury": "My own model: your Mercury model thinks; pick who listens and speaks"
+        },
+        "group": "voice",
+        "setupWhenMissing": "provider:openai",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        }
+      },
+      "voiceModel": {
+        "type": "string",
+        "label": "OpenAI voice model",
+        "default": "gpt-realtime-2.1",
+        "description": "gpt-realtime-2.1, or gpt-realtime-2.1-mini (about 3x cheaper).",
+        "when": {
+          "voiceEngine": [
+            "openai"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "voice": {
+        "type": "enum",
+        "description": "Mercury's voice.",
+        "options": [
+          "marin",
+          "cedar",
+          "alloy",
+          "ash",
+          "ballad",
+          "coral",
+          "echo",
+          "sage",
+          "shimmer",
+          "verse"
+        ],
+        "default": "marin",
+        "label": "OpenAI voice",
+        "when": {
+          "voiceEngine": [
+            "openai",
+            "azure"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiKey": {
+        "type": "secret",
+        "secret": "GEMINI_API_KEY",
+        "label": "Gemini API key",
+        "setup": true,
+        "required": true,
+        "description": "From aistudio.google.com/apikey.",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiModel": {
+        "type": "string",
+        "label": "Gemini Live model",
+        "default": "gemini-3.8-live",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "geminiVoice": {
+        "type": "string",
+        "label": "Gemini voice",
+        "default": "Kore",
+        "description": "e.g. Kore, Puck, Charon, Aoede.",
+        "when": {
+          "voiceEngine": [
+            "gemini"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "grokModel": {
+        "type": "string",
+        "label": "Grok voice model",
+        "default": "grok-voice-latest",
+        "when": {
+          "voiceEngine": [
+            "grok"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "grokVoice": {
+        "type": "enum",
+        "label": "Grok voice",
+        "default": "eve",
+        "options": [
+          "eve",
+          "ara",
+          "leo",
+          "rex",
+          "sal",
+          "atlas",
+          "naksh",
+          "celeste",
+          "ursa",
+          "sirius",
+          "lumen"
+        ],
+        "when": {
+          "voiceEngine": [
+            "grok"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "elevenlabsKey": {
+        "type": "secret",
+        "secret": "ELEVENLABS_API_KEY",
+        "label": "ElevenLabs API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": [
+              "elevenlabs"
+            ],
+            "mode": [
+              "voice",
+              "both"
+            ]
+          },
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "elevenlabs",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "elevenlabs",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          }
+        ],
+        "group": "voice"
+      },
+      "elevenlabsModel": {
+        "type": "enum",
+        "label": "ElevenLabs Realtime model",
+        "default": "eleven_realtime_v1_mini",
+        "options": [
+          "eleven_realtime_v1_mini",
+          "eleven_realtime_v1_max"
+        ],
+        "when": {
+          "voiceEngine": [
+            "elevenlabs"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "elevenlabsVoice": {
+        "type": "string",
+        "label": "ElevenLabs voice",
+        "default": "brian",
+        "when": {
+          "voiceEngine": [
+            "elevenlabs"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureKey": {
+        "type": "secret",
+        "secret": "AZURE_OPENAI_API_KEY",
+        "label": "Azure OpenAI API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureEndpoint": {
+        "type": "string",
+        "label": "Azure endpoint",
+        "setup": true,
+        "required": true,
+        "description": "e.g. myresource.openai.azure.com",
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "azureDeployment": {
+        "type": "string",
+        "label": "Azure realtime deployment name",
+        "setup": true,
+        "default": "gpt-realtime-2.1",
+        "when": {
+          "voiceEngine": [
+            "azure"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenKey": {
+        "type": "secret",
+        "secret": "DASHSCOPE_API_KEY",
+        "label": "Alibaba Model Studio (DashScope) API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenEndpoint": {
+        "type": "string",
+        "label": "Qwen endpoint host",
+        "default": "dashscope-intl.aliyuncs.com",
+        "description": "Your workspace host, e.g. {workspace}.ap-southeast-1.maas.aliyuncs.com",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenModel": {
+        "type": "string",
+        "label": "Qwen model",
+        "default": "qwen3.8-omni-flash-realtime",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "qwenVoice": {
+        "type": "string",
+        "label": "Qwen voice",
+        "default": "Tina",
+        "when": {
+          "voiceEngine": [
+            "qwen"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "sttProvider": {
+        "type": "enum",
+        "label": "Who listens (speech to text)",
+        "setup": true,
+        "default": "deepgram",
+        "options": [
+          "deepgram",
+          "assemblyai",
+          "elevenlabs",
+          "sarvam"
+        ],
+        "optionLabels": {
+          "deepgram": "Deepgram Nova-3: fast, cheap, Hindi and Urdu",
+          "assemblyai": "AssemblyAI Universal-3.6 Pro: Hindi and Urdu",
+          "elevenlabs": "ElevenLabs Scribe v2",
+          "sarvam": "Sarvam Saaras: Indian languages, incl. Urdu"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "sttLanguage": {
+        "type": "enum",
+        "label": "Language you'll speak",
+        "default": "auto",
+        "options": [
+          "auto",
+          "en",
+          "hi",
+          "ur"
+        ],
+        "optionLabels": {
+          "auto": "Detect automatically",
+          "en": "English",
+          "hi": "Hindi",
+          "ur": "Urdu"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "deepgramKey": {
+        "type": "secret",
+        "secret": "DEEPGRAM_API_KEY",
+        "label": "Deepgram API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "deepgram",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "deepgram",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          }
+        ],
+        "group": "voice"
+      },
+      "assemblyaiKey": {
+        "type": "secret",
+        "secret": "ASSEMBLYAI_API_KEY",
+        "label": "AssemblyAI API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "sttProvider": "assemblyai",
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "sarvamKey": {
+        "type": "secret",
+        "secret": "SARVAM_API_KEY",
+        "label": "Sarvam API key",
+        "setup": true,
+        "required": true,
+        "when": [
+          {
+            "voiceEngine": "mercury",
+            "sttProvider": "sarvam",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          },
+          {
+            "voiceEngine": "mercury",
+            "ttsProvider": "sarvam",
+            "mode": [
+              "voice",
+              "both"
+            ]
+          }
+        ],
+        "group": "voice"
+      },
+      "ttsProvider": {
+        "type": "enum",
+        "label": "Who speaks (voice)",
+        "setup": true,
+        "default": "cartesia",
+        "options": [
+          "cartesia",
+          "elevenlabs",
+          "minimax",
+          "sarvam",
+          "deepgram"
+        ],
+        "optionLabels": {
+          "cartesia": "Cartesia Sonic-3.6: very fast, Hindi, Hinglish and Urdu",
+          "elevenlabs": "ElevenLabs Flash: 17k+ voices (Hindi, no Urdu)",
+          "minimax": "MiniMax speech-2.8 (Hindi, no Urdu)",
+          "sarvam": "Sarvam Bulbul: Indian voices (no Urdu)",
+          "deepgram": "Deepgram Aura-2 (English and a few others)"
+        },
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "cartesiaKey": {
+        "type": "secret",
+        "secret": "CARTESIA_API_KEY",
+        "label": "Cartesia API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "ttsProvider": "cartesia",
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "minimaxKey": {
+        "type": "secret",
+        "secret": "MINIMAX_API_KEY",
+        "label": "MiniMax API key",
+        "setup": true,
+        "required": true,
+        "when": {
+          "voiceEngine": "mercury",
+          "ttsProvider": "minimax",
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "ttsVoice": {
+        "type": "string",
+        "label": "Voice ID",
+        "description": "Leave empty for the provider's default voice.",
+        "default": "",
+        "when": {
+          "voiceEngine": [
+            "mercury"
+          ],
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "group": "voice"
+      },
+      "bargeIn": {
+        "type": "boolean",
+        "default": false,
+        "label": "Headphones",
+        "description": "With speakers, Optimus mutes the mic while Mercury talks so it doesn't hear itself; press the key to interrupt. With headphones, turn this on to interrupt just by talking.",
+        "group": "voice",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "optionLabels": {
+          "true": "On: I use headphones, so I can interrupt just by talking",
+          "false": "Off: speakers, so the mic waits while Mercury talks (press the talk key to interrupt)"
+        }
+      },
+      "thinkingSound": {
+        "type": "boolean",
+        "default": true,
+        "label": "Tick-tock while working",
+        "description": "A quiet wooden tick-tock while Mercury searches or works on your screen and nobody is talking, so you know it's still going. It's well below speech level and never mutes your mic.",
+        "group": "voice",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        },
+        "optionLabels": {
+          "true": "On: a soft tick… tock while Mercury searches or works",
+          "false": "Off: silence while it works"
+        }
+      },
+      "idleStopSeconds": {
+        "type": "number",
+        "default": 60,
+        "label": "Stop listening after silence (seconds)",
+        "description": "The mic closes by itself when you haven't spoken for this long and Mercury isn't working on something, so it never streams (and costs) for nothing. 0 keeps listening until you press the key or say bye. Examples: 30, 60, 120, or 0.",
+        "group": "voice",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        }
+      },
+      "maxSessionMinutes": {
+        "type": "number",
+        "default": 30,
+        "label": "Longest listening session (minutes)",
+        "description": "A session ends by itself after this long. Examples: 15, 30 or 60.",
+        "group": "voice",
+        "when": {
+          "mode": [
+            "voice",
+            "both"
+          ]
+        }
+      }
+    },
+    "groups": {
+      "voice": {
+        "label": "🎙 Voice",
+        "description": "Who listens and speaks when you talk to Optimus. It uses the same voice keys as Mercury and the WhatsApp plugin, so a key added anywhere works here. OpenAI is recommended for the best results; every other option works too.",
+        "readyUnless": [
+          "provider:openai",
+          "provider:grok"
+        ]
+      }
+    }
+  }
+}

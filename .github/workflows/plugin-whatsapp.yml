@@ -1,0 +1,84 @@
+name: plugin-whatsapp
+
+# Builds the WhatsApp plugin's companion for each platform and uploads the
+# packaged plugins as workflow artifacts. Nothing is released or published.
+on:
+  push:
+    paths:
+      - 'plugins/whatsapp/**'
+      - '.github/workflows/plugin-whatsapp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64 }
+          - { os: macos-14, target: aarch64-apple-darwin, platform: darwin-arm64 }
+          - { os: macos-14, target: x86_64-apple-darwin, platform: darwin-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: win32-x64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugins/whatsapp/companion/target
+          key: wa-${{ matrix.target }}-${{ hashFiles('plugins/whatsapp/companion/Cargo.toml', 'plugins/whatsapp/companion/Cargo.lock') }}
+      - name: Build
+        working-directory: plugins/whatsapp/companion
+        run: cargo build --release --locked --target ${{ matrix.target }} || cargo build --release --target ${{ matrix.target }}
+      - name: Unit tests
+        if: matrix.platform == 'linux-x64'
+        working-directory: plugins/whatsapp/companion
+        run: cargo test --release --target ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Package
+        run: |
+          ext=""; [ "${{ matrix.platform }}" = "win32-x64" ] && ext=".exe"
+          node plugins/whatsapp/package.mjs "plugins/whatsapp/companion/target/${{ matrix.target }}/release/mercury-wa$ext" ${{ matrix.platform }} dist
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mercury-plugin-whatsapp-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  conformance:
+    # Install the Linux package into Mercury from this commit and run the
+    # plugin conformance kit (handshake, start, stop, restart).
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: mercury-plugin-whatsapp-linux-x64
+          path: dist-plugin
+      - name: Validate
+        run: |
+          mkdir pkg && tar -xzf dist-plugin/mercury-plugin-linux-x64.tgz -C pkg
+          MERCURY_HOME="$RUNNER_TEMP/mh" MERCURY_PLUGIN_CATALOG_URL=off node dist/index.js plugins validate pkg

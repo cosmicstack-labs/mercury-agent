@@ -2,7 +2,109 @@
 
 ## Unreleased
 
-- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-025.
+### MCP servers (ADR-029)
+- **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
+
+## 1.4.2 — search that finds things, and a research prompt that asks only when you mean it
+
+### Web search
+- **Three web sources, the ones that work.** `web_search` asks [Parallel's public search](https://search.parallel.ai/mcp) first (keyless MCP built for agents, about a second, with excerpts and dates), then DuckDuckGo's html page, then its lite page. Brave, Wikipedia, Hacker News and Bing's web feed are gone from web search: Brave refuses automated requests and the others answered general questions badly. News keeps Parallel (article links only, section fronts dropped), then Bing News, Google News and Hacker News.
+- **DuckDuckGo parsed exactly.** Both pages are read from their real markup: each result's title, the real address behind DuckDuckGo's redirect, and the snippet; ads (`result--ad`, sponsored rows) are dropped. A challenge is retried once after a short pause, and a page that is neither results nor "No results" is reported as "page not recognised" instead of silently empty. Tests run against saved copies of both real pages.
+- **News links open the article.** News search used Google News first, whose links are Google redirects (`news.google.com/rss/articles/…`) that can't be turned into the publisher's address. Bing News now comes first and its links are unwrapped to the real article; Google News is the fallback, and its links are marked as redirects.
+- **Search never depends on the model.** Results come only from Mercury's own search tools, never from a provider's built-in web search, so search works the same with every model.
+- **The web-search skill (1.3.0) explains the sources** and tells the model to report which ones failed and why when a search comes back empty.
+- **You can see what happened.** Every result ends with the trail, for example `Searched: Parallel: timed out → DuckDuckGo: 8 results`, so "nothing found" and "everything was blocked" read differently.
+
+### Chat
+- **The research prompt asks only when you want research.** It used to fire on words ("latest", "recent", "explain", "today's news"), so "convert the latest epub" or "explain how my build works and fix it" got a research question. The words now only decide whether to check; one short model call decides whether you asked for an in-depth, multi-source write-up. Instructions, quick questions and today's news never get the prompt, and a failed or slow check means no prompt.
+- **Quick answer comes first.** The picker starts on "Quick answer", so an accidental Enter never starts a long research run.
+
+## 1.4.1 — Mercury learns how you work, saves its own skills, and searches again
+
+### Owner Model: Mercury learns how to work with you (ADR-026)
+- **Memory became beliefs with evidence.** Every claim about you now carries support and counter-evidence, a confidence that fades unless it is seen again, the context it applies in, and a status: candidate → held → confirmed by you; contested; retired; forgotten. What you say outright beats what Mercury inferred and never fades. Nothing is deleted behind your back.
+- **It learns working traits, not personality types:** reply length, when to ask before acting (per project or domain), options vs a recommendation, tone, your expertise and risk appetite per domain, when you are usually around, how you give feedback. It never infers health, religion, politics, sexuality or personality types, never stores credentials, and never generalises about other people beyond what you said.
+- **Two loops.** After each turn a strict extractor turns the turn into belief operations (or nothing; Mercury's own replies are never evidence about you). Every hour of activity, and at shutdown, a reflection pass reads your messages and behaviour across sessions, infers traits, merges duplicates, flags contradictions and rewrites the owner brief.
+- **The model finally sees it:** "About you" and "How to work with you" sit in every prompt, plus the beliefs relevant to each message. Beliefs it acted on without objection gain support; a correction retires the old belief and holds the new one.
+- **You hear about it.** Behaviour-changing learning ends the reply with one line: `☿ Noted: … Say "forget that" to undo.` Contradictions are asked about once. `/memory learned|beliefs|contested|confirm|correct|forget|settle`, `/forget <text>`, "forget that", the `forget_memory` / `confirm_belief` / `correct_belief` tools, a dashboard view with Confirm/Forget, and an editable `~/.mercury/soul/owner.md` whose notes are read back.
+- **Hygiene:** the old extractor saved Mercury's own replies as your preferences (about half of a typical store). Those rows are quarantined, not deleted (dashboard → Quarantined, with Restore); real memories became beliefs. The prose fallback is gone, merging works, conflicts no longer delete at random, and soul files you edited are never overwritten by migration.
+- **One source.** `/memory`, the dashboard, the `save_memory` / `search_memory` tools, the bots and cloud sync all read and write the belief store now; the old `memories` table is a read-only archive. Your name, email and handles stay in `identity.owner` in `mercury.yaml` and are never stored as beliefs.
+- **Chat can actually use what it read.** Per-message recall shows held beliefs first and fills with unverified candidates (labelled as hunches), so what Mercury learned today and what the upgrade migrated is visible now, not after a second session. "What do you know about me?" injects the strongest beliefs directly. Stopwords and channel scaffolding no longer pollute the search, and the "About you" section pads with hedged candidates until enough is held.
+- **Two extractor leaks closed.** A correction that opens like an acknowledgement ("No no, I said British spelling…") is no longer skipped as trivial, and an operation the model emits without an `excerpt` now cites your message instead of being thrown away (that alone dropped whole turns on Haiku).
+- **Pick the model that learns.** `memory.learning.provider: anthropic` (or `LEARNING_PROVIDER`) runs extraction and reflection on a capable provider while chat keeps its own; unset falls back to the default.
+- **Safe upgrade.** The first boot after upgrading backs `second-brain.db` up to `second-brain.pre-owner-model.db` before migrating, the migration runs once and never crashes the boot, every memory you could see before is still listed (or waits in Quarantined), and "☿ Noted" lines are limited to one per channel every few minutes.
+
+### Self-made skills (ADR-027)
+- **Mercury turns long work into skills.** After a multi-step task it would do again (a recurring report, a conversion pipeline, a deploy, a site or device it operates) has worked end-to-end, Mercury saves the procedure with the new `create_skill` tool — exact commands, paths, checks and pitfalls — and tells you in one line. Next time it is one `use_skill` away.
+- **Kept apart from your skills.** Self-made skills live in `~/.mercury/skills/self-made/`, carry `origin: mercury`, are listed under their own "Self-made" label and count as unverified until used again. Drafts are rejected unless they are a real, verified, credential-free procedure; a self-made skill never shadows an installed one.
+- **Skill categories and intents work again.** Discovery registered each skill's category, intents and tags and then rebuilt the index, wiping them; the prompt fell back to a flat list and intent routing matched on names only. Fixed by building the index first.
+- **No junk shelf.** `/skills self-made` shows each one with use counts; unused ones go dormant after 30 days (disabled, never deleted) and the shelf is capped at 40. `/skills self-made enable|disable|remove <name>`. Bots and channel members cannot create skills.
+
+### Web search
+- **Search returns real results again, still free and keyless.** Bing's web RSS feed, the main engine, now answers automated requests with pages unrelated to the query (train timetables for a TypeScript question), and DuckDuckGo, Mojeek and Startpage answer with bot challenges. `web_search` now asks Brave Search first, then Wikipedia, Hacker News, Bing News and Google News, and keeps only results that mention the query, so a source serving junk counts as empty and the next one is tried. A thin answer is topped up from Wikipedia, the same page is never listed twice, and Brave rests for a minute after rate-limiting instead of being retried every query. No new dependency.
+- **Old DuckDuckGo skills stop failing.** `fetch_url` on a search-engine results page (DuckDuckGo, Google, Bing, Yahoo, Brave, Startpage, Mojeek) runs the query through `web_search` instead of returning the challenge page. An installed `web-search` skill that scrapes such a page and never mentions `web_search` is replaced by the built-in one on start, with the original kept as `SKILL.md.replaced.bak`; skills you edited that already use `web_search` are left alone.
+- The built-in `web-search` skill (1.2.0) tells the model to rephrase once before giving up and never to fetch search pages directly.
+
+### Chat
+- **Regular chat works like an agent again.** Its instructions forbade helper scripts and batching ("call write_file for each one individually"), so a task like converting an EPUB to Markdown was done file by file by hand. Chat now reaches for the strongest existing tool (pandoc, ffmpeg, a Python library) or one script, does a quick web search when it isn't sure what the best tool is, and checks the output before saying it is done. It also gets a short working contract like Mercury Code's: do the work, plan multi-step tasks, report what was checked.
+- **`/model` and `/cloud` offer the arrow-key picker in the attached terminal again.** The picker was only wired to the foreground terminal; since the default launch attaches, `/model` printed a list and left you typing `/models use <name>`. Both now open the same ↑↓ picker on your own screens (attached terminal and dashboard), and Esc keeps the current model instead of silently taking the first option.
+- **A model switch says what it does.** `/model` used to answer "Saved for future sessions", which read as "takes effect next session". It now says `✓ Switched to <model> (<provider>). In effect from your next message, and kept as the default.`, and the status row shows the new model at once.
+- **Pickers answered in the attached terminal reach the runtime.** The answer endpoint only resolved permission prompts, so choosing in `/permissions`, `/model` or a question picker did nothing: the command waited out its 2-minute timeout behind a "Thinking" spinner. Choices and Esc now resolve at once, and the spinner is hidden while a picker waits on you.
+- **`/new` no longer leaves the attached terminal "Thinking" forever.** After `/new` or `/session <ref>` the runtime re-bound your screen to the new session, but the terminal kept listening on the old one, so every reply went where nobody was looking and `/stop` seemed ignored. The runtime now tells the screen to follow, and the terminal also follows whenever a message is routed to another session.
+- **Yes-or-no and "which one?" questions come as a picker, not prose.** Chat now asks decisions through its question tool (↑↓ and Enter) and keeps prose for questions that need free text (a name, a path).
+
+### Permissions
+- **Every new session asks for its permission mode again.** Since 1.3.1 the default `mercury` launch attaches to the background runtime, which never showed the "Ask Me / Allow All" prompt, so everyone was silently in Ask Me. The prompt is back wherever a session starts: the foreground terminal and Mercury Code at launch, the attached terminal when you start a new session or type `/new`. Your current mode is listed first, so Enter keeps it and ↓ Enter switches; the pick is remembered as the default for next time and applied to every screen. Resuming an existing session prints one dim line with the mode in effect instead.
+- **`/permissions` works everywhere you are the owner** (attached terminal and dashboard too, not just the foreground terminal), including `/permissions allow-all` and `/permissions ask-me`.
+- **"Always" on a command prompt now covers that command for the rest of the chat** (every `pandoc …`, `git commit …`), not just the exact string. Installs, wrappers like `sudo`/`sh -c`, and remote Mercury Cloud requests stay exact-match.
+- Telegram and Signal can switch back from Allow All to Ask Me (the switch used to be ignored until restart).
+
+### Bottom bar
+- **The session picker fits the screen, new session first.** `mercury` used to list up to six sessions under the launch pad regardless of the terminal height, so on a 24-row terminal Ink dropped the wordmark off the top. The list is now budgeted to the height (the tip goes first, then sessions fold into `… N more · /sessions in the chat`), and "Start a new session" is the first, pre-selected row instead of the last.
+- **One useful row, not a dump.** The row under the input is status only. Left: the session (`⚿ copper-mint-thd · hi`). Right: permission mode, today's budget meter, model, Code mode, Optimus, an update — fitted to the terminal width in priority order with compact forms (`claude-haiku-4-5` not `claude-haiku-4-5-20251001`, `⚡12%` when narrow), so a long model or session name never crowds out the rest; what does not fit is dropped, lowest priority first, never cut mid-word.
+- **Optimus wins the row.** While Optimus is listening or working, its activity is the first segment on the right and the last one the fit ever drops; the session on the left shrinks to its alias to make room.
+- **Model only on the row.** The provider name is gone from the status row (`claude-sonnet-4-5`, not `Anthropic · claude-sonnet-4-5`); the model name already says who serves it.
+- **The budget meter is back on the row.** `⚡ ██████░░ 76%` shows today's token use as a bar that goes green → yellow (70 %) → red (90 %), the colours the completion footer has always used. It outranks the model when the row is narrow, so it stays visible as `⚡76%` down to very small terminals. The attached terminal and the foreground TUI share one builder.
+- **The bar updates live.** The attached terminal (what `mercury` opens) read the model once on connect and never again; model switches, Code mode, permission changes and Optimus activity never reached it. The runtime now pushes a status update on every model switch and checks every 2 seconds for anything else. The bar shows the thread, model, Code mode, Ask Me / Allow All, today's token use and Optimus activity; the foreground and Mercury Code bars show the permission mode too.
+- The launch pad's budget row works again (it read field names the runtime never sent).
+- **Said once, in the chat.** While a turn runs, one line above the input shows the spinner, the phase (Thinking, the running tool, Writing) and the elapsed time, cyan then yellow at 30 s and red at 90 s, under the finished steps' ✓ marks. The status row under the input never repeats it. Choosing a permission mode no longer prints a confirmation line either: the row shows the mode.
+- **No key hints on the row.** `↵ send · /help · ctrl+c detach` is gone; Enter sends, `/help` lists the commands, and the row keeps its width for status. The right half is a single truncating line now, so it can no longer wrap onto a hidden second line and end in `Anthropic · `.
+
+## 1.4.0 — Pluggy Mercury: plugins, WhatsApp calls, and Optimus uses your computer
+
+The first stable release since 1.3.8. It also carries the 1.3.9 hotfix below, which only shipped on the dev channel.
+
+### Plugins (#203)
+- **Optional plugins.** `/plugins install|enable|disable|update|rollback|uninstall`, from a checksum-verified catalog at mercuryagent.sh. Plugins run out of process, so a crashing plugin can't take Mercury down, and they declare their network hosts, secrets and permissions up front.
+- **Plugin API 1.2.** Plugins can return images to the model (kept out of chat history), request desktop access (`permissions.desktop`), and add `whatsapp` or `desktop` channels.
+- **Plugins use Mercury's own providers.** You set a key once; plugins borrow it. A missing optional key is explained once, with what it turns off.
+- **Guided setup and a flatter `/plugins <id>` menu.** Settings are listed on the menu itself, yes/no options say what each answer does, and the follow-up settings appear right after you save. No dead ends.
+- Installing a plugin into a running Mercury now starts it immediately (it used to wait for a restart).
+
+### WhatsApp plugin 0.1.1 (#202)
+- Chat with Mercury on WhatsApp from a spare number, as a linked device.
+- **Voice calls in both directions.** Mercury can call you ("call me at 9pm", "call me when it's done"), keeps you posted while it works, takes approvals by voice or in the chat, and sends links, photos and documents mid-call.
+- Choose the voice engine (OpenAI by default, Gemini, Grok, ElevenLabs, Azure, Qwen, or your own Mercury model), access levels (General / Extended), and link or unlink from the dashboard.
+
+### Optimus plugin 0.4.7 (new)
+- **Mercury uses your computer.** It looks at the screen, then moves the pointer, scrolls and types the way a person does, with a "Mercury is driving" overlay while it has control. macOS, Windows and Linux; no developer certificates needed.
+- **Talk to it.** A talk key starts listening mode with spoken replies, a mute key stops listening without stopping the work, and saying "stop" halts every action at once. Silence ends a session, so nothing is captured or spent while you're away.
+- **Honest about results.** Optimus checks the screen before it reports something as done, and failed actions are reported as failed.
+- Consequential actions ask first; Mercury declines to play or automate games that use anti-cheat (Vanguard, Easy Anti-Cheat, BattlEye), since automated input there can get your account banned. The TUI status bar shows when Optimus is listening or working, and a soft tick-tock plays while it works.
+- Voice settings are shared with WhatsApp.
+
+### Also new
+- **Built-in `web_search`.**
+- **Mercury reads photos and PDFs, and listens to voice notes, from chat.**
+- Mercury always knows it comes from Cosmic Stack.
+- Web dashboard: plain-language model names, renaming, a reasoning picker, every local Ollama model, ChatGPT Plus/Pro plan models.
+
+### Fixed
+- **The desktop channel no longer loops broadcasts.** One failing alert used to fan out into hundreds of WhatsApp messages; repeated alerts are now sent once.
+- ChatGPT OAuth turns no longer fail after a tool call.
+- Long messages no longer fail memory search ("Expression tree is too large").
+- New dashboard chats no longer land in the previous conversation; dashboard permission prompts render and resolve.
+- Plugin tar calls work with GNU tar on Windows.
 - **The web dashboard works on the Windows standalone binary.** Mercury looked for its `web/` folder inside the binary's virtual filesystem, because it only recognised Bun's macOS/Linux marker (`$bunfs`) and not Windows' (`~BUN`), so the dashboard reported "web UI not found". Found and fixed by @farena-ai in #189; the same check is now shared by the login page and the memory-graph fallback.
 
 ## 1.3.9 — hotfix: `mercury doctor` and dashboard saves take effect

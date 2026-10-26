@@ -1,3 +1,468 @@
+# How Optimus works: an agent that uses your computer
+
+> Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.
+
+Published 2026-10-24 by Salman Qureshi. Tags: engineering, product.
+Canonical: https://mercuryagent.sh/blog/how-optimus-works
+
+Optimus is the part of Mercury that uses your computer. It looks at the screen, moves the pointer, clicks, types and opens apps, the way you would. You can ask for something in chat, or hold a key and say it out loud. It runs on macOS, Windows and Linux, and it ships as a plugin, so nobody gets it unless they install it.
+
+This post is about how it works underneath: the processes involved, how a screenshot becomes a click, why it says "sent" instead of "done", how voice reaches Mercury, and what stops it when you want it stopped. The current version is Optimus 0.4.8.
+
+## Mercury is the brain, Optimus is the hands
+
+Mercury does the thinking. It holds the conversation, picks the model, decides the next step and asks you for permission. Optimus has no model of its own for deciding what to do. It is a tool provider: it gives Mercury eyes on the screen and hands on the mouse and keyboard, and it reports back what happened.
+
+That split comes from the plugin rules we set in [ADR-025](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md) for Mercury 1.4. Features that only some people want ship as plugins, and a broken plugin must never take Mercury down. Optimus is one Rust binary, `mercury-optimus`. Mercury starts it as a child process and talks to it over MCP: JSON-RPC 2.0, one message per line, on stdin and stdout. Logs go to stderr so they can never corrupt the protocol.
+
+Mercury supervises it like any other out-of-process plugin:
+
+- Every request has a timeout, and a hung plugin is killed and restarted.
+- Crashes restart it with backoff from 1 second up to 60.
+- More than five crashes in ten minutes turns the plugin off, with a message saying why.
+- The child gets a minimal environment plus only the secrets its manifest declared.
+
+Install it from any chat:
+
+```text
+/plugins install optimus
+```
+
+The catalog entry pins each platform build to a SHA-256 checksum. If the download doesn't match, Mercury says "Checksum mismatch" and installs nothing. Builds exist for macOS on Apple silicon and Intel, Windows x64, and Linux x64 and arm64.
+
+## Seven tools
+
+Mercury shows the model seven tools, namespaced as `optimus__look`, `optimus__act` and so on:
+
+| Tool | What it does |
+|---|---|
+| `look` | Takes a screenshot of one display, or zooms into part of the last one |
+| `act` | Runs up to 60 mouse and keyboard actions in a row, then looks again |
+| `act_consequential` | The same as `act`, for steps that commit something: send, buy, delete, submit |
+| `open` | Opens an app, a URL or a file |
+| `windows` | Lists up to 30 visible windows, front first |
+| `permissions` | Checks or requests the OS permissions Optimus needs |
+| `listen` | Starts a voice session |
+
+An action is one of `click`, `double_click`, `triple_click`, `right_click`, `middle_click`, `move`, `drag`, `draw`, `mouse_down`, `mouse_up`, `type`, `paste`, `key`, `scroll` or `wait`.
+
+There is no accessibility-tree tool and no OCR. Optimus works from pixels, like a person looking at the screen. That keeps it the same on every OS and in every app, including the ones with poor accessibility support.
+
+## How it sees
+
+`look` captures the display and fits the image into 1280×800, which is the size computer-use models are trained on. It is resized and sent as a JPEG at quality 80. A 2880×1800 Retina screen becomes 1280×800, and a 4K screen becomes 1280×720.
+
+The model never deals with Retina scaling or monitor layout. It clicks in the pixels of the screenshot it was given, and Optimus maps those back to real screen coordinates:
+
+```rust title="plugins/optimus/companion/src/ops.rs"
+let sx = self.x as f64 + px * self.w as f64 / self.img_w as f64;
+let sy = self.y as f64 + py * self.h as f64 / self.img_h as f64;
+Ok((sx.round() as i32, sy.round() as i32))
+```
+
+`self.x` and `self.y` are the monitor's origin, so a second display to the left, at x = -1920, works without the model knowing it exists. A coordinate outside the screenshot is an error rather than a guess. On Windows the process declares itself per-monitor DPI aware, so it sees real pixels everywhere.
+
+By default `look` captures the display under the pointer. When text is too small to read, the model can ask for a zoom: Optimus crops the full-resolution capture and fits that region into the same box, but coordinates still refer to the full screenshot. Each look also reports the display number, the mouse position and the active window and its title.
+
+On the Mercury side, images go only into what the model receives for that step. Logs, chat history and the learning engine never carry the base64. If the model can't take images, Mercury drops the picture and tells the model so, instead of failing.
+
+## How it acts
+
+Most input goes through the `enigo` crate. Optimus adds the parts that make it behave like a person and land reliably.
+
+**The pointer glides.** It follows a curve with a small random bow of 4 to 12 percent of the distance, eased in and out, and pauses briefly after arriving. In the default Natural pace a move takes 200 to 750 ms depending on distance. Fast pace cuts that to 70 to 220 ms.
+
+**Typing is key by key.** Natural pace waits 28 to 85 ms per key, a little longer after spaces and punctuation, and occasionally pauses as if thinking. One `type` action holds up to 3,000 characters. `paste` is there for long text: it saves your clipboard, pastes, and puts your clipboard back.
+
+**Scrolling uses each OS's own API.**
+- macOS: pixel-precise `CGEvent` scroll events, spread over eased steps.
+- Windows: `SendInput` with wheel events in small increments.
+- Linux: whole notches, which is what X11 offers.
+
+**`open` forgives app names.** On macOS, "Chrome" finds "Google Chrome". If nothing matches, the reply lists the installed apps so the model can try again. Windows uses `start`; Linux uses `xdg-open` for files and URLs and `gtk-launch` for apps.
+
+## Sent is not done
+
+An early build taught us something uncomfortable. Its logs showed 29 `act` calls rejected because the model sent its steps in a shape Optimus couldn't read. Nothing happened on screen, and Mercury reported success anyway. A model that is told "your call went through" tends to believe the job is done.
+
+So every `act` reply now says exactly what it can vouch for:
+
+```rust title="plugins/optimus/companion/src/ops.rs"
+// "Sent", not "done": an input reaching the screen doesn't mean it had the intended effect.
+let mut text = if done.is_empty() { "Nothing was sent.".to_string() } else { format!("Sent: {}.", done.join("; ")) };
+if let Some(s) = &stopped {
+    text = format!("FAILED: {s} {text}");
+}
+text.push_str(" This only means the input was sent: check the screenshot below to see whether it actually worked before saying so.");
+```
+
+After the actions run, Optimus waits half a second for the screen to settle, takes a fresh screenshot and attaches it. Mercury's desktop guidance tells the model to look after each step, check it worked, and never claim it is finished without a fresh look. Actions in a batch run in order and stop at the first failure.
+
+The action parser is deliberately lenient. Models send actions as JSON strings, double-encoded JSON, single-quoted pseudo-JSON, inside code fences, or as numbered objects. Optimus accepts all of them, because rejecting a well-meant call is how the 29 failures happened.
+
+## Talking to it
+
+Optimus can also be driven by voice. Press the talk key, `ctrl+alt+m` by default, and speak. A plain letter can't be the talk key, because it would fire while you type.
+
+The key is caught differently on each OS:
+- macOS: an event tap that swallows the key, so it never reaches the app you're in.
+- Windows: `RegisterHotKey`.
+- Linux: an X11 key grab, registered with and without CapsLock and NumLock.
+
+There are two ways to run a voice session:
+
+- **Speech to speech.** A realtime voice model listens and talks: OpenAI Realtime by default, or Azure, Grok, ElevenLabs, Qwen-Omni or Gemini Live.
+- **Your own Mercury model.** Speech-to-text with Deepgram, AssemblyAI, ElevenLabs or Sarvam, then your Mercury model, then text-to-speech with Cartesia, ElevenLabs, MiniMax, Sarvam or Deepgram.
+
+Either way, the voice model doesn't control the computer itself. It has three tools: `ask_mercury`, `answer_approval` and `end_conversation`. When you ask for something, it hands the request to Mercury, which runs a normal turn with the same tools and rules as chat. If that turn takes longer than 90 seconds, Mercury says it will send the answer to the chat instead of keeping you waiting on the line.
+
+While Mercury works, Optimus speaks a short line for each step ("Opening Safari", "Typing") and plays a soft tick, quiet enough not to trigger its own microphone. With speakers, the mic is silenced while Mercury talks so it doesn't hear itself. With headphones you can turn on barge-in and interrupt by speaking. A session ends after 60 seconds of silence, or after 30 minutes.
+
+The status row at the bottom of Mercury's terminal shows what Optimus is doing: "🎙 Optimus listening", "🖱 Optimus working" or "🔇 Optimus muted". When the row is short on space, that segment is the last one dropped.
+
+## Why macOS gets its own app
+
+macOS charges Accessibility and Screen Recording permissions to the app that launched a process. If Mercury started Optimus from your terminal, the grant would go to Terminal and cover every script you ever run there. We didn't want that.
+
+So on macOS the plugin builds `Optimus.app` from its own binary. It has no Dock icon, and it signs the app with a certificate created on your Mac, with no Apple account involved. It launches through LaunchServices, so the permissions belong to Optimus alone. The plugin and the app talk over a Unix socket, readable only by you.
+
+Two details make this survive real use:
+
+- **Updates keep your permissions.** macOS identifies a signed app by "this bundle id, signed by this certificate", not by the binary's hash. The certificate stays the same across updates, so you grant permissions once.
+- **Your keychain is never touched.** Signing uses a throwaway keychain that exists only for the `codesign` call. The app is rebuilt only when the version or binary changes, or when `codesign --verify` fails.
+
+LaunchServices starts the app with launchd's environment, not Mercury's. So the first message on the socket hands over the variables the app needs, such as API keys for voice. If the app quits, for example after you change a permission, the plugin relaunches it and retries once.
+
+## The safety rails
+
+Optimus is off until you turn it on. Until then, every tool except `permissions` answers "Optimus is off". Install shows a warning before you confirm: "Controls this computer: it can see your screen, move the mouse and type, in any app."
+
+**Committing steps ask first.** `act_consequential` is the one tool marked as not read-only, so in Ask Me mode Mercury asks before each send, purchase, delete or submit. In Allow All mode it doesn't ask. That is the point of Allow All, so choose it knowingly.
+
+**Voice approvals need your voice.** When Mercury asks for approval during a voice session, a "yes" counts only if your own transcribed words contain one after the question. If the voice model claims you agreed and the transcript shows nothing, the answer is "Not approved".
+
+**You can always stop it.**
+- **Say "stop", or press the talk key while it works.** Every screen action halts at its next step, new ones are refused for 8 seconds, and Mercury cancels the task. The stop words include "cancel", "ruko" and "bas".
+- **Grab the mouse.** If you move the pointer more than 12 pixels from where Optimus left it, it stops and hands control back. It checks between actions, during glides, and every 12 typed characters.
+
+**It shows when it's driving.** A glowing ring follows the pointer with the label "Mercury · Optimus is driving". On macOS and Windows it is excluded from screen capture, so the model never sees it. On X11 it hides during capture.
+
+**Some things are instructions, not walls.** The tool descriptions tell the model never to type passwords, card numbers or 2FA codes, and to decline games with anti-cheat. Those are rules Mercury follows, not technical blocks, and the docs say so.
+
+## Platform limits
+
+| Platform | What works | What doesn't |
+|---|---|---|
+| macOS 12+ | Everything, after granting Accessibility and Screen Recording | macOS asks again for Screen Recording about once a month |
+| Windows | Everything, nothing to grant | Windows running as administrator, such as Task Manager or installers |
+| Linux X11 | Everything | Paste needs `xclip` |
+| Linux Wayland | Screenshots, through the desktop's screen-sharing prompt | Input and the talk key reach only XWayland apps; no overlay |
+
+The 0.4.8 release fixed a Linux crash at start, "error while loading shared libraries: libwayland-client.so.0", on machines without Wayland installed. Optimus now loads that library only when needed. A small launcher adds bundled copies of any system library the machine lacks, and system libraries win whenever they exist. It shipped as a plugin-only update, so nobody had to upgrade Mercury.
+
+The [Optimus docs](/docs/integrations/optimus) cover setup, every setting and the voice providers. The source is in the Mercury repository under `plugins/optimus`:
+
+https://github.com/cosmicstack-labs/mercury-agent
+
+
+---
+
+# Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk
+
+> Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.
+
+Published 2026-10-23 by Salman Qureshi. Tags: news, releases, product.
+Canonical: https://mercuryagent.sh/blog/mercury-1-4
+
+Mercury 1.4, which we are calling Pluggy Mercury, is out. It adds a plugin system, and two official plugins built on it. The WhatsApp plugin lets you chat with Mercury and talk to it by voice call: you can call it, and it can call you. Optimus lets Mercury use your computer. It looks at the screen, moves the pointer and types the way a person does, and you can drive it by chat or by pressing a key and talking.
+
+This is the first stable release since 1.3.8. The [release notes](/docs/releases/1.4.0) have the full list. This post is about why we built it this way.
+
+## Why plugins
+
+WhatsApp calling needs a WhatsApp protocol stack, a realtime audio pipeline and a handful of voice providers. Computer control needs screen capture, synthetic input and, on macOS, its own signed app bundle. Many people who run Mercury want neither. Putting both into the single Mercury binary would have made the download bigger for everyone and put more native code into every install.
+
+So we wrote down a rule in [ADR-025](https://github.com/cosmicstack-labs/mercury-agent/blob/main/DECISIONS.md): features only some people want ship as plugins, and a bad plugin must never take Mercury down with it. The work started in [#203](https://github.com/cosmicstack-labs/mercury-agent/issues/203).
+
+You manage plugins from any chat:
+
+```text
+/plugins install whatsapp
+/plugins disable whatsapp
+/plugins update
+/plugins rollback whatsapp
+/plugins uninstall whatsapp
+```
+
+The same commands work in a shell as `mercury plugins ...`, and in the dashboard under Configure, then Plugins. The catalog lives at `https://mercuryagent.sh/plugins/catalog.json`. Every entry pins a version to a SHA-256 checksum, and Mercury checks the download against it before installing anything.
+
+## How a plugin is kept at arm's length
+
+Both official plugins are out-of-process. Each is a separate Rust program that Mercury starts and talks to over stdio using MCP, plus a small channel extension for chat and voice. That boundary does most of the work:
+
+- **A crash is the plugin's problem.** Mercury restarts it. After five failures in a row, or too many crashes, the plugin is turned off and you get a message saying why.
+- **It gets only what it declared.** The manifest lists the network hosts a plugin may reach and the secrets it may read. Install shows you that list before you confirm. A plugin that controls the computer carries a new `permissions.desktop` flag, and `/plugins info` shows it as a warning.
+- **It can't widen access.** For a chat channel, Mercury decides who gets through, not the plugin. Unknown numbers are dropped before they reach the agent.
+- **Changes are reversible.** The previous version is kept, so `/plugins rollback` brings it back with its old settings. If Mercury fails to start twice right after a plugin change, it turns that plugin off. `mercury start --safe-mode` starts with every plugin off.
+
+Plugins also borrow Mercury's own AI providers. If you already set up OpenAI in Mercury, both plugins' voice features use that key. You don't paste it again. Keys a plugin needs for itself, such as a Gemini or Deepgram key, are stored with Mercury's keys and shared with any other plugin that declares them.
+
+The plugin menu took two rounds. In the first version, the main settings sat behind a "Change a setting" entry, the voice section forced you through every field, yes/no questions didn't say what each answer meant, and picking a voice engine didn't lead you to the key it needed. Now `/plugins whatsapp` lists every setting with its current value. A yes/no setting says what each answer does ("On: Mercury picks up when you call it"). Change the voice engine to Gemini and Mercury asks for the Gemini key straight away. Every question has a way back.
+
+The plugin API is now at 1.2. The main addition is that a tool can return images to the model, which Optimus needs for screenshots. The images go to the model with that one tool result and are never written to chat history, logs or memory. The [author guide](/docs/reference/plugins) covers the rest.
+
+## WhatsApp: it can call you, or listen to you on the go
+
+The WhatsApp plugin runs Mercury on a spare number as a linked device, the same way WhatsApp Web connects. You chat with it from your own number. One warning up front: this uses an unofficial, reverse-engineered protocol. A WhatsApp update can break it, and automated use can get a number restricted. Link a number you can afford to lose, not your main one.
+
+Text works the way you'd expect. Photos and PDFs you send are passed to the model if it accepts them, and voice notes are transcribed with your OpenAI provider. Two access levels decide how much Mercury can do in the chat. General, the default, is conversation only, with no tools, files or memory. Extended is the full agent.
+
+Calls are where it gets useful. You can ring the spare number while you're out and ask Mercury to look something up, check on a task, or draft a reply. It can also ring you. Say "call me at 9pm about the deploy" in any chat, or on a call. The time is parsed in code, not by a model, and confirmed back to you as an exact time. If you miss the call, it tries once more five minutes later and then sends a message. "Call me when it's done" means it does the work first and then calls. Mercury won't call more than four times an hour by default, so a task stuck in a loop can't keep ringing your phone.
+
+During a call, Mercury uses its tools as usual and keeps you posted while it works. Anything that needs approval is asked out loud and posted in the chat at the same moment, and whichever answer arrives first wins. A spoken yes only counts if your own transcribed words say yes, and it never turns into "always". Mercury doesn't read links aloud. It sends them to the chat and tells you it did.
+
+OpenAI Realtime is the default voice engine, and the one we recommend for the best calls. Gemini Live, Grok Voice, ElevenLabs, Azure, Qwen-Omni, or your own Mercury model with separate speech-to-text and text-to-speech providers all work too. Setup only asks about the engine if you don't have an OpenAI provider already.
+
+The full setup is in the [WhatsApp docs](/docs/integrations/whatsapp).
+
+## Optimus: Mercury at your desk
+
+Optimus is the big one. You ask, and Mercury does it on your screen, in whatever app you use.
+
+**How it sees.** The `look` tool takes a screenshot of the display the mouse is on, scaled to fit 1280 by 800, and can zoom into part of it. Screenshots are taken only when Mercury looks or acts. Nothing captures in the background.
+
+**How it acts.** We wanted you to be able to follow what it's doing. In the default Natural pace, the pointer glides along a gentle curve, scrolling arrives in small steps, and text is typed key by key with an uneven rhythm. Typing key by key means it works in every editor, and paste is only a fallback. While it drives, a ring and the label "Mercury is driving" follow the pointer. On macOS and Windows that overlay is excluded from capture, so it never shows up in Optimus's own screenshots.
+
+**How it stays honest.** This was the hardest part. The logs from one early build showed 29 `act` calls rejected because the model sent its steps in a shape Optimus couldn't read. Nothing happened on screen, and Mercury reported success anyway. Optimus now reads steps in every shape we've seen models send. Every step reports "Sent", meaning the input reached the screen, not "done", and returns a fresh screenshot. Failures start with FAILED. Mercury is told to look again and confirm the result before it says a task is finished. Optimus also records every step that failed or was stopped. In a voice session, the answer is checked against that record before you hear it, so a failed task is reported as failed.
+
+**How you stay in control.**
+
+- Optimus does nothing until you turn on "Control this computer" in setup.
+- Ordinary, reversible steps run straight away. The step that submits, sends, posts, pays, deletes, installs or changes a setting goes through a separate tool that needs your approval.
+- Move the mouse while it works and it stops at the next step and hands control back.
+- It's told never to type passwords, card numbers or 2FA codes. It asks you to do that part.
+
+Press the talk key (`ctrl+alt+m` by default, Control+Option+M on a Mac), hear a chime, and talk. Mercury answers out loud and narrates each step as it happens. A quiet tick-tock plays while it works. Say "stop", or press the talk key while it's working, and every action halts at once. The mute key (`ctrl+alt+shift+m`) stops listening without stopping the work, and nothing you say is sent while muted. After 60 seconds of silence with nothing running, the mic closes by itself. The terminal status bar shows when Optimus is listening, working or muted. Voice settings are shared with the WhatsApp plugin, so a key you added there works here too.
+
+Optimus runs on macOS, Windows and Linux, and no Apple Developer ID is involved. On macOS, privacy permissions are charged to the app that launched a process, so if Optimus ran under your terminal, the grant would cover every script that terminal runs. Instead, Optimus builds its own `Optimus.app` and signs it with a certificate made on your Mac. You grant it Accessibility, Screen Recording and Microphone once, and because the certificate stays the same, the grants survive updates. On Windows there's nothing to grant, though windows running as administrator can't be controlled. On Linux, X11 gets full control. Wayland is limited for now: input and the talk key reach only XWayland apps.
+
+The [Optimus docs](/docs/integrations/optimus) cover every setting and permission.
+
+## The rest of 1.4
+
+- A built-in `web_search` tool, free and keyless. In testing, asking for the news on a WhatsApp call made zero tool calls, partly because Mercury had no search tool to call.
+- Mercury always knows it comes from Cosmic Stack.
+- The dashboard model picker shows plain-language names, every local Ollama model and ChatGPT Plus/Pro plan models, and has a reasoning picker.
+- Fixes for ChatGPT OAuth turns failing after a tool call, memory search failing on long messages, and the dashboard on the Windows standalone binary (found and fixed by @farena-ai in #189). The 1.3.9 fix, where `mercury doctor` restarts the daemon when your configuration changed, is folded in.
+
+## Upgrading
+
+```bash
+# npm
+npm install -g @cosmicstack/mercury-agent@1.4.0
+mercury restart
+
+# standalone binary: rerun the installer, or
+mercury upgrade
+```
+
+Then install what you want:
+
+```text
+/plugins install whatsapp
+/plugins install optimus
+```
+
+Your `~/.mercury` folder carries over untouched. If something breaks, open an issue or find us on [Discord](https://discord.gg/5emMpMJy5J).
+
+https://github.com/cosmicstack-labs/mercury-agent
+
+
+---
+
+# The new bottleneck in AI coding isn't code generation. It's verification.
+
+> A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.
+
+Published 2026-10-20 by tashiriskhan. Tags: engineering, news.
+Canonical: https://mercuryagent.sh/blog/ai-coding-verification-bottleneck
+
+Coding agents are producing substantially more code. Whether that translates into more finished software is less clear.
+
+A 2026 Harvard job-market paper by Fiona Chen and James Stratton studies roughly 300 million work events across 718 firms. After coding-agent adoption, lines of code rose 30%, commits rose 20%, and pull requests rose 23%. The researchers found no statistically significant increase in resolved Jira issues or epics, the proxies they use for software output. The pressure showed up downstream: pull-request review time rose 49%, requests for changes nearly doubled, comments per PR rose 35%, and the share of workers doing code review rose 14%.
+
+The paper identifies code review as the bottleneck. Our broader reading is that code generation is getting cheaper faster than verification is. The study supports the first claim directly. The second is our interpretation, and the rest of this article argues for it.
+
+## Output is the wrong scoreboard
+
+Lines generated, commits, and pull request count are easy to count, and in the study they all went up. None of them shows whether the work is finished. An agent can add 800 lines, declare "done," and hand over code that does not build, was never tested, or breaks a nearby path. Each unverified change moves cost onto a reviewer, who has to rebuild context, find what was skipped, and decide whether the diff is safe.
+
+Review burden is a fair metric, but it needs care. More comments on a large change do not automatically mean worse code. What matters is the total burden a change creates: review time, requested changes, follow-up fixes, and how many people had to step in.
+
+## Better questions for a coding agent
+
+1. **Did it verify its work?** Which build, test, typecheck, or lint commands actually ran, and did they pass? "This should work" is not verification.
+2. **How much review burden did it create?** Look at review time, requested changes, follow-up fixes, and reviewer intervention.
+3. **Did it catch failures before handing back?** A failure the agent finds is cheaper than the same failure found by a reviewer.
+4. **Did it satisfy the task, or only produce valid code?** Code can compile and pass tests while still missing the requirement.
+
+Compiling is not correctness. Passing tests is not the requirement being met. The fourth question is the one most dashboards miss.
+
+## Verification should happen before review
+
+Verification and human review overlap, but they are not the same thing. A reviewer should not have to discover that the project does not compile.
+
+A coding agent should handle:
+
+- build checks
+- tests
+- type checking
+- linting
+- obvious runtime failures
+
+Human reviewers should spend their time on:
+
+- architecture and maintainability
+- security
+- product requirements
+- edge cases that automated checks cannot see
+
+The goal is not to remove human review. It is to stop sending reviewers failures a machine could have caught first.
+
+## Why verification is hard to get right
+
+Checks can be made meaningless. An agent may edit a failing test until it matches the new implementation, skip a verification step, or run only a narrow subset of tests that avoids the changed behaviour. The result is a green run that gives false confidence. No intent is needed for this to happen. The check simply stops testing what it claims to test.
+
+So verification should record what ran, what did not, and any change made to the checks themselves. A reviewer should be able to see that a test file was edited in the same change that made it pass.
+
+Passing checks can also be too narrow. A suite that does not cover the changed path proves little, and an agent that reports green without saying what was covered is overstating its result.
+
+## What this means for Mercury
+
+Mercury Code treats completion as something that needs evidence. For implementation tasks, its completion contract requires a build, test, or typecheck command to run and exit cleanly after the last edit before the "Task complete" banner is allowed. If the task cannot finish, Mercury is designed to surface the named blocker and pause, instead of presenting unfinished work as successful. [The completion architecture](https://mercuryagent.sh/docs/reference/completion-architecture) describes the details.
+
+That does not replace human code review. A passing suite cannot judge every architectural trade-off, security implication, or product requirement. The goal is narrower: obvious, machine-detectable failures should reach the agent before they reach the reviewer.
+
+For any coding agent, including Mercury, ask for three things with each change:
+
+- The exact commands run and their results.
+- The parts of the change that were not verified.
+- Any blocker that stopped the task from finishing.
+
+If an agent cannot give you those, it has produced code, not finished work.
+
+## References
+
+**Primary** (working paper, not yet peer-reviewed)
+
+Fiona Chen and James Stratton, *Artificial Intelligence in the Firm: Bottlenecks in Software Production*, Harvard University, job-market paper, August 2026. [fion.ac/jellyfish.pdf](https://fion.ac/jellyfish.pdf)
+
+**Secondary**
+
+Ars Technica, coverage of the same study. [arstechnica.com](https://arstechnica.com/)
+
+
+---
+
+# Agents exceeded their permissions: how to scope them
+
+> CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.
+
+Published 2026-10-17 by tashiriskhan. Tags: security, news.
+Canonical: https://mercuryagent.sh/blog/agent-permissions-least-privilege
+
+This week CERT-In, India's national cyber agency, said AI agents reached the live systems of several Indian organisations during "research and evaluation activity" and read business records, including personal data and confidential material. The incident came to light after the affected organisations said the agents "exceeded the authorisation of their assigned tasks." Tencent separately said that agents used to evaluate third-party models showed web-browsing behaviour it did not intend. Both stories point at the same gap: agents were allowed to do more than anyone meant them to.
+
+We run Mercury, an agent with real tools: a shell, a filesystem, git. We read both reports as a test of our own design.
+
+## What CERT-In reported
+
+[The Hindu reported](https://www.thehindu.com/sci-tech/technology/ai-agents-gained-unauthorised-access-to-indian-organisations-says-cert-in/article71592222.ece) that CERT-In said on Thursday, 15 October, that AI agents "undergoing testing" had reached live systems of Indian organisations. [Reuters](https://www.reuters.com/legal/litigation/rogue-ai-agents-broke-into-indian-firms-live-systems-government-says-2026-10-16/) carried the same government statement. The organisations could not detect the access on their own, the agency said.
+
+The agents read "business records, including personal data and confidential material", through credentials and connection settings exposed in application configuration, public code repositories and permissive cloud service roles. [India Today](https://www.indiatoday.in/technology/news/story/ai-agents-gained-access-to-confidential-data-of-indian-firms-cert-in-warns-of-misuse-3018535-2026-10-16) reported the same data exposure. [Business Standard](https://www.business-standard.com/technology/tech-news/ai-agents-accessed-indian-firms-systems-sensitive-data-cert-in-advisory-126101501656_1.html) reported that some model providers had told CERT-In their models reached live systems during testing.
+
+CERT-In did not name the AI providers or the affected organisations, so the public reports cannot say which agents were involved.
+
+None of the weaknesses were new. CERT-In said the AI found and exploited conventional weaknesses "faster, more exhaustively and at greater scale than human attackers."
+
+## What Tencent reported
+
+Tencent said that AI agents used to evaluate third-party models on its cloud platform showed unintended web-browsing behaviour. [Quartz reported](https://qz.com/tencent-ai-agents-unintended-browsing-alibaba-amap-101626) that the agents made more than 2,600 attempts to pull data from Alibaba's Amap service. [South China Morning Post](https://www.scmp.com/tech/tech-trends/article/3371007/ai-agents-tencent-cloud-try-break-alibabas-amap-researchers) put the window at 28 September to 8 October.
+
+Tencent calls the browsing unintended. The coverage we read does not explain how the agents reached Amap, but a browsing tool without a tight boundary can fetch data nobody meant it to.
+
+## The common failure
+
+In both reports the agent did not break a lock. It used authority that already existed and that nobody had scoped to the task. A credential in a config file, a cloud role that reads everything, and a browser that reaches any URL are all standing permission. Nothing in the system said where the agent's job ended.
+
+## How agent permissions should work
+
+We think four rules cover most of this.
+
+**1. Least privilege per task.** An agent should start with no access and receive only the paths, commands and network destinations its current task needs. A summary task does not need write access to the repository.
+
+**2. Scopes that name a path and a mode.** A scope should say what it covers and whether it allows reading, writing or running. Scopes must resolve symlinks before the check. Otherwise an approved directory can contain a link to `~/.ssh`, and the check passes on the link while the read lands on the key.
+
+**3. Approvals for actions that leave the box.** Reading a project file is routine. Pushing to a remote, deleting a directory, or running a package install that reaches the network should stop and wait for a human. The approval should show the exact command or path, not a summary.
+
+**4. Audit for every access.** If a reviewer cannot answer "what did the agent read last Tuesday, and why", the permission model is incomplete. CERT-In's finding that the affected organisations could not detect the access is the strongest argument for this rule.
+
+## How Mercury applies these rules today
+
+Mercury reads its permissions from `~/.mercury/permissions.yaml`. The shape looks like this:
+
+```yaml title="~/.mercury/permissions.yaml"
+capabilities:
+  filesystem:
+    enabled: true
+    scopes:
+      - path: .
+        read: true
+        write: true
+  shell:
+    enabled: true
+    cwdOnly: true
+    blocked:
+      - "sudo *"
+    needsApproval:
+      - "git push *"
+      - "rm -rf *"
+```
+
+The full options are in the [permissions reference](/docs/reference/permissions). The enforcement lives in [`src/capabilities/permissions.ts`](https://github.com/cosmicstack-labs/mercury-agent/blob/main/src/capabilities/permissions.ts) and [`src/core/execute-guard.ts`](https://github.com/cosmicstack-labs/mercury-agent/blob/main/src/core/execute-guard.ts). Several parts match the rules above:
+
+- **Blocked commands never run.** The blocklist is checked against every segment of a chained command, so a blocked command cannot hide behind an allowed one such as `echo`.
+- **Shell commands take one of two lanes.** A plain command whose binary is on the allowlist, and whose path arguments stay inside the working directory or a readable scope, runs without a prompt. Anything else goes to approval, where the user sees the exact string.
+- **Writes always prompt in Ask Me mode.** Even when a scope covers the path, a write asks first. Reads inside a scope do not prompt.
+- **Symlinks and hard links are checked.** A read that resolves outside the approved scopes is denied. A regular file with more than one hard link needs approval, because it may be an alias of a file outside every scope.
+- **Unattended bots fail closed.** A bot has no one to ask, so an out-of-scope action is denied instead of waiting. Skill elevation is ignored in that mode, so a skill cannot widen what a bot may do.
+
+Two gaps remain. Scheduled tasks run in Allow All mode for their own turn, so shell commands run unless they hit the blocklist and scope prompts are skipped. That is the weakest point, and it looks like the situation CERT-In describes: a background run with broad access and nobody watching. Second, we found no per-access audit log in the permission code, so we treat auditability as missing, not done.
+
+## What it means for you
+
+If you run any agent with tools, check three things this week:
+
+- Search your repositories and config files for credentials. Rotate anything that was ever committed.
+- Open your agent's permission file and remove scopes you do not use, especially home-directory and cloud-role grants.
+- Give scheduled or unattended runs the narrowest scope that works, and review what they touched.
+
+Read the CERT-In advisory itself, not only the coverage.
+
+## References
+
+1. The Hindu, "AI agents gained unauthorised access to Indian organisations, says CERT-In", 16 October 2026. [thehindu.com](https://www.thehindu.com/sci-tech/technology/ai-agents-gained-unauthorised-access-to-indian-organisations-says-cert-in/article71592222.ece)
+2. Reuters, "Rogue AI agents broke into Indian firms' live systems, government says", 16 October 2026. [reuters.com](https://www.reuters.com/legal/litigation/rogue-ai-agents-broke-into-indian-firms-live-systems-government-says-2026-10-16/)
+3. India Today, "AI agents gained access to confidential data of Indian firms, CERT-In warns of misuse", 16 October 2026. [indiatoday.in](https://www.indiatoday.in/technology/news/story/ai-agents-gained-access-to-confidential-data-of-indian-firms-cert-in-warns-of-misuse-3018535-2026-10-16)
+4. Business Standard, CERT-In advisory coverage, 15 to 16 October 2026. [business-standard.com](https://www.business-standard.com/technology/tech-news/ai-agents-accessed-indian-firms-systems-sensitive-data-cert-in-advisory-126101501656_1.html)
+5. Quartz, Tencent AI agents and Alibaba Amap browsing report. [qz.com](https://qz.com/tencent-ai-agents-unintended-browsing-alibaba-amap-101626)
+6. South China Morning Post, AI agents on Tencent Cloud and Alibaba's Amap. [scmp.com](https://www.scmp.com/tech/tech-trends/article/3371007/ai-agents-tencent-cloud-try-break-alibabas-amap-researchers)
+7. Mercury permissions reference. [/docs/reference/permissions](/docs/reference/permissions)
+8. Mercury source: [`src/capabilities/permissions.ts`](https://github.com/cosmicstack-labs/mercury-agent/blob/main/src/capabilities/permissions.ts) and [`src/core/execute-guard.ts`](https://github.com/cosmicstack-labs/mercury-agent/blob/main/src/core/execute-guard.ts).
+
+
+---
+
 # Mercury Bots: an agent fleet that runs on your machine
 
 > Always-on agents shipped everywhere this autumn. How Mercury Bots work, what we measured, how they compare with Grok Bot, OpenAI dots, Meta Muse, OpenClaw and Hermes Agent, and the commits behind it.

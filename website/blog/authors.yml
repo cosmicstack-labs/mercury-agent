@@ -8,6 +8,16 @@ salman:
   socials:
     github: hotheadhacker
 
+tashiriskhan:
+  name: tashiriskhan
+  title: Contributor, Mercury
+  description: Writes about agent permissions, security and running Mercury safely.
+  url: https://github.com/tashiriskhan
+  image_url: https://github.com/tashiriskhan.png
+  page: true
+  socials:
+    github: tashiriskhan
+
 mercury-eng:
   name: Mercury Engineering
   title: The team behind Mercury

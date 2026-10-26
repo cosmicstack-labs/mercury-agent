@@ -1,0 +1,49 @@
+[package]
+name = "mercury-optimus"
+version = "0.4.9"
+edition = "2024"
+rust-version = "1.94"
+description = "Optimus: full computer control for Mercury (screen, mouse, keyboard, apps, voice)"
+license = "MIT"
+publish = false
+
+[dependencies]
+xcap = "0.9"
+enigo = "0.6"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+serde_json = "1"
+# Voice: the same links as the WhatsApp plugin (rustls + ring).
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-websockets = { version = "0.13.3", features = ["client", "rustls-webpki-roots", "rand", "ring"] }
+http = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+ureq = "3"
+# Microphone and speaker.
+cpal = "0.16"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.24", features = ["highsierra"] }
+core-foundation = "0.10"
+# The "Mercury is driving" overlay (AppKit, on the main thread).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry", "NSThread"] }
+objc2-app-kit = { version = "0.3", features = ["objc2-core-graphics", "objc2-quartz-core", "NSApplication", "NSWindow", "NSPanel", "NSView", "NSColor", "NSTextField", "NSControl", "NSResponder", "NSGraphics", "NSFont", "NSText", "NSScreen", "NSRunningApplication"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer", "objc2-core-foundation"] }
+dispatch2 = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xfixes", "shape"] }
+# Load libwayland-client at run time (xcap's Wayland capture), so Optimus also
+# starts on X11-only and headless systems that don't have it.
+wayland-sys = { version = "0.31", features = ["client", "dlopen"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_HiDpi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

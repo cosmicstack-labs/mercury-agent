@@ -1,0 +1,125 @@
+name: plugin-optimus
+
+# Builds the Optimus plugin's companion for each platform and uploads the
+# packaged plugins as workflow artifacts. Nothing is released or published.
+on:
+  push:
+    paths:
+      - 'plugins/optimus/**'
+      - '.github/workflows/plugin-optimus.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64 }
+          - { os: macos-14, target: aarch64-apple-darwin, platform: darwin-arm64 }
+          - { os: macos-14, target: x86_64-apple-darwin, platform: darwin-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: win32-x64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugins/optimus/companion/target
+          key: optimus-${{ matrix.target }}-${{ hashFiles('plugins/optimus/companion/Cargo.toml', 'plugins/optimus/companion/Cargo.lock') }}
+      - name: Linux libraries (screen capture, X11 input)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config clang libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev libxdo-dev libasound2-dev
+      - name: Build
+        working-directory: plugins/optimus/companion
+        run: cargo build --release --locked --target ${{ matrix.target }} || cargo build --release --target ${{ matrix.target }}
+      - name: Unit tests
+        if: matrix.platform == 'linux-x64'
+        working-directory: plugins/optimus/companion
+        run: cargo test --release --target ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fallback libraries (Linux)
+        # Copies of the non-glibc libraries the companion links (ALSA, libxcb and
+        # their dependencies), used only on systems that lack them.
+        if: runner.os == 'Linux'
+        run: |
+          bin="plugins/optimus/companion/target/${{ matrix.target }}/release/mercury-optimus"
+          ldd "$bin"
+          mkdir -p fallback-libs
+          ldd "$bin" | awk '$2 == "=>" && $3 ~ /^\// {print $1, $3}' | while read -r name path; do
+            case "$name" in
+              libc.so.*|libm.so.*|libgcc_s.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*|linux-vdso*) continue ;;
+            esac
+            mkdir -p "fallback-libs/$name" && cp -L "$path" "fallback-libs/$name/$name"
+          done
+          find fallback-libs -type f
+          if ldd "$bin" | grep -q libwayland; then echo "::error::libwayland-client must be loaded at run time (wayland-sys dlopen)"; exit 1; fi
+      - name: Package
+        run: |
+          ext=""; [ "${{ matrix.platform }}" = "win32-x64" ] && ext=".exe"
+          node plugins/optimus/package.mjs "plugins/optimus/companion/target/${{ matrix.target }}/release/mercury-optimus$ext" ${{ matrix.platform }} dist fallback-libs
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mercury-plugin-optimus-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  conformance:
+    # Install the Linux package into Mercury from this commit and run the
+    # plugin conformance kit (handshake, start, stop, restart).
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: mercury-plugin-optimus-linux-x64
+          path: dist-plugin
+      - name: Validate
+        run: |
+          mkdir pkg && tar -xzf dist-plugin/mercury-plugin-linux-x64.tgz -C pkg
+          MERCURY_HOME="$RUNNER_TEMP/mh" MERCURY_PLUGIN_CATALOG_URL=off node dist/index.js plugins validate pkg
+
+  bare-linux:
+    # A plain ubuntu:24.04 container has no ALSA, libxcb or Wayland: the
+    # launcher must still start the companion, using the bundled copies.
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mercury-plugin-optimus-linux-x64
+          path: dist-plugin
+      - name: Starts without the desktop libraries
+        run: |
+          mkdir pkg && tar -xzf dist-plugin/mercury-plugin-linux-x64.tgz -C pkg
+          docker run --rm -v "$PWD/pkg:/p:ro" ubuntu:24.04 sh -c '
+            set -e
+            if ldconfig -p | grep -E "libasound|libxcb|libwayland"; then echo "the image already has these libraries"; exit 1; fi
+            /p/bin/mercury-optimus --probe && echo "launcher: probe ok"
+            printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ci\",\"version\":\"0\"}}}" | timeout 10 /p/bin/mercury-optimus > out.txt 2> err.txt || true
+            cat err.txt; head -c 400 out.txt; echo
+            grep -q "\"id\":1" out.txt
+          '

@@ -24,6 +24,14 @@ export interface SystemPromptInputs {
   timezone: string;
   /** Second Brain summary, or null when Second Brain is disabled. */
   memorySummary: { total: number; learningPaused: boolean } | null;
+  /**
+   * The owner brief (ADR-026): "About {owner}" and "How to work with {owner}",
+   * built from the belief store and regenerated only when beliefs change so
+   * the cached prefix holds. Null/undefined when nothing is held yet.
+   */
+  ownerSections?: { about: string; howToWork: string } | null;
+  /** The owner's name for the brief headings; defaults to "the owner". */
+  ownerName?: string;
   toolNames: readonly string[];
   github: { defaultOwner?: string; defaultRepo?: string; username?: string };
 }
@@ -31,11 +39,39 @@ export interface SystemPromptInputs {
 export const GITHUB_TOOL_NAMES = ['create_pr', 'review_pr', 'list_issues', 'create_issue', 'github_api'] as const;
 
 export const TOOL_USAGE_GUIDELINES = `**Tool Usage Guidelines:**
-- Use write_file, create_file, and edit_file tools DIRECTLY to create and modify files. Do NOT create intermediary scripts (Python, bash, Node.js) whose sole purpose is to generate other files — you have native file tools for this.
-- Use run_command for: building, testing, installing dependencies, running the project, git operations, and other system tasks that require a shell.
-- Do NOT use run_command with echo/cat/tee/heredoc to write files. Use write_file or create_file instead.
-- Do NOT create one-time-use helper scripts. If the user asks you to create a file, create it directly with create_file or write_file.
-- When creating multiple files, call create_file or write_file for each one individually. Do not batch them into a script.`;
+- Create or change a single file with write_file, create_file or edit_file. Never write a file through run_command with echo/cat/tee/heredoc, and never write a generator script just to emit one file you could write directly.
+- Use run_command for building, testing, installing dependencies, running the project, git, and for real work on data: converting formats, processing many files, extracting, transforming, downloading.
+- Pick the strongest tool for the job before doing anything by hand. For conversions and bulk work (EPUB/PDF/DOCX/HTML to Markdown, images, audio/video, CSV/JSON, renaming or reorganising many files) use an established CLI or library — pandoc, ffmpeg, ImageMagick, jq, a Python package such as ebooklib, markdownify or pypdf — through run_command, or one short script that handles every file in one run. Never read and rewrite many files one by one yourself.
+- Not sure what the best tool is? Spend one web_search finding out. Check it is installed (e.g. \`command -v pandoc\`, \`python3 -c "import ebooklib"\`) and install it or fall back to the next best option.
+- After a bulk or conversion step, check the output (count the files, open a sample) before saying it is done.`;
+
+/**
+ * How to work in plain chat (programming mode off). Mercury Code has its
+ * own contract (programming-mode.ts); without this, chat answered tasks as
+ * a narrator: no plan, the slowest tool, and no check of the result.
+ * Stable text: it is part of the cached prompt prefix.
+ */
+export const CHAT_WORK_CONTRACT = `**How you work:**
+- When the user asks for something to be done, do it with your tools; don't describe how they could do it.
+- First work out the end result they want, then the fastest reliable way to get there (an existing command, library or service beats manual steps).
+- For tasks with several steps, keep a short plan with update_plan and work through it.
+- Report what you did and what you checked, briefly. If something failed or you could not confirm it, say so plainly.
+- Need the user to decide before you go on — yes or no, or which of a few options? Ask with ask_user, so they pick with the arrow keys instead of typing an answer. Only a question that needs free text (a name, a path, a date) is asked in words.
+- Plain questions and conversation don't need tools: just answer.`;
+
+/**
+ * Self-made skills (ADR-027): shown only when create_skill is available, i.e.
+ * in the owner's own interactive sessions, never for bots or members.
+ */
+export const SELF_MADE_SKILLS_GUIDE = `**Skills you make yourself:**
+- Before a task with many steps, check the skills list for one that fits and use it.
+- If none fits and you would do the same procedure again for other inputs (a recurring report, a conversion pipeline, a deploy, a site or device you operate), plan it as a procedure first: inputs, steps, checks. Do the task. Once it actually worked, save the procedure with create_skill — exact commands, tools, paths, the pitfalls you hit — and tell the owner in one line.
+- Never make a skill for a one-off, for something one tool call does, for anything you did not verify end-to-end, or with credentials inside. Improve an existing self-made skill (same name) rather than adding a near-duplicate.
+- Self-made skills are listed under "Self-made" and count as unverified until used again: follow them, but trust the result, not the text, and fix the skill when a step fails.`;
+
+export function selfMadeSkillsSection(toolNames: readonly string[]): string {
+  return toolNames.includes('create_skill') ? SELF_MADE_SKILLS_GUIDE : '';
+}
 
 /**
  * Token budget line for the per-turn (volatile) system block. It changes on
@@ -73,6 +109,23 @@ export function memorySection(summary: SystemPromptInputs['memorySummary']): str
     text += `\n\nLearning is currently PAUSED — no new memories will be extracted or saved until resumed.`;
   }
   return text;
+}
+
+/**
+ * What Mercury believes about its owner and how to work with them, right
+ * after the identity so it reads as part of who Mercury is. Empty when there
+ * is nothing held: a bare heading would only invite the model to invent.
+ */
+export function ownerSection(sections: SystemPromptInputs['ownerSections'], ownerName = 'the owner'): string {
+  if (!sections) return '';
+  const about = sections.about.trim();
+  const how = sections.howToWork.trim();
+  if (!about && !how) return '';
+  const name = ownerName.trim() || 'the owner';
+  const parts: string[] = [];
+  if (about) parts.push(`## About ${name}\n\nWhat you know about ${name} from past conversations (stated facts are plain; "seems" marks what you inferred and have not confirmed):\n${about}`);
+  if (how) parts.push(`## How to work with ${name}\n\nLearned from how ${name} works with you; follow these unless ${name} says otherwise in the moment:\n${how}`);
+  return parts.join('\n\n');
 }
 
 export function tweetNotifierSection(skillContext: string): string {
@@ -113,14 +166,19 @@ Always specify owner and repo parameters on GitHub tools. The user's GitHub user
 /** Assemble the stable system prompt. Section order is part of the cache key; keep it stable. */
 export function buildSystemPrompt(i: SystemPromptInputs): string {
   const sections: string[] = [i.identityPrompt];
+  const owner = ownerSection(i.ownerSections, i.ownerName);
+  if (owner) sections.push(owner);
   if (i.skillContext) sections.push(i.skillContext);
   let prompt = sections.join('\n\n');
   if (i.botSection) prompt += i.botSection;
   if (i.programmingSuffix) prompt += i.programmingSuffix;
+  else prompt += '\n\n' + CHAT_WORK_CONTRACT;
   if (i.researchSuffix) prompt += i.researchSuffix;
   if (i.saverSuffix) prompt += i.saverSuffix;
   prompt += '\n\n' + environmentSection(i.now, i.timezone, i.platform, i.cwd);
   prompt += '\n\n' + TOOL_USAGE_GUIDELINES;
+  const selfMade = selfMadeSkillsSection(i.toolNames);
+  if (selfMade) prompt += '\n\n' + selfMade;
   prompt += '\n\n' + memorySection(i.memorySummary);
   const tweet = tweetNotifierSection(i.skillContext);
   if (tweet) prompt += '\n\n' + tweet;

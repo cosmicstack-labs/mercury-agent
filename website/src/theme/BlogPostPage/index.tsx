@@ -15,6 +15,7 @@ import type { Props } from '@theme/BlogPostPage';
 import { formatDate } from '@site/src/components/Journal/posts';
 import SocialMeta from '@site/src/components/Journal/SocialMeta';
 import { ProgressBar, leftLabel, useReadingProgress } from '@site/src/components/Journal/ReadingProgress';
+import ListenPlayer from '@site/src/components/Journal/ListenPlayer';
 import '@site/src/components/Journal/journal.css';
 
 function useCopy(): [string, (fn: () => Promise<string>) => void] {
@@ -122,6 +123,7 @@ function Article({ sidebar, children }: { sidebar: Props['sidebar']; children: R
             <span>{minutes} min read</span>
           </div>
         </div>
+        <ListenPlayer title={title} articleRef={bodyRef} minutes={minutes} />
       </header>
 
       {image && (

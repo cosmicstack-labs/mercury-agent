@@ -246,4 +246,6 @@ export interface BotStatusSummary {
   crewWorking?: number;
   /** Earliest automatic resume time of a paused routine, when any is paused. */
   routinePausedUntil?: number;
+  /** The bot has a custom avatar (`GET /api/bots/:id/avatar`); clients draw a monogram otherwise. */
+  hasAvatar?: boolean;
 }

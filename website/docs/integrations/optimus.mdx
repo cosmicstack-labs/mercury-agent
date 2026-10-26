@@ -1,0 +1,223 @@
+---
+id: optimus
+title: Optimus (computer use)
+sidebar_label: Optimus
+description: "Optimus lets Mercury use your computer like a person: it sees the screen, moves the pointer, types and opens apps, by chat or out loud with a talk key. Install, permissions, hotkeys, settings and safety."
+keywords: [mercury, optimus, computer use, desktop agent, voice, talk key, plugin, screen control]
+---
+
+Optimus is a plugin that lets Mercury use your computer. It looks at the screen, then moves the pointer, scrolls and types the way a person does, and opens apps, URLs and files. Ask in any Mercury chat ("look at my screen", "open Safari and search for…"), or press a **talk key**, say what you want, and hear Mercury answer while it works.
+
+It's an optional [plugin](../cli-commands/plugins), version **0.4.8**, from the official plugin catalog. It needs Mercury **1.4.0** or newer.
+
+## Platform support
+
+| Platform | Support |
+|---|---|
+| **macOS** (Apple silicon and Intel) | Full. You grant Accessibility, Screen Recording and Microphone once. |
+| **Windows** x64 | Full. Nothing to grant. Windows running as administrator (Task Manager, installers) can't be controlled. |
+| **Linux** x64 and arm64, **X11** | Full. |
+| **Linux, Wayland** | Limited. Screenshots go through the desktop's screen-sharing prompt. Mouse, keyboard and the talk key only reach X11 (XWayland) apps for now, and the "Mercury is driving" overlay isn't shown. Use chat, or ask Mercury to start listening. An X11 session gives Optimus full control. |
+
+## Install
+
+In any Mercury chat:
+
+```text
+/plugins install optimus
+```
+
+Or from a shell:
+
+```bash
+mercury plugins install optimus
+```
+
+Install shows a warning that this plugin controls the computer, lists what it needs, and asks you to confirm. No Apple Developer ID, code-signing certificate or developer account is needed on any platform.
+
+Setup then asks, one question at a time:
+
+1. **Control this computer.** Optimus does nothing until you say yes. While it's off, every tool except `permissions` replies that Optimus is off.
+2. **How you talk to Optimus.** Both (recommended), Chat only, or Listening.
+3. **Talk key.** Default `ctrl+alt+m` (Control+Option+M on a Mac). Asked only in Listening or Both.
+4. **Who listens and speaks?** Asked only when Mercury has no OpenAI provider. With one, OpenAI Realtime is used and this step is skipped.
+
+Change any of it later in `/plugins optimus`. Optimus has no account to link.
+
+## Permissions
+
+### macOS
+
+macOS charges Accessibility and Screen Recording to the app that started a process, so if Optimus ran under your terminal, the grant would cover every script that terminal runs. Instead, Optimus builds its own `Optimus.app` in the plugin's data folder and signs it with a certificate made on your Mac ("Mercury Optimus (local)"). No Apple account is involved, your login keychain isn't touched, and there's no password prompt.
+
+On first use it asks for these, in **System Settings → Privacy & Security**:
+
+| Permission | Why |
+|---|---|
+| **Accessibility** | Moving the mouse, typing, and the talk key |
+| **Screen Recording** | Seeing the screen |
+| **Microphone** | Listening mode only, asked once |
+
+Turn on **Optimus** under each one. If Screen Recording asks to quit and reopen, Optimus restarts by itself the next time it's used. Because the certificate stays the same across updates, the permissions survive plugin updates. macOS asks you to confirm Screen Recording again about once a month.
+
+To check at any time, ask Mercury to check Optimus's permissions (the `permissions` tool). It reports each one and, when asked to fix them, shows the system prompts and opens the right Settings page.
+
+### Windows
+
+Nothing to grant. Optimus can't control windows that run as administrator, such as Task Manager and installers.
+
+### Linux
+
+On **X11** nothing to grant. On **Wayland**, see the limits in [Platform support](#platform-support). Optimus also starts on servers and minimal installs that lack ALSA or the X11 libraries: the package carries its own copies and uses them only when your system has none. Seeing and using the screen still needs a running X11 or Wayland session, and voice needs a sound device. Pasting uses `xclip` on X11 and `wl-copy` on Wayland, so install the one for your session if you want the paste fallback.
+
+## Chat and listening
+
+**Chat.** Ask Mercury in any chat (terminal, dashboard, Telegram, WhatsApp) to use the screen. Mercury takes a look, acts, and looks again to check.
+
+**Listening.** Press the talk key. You hear a rising chime, then talk. Mercury answers out loud while it works on your screen and says each step as it happens ("Opening Gmail", "Typing your post"). From a chat you can also say "let's talk" and Mercury starts listening for you (the `listen` tool).
+
+The **How you talk to Optimus** setting decides which of these you get:
+
+| Mode (`mode`) | What it does |
+|---|---|
+| `both` (default) | Chat, plus a key to talk out loud |
+| `chat` | Type to Mercury as usual. No talk key, no microphone. |
+| `voice` | Press a key, talk, and hear Mercury answer |
+
+In a listening session, links, lists and other details aren't read out. They go to your Mercury chat. A file Mercury makes during a session is shown in Finder or Explorer.
+
+### The talk key
+
+Default **`ctrl+alt+m`** (Control+Option+M on a Mac). What a press does depends on the moment:
+
+| When | Pressing the talk key |
+|---|---|
+| Not listening | Starts listening (rising chime) |
+| Optimus is working | **Stops everything.** Every action halts and the session stays open, so you can keep talking. |
+| Mercury is speaking | Interrupts it |
+| All quiet | Ends the session (falling chime) |
+| Muted | Unmutes |
+
+A key is modifiers plus one key: a letter, a digit, `space`, `enter`, `tab`, `esc` or `f1` to `f12`. Modifiers are `ctrl`, `alt` (Option on a Mac), `shift` and `cmd` (Command on a Mac, Win on Windows). A plain letter isn't allowed, because it would fire while you type: add `ctrl`, `alt` or `cmd`, or use an F key. Examples: `ctrl+alt+m`, `ctrl+shift+space`, `f9`.
+
+### The mute key
+
+Default **`ctrl+alt+shift+m`** (Control+Option+Shift+M on a Mac). Muting stops listening but not working: Mercury keeps doing the task and still talks, and **nothing you say is sent anywhere**. Saying "mute" also mutes. Press the mute key again, or the talk key, to unmute. A session doesn't time out while muted.
+
+### Saying "stop"
+
+Say **"stop"** (also "cancel", "halt", "abort", "enough", "never mind", "ruko", "bas") and every screen action halts at once, along with the Mercury task the session started. Mercury says "Stopped." and waits. New screen actions are refused for a few seconds while the task is cancelled; your next request lifts the stop.
+
+Say **"bye"** ("goodbye", "that's all", "stop listening") to stop everything and end the session.
+
+### When a session ends by itself
+
+- **Silence.** When you haven't spoken for **60 seconds** and Mercury isn't working on anything, the mic closes by itself, so it never streams (and costs) for nothing. Change it with **Stop listening after silence**; `0` keeps listening until you press the key or say bye.
+- **Length.** A session ends after **30 minutes** at most (**Longest listening session**).
+
+### Speakers or headphones
+
+With speakers, Optimus mutes the mic while Mercury talks so it doesn't hear itself; press the talk key to interrupt. With headphones, turn on **Headphones** in `/plugins optimus` → **🎙 Voice** to interrupt just by talking.
+
+### Tick-tock
+
+While Mercury searches or works and nobody is talking, a quiet wooden tick-tock plays, so you know it's still going. It's well below speech level and never mutes the mic, so you can say "stop" over it. Turn it off with **Tick-tock while working**.
+
+## What you see
+
+- **"Mercury is driving."** While Optimus moves the mouse, a ring follows the pointer with the label *☿ Mercury · Optimus is driving*, and fades a moment after the last action. On macOS and Windows it's excluded from screen capture; on Linux X11 it's hidden while a screenshot is taken, so it never appears in Optimus's own screenshots. Wayland doesn't allow it. Turn it off with **"Mercury is driving" ring by the pointer**.
+- **Status bar.** The terminal UI's status bar shows when Optimus is listening (🎙), working (🖱) or muted (🔇).
+- **Pace.** In **Natural** pace the pointer glides along a gentle curve, scrolling arrives in small steps, and text is typed key by key at an uneven human rhythm. Typing (not pasting) means it works in every editor. **Fast** does the same moves with less waiting.
+
+## Staying honest about "done"
+
+An action reaching the screen doesn't mean it worked. Optimus reports each step as *Sent*, not *done*, and returns a fresh screenshot. Mercury is told to look again and check the exact result (the post is published, the file is saved) before it says a task is done.
+
+Every step that failed or was stopped is recorded. In a listening session, Mercury's answer is checked against that record before you hear it: if steps failed, the voice is told which ones and not to call the task done unless Mercury confirmed it on the screen. With your own Mercury model as the voice, an answer that doesn't admit the failure starts with "Heads up, some steps didn't work."
+
+## You stay in control
+
+- **Off until you allow it.** Nothing works until you turn on **Control this computer**.
+- **Approvals.** Ordinary, reversible steps (clicking, typing, scrolling) run straight away. The step that commits something (submit a form, send a message or email, post, pay or buy, delete, install, change a setting) goes through `act_consequential`, which needs your approval like any other Mercury action. In a listening session the approval is asked out loud and you answer by voice.
+- **Move the mouse to take over.** If you move the mouse while Optimus is working, it stops at the next step and hands control back.
+- **No secrets.** Optimus is told never to type passwords, card numbers or 2FA codes. It asks you to do that part.
+- **Stop.** The talk key while it's working, or saying "stop", halts everything at once.
+- **No anti-cheat games.** Mercury declines to play or automate games that use anti-cheat (Valorant, Fortnite, Call of Duty, Counter-Strike 2, or anything running Vanguard, Easy Anti-Cheat or BattlEye). Automated input breaks those games' rules and can get your account banned. Single-player and offline games without anti-cheat are fine. This is an instruction Mercury follows, not a technical block.
+
+## Privacy
+
+- **Screenshots** are taken only when Mercury looks at the screen or acts on it, never in the background. Each is the display the mouse is on, scaled to fit 1280×800. They go to your model for that step only, and are kept out of chat history, logs and memory. If your model can't take images, the screenshot is left out and Mercury is told so.
+- **The microphone** is open only during a listening session. It closes on silence, when you press the key or say bye, and at the session limit. While muted, nothing is sent. In **Chat only** mode the microphone is never used.
+- **Voice audio** goes only to the voice engine you chose.
+
+## Voice engines
+
+Pick who listens and speaks in `/plugins optimus` → **🎙 Voice**. The options, settings and defaults are the same as for [WhatsApp calls](./whatsapp#voice-engines): OpenAI Realtime (default, uses your Mercury OpenAI provider), Gemini Live, Grok Voice (your Mercury Grok provider), ElevenLabs Realtime (experimental), Azure OpenAI Realtime, Qwen-Omni Realtime, or your own Mercury model with a speech-to-text and a text-to-speech provider. Voice keys are shared with the WhatsApp plugin: a key added for one works for the other.
+
+## Settings
+
+Open `/plugins optimus`. Settings are listed on the menu with their current values. Voice settings appear only in Listening or Both mode.
+
+| Setting | Key | Default | What it does |
+|---|---|---|---|
+| Control this computer | `allowControl` | off | On: Optimus can see your screen and use the mouse and keyboard. Off: it does nothing. |
+| How you talk to Optimus | `mode` | `both` | `both`, `chat` or `voice` (see above). |
+| How Optimus moves and types | `pace` | `natural` | `natural` (like a person) or `fast` (same moves, less waiting). |
+| "Mercury is driving" ring by the pointer | `showOverlay` | on | The ring and label while Optimus moves the mouse. |
+| Talk key | `hotkey` | `ctrl+alt+m` | Start and stop listening, interrupt, or stop work. |
+| Mute key | `muteHotkey` | `ctrl+alt+shift+m` | Stop listening while Mercury keeps working. |
+
+Under **🎙 Voice**:
+
+| Setting | Key | Default | What it does |
+|---|---|---|---|
+| Who listens and speaks? | `voiceEngine` | `openai` | The voice engine. Engine-specific keys, models and voices follow, as for [WhatsApp](./whatsapp#voice-calls-1). |
+| Headphones | `bargeIn` | off | On: interrupt just by talking. Off: the mic waits while Mercury talks. |
+| Tick-tock while working | `thinkingSound` | on | The soft tick-tock while Mercury searches or works. |
+| Stop listening after silence (seconds) | `idleStopSeconds` | `60` | `0` keeps listening until you press the key or say bye. |
+| Longest listening session (minutes) | `maxSessionMinutes` | `30` | A session ends by itself after this long. |
+
+The engine settings (`voiceModel`, `voice`, `geminiKey`, `geminiModel`, `geminiVoice`, `grokModel`, `grokVoice`, `elevenlabsKey`, `elevenlabsModel`, `elevenlabsVoice`, `azureKey`, `azureEndpoint`, `azureDeployment`, `qwenKey`, `qwenEndpoint`, `qwenModel`, `qwenVoice`, `sttProvider`, `sttLanguage`, `ttsProvider`, `ttsVoice` and the provider keys) have the same names and defaults as in the WhatsApp plugin.
+
+## Tools
+
+These are what Mercury uses. You don't call them yourself.
+
+| Tool | What it does | Approval |
+|---|---|---|
+| `optimus__look` | Screenshot of the display the mouse is on (or display N), with an optional zoom | No |
+| `optimus__act` | Click, double-click, right-click, drag, draw, type, paste, key combos, scroll, wait; returns a fresh screenshot | No |
+| `optimus__act_consequential` | The same, for the step that submits, sends, pays, deletes, installs or changes a setting | **Yes** |
+| `optimus__open` | Open an app by name, a URL, or a file or folder | No |
+| `optimus__windows` | List open windows, front first | No |
+| `optimus__permissions` | Check (and request) the OS permissions | No |
+| `optimus__listen` | Start a listening session from chat | No |
+
+## Troubleshooting
+
+**"Optimus is off".**
+Turn on **Control this computer** in `/plugins optimus`.
+
+**"Can't take a screenshot" or "can't control the mouse and keyboard" on macOS.**
+Open System Settings → Privacy & Security and turn on **Optimus** under Screen Recording and Accessibility. Or ask Mercury to check Optimus's permissions; it opens the right page.
+
+**The talk key does nothing.**
+Open `/plugins optimus`: the menu shows whether the talk key is working, or why not (for example a key it couldn't parse). Make sure the mode is Listening or Both. On macOS the key needs Accessibility. On Wayland, the key only works while an XWayland app has focus; use chat, or ask Mercury to start listening.
+
+**"Optimus can't listen yet: voice calls need an OpenAI provider".**
+The default engine uses Mercury's OpenAI provider. Add your OpenAI key once in the dashboard (Providers) or with `mercury doctor`, or pick another engine in `/plugins optimus` → **🎙 Voice**.
+
+**It stops halfway with "you moved the mouse".**
+That's the takeover check. Keep your hands off the mouse while Optimus is working, or take over on purpose and ask it to carry on.
+
+**It can't click in Task Manager or an installer (Windows).**
+Windows blocks input to apps running as administrator.
+
+**Mercury keeps hearing itself.**
+Use headphones and turn on **Headphones**, or leave it off so the mic waits while Mercury talks.
+
+## Remove it
+
+`/plugins disable optimus` turns it off and keeps its settings. `/plugins uninstall optimus` removes it; add `--purge` to delete its data too (on macOS, including `Optimus.app` and its local certificate). You can then remove Optimus from the macOS privacy lists.
+
+See also: [Plugins](../cli-commands/plugins), [WhatsApp](./whatsapp), [Writing plugins](../reference/plugins).

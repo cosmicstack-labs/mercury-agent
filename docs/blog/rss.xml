@@ -4,11 +4,48 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Fri, 16 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Sat, 24 Oct 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[How Optimus works: an agent that uses your computer]]></title>
+            <link>https://mercuryagent.sh/blog/how-optimus-works</link>
+            <guid>https://mercuryagent.sh/blog/how-optimus-works</guid>
+            <pubDate>Sat, 24 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.]]></description>
+            <category>Engineering</category>
+            <category>Product</category>
+        </item>
+        <item>
+            <title><![CDATA[Mercury 1.4: plugins, WhatsApp calls, and an agent at your desk]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-1-4</link>
+            <guid>https://mercuryagent.sh/blog/mercury-1-4</guid>
+            <pubDate>Fri, 23 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Mercury 1.4 adds isolated plugins and two official ones: WhatsApp chat with voice calls both ways, and Optimus, which sees your screen and uses your mouse.]]></description>
+            <category>News</category>
+            <category>Releases</category>
+            <category>Product</category>
+        </item>
+        <item>
+            <title><![CDATA[The new bottleneck in AI coding isn't code generation. It's verification.]]></title>
+            <link>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</link>
+            <guid>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</guid>
+            <pubDate>Tue, 20 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.]]></description>
+            <category>Engineering</category>
+            <category>News</category>
+        </item>
+        <item>
+            <title><![CDATA[Agents exceeded their permissions: how to scope them]]></title>
+            <link>https://mercuryagent.sh/blog/agent-permissions-least-privilege</link>
+            <guid>https://mercuryagent.sh/blog/agent-permissions-least-privilege</guid>
+            <pubDate>Sat, 17 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[CERT-In says AI agents read live business records at Indian firms. Here is how least privilege, scoped access, approvals and audit logs should limit them.]]></description>
+            <category>Security</category>
+            <category>News</category>
+        </item>
         <item>
             <title><![CDATA[Mercury Bots: an agent fleet that runs on your machine]]></title>
             <link>https://mercuryagent.sh/blog/mercury-bots</link>

@@ -1,6 +1,7 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { guardedFetch } from '../../utils/ssrf.js';
+import { formatResults, searchQueryFromUrl, webSearch } from './web-search.js';
 
 const MAX_CONTENT_LENGTH = 15000;
 
@@ -95,6 +96,19 @@ export function createFetchUrlTool(opts: { isResearchMode: () => boolean } = { i
     execute: async ({ url, format }) => {
       const outputFormat = format ?? 'markdown';
       const preserveImages = opts.isResearchMode();
+
+      // A search-engine results page (DuckDuckGo, Google, Bing…) answers a
+      // bot with a challenge or a wall of markup. Old skills still send the
+      // model there, so run the query through web_search instead.
+      const searchQuery = searchQueryFromUrl(url);
+      if (searchQuery) {
+        try {
+          const { results, engine } = await webSearch(searchQuery, { max: 8 });
+          return `${formatResults(results, engine, searchQuery, 'web')}\n\n(Search pages block automated reads, so this came from web_search. Call web_search directly next time; use fetch_url on a result link to read it.)`;
+        } catch (err) {
+          return `Error: search pages block automated reads, and web_search failed too: ${(err as Error).message}`;
+        }
+      }
 
       try {
         const controller = new AbortController();

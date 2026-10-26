@@ -1,5 +1,5 @@
 import { BaseChannel } from './base.js';
-import type { ChannelMessage } from '../types/channel.js';
+import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
@@ -17,7 +17,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity';
+  type: 'thinking' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched';
   data?: Record<string, unknown>;
 }
 
@@ -100,6 +100,21 @@ export class WebChannel extends BaseChannel {
    * session — the dashboard / third-party backends consume these for live
    * bot views. Bot turns never carry text deltas, only activity labels.
    */
+  /** Runtime status for every attached screen's bottom bar (no target: all clients). */
+  broadcastStatus(status: Record<string, unknown>): void {
+    this.broadcast({ type: 'status', data: { ...status } });
+  }
+
+  /**
+   * The screen listening on `targetId` was re-bound to another session
+   * (/new, /session <ref>, a deleted current session). Without this the
+   * attached terminal kept streaming the old id: replies to the new session
+   * never reached it, and it showed "Thinking" forever.
+   */
+  sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
+    this.broadcast({ type: 'session_switched', data: { targetId, id: session.id, shortId: session.shortId, alias: session.alias, title: session.title } });
+  }
+
   broadcastBotActivity(ev: { botId: string; jobId: string; kind: string; label: string; detail?: string; stepIndex: number; elapsedMs: number; status?: string }): void {
     this.broadcast({ type: 'bot_activity', data: { ...ev } });
   }
@@ -329,7 +344,11 @@ export class WebChannel extends BaseChannel {
     this.emitMessageInThread(content, 'web:default');
   }
 
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string): void {
+  /**
+   * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
+   * present is what lets the runtime hand a photo to a vision model instead of a path.
+   */
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[]): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -347,6 +366,7 @@ export class WebChannel extends BaseChannel {
         ...(requestId ? { requestId } : {}),
         ...(externalConversationId ? { externalConversationId } : {}),
         ...(messageId ? { canonicalMessageId: messageId } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       },
     };
     this.emit(msg);

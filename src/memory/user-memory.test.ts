@@ -1,23 +1,36 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getDefaultConfig } from '../utils/config.js';
 import { UserMemoryStore } from './user-memory.js';
-import { isBetterSqlite3Available } from './second-brain-db.js';
+import { SecondBrainDB, isBetterSqlite3Available, type MemoryRow } from './second-brain-db.js';
 
 const tempDirs: string[] = [];
 
 const sqliteAvailable = isBetterSqlite3Available();
 
-function createStore(): UserMemoryStore {
+function tempDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'mercury-sb-'));
   tempDirs.push(dir);
+  return join(dir, 'second-brain', 'second-brain.db');
+}
+
+function createStore(dbPath = tempDbPath()): UserMemoryStore {
   const config = getDefaultConfig();
   config.memory.secondBrain = { enabled: true };
-  const dbPath = join(dir, 'second-brain', 'second-brain.db');
-  const store = new UserMemoryStore(config, 'user:owner', dbPath);
-  return store;
+  return new UserMemoryStore(config, 'user:owner', dbPath);
+}
+
+/** A row the pre-Owner-Model Second Brain would have written. */
+function legacyRow(partial: Partial<MemoryRow> & { id: string; summary: string }): Omit<MemoryRow, 'rowid'> {
+  const now = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  return {
+    user_key: 'user:owner', type: 'preference', categories: '[]', shareable: 0, detail: null, scope: 'durable',
+    evidence_kind: 'direct', source: 'conversation', confidence: 0.9, importance: 0.8, durability: 0.9, evidence_count: 2,
+    provenance: null, dismissed: 0, superseded_by: null, created_at: now, updated_at: now, last_seen_at: now,
+    last_used_at: null, last_used_query: null, ...partial,
+  };
 }
 
 afterEach(() => {
@@ -29,339 +42,169 @@ afterEach(() => {
   }
 });
 
-describe('UserMemoryStore', () => {
-  it.skipIf(!sqliteAvailable)('merges similar durable memories instead of duplicating them', () => {
+describe('UserMemoryStore (facade over the belief store)', () => {
+  it.skipIf(!sqliteAvailable)('an explicit save is a confirmed belief the owner stated, and reads back through the old API', () => {
     const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise answers.', confidence: 0.9, importance: 0.8, durability: 0.9 },
+    const [saved] = store.remember([
+      { type: 'preference', summary: 'Prefers concise technical answers.', confidence: 0.9, importance: 0.8, durability: 0.9, evidenceKind: 'direct' },
     ]);
+    expect(saved.type).toBe('preference');
+    expect(saved.evidenceKind).toBe('direct');
+    expect(saved.scope).toBe('durable');
 
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise technical answers.', confidence: 0.94, importance: 0.81, durability: 0.92 },
-    ]);
+    const belief = store.beliefs.get(saved.id);
+    expect(belief?.status).toBe('confirmed');
+    expect(belief?.ownerStated).toBe(true);
 
-    const recent = store.getRecent();
-    expect(recent).toHaveLength(1);
-    expect(recent[0].evidenceCount).toBe(2);
-    expect(recent[0].summary).toContain('concise');
+    expect(store.getRecent().map((r) => r.id)).toContain(saved.id);
+    expect(store.getById(saved.id)?.summary).toBe('Prefers concise technical answers.');
+    expect(store.getSummary().total).toBe(1);
+    expect(store.getSummary().byType.preference).toBe(1);
   });
 
-  it.skipIf(!sqliteAvailable)('retrieves only relevant records for a query', () => {
+  it.skipIf(!sqliteAvailable)('saving the same thing twice supports the one belief instead of duplicating it', () => {
     const store = createStore();
-
-    store.remember([
-      { type: 'project', summary: 'User is building Mercury as a personal AI agent.', confidence: 0.95, importance: 0.9, durability: 0.95 },
-    ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise answers.', confidence: 0.95, importance: 0.75, durability: 0.9 },
-    ]);
-    store.consolidate();
-
-    const result = store.retrieveRelevant('Plan Mercury architecture', { maxRecords: 3, maxChars: 500 });
-
-    expect(result.records).toHaveLength(1);
-    expect(result.records[0].type).toBe('project');
-    expect(result.context).toContain('Mercury');
+    store.remember([{ type: 'goal', summary: 'Wants Mercury to become a second brain.', confidence: 0.9, importance: 0.9, durability: 0.9 }]);
+    store.remember([{ type: 'goal', summary: 'Wants Mercury to become a second brain.', confidence: 0.9, importance: 0.9, durability: 0.9 }]);
+    expect(store.getSummary().total).toBe(1);
+    expect(store.getRecent()[0].evidenceCount).toBeGreaterThanOrEqual(2);
   });
 
-  it.skipIf(!sqliteAvailable)('auto-resolves conflicts by dismissing the lower-confidence memory', () => {
+  it.skipIf(!sqliteAvailable)('an inferred save is only a candidate', () => {
     const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise answers.', confidence: 0.96, importance: 0.84, durability: 0.92 },
+    const [r] = store.remember([
+      { type: 'habit', summary: 'Seems to work on projects late in the evening.', confidence: 0.6, importance: 0.6, durability: 0.6, evidenceKind: 'inferred' },
     ]);
-
-    store.remember([
-      { type: 'preference', summary: 'User does not prefer concise answers.', confidence: 0.88, importance: 0.82, durability: 0.88 },
-    ]);
-
-    const recent = store.getRecent();
-    const active = recent.filter(r => !r.dismissed);
-    expect(active).toHaveLength(1);
-    expect(active[0].summary).toContain('concise answers');
-    expect(active[0].summary).not.toContain('does not');
+    expect(r.evidenceKind).toBe('inferred');
+    expect(r.scope).toBe('active');
+    expect(store.beliefs.get(r.id)?.status).toBe('candidate');
+    expect(store.getByType('habit')).toHaveLength(1);
   });
 
-  it.skipIf(!sqliteAvailable)('auto-resolves conflicts when incoming has higher confidence', () => {
+  it.skipIf(!sqliteAvailable)('never stores a secret, whatever the owner asked', () => {
     const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers verbose answers.', confidence: 0.75, importance: 0.7, durability: 0.7 },
+    const saved = store.remember([
+      { type: 'identity', summary: 'My GitHub token is ghp_abcdefghijklmnopqrstuvwxyz0123', confidence: 0.9, importance: 0.9, durability: 0.9 },
     ]);
-
-    store.remember([
-      { type: 'preference', summary: 'User does not prefer verbose answers.', confidence: 0.95, importance: 0.9, durability: 0.9 },
-    ]);
-
-    const recent = store.getRecent();
-    const active = recent.filter(r => !r.dismissed);
-    expect(active).toHaveLength(1);
-    expect(active[0].summary).toContain('does not prefer verbose');
+    expect(saved).toHaveLength(0);
+    expect(store.getSummary().total).toBe(0);
   });
 
-  it.skipIf(!sqliteAvailable)('synthesizes a compact profile and reflection records from repeated signal', () => {
+  it.skipIf(!sqliteAvailable)('retrieval returns the relevant beliefs as a context block', () => {
     const store = createStore();
-
     store.remember([
-      { type: 'identity', summary: 'User is building Mercury.', confidence: 0.96, importance: 0.92, durability: 0.95 },
+      { type: 'project', summary: 'Is building a personal knowledge management system.', confidence: 0.95, importance: 0.9, durability: 0.9 },
+      { type: 'preference', summary: 'Prefers tea over coffee.', confidence: 0.8, importance: 0.5, durability: 0.7 },
     ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise technical answers.', confidence: 0.96, importance: 0.84, durability: 0.92 },
-    ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers practical implementation details.', confidence: 0.95, importance: 0.82, durability: 0.9 },
-    ]);
-    store.remember([
-      { type: 'goal', summary: 'User wants Mercury to become a second brain.', confidence: 0.97, importance: 0.95, durability: 0.94 },
-    ]);
-
-    const result = store.consolidate();
-    const summary = store.getSummary();
-    const recent = store.getRecent(10);
-    const reflections = recent.filter(r => r.type === 'reflection');
-
-    expect(result.reflectionCount).toBeGreaterThan(0);
-    expect(summary.profileSummary).toContain('Mercury');
-    expect(summary.profileSummary).toContain('concise');
-    expect(reflections.length).toBeGreaterThan(0);
+    const result = store.retrieveRelevant('How should I structure the knowledge management system?', { maxRecords: 3 });
+    expect(result.records.length).toBeGreaterThanOrEqual(1);
+    expect(result.records[0].summary).toContain('knowledge management');
+    expect(result.context).toContain('Relevant user memory:');
+    expect(store.retrieveRelevant('zxqv unrelated').records).toHaveLength(0);
   });
 
-  it.skipIf(!sqliteAvailable)('separates active state from durable profile', () => {
+  it.skipIf(!sqliteAvailable)('search, update and delete go through the belief store', () => {
     const store = createStore();
+    const [r] = store.remember([{ type: 'preference', summary: 'Prefers dark mode everywhere.', confidence: 0.9, importance: 0.7, durability: 0.9 }]);
+    expect(store.search('dark mode')[0]?.id).toBe(r.id);
 
-    store.remember([
-      { type: 'project', summary: 'User is building Mercury memory architecture this week.', confidence: 0.96, importance: 0.91, durability: 0.82 },
-    ]);
-    store.remember([
-      { type: 'goal', summary: 'User wants Mercury to become a second brain.', confidence: 0.97, importance: 0.95, durability: 0.93 },
-    ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers concise answers.', confidence: 0.96, importance: 0.82, durability: 0.92 },
-    ]);
-    store.remember([
-      { type: 'preference', summary: 'User does not prefer concise answers.', confidence: 0.95, importance: 0.82, durability: 0.9 },
-    ]);
-    store.consolidate();
+    const updated = store.updateMemory(r.id, { summary: 'Prefers dark mode in every editor.', shareable: true });
+    expect(updated?.summary).toBe('Prefers dark mode in every editor.');
+    expect(updated?.shareable).toBe(true);
+    expect(store.countShareable()).toBe(1);
+    expect(store.getShareableSince(0).map((m) => m.id)).toEqual([r.id]);
 
-    const summary = store.getSummary();
-    const active = store.getActiveSummary();
-
-    expect(active).toContain('Mercury memory architecture');
-    expect(summary.profileSummary).toContain('second brain');
+    expect(store.softDeleteMemory(r.id)).toBe(true);
+    expect(store.getSummary().total).toBe(0);
+    expect(store.search('dark mode')).toHaveLength(0);
   });
 
   it.skipIf(!sqliteAvailable)('supports pause and resume of learning', () => {
     const store = createStore();
-
-    expect(store.isLearningPaused()).toBe(false);
-
     store.setLearningPaused(true);
-    expect(store.isLearningPaused()).toBe(true);
-
-    store.remember([
-      { type: 'goal', summary: 'User wants autonomous learning.', confidence: 0.95, importance: 0.92, durability: 0.88 },
-    ]);
+    store.remember([{ type: 'goal', summary: 'Wants autonomous learning.', confidence: 0.95, importance: 0.92, durability: 0.88 }]);
     expect(store.getSummary().total).toBe(0);
-
     store.setLearningPaused(false);
-    store.remember([
-      { type: 'goal', summary: 'User wants autonomous learning.', confidence: 0.95, importance: 0.92, durability: 0.88 },
-    ]);
+    store.remember([{ type: 'goal', summary: 'Wants autonomous learning.', confidence: 0.95, importance: 0.92, durability: 0.88 }]);
     expect(store.getSummary().total).toBe(1);
   });
 
   it.skipIf(!sqliteAvailable)('clears all memories', () => {
     const store = createStore();
-
     store.remember([
-      { type: 'identity', summary: 'User is a software developer.', confidence: 0.95, importance: 0.9, durability: 0.9 },
+      { type: 'identity', summary: 'Is a software developer.', confidence: 0.95, importance: 0.9, durability: 0.9 },
+      { type: 'preference', summary: 'Prefers dark mode.', confidence: 0.9, importance: 0.75, durability: 0.85 },
     ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers dark mode.', confidence: 0.9, importance: 0.75, durability: 0.85 },
-    ]);
-
     expect(store.getSummary().total).toBe(2);
-
-    const cleared = store.clear();
-    expect(cleared).toBe(2);
+    expect(store.clear()).toBe(2);
     expect(store.getSummary().total).toBe(0);
+    expect(store.getRecent()).toHaveLength(0);
   });
 
-  it.skipIf(!sqliteAvailable)('full-text search finds relevant memories', () => {
+  it.skipIf(!sqliteAvailable)('profile and active summary come from the reflection brief', () => {
     const store = createStore();
+    expect(store.getProfile()).toBe('');
+    store.beliefs.setMeta('brief', JSON.stringify({ about: 'Builds Mercury.', howToWork: 'Keep replies short.', at: Date.now(), sig: 'x' }));
+    expect(store.getProfile()).toBe('Builds Mercury.');
+    expect(store.getActiveSummary()).toBe('Keep replies short.');
+    expect(store.getSummary().profileSummary).toBe('Builds Mercury.');
+    expect(store.consolidate()).toEqual({ profileUpdated: false, reflectionCount: 0 });
+  });
+});
 
-    store.remember([
-      { type: 'project', summary: 'User is building a personal knowledge management system.', confidence: 0.95, importance: 0.9, durability: 0.9 },
-    ]);
-    store.remember([
-      { type: 'preference', summary: 'User prefers tea over coffee.', confidence: 0.8, importance: 0.5, durability: 0.7 },
-    ]);
+describe('UserMemoryStore upgrade from a pre-Owner-Model database', () => {
+  function seedLegacy(dbPath: string): void {
+    mkdirSync(join(dbPath, '..'), { recursive: true });
+    const db = new SecondBrainDB(dbPath);
+    db.init();
+    db.insert(legacyRow({ id: 'm-pref', type: 'preference', summary: 'User prefers concise technical answers.' }));
+    db.insert(legacyRow({ id: 'm-proj', type: 'project', summary: 'User is building Mercury, an AI agent.', evidence_count: 1 }));
+    db.insert(legacyRow({ id: 'm-junk', type: 'preference', summary: 'I can help you with that! Here is the plan:' }));
+    db.insert(legacyRow({ id: 'm-secret', type: 'identity', summary: 'User password is hunter2' }));
+    db.setMeta('user:owner:profile_summary', 'Old templated profile');
+    db.close();
+  }
 
-    const results = store.search('knowledge management');
-    expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results[0].summary).toContain('knowledge management');
+  it.skipIf(!sqliteAvailable)('boots without error, backs the database up once, and keeps every real memory readable', () => {
+    const dbPath = tempDbPath();
+    seedLegacy(dbPath);
+
+    const store = createStore(dbPath);
+    const backup = dbPath.replace(/\.db$/, '.pre-owner-model.db');
+    expect(existsSync(backup)).toBe(true);
+
+    // Real memories are beliefs now; the old API still lists them.
+    const summaries = store.getRecent(50).map((r) => r.summary);
+    expect(summaries).toContain('User prefers concise technical answers.');
+    expect(summaries).toContain('User is building Mercury, an AI agent.');
+    expect(summaries.some((s) => s.includes('hunter2'))).toBe(false);
+    expect(summaries.some((s) => s.startsWith('I can help'))).toBe(false);
+    expect(store.getSummary().total).toBe(2);
+    expect(store.search('concise')).toHaveLength(1);
+
+    // Junk went to quarantine, not the bin; the owner can bring it back.
+    const quarantined = store.listQuarantined();
+    expect(quarantined.map((q) => q.id).sort()).toEqual(['m-junk', 'm-secret']);
+    expect(store.restoreQuarantined('m-junk')).toBeTruthy();
+    expect(store.listQuarantined().map((q) => q.id)).toEqual(['m-secret']);
+    expect(store.getSummary().total).toBe(3);
+
+    // Old summaries never leak: the profile now comes only from the reflection brief.
+    expect(store.getProfile()).toBe('');
+    store.close();
+
+    // Second boot: nothing migrates twice and nothing is lost.
+    const again = createStore(dbPath);
+    expect(again.getSummary().total).toBe(3);
+    expect(again.listQuarantined().map((q) => q.id)).toEqual(['m-secret']);
+    again.close();
   });
 
-  it.skipIf(!sqliteAvailable)('deprioritizes stale inferred memories in retrieval', () => {
-    const store = createStore();
-
-    const [inferred] = store.remember([
-      { type: 'goal', summary: 'User may be exploring memory tooling.', confidence: 0.88, importance: 0.84, durability: 0.82, evidenceKind: 'inferred' },
-    ]);
-    const [direct] = store.remember([
-      { type: 'goal', summary: 'User explicitly wants Mercury to become a second brain.', confidence: 0.9, importance: 0.9, durability: 0.9, evidenceKind: 'direct' },
-    ]);
-
-    store.consolidate();
-    const summary = store.getSummary();
-    expect(summary.profileSummary).toContain('second brain');
-  });
-
-  it.skipIf(!sqliteAvailable)('stores weak memories that pass minimum threshold', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'habit', summary: 'User seems to work on projects late evenings.', confidence: 0.58, importance: 0.6, durability: 0.6, evidenceKind: 'inferred' },
-    ]);
-
-    expect(store.getSummary().total).toBe(1);
-  });
-
-  it.skipIf(!sqliteAvailable)('rejects memories below minimum confidence', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'habit', summary: 'Too uncertain to store.', confidence: 0.3, importance: 0.4, durability: 0.4 },
-    ]);
-
+  it.skipIf(!sqliteAvailable)('a fresh database needs no backup and starts empty', () => {
+    const dbPath = tempDbPath();
+    const store = createStore(dbPath);
+    expect(existsSync(dbPath.replace(/\.db$/, '.pre-owner-model.db'))).toBe(false);
     expect(store.getSummary().total).toBe(0);
-  });
-
-  it('reports better-sqlite3 availability status', () => {
-    expect(typeof sqliteAvailable).toBe('boolean');
-  });
-
-  it.skipIf(!sqliteAvailable)('moves stale memories to subconscious instead of deleting them', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers dark mode for coding.', confidence: 0.9, importance: 0.8, durability: 0.9 },
-    ]);
-
-    expect(store.getSummary().total).toBe(1);
-    expect(store.getSummary().subconsciousTotal).toBe(0);
-
-    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
-    const row = db.getActive('user:owner')[0];
-    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
-
-    const result = store.prune();
-    expect(result.movedToSubconscious).toBe(1);
-
-    expect(store.getSummary().total).toBe(0);
-    expect(store.getSummary().subconsciousTotal).toBe(1);
-  });
-
-  it.skipIf(!sqliteAvailable)('recalls subconscious memories when conscious is weak', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers TypeScript for backend projects.', confidence: 0.9, importance: 0.85, durability: 0.9 },
-    ]);
-
-    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
-    const row = db.getActive('user:owner')[0];
-    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
-
-    store.prune();
-    expect(store.getSummary().total).toBe(0);
-    expect(store.getSummary().subconsciousTotal).toBe(1);
-
-    const result = store.retrieveRelevant('TypeScript backend', { maxRecords: 5, maxChars: 900 });
-    expect(result.records.length).toBeGreaterThanOrEqual(1);
-
-    expect(store.getSummary().total).toBeGreaterThanOrEqual(1);
-    expect(store.getSummary().subconsciousTotal).toBe(0);
-  });
-
-  it.skipIf(!sqliteAvailable)('does not enforce a hard cap on memory count', () => {
-    const store = createStore();
-    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
-    const now = Date.now();
-
-    for (let i = 0; i < 60; i++) {
-      db.insert({
-        id: `mem_test_${i}`,
-        user_key: 'user:owner',
-        type: i % 2 === 0 ? 'preference' : 'identity',
-        categories: '[]',
-        shareable: 0,
-        summary: `Distinct memory observation number ${i} with completely different content about topic ${i}.`,
-        detail: null,
-        scope: i % 3 === 0 ? 'active' : 'durable',
-        evidence_kind: 'direct',
-        source: 'conversation',
-        confidence: 0.85,
-        importance: 0.75,
-        durability: 0.8,
-        evidence_count: 1,
-        provenance: null,
-        dismissed: 0,
-        superseded_by: null,
-        created_at: now,
-        updated_at: now,
-        last_seen_at: now,
-        last_used_at: null,
-        last_used_query: null,
-      });
-    }
-
-    expect(store.getSummary().total).toBe(60);
-  });
-
-  it.skipIf(!sqliteAvailable)('preserves memories in subconscious without confidence decay', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'identity', summary: 'User is a software engineer specializing in distributed systems.', confidence: 0.92, importance: 0.9, durability: 0.95 },
-    ]);
-
-    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
-    const row = db.getActive('user:owner')[0];
-    const originalConfidence = row.confidence;
-
-    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
-    store.prune();
-
-    expect(store.getSummary().subconsciousTotal).toBe(1);
-
-    const subconsciousRow = db.getSubconscious('user:owner')[0];
-    expect(subconsciousRow.confidence).toBeCloseTo(originalConfidence, 2);
-  });
-
-  it.skipIf(!sqliteAvailable)('hard deletes only explicitly dismissed memories, not just subconscious ones', () => {
-    const store = createStore();
-
-    store.remember([
-      { type: 'preference', summary: 'User prefers dark mode for coding.', confidence: 0.9, importance: 0.8, durability: 0.9 },
-    ]);
-
-    const db = (store as any).db as import('./second-brain-db.js').SecondBrainDB;
-    const row = db.getActive('user:owner')[0];
-    db.update({ id: row.id, last_seen_at: Date.now() - (31 * 24 * 60 * 60 * 1000), updated_at: Date.now() - (31 * 24 * 60 * 60 * 1000) });
-
-    store.prune();
-    expect(store.getSummary().subconsciousTotal).toBe(1);
-
-    store.prune();
-    expect(store.getSummary().subconsciousTotal).toBe(1);
-
-    store.remember([
-      { type: 'preference', summary: 'User does not prefer dark mode for coding.', confidence: 0.95, importance: 0.85, durability: 0.9 },
-    ]);
-
-    const recentConscious = store.getSummary().total;
-    expect(recentConscious).toBe(1);
+    expect(store.listQuarantined()).toHaveLength(0);
   });
 });

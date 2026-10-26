@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isLoopbackRequest } from '../middleware.js';
+import { peekPluginManager } from '../../plugins/manager.js';
 import { getLoopLag } from '../../utils/loop-lag.js';
 
 export interface AgentStatus {
@@ -61,7 +62,8 @@ function versionString(): string {
 status.get('/api/health', (c) => {
   if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
   const lag = getLoopLag();
-  return c.json({ ok: true, pid: process.pid, version: versionString(), state: currentStatus.state, booting: currentStatus.state === 'booting', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) } });
+  const plugins = peekPluginManager()?.health();
+  return c.json({ ok: true, pid: process.pid, version: versionString(), state: currentStatus.state, booting: currentStatus.state === 'booting', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) }, ...(plugins ? { plugins: { safeMode: plugins.safeMode, running: plugins.running, tools: plugins.tools } } : {}) });
 });
 
 status.get('/api/status', (c) => {

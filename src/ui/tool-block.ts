@@ -64,6 +64,9 @@ const TITLES: Record<string, string> = {
   use_skill: 'Skill',
   search_memory: 'Recall',
   save_memory: 'Remember',
+  forget_memory: 'Forget',
+  confirm_belief: 'Confirm',
+  correct_belief: 'Correct',
   update_plan: 'Plan',
 };
 

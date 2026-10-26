@@ -1,0 +1,160 @@
+---
+id: plugins
+title: Plugins (install, enable, disable, remove)
+sidebar_label: Plugins
+---
+
+Plugins add features to Mercury that not everyone needs, without making the
+Mercury download bigger for everyone. You install the ones you want; the rest
+never touch your machine.
+
+A plugin can add **tools** the agent can use, a **chat channel** (such as
+WhatsApp) and, for some plugins, **slash commands** you can type. Every plugin
+can be turned off or removed at any time, and Mercury keeps running if a
+plugin breaks. Plugins are available from Mercury 1.4.0.
+
+## Official plugins
+
+These are in the plugin catalog for macOS (Apple silicon and Intel),
+Windows x64 and Linux (x64 and arm64):
+
+| Plugin | Install | What it does |
+|--------|---------|--------------|
+| [WhatsApp](../integrations/whatsapp) | `/plugins install whatsapp` | Chat with Mercury on WhatsApp from a spare number, and talk to it by voice call in both directions |
+| [Optimus](../integrations/optimus) | `/plugins install optimus` | Mercury uses your computer: sees the screen, moves the pointer, types and opens apps, by chat or out loud |
+
+The catalog is published at
+[mercuryagent.sh/plugins/catalog.json](https://mercuryagent.sh/plugins/catalog.json).
+Each entry pins a version and a SHA-256 checksum, and Mercury checks the
+download against it before installing.
+
+## Four ways to manage plugins
+
+| Where | Example |
+|-------|---------|
+| Any chat (terminal, Telegram, web, Discord, Slack) | `/plugins` |
+| Shell | `mercury plugins list` |
+| Web dashboard | **Configure → Plugins** |
+| Telegram buttons | `/plugins`, then tap **Install**, **Disable** or **Uninstall** |
+
+They all do the same thing. If Mercury is running in the background, the
+shell commands ask it to make the change, so plugins start and stop right
+away without a restart.
+
+## Commands
+
+| Chat | Shell | What it does |
+|------|-------|--------------|
+| `/plugins` | `mercury plugins` | Installed and available plugins, with status |
+| `/plugins ID` | `mercury plugins open ID` | That plugin's menu: its settings, linking, test, turn off, uninstall. Reply with a number (or tap a button on Telegram) |
+| `/plugins setup ID` | `mercury plugins setup ID` | Walk through the plugin's setup again |
+| `/plugins search weather` | `mercury plugins search weather` | Find plugins in the catalog |
+| `/plugins info ID` | `mercury plugins info ID` | Tools, network access, secrets it reads, settings |
+| `/plugins install ID` | `mercury plugins install ID` | Install. Shows what the plugin needs first and asks you to confirm |
+| `/plugins enable ID` | `mercury plugins enable ID` | Turn it on |
+| `/plugins disable ID` | `mercury plugins disable ID` | Turn it off. Its data and settings are kept |
+| `/plugins update` | `mercury plugins update` | Update catalog plugins (or one: `update ID`) |
+| `/plugins rollback ID` | `mercury plugins rollback ID` | Go back to the version you had before |
+| `/plugins uninstall ID` | `mercury plugins uninstall ID` | Remove it. Add `--purge` to delete its data too |
+| `/plugins set ID KEY VALUE` | `mercury plugins set ID KEY VALUE` | Change a plugin setting |
+| `/plugins pair ID PHONE` | `mercury plugins pair ID` (QR code) or `--code PHONE` | Link a channel plugin's account, such as the spare WhatsApp number |
+| `/plugins unlink ID` | `mercury plugins unlink ID` | Log a channel plugin out of its account |
+| `/plugins test ID` | `mercury plugins test ID` | Send yourself a test message through a channel plugin |
+
+After install, Mercury walks you through the plugin's setup, one question
+at a time, in the same chat. For WhatsApp that's your number, what Mercury
+may do in your chat, and linking the spare number. For Optimus it's whether
+it may control the computer, how you want to talk to it, and the talk key.
+Setup skips questions that don't apply: with an OpenAI provider already set
+up in Mercury, neither plugin asks which voice to use.
+`mercury plugins install ID --no-setup` installs without the walk-through.
+
+## The plugin menu
+
+You never need to remember a plugin's settings. `/plugins ID` (or
+`mercury plugins open ID`, or the dashboard) opens its menu:
+
+- **Every setting is listed on the menu** with its current value. Pick one to
+  change it. Related settings are grouped into sections, such as
+  **🎙 Voice calls**, each marked ✓ when it's ready or "needs setup" when it
+  isn't.
+- **Choices say what they do.** A yes/no setting shows, for example,
+  "On: Mercury picks up when you call it" and "Off: your calls to Mercury ring
+  out", and after you save, the reply repeats what your choice does.
+- **Follow-up settings come next.** Change the voice engine to Gemini and
+  Mercury asks for the Gemini key and model straight away, instead of leaving
+  you to find them.
+- **No dead ends.** Every question offers a way back with no change, and
+  `cancel` closes the menu.
+- The menu also has **Link** / **Unlink** and **Send me a test message** for
+  channel plugins, **Run setup again**, **Update**, **Turn off** and
+  **Uninstall**.
+
+In a chat, reply with the option's number (or tap a button on Telegram).
+Members see the status only.
+
+## Plugins use Mercury's providers
+
+A plugin that needs an AI provider (the voice engines in WhatsApp and Optimus
+use OpenAI or Grok) borrows the one you already set up in Mercury
+(dashboard → Providers, or `mercury doctor`). You set a key in one place.
+Keys a plugin asks for itself (a Gemini or Deepgram key, say) are stored with
+Mercury's own keys, shown only as "set", and readable only by plugins that
+declare them, so a key added for WhatsApp also works for Optimus. If a key
+is missing, Mercury tells you once what it turns off and how to fix it.
+
+`install` accepts a catalog id, a folder, a `.tgz` file, an `https://` URL,
+or `github:owner/repo` (latest release). Only catalog plugins are verified
+by Mercury; install anything else only from people you trust.
+
+Only the owner (and admins on Telegram, Discord and Slack) can install or
+change plugins. In the web dashboard, changes are accepted only from the
+computer Mercury runs on.
+
+## What keeps Mercury safe from a bad plugin
+
+- **Two kinds of plugin.** *Own process* plugins run as a separate program:
+  if they crash, Mercury restarts them, and after repeated crashes turns them
+  off. *In-process* plugins run inside Mercury, with timeouts on everything
+  they do.
+- **Only what it declared.** A plugin can reach only the websites and read
+  only the secrets listed in its manifest. `/plugins info` shows both, and
+  install shows them before you confirm. A plugin that controls the computer
+  (Optimus) is flagged with a warning.
+- **Tools ask first.** A plugin tool that changes anything asks for your
+  approval like any built-in tool. Bots never see plugin tools unless you
+  allow them in the bot's tool list (`weather__forecast`, or `weather__*` for
+  all of one plugin's tools).
+- **Automatic turn-off.** A plugin is turned off, and you get a message
+  saying why, when:
+  - it fails 5 times in a row;
+  - it crashes too often;
+  - its files changed since install;
+  - it isn't compatible with your Mercury version;
+  - Mercury failed to start twice right after it was installed or updated.
+- **Clean removal.** Disable or uninstall stops its timers, network requests
+  and tools straight away. No restart needed. Installing into a running
+  Mercury starts the plugin straight away too.
+- **Updates you can undo.** The previous version is kept, so
+  `/plugins rollback ID` brings it back, with its settings.
+
+## Safe mode
+
+If Mercury won't start after a plugin change, start it with every plugin off:
+
+```sh
+mercury start --safe-mode        # or: MERCURY_PLUGINS=off mercury start
+mercury doctor --plugins         # what's installed, what's off and why
+```
+
+## Where things live
+
+```
+~/.mercury/plugins/
+  state.json                 installed / enabled
+  ID/versions/VERSION/       the plugin (current + previous)
+  ID/data/                   the plugin's own data (kept on uninstall unless --purge)
+  ID/settings.json           your settings for it
+```
+
+Writing a plugin? See [Reference → Writing plugins](../reference/plugins).

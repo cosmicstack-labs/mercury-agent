@@ -8,7 +8,7 @@ import type { AppendSessionMessageInput, CreateSessionInput, Session, SessionBin
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ID_PREFIX_RE = /^[0-9a-f]{4,32}$/i;
 const ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
-const CHANNEL_TYPES: ChannelType[] = ['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp'];
+const CHANNEL_TYPES: ChannelType[] = ['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp', 'desktop'];
 const TITLE_SOURCES: Session['titleSource'][] = ['fallback', 'generated', 'user'];
 const SESSION_STATUSES: Session['status'][] = ['active', 'archived', 'deleted'];
 const MESSAGE_ROLES: SessionMessage['role'][] = ['user', 'assistant', 'system', 'tool'];
@@ -600,7 +600,7 @@ export class SessionRepository {
 
   private legacyChannelType(id: string): ChannelType {
     const prefix = id.split(':', 1)[0];
-    return ['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp'].includes(prefix) ? prefix as ChannelType : 'internal';
+    return ['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp', 'desktop'].includes(prefix) ? prefix as ChannelType : 'internal';
   }
 
   private assertUuid(id: string): void {

@@ -9,6 +9,7 @@ import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import type { BotManifest, BotPermissionsFile, BotPathScope } from './types.js';
 import { BOT_DANGEROUS_TOOLS, BOT_SANDBOX_DIRNAME, BOT_SHARED_SANDBOX_DIRNAME } from './store.js';
+import { isPluginToolName, pluginToolAllowed } from '../plugins/tool-bridge.js';
 
 /**
  * Tools a bot must never see, regardless of manifest. These are the tools
@@ -24,6 +25,7 @@ const ALWAYS_STRIPPED = new Set([
   'list_agents',
   'stop_agent',
   'install_skill',       // no skill installs from an unattended bot
+  'create_skill',        // self-made skills come from the owner's own sessions (ADR-027)
   'schedule_task',       // bot schedules are managed via bot.yaml, not tools
   'list_scheduled_tasks',
   'cancel_scheduled_task',
@@ -153,6 +155,14 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
   for (const [name, tool] of Object.entries(all)) {
     if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name)) continue;
     if (deny.has(name)) continue;
+    // Plugin tools are opt-in for bots (fail-closed): only an explicit allow
+    // entry ("<plugin>__<tool>" or "<plugin>__*") lets a bot see one. A
+    // deny-only gate must never expose a tool installed after the bot was set up.
+    if (isPluginToolName(name)) {
+      if (!pluginToolAllowed(name, allow)) continue;
+      out[name] = tool;
+      continue;
+    }
     if (allow.length > 0 && !allow.includes(name)) continue;
     out[name] = tool;
   }

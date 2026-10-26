@@ -1,0 +1,329 @@
+---
+id: plugins
+title: Writing plugins
+sidebar_label: Writing plugins
+---
+
+A Mercury plugin is a folder with a `mercury-plugin.json` manifest and code.
+Start from a working one:
+
+```sh
+mercury plugins init my-plugin                    # runs inside Mercury
+mercury plugins init my-plugin --out-of-process   # an MCP server in its own process
+cd my-plugin
+mercury plugins validate .                        # check it the way Mercury will run it
+mercury plugins install . --yes                   # try it in your Mercury
+mercury plugins pack .                            # .tgz + checksum + catalog entry
+```
+
+No npm package is needed: `init` writes the API types next to your code as
+`mercury-plugin.d.ts`.
+
+Mercury 1.4 implements **plugin API 1.2**. Minor versions only add, so a
+plugin written for 1.0 or 1.1 keeps working. The two official plugins are
+full examples of an out-of-process plugin written in Rust:
+[WhatsApp](../integrations/whatsapp) (a chat channel with voice calls, API 1.1)
+and [Optimus](../integrations/optimus) (a desktop channel with tool images,
+API 1.2). Their source is in
+[`plugins/`](https://github.com/cosmicstack-labs/mercury-agent/tree/main/plugins).
+
+## Which kind?
+
+| | In-process | Out-of-process |
+|---|---|---|
+| Runs | Inside Mercury, loaded with `import()` | As a child process speaking MCP over stdio |
+| Good for | Small, fast tools; slash commands | Native code, heavy work, existing MCP servers, other languages |
+| If it crashes | Errors are contained and counted; repeated failures turn it off | Mercury restarts it; repeated crashes turn it off |
+| Slash commands | Yes | Not yet (plugin API 1.2) |
+
+## The manifest
+
+```json
+{
+  "manifestVersion": 1,
+  "id": "weather",
+  "name": "Weather",
+  "version": "1.2.0",
+  "description": "Forecasts and alerts.",
+  "kind": "in-process",
+  "engines": { "mercury": ">=1.4.0 <2.0.0", "pluginApi": "^1.0.0" },
+  "entry": "index.mjs",
+  "contributes": {
+    "tools": [{ "name": "forecast", "description": "Get the forecast for a city.", "readOnly": true, "timeoutMs": 20000 }],
+    "commands": [{ "name": "weather", "description": "Today's weather" }]
+  },
+  "permissions": { "network": ["api.weather.example"], "secrets": ["WEATHER_API_KEY"] },
+  "settings": {
+    "version": 2,
+    "fields": { "unit": { "type": "enum", "options": ["c", "f"], "default": "c" } },
+    "migrations": [{ "to": 2, "rename": { "units": "unit" }, "mapValues": { "unit": { "celsius": "c", "fahrenheit": "f" } } }]
+  }
+}
+```
+
+- **Settings** can carry setup metadata. Settings with `"setup": true` are
+  asked in order right after install, in chat or in the terminal. Every
+  setting with a `label` is listed on the plugin's `/plugins ID` menu with its
+  current value. The metadata fields are:
+  - `label`: a plain question, such as "Which number will you chat from?";
+  - `required`: setup can't finish without a value;
+  - `optionLabels`: what each choice does, for enum options and for booleans
+    under `"true"` and `"false"` ("On: Mercury picks up when you call it").
+    The menu repeats the chosen label after saving, so the owner reads what
+    the choice does, not just "yes";
+  - `examples`: one-tap suggestions for a string or number setting (typing
+    your own still works);
+  - `"format": "phone"`, which is validated and normalised to `+digits`;
+  - `when`: show the setting only when other settings have these values,
+    such as `{ "voiceEngine": ["gemini"] }`. A list of conditions means any of
+    them. After the owner changes a setting in the menu, Mercury asks straight
+    away for the settings that now apply (pick Gemini, then the Gemini key);
+  - `group`: put the setting in a menu section declared under
+    `settings.groups`, each with a `label`, an optional `description`, and
+    `readyUnless` (requirements such as `"provider:openai"` that mark the
+    section "needs setup");
+  - `setupWhenMissing`: ask this in setup only while a requirement is
+    missing. With an OpenAI provider set up, the default voice just works, so
+    setup doesn't ask which voice to use.
+
+  A setting of `"type": "secret"` is an API key the owner pastes once. It is
+  stored with Mercury's own keys (never in the plugin's settings file), shown
+  only as "set", and passed to the plugin as the environment variable named
+  by its `secret` field, which must also be listed in `permissions.secrets`.
+
+  Chat channel plugins (WhatsApp) also get a linking step at the end of
+  setup. A `desktop` channel has no account to link.
+- **Tools** are shown to the model as `ID__name` (for example
+  `weather__forecast`). `readOnly` tools skip approval and are available in
+  plan mode; every other tool asks the owner first.
+- **Commands** can't use a built-in name (`/help`, `/stop`, `/bots` and so on).
+- **permissions.network** lists the hosts `ctx.fetch` may reach (`*.example.com`
+  works). Private and loopback addresses are always blocked.
+- **permissions.secrets** lists the names from `~/.mercury/.env` the plugin
+  may read. Nothing else is visible to it. `permissions.optionalSecrets` maps
+  the ones it works without to what they turn on; a missing one is explained
+  to the owner once.
+- **permissions.desktop** (plugin API 1.2) says the plugin controls the
+  computer: it sees the screen, moves the mouse and types. `/plugins info`
+  and install show it as a warning. The plugin must also ask for consent in
+  its own setup, as [Optimus](../integrations/optimus) does with
+  "Control this computer".
+- Out-of-process plugins use `"server": { "command": "node", "args": ["server.mjs"] }`.
+  `node` means Mercury's own runtime, so users don't need Node installed.
+  It can also be a binary inside the package, with per-platform variants
+  under `server.platforms` and their SHA-256 in `checksums`.
+
+## In-process API
+
+```js
+/** @param {import('./mercury-plugin').PluginContext} ctx */
+export async function activate(ctx) {
+  ctx.tools.register({
+    name: 'forecast',
+    inputSchema: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+    execute: async ({ city }, { signal }) => {
+      const res = await ctx.fetch(`https://api.weather.example/v1?q=${encodeURIComponent(city)}`, {
+        headers: { authorization: `Bearer ${ctx.secrets.get('WEATHER_API_KEY')}` },
+        signal,
+      });
+      return await res.json();
+    },
+  });
+  ctx.timers.setInterval(() => ctx.log.debug('tick'), 60_000);
+}
+```
+
+The context provides:
+
+- `ctx.tools`, `ctx.commands`
+- `ctx.settings`, `ctx.secrets`
+- `ctx.fetch`
+- `ctx.timers`
+- `ctx.log`
+- `ctx.plugin.dataDir`, a folder kept across updates
+- `ctx.signal`, aborted when the plugin stops
+- `ctx.onDispose`
+
+Everything registered or scheduled through `ctx` is cleaned up automatically
+when the plugin is turned off, updated or removed.
+
+## Rules for a stable plugin
+
+These are checked by `mercury plugins validate`:
+
+1. **One self-contained file.** Bundle your dependencies
+   (`esbuild src/index.ts --bundle --format=esm --platform=node --outfile=index.mjs`).
+   A compiled Mercury can't resolve npm packages for you; only `node:`
+   builtins and files in your package load.
+2. **Hot plug.** Your plugin must start, stop and start again cleanly, with
+   no restart of Mercury. Use `ctx.timers` and `ctx.signal`, not globals.
+3. **Clean up.** Anything you start outside `ctx`, stop in `ctx.onDispose`.
+4. **Versioned contract.** Declare `engines.pluginApi`. Plugin API minor
+   versions only add. A breaking change is a new major, and the previous one
+   stays supported for at least two Mercury minor releases.
+5. **Settings migrations.** If you rename or remove a setting, or change its
+   meaning, do two things:
+   - bump `settings.version`;
+   - add a `migrations` step (`rename`, `remove`, `mapValues`).
+
+   Saved values then carry over on update. Rolling back restores the older
+   version's settings.
+6. **No plugin-to-plugin dependencies** (as of plugin API 1.2). Each plugin stands
+   alone.
+
+## Out-of-process (MCP)
+
+Mercury starts the server and runs the handshake:
+
+1. `initialize`, then `notifications/initialized`
+2. `tools/list`, which exposes only the tools your manifest declares
+3. `tools/call` for each tool use
+
+It also handles `ping` and `notifications/tools/list_changed`. It cancels
+calls with `notifications/cancelled` when a turn stops.
+
+What your server receives:
+
+- **Settings:** JSON in the `MERCURY_PLUGIN_SETTINGS` environment variable.
+- **Data folder:** `MERCURY_PLUGIN_DATA_DIR`.
+- **Secrets:** the declared secrets, as environment variables.
+
+Write logs to stderr. Stdout is the protocol channel.
+
+## Tool images (plugin API 1.2)
+
+An out-of-process tool can return images to the model next to its text, as
+standard MCP `image` content:
+
+```json
+{ "content": [
+  { "type": "text", "text": "Sent: click (640, 380)." },
+  { "type": "image", "data": "<base64>", "mimeType": "image/jpeg" }
+] }
+```
+
+- **Types:** `image/png`, `image/jpeg`, `image/webp`, `image/gif`.
+- **Limits:** 4 images per result, about 6 MB each.
+- **Kept out of history.** The images go to the model with that one tool
+  result. Chat history, logs and memory only ever see the text.
+- **Text-only models** get the text plus a note that an image was left out.
+
+Require `"pluginApi": "^1.2.0"` to use it.
+
+## Chat channels (plugin API 1.1)
+
+An out-of-process plugin can provide a chat channel. The channel types are
+`whatsapp` (plugin API 1.1, see [WhatsApp](../integrations/whatsapp)) and
+`desktop` (plugin API 1.2, see [Optimus](../integrations/optimus)). Declare
+it and require the matching API:
+
+```json
+"engines": { "mercury": ">=1.4.0 <2.0.0", "pluginApi": "^1.1.0" },
+"contributes": { "channel": { "type": "whatsapp" } },
+"settings": { "version": 1, "fields": {
+  "owner": { "type": "string", "description": "The owner's phone number", "format": "phone" },
+  "members": { "type": "string", "description": "Other numbers allowed to chat, comma separated" },
+  "allowGroups": { "type": "boolean", "default": false }
+} }
+```
+
+Mercury sends `capabilities.experimental["mercury/channel"]` in
+`initialize`. After that, the same stdio connection carries the following
+messages.
+
+| Direction | Message | Params |
+|---|---|---|
+| plugin → Mercury (notification) | `mercury/channel/status` | `state` (`starting`, `needs-pairing`, `pairing`, `connected`, `disconnected`, `logged-out`, `error`), `detail?`, `account?`, `qr?`, `pairCode?` |
+| plugin → Mercury (notification) | `mercury/channel/message` | `id`, `chatId`, `senderId`, `senderPhone?`, `senderName?`, `isGroup?`, `fromMe?`, `text?`, `attachments?` (each with `kind`, `path`, `mime?`, `name?`), `timestamp?` |
+| plugin → Mercury (notification) | `mercury/channel/activity` | `listening`, `working`, `muted` (API 1.2, desktop: shown in the terminal status bar) |
+| Mercury → plugin (request) | `mercury/channel/send` | `chatId`, `text` |
+| Mercury → plugin (request) | `mercury/channel/sendFile` | `chatId`, `path`, `caption?` |
+| Mercury → plugin (request) | `mercury/channel/typing` | `chatId`, `on` |
+| Mercury → plugin (request) | `mercury/channel/pair` | `method` (`qr` or `code`), `phone?` |
+| Mercury → plugin (request) | `mercury/channel/unlink` | none |
+
+Photos and PDFs in `attachments` are passed to the model when it accepts
+them. Voice notes are transcribed with the owner's OpenAI provider before the
+message reaches the agent.
+
+### Voice sessions
+
+A channel plugin can also carry **voice**: calls on WhatsApp, or listening
+mode at the computer for a `desktop` channel. Both use the same messages.
+
+| Direction | Message | Params → result |
+|---|---|---|
+| plugin → Mercury (request) | `mercury/call/incoming` | `callId`, `from`, `fromPhone?`, `voiceReady` → `accept`, `instructions?` |
+| plugin → Mercury (request) | `mercury/call/briefing` | `callId` → `instructions` |
+| plugin → Mercury (request) | `mercury/call/ask` | `callId`, `question` → `answer` (runs a normal Mercury turn) |
+| plugin → Mercury (request) | `mercury/call/approve` | `callId`, `approvalId`, `approved` → `ok` |
+| plugin → Mercury (request) | `mercury/call/schedule` | `when`, `topic` → `ok`, `text` |
+| plugin → Mercury (request) | `mercury/call/stop` | `callId` → `stopped` |
+| plugin → Mercury (notification) | `mercury/call/ended` | `callId`, `direction`, `outcome`, `durationSec`, `transcript`, `reason?` |
+| Mercury → plugin (notification) | `mercury/call/progress` | `callId`, `activity` (what the running turn is doing now) |
+| Mercury → plugin (notification) | `mercury/call/context` | `callId`, `text` (something happened in the chat, such as a photo arriving) |
+| Mercury → plugin (notification) | `mercury/call/approval` | `callId`, `approvalId`, `prompt` (ask the owner out loud) |
+| Mercury → plugin (notification) | `mercury/call/approval-resolved` | `callId`, `approvalId`, `decision`, `via` |
+
+How these work:
+
+- **`incoming`:** Mercury answers only the owner, and only when the plugin
+  says its voice engine is ready.
+- **`ask`:** runs a normal Mercury turn whose answer is spoken back.
+- **Approvals:** a turn that needs approval during a call sends
+  `approval`. On WhatsApp it is also posted in the chat; the first answer
+  wins. The plugin sends `approve` only after checking that the owner's own
+  transcribed words said yes, and a spoken yes never becomes "always". No
+  answer within 2 minutes is no.
+- **`schedule`:** "call me back at 9" on a call. The time is worked out by
+  Mercury, not by a model.
+- **`stop`:** the owner said stop or goodbye: Mercury ends the work the
+  session started.
+- **`ended`:** on WhatsApp, sends the owner a summary with the transcript.
+  A desktop session reports only failures.
+
+### Mercury's providers
+
+A plugin that needs one of Mercury's AI providers (`openai` or `grok`)
+declares it, so the owner sets a key in one place:
+
+```json
+"permissions": { "providers": {
+  "openai": { "unlocks": "Voice calls", "when": { "voiceEngine": "openai" },
+              "alternative": "Or pick another voice in /plugins whatsapp → Voice calls." }
+} }
+```
+
+The short form `{ "openai": "Voice calls" }` also works. Mercury passes the
+key the owner already set up as `MERCURY_PROVIDER_OPENAI_API_KEY` and
+`MERCURY_PROVIDER_OPENAI_BASE_URL` (`MERCURY_PROVIDER_GROK_…` for Grok). With
+`when`, the provider is only required while the settings match. If it isn't
+set up, the owner is told once what it turns off, and `/plugins info` shows
+it.
+
+### Who can talk to the agent
+
+Mercury, not the plugin, decides:
+
+- **Access:** only the `owner` number and listed `members` get through.
+  Unknown senders are dropped, groups are ignored unless `allowGroups` is
+  on, and your own messages are never answered. A `desktop` channel only
+  ever talks to the owner at the computer.
+- **Formatting:** Mercury converts Markdown to the channel's formatting and
+  splits long replies.
+- **Approvals:** prompts are answered by a text reply: 1 for yes, 2 for no,
+  3 for always.
+- **Linking:** owners link the account with `mercury plugins pair ID` (QR
+  code) or `/plugins pair ID PHONE` (pairing code).
+
+## Publishing
+
+`mercury plugins pack .` writes `ID-VERSION.tgz` and prints its SHA-256 and
+a catalog entry. Then:
+
+- **Share it from GitHub.** Attach the file to a GitHub release as
+  `mercury-plugin.tgz` (or `mercury-plugin-PLATFORM.tgz` per platform).
+  Anyone can then install it with `mercury plugins install github:owner/repo`.
+- **List it in `/plugins`.** Open a pull request adding the entry to the
+  catalog at `website/static/plugins/catalog.json`. Catalog installs are
+  checksum-verified.

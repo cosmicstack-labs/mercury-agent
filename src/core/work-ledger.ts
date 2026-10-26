@@ -8,7 +8,7 @@ import { logger } from '../utils/logger.js';
 const channelMessageSchema = z.object({
   id: z.string(),
   channelId: z.string(),
-  channelType: z.enum(['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp']),
+  channelType: z.enum(['cli', 'telegram', 'web', 'internal', 'signal', 'discord', 'slack', 'whatsapp', 'desktop']),
   senderId: z.string(),
   senderName: z.string().optional(),
   content: z.string(),

@@ -22,9 +22,9 @@ const src = (p: string) => readFileSync(join(dirname(fileURLToPath(import.meta.u
 describe('default provider is respected', () => {
   it('agent: /models use persists the switch via saveConfig', () => {
     const agent = src('agent.ts');
-    // The persisted message must say so — no silent session-only mutation.
-    expect(agent).toContain('Default model switched to');
-    expect(agent).toContain('Saved for future sessions');
+    // The message must say it is in effect now AND kept — "saved for future
+    // sessions" alone read as "takes effect next session".
+    expect(agent).toContain('In effect from your next message, and kept as the default.');
     // switchSessionProvider saves after rebuilding the registry.
     expect(agent).toMatch(/saveConfig\(this\.config\);\s*\n\s*updateCliProviderStatus\(this\.channels\.get\('cli'\), providerName, model\);/);
   });

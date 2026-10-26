@@ -200,6 +200,31 @@ POST   /api/skills/:name/deactivate
 DELETE /api/skills/:name
 ```
 
+## Self-made skills
+
+Mercury can write skills for itself. After a multi-step task it would do again — a recurring report, a conversion pipeline, a deploy, a site or device it operates — has worked end-to-end, it saves the procedure (exact commands, paths, checks, pitfalls) with `create_skill` and tells you in one line:
+
+```
+☿ Skill saved: weekly-sales-report — say /skills self-made to review or remove it.
+```
+
+Next time, the task is one `use_skill` away. These skills are deliberately kept apart from the ones you install:
+
+- They live in `~/.mercury/skills/self-made/<name>/SKILL.md` with `category: self-made`, `origin: mercury`, `made`, `verified`, `uses` and `last_used` in the frontmatter.
+- They are listed under their own **Self-made** label and count as *unverified* until used again; Mercury is told to trust the result, not the text, and to update the skill when a step fails.
+- Mercury never saves one for a one-off, for anything a single tool does, for anything it did not verify, or with credentials inside; a self-made skill never shadows an installed one with the same name.
+- Unused ones go **dormant** after 30 days (disabled, never deleted) and the shelf is capped at 40 live skills.
+- Only your own sessions can create them — not bots, not channel members.
+
+```
+/skills self-made                       # list, with use counts and dormancy
+/skills self-made enable <name>
+/skills self-made disable <name>
+/skills self-made remove <name>
+```
+
+To keep one for good, move its folder out of `self-made/` and drop the `origin`/`uses` fields — it becomes an ordinary skill.
+
 ## Writing your own
 
 Copy the seeded template:

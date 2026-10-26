@@ -26,6 +26,12 @@ export interface ScheduledTaskManifest {
   sourceChannelType?: string;
   /** Set for Mercury Bot routines — the run routes to the bot, not the main agent. */
   botId?: string;
+  /**
+   * Plugin tools this task may run without asking when it fires (e.g.
+   * "whatsapp__call_owner" for "call me in 10 minutes"). Approved by the owner
+   * once, when the task was created; nothing else is pre-approved.
+   */
+  allowTools?: string[];
 }
 
 const SCHEDULES_FILE = 'schedules.yaml';

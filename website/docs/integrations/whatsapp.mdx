@@ -1,0 +1,236 @@
+---
+id: whatsapp
+title: WhatsApp
+description: "Chat with Mercury on WhatsApp and talk to it by voice call, in both directions. Install, link a spare number, voice engines, scheduled calls, approvals and access levels."
+keywords: [mercury, whatsapp, voice calls, plugin, ai agent on whatsapp, linked device]
+---
+
+The WhatsApp plugin lets you chat with Mercury on WhatsApp and talk to it by voice call. You call Mercury, or Mercury calls you ("call me at 9pm", "call me when it's done"). Mercury runs on a **spare number** as a linked device, the same way WhatsApp Web connects, so you don't need a WhatsApp Business account.
+
+It's an optional [plugin](../cli-commands/plugins), version **0.1.1**, from the official plugin catalog. It needs Mercury **1.4.0** or newer.
+
+:::warning[Unofficial protocol: use a spare number]
+
+The plugin uses an **unofficial, reverse-engineered WhatsApp protocol** ([whatsapp-rust](https://github.com/oxidezap/whatsapp-rust)). A WhatsApp update can break it, and automated use can get the number restricted or banned. Link a spare number you can afford to lose, **not your main one**. You chat with Mercury *from* your own number; Mercury runs *on* the spare one.
+
+:::
+
+## Requirements
+
+- Mercury 1.4.0 or newer, on macOS (Apple silicon or Intel), Windows x64, or Linux (x64 or arm64).
+- A spare phone number with WhatsApp installed on a phone, to link as Mercury's account.
+- Your own WhatsApp number, to chat and call from.
+- For voice calls, one voice engine (see [Voice engines](#voice-engines)). The default uses the OpenAI provider you already set up in Mercury, so there may be nothing extra to configure. Text chat works without any of this.
+
+## Install
+
+In any Mercury chat:
+
+```text
+/plugins install whatsapp
+```
+
+Or from a shell:
+
+```bash
+mercury plugins install whatsapp
+```
+
+Install shows what the plugin needs (network hosts, the secrets it may read, the Mercury providers it uses) and asks you to confirm. The plugin runs in its own process, so if it crashes, Mercury keeps running and restarts it.
+
+Mercury then walks you through setup, one question at a time, in the same chat (or in the dashboard under **Configure → Plugins**):
+
+1. **Which number will you chat from?** Your own number, with the country code. Only this number can talk to Mercury.
+2. **What can Mercury do in your chat?** General or Extended (see [Access levels](#access-levels)).
+3. **Who handles your calls?** Asked only when Mercury has no OpenAI provider. With one, OpenAI Realtime is used and this step is skipped. Picking an engine then asks for that engine's key and options.
+4. **Link the spare number** with a pairing code or a QR code (see below).
+
+Run the setup again anytime with `/plugins setup whatsapp`.
+
+## Link the spare number
+
+You can link with a pairing code or a QR code.
+
+**Pairing code** (works from any chat, including Telegram):
+
+1. Choose **Pairing code** in setup, or run `/plugins pair whatsapp +15551234567` with the **spare** number.
+2. On the spare phone: **WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead**, then type the 8-character code.
+3. The code is valid for about 3 minutes. Mercury confirms in the chat when the link is up.
+
+**QR code:**
+
+- **Dashboard:** Configure → Plugins → WhatsApp → **Link with QR code**. The QR refreshes about every 20 seconds.
+- **Terminal:** `mercury plugins pair whatsapp` prints a QR code. `mercury plugins pair whatsapp --code +15551234567` gets a pairing code instead.
+
+On the spare phone: **Linked devices → Link a device**, then scan.
+
+Once it's linked, message the spare number from your own number to talk to Mercury. To check the link, open `/plugins whatsapp` and pick **Send me a test message**, or run `mercury plugins test whatsapp`.
+
+If WhatsApp logs the device out, Mercury tells you on another channel and how to link it again.
+
+### Unlink
+
+Use **Unlink the account** in `/plugins whatsapp`, the **Unlink** button in the dashboard, or:
+
+```bash
+mercury plugins unlink whatsapp
+```
+
+Then remove "Mercury" from **Linked devices** on the spare phone if it's still listed.
+
+## What works in chat
+
+- Text both ways. Long replies are split, and Markdown is converted to WhatsApp formatting.
+- Files from Mercury arrive as attachments: images as photos, everything else as documents.
+- **Photos and PDFs you send** are passed to the model along with your message, when the model in use accepts them. Text-only models are told the file is there but can't see it.
+- **Voice notes you send** are transcribed with your Mercury OpenAI provider (`gpt-4o-mini-transcribe`, falling back to `whisper-1`) and reach Mercury as text. Without an OpenAI provider, Mercury tells you how to turn this on and asks you to type instead.
+- Mercury knows it's on WhatsApp and writes like a text message: short, no tables or code blocks. Long output goes into a file it sends you.
+- Built-in `web_search` (Extended access) means questions about news and current events get looked up, not guessed.
+- Groups are ignored unless you turn on **Answer in WhatsApp groups**.
+
+## Access levels
+
+Access decides what Mercury may do in your WhatsApp chat. Change it anytime in `/plugins whatsapp`.
+
+| Level | What Mercury can do |
+|---|---|
+| **General** (default) | Chat and general knowledge only. No tools, files or personal memory. If something needs them, Mercury says so in one line. |
+| **Extended** | Memory, files, tools and actions, as anywhere else. Anything risky still asks you first. |
+
+Other numbers you add under **Other numbers allowed to chat** are *members*. They get their own level (**What can those numbers do?**), which is never more than yours, and they can't run admin commands such as `/plugins`. Members never get your private details (memory, files, contacts, accounts) unless you told Mercury to share them. Unknown numbers are ignored.
+
+Mercury only learns from calls (adds what you said to its memory) at Extended access.
+
+## Approvals
+
+When something needs your go-ahead in the chat, Mercury asks with a prompt you answer by reply:
+
+- **1** yes
+- **2** no
+- **3** always for this chat
+
+No reply within 2 minutes counts as no.
+
+## Voice calls
+
+Call the spare number from your own number and talk to Mercury. Mercury can also ring you when something matters (the `call_owner` tool), or at a time you set ([Scheduled calls](#scheduled-calls)).
+
+- **Who can call:** only the owner. Calls from anyone else, and group calls, are declined.
+- **During a call** Mercury can look things up and act, using its tools, memory and files (at Extended access). While it works it keeps you posted instead of going silent.
+- **Approvals on a call:** Mercury asks out loud and also posts the request in the chat. Say yes on the call, or reply **1** (yes) or **2** (no) in the chat. The first answer wins. A spoken yes only counts when your own transcribed words say yes, and it never becomes "always". No answer within 2 minutes is no.
+- **Links, photos and details:** Mercury doesn't read links or long lists aloud. It sends them to the chat (the `send_to_chat` tool) and says so, or offers to. Photos and documents you send in the chat during a call are visible to Mercury, so you can ask about them on the call.
+- **After the call** you get a message with the duration and the transcript. A missed or declined call from Mercury is followed by a written version of what it wanted.
+- **Limits:** Mercury calls you at most **4 times an hour** and a call lasts at most **15 minutes** by default (see the settings below).
+- Say goodbye to hang up, or just hang up.
+
+To turn off incoming calls without uninstalling, set **Answer your voice calls** to off. Your calls to the spare number then ring out.
+
+### Voice engines
+
+The engine is who listens to you and speaks back on a call. Pick it in `/plugins whatsapp` → **🎙 Voice calls**. Voice keys are shared: a key you add for the [Optimus](./optimus) plugin works here too, and the other way round.
+
+| Engine (`voiceEngine`) | What it needs |
+|---|---|
+| `openai`, **OpenAI Realtime** (default, recommended) | The OpenAI provider you already set up in Mercury (dashboard → Providers, or `mercury doctor`). Nothing extra. |
+| `gemini`, Google Gemini Live | A Gemini API key (from aistudio.google.com/apikey). Cheapest, has a free tier, speaks Hindi and Urdu. |
+| `grok`, xAI Grok Voice | The Grok provider you set up in Mercury. |
+| `elevenlabs`, ElevenLabs Realtime (experimental) | An ElevenLabs API key. |
+| `azure`, Azure OpenAI Realtime | An Azure OpenAI key, endpoint and realtime deployment name. |
+| `qwen`, Alibaba Qwen-Omni Realtime | A DashScope (Alibaba Model Studio) key. |
+| `mercury`, **My own model** | Your Mercury model does the thinking. You pick who listens (speech to text) and who speaks (text to speech), each with its own key. |
+
+When you change the engine in the menu, Mercury asks right away for what the new choice needs (its key, model, voice).
+
+Call audio goes only to the voice engine you chose. With **My own model**, audio goes to the speech-to-text and text-to-speech providers you picked, and the words go to your Mercury model.
+
+## Scheduled calls
+
+Ask in any chat, or on a call: "call me at 9pm about the deploy", "call me back in 20 minutes", "call me tomorrow 8:30am". The time is worked out in code, in the computer's time zone, and Mercury confirms the exact time so a misunderstanding shows up straight away. For "call me when it's done", Mercury does the work first and then calls.
+
+You can also use commands:
+
+| Command | What it does |
+|---|---|
+| `/call 9pm about the deploy` | Schedule a call (also: `in 20m`, `tomorrow 8:30am`, `tonight 8`, `now`) |
+| `/calls` | List scheduled calls |
+| `/calls cancel 2` or `/calls cancel all` | Cancel one by number, or all |
+
+- Calls can be scheduled up to 30 days ahead.
+- If you don't pick up, Mercury tries once more 5 minutes later, then sends you a message.
+- Scheduled calls survive restarts. A call that came due while Mercury wasn't running is placed when it's back (up to 2 hours late); after that you get a "missed" note instead.
+- Only the owner can schedule calls.
+
+## Settings
+
+Open `/plugins whatsapp` (or `mercury plugins open whatsapp`, or the dashboard). Settings are listed on the menu with their current values; pick one to change it. You can also set one directly with `/plugins set whatsapp <key> <value>`.
+
+### Chat
+
+| Setting | Key | Default | What it does |
+|---|---|---|---|
+| Which number will you chat from? | `owner` | (none, asked in setup) | Your own number. Only it can talk to Mercury and call it. |
+| What can Mercury do in your chat? | `access` | `general` | General (chat only) or Extended (memory, files, tools). |
+| Other numbers allowed to chat | `members` | (empty) | Comma-separated numbers that may also chat. They can't run admin commands. |
+| What can those numbers do? | `memberAccess` | `general` | General or Extended for members, never more than you. |
+| Answer in WhatsApp groups | `allowGroups` | off | On: Mercury answers in groups when someone mentions it (owner and members only). Off: one-to-one chats only. |
+
+### Voice calls
+
+These live under **🎙 Voice calls** in the menu. Engine-specific settings only appear when that engine is selected.
+
+| Setting | Key | Default | What it does |
+|---|---|---|---|
+| Answer your voice calls | `answerCalls` | on | Off: your calls to Mercury ring out. |
+| Who handles your calls? | `voiceEngine` | `openai` | The voice engine (table above). |
+| Most calls from Mercury per hour | `maxCallsPerHour` | `4` | Mercury won't ring you more often than this, so a looping task can't spam you. |
+| Longest call, in minutes | `maxCallMinutes` | `15` | A call ends after this long. |
+| OpenAI voice model | `voiceModel` | `gpt-realtime-2.1` | Or `gpt-realtime-2.1-mini`, about 3x cheaper. OpenAI engine. |
+| OpenAI voice | `voice` | `marin` | `marin`, `cedar`, `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`. OpenAI and Azure engines. |
+| Gemini API key | `geminiKey` | | Gemini engine. |
+| Gemini Live model | `geminiModel` | `gemini-3.8-live` | Gemini engine. |
+| Gemini voice | `geminiVoice` | `Kore` | For example Kore, Puck, Charon, Aoede. |
+| Grok voice model | `grokModel` | `grok-voice-latest` | Grok engine. |
+| Grok voice | `grokVoice` | `eve` | `eve`, `ara`, `leo`, `rex`, `sal`, `atlas`, `naksh`, `celeste`, `ursa`, `sirius`, `lumen`. |
+| ElevenLabs API key | `elevenlabsKey` | | ElevenLabs engine, or ElevenLabs as the listener or speaker for My own model. |
+| ElevenLabs Realtime model | `elevenlabsModel` | `eleven_realtime_v1_mini` | Or `eleven_realtime_v1_max`. |
+| ElevenLabs voice | `elevenlabsVoice` | `brian` | ElevenLabs engine. |
+| Azure OpenAI API key | `azureKey` | | Azure engine. |
+| Azure endpoint | `azureEndpoint` | | For example `myresource.openai.azure.com`. |
+| Azure realtime deployment name | `azureDeployment` | `gpt-realtime-2.1` | Azure engine. |
+| DashScope API key | `qwenKey` | | Qwen engine. |
+| Qwen endpoint host | `qwenEndpoint` | `dashscope-intl.aliyuncs.com` | Your workspace host, for example `{workspace}.ap-southeast-1.maas.aliyuncs.com`. |
+| Qwen model | `qwenModel` | `qwen3.8-omni-flash-realtime` | Qwen engine. |
+| Qwen voice | `qwenVoice` | `Tina` | Qwen engine. |
+| Who listens (speech to text) | `sttProvider` | `deepgram` | My own model: `deepgram` (Nova-3), `assemblyai` (Universal-3.6 Pro), `elevenlabs` (Scribe v2), `sarvam` (Saaras, Indian languages incl. Urdu). |
+| Language you'll speak | `sttLanguage` | `auto` | My own model: detect automatically, English, Hindi or Urdu. |
+| Who speaks (voice) | `ttsProvider` | `cartesia` | My own model: `cartesia` (Sonic-3.6), `elevenlabs` (Flash), `minimax` (speech-2.8), `sarvam` (Bulbul), `deepgram` (Aura-2). |
+| Voice ID | `ttsVoice` | (empty) | My own model. Empty uses the provider's default voice. |
+| Deepgram, AssemblyAI, Sarvam, Cartesia, MiniMax API keys | `deepgramKey`, `assemblyaiKey`, `sarvamKey`, `cartesiaKey`, `minimaxKey` | | Asked only when you pick that provider for My own model. |
+
+API keys you paste are stored with Mercury's own keys, never shown again, and readable only by plugins that declare them.
+
+## Troubleshooting
+
+**Mercury doesn't answer my messages.**
+Check that you're messaging the spare number *from* the number in **Which number will you chat from?** (with the country code). Open `/plugins whatsapp` and look at **Account**: it should say *linked*. If not, pick **Link the account**. Run `mercury doctor --plugins` to see whether the plugin is running, and why it was turned off if it was.
+
+**"I couldn't answer your call: voice calls need an OpenAI provider".**
+The default engine uses Mercury's OpenAI provider. Add your OpenAI key once in the dashboard (Providers) or with `mercury doctor`, or pick another engine in `/plugins whatsapp` → **🎙 Voice calls**. The menu marks the section *needs setup* until it's ready.
+
+**Mercury says it can't listen to voice notes.**
+Voice notes are transcribed with Mercury's OpenAI provider. Add one, or type the message.
+
+**"Not calling: already called the owner 4 times in the last hour".**
+That's the `maxCallsPerHour` limit. Raise it in the voice settings if you want more calls.
+
+**The device was logged out.**
+WhatsApp can log linked devices out. Link again with `/plugins pair whatsapp` or the dashboard. If it keeps happening, WhatsApp may be restricting the number.
+
+**Something broke after a WhatsApp update.**
+Update the plugin with `/plugins update whatsapp`. If the new version is worse, `/plugins rollback whatsapp` restores the previous one with its settings.
+
+## Remove it
+
+`/plugins disable whatsapp` turns it off and keeps its data and settings. `/plugins uninstall whatsapp` removes it; add `--purge` to delete its data (including the WhatsApp session) too.
+
+See also: [Plugins](../cli-commands/plugins), [Optimus](./optimus), [Writing plugins](../reference/plugins).

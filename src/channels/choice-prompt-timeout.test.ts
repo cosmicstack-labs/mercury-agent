@@ -59,7 +59,9 @@ describe('choice prompt timeout / dismissal', () => {
     // timeout — an unanswered question held the chat message indefinitely.
     // It must use the same time-weighted contract, defaulting to Quick answer.
     expect(agentSrc).toMatch(/promptResearchMode[\s\S]*?this\.presentChoiceWithTimeout\(/s);
-    expect(agentSrc).toMatch(/MERCURY_CODE_HANDOFF_TIMEOUT_MS,\s*\n\s*1, \/\/ unanswered = Quick answer/);
+    expect(agentSrc).toMatch(/MERCURY_CODE_HANDOFF_TIMEOUT_MS,\s*\n\s*0, \/\/ unanswered = Quick answer/);
+    // Quick answer is listed first, so the picker starts on it.
+    expect(agentSrc).toMatch(/\['Quick answer \(normal conversation\)', 'Full research mode/);
   });
 
   it('enterMercuryCode tears down a stranded bot chat (no parked sends afterwards)', async () => {

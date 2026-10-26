@@ -1,0 +1,29 @@
+[package]
+name = "mercury-wa"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "WhatsApp companion for the Mercury WhatsApp plugin (linked device, via whatsapp-rust)"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Pinned: main @ 2026-10-20. Bump deliberately; the protocol is unofficial.
+# "voip": 1:1 calls (MLOW + Opus via libopus, which needs cmake to build).
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "c373266fd2c66ae39752171cff5e0dd798a90205", features = ["voip"] }
+# Voice: OpenAI Realtime over the same WebSocket/TLS stack whatsapp-rust uses (rustls + ring).
+tokio-websockets = { version = "0.13.3", features = ["client", "rustls-webpki-roots", "rand", "ring"] }
+http = "1"
+base64 = "0.22"
+# Minting ElevenLabs Realtime session secrets (rustls, like everything else here).
+ureq = "3"
+tokio = { version = "1.47", features = ["full"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

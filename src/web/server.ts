@@ -13,7 +13,7 @@ import providerRoutes from './api/providers.js';
 import configRoutes from './api/config.js';
 import systemRoutes, { setScheduler } from './api/system.js';
 import brainRoutes, { setUserMemory } from './api/brain.js';
-import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setSessionRepository, setSessionSyncEnabledCallback } from './api/chat.js';
+import chatRoutes, { setWebChannel, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setSessionRepository, setSessionSyncEnabledCallback } from './api/chat.js';
 import agentRoutes, { setAgentSupervisor, setBackgroundTaskManager } from './api/agents.js';
 import botsRoutes, { setBotManager, setBotsWebhookSecret } from './api/bots.js';
 import spotifyRoutes, { setSpotifyClient } from './api/spotify.js';
@@ -21,6 +21,7 @@ import kanbanRoutes, { setKanbanSupervisor, setKanbanBoardManager, setKanbanProv
 import ideRoutes, { setIDEProviders } from './api/workspace-ide.js';
 import lifecycleRoutes, { setShutdownHandler } from './api/lifecycle.js';
 import mcpRoutes, { setMcpManager } from './api/mcp.js';
+import pluginRoutes from './api/plugins.js';
 import { BoardManager } from '../core/board-manager.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -85,6 +86,7 @@ app.route('/', kanbanRoutes);
 app.route('/', ideRoutes);
 app.route('/', lifecycleRoutes);
 app.route('/', mcpRoutes);
+app.route('/', pluginRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -200,7 +202,7 @@ if (spaAvailable) {
 }
 
 export { setShutdownHandler, setMcpManager };
-export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager, setBotsWebhookSecret };
+export { updateStatus, setUserMemory, setWebChannel, setScheduler, setAgentSupervisor, setBackgroundTaskManager, setSpotifyClient, setProgrammingMode, setModelSwitchCallback, setCurrentProviderCallback, setStatusSnapshotCallback, setKanbanSupervisor, setKanbanBoardManager, setKanbanProviders, setIDEProviders, setBotManager, setBotsWebhookSecret };
 
 let webServer: ReturnType<typeof createAdaptorServer> | null = null;
 
