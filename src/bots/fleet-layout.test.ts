@@ -187,6 +187,64 @@ describe('fleet physical layout (crew nests under the lead)', () => {
   });
 });
 
+describe('fleet depth cap (creation allows exactly what the roster can see)', () => {
+  let root: string;
+  let manager: BotManager;
+  let store: BotStore;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mercury-fleet-depth-'));
+    manager = makeManager(root);
+    store = manager['store'];
+  });
+
+  afterEach(() => {
+    for (const m of activeManagers.splice(0)) m.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('addCrew builds the third level and refuses the fourth', () => {
+    store.create({ id: 'ceo', name: 'CEO', manifest: { fleetRole: 'lead' } });
+    expect(manager.addCrew('ceo', { id: 'eng-lead', name: 'Eng Lead' }).ok).toBe(true);
+    manager.promoteLead('eng-lead');
+
+    const third = manager.addCrew('eng-lead', { id: 'backend', name: 'Backend' });
+    expect(third.ok).toBe(true);
+    // Level 3 is the deepest level list() and crewOf() reach — a bot created
+    // there is a bot the roster can show. Anything deeper used to be created
+    // and then disappear from both.
+    expect(store.list().map(m => m.id)).toContain('backend');
+    expect(store.crewOf('eng-lead').map(m => m.id)).toContain('backend');
+
+    manager.promoteLead('backend');
+    const fourth = manager.addCrew('backend', { id: 'intern', name: 'Intern' });
+    expect(fourth.ok).toBe(false);
+    if (!fourth.ok) expect(fourth.error).toMatch(/3 levels/);
+    expect(store.get('intern')).toBeNull();
+    expect(existsSync(join(root, 'bots', 'ceo', 'eng-lead', 'backend', 'intern'))).toBe(false);
+    expect(store.list().map(m => m.id).sort()).toEqual(['backend', 'ceo', 'eng-lead']);
+  });
+
+  it('a hand-written fourth level is refused on create and on save', () => {
+    store.create({ id: 'ceo', name: 'CEO', manifest: { fleetRole: 'lead' } });
+    store.create({ id: 'eng-lead', name: 'Eng Lead', manifest: { fleetRole: 'lead', parent: 'ceo' } });
+    store.create({ id: 'backend', name: 'Backend', manifest: { fleetRole: 'lead', parent: 'eng-lead' } });
+
+    expect(() =>
+      store.create({ id: 'intern', name: 'Intern', manifest: { fleetRole: 'crew', parent: 'backend' } }))
+      .toThrow(/3 levels/);
+
+    // Re-parenting into the same depth is refused before the profile dir moves,
+    // so a refused write leaves the disk where it was.
+    store.create({ id: 'qaid', name: 'QA' });
+    expect(() => store.update('qaid', m => { m.fleetRole = 'crew'; m.parent = 'backend'; }))
+      .toThrow(/3 levels/);
+    expect(existsSync(join(root, 'bots', 'qaid', 'bot.yaml'))).toBe(true);
+    expect(existsSync(join(root, 'bots', 'ceo', 'eng-lead', 'backend', 'qaid'))).toBe(false);
+    expect(store.get('qaid')!.parent).toBeUndefined();
+  });
+});
+
 describe('fleet cascade delete (manager lifecycle)', () => {
   let root: string;
   let manager: BotManager;
