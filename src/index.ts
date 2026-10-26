@@ -2702,12 +2702,16 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const mcpConfig = validateMcpConfig(config.mcp);
   for (const problem of mcpConfig.problems) logger.warn({ problem }, 'MCP server skipped');
   for (const warning of mcpConfig.warnings) logger.warn({ warning }, 'MCP config warning');
-  const mcpManager = new McpManager(mcpConfig.servers, {
+  // Like plugins (ADR-025), only the runtime owner connects MCP servers: a
+  // terminal attached to a live daemon must not start every stdio server twice.
+  const mcpManager = daemonOwnsRuntime ? undefined : new McpManager(mcpConfig.servers, {
     gate: (request) => capabilities.permissions.checkMcpTool(request),
   });
-  capabilities.attachMcp(mcpManager);
-  setWebMcpManager(mcpManager);
-  void mcpManager.connectAll();
+  if (mcpManager) {
+    capabilities.attachMcp(mcpManager);
+    setWebMcpManager(mcpManager);
+    void mcpManager.connectAll();
+  }
 
   const agent = new Agent(
     config, providers, identity, shortTerm, longTerm, episodic, userMemory, channels, tokenBudget, capabilities, scheduler, sessions,
@@ -3889,7 +3893,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       // Release the bots' SQLite queue handle — on Windows an open handle
       // keeps queue.db locked against any later uninstall/replace.
       try { botManager?.dispose(); } catch { /* best effort */ }
-      await mcpManager.close();
+      try { await mcpManager?.close(); } catch { /* best effort */ }
       try { await pluginManager?.shutdown(); } catch { /* best effort */ }
       await agent.shutdown();
       clearCloudRuntimeOnline();
