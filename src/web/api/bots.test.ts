@@ -223,6 +223,7 @@ describe('web bots API — avatars', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/png');
     expect(res.headers.get('Cache-Control')).toContain('private');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     const served = Buffer.from(await res.arrayBuffer());
     expect(served.equals(PNG)).toBe(true);
   });

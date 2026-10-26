@@ -420,6 +420,8 @@ app.get('/api/bots/:id/avatar', (c: any) => {
     'Content-Type': mime,
     'Content-Length': String(bytes.length),
     'Cache-Control': 'private, max-age=0, must-revalidate',
+    // The bytes were sniffed as an image; the browser must not re-sniff them as HTML.
+    'X-Content-Type-Options': 'nosniff',
     ETag: etag,
   });
 });
