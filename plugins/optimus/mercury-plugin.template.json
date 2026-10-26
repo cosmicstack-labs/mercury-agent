@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "optimus",
   "name": "Optimus",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Mercury uses your computer like a person: sees the screen, moves the mouse, types and opens apps, by chat or out loud with a talk key. macOS, Windows and Linux. Asks before anything that submits, sends, pays or deletes.",
   "kind": "out-of-process",
   "author": "Cosmic Stack",
@@ -190,30 +190,19 @@
             "voice",
             "both"
           ]
-        },
-        "examples": [
-          "ctrl+alt+m",
-          "ctrl+shift+space",
-          "ctrl+alt+space",
-          "f9"
-        ]
+        }
       },
       "muteHotkey": {
         "type": "string",
         "default": "ctrl+alt+shift+m",
         "label": "Mute key",
-        "description": "While talking: Optimus stops listening (nothing you say is sent anywhere) but keeps working and still speaks. Press again, or press the talk key, to unmute. Saying \"mute\" also mutes.",
+        "description": "While talking: Optimus stops listening (nothing you say is sent anywhere) but keeps working and still speaks. Press again, or press the talk key, to unmute. Saying \"mute\" also mutes. Examples: ctrl+alt+shift+m, ctrl+alt+n, f10.",
         "when": {
           "mode": [
             "voice",
             "both"
           ]
-        },
-        "examples": [
-          "ctrl+alt+shift+m",
-          "ctrl+alt+n",
-          "f10"
-        ]
+        }
       },
       "voiceEngine": {
         "type": "enum",
@@ -806,38 +795,27 @@
         "type": "number",
         "default": 60,
         "label": "Stop listening after silence (seconds)",
-        "description": "The mic closes by itself when you haven't spoken for this long and Mercury isn't working on something, so it never streams (and costs) for nothing. 0 keeps listening until you press the key or say bye.",
+        "description": "The mic closes by itself when you haven't spoken for this long and Mercury isn't working on something, so it never streams (and costs) for nothing. 0 keeps listening until you press the key or say bye. Examples: 30, 60, 120, or 0.",
         "group": "voice",
         "when": {
           "mode": [
             "voice",
             "both"
           ]
-        },
-        "examples": [
-          "30",
-          "60",
-          "120",
-          "0"
-        ]
+        }
       },
       "maxSessionMinutes": {
         "type": "number",
         "default": 30,
         "label": "Longest listening session (minutes)",
-        "description": "A session ends by itself after this long.",
+        "description": "A session ends by itself after this long. Examples: 15, 30 or 60.",
         "group": "voice",
         "when": {
           "mode": [
             "voice",
             "both"
           ]
-        },
-        "examples": [
-          "15",
-          "30",
-          "60"
-        ]
+        }
       }
     },
     "groups": {

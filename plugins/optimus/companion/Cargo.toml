@@ -1,6 +1,6 @@
 [package]
 name = "mercury-optimus"
-version = "0.4.8"
+version = "0.4.9"
 edition = "2024"
 rust-version = "1.94"
 description = "Optimus: full computer control for Mercury (screen, mouse, keyboard, apps, voice)"
