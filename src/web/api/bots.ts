@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { openFolder, tildify } from '../../bots/open-folder.js';
 import type { Context } from 'hono';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, importBotBundle } from '../../bots/bundle.js';
 import { decodeAvatarInput, detectImage } from '../../bots/avatar.js';
+import { storeInlineAttachments } from './uploads.js';
 
 const app = new Hono();
 
@@ -230,13 +231,37 @@ app.patch('/api/bots/:id', async (c: any) => {
 app.post('/api/bots/:id/message', async (c: any) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
   const id = c.req.param('id');
-  const body = await c.req.json().catch(() => null) as { message?: string; from?: string } | null;
-  if (!body?.message) return c.json({ error: 'message is required' }, 400);
-  const result = botManager.enqueue(id, { trigger: 'api', prompt: body.message, fromBot: body.from });
+  const body = await c.req.json().catch(() => null) as
+    { message?: string; from?: string; attachments?: unknown } | null;
+
+  // Bytes on the wire, written before the job exists: the queue stores paths, and a
+  // bot turn reads them exactly like a channel attachment.
+  const upload = storeInlineAttachments(body?.attachments);
+  if (!upload.ok) return c.json({ error: upload.error }, 400);
+
+  const message = body?.message?.trim() ?? '';
+  if (!message && upload.attachments.length === 0) {
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
+    return c.json({ error: 'message is required' }, 400);
+  }
+
+  const result = botManager.enqueue(id, {
+    trigger: 'api',
+    prompt: message,
+    fromBot: body?.from,
+    attachments: upload.attachments.length > 0 ? upload.attachments : undefined,
+  });
   if (!result.accepted) {
+    // The turn will never run: its files must not stay in uploads.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ accepted: false, reasonCode: result.reasonCode }, 409);
   }
-  return c.json({ accepted: true, jobId: result.jobId, status: 'accepted' }, 202);
+  return c.json({
+    accepted: true,
+    jobId: result.jobId,
+    status: 'accepted',
+    ...(upload.attachments.length > 0 ? { attachments: upload.attachments.map(a => ({ name: a.name, kind: a.kind })) } : {}),
+  }, 202);
 });
 
 // Inbox (pending bot-to-bot mail)

@@ -1,3 +1,4 @@
+
 ## ADR-022: Operating a fleet — cost, runs, kill switch
 
 - **Context**: ADR-020 and ADR-021 made bot behaviour bounded and legible in the journal, but the owner still had no view of where tokens went, no way to see what a run did without opening JSON files, no single stop, and a dead-letter queue full of pre-ADR-020 misclassified failures with no way to clear it. Onboarding presented the budget as optional.
@@ -290,3 +291,9 @@
   - Any new place that filters tools by name (plan mode, members, bots, sub-agents) must decide how it treats the `mcp__` prefix.
   - Text from an MCP server (descriptions, results, errors) is untrusted input and must never be used to make a permission decision.
   - Resources, prompts, sampling, OAuth, images in results, bot access and the 2026-07-28 protocol (`versionNegotiation: 'auto'`) are follow-ups.
+
+## ADR-030: Bots take files too — attachments ride the job, not the prompt
+
+- **Context**: ADR-028 gave the chat route files (#225) and the profile an avatar, but a bot could still only be *told* about a photo: `POST /api/bots/:id/message` read `message` and the durable job carried `{trigger, prompt, fromBot, source}`. The runtime could already read attachments (`withAttachments`, 8 MB image / 15 MB PDF, vision-gated), so the gap was purely the queue: a bot turn has no request, and the job is the only thing that survives a restart.
+- **Decision**: The job carries **paths**, not bytes — `attachments?: ChannelAttachment[]` on `BotJob` and `DurableBotJob`, stored as a JSON column (`attachments TEXT`, added by an idempotent `ALTER TABLE` like `run_after`), normalized on read. The route validates and writes the bytes with the same helper the chat route uses (`storeInlineAttachments`), then enqueues; files for a job that is refused (`409`) or a message that never arrives are deleted, so `uploads/` cannot accumulate orphans. `idempotencyKeyFor` now includes the attachment paths: the same caption with two different photos is two jobs, while a retried identical request still dedupes. `runBotTurn` names a caption-less turn `(Attached: names)` — a provider rejects an empty text block — and applies `withAttachments` to the last user message, so a vision model gets image parts and a text-only one gets the existing note.
+- **Consequence**: A photo can be handed to a bot exactly like a chat turn, from the phone or a script, and the work survives a restart because the files are on disk and the job references them. Stale paths are harmless: `withAttachments` skips a file that no longer exists rather than failing the turn. Not here: files arriving from *other bots* (bot-to-bot mail carries text), transcription, and any retention sweep for uploads no job references — a disk-hygiene follow-up, not a correctness one.

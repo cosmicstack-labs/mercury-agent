@@ -304,3 +304,54 @@ describe('web bots API — avatars', () => {
     expect(existsSync(join(root, 'bots', 'painter'))).toBe(false);
   });
 });
+
+describe('web bots API — files on a bot message', () => {
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+  beforeEach(() => {
+    store.create({ id: 'painter', name: 'Painter' });
+  });
+
+  const send = (body: unknown) =>
+    app.request('/api/bots/painter/message', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  it('queues a photo with the job and names it in the response', async () => {
+    const res = await send({ message: '', attachments: [{ name: 'dot.png', data: PNG.toString('base64') }] });
+
+    expect(res.status).toBe(202);
+    await expect(jreq(res)).resolves.toMatchObject({
+      accepted: true,
+      status: 'accepted',
+      attachments: [{ name: 'dot.png', kind: 'image' }],
+    });
+  });
+
+  it('still takes a plain message with no files', async () => {
+    const res = await send({ message: 'check the logs' });
+    expect(res.status).toBe(202);
+    const body = await jreq(res);
+    expect(body).toMatchObject({ accepted: true });
+    expect(body.attachments).toBeUndefined();
+  });
+
+  it('refuses a file it cannot read, and writes nothing', async () => {
+    const before = existsSync(join(root, 'uploads'));
+    const res = await send({ message: 'look', attachments: [{ data: Buffer.from('hello').toString('base64') }] });
+
+    expect(res.status).toBe(400);
+    await expect(jreq(res)).resolves.toEqual({
+      error: 'attachment 1 is not a supported image (png, jpeg, webp, gif) or PDF',
+    });
+    expect(existsSync(join(root, 'uploads'))).toBe(before);
+  });
+
+  it('requires something to say when there is nothing attached', async () => {
+    const res = await send({ message: '   ' });
+    expect(res.status).toBe(400);
+    await expect(jreq(res)).resolves.toEqual({ error: 'message is required' });
+  });
+});
