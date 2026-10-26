@@ -4,6 +4,7 @@ import { CLIChannel } from './cli.js';
 import { TelegramChannel } from './telegram.js';
 import { SignalChannel } from './signal.js';
 import { DiscordChannel } from './discord.js';
+import { NtfyChannel } from './ntfy.js';
 import { SlackChannel } from './slack.js';
 import type { MercuryConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -34,6 +35,10 @@ export class ChannelRegistry {
       logger.warn('Signal channel has a phone number but is disabled. Run `mercury doctor` to re-enable it.');
     } else if (config.channels.signal.enabled && !config.channels.signal.phoneNumber) {
       logger.warn('Signal channel is enabled but no phone number is configured. Run `mercury doctor`.');
+    }
+
+    if (config.channels.ntfy.enabled) {
+      this.register('ntfy', new NtfyChannel(config));
     }
 
     if (config.channels.discord.enabled && config.channels.discord.botToken) {
@@ -111,6 +116,11 @@ export class ChannelRegistry {
   }
 
   getNotificationChannel(): Channel | undefined {
+    // ntfy exists only to receive alerts, so it wins over the chat channels: the owner
+    // turned it on precisely to keep alerts out of a conversation (ADR-030). Everything
+    // below is a chat surface doing double duty.
+    const ntfy = this.channels.get('ntfy');
+    if (ntfy?.isReady()) return ntfy;
     const signal = this.channels.get('signal');
     if (signal?.isReady()) return signal;
     const telegram = this.channels.get('telegram');

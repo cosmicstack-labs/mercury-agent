@@ -144,6 +144,19 @@ export interface MercuryConfig {
       members: SignalAccessUser[];
       pending: SignalPendingRequest[];
     };
+    /**
+     * A one-way push channel (ADR-030): alerts are published to an ntfy topic, which the
+     * phone shows as a notification. Not a chat — nothing inbound is read.
+     */
+    ntfy: {
+      enabled: boolean;
+      url: string;
+      topic: string;
+      token?: string;
+      /** ntfy accepts 1-5 or min/low/default/high/urgent. */
+      priority: string;
+      tags: string;
+    };
     discord: {
       enabled: boolean;
       botToken: string;
@@ -463,6 +476,14 @@ export function getDefaultConfig(): MercuryConfig {
         admins: [],
         members: [],
         pending: [],
+      },
+      ntfy: {
+        enabled: getEnvBool('NTFY_ENABLED', false),
+        url: getEnv('NTFY_URL', 'https://ntfy.sh'),
+        topic: getEnv('NTFY_TOPIC', ''),
+        token: getEnv('NTFY_TOKEN', ''),
+        priority: getEnv('NTFY_PRIORITY', 'high'),
+        tags: getEnv('NTFY_TAGS', 'warning'),
       },
       discord: {
         enabled: getEnvBool('DISCORD_ENABLED', false),
