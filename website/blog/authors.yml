@@ -9,12 +9,12 @@ salman:
     github: hotheadhacker
 
 tashiriskhan:
-  name: tashiriskhan
+  name: Tashir Khan
   title: Contributor, Mercury
   description: Writes about agent permissions, security and running Mercury safely.
   url: https://github.com/tashiriskhan
   image_url: https://github.com/tashiriskhan.png
-  page: true
+  page: false
   socials:
     github: tashiriskhan
 
