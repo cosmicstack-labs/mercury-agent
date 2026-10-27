@@ -2,12 +2,38 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mercuryagent.sh/blog</id>
     <title>Mercury Blog</title>
-    <updated>2026-10-16T00:00:00.000Z</updated>
+    <updated>2026-10-27T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mercuryagent.sh/blog"/>
     <subtitle>News, engineering notes and field reports from the team building Mercury.</subtitle>
     <icon>https://mercuryagent.sh/img/logo-light.png</icon>
     <rights>© 2026 Cosmic Stack</rights>
+    <entry>
+        <title type="html"><![CDATA[Running an agent overnight: what breaks first]]></title>
+        <id>https://mercuryagent.sh/blog/running-an-agent-overnight</id>
+        <link href="https://mercuryagent.sh/blog/running-an-agent-overnight"/>
+        <updated>2026-10-27T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Runtime" term="Runtime"/>
+        <category label="Engineering" term="Engineering"/>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[The new bottleneck in AI coding isn't code generation. It's verification.]]></title>
+        <id>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</id>
+        <link href="https://mercuryagent.sh/blog/ai-coding-verification-bottleneck"/>
+        <updated>2026-10-20T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.]]></summary>
+        <author>
+            <name>Tashir Khan</name>
+            <uri>https://github.com/tashiriskhan</uri>
+        </author>
+        <category label="Engineering" term="Engineering"/>
+        <category label="News" term="News"/>
+    </entry>
     <entry>
         <title type="html"><![CDATA[Mercury Bots: an agent fleet that runs on your machine]]></title>
         <id>https://mercuryagent.sh/blog/mercury-bots</id>

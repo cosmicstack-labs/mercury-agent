@@ -4,11 +4,29 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Fri, 16 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Tue, 27 Oct 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[Running an agent overnight: what breaks first]]></title>
+            <link>https://mercuryagent.sh/blog/running-an-agent-overnight</link>
+            <guid>https://mercuryagent.sh/blog/running-an-agent-overnight</guid>
+            <pubDate>Tue, 27 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.]]></description>
+            <category>Runtime</category>
+            <category>Engineering</category>
+        </item>
+        <item>
+            <title><![CDATA[The new bottleneck in AI coding isn't code generation. It's verification.]]></title>
+            <link>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</link>
+            <guid>https://mercuryagent.sh/blog/ai-coding-verification-bottleneck</guid>
+            <pubDate>Tue, 20 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.]]></description>
+            <category>Engineering</category>
+            <category>News</category>
+        </item>
         <item>
             <title><![CDATA[Mercury Bots: an agent fleet that runs on your machine]]></title>
             <link>https://mercuryagent.sh/blog/mercury-bots</link>

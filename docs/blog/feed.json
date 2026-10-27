@@ -5,6 +5,38 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/running-an-agent-overnight",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/running-an-agent-overnight",
+            "title": "Running an agent overnight: what breaks first",
+            "summary": "We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.",
+            "date_modified": "2026-10-27T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Runtime",
+                "Engineering"
+            ]
+        },
+        {
+            "id": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/ai-coding-verification-bottleneck",
+            "title": "The new bottleneck in AI coding isn't code generation. It's verification.",
+            "summary": "A Harvard working paper finds coding agents raised code output while review time rose 49%. Why verification, not generation, should decide whether an agent is useful.",
+            "date_modified": "2026-10-20T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Engineering",
+                "News"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/mercury-bots",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/mercury-bots",
