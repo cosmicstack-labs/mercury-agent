@@ -159,7 +159,7 @@ MCP tools have their own rules, separate from the shell and file tools:
 | Tool not in `allow` (or in `deny`) | The agent can't see it |
 | Ask Me mode | You're asked before every call, with server, tool and arguments (shown whole up to 4,000 characters; longer ones show the start and the end) |
 | You answer **Always** | That tool runs without asking in that chat until Mercury restarts |
-| **Allow All** mode | You're **still asked** — Allow All never covers MCP tools |
+| **Allow All** mode | You're **still asked** — Allow All never covers MCP tools, in the terminal, the web dashboard and Mercury Cloud alike |
 | Tool in `autoApprove` | Runs without asking, in chats and in unattended runs |
 | Scheduled tasks and sub-agents | They ask on the chat they came from, like a normal call; nothing is approved for them. A run with no one to ask (fail-closed, internal) only runs `autoApprove` tools |
 | Plan mode | MCP tools are not available |
@@ -213,3 +213,4 @@ In chat, `/mcp` shows the live status of the running Mercury; the dashboard's **
 - **Windows.** Commands such as `npx` that are `.cmd` shims work as `command: npx`.
 - **Standalone binaries.** MCP is built into the standalone binaries (verified on the Windows binary; macOS and Linux run the same bundled code). Stdio servers still need their own runtime installed — Node.js for `npx`, Python for `uvx`.
 - **Termux.** MCP is untested on Termux. Install Mercury with npm there; stdio servers that only need Node.js are expected to work.
+- **Mercury Cloud.** Servers are configured only on the machine that runs Mercury, in `mercury.yaml` or with `mercury mcp` in a terminal. Chats from Mercury Cloud reach that Mercury, so they can use its MCP tools and get the same prompts, even in an Allow All session. Cloud can't add or change servers, and your `${env:…}` secrets stay in the local `.env`.

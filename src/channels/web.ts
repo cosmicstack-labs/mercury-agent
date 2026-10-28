@@ -237,8 +237,8 @@ export class WebChannel extends BaseChannel {
     this.broadcast({ type: 'thinking', data: { targetId: _targetId } });
   }
 
-  async askPermission(prompt: string, _targetId?: string): Promise<string> {
-    if (this.isPermissionBypassed(_targetId)) return 'yes';
+  async askPermission(prompt: string, _targetId?: string, options?: { alwaysAsk?: boolean }): Promise<string> {
+    if (!options?.alwaysAsk && this.isPermissionBypassed(_targetId)) return 'yes';
     if (!this.hasInteractiveTarget(_targetId)) return 'no';
     const id = `perm_${randomUUID()}`;
     this.broadcast({
