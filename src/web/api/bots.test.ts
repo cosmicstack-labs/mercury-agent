@@ -6,7 +6,7 @@ import { getDefaultConfig } from '../../utils/config.js';
 import { BotManager } from '../../bots/bot-manager.js';
 import { BotStore } from '../../bots/store.js';
 import { PERMISSION_TIERS } from '../../bots/permission-tiers.js';
-import app, { setBotManager } from './bots.js';
+import app, { registerRosterClient, setBotManager } from './bots.js';
 
 /**
  * Web cockpit API — handlers tested directly via the module's own Hono app
@@ -205,6 +205,46 @@ describe('web bots API — deliverables folder (where results land)', () => {
     expect(typeof root.exists).toBe('boolean');
     expect((await app.request('/api/bots/ghost/folder')).status).toBe(404);
   });
+  it('a config edit the roster shows is announced — a client keeps showing the old value without it', async () => {
+    store.create({ id: 'quiet', name: 'Quiet' });
+    const seen: Array<{ event: string; data: any }> = [];
+    const unsubscribe = registerRosterClient({ send: (event, data) => seen.push({ event, data }) });
+
+    try {
+      await app.request('/api/bots/quiet', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      // The summary carries the flag, not the description: the roster is what a drawer draws, and
+      // the description belongs to the bot's own page.
+      const roster = seen.filter((e) => e.event === 'bot_roster').at(-1);
+      const edited = roster?.data.bots.find((b: any) => b.id === 'quiet');
+      expect(edited?.enabled).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('a rejected edit is not announced — no phantom refresh on an unknown bot', async () => {
+    const seen: Array<{ event: string; data: any }> = [];
+    const unsubscribe = registerRosterClient({ send: (event, data) => seen.push({ event, data }) });
+
+    try {
+      const res = await app.request('/api/bots/ghost', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      // The handler answers 400 for an unknown id, the same as the other malformed requests.
+      expect(res.status).toBe(400);
+      expect(seen.filter((e) => e.event === 'bot_roster')).toHaveLength(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
 });
 
 describe('web bots API — avatars', () => {
