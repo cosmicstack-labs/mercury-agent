@@ -249,7 +249,22 @@ export class BotStore {
     if (manifest.parent && manifest.parent !== id) {
       return join(this.deliverablesDir(manifest.parent), 'work', id);
     }
-    return join(this.deliverablesRootDir, deliverablesFolderName(manifest.name, manifest.id));
+    return join(this.deliverablesRootDir, manifest.deliverablesFolder ?? deliverablesFolderName(manifest.name, manifest.id));
+  }
+
+  /**
+   * Freeze the folder name of a lead's or a solo's deliverables, so a rename moves the label and
+   * not the files. Called when the folder is first written to; a crew bot has no folder of its own
+   * (it lives under its lead's `work/`), so there is nothing to pin.
+   */
+  pinDeliverablesFolder(id: string): string {
+    const manifest = this.get(id);
+    if (!manifest) return join(this.deliverablesRootDir, id);
+    if (manifest.parent && manifest.parent !== id) return this.deliverablesDir(id);
+    if (manifest.deliverablesFolder) return this.deliverablesDir(id);
+    manifest.deliverablesFolder = deliverablesFolderName(manifest.name, manifest.id);
+    this.save(manifest);
+    return this.deliverablesDir(id);
   }
 
   /** Rewrite the README index of a deliverables folder (finals on top, stages under work/). */

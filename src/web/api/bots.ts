@@ -208,7 +208,15 @@ app.patch('/api/bots/:id', async (c: any) => {
   if (!patch) return c.json({ error: 'Invalid JSON body' }, 400);
   try {
     const updated = botManager.store.update(id, m => {
-      // Only config-editable fields; id/name identity fields are immutable here.
+      // The id is the identity and stays immutable: directories, crew links, journals, threads and
+      // avatars are all keyed by it. The name is a label the owner reads, so it is mutable — a bot
+      // created with a placeholder name was stuck with it forever, and editing bot.yaml behind the
+      // API's back (the only way until now) needs a daemon restart.
+      if (patch.name !== undefined) {
+        const name = typeof patch.name === 'string' ? patch.name.replace(/\s+/g, ' ').trim() : '';
+        if (!name) throw new Error('Bot name must not be empty');
+        m.name = name.slice(0, 60);
+      }
       if (patch.enabled !== undefined) m.enabled = patch.enabled;
       if (patch.description !== undefined) m.description = patch.description;
       if (patch.model !== undefined) m.model = patch.model;
