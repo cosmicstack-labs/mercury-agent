@@ -43,13 +43,36 @@ export function getStatus(): AgentStatus {
 const status = new Hono();
 
 let runtimeVersion = '';
+/**
+ * The version the listener reports, from whichever package.json sits above the running file.
+ *
+ * This counted `..` segments from `src/web/api/`, which is right for the sources and wrong for the
+ * shipped bundle: packed, the code runs from `dist/mercury.js`, three levels up lands in
+ * `node_modules/` where no package.json describes this agent, and `/api/health` answered
+ * `version: ""` on every installed instance — the dashboard and the phone showed no version at all.
+ * Walk up instead, and keep the first package.json that carries one.
+ */
 function versionString(): string {
   if (runtimeVersion) return runtimeVersion;
-  try {
-    runtimeVersion = process.env.MERCURY_CHANNEL_VERSION
-      || JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json'), 'utf8')).version
-      || '';
-  } catch { runtimeVersion = ''; }
+  const fromEnv = process.env.MERCURY_CHANNEL_VERSION;
+  if (fromEnv) {
+    runtimeVersion = fromEnv;
+    return runtimeVersion;
+  }
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 4; depth += 1) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { version?: string };
+      if (pkg?.version) {
+        runtimeVersion = pkg.version;
+        return runtimeVersion;
+      }
+    } catch { /* not here: keep walking up */ }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  runtimeVersion = '';
   return runtimeVersion;
 }
 
