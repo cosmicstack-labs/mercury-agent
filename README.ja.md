@@ -376,7 +376,7 @@ npm run build:bin:all   # 全ターゲット: macOS arm64/x64、Linux x64/arm64(
 | リソース | |
 |---|---|
 | [mercuryagent.sh/docs](https://mercuryagent.sh/docs) | ガイド、プラットフォーム設定、チャンネル設定、リファレンス |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | ランタイムの構成 |
+| [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md) | ランタイムの構成 |
 | [BOTS-ARCHITECTURE.md](BOTS-ARCHITECTURE.md) | ボット、フリート、そのガバナンス |
 | [DECISIONS.md](DECISIONS.md) | アーキテクチャ決定記録 |
 | [CHANGELOG.md](CHANGELOG.md) | すべてのリリース |
