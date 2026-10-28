@@ -6,6 +6,7 @@ import { RegistryClient, isValidSkillId } from '../../skills/registry.js';
 import { SkillStore } from '../../skills/store.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
+import { getStatus } from './status.js';
 import type { Scheduler } from '../../core/scheduler.js';
 import cron from 'node-cron';
 
@@ -166,10 +167,14 @@ system.get('/api/usage', (c) => {
     requestLog: [],
   };
 
+  // A tracker that exists and cannot be read is not a tracker reporting zeros: the file is the
+  // answer, and losing it makes `dailyBudget: 0` read as "unlimited" on the console.
+  let available = true;
   if (existsSync(usagePath)) {
     try {
       data = { ...data, ...(JSON.parse(readFileSync(usagePath, 'utf8')) as Record<string, any>) };
     } catch {
+      available = false;
       // keep defaults
     }
   }
@@ -181,11 +186,18 @@ system.get('/api/usage', (c) => {
     byChannel[row.channelType] = (byChannel[row.channelType] || 0) + (row.totalTokens || 0);
   }
 
+  // The budget the runtime enforces is the live one. The tracker file carries whatever was
+  // configured the last time tokens were written, so raising the limit used to leave this endpoint
+  // reporting the old number — and `remaining` computed from it — until some turn happened to
+  // rewrite the file. The file stays the fallback for a runtime that never reported one.
+  const live = getStatus().tokenBudget;
+  const dailyBudget = Number.isFinite(live) && live > 0 ? live : (data.dailyBudget || 0);
   return c.json({
+    available,
     dailyUsed: data.dailyUsed || 0,
-    dailyBudget: data.dailyBudget || 0,
+    dailyBudget,
     lastResetDate: data.lastResetDate,
-    remaining: Math.max(0, (data.dailyBudget || 0) - (data.dailyUsed || 0)),
+    remaining: Math.max(0, dailyBudget - (data.dailyUsed || 0)),
     requestLog: (data.requestLog || []).slice(-100).reverse(),
     byProvider,
     byChannel,
@@ -193,9 +205,11 @@ system.get('/api/usage', (c) => {
 });
 
 system.get('/api/schedules', (c) => {
-  if (!scheduler) return c.json({ schedules: [], total: 0 });
+  // No scheduler in this process is not an empty schedule: the pair is the same shape, and the
+  // console cannot tell a bot with no routines from a runtime that never started the scheduler.
+  if (!scheduler) return c.json({ available: false, schedules: [], total: 0 });
   const schedules = scheduler.getManifests().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return c.json({ schedules, total: schedules.length });
+  return c.json({ available: true, schedules, total: schedules.length });
 });
 
 system.put('/api/schedules/:id', async (c) => {
