@@ -3270,7 +3270,7 @@ export class Agent {
           // passed back with assistant turns (issue #24); other providers
           // get plain text.
           // Photos and PDFs from the chat go to models that can take them.
-          setPluginImagesAllowed(modelSeesImages(provider.name, provider.getModel()));
+          setPluginImagesAllowed(modelSeesImages(provider.name, provider.getModel()) && provider.supportsToolResultImages());
           const providerMessages = withAttachments(deepseekProviderOptions ? withReasoningParts(messages) : messages, msg, provider.name, provider.getModel());
           // Per-provider output ceiling: a 32K request is rejected outright by
           // providers with smaller limits and burned a halve-and-retry round.
