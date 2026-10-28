@@ -13,6 +13,16 @@
 import { jsonSchema, tool, type Tool } from 'ai';
 import { isMcpToolName } from '../capabilities/mcp/naming.js';
 import type { PermissionManager } from '../capabilities/permissions.js';
+import {
+  TOOL_IMAGE_TYPES,
+  attachedImagesNote,
+  holdImages,
+  resetToolImages,
+  setToolImagesAllowed,
+  toolOutputWithImages,
+  usableImages,
+  type ToolImage,
+} from '../capabilities/tool-images.js';
 import { logger } from '../utils/logger.js';
 
 export interface LiveTool {
@@ -37,16 +47,9 @@ export interface PluginCommandHandler {
 
 const MAX_RESULT_CHARS = 100_000;
 
-/** Image types a plugin tool may return (plugin API 1.2), e.g. screenshots. */
-export const PLUGIN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-/** Images per result, and base64 characters per image (~6 MB decoded). */
-const MAX_IMAGES = 4;
-const MAX_IMAGE_CHARS = 8_000_000;
+export const PLUGIN_IMAGE_TYPES = TOOL_IMAGE_TYPES;
 
-export interface PluginImage {
-  data: string;
-  mimeType: string;
-}
+export type PluginImage = ToolImage;
 
 const CONTENT = Symbol('mercury.pluginToolContent');
 
@@ -65,24 +68,8 @@ function isToolContent(v: unknown): v is PluginToolContent {
   return !!v && typeof v === 'object' && (v as Record<symbol, unknown>)[CONTENT] === true;
 }
 
-/**
- * Images waiting to be attached to their tool result, by tool call id.
- * execute() returns text only (so logs, history and learning never carry
- * base64); toModelOutput() adds the images when the result goes to the model.
- * Bounded: a result the SDK never converts can't leak memory.
- */
-const pendingImages = new Map<string, PluginImage[]>();
-/** Whether the model in use can take images (set by the agent before each provider call). */
-let imagesAllowed = true;
-
 export function setPluginImagesAllowed(allowed: boolean): void {
-  imagesAllowed = allowed;
-}
-const MAX_PENDING = 32;
-
-function holdImages(callId: string, images: PluginImage[]): void {
-  pendingImages.set(callId, images);
-  while (pendingImages.size > MAX_PENDING) pendingImages.delete(pendingImages.keys().next().value as string);
+  setToolImagesAllowed(allowed);
 }
 const TOOL_NAME_RE = /^([a-z][a-z0-9-]{1,30}[a-z0-9])__([a-z][a-z0-9_]{0,29})$/;
 
@@ -180,16 +167,8 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
   return tool<Record<string, unknown>, string>({
     description: `[Plugin: ${t.pluginName}] ${t.description}`,
     inputSchema: jsonSchema<Record<string, unknown>>(t.inputSchema as Parameters<typeof jsonSchema>[0]),
-    toModelOutput: ({ toolCallId, output }) => {
-      const text = typeof output === 'string' ? output : stringifyResult(output);
-      const images = pendingImages.get(toolCallId);
-      if (!images?.length) return { type: 'text', value: text };
-      if (!imagesAllowed) return { type: 'text', value: `${text}\n(The current model can't view images, so the attached image was left out. Say so if it matters.)` };
-      return {
-        type: 'content',
-        value: [{ type: 'text', text }, ...images.map((i) => ({ type: 'image-data' as const, data: i.data, mediaType: i.mimeType }))],
-      };
-    },
+    toModelOutput: ({ toolCallId, output }) =>
+      toolOutputWithImages(toolCallId, typeof output === 'string' ? output : stringifyResult(output)),
     execute: async (input, options) => {
       const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
       if (!t.readOnly) {
@@ -212,10 +191,9 @@ function wrap(t: LiveTool, permissions: PermissionManager): Tool {
         const result = await Promise.race([Promise.resolve().then(() => t.invoke(args, ac.signal)), timeout]);
         outcomeSink(t.pluginId, { ok: true });
         if (isToolContent(result)) {
-          const images = result.images.filter((i) => PLUGIN_IMAGE_TYPES.has(i.mimeType) && i.data.length <= MAX_IMAGE_CHARS).slice(0, MAX_IMAGES);
-          if (images.length && options?.toolCallId) holdImages(options.toolCallId, images);
-          const note = images.length ? `\n[${images.length} image${images.length > 1 ? 's' : ''} attached]` : '';
-          return stringifyResult(`${result.text || 'Done.'}${note}`);
+          const images = usableImages(result.images);
+          holdImages(options?.toolCallId, images);
+          return stringifyResult(`${result.text || 'Done.'}${attachedImagesNote(images.length)}`);
         }
         return stringifyResult(result);
       } catch (err) {
@@ -247,7 +225,7 @@ export function getPluginTools(permissions: PermissionManager, opts: { readOnlyO
 
 /** Test hook. */
 export function resetToolBridge(): void {
-  pendingImages.clear();
+  resetToolImages();
   liveTools.clear();
   liveCommands.clear();
   outcomeSink = () => {};

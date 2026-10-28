@@ -1,4 +1,5 @@
 import { redactSecrets } from '../../utils/redact.js';
+import { attachedImagesNote, usableImages, type ToolImage } from '../tool-images.js';
 
 export const MAX_RESULT_CHARS = 32 * 1024;
 
@@ -55,15 +56,45 @@ function truncate(text: string): string {
   return `${text.slice(0, MAX_RESULT_CHARS)}\n… (truncated, ${omitted} chars omitted)`;
 }
 
-export function callResultToText(result: McpCallResultLike): string {
+export interface McpResultContent {
+  text: string;
+  images: ToolImage[];
+}
+
+function convert(result: McpCallResultLike, withImages: boolean): McpResultContent {
   const blocks = Array.isArray(result.content) ? (result.content as ContentBlock[]) : [];
-  let text = blocks.map(blockToText).filter((part) => part.length > 0).join('\n');
+  const imageOf = new Map<ContentBlock, ToolImage>();
+  if (withImages && !result.isError) {
+    for (const block of blocks) {
+      if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
+        imageOf.set(block, { data: block.data, mimeType: block.mimeType });
+      }
+    }
+  }
+  const images = usableImages([...imageOf.values()]);
+  const kept = new Set(images);
+  let text = blocks
+    .map((block) => {
+      const image = imageOf.get(block);
+      return image && kept.has(image) ? '' : blockToText(block);
+    })
+    .filter((part) => part.length > 0)
+    .join('\n');
   if (!text && result.structuredContent !== undefined) {
     text = JSON.stringify(result.structuredContent, null, 2) ?? '';
   }
-  if (!text) {
+  if (!text && !images.length) {
     text = result.isError ? 'the server reported an error without details' : '(no content)';
   }
   if (result.isError) text = `Error: ${text}`;
-  return truncate(redactSecrets(text));
+  const note = attachedImagesNote(images.length);
+  return { text: text ? `${truncate(redactSecrets(text))}${note}` : note.trimStart(), images };
+}
+
+export function callResultToText(result: McpCallResultLike): string {
+  return convert(result, false).text;
+}
+
+export function callResultToContent(result: McpCallResultLike): McpResultContent {
+  return convert(result, true);
 }

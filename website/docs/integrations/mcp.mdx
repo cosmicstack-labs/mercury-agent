@@ -148,7 +148,7 @@ An invalid server entry is skipped with a warning in the log and in `mercury doc
 - **Tool changes.** If a server announces that its tool list changed (`tools/list_changed`), Mercury refreshes it. New tools are hidden unless your `allow` list covers them, and run without asking only if their exact name is in `autoApprove`.
 - **Tool names.** Tools are exposed as `mcp__<server>__<tool>`. Characters outside `A-Z a-z 0-9 _ -` become `_`, and names are capped at 64 characters (some model providers reject longer names); a shortened or clashing name gets a short hash suffix. `mercury mcp test` shows the exact names.
 - **Unusable tools.** A tool whose input schema can't be passed to the model (not an object, larger than 16 KB, or referencing a remote `$ref`) is skipped and reported with the reason. Descriptions inside a schema are shortened to 300 characters, since the model reads them on every turn.
-- **Results.** Text is passed to the model, capped at 32 KB per call. Images and audio are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. An error result from the server reaches the agent as `Error: …`.
+- **Results.** Text is passed to the model, capped at 32 KB per call. Up to 4 images per call (PNG, JPEG, WebP or GIF, about 6 MB each) reach the model as pictures when the model and its provider can take images in tool results (today Anthropic, and OpenAI's Responses API); elsewhere the model gets a note that an image was left out. Other media, and images beyond those limits, are replaced by a short placeholder such as `[image/png, 12.3 KB — not shown]`. Chat history and logs keep only the text. An error result from the server reaches the agent as `Error: …`.
 
 ## Permissions
 
