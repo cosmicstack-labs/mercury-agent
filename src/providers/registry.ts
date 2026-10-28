@@ -26,7 +26,7 @@ export async function createProvider(pc: ProviderConfig, tokenStore?: import('..
     // catalogue is mostly third-party models reached through that surface.
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
-  } else if (pc.name === 'atlascloud' || pc.name === 'ollamaCloud' || pc.name === 'openaiCompat' || pc.name === 'litellm' || pc.name === 'lmStudio') {
+  } else if (pc.name === 'atlascloud' || pc.name === 'runcrate' || pc.name === 'ollamaCloud' || pc.name === 'openaiCompat' || pc.name === 'litellm' || pc.name === 'lmStudio') {
     const { OpenAICompatProvider } = await import('./openai-compat.js');
     return new OpenAICompatProvider(pc, { useChatApi: true });
   } else if (pc.name === 'mimo' || pc.name === 'mimoTokenPlan') {
@@ -75,6 +75,7 @@ export class ProviderRegistry {
       config.providers.anthropic,
       config.providers.grok,
       config.providers.atlascloud,
+      config.providers.runcrate,
       config.providers.ollamaCloud,
       config.providers.ollamaLocal,
       config.providers.atomicChat,
