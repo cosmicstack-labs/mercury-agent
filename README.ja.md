@@ -26,7 +26,7 @@
   <a href="https://mercuryagent.sh">ウェブサイト</a> ·
   <a href="https://mercuryagent.sh/docs">ドキュメント</a> ·
   <a href="#クイックスタート">クイックスタート</a> ·
-  <a href="CHANGELOG.md">変更履歴</a> ·
+  <a href="CHANGELOG.ja.md">変更履歴</a> ·
   <a href="https://discord.gg/5emMpMJy5J">Discord</a>
 </p>
 
@@ -379,7 +379,7 @@ npm run build:bin:all   # 全ターゲット: macOS arm64/x64、Linux x64/arm64(
 | [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md) | ランタイムの構成 |
 | [BOTS-ARCHITECTURE.md](BOTS-ARCHITECTURE.md) | ボット、フリート、そのガバナンス |
 | [DECISIONS.md](DECISIONS.md) | アーキテクチャ決定記録 |
-| [CHANGELOG.md](CHANGELOG.md) | すべてのリリース |
+| [CHANGELOG.ja.md](CHANGELOG.ja.md) | すべてのリリース |
 | [SECURITY.md](SECURITY.md) | 脆弱性の報告 |
 
 ## コントリビューション
