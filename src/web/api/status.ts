@@ -76,9 +76,14 @@ status.get('/api/status', (c) => {
   }
 
   return c.json({
+    // The witness: a caller that does not find `available: true` must not read the rest of this
+    // body as fact. `uptimeSeconds` is the number, so no client has to invent a zero from an
+    // absent field — `uptime` stays for the dashboard that already reads it.
+    available: true,
     running: s.running,
     state: s.state,
     uptime: Math.floor(process.uptime()),
+    uptimeSeconds: Math.floor(process.uptime()),
     providers: providersMap,
     tokens: {
       dailyUsed: s.tokensUsed,
