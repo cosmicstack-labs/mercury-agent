@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import api from "@/lib/api";
 import { useThemeStore } from "@/stores/theme";
 import { ThemeToggle } from "./ThemeToggle";
 import {
@@ -246,7 +247,7 @@ export function Sidebar({ open, onToggle }: SidebarProps) {
             {(() => {
               const btn = (
                 <button
-                  onClick={() => { window.location.href = "/api/auth/logout"; }}
+                  onClick={() => { void api.auth.signOut(); }}
                   className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                 >
                   <LogOut size={18} />

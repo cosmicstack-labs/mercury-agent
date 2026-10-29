@@ -1,0 +1,53 @@
+[package]
+name = "mercury-desktop"
+version = "0.1.0"
+description = "Mercury Desktop — native shell for the Mercury agent runtime"
+authors = ["Cosmic Stack"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+
+[lib]
+name = "mercury_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
+tauri-plugin-window-state = "2.5"
+tauri-plugin-store = "2.5"
+tauri-plugin-notification = "2.7"
+tauri-plugin-updater = "2.14"
+tauri-plugin-autostart = "2.7"
+tauri-plugin-deep-link = "2.6"
+tauri-plugin-opener = "2.7"
+tauri-plugin-os = "2.4"
+tauri-plugin-process = "2.4"
+tauri-plugin-dialog = "2.8"
+tauri-plugin-log = "2.10"
+# OS keychain for device tokens: Keychain, Credential Manager, Secret Service.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Runtime installer: GitHub release download, sha256, web.tar.gz.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+log = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The voice capsule sits above the menu bar (see src/notch.rs).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow", "NSResponder"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

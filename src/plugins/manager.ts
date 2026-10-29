@@ -666,6 +666,7 @@ export class PluginManager {
       tier: inst && inst.source.type !== 'catalog' ? 'local' : cat?.tier ?? 'local',
       status,
       installedVersion: inst?.version,
+      previousVersion: inst?.previousVersion && existsSync(pluginVersionDir(id, inst.previousVersion)) ? inst.previousVersion : undefined,
       latestVersion: cat?.version,
       sizeBytes: inst ? packageSize(id, inst.version) : (cat?.artifacts ? Object.values(cat.artifacts)[0]?.size : cat?.artifact?.size),
       enabled: inst?.enabled ?? false,

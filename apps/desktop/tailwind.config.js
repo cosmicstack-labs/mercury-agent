@@ -1,0 +1,77 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: ["class"],
+  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  theme: {
+    // One palette, driven by CSS variables (src/styles/tokens.css) so the
+    // theme and the tint change without a rebuild.
+    colors: {
+      transparent: "transparent",
+      current: "currentColor",
+      bg: "rgb(var(--bg) / <alpha-value>)",
+      soft: "rgb(var(--bg-soft) / <alpha-value>)",
+      surface: "rgb(var(--surface) / <alpha-value>)",
+      raised: "rgb(var(--surface-2) / <alpha-value>)",
+      ink: "rgb(var(--ink) / <alpha-value>)",
+      ink2: "rgb(var(--ink-2) / <alpha-value>)",
+      ink3: "rgb(var(--ink-3) / <alpha-value>)",
+      ink4: "rgb(var(--ink-4) / <alpha-value>)",
+      line: "rgb(var(--ink) / 0.10)",
+      "line-strong": "rgb(var(--ink) / 0.18)",
+      accent: "rgb(var(--accent) / <alpha-value>)",
+      "on-accent": "rgb(var(--on-accent) / <alpha-value>)",
+      cyan: "rgb(var(--cyan) / <alpha-value>)",
+      blue: "rgb(var(--blue) / <alpha-value>)",
+      amber: "rgb(var(--amber) / <alpha-value>)",
+      red: "rgb(var(--red) / <alpha-value>)",
+      white: "#ffffff",
+      black: "#000000",
+    },
+    fontFamily: {
+      sans: ['"Geist Variable"', "system-ui", "-apple-system", "sans-serif"],
+      mono: ['"Geist Mono Variable"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+    },
+    borderRadius: {
+      none: "0",
+      sm: "6px",
+      DEFAULT: "8px",
+      md: "10px",
+      lg: "12px",
+      xl: "16px",
+      "2xl": "20px",
+      "3xl": "24px",
+      full: "9999px",
+    },
+    extend: {
+      fontSize: {
+        // Reading sizes for a desktop app viewed at arm's length: UI text 14,
+        // body 15, answers 16 (see styles/base.css .prose).
+        "2xs": ["12px", "16px"],
+        xs: ["13px", "18px"],
+        sm: ["14px", "20px"],
+        base: ["15px", "24px"],
+        md: ["16px", "26px"],
+        lg: ["18px", "28px"],
+        xl: ["22px", "30px"],
+        "2xl": ["26px", "34px"],
+      },
+      keyframes: {
+        "dot-pulse": { "0%, 80%, 100%": { opacity: "0.25" }, "40%": { opacity: "1" } },
+        "ring-spin": { to: { transform: "rotate(360deg)" } },
+        breathe: { "0%, 100%": { transform: "scale(1)", opacity: "0.75" }, "50%": { transform: "scale(1.08)", opacity: "1" } },
+        "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
+        "caret-blink": { "0%, 100%": { opacity: "1" }, "50%": { opacity: "0" } },
+        "bars": { "0%, 100%": { transform: "scaleY(0.35)" }, "50%": { transform: "scaleY(1)" } },
+      },
+      animation: {
+        "dot-pulse": "dot-pulse 1.4s ease-in-out infinite",
+        "ring-spin": "ring-spin 0.9s linear infinite",
+        breathe: "breathe 5s ease-in-out infinite",
+        "fade-in": "fade-in 120ms ease-out",
+        "caret-blink": "caret-blink 1s step-end infinite",
+        bars: "bars 0.9s ease-in-out infinite",
+      },
+    },
+  },
+  plugins: [],
+};

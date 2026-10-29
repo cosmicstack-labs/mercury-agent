@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "optimus",
   "name": "Optimus",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "description": "Mercury uses your computer like a person: sees the screen, moves the mouse, types and opens apps, by chat or out loud with a talk key. macOS, Windows and Linux. Asks before anything that submits, sends, pays or deletes.",
   "kind": "out-of-process",
   "author": "Cosmic Stack",

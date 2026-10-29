@@ -245,7 +245,10 @@ const DEFAULT_MANIFEST: PermissionsManifest = {
   },
 };
 
-const PERMISSIONS_FILE = join(getMercuryHome(), 'permissions.yaml');
+/** Where the owner's permissions live. Looked up each time: MERCURY_HOME can change after this module loads (tests, a profile switch), and the folder is created from the current one. */
+function permissionsFile(): string {
+  return join(getMercuryHome(), 'permissions.yaml');
+}
 
 // Split a command into shell-segment strings so each pipeline/chain/substitution
 // is checked separately. Without this, a single auto-approved base command
@@ -681,9 +684,9 @@ export class PermissionManager {
   }
 
   private load(): PermissionsManifest {
-    if (existsSync(PERMISSIONS_FILE)) {
+    if (existsSync(permissionsFile())) {
       try {
-        const raw = readFileSync(PERMISSIONS_FILE, 'utf-8');
+        const raw = readFileSync(permissionsFile(), 'utf-8');
         const parsed = parseYaml(raw) as PermissionsManifest;
         return this.mergeDefaults(parsed);
       } catch (err) {
@@ -699,7 +702,7 @@ export class PermissionManager {
     const m = manifest || this.manifest;
     const dir = getMercuryHome();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(PERMISSIONS_FILE, stringifyYaml(m, { lineWidth: 0 }), 'utf-8');
+    writeFileSync(permissionsFile(), stringifyYaml(m, { lineWidth: 0 }), 'utf-8');
     this.manifest = m;
   }
 

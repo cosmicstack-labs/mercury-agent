@@ -44,7 +44,7 @@ function sanitiseBody(raw: string, providerName: string): string {
  * so we reconstruct it from intermediate events.
  * Returns a synthetic JSON Response so the SDK's doGenerate can parse it.
  */
-async function sseToJsonResponse(sseResponse: Response): Promise<Response> {
+export async function sseToJsonResponse(sseResponse: Response): Promise<Response> {
   const text = await sseResponse.text();
   const lines = text.split('\n');
 
@@ -67,6 +67,23 @@ async function sseToJsonResponse(sseResponse: Response): Promise<Response> {
       case 'response.output_item.added':
         if (parsed.item) {
           outputItems[parsed.output_index] = { ...parsed.item, content: [] };
+        }
+        break;
+      case 'response.output_item.done':
+        // The finished item: a tool call's arguments and a reasoning item's
+        // encrypted content only arrive here (when added, a call's arguments
+        // are still ""). Keep text already collected if this one has none.
+        if (parsed.item && parsed.output_index !== undefined) {
+          const prev = outputItems[parsed.output_index];
+          const content = Array.isArray(parsed.item.content) && parsed.item.content.length ? parsed.item.content : prev?.content ?? [];
+          outputItems[parsed.output_index] = { ...prev, ...parsed.item, content };
+        }
+        break;
+      case 'response.function_call_arguments.done':
+        // Older streams may finish a call's arguments without an item.done.
+        if (parsed.output_index !== undefined && typeof parsed.arguments === 'string') {
+          const item = outputItems[parsed.output_index];
+          if (item) item.arguments = parsed.arguments;
         }
         break;
       case 'response.output_text.done':

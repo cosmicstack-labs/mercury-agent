@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notch",
+  "description": "The voice capsule: it only listens for state and sends controls back to the main window.",
+  "windows": [
+    "notch"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-set-size"
+  ]
+}

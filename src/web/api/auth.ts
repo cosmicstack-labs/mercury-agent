@@ -6,6 +6,10 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import process from 'node:process';
 import { authenticate, createSession, destroySession, changePassword, changeUsername, getSessionCookieName, getSessionMaxAge } from '../auth.js';
+import { createDevice, listDevices, revokeDevice } from '../devices.js';
+import { authenticateRequest, bearerToken } from '../middleware.js';
+import { apiContract } from '../api-contract.js';
+import { createLoginLimiter } from '../login-limiter.js';
 
 function resolveWebDir(...segments: string[]): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -95,6 +99,89 @@ auth.get('/api/auth/logout', (c) => {
     path: '/',
   });
   return c.redirect('/login');
+});
+
+// ── Device tokens (Mercury Desktop, phones, scripts) ──────────────────────
+//
+// POST /api/auth/token  { username, password, deviceName?, platform? }
+//   → 200 { token, device, apiVersion, features, version? }
+//   → 401 bad credentials · 429 too many failures from this address
+//
+// The token is the only credential the client keeps; the password is never
+// stored on the device. Same bcrypt check as the web login, plus a small
+// per-address failure limiter because this endpoint is reachable without a
+// browser and will be pointed at from the internet through tunnels.
+
+const tokenLimiter = createLoginLimiter();
+
+function peerAddress(c: { env?: unknown }): string {
+  try {
+    return String((c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress || 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
+
+auth.post('/api/auth/token', async (c) => {
+  const peer = peerAddress(c);
+  const wait = tokenLimiter.retryAfterSeconds(peer);
+  if (wait > 0) {
+    c.header('Retry-After', String(wait));
+    return c.json({ error: 'Too many failed sign-in attempts; try again later' }, 429);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Expected a JSON body' }, 400);
+  }
+  const username = typeof body.username === 'string' ? body.username : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!username || !password) {
+    return c.json({ error: 'Username and password required' }, 400);
+  }
+  if (!authenticate(username, password)) {
+    tokenLimiter.recordFailure(peer);
+    return c.json({ error: 'Invalid username or password' }, 401);
+  }
+  tokenLimiter.reset(peer);
+  let created;
+  try {
+    created = createDevice(body.deviceName, body.platform);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Could not create device' }, 409);
+  }
+  return c.json({ token: created.token, device: created.device, ...apiContract() });
+});
+
+auth.get('/api/auth/devices', (c) => {
+  const principal = authenticateRequest(c);
+  return c.json({
+    devices: listDevices(),
+    current: principal?.kind === 'device' ? principal.deviceId : null,
+  });
+});
+
+auth.delete('/api/auth/devices/:id', (c) => {
+  const id = c.req.param('id');
+  if (!/^[0-9a-f]{8}$/.test(id)) return c.json({ error: 'Bad device id' }, 400);
+  return revokeDevice(id) ? c.json({ success: true }) : c.json({ error: 'No such device' }, 404);
+});
+
+/** Sign out this device: revoke the token that made the call. */
+auth.post('/api/auth/token/revoke', (c) => {
+  const principal = authenticateRequest(c);
+  if (principal?.kind !== 'device') return c.json({ error: 'Not a device token' }, 400);
+  revokeDevice(principal.deviceId);
+  return c.json({ success: true });
+});
+
+// Sessions obtained with a Bearer header (scripts, or a desktop client on
+// the web-session path) end here instead of through the cookie redirect.
+auth.post('/api/auth/logout', (c) => {
+  const token = bearerToken(c) || getCookie(c, getSessionCookieName());
+  if (token) destroySession(token);
+  return c.json({ success: true });
 });
 
 auth.post('/api/auth/password', async (c) => {

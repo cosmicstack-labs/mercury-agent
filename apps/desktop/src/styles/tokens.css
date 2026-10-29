@@ -1,0 +1,56 @@
+/* ═══════════════════════════════════════════════════════════════
+   Mercury Desktop tokens — one quiet palette, one accent.
+
+   Values are space-separated RGB so Tailwind can apply alpha. Light is a
+   near-white paper, dark is Mercury's ground. Only the accent changes with
+   the user's tint; amber (needs you), red (halt) and cyan (thinking) are
+   semantic and fixed.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: 247 247 245;        /* #F7F7F5 */
+  --bg-soft: 240 240 237;   /* #F0F0ED */
+  --surface: 255 255 255;
+  --surface-2: 243 243 240; /* #F3F3F0 */
+  --ink: 22 24 26;          /* #16181A */
+  --ink-2: 75 81 87;        /* #4B5157 */
+  --ink-3: 122 129 135;     /* #7A8187 */
+  --ink-4: 163 169 174;     /* #A3A9AE */
+  --accent: 26 158 110;     /* #1A9E6E */
+  --on-accent: 255 255 255;
+  --cyan: 14 124 140;       /* #0E7C8C */
+  --blue: 37 99 235;        /* #2563EB  unread */
+  --amber: 183 121 31;      /* #B7791F */
+  --red: 197 48 48;         /* #C53030 */
+  --glow: 26 158 110;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 15 17 19;           /* #0F1113 */
+  --bg-soft: 20 23 25;      /* #141719 */
+  --surface: 23 26 29;      /* #171A1D */
+  --surface-2: 29 33 37;    /* #1D2125 */
+  --ink: 230 234 237;       /* #E6EAED */
+  --ink-2: 174 182 188;     /* #AEB6BC */
+  --ink-3: 126 135 142;     /* #7E878E */
+  --ink-4: 84 92 99;        /* #545C63 */
+  --accent: 52 225 161;     /* #34E1A1 */
+  --on-accent: 4 20 11;
+  --cyan: 127 216 232;      /* #7FD8E8 */
+  --blue: 96 165 250;       /* #60A5FA  unread */
+  --amber: 245 196 81;      /* #F5C451 */
+  --red: 255 107 107;       /* #FF6B6B */
+  --glow: 52 225 161;
+  color-scheme: dark;
+}
+
+/* Tints: the accent only. Light and dark pairs chosen for 4.5:1 on their ground. */
+[data-tint="graphite"] { --accent: 75 81 87; --on-accent: 255 255 255; --glow: 75 81 87; }
+.dark[data-tint="graphite"] { --accent: 174 182 188; --on-accent: 15 17 19; --glow: 174 182 188; }
+[data-tint="teal"] { --accent: 14 124 140; --on-accent: 255 255 255; --glow: 14 124 140; }
+.dark[data-tint="teal"] { --accent: 127 216 232; --on-accent: 4 20 24; --glow: 127 216 232; }
+[data-tint="violet"] { --accent: 109 76 204; --on-accent: 255 255 255; --glow: 109 76 204; }
+.dark[data-tint="violet"] { --accent: 177 156 255; --on-accent: 20 12 40; --glow: 177 156 255; }
+[data-tint="amber"] { --accent: 160 98 10; --on-accent: 255 255 255; --glow: 160 98 10; }
+.dark[data-tint="amber"] { --accent: 245 196 81; --on-accent: 36 24 2; --glow: 245 196 81; }

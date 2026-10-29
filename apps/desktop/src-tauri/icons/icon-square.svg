@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs>
+  <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1A2924"/><stop offset="1" stop-color="#090D0C"/></linearGradient>
+  <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55"><stop offset="0" stop-color="#34E1A1" stop-opacity="0.16"/><stop offset="1" stop-color="#34E1A1" stop-opacity="0"/></radialGradient>
+  <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.10"/><stop offset="0.5" stop-color="#fff" stop-opacity="0"/></linearGradient>
+  <linearGradient id="mark" gradientUnits="userSpaceOnUse" x1="0" y1="312" x2="0" y2="715"><stop offset="0" stop-color="#7DF5C8"/><stop offset="1" stop-color="#22C98B"/></linearGradient>
+  <clipPath id="clip"><path d="M 252.4 40 H 771.6 A 212.4 212.4 0 0 1 984 252.4 V 771.6 A 212.4 212.4 0 0 1 771.6 984 H 252.4 A 212.4 212.4 0 0 1 40 771.6 V 252.4 A 212.4 212.4 0 0 1 252.4 40 Z"/></clipPath>
+</defs>
+<path d="M 252.4 40 H 771.6 A 212.4 212.4 0 0 1 984 252.4 V 771.6 A 212.4 212.4 0 0 1 771.6 984 H 252.4 A 212.4 212.4 0 0 1 40 771.6 V 252.4 A 212.4 212.4 0 0 1 252.4 40 Z" fill="url(#plate)"/>
+<g clip-path="url(#clip)"><rect width="1024" height="1024" fill="url(#glow)"/><rect width="1024" height="1024" fill="url(#sheen)"/></g>
+<g transform="translate(-206.19 -204.98) scale(1.4055)"><path d="M 393 414 C 378 372, 376 334, 396 325 C 413 318, 434 338, 452 363" fill="none" stroke="url(#mark)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/><path d="M 393 414 C 378 372, 376 334, 396 325 C 413 318, 434 338, 452 363" fill="none" stroke="url(#mark)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round" transform="translate(1022 0) scale(-1 1)"/><circle cx="511" cy="495" r="136.5" fill="none" stroke="url(#mark)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/><path d="M 511 631.5 V 699.5" fill="none" stroke="url(#mark)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/><path d="M 480.5 677 H 542.5" fill="none" stroke="url(#mark)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/><circle cx="451" cy="497" r="21" fill="url(#mark)"/><circle cx="571" cy="497" r="21" fill="url(#mark)"/><path d="M 492 540 Q 511.5 561 531 540" fill="none" stroke="url(#mark)" stroke-width="20" stroke-linecap="round"/></g>
+</svg>

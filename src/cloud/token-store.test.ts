@@ -115,3 +115,38 @@ describe('CloudTokenStore', () => {
     expect(mocks.saveConfig).not.toHaveBeenCalled();
   });
 });
+
+describe('signed-out sessions', () => {
+  it('a refused refresh with no recovery key marks the session signed out; new tokens clear it', async () => {
+    const c = config('old-jwt', 'old-refresh');
+    c.cloud.agentApiKey = '';
+    mocks.loadConfig.mockReturnValue(c);
+    mocks.refreshToken.mockRejectedValue(new Error('Token refresh failed: 401'));
+    const store = new CloudTokenStore('old-jwt', 'old-refresh', c.cloud.apiUrl, c.cloud.agentId, undefined, '');
+    await expect(store.rotate()).rejects.toThrow(/no recovery key/);
+    expect(store.isSignedOut()).toBe(true);
+    expect(store.getAuthState().error).toMatch(/401/);
+    store.setTokens('new-jwt', 'new-refresh');
+    expect(store.isSignedOut()).toBe(false);
+  });
+
+  it('a refused recovery key also signs out; a network error does not', async () => {
+    mocks.loadConfig.mockReturnValue(config());
+    mocks.refreshToken.mockRejectedValue(new Error('fetch failed: ECONNRESET'));
+    mocks.redeemAgentApiKey.mockRejectedValue(new Error('Agent key redeem failed: 403'));
+    const store = new CloudTokenStore('old-jwt', 'old-refresh', 'https://api.example.com', 'agent-1', undefined, 'mcapk_agent_1');
+    await expect(store.rotate()).rejects.toThrow(/403/);
+    expect(store.isSignedOut()).toBe(true);
+    mocks.redeemAgentApiKey.mockRejectedValue(new Error('fetch failed: ECONNRESET'));
+    const flaky = new CloudTokenStore('old-jwt', 'old-refresh', 'https://api.example.com', 'agent-1', undefined, 'mcapk_agent_1');
+    await expect(flaky.rotate()).rejects.toThrow();
+    expect(flaky.isSignedOut()).toBe(false);
+  });
+
+  it('a network failure is not a sign-out', async () => {
+    const { isAuthRejection } = await import('./token-store.js');
+    expect(isAuthRejection(new Error('fetch failed: ECONNRESET'))).toBe(false);
+    expect(isAuthRejection(new Error('Token refresh failed: 401'))).toBe(true);
+    expect(isAuthRejection(new Error('Agent key redeem failed: 403'))).toBe(true);
+  });
+});
