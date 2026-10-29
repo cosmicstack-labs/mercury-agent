@@ -260,7 +260,9 @@ export function ProviderEditor({ provider: p, offerDefault, defaultOn = false, o
   saveLabel?: string;
 }) {
   const showKey = !p.signInOnly && (p.needsKey || p.kind === "gateway" || p.hasKey);
-  const showUrl = !p.signInOnly && (p.needsBaseUrl || p.kind === "local" || p.kind === "gateway" && p.id !== "aimlapi" && p.id !== "atlascloud");
+  // A fixed-endpoint gateway (AI/ML API, Atlas Cloud, Runcrate…) says so with needsBaseUrl: false;
+  // only those that point at your own endpoint, and local servers, show the address.
+  const showUrl = !p.signInOnly && (p.needsBaseUrl || p.kind === "local");
   const [key, setKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(p.baseUrl);
   const [model, setModel] = useState(p.model);
