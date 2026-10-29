@@ -96,6 +96,18 @@ describe('buildModelCatalog', () => {
     expect(catalog.models).toContain('another-chat-model');
   });
 
+  it('prefers the Cheaper Inference default model when available', () => {
+    const catalog = buildModelCatalog('cheaperinference', [
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'another-chat-model',
+    ]);
+
+    expect(catalog.recommendedModel).toBe('gpt-5.4-mini');
+    expect(catalog.models).toContain('gpt-5.4');
+    expect(catalog.models).toContain('another-chat-model');
+  });
+
   it('falls back to the current Ollama Cloud model when no preferred default is available', () => {
     const catalog = buildModelCatalog(
       'ollamaCloud',
@@ -178,5 +190,27 @@ describe('fetchProviderModelCatalog', () => {
     expect(catalog.recommendedModel).toBe('qwen/qwen3.5-flash');
     expect(catalog.models).toContain('another-chat-model');
     expect(catalog.models).not.toContain('black-forest-labs/flux-kontext-pro');
+  });
+
+  it('excludes non-text Cheaper Inference models using the model type', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { id: 'gpt-5.4-mini', type: 'text' },
+        { id: 'another-chat-model', type: 'text' },
+        { id: 'gpt-image-2', type: 'image' },
+      ],
+    }), { status: 200 })));
+
+    const catalog = await fetchProviderModelCatalog('cheaperinference', {
+      name: 'cheaperinference',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.cheaperinference.com/v1',
+      model: 'gpt-5.4-mini',
+      enabled: true,
+    });
+
+    expect(catalog.recommendedModel).toBe('gpt-5.4-mini');
+    expect(catalog.models).toContain('another-chat-model');
+    expect(catalog.models).not.toContain('gpt-image-2');
   });
 });

@@ -189,6 +189,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'githubCopilot', label: 'GitHub Copilot' },
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
+  { key: 'cheaperinference', label: 'Cheaper Inference' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -1550,6 +1551,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.atlascloud.apiKey = result.apiKey;
           config.providers.atlascloud.model = result.model;
           config.providers.atlascloud.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'cheaperinference') {
+        const mask = isReconfig && config.providers.cheaperinference.apiKey ? ` [${maskKey(config.providers.cheaperinference.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'cheaperinference',
+          'Cheaper Inference',
+          chalk.white(`  Cheaper Inference API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.cheaperinference.apiKey = result.apiKey;
+          config.providers.cheaperinference.model = result.model;
+          config.providers.cheaperinference.enabled = true;
         }
         continue;
       }
