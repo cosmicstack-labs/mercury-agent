@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "whatsapp",
   "name": "WhatsApp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Chat with Mercury on WhatsApp and talk to it by voice call: OpenAI by default, or Gemini, Grok, ElevenLabs, Azure, Qwen, or your own Mercury model with Deepgram/Cartesia/MiniMax/Sarvam voices. Runs on a spare number as a linked device (unofficial protocol).",
   "kind": "out-of-process",
   "author": "Cosmic Stack",

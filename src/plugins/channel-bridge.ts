@@ -178,6 +178,8 @@ export class PluginChannel extends BaseChannel {
   /** The owner's chat as WhatsApp addresses it (often a LID, not their phone JID). */
   private ownerChatId: string | undefined;
   private seen = new Set<string>();
+  /** When each ignored sender was last logged (once an hour each, so a chatty stranger can't flood the log). */
+  private ignoredLogged = new Map<string, number>();
   private statusListeners = new Set<(s: ChannelStatus) => void>();
   /** In-flight `ask_mercury` turns, by call target (`call:<callId>`). */
   private callAsks = new Map<string, { chunks: string[]; resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -531,6 +533,32 @@ export class PluginChannel extends BaseChannel {
     return members.includes(d) ? 'member' : null;
   }
 
+  /**
+   * Why a message didn't reach the agent, for the owner reading the log:
+   *   no-owner        no owner number is set, so nobody gets through
+   *   number-unknown  WhatsApp sent a private id (LID) and the plugin couldn't
+   *                   find the number behind it (an older plugin, or a first
+   *                   message before the mapping is known)
+   *   not-allowed     a number that isn't the owner or a member
+   * The sender shows as its last four digits only.
+   */
+  private noteIgnored(reason: 'no-owner' | 'number-unknown' | 'not-allowed', sender: string): void {
+    const who = digits(sender);
+    const key = `${reason}:${who}`;
+    const now = Date.now();
+    if (now - (this.ignoredLogged.get(key) ?? 0) < 3_600_000) return;
+    this.ignoredLogged.set(key, now);
+    if (this.ignoredLogged.size > 500) this.ignoredLogged.delete(this.ignoredLogged.keys().next().value!);
+    const tail = who ? `…${who.slice(-4)}` : 'unknown';
+    const hint = reason === 'no-owner'
+      ? 'no owner number is set'
+      : reason === 'number-unknown'
+        ? 'WhatsApp addressed the sender by a private id (LID) and the plugin could not find their number; update the plugin, or have them send another message'
+        : 'not the owner or a listed member';
+    const log = reason === 'not-allowed' ? logger.info.bind(logger) : logger.warn.bind(logger);
+    log({ plugin: this.manifest.id, reason, sender: tail }, `Channel message ignored: ${hint}`);
+  }
+
   private onMessageNotification(p: IncomingParams): void {
     if (typeof p.chatId !== 'string' || typeof p.senderId !== 'string') return;
     if (p.fromMe === true) return; // never answer ourselves
@@ -544,10 +572,12 @@ export class PluginChannel extends BaseChannel {
     const sender = typeof p.senderPhone === 'string' && p.senderPhone ? p.senderPhone : p.senderId;
     const role = this.roleOf(sender);
     if (!role) {
-      if (!digits(String(settings.owner ?? ''))) {
-        logger.warn({ plugin: this.manifest.id }, 'Channel message ignored: no owner number set');
-      }
-      return; // unknown senders are ignored, silently
+      // Strangers get no reply, but the owner can see why a message didn't
+      // get through (#247). Never the content; never a whole number.
+      if (!digits(String(settings.owner ?? ''))) this.noteIgnored('no-owner', p.senderId);
+      else if (!p.senderPhone && /@(hosted\.)?lid$/.test(p.senderId)) this.noteIgnored('number-unknown', p.senderId);
+      else this.noteIgnored('not-allowed', sender);
+      return;
     }
 
     const text = typeof p.text === 'string' ? p.text.slice(0, 20_000) : '';

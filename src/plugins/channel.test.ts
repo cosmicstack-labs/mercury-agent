@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Tool } from 'ai';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PermissionManager } from '../capabilities/permissions.js';
+import { logger } from '../utils/logger.js';
 import type { Channel } from '../channels/base.js';
 import type { ChannelMessage } from '../types/channel.js';
 import { PluginManager, setProviderLookup } from './manager.js';
@@ -170,6 +171,32 @@ describe('plugin channels (plugin API 1.1)', () => {
       ['hi from owner', 'admin', 'whatsapp:15550002@s.whatsapp.net'],
       ['hi from member', 'member', 'whatsapp:15550002@s.whatsapp.net'],
     ]);
+  });
+
+  // #247: WhatsApp addresses people by a private id (LID). The plugin turns it
+  // back into their number; when it can't, the owner can see why in the log.
+  it('a sender addressed by LID gets through once the plugin knows their number', async () => {
+    await installChannel('+1 (555) 0002');
+    await inject({ id: 'l1', senderId: '100000012345678@lid', chatId: '100000012345678@lid', senderPhone: '15550002', text: 'hi by lid' });
+    expect(received.map((m) => [m.content, m.senderRole])).toEqual([['hi by lid', 'admin']]);
+  });
+
+  it('a LID with no number is ignored, and the log says why without the message or the whole id', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      await installChannel('+1 (555) 0002');
+      await inject({ id: 'l2', senderId: '100000012345678@lid', chatId: '100000012345678@lid', text: 'secret words' });
+      await inject({ id: 'l3', senderId: '100000012345678@lid', chatId: '100000012345678@lid', text: 'again' });
+      expect(received).toEqual([]);
+      const ignored = warn.mock.calls.filter(([, msg]) => typeof msg === 'string' && msg.startsWith('Channel message ignored'));
+      // Once per sender per hour: a second message doesn't log again.
+      expect(ignored).toHaveLength(1);
+      expect(ignored[0][0]).toMatchObject({ reason: 'number-unknown', sender: '…5678' });
+      expect(JSON.stringify(ignored)).not.toContain('secret words');
+      expect(JSON.stringify(ignored)).not.toContain('100000012345678');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('no owner set means nobody gets through', async () => {
