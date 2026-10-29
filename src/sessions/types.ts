@@ -38,6 +38,8 @@ export interface Session {
   revision: number;
   bindings: SessionBinding[];
   messages: SessionMessage[];
+  /** When the owner saved it to come back to later (unset = not saved). */
+  savedAt?: number;
 }
 
 export interface CreateSessionInput {

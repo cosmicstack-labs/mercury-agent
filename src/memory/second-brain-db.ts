@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
 import { isSqliteAvailable, openSqlite, type SqliteDatabase } from '../utils/sqlite-driver.js';
+import { exclusiveGroup, normalizeRelationship } from './person-standing.js';
 
 /**
  * True when any SQLite engine is available (better-sqlite3, bun:sqlite or
@@ -55,6 +56,23 @@ export interface PersonRow {
   last_seen_at: number;
   created_at: number;
   updated_at: number;
+  /** 'person' | 'pet' | 'unverified' (never 'not_person': those are not stored). */
+  kind?: string;
+  /** Who decided `kind`: 'owner' | 'model' | 'rule' | null. */
+  verified_by?: string | null;
+  /** Contact card: JSON { phone, email, birthday, location, company, notes, links[] }. */
+  meta?: string;
+  /** 1 = the owner edited this person; rebuilds never overwrite or delete it. */
+  owner_edited?: number;
+}
+
+export type PersonKind = 'person' | 'pet' | 'unverified';
+
+export interface PersonGraph {
+  persons: Array<{ id: string; name: string; kind: string; relationship: string | null; memoryCount: number }>;
+  memories: Array<{ id: string; summary: string; type: string; importance: number; updatedAt: number }>;
+  memoryPersons: Array<{ memoryId: string; personId: string; role: string }>;
+  relationships: Array<{ source: string; target: string; type: string; strength: number }>;
 }
 
 export interface PersonListRow extends PersonRow {
@@ -246,6 +264,44 @@ export class SecondBrainDB {
 
     // Index for incremental fetch (shareable + updated_at — the cloud pull query).
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_memories_shareable_updated ON memories(shareable, updated_at)');
+
+    // People: what an entity is, who decided, the contact card, and owner edits.
+    const personColumns = this.db.prepare('PRAGMA table_info(persons)').all() as { name: string }[];
+    const addPersonColumn = (name: string, ddl: string) => {
+      if (!personColumns.some((c) => c.name === name)) this.db.exec(`ALTER TABLE persons ADD COLUMN ${ddl}`);
+    };
+    addPersonColumn('kind', "kind TEXT NOT NULL DEFAULT 'unverified'");
+    addPersonColumn('verified_by', 'verified_by TEXT');
+    addPersonColumn('meta', "meta TEXT NOT NULL DEFAULT '{}'");
+    addPersonColumn('owner_edited', 'owner_edited INTEGER NOT NULL DEFAULT 0');
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS person_overrides (
+        user_key TEXT NOT NULL,
+        canonical_name TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_person_id TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_key, canonical_name)
+      );
+      CREATE TABLE IF NOT EXISTS belief_persons (
+        belief_id TEXT NOT NULL,
+        person_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'mentioned',
+        confidence REAL NOT NULL DEFAULT 0.7,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (belief_id, person_id),
+        FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_belief_persons_person ON belief_persons(person_id);
+      CREATE TABLE IF NOT EXISTS person_checks (
+        person_id TEXT PRIMARY KEY,
+        user_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        context TEXT,
+        queued_at INTEGER NOT NULL,
+        FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
+      );
+    `);
 
     logger.info({ backend: this.db.backend }, 'Second brain database initialized');
   }
@@ -533,15 +589,46 @@ export class SecondBrainDB {
     confidence?: number;
     description?: string | null;
     personId?: string;
-  }): PersonRow {
+    /**
+     * Context for a model check. A check is queued only when an unreviewed
+     * name RECURS (its second sighting), never on first sight and never in
+     * rebuilds: one-off names cost no tokens.
+     */
+    queueCheck?: { context: string } | null;
+  }): PersonRow | null {
     const now = Date.now();
     const normalized = this.normalizePersonName(params.name);
+    if (!normalized) return null;
+
+    // The owner's decisions win over every extraction, including rebuilds.
+    const override = this.db.prepare('SELECT action, target_person_id FROM person_overrides WHERE user_key = ? AND canonical_name = ? LIMIT 1')
+      .get(params.userKey, normalized) as { action: string; target_person_id: string | null } | undefined;
+    if (override?.action === 'not_person') return null;
+
     const existingStmt = this.db.prepare('SELECT * FROM persons WHERE user_key = ? AND canonical_name = ? LIMIT 1');
-    const existing = existingStmt.get(params.userKey, normalized) as PersonRow | undefined;
+    let existing = existingStmt.get(params.userKey, normalized) as PersonRow | undefined;
+    if (!existing && override?.action === 'merge' && override.target_person_id) existing = this.getPersonById(override.target_person_id);
+    if (!existing) {
+      // A name the owner gave another person (rename, merge) resolves to that person.
+      existing = this.db.prepare(`
+        SELECT p.* FROM person_aliases a JOIN persons p ON p.id = a.person_id
+        WHERE p.user_key = ? AND a.normalized_alias = ? ORDER BY p.owner_edited DESC LIMIT 1
+      `).get(params.userKey, normalized) as PersonRow | undefined;
+    }
+
+    if (existing && existing.owner_edited === 1) {
+      this.db.prepare('UPDATE persons SET last_seen_at = ?, updated_at = ? WHERE id = ?').run(now, now, existing.id);
+      return this.getPersonById(existing.id) ?? existing;
+    }
 
     if (existing) {
       const confidence = Math.max(existing.confidence, params.confidence ?? existing.confidence);
-      const relationshipToUser = params.relationshipToUser ?? existing.relationship_to_user;
+      // A plain mention ("known") never erases a real relationship ("wife").
+      const incoming = this.allowedRelationship(params.userKey, existing.id, params.relationshipToUser);
+      // A specific relationship already stored wins over a vaguer one ("wife" over "spouse").
+      const current = existing.relationship_to_user;
+      const currentSpecific = !!current && !['known', 'spouse', 'family'].includes(current);
+      const relationshipToUser = incoming && incoming !== 'known' && !currentSpecific ? incoming : current ?? incoming;
       const description = params.description ?? existing.description;
       this.db.prepare(`
         UPDATE persons
@@ -551,11 +638,16 @@ export class SecondBrainDB {
 
       const updated = this.getPersonById(existing.id);
       if (!updated) throw new Error('Failed to update person record');
+      if (params.queueCheck && !updated.verified_by && (updated.kind ?? 'unverified') === 'unverified') {
+        this.db.prepare('INSERT OR IGNORE INTO person_checks (person_id, user_key, name, context, queued_at) VALUES (?, ?, ?, ?, ?)')
+          .run(updated.id, params.userKey, updated.display_name, params.queueCheck.context.slice(0, 400), now);
+      }
       return updated;
     }
 
     const id = params.personId || `per_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const confidence = params.confidence ?? 0.7;
+    params = { ...params, relationshipToUser: this.allowedRelationship(params.userKey, id, params.relationshipToUser) ?? (params.relationshipToUser ? 'known' : null) };
     this.db.prepare(`
       INSERT INTO persons (
         id, user_key, canonical_name, display_name, relationship_to_user,
@@ -578,6 +670,247 @@ export class SecondBrainDB {
     const created = this.getPersonById(id);
     if (!created) throw new Error('Failed to create person record');
     return created;
+  }
+
+  /**
+   * Cardinality: a one-to-one relation (wife, mother, manager…) belongs to one
+   * person at a time. An extracted claim never takes it from someone who
+   * already holds it; only the owner can move it (see moveExclusiveRelationship).
+   * Returns the relationship to store, or null to keep what is there.
+   */
+  private allowedRelationship(userKey: string, personId: string, relationship: string | null | undefined): string | null {
+    const rel = normalizeRelationship(relationship);
+    if (!rel) return null;
+    const group = exclusiveGroup(rel);
+    if (!group) return rel;
+    const holder = this.exclusiveHolder(userKey, group, personId);
+    return holder ? null : rel;
+  }
+
+  /** Who holds a one-to-one relation group (spouse, mother…), other than `exceptId`. */
+  exclusiveHolder(userKey: string, group: string, exceptId?: string): PersonRow | undefined {
+    const rows = this.db.prepare(`SELECT * FROM persons WHERE user_key = ? AND relationship_to_user IS NOT NULL AND relationship_to_user != 'known' AND id != ?`)
+      .all(userKey, exceptId ?? '') as PersonRow[];
+    return rows.find((r) => exclusiveGroup(r.relationship_to_user) === group);
+  }
+
+  /** Owner moves a one-to-one relation: the previous holder becomes "known". */
+  releaseExclusiveRelationship(userKey: string, group: string, exceptId: string): PersonRow | undefined {
+    const holder = this.exclusiveHolder(userKey, group, exceptId);
+    if (holder) this.db.prepare(`UPDATE persons SET relationship_to_user = 'known', updated_at = ? WHERE id = ?`).run(Date.now(), holder.id);
+    return holder;
+  }
+
+  /** Find a person by name or alias without creating one. */
+  resolvePersonId(userKey: string, name: string): string | null {
+    const normalized = this.normalizePersonName(name);
+    if (!normalized) return null;
+    const direct = this.db.prepare('SELECT id FROM persons WHERE user_key = ? AND canonical_name = ? LIMIT 1').get(userKey, normalized) as { id: string } | undefined;
+    if (direct) return direct.id;
+    const alias = this.db.prepare('SELECT p.id FROM person_aliases a JOIN persons p ON p.id = a.person_id WHERE p.user_key = ? AND a.normalized_alias = ? LIMIT 1').get(userKey, normalized) as { id: string } | undefined;
+    return alias?.id ?? null;
+  }
+
+  /**
+   * The evidence behind each person, for standing (person-standing.ts):
+   * mentions in live beliefs and the archive, how many are social, the days
+   * they span, and links to other people. Grouped queries, one pass.
+   */
+  personEvidence(userKey: string): Array<{ id: string; relationship: string | null; kind: string | null; verified_by: string | null; owner_edited: number; mentions: number; social: number; days: number; plinks: number }> {
+    return this.db.prepare(`
+      WITH links AS (
+        SELECT bp.person_id AS pid, b.kind AS kind, b.created_at AS ts FROM belief_persons bp
+          JOIN beliefs b ON b.id = bp.belief_id AND b.status IN ('candidate','held','confirmed','contested')
+        UNION ALL
+        SELECT mp.person_id, m.type, m.created_at FROM memory_persons mp
+          JOIN memories m ON m.id = mp.memory_id AND m.dismissed = 0
+      ),
+      agg AS (
+        SELECT pid, COUNT(*) AS mentions, SUM(CASE WHEN kind IN ('relationship','episode') THEN 1 ELSE 0 END) AS social,
+          COUNT(DISTINCT date(ts / 1000, 'unixepoch', 'localtime')) AS days
+        FROM links GROUP BY pid
+      ),
+      rel AS (
+        SELECT pid, COUNT(*) AS n FROM (
+          SELECT source_person_id AS pid FROM person_relationships WHERE user_key = ?
+          UNION ALL SELECT target_person_id FROM person_relationships WHERE user_key = ?
+        ) GROUP BY pid
+      )
+      SELECT p.id, p.relationship_to_user AS relationship, p.kind, p.verified_by, p.owner_edited,
+        COALESCE(agg.mentions, 0) AS mentions, COALESCE(agg.social, 0) AS social, COALESCE(agg.days, 0) AS days, COALESCE(rel.n, 0) AS plinks
+      FROM persons p LEFT JOIN agg ON agg.pid = p.id LEFT JOIN rel ON rel.pid = p.id
+      WHERE p.user_key = ?
+    `).all(userKey, userKey, userKey) as Array<{ id: string; relationship: string | null; kind: string | null; verified_by: string | null; owner_edited: number; mentions: number; social: number; days: number; plinks: number }>;
+  }
+
+  // ── People in beliefs (the live brain since the Owner Model) ─────────────
+
+  linkBeliefPerson(beliefId: string, personId: string, role: string, confidence: number): void {
+    this.db.prepare(`INSERT INTO belief_persons (belief_id, person_id, role, confidence, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(belief_id, person_id) DO UPDATE SET role = excluded.role, confidence = excluded.confidence`).run(beliefId, personId, role, confidence, Date.now());
+  }
+
+  clearBeliefPersons(beliefId: string): void {
+    this.db.prepare('DELETE FROM belief_persons WHERE belief_id = ?').run(beliefId);
+  }
+
+  clearAllBeliefPersons(userKey: string): void {
+    this.db.prepare('DELETE FROM belief_persons WHERE person_id IN (SELECT id FROM persons WHERE user_key = ?)').run(userKey);
+  }
+
+  /** Live beliefs created after `since` (ms), oldest first, for incremental person indexing. */
+  /** Beliefs after a (created_at, rowid) cursor, in the order they were made: two made in the same millisecond are both seen. */
+  beliefsSince(userKey: string, since: number, limit = 500, sinceSeq = -1): Array<{ id: string; statement: string; detail: string | null; kind: string; confidence: number; created_at: number; seq: number }> {
+    return this.db.prepare(`SELECT id, statement, detail, kind, MIN(1, 0.5 + support / 10.0) AS confidence, created_at, rowid AS seq FROM beliefs
+      WHERE owner_key = ? AND (created_at > ? OR (created_at = ? AND rowid > ?)) AND status IN ('candidate', 'held', 'confirmed', 'contested') ORDER BY created_at ASC, rowid ASC LIMIT ?`)
+      .all(userKey, since, since, sinceSeq, limit) as Array<{ id: string; statement: string; detail: string | null; kind: string; confidence: number; created_at: number; seq: number }>;
+  }
+
+  // ── Owner curation of people ─────────────────────────────────────────────
+
+  updatePerson(userKey: string, id: string, fields: { displayName?: string; relationship?: string | null; description?: string | null; kind?: PersonKind; meta?: Record<string, unknown> }): PersonRow | null {
+    const row = this.getPersonById(id);
+    if (!row || row.user_key !== userKey) return null;
+    const now = Date.now();
+    const meta = fields.meta !== undefined ? JSON.stringify(fields.meta) : row.meta ?? '{}';
+    const kind = fields.kind ?? row.kind ?? 'unverified';
+    const displayName = fields.displayName?.trim() || row.display_name;
+    this.db.prepare(`
+      UPDATE persons SET display_name = ?, relationship_to_user = ?, description = ?, kind = ?, verified_by = ?, meta = ?, owner_edited = 1, updated_at = ?
+      WHERE id = ?
+    `).run(
+      displayName,
+      fields.relationship !== undefined ? normalizeRelationship(fields.relationship) : row.relationship_to_user,
+      fields.description !== undefined ? fields.description : row.description,
+      kind,
+      fields.kind !== undefined ? 'owner' : row.verified_by ?? null,
+      meta,
+      now,
+      id,
+    );
+    // The id never changes; a new name becomes an alias, so future mentions link here.
+    if (fields.displayName && fields.displayName.trim() !== row.display_name) this.addPersonAlias(id, fields.displayName.trim(), 'owner');
+    this.db.prepare('DELETE FROM person_checks WHERE person_id = ?').run(id);
+    return this.getPersonById(id) ?? null;
+  }
+
+  /** "This isn't a person": forget the entity, and never create it again. */
+  markNotPerson(userKey: string, id: string): boolean {
+    const row = this.getPersonById(id);
+    if (!row || row.user_key !== userKey) return false;
+    const names = [row.canonical_name, ...(this.db.prepare('SELECT normalized_alias FROM person_aliases WHERE person_id = ?').all(id) as Array<{ normalized_alias: string }>).map((a) => a.normalized_alias)];
+    const now = Date.now();
+    const put = this.db.prepare(`INSERT INTO person_overrides (user_key, canonical_name, action, target_person_id, created_at) VALUES (?, ?, 'not_person', NULL, ?)
+      ON CONFLICT(user_key, canonical_name) DO UPDATE SET action = 'not_person', target_person_id = NULL, created_at = excluded.created_at`);
+    for (const n of new Set(names)) put.run(userKey, n, now);
+    this.db.prepare('DELETE FROM persons WHERE id = ?').run(id);
+    return true;
+  }
+
+  /** Merge `fromId` into `intoId`: links, relationships and names move; `intoId` keeps its id. */
+  mergePersons(userKey: string, fromId: string, intoId: string, opts: { byOwner?: boolean } = {}): boolean {
+    const byOwner = opts.byOwner ?? true;
+    if (fromId === intoId) return false;
+    const from = this.getPersonById(fromId);
+    const into = this.getPersonById(intoId);
+    if (!from || !into || from.user_key !== userKey || into.user_key !== userKey) return false;
+    const now = Date.now();
+    // The driver runs the function inside BEGIN/COMMIT right away.
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO memory_persons (memory_id, person_id, role, confidence, created_at, updated_at)
+        SELECT memory_id, ?, role, confidence, created_at, ? FROM memory_persons WHERE person_id = ?
+        ON CONFLICT(memory_id, person_id) DO NOTHING`).run(intoId, now, fromId);
+      this.db.prepare(`INSERT INTO belief_persons (belief_id, person_id, role, confidence, created_at)
+        SELECT belief_id, ?, role, confidence, created_at FROM belief_persons WHERE person_id = ?
+        ON CONFLICT(belief_id, person_id) DO NOTHING`).run(intoId, fromId);
+      this.db.prepare('UPDATE OR IGNORE person_relationships SET source_person_id = ? WHERE source_person_id = ?').run(intoId, fromId);
+      this.db.prepare('UPDATE OR IGNORE person_relationships SET target_person_id = ? WHERE target_person_id = ?').run(intoId, fromId);
+      this.db.prepare('DELETE FROM person_relationships WHERE source_person_id = target_person_id').run();
+      const aliases = [from.display_name, ...(this.db.prepare('SELECT alias FROM person_aliases WHERE person_id = ?').all(fromId) as Array<{ alias: string }>).map((a) => a.alias)];
+      for (const a of aliases) this.addPersonAlias(intoId, a, byOwner ? 'owner' : 'memory');
+      const put = this.db.prepare(`INSERT INTO person_overrides (user_key, canonical_name, action, target_person_id, created_at) VALUES (?, ?, 'merge', ?, ?)
+        ON CONFLICT(user_key, canonical_name) DO UPDATE SET action = 'merge', target_person_id = excluded.target_person_id, created_at = excluded.created_at`);
+      put.run(userKey, from.canonical_name, intoId, now);
+      this.db.prepare('DELETE FROM persons WHERE id = ?').run(fromId);
+      if (byOwner) this.db.prepare('UPDATE persons SET owner_edited = 1, updated_at = ? WHERE id = ?').run(now, intoId);
+    });
+    return true;
+  }
+
+  // ── The model check queue (new names only) ────────────────────────────────
+
+  pendingPersonChecks(userKey: string, limit: number): Array<{ person_id: string; name: string; context: string | null }> {
+    return this.db.prepare('SELECT person_id, name, context FROM person_checks WHERE user_key = ? ORDER BY queued_at ASC LIMIT ?')
+      .all(userKey, Math.max(1, Math.min(limit, 50))) as Array<{ person_id: string; name: string; context: string | null }>;
+  }
+
+  /** Owner opt-in: queue existing unreviewed people (not owner-edited, not already decided). */
+  queueExistingPersonChecks(userKey: string): number {
+    const rows = this.db.prepare(`
+      SELECT p.id, p.display_name,
+        COALESCE(
+          (SELECT b.statement FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id WHERE bp.person_id = p.id ORDER BY b.updated_at DESC LIMIT 1),
+          (SELECT m.summary FROM memory_persons mp JOIN memories m ON m.id = mp.memory_id WHERE mp.person_id = p.id ORDER BY m.updated_at DESC LIMIT 1),
+          ''
+        ) AS context
+      FROM persons p
+      WHERE p.user_key = ? AND p.owner_edited = 0 AND COALESCE(p.verified_by, '') = '' AND p.kind = 'unverified'
+    `).all(userKey) as Array<{ id: string; display_name: string; context: string }>;
+    const put = this.db.prepare('INSERT OR IGNORE INTO person_checks (person_id, user_key, name, context, queued_at) VALUES (?, ?, ?, ?, ?)');
+    const now = Date.now();
+    for (const r of rows) put.run(r.id, userKey, r.display_name, (r.context ?? '').slice(0, 400), now);
+    return rows.length;
+  }
+
+  countPersonChecks(userKey: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM person_checks WHERE user_key = ?').get(userKey) as { n: number }).n;
+  }
+
+  applyPersonCheck(userKey: string, personId: string, verdict: 'person' | 'pet' | 'not_person' | 'unsure'): void {
+    this.db.prepare('DELETE FROM person_checks WHERE person_id = ?').run(personId);
+    const row = this.getPersonById(personId);
+    if (!row || row.user_key !== userKey || row.owner_edited === 1) return;
+    if (verdict === 'not_person') {
+      // A model's "no" hides it; only the owner's "no" is permanent (markNotPerson).
+      this.db.prepare("UPDATE persons SET kind = 'unverified', verified_by = 'model-rejected', updated_at = ? WHERE id = ?").run(Date.now(), personId);
+      return;
+    }
+    if (verdict === 'unsure') return;
+    this.db.prepare('UPDATE persons SET kind = ?, verified_by = ?, updated_at = ? WHERE id = ?').run(verdict, 'model', Date.now(), personId);
+  }
+
+  // ── The brain graph: real links only ─────────────────────────────────────
+
+  personGraph(userKey: string, maxMemories: number): PersonGraph {
+    // Nodes: the live brain (beliefs) and the people in it; edges: who appears
+    // in which belief, and person-to-person relationships. Legacy archive
+    // links still count toward a person's weight.
+    const persons = (this.db.prepare(`
+      SELECT p.id, p.display_name AS name, p.kind, p.relationship_to_user AS relationship,
+        (SELECT COUNT(*) FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id AND b.status IN ('candidate','held','confirmed','contested') WHERE bp.person_id = p.id)
+        + (SELECT COUNT(*) FROM memory_persons mp JOIN memories m ON m.id = mp.memory_id AND m.dismissed = 0 WHERE mp.person_id = p.id) AS memoryCount
+      FROM persons p
+      WHERE p.user_key = ? AND COALESCE(p.verified_by, '') != 'model-rejected'
+      ORDER BY memoryCount DESC
+      LIMIT 400
+    `).all(userKey) as PersonGraph['persons']).filter((p) => p.memoryCount > 0 || p.relationship);
+    const memories = (this.db.prepare(`
+      SELECT id, statement AS summary, kind AS type, MIN(1, 0.3 + support / 8.0) AS importance, updated_at AS updatedAt FROM beliefs
+      WHERE owner_key = ? AND status IN ('candidate', 'held', 'confirmed', 'contested')
+      ORDER BY (status = 'confirmed') DESC, (status = 'held') DESC, updated_at DESC
+      LIMIT ?
+    `).all(userKey, Math.max(10, Math.min(maxMemories, 2000))) as PersonGraph['memories'])
+      .map((m) => ({ ...m, summary: m.summary.length > 140 ? `${m.summary.slice(0, 137)}…` : m.summary }));
+    const personIds = new Set(persons.map((p) => p.id));
+    const memoryIds = new Set(memories.map((m) => m.id));
+    const memoryPersons = (this.db.prepare(`
+      SELECT bp.belief_id AS memoryId, bp.person_id AS personId, bp.role FROM belief_persons bp
+      JOIN persons p ON p.id = bp.person_id WHERE p.user_key = ?
+    `).all(userKey) as PersonGraph['memoryPersons']).filter((l) => personIds.has(l.personId) && memoryIds.has(l.memoryId));
+    const relationships = (this.db.prepare(`
+      SELECT source_person_id AS source, target_person_id AS target, relation_type AS type, strength FROM person_relationships WHERE user_key = ?
+    `).all(userKey) as PersonGraph['relationships']).filter((r) => personIds.has(r.source) && personIds.has(r.target));
+    return { persons, memories, memoryPersons, relationships };
   }
 
   getPersonById(id: string): PersonRow | undefined {
@@ -632,7 +965,9 @@ export class SecondBrainDB {
     const stmt = this.db.prepare(`
       DELETE FROM persons
       WHERE user_key = ?
+        AND owner_edited = 0
         AND id NOT IN (SELECT DISTINCT person_id FROM memory_persons)
+        AND id NOT IN (SELECT DISTINCT person_id FROM belief_persons)
     `);
     stmt.run(userKey);
   }
@@ -693,59 +1028,50 @@ export class SecondBrainDB {
   }
 
   listPersons(userKey: string, query?: string, limit: number = 100): PersonListRow[] {
-    const cappedLimit = Math.min(Math.max(limit, 1), 300);
-    if (query && query.trim()) {
-      const q = `%${query.trim().toLowerCase()}%`;
-      const stmt = this.db.prepare(`
-        SELECT
-          p.*,
-          COUNT(DISTINCT mp.memory_id) AS memory_count
-        FROM persons p
-        LEFT JOIN memory_persons mp ON mp.person_id = p.id
-        LEFT JOIN memories m ON m.id = mp.memory_id
-        WHERE p.user_key = ?
-          AND (LOWER(p.display_name) LIKE ? OR LOWER(p.canonical_name) LIKE ?)
-          AND (m.id IS NULL OR m.dismissed = 0)
-        GROUP BY p.id
-        HAVING COUNT(DISTINCT mp.memory_id) > 0
-        ORDER BY memory_count DESC, p.updated_at DESC
-        LIMIT ?
-      `);
-      return stmt.all(userKey, q, q, cappedLimit) as PersonListRow[];
-    }
-
+    const cappedLimit = Math.min(Math.max(limit, 1), 5000);
+    // Counts both the legacy archive and live beliefs; owner-edited people
+    // stay listed even with nothing linked yet.
+    const q = query && query.trim() ? `%${query.trim().toLowerCase()}%` : null;
     const stmt = this.db.prepare(`
-      SELECT
-        p.*,
-        COUNT(DISTINCT mp.memory_id) AS memory_count
-      FROM persons p
-      LEFT JOIN memory_persons mp ON mp.person_id = p.id
-      LEFT JOIN memories m ON m.id = mp.memory_id
-      WHERE p.user_key = ?
-        AND (m.id IS NULL OR m.dismissed = 0)
-      GROUP BY p.id
-      HAVING COUNT(DISTINCT mp.memory_id) > 0
-      ORDER BY memory_count DESC, p.updated_at DESC
+      SELECT * FROM (
+        SELECT p.*, (SELECT COUNT(*) FROM memory_persons mp JOIN memories m ON m.id = mp.memory_id AND m.dismissed = 0 WHERE mp.person_id = p.id)
+          + (SELECT COUNT(*) FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id AND b.status IN ('candidate','held','confirmed','contested') WHERE bp.person_id = p.id) AS memory_count
+        FROM persons p
+        WHERE p.user_key = ?
+          ${q ? 'AND (LOWER(p.display_name) LIKE ? OR LOWER(p.canonical_name) LIKE ? OR p.id IN (SELECT person_id FROM person_aliases WHERE normalized_alias LIKE ?))' : ''}
+      )
+      WHERE memory_count > 0 OR owner_edited = 1
+      ORDER BY memory_count DESC, updated_at DESC
       LIMIT ?
     `);
-    return stmt.all(userKey, cappedLimit) as PersonListRow[];
+    return (q ? stmt.all(userKey, q, q, q, cappedLimit) : stmt.all(userKey, cappedLimit)) as PersonListRow[];
   }
 
   getPersonWithCount(userKey: string, personId: string): PersonListRow | undefined {
     const stmt = this.db.prepare(`
-      SELECT
-        p.*,
-        COUNT(DISTINCT mp.memory_id) AS memory_count
+      SELECT p.*, (SELECT COUNT(*) FROM memory_persons mp JOIN memories m ON m.id = mp.memory_id AND m.dismissed = 0 WHERE mp.person_id = p.id)
+          + (SELECT COUNT(*) FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id AND b.status IN ('candidate','held','confirmed','contested') WHERE bp.person_id = p.id) AS memory_count
       FROM persons p
-      LEFT JOIN memory_persons mp ON mp.person_id = p.id
-      LEFT JOIN memories m ON m.id = mp.memory_id
-      WHERE p.user_key = ?
-        AND p.id = ?
-        AND (m.id IS NULL OR m.dismissed = 0)
-      GROUP BY p.id
+      WHERE p.user_key = ? AND p.id = ?
       LIMIT 1
     `);
     return stmt.get(userKey, personId) as PersonListRow | undefined;
+  }
+
+  /** Live beliefs that mention a person, newest first. */
+  getBeliefIdsForPerson(personId: string, limit: number = 50, offset = 0): string[] {
+    return (this.db.prepare(`SELECT bp.belief_id AS id FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id
+      WHERE bp.person_id = ? AND b.status IN ('candidate','held','confirmed','contested') ORDER BY b.updated_at DESC LIMIT ? OFFSET ?`)
+      .all(personId, Math.max(1, limit), Math.max(0, offset)) as Array<{ id: string }>).map((r) => r.id);
+  }
+
+  /** How many live beliefs and legacy memories mention a person (for paging). */
+  countPersonMemories(userKey: string, personId: string): { beliefs: number; memories: number } {
+    const beliefs = (this.db.prepare(`SELECT COUNT(*) AS n FROM belief_persons bp JOIN beliefs b ON b.id = bp.belief_id
+      WHERE bp.person_id = ? AND b.status IN ('candidate','held','confirmed','contested')`).get(personId) as { n: number }).n;
+    const memories = (this.db.prepare(`SELECT COUNT(*) AS n FROM memory_persons mp JOIN memories m ON m.id = mp.memory_id
+      WHERE mp.person_id = ? AND m.user_key = ? AND m.dismissed = 0`).get(personId, userKey) as { n: number }).n;
+    return { beliefs, memories };
   }
 
   getPersonConnections(userKey: string, personId: string, limit: number = 30): PersonConnectionRow[] {
@@ -765,17 +1091,16 @@ export class SecondBrainDB {
     return stmt.all(userKey, personId, cappedLimit) as PersonConnectionRow[];
   }
 
-  getMemoriesForPerson(userKey: string, personId: string, limit: number = 50): MemoryRow[] {
-    const cappedLimit = Math.min(Math.max(limit, 1), 200);
+  getMemoriesForPerson(userKey: string, personId: string, limit: number = 50, offset = 0): MemoryRow[] {
     const stmt = this.db.prepare(`
       SELECT m.*
       FROM memory_persons mp
       JOIN memories m ON m.id = mp.memory_id
       WHERE mp.person_id = ? AND m.user_key = ? AND m.dismissed = 0
       ORDER BY m.updated_at DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `);
-    return stmt.all(personId, userKey, cappedLimit) as MemoryRow[];
+    return stmt.all(personId, userKey, Math.max(1, limit), Math.max(0, offset)) as MemoryRow[];
   }
 
   getRelationshipMemoryRows(userKey: string): MemoryRow[] {
@@ -793,6 +1118,20 @@ export class SecondBrainDB {
       .replace(/[^a-z0-9@\s'-]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  /** The legacy archive as map notes (live rows only). */
+  archiveNotes(userKey: string, limit = 50000): Array<{ id: string; text: string; kind: string; at: number; confidence: number }> {
+    return this.db.prepare(`SELECT id, summary AS text, type AS kind, updated_at AS at, confidence FROM memories
+      WHERE user_key = ? AND dismissed = 0 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT ?`).all(userKey, limit) as Array<{ id: string; text: string; kind: string; at: number; confidence: number }>;
+  }
+
+  /** Changes when any live belief or archive row changes: count + newest update. */
+  knowledgeSignature(userKey: string, ownerKey: string, archive: boolean): string {
+    const b = this.db.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), 0) AS t FROM beliefs WHERE owner_key = ? AND status IN ('candidate','held','confirmed','contested')`).get(ownerKey) as { n: number; t: number };
+    if (!archive) return `${b.n}:${b.t}`;
+    const m = this.db.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), 0) AS t FROM memories WHERE user_key = ? AND dismissed = 0 AND superseded_by IS NULL`).get(userKey) as { n: number; t: number };
+    return `${b.n}:${b.t}|${m.n}:${m.t}`;
   }
 
   setMeta(key: string, value: string): void {

@@ -32,11 +32,15 @@ pub enum Ctl {
     Narrate(String),
     /// The mute key: stop (or start again) listening, without stopping any work.
     Mute,
+    /// Pause from Mercury Desktop: stop what it's saying or doing, keep the session.
+    Interrupt,
 }
 
 pub struct SessionCtl {
     tx: mpsc::UnboundedSender<Ctl>,
     muted: Arc<std::sync::atomic::AtomicBool>,
+    /// Mercury's voice is playing right now (published as activity.speaking).
+    speaking: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionCtl {
@@ -51,6 +55,29 @@ impl SessionCtl {
     }
     pub fn is_muted(&self) -> bool {
         self.muted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Mute or unmute to a known state (a remote control can't rely on toggling).
+    pub fn set_mute(&self, on: bool) {
+        if self.is_muted() != on {
+            let _ = self.tx.send(Ctl::Mute);
+        }
+    }
+    pub fn interrupt(&self) {
+        let _ = self.tx.send(Ctl::Interrupt);
+    }
+    pub fn is_speaking(&self) -> bool {
+        self.speaking.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Record whether Mercury's voice is playing, and tell Mercury when it changes.
+fn set_speaking(sh: &Arc<Shared>, on: bool) {
+    let changed = match sh.session.lock().unwrap().as_ref() {
+        Some(s) => s.speaking.swap(on, std::sync::atomic::Ordering::Relaxed) != on,
+        None => false,
+    };
+    if changed {
+        sh.publish_activity();
     }
 }
 
@@ -77,7 +104,7 @@ pub async fn press(sh: Arc<Shared>, from_tool: bool) -> Result<String, String> {
         if live.is_some() {
             return Ok(String::new());
         }
-        *live = Some(SessionCtl { tx, muted: muted.clone() });
+        *live = Some(SessionCtl { tx, muted: muted.clone(), speaking: Arc::new(std::sync::atomic::AtomicBool::new(false)) });
     }
     crate::core::clear_halt();
     let call_id = format!("desk-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
@@ -229,6 +256,11 @@ async fn bridge(
     let mut tock = false;
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_narrated = Instant::now() - Duration::from_secs(60);
+    // Voice levels for Mercury Desktop's call screen (~12 a second while anyone is audible).
+    let mut level_tick = tokio::time::interval(Duration::from_millis(80));
+    level_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut mic_peak: i16 = 0;
+    let mut levels_quiet = false;
 
     // Silence ends the session by itself, so an open mic never streams (and bills) for nothing.
     let idle_stop = settings().get("idleStopSeconds").and_then(Value::as_f64).unwrap_or(60.0).max(0.0);
@@ -300,6 +332,24 @@ async fn bridge(
                     set_muted(sh, muted, &out, now, &call_id);
                     last_activity = Instant::now();
                 }
+                Some(Ctl::Interrupt) => {
+                    // Like the talk key, except it never ends the session.
+                    if busy_working(&pending) {
+                        stop_all(&pending);
+                        narration = None;
+                        ready_answers.clear();
+                        out.clear();
+                        link.send(LinkCmd::Cancel);
+                        say_stopped(&link, brain);
+                        responding = true;
+                    } else if responding || out.recently_audible(300) {
+                        out.clear();
+                        link.send(LinkCmd::Cancel);
+                        responding = false;
+                        set_speaking(sh, false);
+                    }
+                    last_activity = Instant::now();
+                }
                 Some(Ctl::Press) if muted.load(std::sync::atomic::Ordering::Relaxed) => {
                     // Muted: the talk key unmutes rather than stopping anything.
                     set_muted(sh, muted, &out, false, &call_id);
@@ -325,10 +375,22 @@ async fn bridge(
                     }
                 }
             },
+            _ = level_tick.tick() => {
+                let mic_level = if muted.load(std::sync::atomic::Ordering::Relaxed) { 0.0 } else { (mic_peak as f32 / 32768.0 * 3.0).min(1.0) };
+                let out_level = (out.take_level() * 2.2).min(1.0);
+                mic_peak = 0;
+                let quiet = mic_level < 0.02 && out_level < 0.02;
+                // Say "silent" once, then stay quiet until someone is audible again.
+                if !(quiet && levels_quiet) {
+                    sh.out.notify("mercury/voice/level", json!({ "callId": call_id, "mic": (mic_level * 100.0).round() / 100.0, "out": (out_level * 100.0).round() / 100.0 }));
+                }
+                levels_quiet = quiet;
+            }
             frame = mic.recv() => {
                 let Some(frame) = frame else { break Err("the microphone stopped".to_string()) };
                 // Muted: nothing the owner says is sent anywhere.
                 if muted.load(std::sync::atomic::Ordering::Relaxed) { continue; }
+                mic_peak = mic_peak.max(frame.iter().map(|s| s.saturating_abs()).max().unwrap_or(0));
                 // With speakers, the mic would hear Mercury: send silence while it talks.
                 let muted = !barge_in && out.recently_audible(350);
                 link.send(LinkCmd::Audio(if muted { silence.clone() } else { frame }));
@@ -421,9 +483,13 @@ async fn bridge(
                 let Some(ev) = ev else { break Err("the voice connection ended".to_string()) };
                 match ev {
                     LinkEvent::Closed(reason) => break Err(reason),
-                    LinkEvent::ResponseStarted => responding = true,
+                    LinkEvent::ResponseStarted => {
+                        responding = true;
+                        set_speaking(sh, true);
+                    }
                     LinkEvent::ResponseDone => {
                         responding = false;
+                        set_speaking(sh, false);
                         if !ready_answers.is_empty() { deliver(&link, brain, &mut ready_answers, &mut responding); }
                         else if narration.is_some() { speak_narration(&link, brain, &mut narration, &mut responding); }
                     }
@@ -436,11 +502,16 @@ async fn bridge(
                         }
                     }
                     LinkEvent::AssistantText(t) => {
-                        if !t.is_empty() { transcript.push(json!({ "role": "mercury", "text": t })); }
+                        if !t.is_empty() {
+                            // Live, for the call screen and the call's chat thread.
+                            sh.out.notify("mercury/voice/transcript", json!({ "callId": call_id, "role": "mercury", "text": t }));
+                            transcript.push(json!({ "role": "mercury", "text": t }));
+                        }
                     }
                     LinkEvent::UserText(t) => {
                         if t.is_empty() { continue; }
                         last_activity = Instant::now();
+                        sh.out.notify("mercury/voice/transcript", json!({ "callId": call_id, "role": "owner", "text": t.clone() }));
                         transcript.push(json!({ "role": "owner", "text": t.clone() }));
                         user_said.push((Instant::now(), t.clone()));
                         if user_said.len() > 20 { user_said.remove(0); }

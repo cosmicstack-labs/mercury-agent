@@ -1950,7 +1950,9 @@ export class BotManager {
     }
     const isCrew = Boolean(manifest.parent);
     const final = Boolean(options.final) && !isCrew;
-    const botFolder = this.store.deliverablesDir(botId);
+    // Pin before the folder is created: from here on the folder name belongs to the files, not to
+    // whatever the bot is called today.
+    const botFolder = this.store.pinDeliverablesFolder(botId);
     const destDir = isCrew ? botFolder : final ? botFolder : join(botFolder, 'work');
     mkdirSync(destDir, { recursive: true });
     const sourceName = options.saveAs || basename(candidate);
@@ -1997,6 +1999,12 @@ export class BotManager {
    * behind so an owner with a bookmark finds the new place.
    */
   migrateDeliverables(): { moved: number } {
+    // Existing bots: pin the folder they already use, so the first rename after this upgrade does
+    // not move their deliverables. Runs before the legacy scan, which may return early.
+    for (const manifest of this.store.list()) {
+      if (manifest.parent) continue;
+      this.store.pinDeliverablesFolder(manifest.id);
+    }
     const legacy = this.store.outputsDir();
     if (!existsSync(legacy)) return { moved: 0 };
     let moved = 0;

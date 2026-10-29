@@ -9,6 +9,9 @@ import type {
   BotPermissionsFile,
 } from './types.js';
 
+/** Duplicate bot copies already warned about in this process. */
+const REPORTED_FORKS = new Set<string>();
+
 export const BOT_MANIFEST_FILENAME = 'bot.yaml';
 export const BOT_PERSONA_FILENAME = 'persona.md';
 /** A bot's face. Extension-less on purpose: the format is sniffed from the bytes. */
@@ -249,7 +252,22 @@ export class BotStore {
     if (manifest.parent && manifest.parent !== id) {
       return join(this.deliverablesDir(manifest.parent), 'work', id);
     }
-    return join(this.deliverablesRootDir, deliverablesFolderName(manifest.name, manifest.id));
+    return join(this.deliverablesRootDir, manifest.deliverablesFolder ?? deliverablesFolderName(manifest.name, manifest.id));
+  }
+
+  /**
+   * Freeze the folder name of a lead's or a solo's deliverables, so a rename moves the label and
+   * not the files. Called when the folder is first written to; a crew bot has no folder of its own
+   * (it lives under its lead's `work/`), so there is nothing to pin.
+   */
+  pinDeliverablesFolder(id: string): string {
+    const manifest = this.get(id);
+    if (!manifest) return join(this.deliverablesRootDir, id);
+    if (manifest.parent && manifest.parent !== id) return this.deliverablesDir(id);
+    if (manifest.deliverablesFolder) return this.deliverablesDir(id);
+    manifest.deliverablesFolder = deliverablesFolderName(manifest.name, manifest.id);
+    this.save(manifest);
+    return this.deliverablesDir(id);
   }
 
   /** Rewrite the README index of a deliverables folder (finals on top, stages under work/). */
@@ -469,7 +487,6 @@ export class BotStore {
     // concurrent runtime or a rename fails on Windows) must not let the same
     // bot appear twice. First occurrence wins; extra copies are flagged.
     const seenIds = new Set<string>();
-    const reportedForks = new Set<string>();
     // Fleet layout is physical: crew profiles nest inside their lead's dir,
     // so walk the tree (bounded by the fleet depth cap). Data dirs without a
     // bot.yaml (sandbox/, skills/, rotations) are descended harmlessly but
@@ -494,8 +511,9 @@ export class BotStore {
             if (!seenIds.has(m.id)) {
               seenIds.add(m.id);
               manifests.push(m);
-            } else if (!reportedForks.has(m.id)) {
-              reportedForks.add(m.id);
+            } else if (!REPORTED_FORKS.has(sub)) {
+              // Once per copy per run: the roster is read often, the log shouldn't fill.
+              REPORTED_FORKS.add(sub);
               logger.warn({ botId: m.id, dir: sub }, 'Duplicate physical bot profile — roster keeps only the first occurrence; run `mercury` and remove the stale copy');
             }
           }

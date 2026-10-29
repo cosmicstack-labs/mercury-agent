@@ -275,6 +275,12 @@ export interface MercuryConfig {
   web: {
     enabled: boolean;
     port: number;
+    /**
+     * Extra browser origins allowed to call /api/* with a Bearer token
+     * (CORS). Mercury Desktop's own origins are always allowed; list a
+     * self-hosted web build or a dev server here. Never '*'.
+     */
+    corsOrigins?: string[];
   };
   mcp?: McpConfig;
 }
