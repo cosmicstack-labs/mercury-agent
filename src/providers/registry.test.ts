@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BaseProvider } from './base.js';
 import { ProviderRegistry } from './registry.js';
+import { getDefaultConfig } from '../utils/config.js';
 
 function provider(name: string, model: string): BaseProvider {
   return {
@@ -102,5 +103,27 @@ describe('usable providers (a bot always gets a provider that can answer)', () =
   it('with nothing usable the configured default is still returned (its error is the honest one)', () => {
     const r = registryWith('openai', [['openai', false]]);
     expect(r.getDefault().name).toBe('openai');
+  });
+});
+
+/**
+ * `create` builds its candidate list by hand, so a provider wired everywhere
+ * else (config schema, isProviderConfigured, createProvider, doctor, web UI)
+ * can still be left out of it — which is exactly what happened to LM Studio:
+ * a config with LM Studio as the only provider registered nothing and the CLI
+ * exited with "No LLM providers available".
+ */
+describe('ProviderRegistry.create registration', () => {
+  it('registers LM Studio when it is the only configured provider', async () => {
+    const config = getDefaultConfig();
+    config.providers.default = 'lmStudio';
+    config.providers.lmStudio.baseUrl = 'http://127.0.0.1:1234/v1';
+    config.providers.lmStudio.model = 'qwen3-8b';
+    config.providers.lmStudio.enabled = true;
+
+    const registry = await ProviderRegistry.create(config);
+
+    expect(registry.hasProviders()).toBe(true);
+    expect(registry.get('lmStudio')?.name).toBe('lmStudio');
   });
 });

@@ -84,6 +84,7 @@ export class ProviderRegistry {
       config.providers.chatgptWeb,
       config.providers.githubCopilot,
       config.providers.litellm,
+      config.providers.lmStudio,
     ];
 
     // Load only configured providers in parallel
