@@ -416,6 +416,7 @@ function isProviderConfiguredSafe(p: import('../utils/config.js').ProviderConfig
   if (p.name === 'ollamaCloud') return p.apiKey.length > 0 && p.baseUrl.length > 0;
   if (p.name === 'atlascloud') return p.apiKey.length > 0 && p.baseUrl.length > 0 && p.model.length > 0;
   if (p.name === 'openaiCompat') return p.baseUrl.length > 0 && p.model.length > 0;
+  if (p.name === 'openrouter') return p.apiKey.length > 0 && p.baseUrl.length > 0 && p.model.length > 0;
   if (p.name === 'chatgptWeb' || p.name === 'githubCopilot') return p.model.length > 0;
   return p.apiKey.length > 0;
 }

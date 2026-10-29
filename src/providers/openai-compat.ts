@@ -29,6 +29,47 @@ function withReasoningPref(providerName: string): typeof fetch {
   };
 }
 
+/**
+ * OpenRouter serves the same weights from many hosts. `routing` pins one: the
+ * gateway reads a `provider` block in the body (`order`, `quantizations`,
+ * `allow_fallbacks`), which the OpenAI SDK has no field for — so it is written
+ * on the wire, the same way the reasoning level above is.
+ *
+ * Only `openrouter` gets this: another gateway that happened to understand the
+ * key would be a coincidence, and sending it could be a hard 400.
+ */
+function withOpenRouterRouting(config: ProviderConfig): typeof fetch {
+  const routing = config.routing;
+  const order = routing?.order ?? [];
+  const quantizations = routing?.quantizations ?? [];
+  if (config.name !== 'openrouter' || (order.length === 0 && quantizations.length === 0)) {
+    return globalThis.fetch;
+  }
+  return async (input, init) => {
+    if (typeof init?.body === 'string') {
+      try {
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+        body.provider = {
+          ...(order.length > 0 ? { order } : {}),
+          ...(quantizations.length > 0 ? { quantizations } : {}),
+          // A pinned endpoint that is down should fail loudly rather than be
+          // swapped for another host behind the caller's back.
+          allow_fallbacks: routing?.allowFallbacks ?? false,
+        };
+        init = { ...init, body: JSON.stringify(body) };
+      } catch { /* not JSON — pass through */ }
+    }
+    return globalThis.fetch(input, init);
+  };
+}
+
+/** One hook for the wire: routing when it applies, the reasoning level otherwise. */
+function openaiCompatFetch(config: ProviderConfig): typeof fetch | undefined {
+  if (providerHasReasoningControl(config.name)) return withReasoningPref(config.name);
+  const routed = withOpenRouterRouting(config);
+  return routed === globalThis.fetch ? undefined : routed;
+}
+
 export class OpenAICompatProvider extends BaseProvider {
   readonly name: string;
   readonly model: string;
@@ -48,7 +89,7 @@ export class OpenAICompatProvider extends BaseProvider {
       headers: aimlapiHeaders(config.baseUrl),
       // Only providers with a reasoning control get the hook; the rest keep
       // the SDK's default fetch untouched.
-      fetch: providerHasReasoningControl(config.name) ? withReasoningPref(config.name) : undefined,
+      fetch: openaiCompatFetch(config),
     });
     this.modelInstance = useChatApi
       ? this.client.chat(config.model)

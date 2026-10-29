@@ -248,6 +248,7 @@ Mercury tries your default provider first and falls back to the others if it fai
 | Ollama Local | your local model | none |
 | LM Studio | your local model | none |
 | OpenAI-compatible | any | `OPENAI_COMPAT_API_KEY` and `OPENAI_COMPAT_BASE_URL` |
+| OpenRouter | any namespaced id, e.g. `anthropic/claude-sonnet-4.6` | `OPENROUTER_API_KEY` (base URL defaults to `https://openrouter.ai/api/v1`) |
 
 LiteLLM and GitHub Copilot endpoints are also available through `mercury doctor`.
 

@@ -33,7 +33,7 @@ providers.post('/api/providers/:name', async (c) => {
   const body = await c.req.json();
   const config = loadConfig();
 
-  const validNames: ProviderName[] = ['aimlapi', 'mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'atlascloud', 'ollamaCloud', 'ollamaLocal', 'atomicChat', 'openaiCompat', 'litellm', 'lmStudio', 'mimo', 'mimoTokenPlan'];
+  const validNames: ProviderName[] = ['aimlapi', 'mercuryCloud', 'openai', 'anthropic', 'deepseek', 'grok', 'atlascloud', 'ollamaCloud', 'ollamaLocal', 'atomicChat', 'openaiCompat', 'openrouter', 'litellm', 'lmStudio', 'mimo', 'mimoTokenPlan'];
   if (!validNames.includes(providerName)) {
     return c.json({ error: 'Unknown provider' }, 400);
   }

@@ -193,6 +193,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
   { key: 'openaiCompat', label: 'OpenAI Compilations' },
+  { key: 'openrouter', label: 'OpenRouter' },
   { key: 'mimo', label: 'MiMo (Xiaomi)' },
   { key: 'mimoTokenPlan', label: 'MiMo Token Plan (Xiaomi)' },
   { key: 'lmStudio', label: 'LM Studio' },
