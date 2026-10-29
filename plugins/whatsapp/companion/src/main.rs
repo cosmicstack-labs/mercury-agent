@@ -138,6 +138,12 @@ pub async fn resolve_phone(client: &Client, jid: &Jid, alt: Option<&Jid>) -> Opt
     if let Some(phone) = known(client.get_lid_pn_entry(jid).await.ok().flatten()) {
         return Some(phone);
     }
+    // One lookup per unknown LID per window: a stranger writing again and
+    // again mustn't turn this device into a stream of lookups (WhatsApp
+    // watches for that), and the answer won't change within minutes.
+    if !lookup_due(&jid.user, std::time::Instant::now()) {
+        return None;
+    }
     if let Err(e) = client.contacts().is_on_whatsapp(&[jid.to_non_ad()]).await {
         log(format!("couldn't look up a sender's number (LID {}): {e}", masked(&jid.user)));
     }
@@ -146,6 +152,23 @@ pub async fn resolve_phone(client: &Client, jid: &Jid, alt: Option<&Jid>) -> Opt
         log(format!("a sender's number is unknown (LID {}): Mercury will treat them as unknown", masked(&jid.user)));
     }
     phone
+}
+
+/// How long an unknown LID waits before WhatsApp is asked about it again.
+const LOOKUP_EVERY: Duration = Duration::from_secs(600);
+
+/// Whether this LID may be looked up now (and, if so, note that it was).
+fn lookup_due(lid: &str, now: std::time::Instant) -> bool {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if last.get(lid).is_some_and(|t| now.duration_since(*t) < LOOKUP_EVERY) {
+        return false;
+    }
+    if last.len() >= 1000 {
+        last.retain(|_, t| now.duration_since(*t) < LOOKUP_EVERY);
+    }
+    last.insert(lid.to_string(), now);
+    true
 }
 
 /// The last four characters, for logs: enough to tell people apart, not to identify them.
@@ -647,6 +670,15 @@ mod tests {
         assert_eq!(phone_of(&jid("100000012345678@lid")), None);
         assert_eq!(phone_of(&jid("100000012345678@hosted.lid")), None);
         assert_eq!(phone_of(&jid("120363000000000000@g.us")), None);
+    }
+
+    #[test]
+    fn an_unknown_lid_is_looked_up_at_most_once_per_window() {
+        let t0 = std::time::Instant::now();
+        assert!(lookup_due("test-lid-1", t0));
+        assert!(!lookup_due("test-lid-1", t0 + Duration::from_secs(60)));
+        assert!(lookup_due("test-lid-2", t0), "another sender has its own window");
+        assert!(lookup_due("test-lid-1", t0 + LOOKUP_EVERY + Duration::from_secs(1)));
     }
 
     #[test]
