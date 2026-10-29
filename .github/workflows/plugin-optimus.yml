@@ -52,6 +52,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
       - name: Fallback libraries (Linux)
         # Copies of the non-glibc libraries the companion links (ALSA, libxcb and
         # their dependencies), used only on systems that lack them.
@@ -90,6 +91,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run build
