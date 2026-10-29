@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import system, { setScheduler } from './system.js';
-import status from './status.js';
+import status, { getStatus, updateStatus } from './status.js';
 import type { Scheduler } from '../../core/scheduler.js';
 
 /**
@@ -57,12 +57,21 @@ describe('GET /api/usage', () => {
       ],
     });
 
-    const res = await system.request('/api/usage');
-    const body = (await res.json()) as Record<string, unknown>;
+    // A live budget announced by the runtime wins over the tracker's snapshot, so this case pins
+    // the fallback: nobody announced one (`tokenBudget: 0`), and the file is the answer. The live
+    // case has its own tests in usage-budget.test.ts.
+    const live = getStatus().tokenBudget;
+    updateStatus({ tokenBudget: 0 });
+    try {
+      const res = await system.request('/api/usage');
+      const body = (await res.json()) as Record<string, unknown>;
 
-    expect(body.available).toBe(true);
-    expect(body.dailyUsed).toBe(1234);
-    expect(body.dailyBudget).toBe(80000000);
+      expect(body.available).toBe(true);
+      expect(body.dailyUsed).toBe(1234);
+      expect(body.dailyBudget).toBe(80000000);
+    } finally {
+      updateStatus({ tokenBudget: live });
+    }
   });
 
   it('is NOT available when the tracker exists and cannot be read', async () => {
