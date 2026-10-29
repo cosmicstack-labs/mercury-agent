@@ -50,6 +50,55 @@ export function withReasoningPref(providerName: string, baseUrl?: string, base: 
   };
 }
 
+/**
+ * OpenRouter serves the same weights from many hosts. `routing` pins one: the
+ * gateway reads a `provider` block in the body (`order`, `quantizations`,
+ * `allow_fallbacks`), which the OpenAI SDK has no field for — so it is written
+ * on the wire, the same way the reasoning level above is.
+ *
+ * Only `openrouter` gets this: another gateway that happened to understand the
+ * key would be a coincidence, and sending it could be a hard 400.
+ */
+function withOpenRouterRouting(config: ProviderConfig, base: typeof fetch = globalThis.fetch): typeof fetch {
+  const routing = config.routing;
+  const order = routing?.order ?? [];
+  const quantizations = routing?.quantizations ?? [];
+  if (config.name !== 'openrouter' || (order.length === 0 && quantizations.length === 0)) {
+    return base;
+  }
+  return async (input, init) => {
+    if (typeof init?.body === 'string') {
+      try {
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+        body.provider = {
+          ...(order.length > 0 ? { order } : {}),
+          ...(quantizations.length > 0 ? { quantizations } : {}),
+          // A pinned endpoint that is down should fail loudly rather than be
+          // swapped for another host behind the caller's back.
+          allow_fallbacks: routing?.allowFallbacks ?? false,
+        };
+        init = { ...init, body: JSON.stringify(body) };
+      } catch { /* not JSON — pass through */ }
+    }
+    return base(input, init);
+  };
+}
+
+/**
+ * The one hook for the wire, composing both body mutations on the same
+ * request: the endpoint pin (OpenRouter's `provider` block) and the reasoning
+ * level (the effort field). Routing is the inner layer and reasoning wraps it,
+ * so a reasoning retry that resends without its field still carries the pin —
+ * previously a provider with a reasoning control returned early and silently
+ * dropped the other hook's mutation.
+ */
+function openaiCompatFetch(config: ProviderConfig): typeof fetch | undefined {
+  const routed = withOpenRouterRouting(config);
+  const reasoning = providerHasReasoningControl(config.name);
+  if (!reasoning && routed === globalThis.fetch) return undefined;
+  return reasoning ? withReasoningPref(config.name, config.baseUrl, routed) : routed;
+}
+
 export class OpenAICompatProvider extends BaseProvider {
   readonly name: string;
   readonly model: string;
@@ -76,12 +125,13 @@ export class OpenAICompatProvider extends BaseProvider {
       // configured, overrides the SDK's Bearer header.
       headers: basicAuth ? { ...attribution, ...basicAuth } : attribution,
       // Only providers with a reasoning control get the hook; the rest keep
-      // the SDK's default fetch untouched.
+      // the SDK's default fetch untouched. Routing (OpenRouter's endpoint pin)
+      // composes with it — see openaiCompatFetch.
       // Chat Completions servers also get their reasoning field carried
       // through (reasoning-wire.ts); the Responses API has it natively.
       fetch: useChatApi
-        ? reasoningAsThinkTags(providerHasReasoningControl(config.name) ? withReasoningPref(config.name, config.baseUrl) : globalThis.fetch)
-        : providerHasReasoningControl(config.name) ? withReasoningPref(config.name, config.baseUrl) : undefined,
+        ? reasoningAsThinkTags(openaiCompatFetch(config) ?? globalThis.fetch)
+        : openaiCompatFetch(config),
     });
     this.modelInstance = useChatApi
       ? withThinkTagReasoning(this.client.chat(config.model))
