@@ -1,0 +1,122 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--ink));
+  font-family: "Geist Variable", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 24px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern", "liga", "calt";
+  overscroll-behavior: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* Only what the user may want to copy is selectable. */
+input, textarea, pre, code, [data-selectable], .prose {
+  user-select: text;
+  cursor: auto;
+}
+
+*:focus { outline: none; }
+/* Text fields show focus on their own container (see Composer, Input),
+   not with a ring drawn inside a rounded box. */
+textarea:focus-visible, input:focus-visible { outline: none; }
+*:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--ink) / 0.14); border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--ink) / 0.26); background-clip: padding-box; border: 3px solid transparent; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* The whole chrome is a drag region on macOS; controls opt out. */
+[data-tauri-drag-region] { -webkit-app-region: drag; }
+button, input, textarea, a, [role="button"], [data-no-drag] { -webkit-app-region: no-drag; }
+
+/* ── Prose: the agent's answers ── */
+.prose { font-size: 16px; line-height: 1.7; color: rgb(var(--ink)); letter-spacing: -0.003em; }
+.prose > * + * { margin-top: 0.85em; }
+.prose p { margin: 0; }
+.prose h1, .prose h2, .prose h3, .prose h4 { font-weight: 600; letter-spacing: -0.01em; color: rgb(var(--ink)); }
+.prose h1 { font-size: 1.35em; } .prose h2 { font-size: 1.2em; } .prose h3 { font-size: 1.08em; } .prose h4 { font-size: 1em; }
+.prose ul, .prose ol { padding-left: 1.4em; }
+.prose ul { list-style: disc; } .prose ol { list-style: decimal; }
+.prose ul ul { list-style: circle; } .prose ul ul ul { list-style: square; }
+.prose li + li { margin-top: 0.3em; }
+.prose li::marker { color: rgb(var(--ink-3)); }
+.prose ol > li::marker { font-variant-numeric: tabular-nums; font-weight: 500; }
+.prose li > p { margin: 0; }
+.prose a { color: rgb(var(--accent)); text-decoration: underline; text-decoration-color: rgb(var(--accent) / 0.4); text-underline-offset: 2px; }
+.prose strong { font-weight: 600; }
+.prose code { font-family: "Geist Mono Variable", ui-monospace, monospace; font-size: 0.9em; background: rgb(var(--ink) / 0.07); padding: 1px 5px; border-radius: 5px; }
+.prose pre code { background: none; padding: 0; font-size: inherit; }
+.prose blockquote { border-left: 2px solid rgb(var(--ink) / 0.18); padding-left: 12px; color: rgb(var(--ink-2)); }
+.prose table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.md-table { overflow-x: auto; border: 1px solid rgb(var(--ink) / 0.12); border-radius: 10px; }
+.md-table table { border: 0; }
+.md-table th, .md-table td { border: 0; border-bottom: 1px solid rgb(var(--ink) / 0.08); }
+.md-table tr:last-child td { border-bottom: 0; }
+.md-table tbody tr:nth-child(even) { background: rgb(var(--ink) / 0.025); }
+.prose th, .prose td { border: 1px solid rgb(var(--ink) / 0.12); padding: 6px 10px; text-align: left; }
+.prose th { background: rgb(var(--ink) / 0.04); font-weight: 600; }
+.prose hr { border: 0; border-top: 1px solid rgb(var(--ink) / 0.12); }
+.prose img { max-width: 100%; border-radius: 8px; }
+
+/* ── Optimus face ── */
+@keyframes optimus-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes optimus-scan { 0%, 100% { transform: translateX(-3px); } 50% { transform: translateX(3px); } }
+@keyframes optimus-mouth { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+.optimus-eyes-pulse { animation: optimus-pulse 1.6s ease-in-out infinite; }
+.optimus-eyes-scan { animation: optimus-scan 1.1s ease-in-out infinite; }
+.optimus-mouth { animation: optimus-mouth 0.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .optimus-eyes-pulse, .optimus-eyes-scan, .optimus-mouth { animation: none; } }
+
+/* ── Code blocks (Shiki emits both themes as CSS variables) ── */
+.md-code { border: 1px solid rgb(var(--ink) / 0.1); border-radius: 12px; overflow: hidden; background: rgb(var(--surface-2)); }
+.md-code-bar { display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 6px 0 12px; border-bottom: 1px solid rgb(var(--ink) / 0.08); font-size: 12px; color: rgb(var(--ink-3)); }
+.md-code-lang { font-family: "Geist Mono Variable", ui-monospace, monospace; text-transform: lowercase; }
+.md-code-btn { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 7px; border-radius: 6px; color: rgb(var(--ink-3)); }
+.md-code-btn:hover { background: rgb(var(--ink) / 0.07); color: rgb(var(--ink)); }
+.md-code-btn-on { color: rgb(var(--accent)); }
+.md-code-body, .md-code-body pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-family: "Geist Mono Variable", ui-monospace, monospace; font-size: 13.5px; line-height: 1.6; background: transparent !important; }
+.md-code-body > pre { padding: 0; }
+.md-wrap, .md-wrap pre { white-space: pre-wrap; word-break: break-word; }
+.shiki, .shiki span { color: var(--shiki-light); background-color: transparent !important; }
+.dark .shiki, .dark .shiki span { color: var(--shiki-dark); }
+
+/* ── Task lists ── */
+.prose ul.md-task-list { list-style: none; padding-left: 0.2em; }
+.md-task { display: flex; align-items: flex-start; gap: 9px; }
+.md-check { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; margin-top: 0.27em; border-radius: 5px; border: 1.5px solid rgb(var(--ink) / 0.3); color: rgb(var(--on-accent)); }
+.md-check-on { background: rgb(var(--accent)); border-color: rgb(var(--accent)); }
+.md-task-done .md-task-text { color: rgb(var(--ink-3)); text-decoration: line-through; text-decoration-color: rgb(var(--ink) / 0.3); }
+
+/* ── Alerts ── */
+.md-alert { border-left: 3px solid var(--alert); background: color-mix(in srgb, var(--alert) 8%, transparent); border-radius: 0 10px 10px 0; padding: 10px 14px; }
+.md-alert-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; color: var(--alert); margin-bottom: 4px; }
+.md-alert-body > * + * { margin-top: 0.5em; }
+.md-alert-note { --alert: rgb(var(--cyan)); }
+.md-alert-tip { --alert: rgb(var(--accent)); }
+.md-alert-important { --alert: #8B5CF6; }
+.md-alert-warning { --alert: rgb(var(--amber)); }
+.md-alert-caution { --alert: rgb(var(--red)); }
+
+/* ── Live thought process ── */
+.thought-stream { mask-image: linear-gradient(to bottom, transparent 0, #000 18px); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); }

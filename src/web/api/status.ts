@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isLoopbackRequest } from '../middleware.js';
+import { isLoopbackRequest, authenticateRequest } from '../middleware.js';
+import { apiContract } from '../api-contract.js';
 import { peekPluginManager } from '../../plugins/manager.js';
 import { getLoopLag } from '../../utils/loop-lag.js';
 
@@ -46,7 +47,10 @@ let runtimeVersion = '';
 function versionString(): string {
   if (runtimeVersion) return runtimeVersion;
   try {
+    // tsup bakes the version into the bundle (globalThis.__MERCURY_VERSION__);
+    // package.json is only reachable when running from source.
     runtimeVersion = process.env.MERCURY_CHANNEL_VERSION
+      || (globalThis as { __MERCURY_VERSION__?: string }).__MERCURY_VERSION__
       || JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json'), 'utf8')).version
       || '';
   } catch { runtimeVersion = ''; }
@@ -54,16 +58,24 @@ function versionString(): string {
 }
 
 /**
- * Liveness for `mercury attach` — no auth, loopback only, answers the
- * moment the listener is bound (before channels and bots have booted). The
- * pid lets a launcher tell "my runtime, still booting" from "some other
- * process owns this port" without a restart.
+ * Liveness for `mercury attach` and the handshake for every remote client.
+ *
+ *  - Loopback: no auth, answers the moment the listener is bound (before
+ *    channels and bots have booted). The pid lets a launcher tell "my
+ *    runtime, still booting" from "some other process owns this port".
+ *  - Any other peer: only with a valid credential (device token or web
+ *    session). Unauthenticated, the runtime stays invisible (404), exactly
+ *    as before — a scanner learns nothing. A client with no token yet goes
+ *    through POST /api/auth/token, whose reply carries the same contract.
+ *
+ * `apiVersion` / `features` are the contract (api-contract.ts); `version`
+ * is the package version, for display only.
  */
 status.get('/api/health', (c) => {
-  if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
+  if (!isLoopbackRequest(c) && !authenticateRequest(c)) return c.json({ error: 'Not found' }, 404);
   const lag = getLoopLag();
   const plugins = peekPluginManager()?.health();
-  return c.json({ ok: true, pid: process.pid, version: versionString(), state: currentStatus.state, booting: currentStatus.state === 'booting', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) }, ...(plugins ? { plugins: { safeMode: plugins.safeMode, running: plugins.running, tools: plugins.tools } } : {}) });
+  return c.json({ ok: true, pid: process.pid, version: versionString(), ...apiContract(), state: currentStatus.state, booting: currentStatus.state === 'booting', setupRequired: currentStatus.state === 'setup', loopLag: { p99Ms: Math.round(lag.p99Ms), maxMs: Math.round(lag.maxMs) }, ...(plugins ? { plugins: { safeMode: plugins.safeMode, running: plugins.running, tools: plugins.tools } } : {}) });
 });
 
 status.get('/api/status', (c) => {
@@ -76,9 +88,14 @@ status.get('/api/status', (c) => {
   }
 
   return c.json({
+    // The witness: a caller that does not find `available: true` must not read the rest of this
+    // body as fact. `uptimeSeconds` is the number, so no client has to invent a zero from an
+    // absent field — `uptime` stays for the dashboard that already reads it.
+    available: true,
     running: s.running,
     state: s.state,
     uptime: Math.floor(process.uptime()),
+    uptimeSeconds: Math.floor(process.uptime()),
     providers: providersMap,
     tokens: {
       dailyUsed: s.tokensUsed,

@@ -14,11 +14,15 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
-import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../providers/registry.js';
+import { ArtifactCollector } from '../artifacts/collector.js';
+import { artifactStore, type Artifact } from '../artifacts/store.js';
+import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
+import { getMercuryHome } from '../utils/config.js';
+import { createProvider } from '../providers/registry.js';
 import type { BaseProvider } from '../providers/base.js';
 import { Lifecycle } from './lifecycle.js';
 import { Scheduler } from './scheduler.js';
-import { ProgrammingMode } from './programming-mode.js';
+import { ProgrammingMode, scopedProgrammingState, type ProgrammingSnapshot } from './programming-mode.js';
 import { ResearchMode } from './research-mode.js';
 import { SaverMode, NORMAL_HISTORY_WINDOW } from './saver-mode.js';
 import { BackgroundTaskManager } from './background-tasks.js';
@@ -42,7 +46,7 @@ import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import { classifyResearchIntent } from './research-intent.js';
 import type { SpotifyClient } from '../spotify/client.js';
-import { normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
+import { fallbackSessionTitle, isThinOpening, normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
 import { getCloudTokenStore } from '../cloud/token-store.js';
 import {
@@ -98,6 +102,7 @@ import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-command.js';
 import { modelSeesImages, withAttachments } from './attachments.js';
+import { attachmentRefs } from '../web/api/uploads.js';
 import { AlertGate } from './alert-gate.js';
 import { setPluginImagesAllowed } from '../plugins/tool-bridge.js';
 import { handleCallCommand } from '../plugins/call-schedule.js';
@@ -133,7 +138,7 @@ import type { ApplyResult } from '../memory/beliefs.js';
  */
 export function stepAwareTextStream(
   fullStream: AsyncIterable<any>,
-  onReasoning?: (preview: string | null) => void,
+  onReasoning?: (preview: string | null, delta?: string) => void,
 ): AsyncIterable<string> {
   return (async function* () {
     let firstStep = true;
@@ -154,7 +159,7 @@ export function stepAwareTextStream(
         // Live thinking feedback: the model reasoning before speaking is
         // surfaced as a preview instead of dead air.
         reasoningBuf = (reasoningBuf + part.text).slice(-400);
-        onReasoning?.(reasoningBuf.slice(-160));
+        onReasoning?.(reasoningBuf.slice(-160), part.text);
         continue;
       }
       if (part.type === 'text-delta' && part.text) {
@@ -1058,8 +1063,35 @@ export class Agent {
 
   queueMessage(message: ChannelMessage, workKey?: string): void {
     if (workKey && this.queuedWorkKeys.has(workKey)) return;
-    this.messageQueue.push({ message, workKey });
+    // Someone is waiting on the line: a question asked on a call goes ahead
+    // of queued chat work (behind earlier call questions, in order).
+    if (message.metadata?.voiceCall === true) {
+      let at = 0;
+      while (at < this.messageQueue.length && this.messageQueue[at].message.metadata?.voiceCall === true) at++;
+      this.messageQueue.splice(at, 0, { message, workKey });
+    } else {
+      this.messageQueue.push({ message, workKey });
+    }
     if (workKey) this.queuedWorkKeys.add(workKey);
+  }
+
+  /** Is a turn for this session running, or waiting in the queue? */
+  isBusyWith(sessionId: string): boolean {
+    const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
+    if (this.processing && of(this.currentMessage) === sessionId) return true;
+    return this.messageQueue.some((i) => of(i.message) === sessionId);
+  }
+
+  /**
+   * Where work for one channel stands: running now, waiting in the queue,
+   * or neither; and what Mercury is busy with when it's something else.
+   */
+  workStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; busyWith?: string } {
+    const current = this.currentMessage?.channelId;
+    if (this.processing && current === channelId) return { state: 'running' };
+    const busyWith = this.processing && current ? (this.currentActivity || 'another task').replace(/^\W+/u, '').trim() || 'another task' : undefined;
+    if (this.messageQueue.some((i) => i.message.channelId === channelId)) return { state: 'queued', busyWith };
+    return { state: 'none', busyWith };
   }
 
   private async handleDuplicateWork(entry: WorkEntry): Promise<void> {
@@ -1797,6 +1829,45 @@ export class Agent {
     this.syncBgTasksToTui();
   }
 
+  /**
+   * Session-scoped coding. A message that names a programming mode (Mercury
+   * Desktop's Code surface) runs with THAT session's mode, plan and folder;
+   * everything else (terminal, chat, other sessions) keeps the global mode.
+   * Turns are serial (processQueue), so a swap-run-restore is race-free.
+   */
+  private readonly sessionProgramming = new Map<string, ProgrammingSnapshot>();
+
+  private async withSessionProgramming(msg: ChannelMessage, run: () => Promise<void>): Promise<void> {
+    const requested = scopedProgrammingState(msg.metadata?.programming);
+    const sessionKey = typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : msg.sessionId;
+    if (!requested || !sessionKey) return run();
+    const globalMode = this.programmingMode.snapshot();
+    const globalCwd = this.capabilities.getCwd();
+    const cwd = typeof msg.metadata?.programmingCwd === 'string' ? msg.metadata.programmingCwd : null;
+    const saved = this.sessionProgramming.get(sessionKey);
+    this.programmingMode.restore({
+      state: requested,
+      projectContext: cwd ?? saved?.projectContext ?? null,
+      // A plan made in this session stays with this session.
+      lastPlan: saved?.lastPlan ?? null,
+    });
+    if (cwd) {
+      this.capabilities.setCwd(cwd);
+      this.capabilities.permissions.addTempScope(cwd, true, true);
+    }
+    try {
+      await run();
+    } finally {
+      this.sessionProgramming.set(sessionKey, this.programmingMode.snapshot());
+      if (this.sessionProgramming.size > 200) {
+        const oldest = this.sessionProgramming.keys().next().value;
+        if (oldest !== undefined) this.sessionProgramming.delete(oldest);
+      }
+      this.programmingMode.restore(globalMode);
+      if (cwd) this.capabilities.setCwd(globalCwd);
+    }
+  }
+
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     if (this.messageQueue.length === 0) return;
@@ -1813,7 +1884,7 @@ export class Agent {
         this.currentWorkKey = item.workKey ?? null;
         try {
           if (item.workKey) this.workLedger.markRunning(item.workKey);
-          await this.handleMessage(msg);
+          await this.withSessionProgramming(msg, () => this.handleMessage(msg));
           if (item.workKey && this.workLedger.get(item.workKey)?.status === 'running') {
             this.workLedger.markFailed(item.workKey, 'Work ended without producing a durable final response');
           }
@@ -1952,11 +2023,31 @@ export class Agent {
    * Record the model's plan checklist (update_plan tool) into the TUI so the
    * user sees which step is being implemented. Never throws.
    */
-  private maybeRecordPlanProgress(channel: any, toolName: string, input: unknown): void {
+  /** Tell the owner about this turn's artifacts: a card in the apps, a line in the terminal (it can't show them). */
+  private announceArtifacts(channel: unknown, items: Artifact[], targetId?: string): void {
+    try {
+      if (channel instanceof CLIChannel) {
+        const list = items.slice(0, 6).map((a) => `${a.name} (${artifactKindLabel(a.kind)}, ${formatBytes(a.size)})`).join(', ');
+        const more = items.length > 6 ? ` and ${items.length - 6} more` : '';
+        const where = items.length === 1 ? `\n  ${items[0].originalPath}` : '';
+        channel.sendSystemNotice(`◆ ${items.length === 1 ? 'Artifact' : `${items.length} artifacts`}: ${list}${more}${where}\n  Open them in Mercury Desktop → Artifacts.`);
+      } else {
+        const app = channel as { sendArtifacts?: (refs: ReturnType<typeof artifactRef>[], targetId?: string) => void } | null;
+        if (typeof app?.sendArtifacts === 'function') app.sendArtifacts(items.map(artifactRef), targetId);
+      }
+    } catch { /* telling about artifacts must never break a turn */ }
+  }
+
+  private maybeRecordPlanProgress(channel: unknown, toolName: string, input: unknown, targetId?: string): void {
     try {
       if (toolName !== 'update_plan') return;
-      if (!(channel instanceof CLIChannel)) return;
-      channel.setPlanProgress((input as any)?.steps);
+      const steps = (input as { steps?: Parameters<CLIChannel['setPlanProgress']>[0] } | null)?.steps;
+      if (channel instanceof CLIChannel) channel.setPlanProgress(steps);
+      else {
+        // The apps (Chat, Code): a card above the composer, kept with the conversation.
+        const app = channel as { sendPlan?: (s: typeof steps, targetId?: string) => void } | null;
+        if (typeof app?.sendPlan === 'function') app.sendPlan(steps, targetId);
+      }
     } catch { /* checklist must never break the tool loop */ }
   }
 
@@ -2107,9 +2198,9 @@ export class Agent {
     }
 
     this.config.providers.default = providerName as any;
-    const previousProviders = this.providers;
-    this.providers = await ProviderRegistryImpl.create(this.config, getCloudTokenStore());
-    previousProviders.destroy();
+    // In place: bots, kanban and the IDE hold this same registry, so a new
+    // instance would leave them on the old (destroyed) providers.
+    await this.providers.reload(this.config, getCloudTokenStore());
     const selected = this.providers.getDefault();
     const model = selected.getModel();
 
@@ -2154,6 +2245,23 @@ export class Agent {
       if (pc && typeof pc === 'object') (pc as { model?: string }).model = model;
     }
     return this.switchSessionProvider(providerName);
+  }
+
+  /**
+   * Apply provider settings saved elsewhere (desktop Settings, dashboard)
+   * without a restart. Re-reads mercury.yaml so this in-memory config can't
+   * later write a stale key back over the new one, then reloads the shared
+   * registry in place.
+   */
+  async reloadProviders(): Promise<{ ok: boolean; providers: string[]; default: string; model: string }> {
+    const fresh = loadConfig();
+    Object.assign(this.config.providers, fresh.providers);
+    this.config.memory.learning = { ...this.config.memory.learning, provider: fresh.memory.learning?.provider };
+    if (fresh.bots?.fleets && this.config.bots?.fleets) this.config.bots.fleets.crewProvider = fresh.bots.fleets.crewProvider;
+    const { registered } = await this.providers.reload(this.config, getCloudTokenStore());
+    const current = this.getCurrentProvider();
+    updateCliProviderStatus(this.channels.get('cli'), current.name, current.model);
+    return { ok: registered.length > 0, providers: registered, default: current.name, model: current.model };
   }
 
   async birth(): Promise<void> {
@@ -2725,7 +2833,14 @@ export class Agent {
         content: msg.content,
         timestamp: msg.timestamp,
         externalMessageId: msg.id,
-        metadata: { channelType: msg.channelType, channelId: msg.channelId, workCwd: this.capabilities.getCwd(), ...(requestId ? { requestId } : {}) },
+        metadata: {
+          channelType: msg.channelType,
+          channelId: msg.channelId,
+          workCwd: this.capabilities.getCwd(),
+          ...(requestId ? { requestId } : {}),
+          // Files the owner sent with this turn, as refs a client can fetch back.
+          ...(() => { const refs = attachmentRefs(msg.metadata?.attachments); return refs.length ? { attachments: refs } : {}; })(),
+        },
       });
       // One read of the session per turn (it used to be re-read three times).
       const activeSession = this.sessions.get(canonicalSession.id);
@@ -2857,6 +2972,13 @@ export class Agent {
       // Compact per-turn tool trace, written to the session at turn end so
       // the next turn's history carries what was read and written.
       const turnToolTrace: string[] = [];
+      // Files this turn makes that are worth keeping (images, PDFs, reports…): artifacts of the conversation.
+      const artifactCollector = new ArtifactCollector({
+        startedAt: Date.now(),
+        cwd: this.capabilities.getCwd(),
+        surface: this.programmingMode.isActive() ? 'code' : 'chat',
+        mercuryHome: getMercuryHome(),
+      });
       const noteToolSteps = (toolCalls: readonly any[] | undefined, toolResults: readonly any[] | undefined): void => {
         if (!toolCalls || !toolResults) return;
         for (let i = 0; i < toolCalls.length; i++) {
@@ -2993,7 +3115,8 @@ export class Agent {
                     const trValue = toolResultValue(toolResults[i]);
                     recordExecuteToolResult(tc.toolName, trValue);
                     this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, trValue);
-                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                    this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
+                    artifactCollector.observe(tc.toolName, tc.input, trValue, this.capabilities.getCwd());
                     const resultStr = typeof trValue === 'string' ? trValue : JSON.stringify(trValue ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -3247,7 +3370,8 @@ export class Agent {
                   }
                   recordExecuteToolResult(tc.toolName, toolResultValue(toolResults[i]));
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, toolResultValue(toolResults[i]));
-                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
+                  artifactCollector.observe(tc.toolName, tc.input, toolResultValue(toolResults[i]), this.capabilities.getCwd());
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3340,9 +3464,13 @@ export class Agent {
             });
 
             const cliChThinking = channel instanceof CLIChannel ? channel : null;
+            // Clients that show the thought process live (Mercury Desktop) get the reasoning text.
+            const webChThinking = channel instanceof WebChannel ? channel : null;
+            const reasoningTarget = msg.channelId;
             const trackedStream = this.withProgressStream((async function* () {
-              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview) => {
+              for await (const chunk of (stepAwareTextStream(streamResult.fullStream, (preview, delta) => {
                 cliChThinking?.showThinkingPreview(preview);
+                if (webChThinking) webChThinking.sendReasoning(preview === null ? null : delta ?? '', reasoningTarget);
               }))) {
                 if (chunk) hasStreamedOutput = true;
                 cliChThinking?.showThinkingPreview(null);
@@ -3854,7 +3982,8 @@ export class Agent {
                     lastGuardToolFailure = `${tc.toolName}: ${guardResultText.slice(0, 120)}`;
                   }
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, guardToolResult);
-                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input);
+                  this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
+                  artifactCollector.observe(tc.toolName, tc.input, guardToolResult, this.capabilities.getCwd());
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -4167,6 +4296,11 @@ export class Agent {
         }
       }
 
+      // Keep this turn's artifacts with the conversation (Mercury's copies, deleted with the thread).
+      let turnArtifacts: Artifact[] = [];
+      if (canonicalSessionId && artifactCollector.size > 0) {
+        try { turnArtifacts = artifactCollector.finalize(canonicalSessionId, artifactStore()); } catch (err) { logger.warn({ err }, 'Keeping artifacts failed'); }
+      }
       if (canonicalSessionId) {
         if (turnToolTrace.length > 0) {
           this.sessions.appendMessage(canonicalSessionId, {
@@ -4200,8 +4334,10 @@ export class Agent {
             cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
             outputTokens: result.usage?.outputTokens ?? 0,
             ...(lastVerificationNote ? { verification: lastVerificationNote } : {}),
+            ...(turnArtifacts.length ? { artifacts: turnArtifacts.map(artifactRef) } : {}),
           },
         });
+        if (turnArtifacts.length && channel) this.announceArtifacts(channel, turnArtifacts, msg.channelId);
         if (msg.channelType !== 'internal' && msg.senderId !== 'system' && usedProvider) {
           this.scheduleSessionTitleGeneration(canonicalSessionId, usedProvider.name);
         }
@@ -4708,9 +4844,15 @@ export class Agent {
    * queued for it. Other chats keep going. Returns whether anything stopped.
    */
   stopWorkFor(channelPrefix: string, reason = 'Stopped by the owner.'): boolean {
-    const before = this.messageQueue.length;
+    const dropped = this.messageQueue.filter((i) => i.message.channelId.startsWith(channelPrefix));
     this.messageQueue = this.messageQueue.filter((i) => !i.message.channelId.startsWith(channelPrefix));
-    let stopped = this.messageQueue.length !== before;
+    // Never started: cancel them, or a restart would run them after all.
+    for (const item of dropped) {
+      if (!item.workKey) continue;
+      this.queuedWorkKeys.delete(item.workKey);
+      try { this.workLedger.markCancelled(item.workKey, reason); } catch { /* entry may not exist */ }
+    }
+    let stopped = dropped.length > 0;
     if (this.currentMessage?.channelId.startsWith(channelPrefix) && this.currentAbort && !this.currentAbort.signal.aborted) {
       this.currentAbortReason = 'stopped';
       this.currentAbort.abort();
@@ -5215,14 +5357,66 @@ Is this productive iteration or a stuck loop?`,
     if (!this.generateTitle || this.titleGenerationInFlight.has(sessionId)) return;
     const session = this.sessions.get(sessionId);
     const exchange = session.messages.filter((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'));
-    if (session.titleSource !== 'fallback' || exchange.length !== 2 || exchange[0].role !== 'user' || exchange[1].role !== 'assistant') return;
+    if (session.titleSource !== 'fallback' || exchange[0]?.role !== 'user') return;
+    // Name it after the first exchange, unless that opened with only "hi":
+    // then after the second, when there is something to name.
+    const at = exchange.length === 2 && !isThinOpening(exchange[0].content) ? 0 : exchange.length === 4 ? 2 : -1;
+    if (at < 0 || exchange[at].role !== 'user' || exchange[at + 1].role !== 'assistant') return;
+    const userText = at === 0 ? exchange[0].content : `${exchange[0].content}\n${exchange[2].content}`;
     this.titleGenerationInFlight.add(sessionId);
     const timer = setTimeout(() => {
-      void this.generateSessionTitle(sessionId, exchange[0].content, exchange[1].content, providerName).finally(() => {
+      void this.generateSessionTitle(sessionId, userText, exchange[at + 1].content, providerName).finally(() => {
         this.titleGenerationInFlight.delete(sessionId);
       });
     }, 0);
     timer.unref?.();
+  }
+
+  /**
+   * Fix titles made before titles were checked: a generated title that is
+   * really a reply ("I appreciate your request, but…") is written again,
+   * and fallback titles are re-cut from the first message. Renames don't
+   * count as activity, so nothing moves in the list. Runs once at start-up;
+   * fixed titles pass the check, so the next start finds nothing to do.
+   */
+  async repairSessionTitles(limit = 200): Promise<{ regenerated: number; recut: number }> {
+    let regenerated = 0;
+    let recut = 0;
+    for (const session of this.sessions.list()) {
+      const firstUser = session.messages.find((m) => m.role === 'user' && (m.kind ?? 'message') === 'message');
+      if (!firstUser) continue;
+      if (session.titleSource === 'fallback') {
+        const title = fallbackSessionTitle(firstUser.content);
+        if (title !== session.title) { this.sessions.updateTitle(session.id, title, 'fallback', { touch: false }); recut++; }
+        continue;
+      }
+      if (session.titleSource !== 'generated') continue;
+      const exchange = session.messages.filter((m) => (m.kind ?? 'message') === 'message' && (m.role === 'user' || m.role === 'assistant'));
+      const thin = isThinOpening(firstUser.content);
+      const tidy = normalizeGeneratedSessionTitle(session.title);
+      if (tidy && !(thin && /greeting|check-in|hello/i.test(tidy))) {
+        // A good title with wrappers left on ("# Heading"): tidy it, no model call.
+        if (tidy !== session.title) { this.sessions.updateTitle(session.id, tidy, 'generated', { touch: false }); recut++; }
+        continue;
+      }
+      if (regenerated >= limit) continue;
+      // A chat that opened with "hi" is named after what came next.
+      const users = exchange.filter((m) => m.role === 'user');
+      const userText = thin && users[1] ? `${firstUser.content}\n${users[1].content}` : firstUser.content;
+      const replyAfter = thin && users[1] ? users[1] : firstUser;
+      const reply = exchange.find((m) => m.role === 'assistant' && m.sequence > replyAfter.sequence);
+      let title: string | null = null;
+      if (this.generateTitle && reply) {
+        try {
+          title = normalizeGeneratedSessionTitle(await this.generateTitle({ userMessage: userText, assistantMessage: reply.content, providerName: '' }));
+        } catch { /* fall back below */ }
+      }
+      if (title) this.sessions.updateTitle(session.id, title, 'generated', { touch: false });
+      else this.sessions.updateTitle(session.id, fallbackSessionTitle(firstUser.content), 'fallback', { touch: false });
+      regenerated++;
+    }
+    if (regenerated || recut) logger.info({ regenerated, recut }, 'Repaired session titles');
+    return { regenerated, recut };
   }
 
   private async generateSessionTitle(sessionId: string, userMessage: string, assistantMessage: string, providerName: string): Promise<void> {

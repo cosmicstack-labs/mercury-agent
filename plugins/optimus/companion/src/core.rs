@@ -123,7 +123,7 @@ pub struct Shared {
     /// How the talk key reads, e.g. "Control+Option+M" (empty when there's none).
     pub hotkey_label: Mutex<String>,
     /// Screen operations in progress, and the (listening, working) state last reported.
-    working: Mutex<(u32, Option<(bool, bool, bool)>)>,
+    working: Mutex<(u32, Option<(bool, bool, bool, bool)>)>,
     /// Steps that failed or were stopped, with when: a voice answer is checked against them.
     pub failures: Mutex<Vec<(std::time::Instant, String)>>,
 }
@@ -136,15 +136,15 @@ impl Shared {
 
     /// Tell Mercury whether Optimus is listening and/or working (the TUI status bar shows it).
     pub fn publish_activity(&self) {
-        let (listening, muted) = match self.session.lock().unwrap().as_ref() {
-            Some(s) => (true, s.is_muted()),
-            None => (false, false),
+        let (listening, muted, speaking) = match self.session.lock().unwrap().as_ref() {
+            Some(s) => (true, s.is_muted(), s.is_speaking()),
+            None => (false, false, false),
         };
         let mut w = self.working.lock().unwrap();
-        let now = (listening, w.0 > 0, muted);
+        let now = (listening, w.0 > 0, muted, speaking);
         if w.1 != Some(now) {
             w.1 = Some(now);
-            self.out.notify("mercury/channel/activity", json!({ "listening": now.0, "working": now.1, "muted": now.2 }));
+            self.out.notify("mercury/channel/activity", json!({ "listening": now.0, "working": now.1, "muted": now.2, "speaking": now.3 }));
         }
     }
 }
@@ -352,6 +352,33 @@ fn on_mercury(shared: &Arc<Shared>, msg: &Value) {
     let p = msg.get("params").cloned().unwrap_or(Value::Null);
     let call = p.get("callId").and_then(Value::as_str).unwrap_or("").to_string();
     match method {
+        // Mercury Desktop's voice controls (the notch capsule and the status bar).
+        "mercury/voice/control" => {
+            let action = p.get("action").and_then(Value::as_str).unwrap_or("");
+            // Start a session from the app, as if the talk key were pressed (only when none is running).
+            if action == "start" {
+                if shared.session.lock().unwrap().is_none() {
+                    let sh = shared.clone();
+                    shared.rt.spawn(async move {
+                        if let Err(e) = crate::voice::press(sh, false).await {
+                            log(format!("start from Mercury: {e}"));
+                            error_sound();
+                        }
+                    });
+                }
+                return;
+            }
+            let live = shared.session.lock().unwrap();
+            if let Some(s) = live.as_ref() {
+                match action {
+                    "mute" => s.set_mute(true),
+                    "unmute" => s.set_mute(false),
+                    "interrupt" => s.interrupt(),
+                    "stop" => s.stop(),
+                    _ => log(format!("voice control: unknown action {action}")),
+                }
+            }
+        }
         "mercury/call/progress" => {
             if let Some(a) = p.get("activity").and_then(Value::as_str) {
                 shared.call_activity.lock().unwrap().insert(call, a.chars().take(80).collect());

@@ -10,9 +10,9 @@
  * Only bytes are accepted, never a server path: a client must not be able to make
  * Mercury read a file it could not otherwise reach.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { extname, join } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { getMercuryHome } from '../../utils/config.js';
 import type { ChannelAttachment } from '../../types/channel.js';
 
@@ -150,4 +150,66 @@ export function storeInlineAttachments(input: unknown, now: Date = new Date()): 
       return { ...attachment, path };
     }),
   };
+}
+
+
+// ── Serving stored uploads back to the owner ─────────────────────────────
+//
+// A sent file is recorded on its message as a REF: "<yyyy-mm>/<file>",
+// relative to the uploads root, never an absolute path. Clients fetch it
+// through GET /api/chat/uploads/:month/:file (authenticated like every API
+// route). Both parts are validated by shape and the resolved file must sit
+// directly in that month's folder, so a ref can never reach anything else.
+
+const MONTH_RE = /^\d{4}-\d{2}$/;
+const FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[^/\\]{1,200}$/i;
+
+export interface AttachmentRef {
+  name: string;
+  kind: 'image' | 'document';
+  mime?: string;
+  ref: string;
+}
+
+/** The ref of a stored upload path, or null when the path is not one. */
+export function uploadRef(path: string): string | null {
+  const file = basename(path);
+  const month = basename(dirname(path));
+  if (!MONTH_RE.test(month) || !FILE_RE.test(file)) return null;
+  if (dirname(dirname(path)) !== join(getMercuryHome(), 'uploads')) return null;
+  return `${month}/${file}`;
+}
+
+/** Message metadata for the attachments of one turn (only real uploads). */
+export function attachmentRefs(attachments: unknown): AttachmentRef[] {
+  if (!Array.isArray(attachments)) return [];
+  const out: AttachmentRef[] = [];
+  for (const a of attachments as ChannelAttachment[]) {
+    if (!a || typeof a.path !== 'string') continue;
+    const ref = uploadRef(a.path);
+    if (!ref) continue;
+    out.push({ name: a.name ?? basename(a.path), kind: a.kind, ...(a.mime ? { mime: a.mime } : {}), ref });
+  }
+  return out;
+}
+
+/** Resolve a ref from a request to the file on disk, or null. */
+export function resolveUploadRef(month: string, file: string): string | null {
+  if (!MONTH_RE.test(month) || !FILE_RE.test(file)) return null;
+  const root = join(getMercuryHome(), 'uploads', month);
+  const path = join(root, file);
+  if (!existsSync(path)) return null;
+  try {
+    const real = realpathSync(path);
+    const realRoot = realpathSync(root);
+    if (dirname(real) !== realRoot || real.includes(`..${sep}`)) return null;
+    return real;
+  } catch {
+    return null;
+  }
+}
+
+/** The served type of a stored upload, from its bytes; null for anything else. */
+export function uploadMime(bytes: Buffer): string | null {
+  return sniff(bytes)?.mime ?? null;
 }
