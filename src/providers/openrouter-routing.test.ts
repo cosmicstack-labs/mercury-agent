@@ -18,10 +18,16 @@ function config(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
   };
 }
 
+interface SentBody {
+  model?: string;
+  messages?: Array<{ role?: string; content?: unknown }>;
+  provider?: { order?: string[]; quantizations?: string[]; allow_fallbacks?: boolean };
+}
+
 function stubFetch() {
-  const bodies: any[] = [];
-  const fetchMock = vi.fn(async (_input: any, init?: any) => {
-    if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body));
+  const bodies: SentBody[] = [];
+  const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body) as SentBody);
     return new Response(
       JSON.stringify({
         id: 'chatcmpl-test',
@@ -106,6 +112,6 @@ describe('openrouter endpoint pinning', () => {
 
     await provider.generateText('17+25 ?', 'one word');
 
-    expect(bodies[0].provider.allow_fallbacks).toBe(true);
+    expect(bodies[0].provider?.allow_fallbacks).toBe(true);
   });
 });
