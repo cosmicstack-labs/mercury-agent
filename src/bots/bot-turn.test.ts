@@ -311,6 +311,26 @@ describe('compactMessages', () => {
     const msgs = [{ role: 'user', content: 'hi' }];
     expect(compactMessages(msgs as never, DEFAULT_TURN_LIMITS)).toBe(msgs);
   });
+  // Measured on api.deepseek.com: a body containing `\ud83c` — what JSON.stringify writes for half a
+  // surrogate pair — is refused with 400 "unexpected end of hex escape", and the whole turn dies as
+  // unknown_error. The cut used to land inside an emoji, so a half is never sent again.
+  it('never truncates inside a surrogate pair', () => {
+    const emoji = '\u{1F3A7}';
+    const big = `${'x'.repeat(999)}${emoji}${'y'.repeat(500)}`;
+    const msgs = [toolMsg('a', big), toolMsg('b', 'ok')];
+    const out = compactMessages(msgs as never, { keepRecentToolResults: 2, maxToolResultChars: 1000 }) as unknown as Array<{ content: Array<{ output: { value: string } }> }>;
+    const value = out[0].content[0].output.value;
+    expect(value).toContain('[…truncated');
+    expect(value).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(JSON.stringify({ content: value })).not.toMatch(/\\u[dD][89abAB]/);
+  });
+  it('strips a lone surrogate that came from somewhere else, even under the cap', () => {
+    const half = '\u{1F3A7}'.slice(0, 1);
+    const msgs = [toolMsg('a', `output${half}`), toolMsg('b', 'ok')];
+    const out = compactMessages(msgs as never, { keepRecentToolResults: 2, maxToolResultChars: 1000 }) as unknown as Array<{ content: Array<{ output: { value: string } }> }>;
+    expect(out[0].content[0].output.value).toBe('output');
+    expect(JSON.stringify({ content: out[0].content[0].output.value })).not.toMatch(/\\u[dD][89abAB]/);
+  });
 });
 
 describe('turn governor', () => {
