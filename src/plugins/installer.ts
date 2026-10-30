@@ -225,6 +225,14 @@ export async function verifyPackage(dir: string, manifest: PluginManifest): Prom
     const entry = inside(manifest.entry!);
     if (!existsSync(entry) || !statSync(entry).isFile()) throw new Error(`Entry module "${manifest.entry}" is missing from the package.`);
     if (!/\.(m?js)$/.test(entry)) throw new Error('The entry module must be a bundled .js or .mjs file.');
+    // A renderer asset the package does not carry is a fenced block that never
+    // draws — and the failure would surface in the dashboard, not at install.
+    for (const renderer of manifest.contributes.renderers) {
+      const asset = inside(renderer.asset);
+      if (!existsSync(asset) || !statSync(asset).isFile()) {
+        throw new Error(`Renderer asset "${renderer.asset}" is missing from the package.`);
+      }
+    }
   } else {
     const spec = manifest.server!.platforms?.[currentPlatform()] ?? manifest.server!;
     if (spec.command !== 'node') {

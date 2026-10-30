@@ -12,6 +12,10 @@ import { isLoopbackRequest } from '../middleware.js';
 import { getPluginManager } from '../../plugins/manager.js';
 import { localService } from '../../plugins/service.js';
 import { qrSvg } from '../../plugins/qr-svg.js';
+import { readFileSync, statSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+import { installedManifest } from '../../plugins/installer.js';
+import { pluginVersionDir, readState } from '../../plugins/store.js';
 
 const plugins = new Hono();
 
@@ -39,6 +43,69 @@ plugins.get('/api/plugins', async (c) => {
 });
 
 plugins.get('/api/plugins/health', (c) => c.json(getPluginManager().health()));
+
+/**
+ * A fenced-block renderer (Plugin API 1.3).
+ *
+ * The document is the plugin's own HTML, so it is served as a document with a
+ * CSP that allows inline script and style and nothing else: no network, no
+ * forms, no base URL. The dashboard puts it in `sandbox="allow-scripts"`, which
+ * drops it to an opaque origin — no session cookie, no app DOM, and a
+ * postMessage that can only reach the frame that embedded it.
+ *
+ * Only an asset the manifest declares is served. Without that check the route
+ * would hand out `.env` files a plugin folder should never have.
+ */
+const RENDERER_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data:",
+  "connect-src 'none'",
+  "form-action 'none'",
+  "base-uri 'none'",
+].join('; ');
+
+plugins.get('/api/plugins/:id/renderer/*', (c) => {
+  const id = c.req.param('id');
+  const asset = c.req.path.split('/renderer/')[1] ?? '';
+
+  const entry = readState().plugins[id];
+  if (!entry) return c.json({ error: 'Plugin not installed' }, 404);
+  const manifest = installedManifest(id, entry.version);
+  if (!manifest) return c.json({ error: 'Plugin manifest is unreadable' }, 404);
+
+  const declared = manifest.contributes.renderers.some((renderer) => renderer.asset === asset);
+  if (!declared) return c.json({ error: 'No such renderer asset' }, 404);
+
+  const root = pluginVersionDir(id, entry.version);
+  const file = resolve(root, asset);
+  // `resolve` collapses `..`: anything that lands outside the version folder
+  // is refused even though the manifest check above already ruled it out.
+  if (file !== root && !file.startsWith(root + sep)) return c.json({ error: 'No such renderer asset' }, 404);
+  let bytes: Buffer;
+  try {
+    if (!statSync(file).isFile()) throw new Error('not a file');
+    bytes = readFileSync(file);
+  } catch {
+    return c.json({ error: 'Renderer asset is missing from the installation' }, 404);
+  }
+
+  const type = file.endsWith('.html') ? 'text/html; charset=utf-8'
+    : file.endsWith('.css') ? 'text/css; charset=utf-8'
+      : file.endsWith('.js') || file.endsWith('.mjs') ? 'text/javascript; charset=utf-8'
+        : 'application/octet-stream';
+  return new Response(bytes, {
+    headers: {
+      'content-type': type,
+      'content-security-policy': RENDERER_CSP,
+      'x-content-type-options': 'nosniff',
+      // The URL carries the version, so a new install is a new URL — the old
+      // one must not survive in a cache.
+      'cache-control': 'no-cache',
+    },
+  });
+});
 
 plugins.get('/api/plugins/:id', async (c) => {
   try {

@@ -673,6 +673,16 @@ export class PluginManager {
       verified: inst?.verified ?? false,
       tools: manifest ? manifest.contributes.tools.map((t) => `${id}__${t.name}`) : (cat?.tools ?? []),
       commands: manifest ? manifest.contributes.commands.map((c) => `/${c.name}`) : [],
+      // The URL carries the version: a reinstall swaps the folder, and a frame
+      // still holding the previous renderer would keep drawing with the old
+      // parser until the tab was reloaded.
+      renderers: manifest && inst
+        ? manifest.contributes.renderers.map((r) => ({
+          language: r.language,
+          title: r.title,
+          url: `/api/plugins/${encodeURIComponent(id)}/renderer/${r.asset.split('/').map(encodeURIComponent).join('/')}?v=${encodeURIComponent(inst.version)}`,
+        }))
+        : undefined,
       channel: manifest?.contributes.channel
         ? (() => {
           const st = run?.channel?.getStatus();

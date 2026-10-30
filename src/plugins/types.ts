@@ -24,7 +24,7 @@ export const MANIFEST_VERSION = 1 as const;
  * Minor bumps only add; a major bump is a breaking change and the previous
  * major stays supported for at least two Mercury minor releases.
  */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
 export const PLUGIN_ID_RE = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
 /** Tool and command names a plugin declares (before namespacing). */
@@ -144,6 +144,29 @@ const settingsMigration = z.object({
   mapValues: z.record(settingKey, z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))).default({}),
 }).strict();
 
+/**
+ * Plugin API 1.3: a fenced-block renderer.
+ *
+ * The plugin ships one HTML file; Mercury hosts it in an iframe with
+ * `sandbox="allow-scripts"` (no same-origin, so no session cookie and no app
+ * DOM) and serves it with a CSP that allows nothing but inline script and
+ * style. The document talks to the dashboard with one message protocol:
+ * it posts `{v:1,type:'ready'}`, receives `{v:1,type:'render',text,complete,
+ * theme}`, and reports `{v:1,type:'height',px}` so the frame can be sized
+ * without a scrollbar inside it.
+ *
+ * The asset is a path inside the plugin folder — never a URL: a renderer that
+ * reached the network at load time would be a page the owner never audited.
+ */
+const rendererDecl = z.object({
+  /** The fenced-block language that selects this renderer ("diff", "openui"). */
+  language: z.string().regex(/^[a-z][a-z0-9+#-]{0,24}$/, 'a fenced-block name: lowercase, digits, +, #, -'),
+  title: z.string().min(1).max(60).optional(),
+  asset: relPath,
+  /** Only iframe hosting exists; declared so a future sandbox is a schema change. */
+  sandbox: z.literal('iframe').default('iframe'),
+}).strict();
+
 const serverSpec = z.object({
   /** `node` (Mercury's own runtime) or a path inside the plugin folder. */
   command: z.union([z.literal('node'), relPath]),
@@ -182,7 +205,9 @@ export const manifestSchema = z.object({
      * are keyed by them) can be provided by a plugin.
      */
     channel: z.object({ type: z.enum(PLUGIN_CHANNEL_TYPES) }).strict().optional(),
-  }).strict().default({ tools: [], commands: [] }),
+    /** Plugin API 1.3: fenced blocks this plugin draws in the dashboard. */
+    renderers: z.array(rendererDecl).max(16).default([]),
+  }).strict().default({ tools: [], commands: [], renderers: [] }),
   /** What the plugin needs. Shown to the owner before install. */
   permissions: z.object({
     /** Hosts the plugin may reach through ctx.fetch, e.g. "api.example.com" or "*.example.com". */
@@ -351,6 +376,8 @@ export interface PluginListItem {
   verified: boolean;
   tools: string[];
   commands: string[];
+  /** Plugin API 1.3: the fenced blocks this plugin draws, with the URL to load. */
+  renderers?: Array<{ language: string; title?: string; url: string }>;
   /** Menu sections (from settings.groups), with whether each is ready. */
   settingGroups?: Array<{ id: string; label: string; description?: string; ready: boolean }>;
   /** Optional providers or secrets that aren't set up: what's off, what it needs, how to fix it. */

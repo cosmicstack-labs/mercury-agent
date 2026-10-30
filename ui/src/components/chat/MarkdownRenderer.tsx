@@ -1,19 +1,45 @@
+import { useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "./CodeBlock";
+import { PluginFence, useRenderers } from "./PluginFence";
 import { cn } from "@/lib/utils";
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** False while the message is still streaming: a fence may be half-written. */
+  complete?: boolean;
 }
 
-const components: Components = {
+/**
+ * The component map depends on the installed plugins and on whether the message is still
+ * streaming, so it is built per render rather than once at module load.
+ */
+function buildComponents(
+  renderers: Map<string, { url: string; title?: string }>,
+  complete: boolean,
+): Components {
+  return {
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || "");
     const codeString = String(children).replace(/\n$/, "");
 
-    // Fenced code blocks get rendered by CodeBlock
+    // A fence a plugin claims is drawn by that plugin, in its own sandbox.
+    const renderer = match ? renderers.get(match[1]) : undefined;
+    if (match && renderer) {
+      return (
+        <PluginFence
+          language={match[1]}
+          code={codeString}
+          complete={complete}
+          url={renderer.url}
+          title={renderer.title}
+        />
+      );
+    }
+
+    // Everything else: the dashboard's own highlighter.
     if (match) {
       return <CodeBlock code={codeString} language={match[1]} />;
     }
@@ -152,9 +178,12 @@ const components: Components = {
   hr() {
     return <hr className="my-4 border-border" />;
   },
-};
+  };
+}
 
-export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, className, complete = true }: MarkdownRendererProps) {
+  const renderers = useRenderers();
+  const components = useMemo(() => buildComponents(renderers, complete), [renderers, complete]);
   return (
     <div className={cn("text-sm", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>

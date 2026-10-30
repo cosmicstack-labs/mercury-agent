@@ -44,7 +44,9 @@ export function StreamingMessage({ text, steps }: StreamingMessageProps) {
             </div>
           ) : (
             <div className="inline">
-              <MarkdownRenderer content={text} />
+              {/* complete={false}: a fence may be half-written, and the renderer is the
+                  only thing that knows what an incomplete document means in its language. */}
+              <MarkdownRenderer content={text} complete={false} />
               <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-[2px] rounded-sm bg-mercury-500 animate-cursor-blink" />
             </div>
           )}

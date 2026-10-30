@@ -332,6 +332,8 @@ export interface PluginItem {
   verified: boolean;
   tools: string[];
   commands: string[];
+  /** Plugin API 1.3: fenced blocks this plugin draws, with the URL to load. */
+  renderers?: Array<{ language: string; title?: string; url: string }>;
   permissions?: { network: string[]; secrets: string[] };
   disabled?: { code: string; message: string; at: string };
   lastError?: string;
