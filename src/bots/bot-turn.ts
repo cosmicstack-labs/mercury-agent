@@ -697,7 +697,8 @@ function sanitizeModelMessages(messages: ModelMessage[]): ModelMessage[] {
     }
     if (!Array.isArray(m.content)) return m;
     let partChanged = false;
-    const parts = (m.content as unknown as Array<Record<string, any>>).map((p) => {
+    type OutgoingPart = { type?: string; text?: unknown; output?: { type?: string; value?: unknown } };
+    const parts = (m.content as unknown as OutgoingPart[]).map((p) => {
       if (p?.type === 'text' && typeof p.text === 'string') {
         const clean = sanitizeString(p.text);
         if (clean !== p.text) {
