@@ -124,7 +124,7 @@ describe('MCP end to end over stdio', () => {
   it('asks before a call and runs it on yes', async () => {
     const { ask, run } = await harness(servers(), { answer: 'yes' });
     expect(await run('mcp__fx__echo', { text: 'hello' })).toBe('hello');
-    expect(ask).toHaveBeenCalledWith('MCP tool call\nServer: fx\nTool:   echo\nArguments:\n{\n  "text": "hello"\n}');
+    expect(ask).toHaveBeenCalledWith('MCP tool call\nServer: fx\nTool:   echo\nArguments:\n{\n  "text": "hello"\n}', { alwaysAsk: true });
   }, 20_000);
 
   it('returns a denial to the agent on no', async () => {

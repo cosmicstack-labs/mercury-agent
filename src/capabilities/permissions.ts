@@ -66,6 +66,10 @@ function protectedConfigPaths(): string[] {
   ];
 }
 
+export interface AskOptions {
+  alwaysAsk?: boolean;
+}
+
 /** Result of a shell permission check. */
 export interface ShellCheckResult {
   allowed: boolean;
@@ -388,7 +392,7 @@ export function splitShellSegments(command: string): string[] {
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
+  private askHandler?: (prompt: string, options?: AskOptions) => Promise<string>;
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
@@ -566,11 +570,11 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
-    this.askHandler = async (prompt: string) => {
-      const answer = await handler(prompt);
+    this.askHandler = async (prompt: string, options?: AskOptions) => {
+      const answer = await (options ? handler(prompt, options) : handler(prompt));
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
         this.turnAnswers.push({ action, answer });
@@ -971,7 +975,7 @@ export class PermissionManager {
       if (!this.askHandler || ctx.channelType === 'internal' || this.failClosed) {
         return { allowed: false, reason: 'Changing MCP servers or mercury.yaml from a shell command needs the owner; run it yourself in a terminal', needsApproval: false };
       }
-      const answer = await this.askHandler(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
+      const answer = await this.askOwner(`Run command (changes Mercury's MCP servers or config, so it always asks): ${trimmed}`);
       return answer === 'yes' || answer === 'always'
         ? { allowed: true, needsApproval: false, lane: 'shell' }
         : { allowed: false, reason: `User denied: ${trimmed}`, needsApproval: false };
@@ -1106,7 +1110,7 @@ export class PermissionManager {
         reason: `MCP tool ${label} needs approval; add "${toolName}" to tools.autoApprove for server "${serverId}" to run it unattended`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `MCP tool call\nServer: ${serverId}\nTool:   ${toolName}\nArguments:\n${formatMcpArgs(request.args)}`,
     );
     if (answer === 'yes') return { allowed: true };
@@ -1137,11 +1141,15 @@ export class PermissionManager {
         reason: `Permission denied: ${resolved} is a Mercury config file and can only be changed with the owner's confirmation`,
       };
     }
-    const answer = await this.askHandler(
+    const answer = await this.askOwner(
       `Write to Mercury config file: ${resolved}\n(it controls MCP servers, permissions and secrets)`,
     );
     if (answer === 'yes' || answer === 'always') return { allowed: true };
     return { allowed: false, reason: `User denied write to ${path}` };
+  }
+
+  private askOwner(prompt: string): Promise<string> {
+    return this.askHandler ? this.askHandler(prompt, { alwaysAsk: true }) : Promise.resolve('no');
   }
 
   /**

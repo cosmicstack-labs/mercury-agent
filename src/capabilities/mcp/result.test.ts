@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { registerSecretValue } from '../../utils/redact.js';
-import { callResultToText, MAX_RESULT_CHARS } from './result.js';
+import { callResultToContent, callResultToText, MAX_RESULT_CHARS } from './result.js';
 
 describe('callResultToText', () => {
   it('joins text blocks', () => {
@@ -57,5 +57,48 @@ describe('callResultToText', () => {
     const secret = ['result-secret-', 'value-77'].join('');
     registerSecretValue(secret);
     expect(callResultToText({ content: [{ type: 'text', text: `value=${secret}` }] })).toBe('value=****');
+  });
+});
+
+describe('callResultToContent', () => {
+  const png = { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' };
+
+  it('returns supported images separately and notes them in the text', () => {
+    const content = callResultToContent({ content: [{ type: 'text', text: 'a pixel' }, png] });
+    expect(content.images).toEqual([{ data: png.data, mimeType: 'image/png' }]);
+    expect(content.text).toBe('a pixel\n[1 image attached]');
+  });
+
+  it('keeps a placeholder for media it cannot pass on', () => {
+    const content = callResultToContent({
+      content: [
+        { type: 'image', data: 'AAAA', mimeType: 'image/tiff' },
+        { type: 'audio', data: 'AAAA', mimeType: 'audio/wav' },
+      ],
+    });
+    expect(content.images).toEqual([]);
+    expect(content.text).toBe('[image/tiff, 3 B — not shown]\n[audio/wav, 3 B — not shown]');
+  });
+
+  it('passes at most four images and keeps a placeholder for the rest', () => {
+    const content = callResultToContent({ content: Array.from({ length: 6 }, () => ({ ...png })) });
+    expect(content.images).toHaveLength(4);
+    expect(content.text.split('\n').filter((line) => line.endsWith('— not shown]'))).toHaveLength(2);
+    expect(content.text.endsWith('[4 images attached]')).toBe(true);
+  });
+
+  it('notes an image-only result without an empty line', () => {
+    expect(callResultToContent({ content: [png] }).text).toBe('[1 image attached]');
+  });
+
+  it('passes no images with an error result', () => {
+    const content = callResultToContent({ content: [{ type: 'text', text: 'boom' }, png], isError: true });
+    expect(content.images).toEqual([]);
+    expect(content.text).toBe('Error: boom\n[image/png, 8 B — not shown]');
+  });
+
+  it('never puts base64 in the text', () => {
+    const content = callResultToContent({ content: [{ type: 'text', text: 'shot' }, png] });
+    expect(content.text).not.toContain(png.data);
   });
 });

@@ -57,4 +57,8 @@ export class AnthropicProvider extends BaseProvider {
   getModelInstance(): any {
     return this.modelInstance;
   }
+
+  supportsToolResultImages(): boolean {
+    return true;
+  }
 }
