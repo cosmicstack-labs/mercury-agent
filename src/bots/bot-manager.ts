@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, relative, resolve, join } from 'node:path';
 import { writeFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import type { Tool } from 'ai';
+import type { ChannelAttachment } from '../types/channel.js';
 import type { MercuryConfig } from '../utils/config.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { TokenBudget } from '../utils/tokens.js';
@@ -49,6 +50,8 @@ export interface BotJob {
   fromBot?: string;
   /** Originating surface for completion delivery. */
   source?: { channelType: string; channelId: string };
+  /** Photos/PDFs to hand the turn; `web/api/uploads.ts` already wrote them to disk. */
+  attachments?: ChannelAttachment[];
   createdAt: number;
   attempts: number;
   /** Scheduler task id for cron runs (routine gating + no-outcome streaks). */
@@ -393,7 +396,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string }): { jobId: string; accepted: boolean; reasonCode?: string } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -435,9 +438,10 @@ export class BotManager {
       prompt: job.prompt,
       fromBot: job.fromBot,
       source: job.source,
+      attachments: job.attachments,
       attempts: job.attempts ?? 0,
       createdAt: Date.now(),
-      idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot),
+      idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot, job.attachments),
     });
     if (durable.duplicated) {
       return { jobId: durable.job.id, accepted: true };
@@ -1116,6 +1120,7 @@ export class BotManager {
         manifest,
         trigger: job.trigger,
         prompt: job.prompt,
+        attachments: job.attachments,
         persona: this.store.readPersona(botId),
         mail,
         pollMail: () => this.drainMailbox(botId),

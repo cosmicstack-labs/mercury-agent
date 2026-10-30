@@ -1,4 +1,6 @@
 import { streamText, stepCountIs } from 'ai';
+import { withAttachments } from '../core/attachments.js';
+import type { ChannelAttachment } from '../types/channel.js';
 import type { ModelMessage, Tool } from 'ai';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
@@ -81,6 +83,12 @@ export interface BotTurnInput {
   /** Durable job id — correlates activity events with the run. */
   jobId?: string;
   prompt: string;
+  /**
+   * Photos and PDFs for this turn, already on disk. The runtime reads them here:
+   * a caption-less photo becomes `(Attached: names)` because a provider rejects an
+   * empty text block, and a model without vision gets a note instead of pixels.
+   */
+  attachments?: ChannelAttachment[];
   persona: string;
   /** Pending mailbox messages at turn start (attributed bot-to-bot handoffs). */
   mail: BotTurnMail[];
@@ -187,6 +195,18 @@ const CLAIM_PATTERN = /\b(delivered|filed|shipped|published|executed|committed|p
  * only wrote notes gets one nudge to deliver or admit it, and is journaled
  * as `none` if it still produced nothing.
  */
+/**
+ * What the turn says. A provider rejects an empty text block, so a photo sent with no
+ * caption names itself instead of arriving as empty text — the same rule the chat route
+ * applies (`web/api/chat.ts`).
+ */
+export function turnCaption(prompt: string, files: ChannelAttachment[]): string {
+  const trimmed = prompt.trim();
+  if (trimmed) return trimmed;
+  if (files.length === 0) return '';
+  return `(Attached: ${files.map(f => f.name ?? 'file').join(', ')})`;
+}
+
 export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   const { manifest, provider, capabilities, tokenBudget } = input;
   const maxSteps = manifest.autonomy?.maxSteps ?? MAX_STEPS_DEFAULT;
@@ -200,11 +220,28 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   for (const m of input.mail) {
     messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
   }
-  if (input.prompt) {
-    messages.push({ role: 'user', content: input.prompt });
+  const files = input.attachments ?? [];
+  const caption = turnCaption(input.prompt, files);
+  if (caption) {
+    messages.push({ role: 'user', content: caption });
   }
   if (messages.length === 0) {
     messages.push({ role: 'user', content: 'You have no specific task. Check your inbox and report your status.' });
+  }
+  if (files.length > 0) {
+    // Same transformation channels get: image/file parts for a model that takes them,
+    // a plain note otherwise. Rewrites the last user message in place.
+    const turnMessage = {
+      id: `bot-${manifest.id}-${Date.now()}`,
+      channelId: manifest.id,
+      channelType: 'bot',
+      senderId: manifest.id,
+      content: caption,
+      timestamp: Date.now(),
+      metadata: { attachments: files },
+    } as never;
+    const withFiles = withAttachments(messages, turnMessage, provider.name, provider.getModel());
+    messages.splice(0, messages.length, ...withFiles);
   }
 
   let tokensIn = 0;

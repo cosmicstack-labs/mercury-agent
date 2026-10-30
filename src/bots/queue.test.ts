@@ -136,6 +136,26 @@ describe('BotQueue backends (JSON-file + SQLite semantics)', () => {
         expect(pending.map(j => j.id)).toEqual(['h1', 'backoff']); // backoff included: explicit resume overrides it
       });
 
+      it('keeps a job’s files across a restart, and dedupes on them too', () => {
+        const file = { kind: 'image' as const, path: '/uploads/2026-10/a-dot.png', mime: 'image/png', name: 'dot.png' };
+        const backend = mkBackend(name, root);
+        backend.enqueue(job('a1', { prompt: 'what is this?', attachments: [file] }));
+
+        // Durable: a fresh handle on the same db still sees the file list.
+        const resumed = mkBackend(name, root).rehydratable();
+        expect(resumed[0].attachments).toEqual([file]);
+
+        // Same caption, different photo = different job.
+        const other = mkBackend(name, root).enqueue(job('a2', {
+          prompt: 'what is this?',
+          attachments: [{ ...file, path: '/uploads/2026-10/b-other.png', name: 'other.png' }],
+          idempotencyKey: idempotencyKeyFor('researcher', 'chat', 'what is this?', undefined, [
+            { ...file, path: '/uploads/2026-10/b-other.png', name: 'other.png' },
+          ]),
+        }));
+        expect(other.duplicated).toBe(false);
+      });
+
       it('settle dead moves the job to the DLQ with the reason', () => {
         const backend = mkBackend(name, root);
         backend.enqueue(job('a1'));
