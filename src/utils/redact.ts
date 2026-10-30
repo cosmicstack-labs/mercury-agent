@@ -89,6 +89,11 @@ export function userFacingAiError(error: unknown): string {
   if (/context(?:_|\s|-)?length|too many tokens|maximum context|request too large|payload too large/.test(normalized)) {
     return 'This request is too large for the selected model. Shorten the conversation or choose another model.';
   }
+  // Before the rate-limit rule: a budget refusal is our own decision, not the provider's, and
+  // "please try again shortly" is exactly wrong advice — a ceiling does not lift by itself.
+  if (/daily token budget|token budget|budget (?:exhausted|exceeded)|exceeded (?:my|its) (?:daily )?budget/.test(normalized)) {
+    return 'Mercury has used its whole daily token budget, so it stopped answering. Raise the budget, or wait for the daily reset.';
+  }
   if (/rate.?limit|too many requests|quota|capacity|overloaded|\b429\b/.test(normalized)) {
     return 'The selected model is temporarily busy. Please try again shortly.';
   }
