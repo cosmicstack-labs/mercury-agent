@@ -73,6 +73,17 @@ app.post('/api/bots', async (c: any) => {
 /** Open fleet-feed clients — roster mutations (add crew, promote, delete) push fresh snapshots. */
 const rosterSseClients = new Set<{ send: (event: string, data: unknown) => void }>();
 
+/**
+ * Subscribes a client to the fleet feed, and returns its unsubscribe.
+ *
+ * Exported so a test can stand where a browser tab stands: the point of the broadcast below is that
+ * *someone else's* screen updates, which no assertion on the PATCH response can show.
+ */
+export function registerRosterClient(client: { send: (event: string, data: unknown) => void }): () => void {
+  rosterSseClients.add(client);
+  return () => { rosterSseClients.delete(client); };
+}
+
 function broadcastRoster(): void {
   if (!botManager) return;
   for (const client of rosterSseClients) {
@@ -208,7 +219,15 @@ app.patch('/api/bots/:id', async (c: any) => {
   if (!patch) return c.json({ error: 'Invalid JSON body' }, 400);
   try {
     const updated = botManager.store.update(id, m => {
-      // Only config-editable fields; id/name identity fields are immutable here.
+      // The id is the identity and stays immutable: directories, crew links, journals, threads and
+      // avatars are all keyed by it. The name is a label the owner reads, so it is mutable — a bot
+      // created with a placeholder name was stuck with it forever, and editing bot.yaml behind the
+      // API's back (the only way until now) needs a daemon restart.
+      if (patch.name !== undefined) {
+        const name = typeof patch.name === 'string' ? patch.name.replace(/\s+/g, ' ').trim() : '';
+        if (!name) throw new Error('Bot name must not be empty');
+        m.name = name.slice(0, 60);
+      }
       if (patch.enabled !== undefined) m.enabled = patch.enabled;
       if (patch.description !== undefined) m.description = patch.description;
       if (patch.model !== undefined) m.model = patch.model;
@@ -220,6 +239,10 @@ app.patch('/api/bots/:id', async (c: any) => {
       if (patch.retention !== undefined) m.retention = patch.retention;
     });
     botManager.invalidateRuntime(id);
+    // A config edit is roster news: the name, the description, the model, the enabled flag and the
+    // autonomy limits all travel in the summaries. Without this, an open drawer kept the old name
+    // until some unrelated roster change happened — the edit looked like it had not been applied.
+    broadcastRoster();
     return c.json({ bot: updated });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'Failed to update bot' }, 400);

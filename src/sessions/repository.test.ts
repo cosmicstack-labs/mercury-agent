@@ -174,3 +174,17 @@ describe('SessionRepository', () => {
     expect(readdirSync(short)).toContain('cli.json');
   });
 });
+
+describe('SessionRepository.updateTitle without touching', () => {
+  it('renames without moving the session in the list', () => {
+    const repo = new SessionRepository({ rootDir: mkdtempSync(join(tmpdir(), 'mercury-retitle-')), autoMigrate: false });
+    const older = repo.create({ title: 'Older' });
+    repo.appendMessage(older.id, { role: 'user', content: 'a', timestamp: 1_000 });
+    const newer = repo.create({ title: 'Newer' });
+    repo.appendMessage(newer.id, { role: 'user', content: 'b', timestamp: Date.now() + 60_000 });
+    const before = repo.get(older.id).updatedAt;
+    repo.updateTitle(older.id, 'Fixed Title', 'generated', { touch: false });
+    expect(repo.get(older.id)).toMatchObject({ title: 'Fixed Title', titleSource: 'generated', updatedAt: before });
+    expect(repo.list().map((s) => s.id)).toEqual([newer.id, older.id]);
+  });
+});

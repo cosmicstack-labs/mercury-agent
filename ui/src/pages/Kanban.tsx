@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { createEventStream, type EventStream } from "@/lib/sse";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   DndContext,
@@ -414,7 +415,7 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
-  const sseRef = useRef<EventSource | null>(null);
+  const sseRef = useRef<EventStream | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -443,8 +444,7 @@ function BoardDetailView({ boardId, onBack }: { boardId: string; onBack: () => v
     load();
 
     // Use SSE for real-time updates, fallback to polling
-    const baseUrl = window.location.origin;
-    const es = new EventSource(`${baseUrl}/api/boards/${boardId}/events`);
+    const es = createEventStream(`/api/boards/${boardId}/events`);
     sseRef.current = es;
 
     es.addEventListener('board-update', (e) => {

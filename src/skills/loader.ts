@@ -296,6 +296,7 @@ export class SkillLoader {
         list.push({
           name: parsed.meta.name,
           description: parsed.meta.description,
+          ...(parsed.meta.category ? { category: parsed.meta.category } : {}),
           active: !disabled,
         });
       } catch (err) {

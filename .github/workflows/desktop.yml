@@ -1,0 +1,81 @@
+name: Desktop
+
+# Mercury Desktop (apps/desktop): the frontend bundle on every change, and
+# the Rust shell on the three desktop platforms. Nothing here publishes;
+# release bundles come from a separate, manually dispatched workflow once
+# signing keys exist.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'ui/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'ui/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    name: Frontend (typecheck + bundle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            apps/desktop/package-lock.json
+      - name: Dashboard dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: ui
+      - name: Desktop dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: apps/desktop
+      - run: npm run typecheck
+        working-directory: apps/desktop
+      - run: npx vite build
+        working-directory: apps/desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-frontend
+          path: apps/desktop/dist
+          retention-days: 3
+
+  shell:
+    name: Shell (cargo check + test, ${{ matrix.os }})
+    needs: frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # tauri::generate_context! embeds frontendDist at compile time.
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-frontend
+          path: apps/desktop/dist
+      - name: Linux system libraries (webkit2gtk, tray, keyring)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: cargo check --locked
+        working-directory: apps/desktop/src-tauri
+      - run: cargo test --locked
+        working-directory: apps/desktop/src-tauri
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: apps/desktop/src-tauri

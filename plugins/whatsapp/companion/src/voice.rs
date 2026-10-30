@@ -20,7 +20,7 @@ use whatsapp_rust::types::call::{CallAction, IncomingCall};
 use whatsapp_rust::voip::CallHandle;
 
 use crate::links::{self, Brain, Link, LinkCmd, LinkConfig, LinkEvent};
-use crate::{Out, State, log, phone_of};
+use crate::{Out, State, log, phone_of, resolve_phone};
 
 const FRAME: usize = 960;
 const RING_TIMEOUT: Duration = Duration::from_secs(45);
@@ -69,13 +69,17 @@ pub async fn route_call_event(watchers: &CallWatchers, call: &IncomingCall) {
 pub async fn on_offer(st: Arc<State>, client: Arc<Client>, call: Box<IncomingCall>) {
     let CallAction::Offer { call_id, caller_pn, is_video, group_jid, .. } = &call.action else { return };
     let from = call.from.to_string();
-    let from_phone = caller_pn.as_ref().and_then(phone_of).or_else(|| phone_of(&call.from));
     let call_id = call_id.clone();
 
     if group_jid.is_some() || settings().get("answerCalls").and_then(Value::as_bool) == Some(false) {
         let _ = client.voip().reject(&call).await;
         return;
     }
+    // A caller addressed by LID still has to be recognised as the owner (#247).
+    let from_phone = match caller_pn.as_ref().and_then(phone_of) {
+        Some(phone) => Some(phone),
+        None => resolve_phone(&client, &call.from, None).await,
+    };
     let decision = st
         .out
         .request("mercury/call/incoming", json!({ "callId": call_id, "from": from, "fromPhone": from_phone, "video": is_video, "voiceReady": voice_ready(), "voiceProblem": voice_problem() }), Duration::from_secs(8))

@@ -1,0 +1,61 @@
+name: Desktop tester build
+
+# An unsigned Linux build of Mercury Desktop for testers, pinned to the
+# rolling dev runtime (mercury-dev-latest): "Install Mercury here" installs
+# that release, not the latest stable. Runs on pushes to main and on pull
+# requests that touch the app; nothing is published, the bundles are run
+# artifacts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop-tester.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop-tester.yml'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux bundles (.deb + AppImage, x64)
+    # 22.04's older glibc keeps the build running on newer Ubuntu too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            apps/desktop/package-lock.json
+      - name: Linux system libraries (webkit2gtk, tray, keyring)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Dashboard dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: ui
+      - name: Desktop dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: apps/desktop
+      - name: Build
+        run: npx tauri build --debug --bundles deb,appimage
+        working-directory: apps/desktop
+        env:
+          MERCURY_RUNTIME_TAG: mercury-dev-latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mercury-desktop-linux-x64
+          path: |
+            apps/desktop/src-tauri/target/debug/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/debug/bundle/appimage/*.AppImage
+          retention-days: 14
