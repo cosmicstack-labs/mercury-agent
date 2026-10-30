@@ -10,6 +10,7 @@ import { RegistryClient, isValidSkillId } from '../../skills/registry.js';
 import { SkillStore } from '../../skills/store.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
+import { getStatus } from './status.js';
 import type { Scheduler } from '../../core/scheduler.js';
 import cron from 'node-cron';
 
@@ -246,12 +247,18 @@ system.get('/api/usage', (c) => {
     byChannel[row.channelType] = (byChannel[row.channelType] || 0) + (row.totalTokens || 0);
   }
 
+  // The budget the runtime enforces is the live one. The tracker file carries whatever was
+  // configured the last time tokens were written, so raising the limit used to leave this endpoint
+  // reporting the old number — and `remaining` computed from it — until some turn happened to
+  // rewrite the file. The file stays the fallback for a runtime that never reported one.
+  const live = getStatus().tokenBudget;
+  const dailyBudget = Number.isFinite(live) && live > 0 ? live : (data.dailyBudget || 0);
   return c.json({
     available,
     dailyUsed: data.dailyUsed || 0,
-    dailyBudget: data.dailyBudget || 0,
+    dailyBudget,
     lastResetDate: data.lastResetDate,
-    remaining: Math.max(0, (data.dailyBudget || 0) - (data.dailyUsed || 0)),
+    remaining: Math.max(0, dailyBudget - (data.dailyUsed || 0)),
     requestLog: (data.requestLog || []).slice(-100).reverse(),
     byProvider,
     byChannel,
