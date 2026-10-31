@@ -127,6 +127,15 @@ describe('runBotTurn step-budget continuation', () => {
     // ship long leader-bot turns straight to the DLQ instead of retrying.
     expect(classifyFailure(new Error('The operation timed out.'))).toBe('provider_timeout');
     expect(classifyFailure(new Error('Request timed out after 60000ms'))).toBe('provider_timeout');
+    // The SDK hides a cut stream behind its own wrapper and keeps the reason in `cause`: the live
+    // failure (`Failed to process successful response`, 6 runs in four days) was classified
+    // unknown_error — no retry, DLQ, needs-you — because only the message was read.
+    const wrapped = (cause: unknown) =>
+      Object.assign(new Error('Failed to process successful response'), { cause });
+    expect(classifyFailure(wrapped(new Error('terminated')))).toBe('provider_timeout');
+    expect(classifyFailure(wrapped(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })))).toBe('provider_timeout');
+    // A 2xx nobody could parse is a provider hiccup, not a permanent condition.
+    expect(classifyFailure(wrapped(new SyntaxError('Unexpected end of JSON input')))).toBe('provider_empty');
     // Still-permanent things stay permanent.
     expect(classifyFailure(new Error('401 unauthorized'))).toBe('provider_auth');
     expect(classifyFailure(new Error('permission denied by policy'))).toBe('permission_denied');

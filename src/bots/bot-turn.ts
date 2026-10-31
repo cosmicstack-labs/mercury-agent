@@ -547,9 +547,32 @@ export function resolveTurnLimits(manifest: BotManifest, overrides?: Partial<Bot
   };
 }
 
+/**
+ * The text a failure is classified on: the message, and what the error wraps.
+ *
+ * The AI SDK reports a cut stream as « Failed to process successful response » and keeps the real
+ * reason in `cause` — an ECONNRESET, a body cut mid-read, a JSON parse error. Reading only the
+ * message sent every one of those to unknown_error: no retry, DLQ, needs-you. A network blip then
+ * looked like a permanent fault, and the owner was told a bot had failed when it had merely lost
+ * its socket.
+ */
+function failureText(err: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  for (let depth = 0; current != null && depth < 5 && !seen.has(current); depth++) {
+    seen.add(current);
+    const wrapped = current as { message?: unknown; code?: unknown; cause?: unknown };
+    if (typeof wrapped.message === 'string') parts.push(wrapped.message);
+    if (typeof wrapped.code === 'string') parts.push(wrapped.code);
+    current = wrapped.cause;
+  }
+  return parts.join(' | ').toLowerCase();
+}
+
 /** Map a provider/tool error to a typed reason code (retry vs permanent). */
 export function classifyFailure(err: unknown): string {
-  let msg = String((err as { message?: unknown })?.message ?? err ?? '').toLowerCase();
+  let msg = failureText(err);
   // Retry wrappers ("Failed after 3 attempts. Last error: …") carry the
   // real cause after the colon — classify that, not the wrapper.
   const inner = /last error:\s*(.+)$/s.exec(msg);
@@ -566,6 +589,10 @@ export function classifyFailure(err: unknown): string {
   // The SDK's "No output generated" means the stream ended before any step:
   // a provider hiccup, not a permanent condition.
   if (/no output generated/.test(msg)) return 'provider_empty';
+  // The SDK's wrapper around a 2xx response it could not read or parse. Nothing
+  // permanent lives there — a cut stream, a truncated body, an HTML page — and the
+  // cause above already claimed the network cases; whatever is left is still a retry.
+  if (/failed to process successful response/.test(msg)) return 'provider_empty';
   if (/no llm providers available/.test(msg)) return 'provider_unavailable';
   if (/permission denied|blocked command|no permission/.test(msg)) return 'permission_denied';
   if (/api key|unauthorized|401|authentication/.test(msg)) return 'provider_auth';
