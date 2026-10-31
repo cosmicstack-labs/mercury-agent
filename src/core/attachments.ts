@@ -25,7 +25,16 @@ interface Attachment {
 const IMAGE_MIME: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
 
 /** Models that accept image input. Conservative: unknown models get the note instead. */
-export function modelSeesImages(provider: string, model: string): boolean {
+/**
+ * Does the current model read images?
+ *
+ * `declared` wins when the owner configured a capability (`providers.<name>.vision`):
+ * a self-hosted model's name is no evidence — a local Qwen that sees images was
+ * called `qwen3.8-flash-next` and refused. Without a declaration, the name is
+ * matched against the providers known to ship vision.
+ */
+export function modelSeesImages(provider: string, model: string, declared?: boolean): boolean {
+  if (declared !== undefined) return declared;
   const m = model.toLowerCase();
   if (provider === 'deepseek') return false;
   if (/gpt-4o|gpt-4\.1|gpt-5|chatgpt-4o|\bo[134](-|$)|claude|gemini|pixtral|llava|qwen.*vl|vision|grok-(2-vision|4)|llama-?4|mistral-(medium|small)-3|gemma-?3/.test(m)) return true;
@@ -58,7 +67,14 @@ function isPdf(a: Attachment): boolean {
  * this provider and model. Returns the messages unchanged when there is
  * nothing to attach or the model can't take it.
  */
-export function withAttachments<T extends { role: string; content: unknown }>(messages: T[], msg: ChannelMessage, provider: string, model: string): T[] {
+export function withAttachments<T extends { role: string; content: unknown }>(
+  messages: T[],
+  msg: ChannelMessage,
+  provider: string,
+  model: string,
+  /** The owner's declaration, when there is one (see `modelSeesImages`). */
+  declaredVision?: boolean,
+): T[] {
   const files = attachmentsOf(msg);
   if (!files.length) return messages;
   const parts: Array<Record<string, unknown>> = [];
@@ -68,7 +84,7 @@ export function withAttachments<T extends { role: string; content: unknown }>(me
     const size = statSync(a.path).size;
     if (a.kind === 'image') {
       const mediaType = a.mime?.startsWith('image/') ? a.mime : IMAGE_MIME[extname(a.path).toLowerCase()] ?? 'image/jpeg';
-      if (!modelSeesImages(provider, model)) notes.push(`The current model (${model}) can't view images; say so, and offer to describe it with a vision model if one is configured.`);
+      if (!modelSeesImages(provider, model, declaredVision)) notes.push(`The current model (${model}) can't view images; say so, and offer to describe it with a vision model if one is configured.`);
       else if (size > MAX_IMAGE_BYTES) notes.push(`An image is too large to view (${Math.round(size / 1048576)} MB).`);
       else parts.push({ type: 'image', image: readFileSync(a.path), mediaType });
     } else if (isPdf(a)) {

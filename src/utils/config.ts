@@ -37,6 +37,12 @@ export interface ProviderConfig {
   enabled: boolean;
   /** Optional per-provider cap on output tokens per request. */
   maxOutputTokens?: number;
+  /**
+   * The owner says this endpoint's model reads images. `modelSeesImages` otherwise
+   * guesses from the model name, which cannot know about a self-hosted model — a
+   * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
+   */
+  vision?: boolean;
 }
 
 export interface TelegramAccessUser {
@@ -301,6 +307,21 @@ function getEnvBool(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
+/**
+ * A capability the owner declares, where "not set" is a third state.
+ *
+ * `getEnvBool(key, false)` would answer `false` for a variable nobody set, and a `false` is a
+ * declaration: it switches images off for a model whose name the guesser would have accepted
+ * (`gpt-4o` behind a gateway). Undefined means "nothing declared", so the name-based guess in
+ * `modelSeesImages` still applies.
+ */
+function getEnvOptionalBool(key: string): boolean | undefined {
+  const val = process.env[key]?.toLowerCase();
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  return undefined;
+}
+
 export function getDefaultConfig(): MercuryConfig {
   const home = getMercuryHome();
   const cloudApiUrl = getEnv('MERCURY_CLOUD_API_URL', MERCURY_CLOUD_API_URL);
@@ -402,6 +423,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('OPENAI_COMPAT_BASE_URL', ''),
         model: getEnv('OPENAI_COMPAT_MODEL', ''),
         enabled: getEnvBool('OPENAI_COMPAT_ENABLED', false),
+        vision: getEnvOptionalBool('OPENAI_COMPAT_VISION'),
       },
       mimo: {
         name: 'mimo',
@@ -420,6 +442,7 @@ export function getDefaultConfig(): MercuryConfig {
       lmStudio: {
         name: 'lmStudio',
         apiKey: getEnv('LM_STUDIO_API_KEY', ''),
+        vision: getEnvOptionalBool('LM_STUDIO_VISION'),
         baseUrl: getEnv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:1234/v1'),
         model: getEnv('LM_STUDIO_MODEL', ''),
         enabled: getEnvBool('LM_STUDIO_ENABLED', false),
@@ -444,6 +467,7 @@ export function getDefaultConfig(): MercuryConfig {
         baseUrl: getEnv('LITELLM_BASE_URL', 'http://localhost:4000/v1'),
         model: getEnv('LITELLM_MODEL', 'gpt-4o-mini'),
         enabled: getEnvBool('LITELLM_ENABLED', false),
+        vision: getEnvOptionalBool('LITELLM_VISION'),
       },
     },
     channels: {

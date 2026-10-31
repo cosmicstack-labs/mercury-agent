@@ -33,6 +33,14 @@ export abstract class BaseProvider {
   }
 
   /**
+   * What the owner declared about this endpoint's capability, or undefined when
+   * nothing was declared — in which case the name-based guess applies.
+   */
+  get seesImages(): boolean | undefined {
+    return this.config.vision;
+  }
+
+  /**
    * Largest `maxOutputTokens` this provider/model accepts, or undefined for
    * "no known ceiling". The agent loop clamps its request to this so a
    * 32K request is not rejected outright and retried at half size.
