@@ -674,6 +674,7 @@ export class PluginManager {
       verified: inst?.verified ?? false,
       tools: manifest ? manifest.contributes.tools.map((t) => `${id}__${t.name}`) : (cat?.tools ?? []),
       commands: manifest ? manifest.contributes.commands.map((c) => `/${c.name}`) : [],
+      renderers: manifest ? manifest.contributes.renderers.map((r) => r.language) : [],
       channel: manifest?.contributes.channel
         ? (() => {
           const st = run?.channel?.getStatus();

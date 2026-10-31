@@ -24,7 +24,7 @@ export const MANIFEST_VERSION = 1 as const;
  * Minor bumps only add; a major bump is a breaking change and the previous
  * major stays supported for at least two Mercury minor releases.
  */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
 export const PLUGIN_ID_RE = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
 /** Tool and command names a plugin declares (before namespacing). */
@@ -71,6 +71,25 @@ const relPath = z.string().min(1).max(200).refine(
 
 const strictSemver = z.string().refine((v) => semver.valid(v) !== null && semver.clean(v) === v, 'must be a semver version like 1.2.3');
 const semverRange = z.string().min(1).max(100).refine((r) => semver.validRange(r) !== null, 'must be a semver range like ">=1.4.0 <2.0.0"');
+
+/**
+ * Plugin API 1.3: a renderer for a fenced block in the dashboard.
+ *
+ * The client never executes plugin code with the app's origin: the asset is served by
+ * Mercury behind a locked-down CSP and drawn inside `<iframe sandbox="allow-scripts">`,
+ * with no same-origin, no forms and no network. A renderer gets pixels and a message
+ * channel — nothing that can read the transcript or call out.
+ */
+const rendererDecl = z.object({
+  /** Fence language it claims, e.g. "openui". One renderer per language. */
+  language: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, 'lowercase letters, digits, - and _, 2-32 characters'),
+  /** Shown nowhere yet; a place for the client to label a refused block. */
+  title: z.string().min(1).max(60).optional(),
+  /** A self-contained HTML file inside the plugin folder. Served as text/html. */
+  asset: relPath,
+  /** Only iframe is defined in v1.3: in-page script would share the session. */
+  sandbox: z.literal('iframe').default('iframe'),
+}).strict();
 
 const toolDecl = z.object({
   name: z.string().regex(PLUGIN_TOOL_NAME_RE, 'lowercase letters, digits and underscores, max 30 characters'),
@@ -182,6 +201,8 @@ export const manifestSchema = z.object({
      * are keyed by them) can be provided by a plugin.
      */
     channel: z.object({ type: z.enum(PLUGIN_CHANNEL_TYPES) }).strict().optional(),
+    /** Plugin API 1.3: fenced-block renderers the dashboard may offer. */
+    renderers: z.array(rendererDecl).max(4).default([]),
   }).strict().default({ tools: [], commands: [] }),
   /** What the plugin needs. Shown to the owner before install. */
   permissions: z.object({
@@ -359,6 +380,8 @@ export interface PluginListItem {
   missing?: Array<{ key: string; unlocks: string; needs: string; fix: string }>;
   /** Plugin API 1.1: the chat channel this plugin provides, and its live state. */
   channel?: { type: string; state?: string; detail?: string; account?: string };
+  /** Plugin API 1.3: fence languages the dashboard draws with this plugin's renderers. */
+  renderers?: string[];
   permissions?: PluginManifest['permissions'];
   disabled?: PluginStateEntry['disabled'];
   lastError?: string;

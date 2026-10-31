@@ -78,6 +78,7 @@ function describe(i: PluginListItem): string {
   ];
   if (i.tools.length) lines.push(`Tools: ${i.tools.join(', ')}`);
   if (i.commands.length) lines.push(`Commands: ${i.commands.join(', ')}`);
+  if (i.renderers?.length) lines.push(`Dashboard blocks: ${i.renderers.join(', ')} (drawn by this plugin, sandboxed)`);
   if (i.channel) lines.push(`Channel: ${i.channel.type}${i.channel.state ? ` · ${i.channel.state}` : ''}${i.channel.account ? ` · ${i.channel.account}` : ''}${i.channel.detail ? ` (${i.channel.detail})` : ''}`);
   const p = i.permissions;
   lines.push(`Network: ${p?.network.length ? p.network.join(', ') : 'none'}`);
