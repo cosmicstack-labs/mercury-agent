@@ -203,6 +203,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'githubCopilot', label: 'GitHub Copilot' },
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
+  { key: 'runcrate', label: 'Runcrate' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -1492,6 +1493,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.atlascloud.apiKey = result.apiKey;
           config.providers.atlascloud.model = result.model;
           config.providers.atlascloud.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'runcrate') {
+        const mask = isReconfig && config.providers.runcrate.apiKey ? ` [${maskKey(config.providers.runcrate.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'runcrate',
+          'Runcrate',
+          chalk.white(`  Runcrate API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.runcrate.apiKey = result.apiKey;
+          config.providers.runcrate.model = result.model;
+          config.providers.runcrate.enabled = true;
         }
         continue;
       }

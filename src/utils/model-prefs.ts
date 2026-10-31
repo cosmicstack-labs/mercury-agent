@@ -185,6 +185,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   litellm: 'LiteLLM',
   aimlapi: 'AI/ML API',
   atlascloud: 'Atlas Cloud',
+  runcrate: 'Runcrate',
   mimo: 'MiMo',
   mimoTokenPlan: 'MiMo Token Plan',
   githubCopilot: 'GitHub Copilot',

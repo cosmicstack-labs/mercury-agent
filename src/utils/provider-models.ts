@@ -59,6 +59,14 @@ const ATLASCLOUD_PREFERRED_MODELS = [
   'deepseek-ai/deepseek-v4-pro',
 ] as const;
 
+const RUNCRATE_PREFERRED_MODELS = [
+  'deepseek-ai/DeepSeek-V4.1-Flash',
+  'zai-org/GLM-5.3-Flash',
+  'zai-org/GLM-5.3',
+  'Qwen/Qwen3.8-Flash',
+  'moonshotai/Kimi-K2.6',
+] as const;
+
 const OLLAMA_CLOUD_PREFERRED_MODELS = [
   'gpt-oss:120b',
   'gpt-oss:120b-cloud',
@@ -136,6 +144,7 @@ export function getPreferredModelsForProvider(provider: ProviderName): string[] 
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    runcrate: RUNCRATE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -264,6 +273,7 @@ function chooseRecommendedModel(
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    runcrate: RUNCRATE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -314,6 +324,7 @@ export function buildModelCatalog(
     anthropic: ANTHROPIC_PREFERRED_MODELS,
     grok: GROK_PREFERRED_MODELS,
     atlascloud: ATLASCLOUD_PREFERRED_MODELS,
+    runcrate: RUNCRATE_PREFERRED_MODELS,
     ollamaCloud: OLLAMA_CLOUD_PREFERRED_MODELS,
     ollamaLocal: OLLAMA_LOCAL_PREFERRED_MODELS,
     atomicChat: ATOMIC_CHAT_PREFERRED_MODELS,
@@ -346,6 +357,8 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
     errorMessage = 'Mercury could not fetch models for this Grok key. Please re-enter it.';
   } else if (provider === 'atlascloud') {
     errorMessage = 'Mercury could not fetch models for this Atlas Cloud key. Please re-enter it.';
+  } else if (provider === 'runcrate') {
+    errorMessage = 'Mercury could not fetch models for this Runcrate key. Please re-enter it.';
   } else if (provider === 'deepseek') {
     errorMessage = 'Mercury could not fetch models for this DeepSeek key. Please re-enter it.';
   } else if (provider === 'aimlapi') {
@@ -390,6 +403,11 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
           && !lower.includes('audio')
           && !lower.includes('tts')
           && !lower.includes('whisper');
+      }
+      if (provider === 'runcrate') {
+        // Runcrate lists image, video, audio and embedding models on the same
+        // endpoint; each row says what it outputs.
+        return id.length > 0 && (outputModalities ?? []).includes('text');
       }
       return isOpenAIChatModel(id);
     })
