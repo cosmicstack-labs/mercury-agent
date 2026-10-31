@@ -11,6 +11,7 @@ import { isFailedToolResult } from '../core/execute-guard.js';
 import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
 import { formatToolStep } from '../utils/tool-label.js';
 import { logger } from '../utils/logger.js';
+import { stripLoneSurrogates, truncateText } from '../utils/text-safe.js';
 import type { BotManifest, BotTrigger } from './types.js';
 
 /** Mailbox messages injected mid-turn (bot-to-bot or queued user input). */
@@ -546,9 +547,32 @@ export function resolveTurnLimits(manifest: BotManifest, overrides?: Partial<Bot
   };
 }
 
+/**
+ * The text a failure is classified on: the message, and what the error wraps.
+ *
+ * The AI SDK reports a cut stream as « Failed to process successful response » and keeps the real
+ * reason in `cause` — an ECONNRESET, a body cut mid-read, a JSON parse error. Reading only the
+ * message sent every one of those to unknown_error: no retry, DLQ, needs-you. A network blip then
+ * looked like a permanent fault, and the owner was told a bot had failed when it had merely lost
+ * its socket.
+ */
+function failureText(err: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  for (let depth = 0; current != null && depth < 5 && !seen.has(current); depth++) {
+    seen.add(current);
+    const wrapped = current as { message?: unknown; code?: unknown; cause?: unknown };
+    if (typeof wrapped.message === 'string') parts.push(wrapped.message);
+    if (typeof wrapped.code === 'string') parts.push(wrapped.code);
+    current = wrapped.cause;
+  }
+  return parts.join(' | ').toLowerCase();
+}
+
 /** Map a provider/tool error to a typed reason code (retry vs permanent). */
 export function classifyFailure(err: unknown): string {
-  let msg = String((err as { message?: unknown })?.message ?? err ?? '').toLowerCase();
+  let msg = failureText(err);
   // Retry wrappers ("Failed after 3 attempts. Last error: …") carry the
   // real cause after the colon — classify that, not the wrapper.
   const inner = /last error:\s*(.+)$/s.exec(msg);
@@ -565,6 +589,10 @@ export function classifyFailure(err: unknown): string {
   // The SDK's "No output generated" means the stream ended before any step:
   // a provider hiccup, not a permanent condition.
   if (/no output generated/.test(msg)) return 'provider_empty';
+  // The SDK's wrapper around a 2xx response it could not read or parse. Nothing
+  // permanent lives there — a cut stream, a truncated body, an HTML page — and the
+  // cause above already claimed the network cases; whatever is left is still a retry.
+  if (/failed to process successful response/.test(msg)) return 'provider_empty';
   if (/no llm providers available/.test(msg)) return 'provider_unavailable';
   if (/permission denied|blocked command|no permission/.test(msg)) return 'permission_denied';
   if (/api key|unauthorized|401|authentication/.test(msg)) return 'provider_auth';
@@ -674,6 +702,54 @@ function noOutcomePrompt(input: BotTurnInput): string {
  */
 type ToolResultPart = { type: 'tool-result'; toolName?: string; output?: ToolOutput };
 
+/**
+ * No lone UTF-16 surrogate may reach the JSON body: `JSON.stringify` writes it as `\ud83c`, and
+ * DeepSeek then rejects the whole request — "400 Failed to parse the request body as JSON:
+ * messages[6].content: unexpected end of hex escape". An index-based cut through an emoji is enough
+ * to produce one, and it can come from anywhere (tool result, prompt, deliverable), so everything
+ * leaving for the model is cleaned, not just what this function truncates.
+ */
+function sanitizeString(value: string): string {
+  return /[\uD800-\uDFFF]/.test(value) ? stripLoneSurrogates(value) : value;
+}
+
+function sanitizeModelMessages(messages: ModelMessage[]): ModelMessage[] {
+  let changed = false;
+  const out = messages.map((m) => {
+    if (typeof m.content === 'string') {
+      const clean = sanitizeString(m.content);
+      if (clean === m.content) return m;
+      changed = true;
+      return { ...m, content: clean } as ModelMessage;
+    }
+    if (!Array.isArray(m.content)) return m;
+    let partChanged = false;
+    type OutgoingPart = { type?: string; text?: unknown; output?: { type?: string; value?: unknown } };
+    const parts = (m.content as unknown as OutgoingPart[]).map((p) => {
+      if (p?.type === 'text' && typeof p.text === 'string') {
+        const clean = sanitizeString(p.text);
+        if (clean !== p.text) {
+          partChanged = true;
+          return { ...p, text: clean };
+        }
+        return p;
+      }
+      if (p?.type === 'tool-result' && typeof p.output?.value === 'string') {
+        const clean = sanitizeString(p.output.value);
+        if (clean !== p.output.value) {
+          partChanged = true;
+          return { ...p, output: { ...p.output, value: clean } };
+        }
+      }
+      return p;
+    });
+    if (!partChanged) return m;
+    changed = true;
+    return { ...m, content: parts } as unknown as ModelMessage;
+  });
+  return changed ? out : messages;
+}
+
 export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLimits, 'keepRecentToolResults' | 'maxToolResultChars'>): ModelMessage[] {
   const resultRefs: Array<{ mi: number; pi: number }> = [];
   messages.forEach((m, mi) => {
@@ -682,7 +758,7 @@ export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLi
       if (p?.type === 'tool-result') resultRefs.push({ mi, pi });
     });
   });
-  if (resultRefs.length === 0) return messages;
+  if (resultRefs.length === 0) return sanitizeModelMessages(messages);
   const stubBefore = Math.max(0, resultRefs.length - limits.keepRecentToolResults);
   const out = messages.slice();
   resultRefs.forEach(({ mi, pi }, idx) => {
@@ -694,16 +770,16 @@ export function compactMessages(messages: ModelMessage[], limits: Pick<BotTurnLi
     let next: string | null = null;
     if (idx < stubBefore) {
       if (text.length > 400) {
-        next = `${text.slice(0, 400)}\n[…${text.length - 400} more chars trimmed from an earlier step — re-run ${part.toolName ?? 'the tool'} if you need it]`;
+        next = `${truncateText(text, 400)}\n[…${text.length - 400} more chars trimmed from an earlier step — re-run ${part.toolName ?? 'the tool'} if you need it]`;
       }
     } else if (text.length > limits.maxToolResultChars) {
-      next = `${text.slice(0, limits.maxToolResultChars)}\n[…truncated ${text.length - limits.maxToolResultChars} chars]`;
+      next = `${truncateText(text, limits.maxToolResultChars)}\n[…truncated ${text.length - limits.maxToolResultChars} chars]`;
     }
     if (next === null) return;
     if (out[mi] === messages[mi]) out[mi] = { ...messages[mi], content: (messages[mi].content as unknown as ToolResultPart[]).slice() } as ModelMessage;
     (out[mi].content as unknown as ToolResultPart[])[pi] = { ...part, output: { type: 'text', value: next } };
   });
-  return out;
+  return sanitizeModelMessages(out);
 }
 
 // ---- tool wrapping: delivery capture + shared-folder write budget ----------
