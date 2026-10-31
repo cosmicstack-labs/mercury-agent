@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bot, Send, Pause, Play, Square, RotateCw, AlertTriangle, Crown, Shield,
-  Download, Package, Clock, Save, RefreshCw, Users,
+  Download, Package, Clock, Save, RefreshCw, Users, Camera, Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import api, { type BotManifest, type BotStatus, type BotRunRecord, type BotDlqEntry, type BotTierInfo, type BotPermissionsFile } from "@/lib/api";
+import { BotFace } from "./BotFace";
 import { DeliverablesList } from "./DeliverablesList";
 import type { BotEventState } from "./useBotEvents";
 
@@ -57,6 +58,19 @@ export function BotDetail({
   const [crewName, setCrewName] = useState("");
   const [crewPersona, setCrewPersona] = useState("");
   const [crewTier, setCrewTier] = useState("inherit");
+  // The face: bytes go up as base64 (the core sniffs them and refuses anything that is not
+  // an image), and `avatarVersion` re-requests the image after a change — the browser would
+  // otherwise keep the old bytes, the ETag on the route notwithstanding.
+  const avatarInput = useRef<HTMLInputElement | null>(null);
+  const [hasAvatar, setHasAvatar] = useState(Boolean(bot?.state?.hasAvatar));
+  const [avatarVersion, setAvatarVersion] = useState(0);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHasAvatar(Boolean(bot?.state?.hasAvatar));
+    setAvatarError(null);
+  }, [bot?.state?.hasAvatar, id]);
 
   const loadJournal = useCallback(async () => {
     if (!id) return;
@@ -120,6 +134,49 @@ export function BotDetail({
     }).catch(() => setPersonaState("error"));
   };
 
+  const pickAvatar = async (file: File | null) => {
+    if (!id || !file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setAvatarError(`That photo is ${Math.round(file.size / 1048576)} MB; the limit is 2 MB.`);
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("Could not read that file"));
+        reader.readAsDataURL(file);
+      });
+      await api.bots.setAvatar(id, data);
+      setHasAvatar(true);
+      setAvatarVersion((v) => v + 1);
+      setAvatarError(null);
+      onChanged();
+    } catch (e) {
+      setAvatarError(e instanceof Error ? e.message : "Could not store that photo");
+    } finally {
+      setAvatarBusy(false);
+      if (avatarInput.current) avatarInput.current.value = "";
+    }
+  };
+
+  const removeAvatar = async () => {
+    if (!id) return;
+    setAvatarBusy(true);
+    try {
+      await api.bots.clearAvatar(id);
+      setHasAvatar(false);
+      setAvatarVersion((v) => v + 1);
+      setAvatarError(null);
+      onChanged();
+    } catch {
+      setAvatarError("Could not remove the photo");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   const applyTier = async (tier: string) => {
     await api.bots.setPermissions(id, { tier });
     await loadConfig();
@@ -150,11 +207,36 @@ export function BotDetail({
       <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Bot className="h-5 w-5" /> {m.name}
+            <button
+              type="button"
+              onClick={() => avatarInput.current?.click()}
+              disabled={avatarBusy}
+              title={hasAvatar ? "Change this bot's photo" : "Give this bot a photo"}
+              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60"
+            >
+              <BotFace id={id ?? ""} name={m.name} hasAvatar={hasAvatar} version={avatarVersion} size={32} />
+            </button>
+            {m.name}
             <span className="text-muted-foreground text-sm">({id})</span>
             {m.fleetRole === "lead" && <Badge variant="secondary" className="text-yellow-500"><Crown className="h-3 w-3" /> fleet lead</Badge>}
             {m.fleetRole === "crew" && <Badge variant="secondary">crew of {m.parent}</Badge>}
+            <input
+              ref={avatarInput}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={(e) => void pickAvatar(e.target.files?.[0] ?? null)}
+            />
+            <Button size="sm" variant="outline" disabled={avatarBusy} onClick={() => avatarInput.current?.click()}>
+              <Camera className="h-3.5 w-3.5" /> {hasAvatar ? "Change photo" : "Add photo"}
+            </Button>
+            {hasAvatar && (
+              <Button size="sm" variant="ghost" disabled={avatarBusy} onClick={() => void removeAvatar()}>
+                <Trash2 className="h-3.5 w-3.5" /> Remove
+              </Button>
+            )}
           </DialogTitle>
+          {avatarError && <p className="text-xs text-red-500">{avatarError}</p>}
           <DialogDescription className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">model: {m.model?.provider ?? "inherit"}{m.model?.model ? `:${m.model.model}` : ""}</Badge>
             <Badge variant="secondary">memory: {m.memory?.scope ?? "own"}</Badge>
