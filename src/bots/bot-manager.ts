@@ -10,7 +10,7 @@ import type { TokenBudget } from '../utils/tokens.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
-import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
+import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression, MAX_FLEET_DEPTH } from './store.js';
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
@@ -1346,10 +1346,11 @@ export class BotManager {
     if (lead.fleetRole !== 'lead') {
       return { ok: false, error: `**${lead.name}** is not a fleet lead — promote it with \`/bots promote ${leadId}\` first` };
     }
-    // Multi-level guard: no cycles, bounded depth (v1 supports 3 levels —
-    // e.g. CEO → Engineering Lead → Backend). Walk the lead's parent chain.
+    // Multi-level guard: no cycles, bounded depth (MAX_FLEET_DEPTH levels — e.g.
+    // CEO → Engineering Lead → Backend, the deepest level list() and crewOf() walk).
+    // `level` is the level the NEW bot would take: one below the lead it joins.
     let ancestor: string | undefined = leadId;
-    let depth = 0;
+    let level = 1;
     const seen = new Set<string>();
     while (ancestor) {
       if (seen.has(ancestor)) return { ok: false, error: 'Fleet cycle detected in parent chain' };
@@ -1357,8 +1358,13 @@ export class BotManager {
       if (ancestor === spec.id.toLowerCase()) {
         return { ok: false, error: `Cannot add **${spec.id}** — it would become its own ancestor` };
       }
+      // Refuse the level the reader cannot reach: a bot created below this lead
+      // would exist on disk and answer by id while staying out of the roster.
+      if (level >= MAX_FLEET_DEPTH) {
+        return { ok: false, error: `Fleet nesting is capped at ${MAX_FLEET_DEPTH} levels` };
+      }
       ancestor = this.store.get(ancestor)?.parent;
-      if (++depth > 3) return { ok: false, error: 'Fleet nesting is capped at 3 levels' };
+      level += 1;
     }
     // Replay-safety BEFORE the crew cap: a re-run "build the crew" turn
     // (durable job replayed after an interrupted session) re-derives its
