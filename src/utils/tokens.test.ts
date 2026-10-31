@@ -2,8 +2,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { TokenBudget } from './tokens.js';
+import type { MercuryConfig } from './config.js';
 
 let mercuryHome = '';
+
+/** Only the slice TokenBudget reads: a whole config would be noise in every assertion. */
+const configWith = (dailyBudget: number) => ({ tokens: { dailyBudget } } as unknown as MercuryConfig);
 
 vi.mock('./config.js', () => ({
   getMercuryHome: () => mercuryHome,
@@ -16,8 +21,6 @@ vi.mock('./logger.js', () => ({
     warn: vi.fn(),
   },
 }));
-
-import { TokenBudget } from './tokens.js';
 
 describe('TokenBudget hardening', () => {
   beforeEach(() => {
@@ -96,5 +99,38 @@ describe('TokenBudget hardening', () => {
 
     const persisted = JSON.parse(readFileSync(usagePath, 'utf-8')) as { dailyUsed: number };
     expect(persisted.dailyUsed).toBe(100);
+  });
+
+  it('reads a zero budget as no ceiling, not as no answers', () => {
+    const budget = new TokenBudget(configWith(0));
+    budget.recordUsage({
+      provider: 'deepseek',
+      model: 'deepseek-flash',
+      inputTokens: 900,
+      outputTokens: 100,
+      totalTokens: 1_000,
+      channelType: 'cli',
+    });
+
+    expect(budget.isOverBudget()).toBe(false);
+    expect(budget.canAfford(5_000_000)).toBe(true);
+    expect(budget.getStatusText()).toContain('no daily ceiling');
+    expect(budget.getStatusText()).not.toContain('0 remaining');
+  });
+
+  it('still refuses once a real ceiling is crossed', () => {
+    const budget = new TokenBudget(configWith(1_000));
+    budget.recordUsage({
+      provider: 'deepseek',
+      model: 'deepseek-flash',
+      inputTokens: 900,
+      outputTokens: 100,
+      totalTokens: 1_000,
+      channelType: 'cli',
+    });
+
+    expect(budget.canAfford(1)).toBe(false);
+    expect(budget.isOverBudget()).toBe(true);
+    expect(budget.getRemaining()).toBe(0);
   });
 });
