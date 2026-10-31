@@ -31,3 +31,20 @@ web:
 ```
 
 Or use environment variables: `MERCURY_PORT`, `MERCURY_WEB_USER`, `MERCURY_WEB_PASS`.
+
+## Web Search Provider
+
+`web_search` works out of the box: web results come from Parallel's public search, then DuckDuckGo; news from Parallel, Bing News, Google News and Hacker News. To have a search API asked first for web results, set a provider in `~/.mercury/.env`:
+
+```bash
+WEB_SEARCH_PROVIDER=keenable
+# optional: lifts the keyless rate limit
+KEENABLE_API_KEY=
+```
+
+| Provider | Key | Notes |
+|----------|-----|-------|
+| *(unset)* | none | Parallel, then DuckDuckGo (html page, then lite page) |
+| `keenable` | optional `KEENABLE_API_KEY` | [Keenable](https://keenable.ai) search API; keyless works, a key lifts the rate limit |
+
+If the provider fails or finds too few results, the built-in engines answer or fill in as usual. News (`kind: "news"`) always uses the built-in engines. Restart Mercury after changing these.
