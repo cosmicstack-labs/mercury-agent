@@ -1,18 +1,19 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { resolve, isAbsolute, join } from 'node:path';
+import { resolve, join } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { readDenialMessage } from './verified-read.js';
+import { resolveToolPath, type CwdSource } from './resolve-path.js';
 
-export function createListDirTool(permissions: PermissionManager, getCwd: () => string) {
+export function createListDirTool(permissions: PermissionManager, getCwd: CwdSource) {
   return tool({
     description: 'List the contents of a directory. Shows file names, types, and sizes.',
     inputSchema: zodSchema(z.object({
       path: z.string().describe('Absolute or relative path to the directory'),
     })),
     execute: async ({ path }) => {
-      const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
+      const resolved = resolveToolPath(path, getCwd);
       const check = await permissions.checkFsAccess(resolved, 'read');
       if (!check.allowed) {
         if (check.code === undefined || check.code === 'denied') {

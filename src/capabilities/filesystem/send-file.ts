@@ -1,13 +1,14 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { existsSync, statSync } from 'node:fs';
-import { resolve, basename, isAbsolute } from 'node:path';
+import { resolve, basename } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { readDenialMessage } from './verified-read.js';
+import { resolveToolPath, type CwdSource } from './resolve-path.js';
 
 export function createSendFileTool(
   permissions: PermissionManager,
-  getCwd: () => string,
+  getCwd: CwdSource,
   sendFile: (filePath: string, channel?: string) => Promise<void>,
 ) {
   return tool({
@@ -18,7 +19,7 @@ export function createSendFileTool(
       channel: z.enum(['signal', 'telegram']).optional().describe('The channel to send the file via. Use this when the user explicitly requests a specific channel, e.g. "send via Signal" or "send to Telegram".'),
     })),
     execute: async ({ path, channel }) => {
-      const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
+      const resolved = resolveToolPath(path, getCwd);
       const check = await permissions.checkFsAccess(resolved, 'read');
       if (!check.allowed) {
         return readDenialMessage(resolved, check);
