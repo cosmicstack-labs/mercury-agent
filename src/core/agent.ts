@@ -451,6 +451,8 @@ export const MAX_STEPS = (() => {
 const MODEL_OUTPUT_TOKEN_LIMIT = 32768;
 const HEARTBEAT_INITIAL_MS = 20000;
 const HEARTBEAT_MAX_MS = 60000;
+/** Telegram hides a typing action after ~5s; refresh it from progress under that window. */
+const TYPING_REFRESH_MS = 4000;
 const LONG_TASK_HANDOFF_SUGGEST_MS = 45000;
 const MAX_STALL_MS = 4 * 60 * 1000;
 const MAX_SELF_CHECKS = 3; // max AI self-checks per request before hard-aborting
@@ -566,6 +568,7 @@ export class Agent {
   stepNarrative: import('../utils/tool-label.js').NarrativeStep[] = [];
   supervisor?: import('../core/supervisor.js').SubAgentSupervisor;
   botManager?: import('../bots/bot-manager.js').BotManager;
+  private lastTypingAt = 0;
   /** Bot awaiting a persona from the next message (post-create setup flow). */
   /**
    * A terminal beside a live daemon (ADR-024): the daemon owns persisted
@@ -1644,6 +1647,24 @@ export class Agent {
     if (activity) {
       this.currentActivity = activity;
     }
+    this.refreshTypingIndicator();
+  }
+
+  /**
+   * Telegram shows a typing action for only ~5 seconds, and the stream loop does
+   * not run during provider startup, reasoning or tool execution. Re-send the
+   * action from the progress path, throttled under that window. Nothing is
+   * scheduled here, so it stops by itself once the turn stops making progress.
+   */
+  private refreshTypingIndicator(): void {
+    const typingChannel = this.currentMessage ? this.channels.getChannelForMessage(this.currentMessage) : undefined;
+    if (!typingChannel) return;
+    const now = Date.now();
+    if (now - this.lastTypingAt < TYPING_REFRESH_MS) return;
+    this.lastTypingAt = now;
+    void typingChannel
+      .typing(this.currentMessage!.channelId)
+      .catch((e) => logger.warn({ e }, 'channel typing refresh failed'));
   }
 
   /**
