@@ -30,6 +30,8 @@ export interface SkillBatch {
 export interface SkillDiscovery {
   name: string;
   description: string;
+  /** e.g. "self-made" for skills Mercury wrote (ADR-027). */
+  category?: string;
 }
 
 export interface Skill extends SkillMeta {

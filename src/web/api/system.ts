@@ -1,4 +1,8 @@
 import { Hono } from 'hono';
+import type { BaseProvider } from '../../providers/base.js';
+import { BUILDER_VERIFIED_NOTE, buildSkillDraft, draftProblem, type SkillDraft } from '../../skills/builder.js';
+import { SELF_MADE_CATEGORY, composeSkillMd, readSelfMadeMeta, slugify } from '../../skills/self-made.js';
+import { readHistory, historySince } from '../../utils/token-history.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SkillLoader } from '../../skills/loader.js';
@@ -6,6 +10,7 @@ import { RegistryClient, isValidSkillId } from '../../skills/registry.js';
 import { SkillStore } from '../../skills/store.js';
 import { PermissionManager, type PermissionsManifest } from '../../capabilities/permissions.js';
 import { getMercuryHome } from '../../utils/config.js';
+import { getStatus } from './status.js';
 import type { Scheduler } from '../../core/scheduler.js';
 import cron from 'node-cron';
 
@@ -25,6 +30,7 @@ system.get('/api/skills', (c) => {
       name: skill.name,
       description: skill.description,
       active: skill.active,
+      selfMade: skill.category === SELF_MADE_CATEGORY,
       version: full?.version ?? null,
       allowedTools: full?.['allowed-tools'] ?? [],
       hasScripts: !!full?.scriptsDir,
@@ -32,6 +38,55 @@ system.get('/api/skills', (c) => {
     };
   });
   return c.json({ skills, total: skills.length });
+});
+
+// ── Skill builder: describe a skill, Mercury writes it, you save it ─────────
+
+type BuilderDeps = { provider: () => BaseProvider; tools: () => string[] };
+let builder: BuilderDeps | null = null;
+/** Registered by the runtime: the model to write with and the tools a skill may use. */
+export function setSkillBuilder(deps: BuilderDeps | null): void { builder = deps; }
+
+system.post('/api/skills/draft', async (c) => {
+  if (!builder) return c.json({ error: 'The skill builder needs Mercury running with a model.' }, 503);
+  const body = (await c.req.json().catch(() => ({}))) as { request?: unknown; previous?: { draft?: unknown; feedback?: unknown } };
+  const request = typeof body.request === 'string' ? body.request.trim() : '';
+  if (request.length < 10) return c.json({ error: 'Say a little more about what the skill should do.' }, 400);
+  if (request.length > 4000) return c.json({ error: 'Keep the description under 4,000 characters.' }, 400);
+  const prev = body.previous && typeof body.previous.feedback === 'string' && body.previous.feedback.trim() && body.previous.draft && typeof body.previous.draft === 'object'
+    ? { draft: body.previous.draft as SkillDraft, feedback: body.previous.feedback }
+    : undefined;
+  try {
+    const tools = builder.tools();
+    const r = await buildSkillDraft(builder.provider(), request, tools, prev);
+    const exists = r.draft.name ? new SkillLoader().load(r.draft.name) : null;
+    return c.json({ ...r, clash: exists && exists.category !== SELF_MADE_CATEGORY ? `"${r.draft.name}" is already an installed skill; pick another name.` : null, tools });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
+/** Save a reviewed draft as a self-made skill (marked not run yet until Mercury uses it). */
+system.post('/api/skills/self-made', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { draft?: Partial<SkillDraft> };
+  const d = body.draft ?? {};
+  const draft: SkillDraft = {
+    name: String(d.name ?? '').trim(),
+    description: String(d.description ?? '').trim(),
+    intents: Array.isArray(d.intents) ? d.intents.map((i) => String(i).trim()).filter(Boolean) : [],
+    instructions: String(d.instructions ?? '').trim(),
+    ...(Array.isArray(d.allowedTools) && d.allowedTools.length ? { allowedTools: d.allowedTools.map(String) } : {}),
+  };
+  const problem = draftProblem(draft);
+  if (problem) return c.json({ error: `Not saved: ${problem}.` }, 400);
+  const slug = slugify(draft.name)!;
+  const loader = new SkillLoader();
+  const existing = loader.load(slug);
+  if (existing && existing.category !== SELF_MADE_CATEGORY) return c.json({ error: `"${slug}" is already an installed skill. Pick a different name.`, field: 'name' }, 409);
+  const file = join(loader.rootDir(), SELF_MADE_CATEGORY, slug, 'SKILL.md');
+  const prior = existsSync(file) ? readSelfMadeMeta(readFileSync(file, 'utf-8')) ?? undefined : undefined;
+  loader.saveSkill(`${SELF_MADE_CATEGORY}/${slug}`, composeSkillMd({ ...draft, verified: BUILDER_VERIFIED_NOTE }, prior));
+  return c.json({ success: true, name: slug, updated: !!prior });
 });
 
 system.post('/api/skills/install', async (c) => {
@@ -144,6 +199,13 @@ system.put('/api/permissions', async (c) => {
   return c.json({ success: true, manifest: next });
 });
 
+/** Day-by-day tokens for the activity heat map: ?days=1..1100 (default 371). */
+system.get('/api/usage/history', (c) => {
+  const parsed = parseInt(c.req.query('days') ?? '371', 10);
+  const days = Number.isFinite(parsed) ? Math.max(1, Math.min(1100, parsed)) : 371;
+  return c.json({ days: readHistory(days), since: historySince() });
+});
+
 system.get('/api/usage', (c) => {
   const usagePath = join(getMercuryHome(), 'token-usage.json');
   let data: {
@@ -166,10 +228,14 @@ system.get('/api/usage', (c) => {
     requestLog: [],
   };
 
+  // A tracker that exists and cannot be read is not a tracker reporting zeros: the file is the
+  // answer, and losing it makes `dailyBudget: 0` read as "unlimited" on the console.
+  let available = true;
   if (existsSync(usagePath)) {
     try {
       data = { ...data, ...(JSON.parse(readFileSync(usagePath, 'utf8')) as Record<string, any>) };
     } catch {
+      available = false;
       // keep defaults
     }
   }
@@ -181,11 +247,18 @@ system.get('/api/usage', (c) => {
     byChannel[row.channelType] = (byChannel[row.channelType] || 0) + (row.totalTokens || 0);
   }
 
+  // The budget the runtime enforces is the live one. The tracker file carries whatever was
+  // configured the last time tokens were written, so raising the limit used to leave this endpoint
+  // reporting the old number — and `remaining` computed from it — until some turn happened to
+  // rewrite the file. The file stays the fallback for a runtime that never reported one.
+  const live = getStatus().tokenBudget;
+  const dailyBudget = Number.isFinite(live) && live > 0 ? live : (data.dailyBudget || 0);
   return c.json({
+    available,
     dailyUsed: data.dailyUsed || 0,
-    dailyBudget: data.dailyBudget || 0,
+    dailyBudget,
     lastResetDate: data.lastResetDate,
-    remaining: Math.max(0, (data.dailyBudget || 0) - (data.dailyUsed || 0)),
+    remaining: Math.max(0, dailyBudget - (data.dailyUsed || 0)),
     requestLog: (data.requestLog || []).slice(-100).reverse(),
     byProvider,
     byChannel,
@@ -193,9 +266,11 @@ system.get('/api/usage', (c) => {
 });
 
 system.get('/api/schedules', (c) => {
-  if (!scheduler) return c.json({ schedules: [], total: 0 });
+  // No scheduler in this process is not an empty schedule: the pair is the same shape, and the
+  // console cannot tell a bot with no routines from a runtime that never started the scheduler.
+  if (!scheduler) return c.json({ available: false, schedules: [], total: 0 });
   const schedules = scheduler.getManifests().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return c.json({ schedules, total: schedules.length });
+  return c.json({ available: true, schedules, total: schedules.length });
 });
 
 system.put('/api/schedules/:id', async (c) => {

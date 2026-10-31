@@ -344,6 +344,8 @@ export interface PluginListItem {
   tier: 'official' | 'community' | 'local';
   status: PluginStatus;
   installedVersion?: string;
+  /** The version before the last update, if it's still on disk (what rollback goes back to). */
+  previousVersion?: string;
   latestVersion?: string;
   sizeBytes?: number;
   enabled: boolean;

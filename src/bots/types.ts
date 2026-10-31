@@ -110,6 +110,14 @@ export interface BotManifest {
   id: string;
   name: string;
   description?: string;
+  /**
+   * The name of this bot's deliverables folder, decided once and then remembered.
+   *
+   * The folder used to be recomputed from `name` on every call, so renaming a bot silently moved
+   * its results: the next delivery landed in a fresh folder and the old one was orphaned. The name
+   * is a label the owner can change; this is the pointer that keeps the files where they are.
+   */
+  deliverablesFolder?: string;
   enabled: boolean;
   /** Persona file name inside the bot dir. Default 'persona.md'. */
   persona?: string;

@@ -4,6 +4,7 @@ import type { MercuryConfig } from './config.js';
 import { getMercuryHome, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { formatNumber } from './format.js';
+import { recordDay, seedToday } from './token-history.js';
 
 export interface TokenTracker {
   dailyUsed: number;
@@ -51,6 +52,12 @@ export class TokenBudget {
       this.lifetimeSaved = lifetime;
     }
     this.restore();
+    // The ledger starts with today's counter on its first run, so today isn't blank.
+    if (this.dailyUsed > 0) {
+      const input = this.requestLog.reduce((a, e) => a + safeNumber(e.inputTokens), 0);
+      const output = this.requestLog.reduce((a, e) => a + safeNumber(e.outputTokens), 0);
+      seedToday(this.dailyUsed, input, output, this.requestLog.length);
+    }
   }
 
   canAfford(estimatedTokens: number): boolean {
@@ -106,6 +113,7 @@ export class TokenBudget {
     const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
     this.dailyUsed += totalTokens;
     this.requestLog.push(logEntry);
+    recordDay(inputTokens, outputTokens, totalTokens, logEntry.timestamp);
 
     if (entry.agentId) {
       const agentUsed = this.perAgentUsage.get(entry.agentId) ?? 0;

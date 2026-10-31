@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
@@ -232,8 +233,11 @@ function prioritizeModels(models: string[], preferred: readonly string[]): strin
   return [...preferredMatches, ...others];
 }
 
+/** Per-call cap: the CLI picker shows 50; the desktop Settings asks for every model. */
+const modelLimit = new AsyncLocalStorage<number>();
+
 function limitModels(models: string[]): string[] {
-  return models.slice(0, MAX_MODEL_OPTIONS);
+  return models.slice(0, modelLimit.getStore() ?? MAX_MODEL_OPTIONS);
 }
 
 function isOpenAIChatModel(id: string): boolean {
@@ -295,12 +299,18 @@ function chooseRecommendedModel(
   return models[0];
 }
 
+/** Models that can't hold a conversation (rerankers, embedders, speech, images, moderation). */
+const NON_CHAT = /(^|[-_/.:])(rerank(er)?|embed(ding)?s?|whisper|tts|transcribe|moderation|dall-e|image-gen|text-to-speech|speech)([-_/.:]|$)/i;
+export function isChatModelId(id: string): boolean {
+  return !NON_CHAT.test(id);
+}
+
 export function buildModelCatalog(
   provider: ProviderName,
   models: string[],
   currentModel?: string,
 ): ProviderModelCatalog {
-  const filtered = uniq(models);
+  const filtered = uniq(models).filter(isChatModelId);
   if (filtered.length === 0) {
     throw new ProviderModelFetchError('Mercury could not find any supported chat models for this provider.');
   }
@@ -567,7 +577,7 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
   const allModels = Array.isArray(data.data) ? data.data : [];
   const allowed = allModels.filter((m) => m.available === true).map((m) => m.id);
   const ids = allowed.length > 0 ? allowed : allModels.map((m) => m.id);
-  const models = uniq(ids);
+  const models = uniq(ids).filter(isChatModelId);
   return {
     recommendedModel: config.model && models.includes(config.model) ? config.model : models[0] || config.model || 'mercury-mini',
     models: limitModels(models.filter((model) => model !== config.model)),
@@ -577,7 +587,13 @@ async function fetchMercuryCloudModels(config: ProviderConfig): Promise<Provider
 export async function fetchProviderModelCatalog(
   provider: ProviderName,
   config: ProviderConfig,
+  opts: { limit?: number } = {},
 ): Promise<ProviderModelCatalog> {
+  if (opts.limit !== undefined) return modelLimit.run(Math.max(1, opts.limit), () => fetchCatalog(provider, config));
+  return fetchCatalog(provider, config);
+}
+
+async function fetchCatalog(provider: ProviderName, config: ProviderConfig): Promise<ProviderModelCatalog> {
   if (provider === 'mercuryCloud') {
     return fetchMercuryCloudModels(config);
   }

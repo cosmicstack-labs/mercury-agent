@@ -2,22 +2,23 @@
    Mercury API Client — Typed fetch layer for all endpoints
    ═══════════════════════════════════════════════════════════════ */
 
-const BASE = "";
+import { apiUrl, authHeaders, handleUnauthorized, handleSignedOut, isRemoteMode } from "./connection";
 
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
+    ...options,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...options?.headers,
     },
-    ...options,
   });
 
   if (res.status === 401) {
-    window.location.href = "/login";
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
 
@@ -65,15 +66,102 @@ export const status = {
   get: () => get<AgentStatus>("/api/status"),
 };
 
+// ── Health / contract (see src/web/api-contract.ts in the runtime) ──
+export const health = {
+  get: () => get<HealthInfo>("/api/health"),
+  /** Probe an arbitrary runtime URL with an explicit token; used before a connection is configured. */
+  probe: async (baseUrl: string, token: string | null, timeoutMs = 5000): Promise<HealthInfo> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/health`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(res.status === 404 || res.status === 401 ? "Unauthorized" : `Health check failed (${res.status})`);
+      return (await res.json()) as HealthInfo;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+};
+
+export interface HealthInfo {
+  ok: boolean;
+  pid: number;
+  version: string;
+  apiVersion: number;
+  features: string[];
+  state: string;
+  booting: boolean;
+}
+
+export interface DeviceSummary {
+  id: string;
+  name: string;
+  platform: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+}
+
+export interface PairResponse {
+  token: string;
+  device: DeviceSummary;
+  apiVersion: number;
+  features: string[];
+}
+
+export class PairError extends Error {
+  constructor(message: string, public readonly status: number, public readonly retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "PairError";
+  }
+}
+
 // ── Auth ──
 export const auth = {
+  /** Cookie session for the runtime-served dashboard. */
   login: (username: string, password: string) =>
-    fetch("/api/auth/login", {
+    fetch(apiUrl("/api/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ username, password }),
       redirect: "manual",
     }),
+  /**
+   * Device token for a hosted client (Mercury Desktop, phones). Unlike
+   * login() this never touches cookies and the token is the only secret
+   * the client keeps. Pass the runtime URL explicitly: nothing is
+   * configured yet when a connection is being added.
+   */
+  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string) => {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, deviceName, platform }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse> & { error?: string };
+    if (!res.ok) {
+      const retry = res.headers.get("Retry-After");
+      throw new PairError(body.error || `Pairing failed (${res.status})`, res.status, retry ? Number(retry) : null);
+    }
+    return body as PairResponse;
+  },
+  /** Sign out of whatever we are signed in as, then hand control to the shell (or /login). */
+  signOut: async () => {
+    try {
+      if (isRemoteMode()) {
+        await post<{ success: boolean }>("/api/auth/token/revoke").catch(() => post("/api/auth/logout"));
+      } else {
+        window.location.href = "/api/auth/logout";
+        return;
+      }
+    } finally {
+      if (isRemoteMode()) handleSignedOut();
+    }
+  },
+  devices: () => get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
+  revokeDevice: (id: string) => del<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   logout: () => get<void>("/api/auth/logout"),
   changePassword: (currentPassword: string, newPassword: string) =>
     post<{ success: boolean }>("/api/auth/password", {
@@ -1053,6 +1141,7 @@ export interface BoardResources {
 // Default export for convenience
 const api = {
   status,
+  health,
   auth,
   config,
   providers,

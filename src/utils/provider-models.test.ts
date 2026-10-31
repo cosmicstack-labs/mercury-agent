@@ -221,3 +221,13 @@ describe('fetchProviderModelCatalog', () => {
     expect(catalog.models).toEqual(['zai-org/GLM-5.3-Flash']);
   });
 });
+
+describe('chat models only', () => {
+  it('drops rerankers, embedders and speech models from model lists', async () => {
+    const { isChatModelId, buildModelCatalog } = await import('./provider-models.js');
+    for (const m of ['nemotron-3.5-rerank-8b:free', 'text-embedding-3-small', 'gpt-4o-mini-tts', 'whisper-1', 'omni-moderation-latest']) expect(isChatModelId(m)).toBe(false);
+    for (const m of ['gpt-4o-mini', 'claude-sonnet-4.6', 'mercury-mini', 'deepseek-chat']) expect(isChatModelId(m)).toBe(true);
+    const c = buildModelCatalog('openaiCompat', ['a-chat', 'b-rerank-1', 'c-embed'], 'b-rerank-1');
+    expect([c.recommendedModel, ...c.models]).toEqual(['a-chat']);
+  });
+});

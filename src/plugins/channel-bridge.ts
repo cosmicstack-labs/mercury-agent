@@ -37,6 +37,7 @@
  * first answer wins. The plugin accepts a spoken yes only when the owner's own
  * transcribed words say yes, and a spoken yes never becomes "always".
  */
+import { voiceFeed } from './voice-feed.js';
 import { basename } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -177,6 +178,8 @@ export class PluginChannel extends BaseChannel {
   /** The owner's chat as WhatsApp addresses it (often a LID, not their phone JID). */
   private ownerChatId: string | undefined;
   private seen = new Set<string>();
+  /** When each ignored sender was last logged (once an hour each, so a chatty stranger can't flood the log). */
+  private ignoredLogged = new Map<string, number>();
   private statusListeners = new Set<(s: ChannelStatus) => void>();
   /** In-flight `ask_mercury` turns, by call target (`call:<callId>`). */
   private callAsks = new Map<string, { chunks: string[]; resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -249,10 +252,15 @@ export class PluginChannel extends BaseChannel {
   attach(): void {
     live.set(this.manifest.id, this);
     host?.register(this.type, this);
+    // Desktop voice (Optimus): clients see the session live and can steer it.
+    if (this.desktop) voiceFeed.attach(this.manifest.name, (action) => this.transport.notify?.('mercury/voice/control', { action }));
   }
 
   detach(): void {
-    if (this.desktop) desktopActivityHook?.(null);
+    if (this.desktop) {
+      desktopActivityHook?.(null);
+      voiceFeed.detach(this.manifest.name);
+    }
     if (live.get(this.manifest.id) === this) live.delete(this.manifest.id);
     host?.unregister(this.type, this);
     this.ready = false;
@@ -273,6 +281,15 @@ export class PluginChannel extends BaseChannel {
     else if (method === 'mercury/channel/message') this.onMessageNotification(params as IncomingParams);
     else if (method === 'mercury/call/ended') this.onCallEnded(params);
     else if (method === 'mercury/channel/activity') this.onActivity(params);
+    else if (method === 'mercury/voice/transcript' && this.desktop) {
+      // Optimus 0.5+: each thing said on a desktop session, as it's said.
+      const p = (params ?? {}) as Record<string, unknown>;
+      const role = p.role === 'owner' ? 'owner' : p.role === 'mercury' ? 'mercury' : null;
+      if (role && typeof p.text === 'string') voiceFeed.said(String(p.callId ?? ''), role, p.text.slice(0, 4000));
+    } else if (method === 'mercury/voice/level' && this.desktop) {
+      const p = (params ?? {}) as Record<string, unknown>;
+      voiceFeed.levels(Number(p.mic ?? 0), Number(p.out ?? 0));
+    }
   }
 
   async handleRequest(method: string, params: unknown): Promise<unknown> {
@@ -288,6 +305,7 @@ export class PluginChannel extends BaseChannel {
           return { accept: false, reason: 'voice engine not ready' };
         }
         this.callStarted(String(p.callId ?? ''));
+        if (this.desktop) voiceFeed.started(String(p.callId ?? ''));
         return { accept: true, instructions: voiceBriefing() };
       }
       case 'mercury/call/briefing':
@@ -330,6 +348,7 @@ export class PluginChannel extends BaseChannel {
         const callId = typeof p.callId === 'string' ? p.callId.replace(/[^\w.-]/g, '').slice(0, 80) : '';
         const question = typeof p.question === 'string' ? p.question.trim().slice(0, 4000) : '';
         if (!callId || !question) throw new Error('callId and question are required');
+        if (this.desktop) voiceFeed.asked(callId, question);
         return { answer: await this.askDuringCall(callId, question) };
       }
       default:
@@ -348,20 +367,35 @@ export class PluginChannel extends BaseChannel {
         clearTimeout(previous.timer);
         previous.resolve('(superseded by a newer question)');
       }
-      const giveUp = () => {
+      const chat = this.desktop ? 'your Mercury chat' : 'WhatsApp';
+      const channelId = `${this.type}:${target}`;
+      const giveUp = (message: string) => {
+        this.callAsks.delete(target);
+        this.overflow.add(target);
+        resolve(message);
+      };
+      const tooLong = () => {
         // Waiting on the owner's approval isn't "stuck": keep the question open.
         if ([...this.callApprovals.values()].some((a) => a.callId === callId)) {
           const entry = this.callAsks.get(target);
-          if (entry) entry.timer = setTimeout(giveUp, 30_000);
+          if (entry) entry.timer = setTimeout(tooLong, 30_000);
           return;
         }
-        this.callAsks.delete(target);
-        this.overflow.add(target);
-        resolve(this.desktop
-          ? 'Mercury is still working on that. It will send the answer to your Mercury chat when it\'s done.'
-          : 'Mercury is still working on that. It will send the answer to WhatsApp when it\'s done.');
+        const work = workProbe?.(channelId);
+        giveUp(work?.state === 'queued'
+          ? `Mercury hasn't started that yet: it's still busy with another task (${work.busyWith ?? 'another task'}). Your question is next, and the answer will go to ${chat}.`
+          : `Mercury is still working on that. It will send the answer to ${chat} when it's done.`);
       };
-      const timer = setTimeout(giveUp, 90_000);
+      // Stuck behind other work: say so early, instead of a long silence.
+      const behind = () => {
+        const work = workProbe?.(channelId);
+        const entry = this.callAsks.get(target);
+        if (work?.state !== 'queued' || entry?.resolve !== resolve) return;
+        clearTimeout(entry.timer);
+        giveUp(`Mercury hasn't started that yet: it's busy finishing another task (${work.busyWith ?? 'another task'}). Your question is next in line, and the answer will go to ${chat}.`);
+      };
+      const timer = setTimeout(tooLong, 90_000);
+      setTimeout(behind, behindMs);
       this.callAsks.set(target, { chunks: [], resolve, timer });
       const files = this.activeCalls.get(callId)?.files ?? [];
       const sentNote = files.length
@@ -389,6 +423,7 @@ export class PluginChannel extends BaseChannel {
       this.callAsks.delete(target);
       const answer = ask.chunks.filter((c) => !/^(☿|⚙|⏳|\s*\[)/.test(c.trim())).pop() ?? ask.chunks.pop() ?? '';
       ask.resolve(spokenPart(answer) || 'Done.');
+      if (this.desktop) voiceFeed.answered(spokenPart(answer) || 'Done.');
       // On the desktop there's no chat to send details to later: deliver them now.
       const extra = chatPart(answer);
       if (this.desktop && extra) this.notifyOwner(`🎙 From Optimus:\n${extra}`);
@@ -400,6 +435,7 @@ export class PluginChannel extends BaseChannel {
   private onActivity(params: unknown): void {
     const p = (params ?? {}) as Record<string, unknown>;
     desktopActivityHook?.(activityLabel(this.manifest.name, p.listening === true, p.working === true, p.muted === true));
+    if (this.desktop) voiceFeed.activity({ listening: p.listening === true, working: p.working === true, muted: p.muted === true, speaking: p.speaking === true });
   }
 
   private onCallEnded(params: unknown): void {
@@ -413,7 +449,21 @@ export class PluginChannel extends BaseChannel {
         try { learnFromCall(said.slice(0, 6000), replied.slice(0, 6000)); } catch { /* best effort */ }
       }
     }
-    this.activeCalls.delete(String(p.callId ?? ''));
+    const endedId = String(p.callId ?? '');
+    this.activeCalls.delete(endedId);
+    // Nobody is on the line any more: end the work the call started, unless
+    // its answer was already promised to the chat.
+    const target = `call:${endedId}`;
+    if (endedId && !this.overflow.has(target)) {
+      workStopper?.(`${this.type}:${target}`);
+      const ask = this.callAsks.get(target);
+      if (ask) {
+        clearTimeout(ask.timer);
+        this.callAsks.delete(target);
+        ask.resolve('(the call ended)');
+      }
+    }
+    if (this.desktop) voiceFeed.ended(String(p.callId ?? ''), String(p.outcome ?? 'ended'));
     for (const [id, a] of this.callApprovals) if (a.callId === String(p.callId ?? '')) this.resolveCallApproval(id, 'no', 'timeout');
     const secs = typeof p.durationSec === 'number' ? Math.round(p.durationSec) : 0;
     // A desktop session happened in front of the owner: only report failures.
@@ -483,6 +533,32 @@ export class PluginChannel extends BaseChannel {
     return members.includes(d) ? 'member' : null;
   }
 
+  /**
+   * Why a message didn't reach the agent, for the owner reading the log:
+   *   no-owner        no owner number is set, so nobody gets through
+   *   number-unknown  WhatsApp sent a private id (LID) and the plugin couldn't
+   *                   find the number behind it (an older plugin, or a first
+   *                   message before the mapping is known)
+   *   not-allowed     a number that isn't the owner or a member
+   * The sender shows as its last four digits only.
+   */
+  private noteIgnored(reason: 'no-owner' | 'number-unknown' | 'not-allowed', sender: string): void {
+    const who = digits(sender);
+    const key = `${reason}:${who}`;
+    const now = Date.now();
+    if (now - (this.ignoredLogged.get(key) ?? 0) < 3_600_000) return;
+    this.ignoredLogged.set(key, now);
+    if (this.ignoredLogged.size > 500) this.ignoredLogged.delete(this.ignoredLogged.keys().next().value!);
+    const tail = who ? `…${who.slice(-4)}` : 'unknown';
+    const hint = reason === 'no-owner'
+      ? 'no owner number is set'
+      : reason === 'number-unknown'
+        ? 'WhatsApp addressed the sender by a private id (LID) and the plugin could not find their number; update the plugin, or have them send another message'
+        : 'not the owner or a listed member';
+    const log = reason === 'not-allowed' ? logger.info.bind(logger) : logger.warn.bind(logger);
+    log({ plugin: this.manifest.id, reason, sender: tail }, `Channel message ignored: ${hint}`);
+  }
+
   private onMessageNotification(p: IncomingParams): void {
     if (typeof p.chatId !== 'string' || typeof p.senderId !== 'string') return;
     if (p.fromMe === true) return; // never answer ourselves
@@ -496,10 +572,12 @@ export class PluginChannel extends BaseChannel {
     const sender = typeof p.senderPhone === 'string' && p.senderPhone ? p.senderPhone : p.senderId;
     const role = this.roleOf(sender);
     if (!role) {
-      if (!digits(String(settings.owner ?? ''))) {
-        logger.warn({ plugin: this.manifest.id }, 'Channel message ignored: no owner number set');
-      }
-      return; // unknown senders are ignored, silently
+      // Strangers get no reply, but the owner can see why a message didn't
+      // get through (#247). Never the content; never a whole number.
+      if (!digits(String(settings.owner ?? ''))) this.noteIgnored('no-owner', p.senderId);
+      else if (!p.senderPhone && /@(hosted\.)?lid$/.test(p.senderId)) this.noteIgnored('number-unknown', p.senderId);
+      else this.noteIgnored('not-allowed', sender);
+      return;
     }
 
     const text = typeof p.text === 'string' ? p.text.slice(0, 20_000) : '';
@@ -709,6 +787,7 @@ export class PluginChannel extends BaseChannel {
     const call = this.callTarget(channelId);
     if (!call) return;
     this.transport.notify?.('mercury/call/progress', { callId: call.slice('call:'.length), activity: describeTool(toolName) });
+    if (this.desktop) voiceFeed.doing(describeTool(toolName));
   }
 
   /** `whatsapp:call:<id>` → `call:<id>`; undefined for normal chats. */
@@ -778,6 +857,7 @@ export class PluginChannel extends BaseChannel {
       const timer = setTimeout(() => this.resolveCallApproval(approvalId, 'no', 'timeout'), APPROVAL_TIMEOUT_MS);
       this.callApprovals.set(approvalId, { callId, prompt, resolve, timer });
       this.transport.notify?.('mercury/call/approval', { callId, approvalId, prompt: prompt.slice(0, 600) });
+      if (this.desktop) voiceFeed.approval(prompt.slice(0, 600));
       if (this.desktop) return;
       const chat = this.ownerChatId ? `${this.type}:${this.ownerChatId}` : undefined;
       void this.send(`🔐 From your call: ${prompt}\n\nSay *yes* on the call, or reply *1* (yes) or *2* (no) here.`, chat).catch(() => {});
@@ -830,6 +910,15 @@ let workStopper: ((channelPrefix: string) => boolean) | null = null;
 /** How a call's "stop" ends the Mercury work it started (agent.stopWorkFor). */
 export function setWorkStopper(fn: ((channelPrefix: string) => boolean) | null): void {
   workStopper = fn;
+}
+
+let workProbe: ((channelId: string) => { state: 'running' | 'queued' | 'none'; busyWith?: string }) | null = null;
+/** Where a call question's work stands (agent.workStateFor), to explain a wait honestly. */
+/** A call question still not started after this long is waiting behind other work. */
+let behindMs = 12_000;
+export function setWorkProbe(fn: typeof workProbe, waitMs = 12_000): void {
+  workProbe = fn;
+  behindMs = waitMs;
 }
 
 let desktopActivityHook: ((label: string | null) => void) | null = null;
