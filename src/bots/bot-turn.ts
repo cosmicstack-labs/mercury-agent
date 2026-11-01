@@ -240,7 +240,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       timestamp: Date.now(),
       metadata: { attachments: files },
     } as never;
-    const withFiles = withAttachments(messages, turnMessage, provider.name, provider.getModel());
+    const withFiles = withAttachments(messages, turnMessage, provider.name, provider.getModel(), provider.seesImages);
     messages.splice(0, messages.length, ...withFiles);
   }
 

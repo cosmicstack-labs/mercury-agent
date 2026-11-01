@@ -279,6 +279,10 @@ app.post('/api/bots/:id/message', async (c: any) => {
     for (const a of upload.attachments) rmSync(a.path, { force: true });
     return c.json({ accepted: false, reasonCode: result.reasonCode }, 409);
   }
+  if (result.duplicated) {
+    // A retry of a job already queued: that job holds its own copies of the files.
+    for (const a of upload.attachments) rmSync(a.path, { force: true });
+  }
   return c.json({
     accepted: true,
     jobId: result.jobId,

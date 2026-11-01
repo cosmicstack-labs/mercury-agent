@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -372,5 +372,31 @@ describe('BotManager durable queue integration', () => {
       backend.heartbeatLease('hb1', 0); // heartbeat to an instant-expiry lease → swept again
       expect(backend.rehydratable()).toHaveLength(1);
     }
+  });
+});
+
+describe('idempotencyKeyFor with files', () => {
+  let dir = '';
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mercury-idem-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const upload = (name: string, bytes: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, bytes);
+    return { kind: 'image' as const, path, mime: 'image/png', name: 'photo.png' };
+  };
+
+  it('keys a retried upload on its bytes, not its fresh random path', () => {
+    const first = upload('1111-photo.png', 'same pixels');
+    const retry = upload('2222-photo.png', 'same pixels');
+    expect(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [retry]))
+      .toBe(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [first]));
+  });
+
+  it('still tells two different photos apart', () => {
+    const a = upload('a-photo.png', 'cat');
+    const b = upload('b-photo.png', 'dog');
+    expect(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [a]))
+      .not.toBe(idempotencyKeyFor('bot', 'api', 'what is this?', undefined, [b]));
   });
 });

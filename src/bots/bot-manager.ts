@@ -396,7 +396,7 @@ export class BotManager {
     return this.journalFor(botId);
   }
 
-  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string } {
+  enqueue(botId: string, job: { trigger: BotTrigger; prompt: string; fromBot?: string; source?: { channelType: string; channelId: string }; attempts?: number; routineId?: string; attachments?: ChannelAttachment[] }): { jobId: string; accepted: boolean; reasonCode?: string; duplicated?: boolean } {
     const manifest = this.store.get(botId);
     if (!manifest) return { jobId: '', accepted: false, reasonCode: 'target_unknown' };
     if (!manifest.enabled || this.disabled.has(botId)) return { jobId: '', accepted: false, reasonCode: 'target_disabled' };
@@ -444,7 +444,7 @@ export class BotManager {
       idempotencyKey: idempotencyKeyFor(botId, job.trigger, job.prompt, job.fromBot, job.attachments),
     });
     if (durable.duplicated) {
-      return { jobId: durable.job.id, accepted: true };
+      return { jobId: durable.job.id, accepted: true, duplicated: true };
     }
     const id = durable.job.id;
     queue.push({ id, botId, trigger: job.trigger, prompt: job.prompt, fromBot: job.fromBot, source: job.source, createdAt: durable.job.createdAt, attempts: durable.job.attempts, routineId: job.routineId });

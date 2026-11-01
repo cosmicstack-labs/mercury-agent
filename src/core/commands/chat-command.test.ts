@@ -1,6 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebChannel } from '../../channels/web.js';
 import { handleChatCommand } from './chat-command.js';
+
+// A pick is saved to `<mercury home>/permission-mode.json`: without its own home, running
+// these tests rewrote the developer's real permission mode to allow-all.
+let home = '';
+let savedHome: string | undefined;
+beforeEach(() => {
+  savedHome = process.env.MERCURY_HOME;
+  home = mkdtempSync(join(tmpdir(), 'mercury-chat-command-'));
+  process.env.MERCURY_HOME = home;
+});
+afterEach(() => {
+  if (savedHome === undefined) delete process.env.MERCURY_HOME;
+  else process.env.MERCURY_HOME = savedHome;
+  rmSync(home, { recursive: true, force: true });
+});
 
 /**
  * Pickers on the owner's own screens. Since 1.3.1 the default launch attaches
