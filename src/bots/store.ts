@@ -632,6 +632,9 @@ export class BotStore {
     if (errors.length > 0) {
       throw new Error(`Invalid bot manifest: ${errors.join('; ')}`);
     }
+    // Fleet depth: refuse before the profile dir exists. save() would refuse the
+    // same write, but only after mkdir left an empty ghost directory behind.
+    this.assertFleetParentValid(manifest);
     // Fleet layout: a crew bot's profile is created INSIDE its lead's
     // directory. The lead must exist — fail closed rather than placing a
     // profile the hierarchy cannot account for.
@@ -670,10 +673,16 @@ export class BotStore {
   }
 
   update(id: string, mutator: (m: BotManifest) => void): BotManifest {
-    const manifest = this.get(id);
-    if (!manifest) throw new Error(`Bot "${id}" does not exist`);
+    const current = this.get(id);
+    if (!current) throw new Error(`Bot "${id}" does not exist`);
+    // Mutate a copy: a mutator that re-parents into a refused depth (or onto a cycle)
+    // must leave the cached manifest — and the disk — exactly as they were.
+    const manifest: BotManifest = { ...current };
     mutator(manifest);
     manifest.updatedAt = new Date().toISOString();
+    // Validate BEFORE moving anything: save() would refuse the same write, but only
+    // after the profile dir had already been relocated into the refused depth.
+    this.assertFleetParentValid(manifest);
     // Re-parent moves the profile dir to keep the physical layout in sync
     // (crew nested under its lead; promote/detach moves back to the root).
     this.relocateToParent(manifest);
@@ -727,7 +736,12 @@ export class BotStore {
         throw new Error(`Fleet cycle detected at "${ancestor}"`);
       }
       seen.add(ancestor);
-      if (++depth > MAX_FLEET_DEPTH) {
+      // `depth` counts ancestors, so this bot's level is depth + 1: a bot at level
+      // MAX_FLEET_DEPTH has MAX_FLEET_DEPTH - 1 ancestors and is the deepest one list()
+      // walks to. `depth > MAX_FLEET_DEPTH` compared ancestors to levels, letting a
+      // fourth level be created and then never listed.
+      depth += 1;
+      if (depth >= MAX_FLEET_DEPTH) {
         throw new Error(`Fleet nesting exceeds ${MAX_FLEET_DEPTH} levels`);
       }
       const next: string | undefined = this.get(ancestor)?.parent;
