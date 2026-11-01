@@ -34,11 +34,13 @@ export class OpenAICompatProvider extends BaseProvider {
   readonly model: string;
   private client: ReturnType<typeof createOpenAI>;
   private modelInstance: ReturnType<ReturnType<typeof createOpenAI>['languageModel']>;
+  private readonly usesResponsesApi: boolean;
 
   constructor(config: ProviderConfig, { useChatApi }: { useChatApi?: boolean } = {}) {
     super(config);
     this.name = config.name;
     this.model = config.model;
+    this.usesResponsesApi = !useChatApi;
 
     this.client = createOpenAI({
       apiKey: config.apiKey || 'no-key',
@@ -121,5 +123,9 @@ export class OpenAICompatProvider extends BaseProvider {
 
   getModelInstance(): any {
     return this.modelInstance;
+  }
+
+  supportsToolResultImages(): boolean {
+    return this.usesResponsesApi && this.name === 'openai';
   }
 }
