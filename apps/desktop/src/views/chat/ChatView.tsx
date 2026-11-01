@@ -49,7 +49,7 @@ export function ChatView() {
     return () => { setOnCallTurn(null); if (timer) clearTimeout(timer); };
   }, []);
 
-  // Saved chats are a bookmark, not a section: the list shows them only on ⌘⇧S.
+  // Saved chats are a bookmark, not a section: the list shows them on ⌘⇧S or the bookmark by search.
   const [savedOnly, setSavedOnly] = useState(false);
   const saved = !!threads.find((t) => t.id === activeId)?.savedAt;
   const toggleSaved = () => { if (activeId) void setThreadSaved(activeId, !saved).catch(() => {}); };
@@ -85,6 +85,7 @@ export function ChatView() {
             searchLabel={savedOnly ? "Search saved" : "Search chats"}
             savedOnly={savedOnly}
             onLeaveSaved={() => setSavedOnly(false)}
+            onShowSaved={() => setSavedOnly(true)}
             pinned={(voice.active || voice.turns.length > 0) && (
               <button onClick={() => {
                   // A live call opens the call screen; a finished one opens its chat.
