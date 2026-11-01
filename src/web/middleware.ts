@@ -63,6 +63,12 @@ export async function authGuard(c: Context, next: Next) {
   if (PUBLIC_PATHS.has(path)) {
     return next();
   }
+  // A plugin renderer is drawn in `<iframe sandbox="allow-scripts">`: an opaque origin,
+  // so the browser sends no cookie and the session check could never pass. The asset is
+  // shipped code with a CSP that allows nothing; the listing above stays authenticated.
+  if (path.startsWith('/api/ui/renderers/') && path !== '/api/ui/renderers/') {
+    return next();
+  }
   if (path.startsWith('/api/')) {
     if (authenticateRequest(c)) {
       return next();
