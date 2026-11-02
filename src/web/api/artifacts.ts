@@ -1,4 +1,4 @@
-import { copyFileSync, createReadStream, existsSync, statSync } from 'node:fs';
+import { copyFileSync, createReadStream, existsSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 import { Hono } from 'hono';
@@ -6,6 +6,10 @@ import { artifactStore, type Artifact } from '../../artifacts/store.js';
 import type { ArtifactKind } from '../../artifacts/classify.js';
 import type { SessionRepository } from '../../sessions/index.js';
 import { isLoopbackRequest } from '../middleware.js';
+import { canConvert, CONVERT_MIME, convertedName, convertFile, type ConvertFormat } from '../../artifacts/convert/index.js';
+import { logger } from '../../utils/logger.js';
+
+const asFormat = (v: unknown): ConvertFormat | null => (v === 'pdf' || v === 'docx' ? v : null);
 
 /**
  * Artifacts: what Mercury made, by conversation.
@@ -13,7 +17,8 @@ import { isLoopbackRequest } from '../middleware.js';
  *   GET    /api/artifacts?kind=&q=&threadId=&cursor=&limit=   newest first, a page at a time, with counts per kind
  *   GET    /api/artifacts/:id                                  one, with its thread
  *   GET    /api/artifacts/:id/file                             the file itself (Range for video and audio)
- *   POST   /api/artifacts/:id/export { dest }                  Save as… (this computer only)
+ *   GET    /api/artifacts/:id/file?as=pdf|docx                 a Markdown/text artifact as a PDF or Word document
+ *   POST   /api/artifacts/:id/export { dest, as? }             Save as… (this computer only), converted when `as` is given
  *   DELETE /api/artifacts/:id                                  forget one (Mercury's copy only)
  */
 
@@ -55,6 +60,23 @@ artifacts.get('/api/artifacts/:id', (c) => {
 artifacts.get('/api/artifacts/:id/file', (c) => {
   const a = artifactStore().get(c.req.param('id'));
   if (!a || !existsSync(a.storedPath)) return c.json({ error: 'Not found' }, 404);
+  const as = asFormat(c.req.query('as'));
+  if (c.req.query('as') !== undefined && !as) return c.json({ error: 'as must be pdf or docx' }, 400);
+  if (as) {
+    if (!canConvert(a)) return c.json({ error: 'Only Markdown and text can be exported as a document.' }, 415);
+    let bytes: Buffer;
+    try { bytes = convertFile(a.storedPath, a.name, as); } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err), id: a.id, as }, 'Artifact conversion failed');
+      return c.json({ error: `Couldn't make the ${as === 'pdf' ? 'PDF' : 'Word document'}.` }, 500);
+    }
+    return new Response(new Uint8Array(bytes), { status: 200, headers: {
+      'Content-Type': CONVERT_MIME[as],
+      'Content-Length': String(bytes.length),
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(convertedName(a.name, as))}`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store',
+    } });
+  }
   const size = statSync(a.storedPath).size;
   const headers: Record<string, string> = {
     'Content-Type': a.mime,
@@ -82,9 +104,18 @@ artifacts.post('/api/artifacts/:id/export', async (c) => {
   if (!isLoopbackRequest(c)) return c.json({ error: 'Saving to a folder only works on the computer Mercury runs on. Use Download instead.' }, 403);
   const a = artifactStore().get(c.req.param('id'));
   if (!a || !existsSync(a.storedPath)) return c.json({ error: 'Not found' }, 404);
-  const body = (await c.req.json().catch(() => ({}))) as { dest?: unknown };
+  const body = (await c.req.json().catch(() => ({}))) as { dest?: unknown; as?: unknown };
   const dest = typeof body.dest === 'string' ? body.dest : '';
   if (!dest || !isAbsolute(dest) || !existsSync(dirname(dest))) return c.json({ error: 'Choose a folder that exists.' }, 400);
+  const as = asFormat(body.as);
+  if (body.as !== undefined && !as) return c.json({ error: 'as must be pdf or docx' }, 400);
+  if (as) {
+    if (!canConvert(a)) return c.json({ error: 'Only Markdown and text can be exported as a document.' }, 415);
+    try { writeFileSync(dest, convertFile(a.storedPath, a.name, as)); } catch (err) {
+      return c.json({ error: `Couldn't make the ${as === 'pdf' ? 'PDF' : 'Word document'}: ${err instanceof Error ? err.message : String(err)}` }, 500);
+    }
+    return c.json({ ok: true, path: dest });
+  }
   copyFileSync(a.storedPath, dest);
   return c.json({ ok: true, path: dest });
 });

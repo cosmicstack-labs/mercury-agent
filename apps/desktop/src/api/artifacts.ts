@@ -37,7 +37,8 @@ export const artifactsApi = {
   get: (id: string) => http.get<{ artifact: ArtifactItem }>(`/api/artifacts/${encodeURIComponent(id)}`).then((r) => r.artifact),
   remove: (id: string) => http.delete<{ ok: boolean }>(`/api/artifacts/${encodeURIComponent(id)}`),
   /** Save a copy to a folder on the computer Mercury runs on. */
-  exportTo: (id: string, dest: string) => http.post<{ ok: boolean; path: string }>(`/api/artifacts/${encodeURIComponent(id)}/export`, { dest }),
+  /** Save a copy on this computer; `as` makes a Markdown/text artifact a PDF or Word document. */
+  exportTo: (id: string, dest: string, as?: "pdf" | "docx") => http.post<{ ok: boolean; path: string }>(`/api/artifacts/${encodeURIComponent(id)}/export`, { dest, ...(as ? { as } : {}) }),
 };
 
 /**
@@ -76,3 +77,70 @@ export function formatBytes(n: number): string {
 }
 
 export const KIND_LABEL: Record<ArtifactKind, string> = { image: "Image", video: "Video", audio: "Audio", pdf: "PDF", document: "Document", text: "Notes", file: "File" };
+
+/** Markdown and text can also be saved as a PDF or a Word document. */
+export function canExportAsDocument(a: { name: string; mime: string }): boolean {
+  return /^text\/(markdown|plain)$/.test(a.mime) || /\.(md|markdown|txt)$/i.test(a.name);
+}
+
+export type ExportFormat = "original" | "pdf" | "docx";
+
+const FORMAT_LABEL: Record<Exclude<ExportFormat, "original">, string> = { pdf: "PDF", docx: "Word document" };
+
+export function exportName(name: string, format: ExportFormat): string {
+  return format === "original" ? name : `${name.replace(/\.(md|markdown|txt)$/i, "")}.${format}`;
+}
+
+/**
+ * Save an artifact as itself, a PDF or a Word document: a Save dialog when
+ * Mercury runs on this computer (the runtime writes the file), a download
+ * otherwise. Resolves where it went ("" for a download), or null when the
+ * dialog was cancelled.
+ */
+export async function exportArtifact(a: { id: string; name: string }, format: ExportFormat, local: boolean, tauri: boolean): Promise<string | null> {
+  const as = format === "original" ? undefined : format;
+  const name = exportName(a.name, format);
+  if (tauri && local) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const ext = name.split(".").pop() ?? "";
+    const dest = await save({ defaultPath: name, title: `Save ${as ? FORMAT_LABEL[as] : name}`, filters: ext ? [{ name: as ? FORMAT_LABEL[as] : ext.toUpperCase(), extensions: [ext] }] : undefined });
+    if (!dest) return null;
+    await artifactsApi.exportTo(a.id, dest, as);
+    return dest;
+  }
+  const r = await fetch(apiUrl(`/api/artifacts/${encodeURIComponent(a.id)}/file${as ? `?as=${as}` : "?download=1"}`), { headers: authHeaders() });
+  if (!r.ok) {
+    let message = `Couldn't make the file (${r.status})`;
+    try { message = ((await r.json()) as { error?: string }).error ?? message; } catch { /* not JSON */ }
+    throw new Error(message);
+  }
+  const url = URL.createObjectURL(await r.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return "";
+}
+
+/**
+ * A site's icon as a blob URL, through the runtime (GET /api/chat/favicon):
+ * the app itself never loads anything from a third party. null = no icon.
+ */
+const icons = new Map<string, Promise<string | null>>();
+export function faviconUrl(domain: string): Promise<string | null> {
+  const key = domain.toLowerCase();
+  let hit = icons.get(key);
+  if (!hit) {
+    hit = fetch(apiUrl(`/api/chat/favicon?domain=${encodeURIComponent(key)}`), { headers: authHeaders() })
+      .then(async (r) => (r.status === 200 ? URL.createObjectURL(await r.blob()) : null))
+      .catch(() => null);
+    icons.set(key, hit);
+    if (icons.size > 300) {
+      const [oldest, url] = icons.entries().next().value as [string, Promise<string | null>];
+      icons.delete(oldest);
+      void url.then((u) => { if (u) URL.revokeObjectURL(u); });
+    }
+  }
+  return hit;
+}

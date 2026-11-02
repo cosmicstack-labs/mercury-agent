@@ -1,5 +1,9 @@
-import { AlertTriangle, BookOpen, Check, ChevronRight, CircleSlash, Copy, FileText, Globe, ListChecks, Plus, RotateCw, Search, Telescope, Trash2, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, CircleSlash, Copy, Download, FileText, Globe, ListChecks, Plus, RotateCw, Search, Telescope, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { exportArtifact, faviconUrl, type ExportFormat } from "~/api/artifacts";
+import { Menu, MenuItem } from "~/components/ui/Menu";
+import { useConnections } from "~/shell/connections";
+import { isTauri } from "~/shell/tauri";
 import * as api from "~/api/mercury";
 import type { ResearchSnapshot, ResearchSource } from "~/api/types";
 import { useConversation, useConversationStore } from "~/app/conversation";
@@ -219,7 +223,20 @@ export function ResearchReport({ run, content }: { run: ResearchSnapshot; conten
   const [details, setDetails] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [exported, setExported] = useState<{ text: string; ok: boolean } | null>(null);
+  const local = useConnections((s) => s.connections.find((c) => c.id === s.activeId)?.kind === "local");
   const { title, tone } = outcomeLine(run);
+
+  async function exportAs(format: ExportFormat) {
+    if (!run.report) return;
+    setExported({ text: format === "original" ? "Saving…" : `Making the ${format === "pdf" ? "PDF" : "Word document"}…`, ok: true });
+    try {
+      const dest = await exportArtifact(run.report, format, !!local, isTauri);
+      setExported(dest === null ? null : { text: dest ? `Saved to ${dest}` : "Downloaded.", ok: true });
+    } catch (e) {
+      setExported({ text: e instanceof Error ? e.message : String(e), ok: false });
+    }
+  }
   const took = run.endedAt ? elapsed(run.endedAt - run.startedAt) : null;
   const shortOf = run.state !== "done";
 
@@ -242,6 +259,13 @@ export function ResearchReport({ run, content }: { run: ResearchSnapshot; conten
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pl-[25px]">
         {run.report && <Button size="sm" variant="secondary" onClick={() => setReportOpen(true)}><FileText size={13} /> Open report</Button>}
+        {run.report && (
+          <Menu trigger={<Button size="sm" variant="ghost" aria-label="Export the report"><Download size={13} /> Export <ChevronDown size={12} /></Button>}>
+            <MenuItem onSelect={() => void exportAs("pdf")} hint="links stay clickable">PDF</MenuItem>
+            <MenuItem onSelect={() => void exportAs("docx")} hint="Word, Pages, Google Docs">Word (.docx)</MenuItem>
+            <MenuItem onSelect={() => void exportAs("original")} hint="with every source">Markdown (.md)</MenuItem>
+          </Menu>
+        )}
         {content.trim() && (
           <Button size="sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}>
             {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
@@ -257,6 +281,7 @@ export function ResearchReport({ run, content }: { run: ResearchSnapshot; conten
           </>
         )}
       </div>
+      {exported && <p className={cx("pl-[25px] text-xs", exported.ok ? "text-ink3" : "text-red")} data-selectable>{exported.text}</p>}
       <ResearchDetails run={run} open={details} onOpenChange={setDetails} />
       {run.report && (
         <Dialog open={reportOpen} onOpenChange={setReportOpen} title="Research report" width={900}>
@@ -330,13 +355,30 @@ export function ResearchDetails({ run, open, onOpenChange }: { run: ResearchSnap
   );
 }
 
+/** A site's icon (fetched by the runtime), or its first letters while there's none. */
+export function SiteIcon({ domain, failed, cited }: { domain: string; failed?: boolean; cited?: boolean }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setUrl(null);
+    void faviconUrl(domain).then((u) => { if (live) setUrl(u); });
+    return () => { live = false; };
+  }, [domain]);
+  return (
+    <span className="relative mt-0.5 flex h-6 w-6 shrink-0" aria-hidden="true">
+      {url
+        ? <img src={url} alt="" className={cx("h-6 w-6 rounded-md bg-white object-contain p-0.5 ring-1 ring-line", failed && "opacity-50 grayscale")} draggable={false} />
+        : <span className={cx("flex h-6 w-6 items-center justify-center rounded-md font-mono text-2xs uppercase", failed ? "bg-red/10 text-red" : cited ? "bg-accent/15 text-accent" : "bg-ink/[0.06] text-ink3")}>{domain.slice(0, 2)}</span>}
+      {failed && <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red text-white ring-2 ring-surface"><X size={9} strokeWidth={3} /></span>}
+      {cited && !failed && <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-on-accent ring-2 ring-surface"><Check size={9} strokeWidth={3} /></span>}
+    </span>
+  );
+}
+
 function SourceRow({ source: s }: { source: ResearchSource }) {
   return (
     <li className="flex items-start gap-3 px-3 py-2">
-      <span className={cx("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-2xs uppercase",
-        s.status === "failed" ? "bg-red/10 text-red" : s.cited ? "bg-accent/15 text-accent" : "bg-ink/[0.06] text-ink3")} aria-hidden="true">
-        {s.status === "failed" ? <X size={12} /> : s.domain.slice(0, 2)}
-      </span>
+      <SiteIcon domain={s.domain} failed={s.status === "failed"} cited={s.cited} />
       <span className="min-w-0 flex-1">
         <a href={s.url} target="_blank" rel="noreferrer" className="block truncate text-sm text-ink hover:underline" title={s.url}>{s.title || s.domain}</a>
         <span className="block truncate text-xs text-ink4">{s.domain}</span>

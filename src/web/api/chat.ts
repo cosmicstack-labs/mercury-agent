@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { commandCatalog } from '../../core/commands/catalog.js';
 import { getPluginManager } from '../../plugins/manager.js';
 import { artifactStore } from '../../artifacts/store.js';
+import { favicons } from '../favicons.js';
 import { scopedProgrammingState } from '../../core/programming-mode.js';
 import { isInsideWorkspace } from './workspace-ide.js';
 import { storeInlineAttachments, attachmentRefs, resolveUploadRef, uploadMime } from './uploads.js';
@@ -794,6 +795,19 @@ chat.post('/api/chat/threads/:id/research/off', (c) => {
   if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
   researchControls.off(c.req.param('id'));
   return c.json({ ok: true });
+});
+
+// A site's icon for the source lists (fetched and cached by the runtime; the apps load nothing from third parties).
+chat.get('/api/chat/favicon', async (c) => {
+  const icon = await favicons().get(c.req.query('domain') ?? '');
+  if (!icon) return c.body(null, 204, { 'Cache-Control': 'private, max-age=86400' });
+  return new Response(new Uint8Array(icon.bytes), { status: 200, headers: {
+    'Content-Type': icon.mime,
+    'Cache-Control': 'private, max-age=604800',
+    // An SVG opened on its own can't run anything.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'X-Content-Type-Options': 'nosniff',
+  } });
 });
 
 // The owner's answer to a research plan: { action: 'start' | 'cancel', questions?: string[] }.
