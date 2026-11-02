@@ -14,7 +14,7 @@ tashiriskhan:
   description: Writes about agent permissions, security and running Mercury safely.
   url: https://github.com/tashiriskhan
   image_url: https://github.com/tashiriskhan.png
-  page: false
+  page: true
   socials:
     github: tashiriskhan
 

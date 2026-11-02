@@ -4,11 +4,20 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Tue, 27 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Sat, 31 Oct 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
+            <link>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</link>
+            <guid>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</guid>
+            <pubDate>Sat, 31 Oct 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.]]></description>
+            <category>Engineering</category>
+            <category>Runtime</category>
+        </item>
         <item>
             <title><![CDATA[Running an agent overnight: what breaks first]]></title>
             <link>https://mercuryagent.sh/blog/running-an-agent-overnight</link>
