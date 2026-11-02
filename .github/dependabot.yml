@@ -4,6 +4,7 @@ updates:
     directories:
       - /
       - /ui
+      - /apps/desktop
     schedule:
       interval: monthly
     open-pull-requests-limit: 0
@@ -23,3 +24,29 @@ updates:
       interval: monthly
     ignore:
       - dependency-name: '*'
+  - package-ecosystem: cargo
+    directories:
+      - /apps/desktop/src-tauri
+      - /plugins/optimus/companion
+      - /plugins/whatsapp/companion
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    groups:
+      cargo-security:
+        applies-to: security-updates
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - '*'
