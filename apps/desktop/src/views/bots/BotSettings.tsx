@@ -6,7 +6,7 @@ import { Button } from "~/components/ui/Button";
 import { Input } from "~/components/ui/Input";
 import { Switch } from "~/components/ui/Switch";
 import { Spinner } from "~/components/ui/bits";
-import { ModelPicker, ScheduleEditor, TierPicker } from "./BotForms";
+import { ModelPicker, PersonaBuilderButton, ScheduleEditor, TierPicker } from "./BotForms";
 
 /**
  * Everything about a bot that the owner decides, on one page: its name and
@@ -32,7 +32,7 @@ export function BotSettings({ id, status }: { id: string; status: BotStatus | nu
     <div className="flex max-w-[760px] flex-col gap-5">
       <Basics bot={bot} onSaved={load} />
       <Card title="How it works" hint="Its instructions. Say what a good result is, and when there's nothing to report.">
-        <PersonaEditor id={id} initial={persona} />
+        <PersonaEditor id={id} name={bot.name} initial={persona} />
       </Card>
       <SchedulesCard bot={bot} onSaved={load} />
       <Card title="What it may do">
@@ -92,13 +92,14 @@ function Basics({ bot, onSaved }: { bot: BotManifest; onSaved: () => Promise<voi
   );
 }
 
-function PersonaEditor({ id, initial }: { id: string; initial: string }) {
+function PersonaEditor({ id, name, initial }: { id: string; name: string; initial: string }) {
   const [text, setText] = useState(initial);
   const { run, footer } = useSave();
   return (
     <>
       <textarea value={text} onChange={(e) => setText(e.target.value)} rows={10}
         className="w-full resize-y rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-relaxed text-ink" aria-label="Instructions" />
+      <PersonaBuilderButton text={text} name={name} onBuilt={setText} />
       {footer(() => void run(() => api.bots.setPersona(id, text)), text.trim() === initial.trim() || !text.trim())}
     </>
   );

@@ -187,6 +187,21 @@ export interface BotManifest {
   memory?: { scope?: "own" | "shared-read" | "none"; learn?: boolean };
 }
 
+/** A crew member, proposed by Mercury or written by you. */
+export interface CrewSpec {
+  id: string;
+  name: string;
+  description: string;
+  persona: string;
+}
+
+/** "Let Mercury decide" (POST /api/bots/plan). */
+export interface BotPlan {
+  shape: "solo" | "fleet";
+  reason: string;
+  crew: CrewSpec[];
+}
+
 /** A bot waiting for your answer mid-run (GET /api/bots/approvals). */
 export interface BotApproval {
   id: string;

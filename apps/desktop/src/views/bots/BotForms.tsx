@@ -1,7 +1,7 @@
-import { Plus, ShieldAlert, Trash2 } from "lucide-react";
+import { Plus, ShieldAlert, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as api from "~/api/mercury";
-import type { BotSchedule, BotTier, BotTierId, ModelsResponse } from "~/api/types";
+import type { BotSchedule, BotTier, BotTierId, CrewSpec, ModelsResponse } from "~/api/types";
 import { Input } from "~/components/ui/Input";
 import { cx } from "~/lib/cx";
 
@@ -137,4 +137,68 @@ export function ModelPicker({ value, onChange }: { value: { provider?: string; m
 export function slugify(name: string): string {
   const s = name.toLowerCase().normalize("NFKD").replace(/[^\w\s-]/g, "").trim().replace(/[\s_]+/g, "-").replace(/-+/g, "-").slice(0, 30).replace(/^-|-$/g, "");
   return /^[a-z]/.test(s) ? s : `bot-${s || "new"}`;
+}
+
+/**
+ * The persona builder, next to any instructions box: turns rough notes into
+ * the structured persona (Character, Standing instructions, Output) without
+ * adding anything you didn't say. One click to undo.
+ */
+export function PersonaBuilderButton({ text, name, onBuilt }: { text: string; name: string; onBuilt: (persona: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [before, setBefore] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  async function build() {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const persona = await api.bots.buildPersona(text, name);
+      setBefore(text);
+      onBuilt(persona);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button onClick={() => void build()} disabled={busy || text.trim().length < 10}
+        className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-ink2 hover:border-line-strong hover:text-ink disabled:opacity-50">
+        {busy ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-ink3 border-t-transparent" aria-hidden="true" /> : <Sparkles size={12} />}
+        {busy ? "Structuring… (10–60 s)" : "Structure with the persona builder"}
+      </button>
+      {before !== null && !busy && <button onClick={() => { onBuilt(before); setBefore(null); }} className="text-xs text-ink3 hover:text-ink">Undo</button>}
+      {problem && <span className="text-xs text-red">{problem}</span>}
+      {!problem && !busy && before === null && <span className="text-xs text-ink4">Keeps everything you wrote; adds nothing.</span>}
+    </div>
+  );
+}
+
+/** A team of crew members you write yourself (or edit after Mercury proposed them). */
+export function CrewEditor({ value, onChange, max = 6 }: { value: CrewSpec[]; onChange: (c: CrewSpec[]) => void; max?: number }) {
+  const set = (i: number, patch: Partial<CrewSpec>) => onChange(value.map((c, j) => (j === i ? { ...c, ...patch, ...(patch.name !== undefined ? { id: slugify(patch.name) } : {}) } : c)));
+  return (
+    <div className="flex flex-col gap-2.5">
+      {value.map((c, i) => (
+        <div key={i} className="flex flex-col gap-2 rounded-lg border border-line p-3">
+          <div className="flex items-center gap-2">
+            <Input value={c.name} onChange={(e) => set(i, { name: e.target.value })} placeholder="Crew member name, e.g. Fact Checker" className="h-8" aria-label="Crew name" />
+            <button onClick={() => onChange(value.filter((_, j) => j !== i))} className="rounded p-1.5 text-ink4 hover:text-red" aria-label="Remove crew member"><Trash2 size={14} /></button>
+          </div>
+          <Input value={c.description} onChange={(e) => set(i, { description: e.target.value })} placeholder="What it does, in one line" className="h-8" aria-label="Crew description" />
+          <textarea value={c.persona} onChange={(e) => set(i, { persona: e.target.value })} rows={3} placeholder="How it works and what it hands back to the lead."
+            className="w-full resize-y rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink4" aria-label="Crew instructions" />
+          <PersonaBuilderButton text={c.persona} name={c.name} onBuilt={(p) => set(i, { persona: p })} />
+        </div>
+      ))}
+      {value.length < max && (
+        <div>
+          <button onClick={() => onChange([...value, { id: "", name: "", description: "", persona: "" }])} className="flex items-center gap-1.5 text-sm text-ink2 hover:text-ink">
+            <Plus size={14} /> Add a crew member
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

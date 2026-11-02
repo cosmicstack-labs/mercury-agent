@@ -1,4 +1,4 @@
-import { ChevronDown, Play, Plus, RefreshCw, Shield, ShieldAlert, Square, Trash2 } from "lucide-react";
+import { ChevronDown, LayoutGrid, Play, Plus, RefreshCw, Shield, ShieldAlert, Square, Trash2 } from "lucide-react";
 import { DictationNotice, MicButton, RecordingBar, joinText, useDictation } from "~/components/dictation/Dictation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
@@ -19,6 +19,8 @@ import { Activity } from "./Activity";
 import { Usage } from "./Usage";
 import { BotInbox, InboxRow } from "./Inbox";
 import { PendingApprovals } from "./Approvals";
+import { BotsOverview } from "./Overview";
+import { CrewActions, MakeFleet } from "./FleetTools";
 import { CreateBot } from "./CreateBot";
 import { BotSettings } from "./BotSettings";
 import { describeCron } from "./BotForms";
@@ -75,7 +77,7 @@ export function BotsView() {
     useUi.getState().clearBotFocus();
   }, [focus]);
   useEffect(() => {
-    if (!selected) setSelected(bots.length ? "inbox" : "new");
+    if (!selected) setSelected(bots.length ? "all" : "new");
   }, [bots.length, selected]);
 
   if (!available) return <Empty title="Bots are not available on this runtime" body="Enable bots in the runtime's configuration to see them here." />;
@@ -95,6 +97,12 @@ export function BotsView() {
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
           <InboxRow active={selected === "inbox"} unread={unread} waiting={waiting} onClick={() => setSelected("inbox")} />
+          <button onClick={() => setSelected("all")} className={cx("mb-3 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left", selected === "all" ? "bg-ink/[0.07]" : "hover:bg-ink/[0.05]")}>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/[0.06]"><LayoutGrid size={15} className="text-ink2" /></span>
+            <span className="flex-1 text-sm font-medium text-ink">All bots</span>
+            <span className="text-xs text-ink4">{fleets.length ? `${fleets.length} fleet${fleets.length === 1 ? "" : "s"} · ` : ""}{bots.length}</span>
+          </button>
+          {fleets.length > 0 && <div className="px-2.5 pb-1 text-2xs font-medium uppercase tracking-wider text-ink4">Fleets</div>}
           {bots.length === 0 && <p className="px-2 pt-1 text-sm text-ink4">No bots yet. Press New bot to make one.</p>}
 
           {fleets.map((f) => {
@@ -140,7 +148,9 @@ export function BotsView() {
 
       <section className={cx("min-w-0 flex-1", selected === "new" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
         {selected === "new" ? (
-          <CreateBot existingIds={bots.map((b) => b.id)} onCancel={() => setSelected(bots.length ? "inbox" : null)} onCreated={(id) => setSelected(id)} />
+          <CreateBot existingIds={bots.map((b) => b.id)} onCancel={() => setSelected(bots.length ? "all" : null)} onCreated={(id) => setSelected(id)} />
+        ) : selected === "all" ? (
+          <BotsOverview fleets={fleets} solo={solo} onOpen={setSelected} onNew={() => setSelected("new")} />
         ) : selected === "inbox" ? (
           <div className="mx-auto flex max-w-[860px] flex-col gap-5 px-8 py-7">
             <div>
@@ -153,7 +163,7 @@ export function BotsView() {
         ) : selectedFleet ? (
           <FleetDetail fleet={selectedFleet} activity={activity} onSelect={setSelected} />
         ) : selected ? (
-          <BotDetail id={selected} status={selectedBot} onDeleted={() => setSelected("inbox")} />
+          <BotDetail id={selected} status={selectedBot} onDeleted={() => setSelected("all")} />
         ) : (
           <Empty title="Pick a bot" />
         )}
@@ -238,7 +248,7 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
       {tab === "overview" && (
         <>
           <div className="flex flex-col gap-3">
-            <SectionTitle>Crew</SectionTitle>
+            <SectionTitle right={<CrewActions leadId={lead.id} leadName={lead.name} crewCount={crew.length} />}>Crew</SectionTitle>
             <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-3">
               {crew.map((b) => (
                 <button key={b.id} onClick={() => onSelect(b.id)} className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 text-left hover:border-line-strong">
@@ -252,7 +262,7 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
                   </span>
                 </button>
               ))}
-              {crew.length === 0 && <p className="text-sm text-ink4">No crew yet.</p>}
+              {crew.length === 0 && <p className="text-sm text-ink4">No crew yet. Add a member, or let Mercury suggest them.</p>}
             </div>
           </div>
           <BotBody id={lead.id} status={lead} />
@@ -276,6 +286,7 @@ function BotDetail({ id, status, onDeleted }: { id: string; status: BotStatus | 
       <BotHeader id={id} status={status} onDeleted={onDeleted} />
       <PendingApprovals botId={id} />
       <TabBar tab={tab} onChange={setTab} fleet={false} />
+      {tab === "overview" && status && !status.parent && status.fleetRole !== "lead" && <MakeFleet id={id} name={status.name} />}
       {tab === "overview" && <BotBody id={id} status={status} />}
       {tab === "results" && <BotInbox bots={status ? [status] : []} botId={id} />}
       {tab === "deliverables" && <Deliverables bots={me} />}

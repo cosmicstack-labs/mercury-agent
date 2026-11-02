@@ -5,7 +5,7 @@
 
 import { http, ApiError } from "./client";
 import type { SkillDraft,
-  BotApproval, BotInboxEntry, BotManifest, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
@@ -110,6 +110,14 @@ export const bots = {
   inbox: (opts: { unread?: boolean; bot?: string; limit?: number } = {}) =>
     http.get<{ entries: BotInboxEntry[]; unread: number }>(`/api/bots/inbox?limit=${opts.limit ?? 100}${opts.unread ? "&unread=1" : ""}${opts.bot ? `&bot=${encodeURIComponent(opts.bot)}` : ""}`),
   markRead: (ids?: string[]) => http.post<{ ok: boolean; unread: number }>("/api/bots/inbox/read", ids ? { ids } : {}),
+  /** The persona builder: rough instructions → the structured persona. Nothing is saved. */
+  buildPersona: (text: string, name: string) => http.post<{ persona: string }>("/api/bots/persona-builder", { text, name }).then((r) => r.persona),
+  /** Solo or fleet for this job, with a proposed crew. fleet: true = you already chose a fleet. */
+  plan: (input: { name: string; description: string; persona: string; fleet?: boolean }) => http.post<{ plan: BotPlan; maxCrew: number }>("/api/bots/plan", input),
+  promote: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/promote`, {}),
+  /** Mercury designs and adds crew to a lead, in the background (roster updates arrive live). */
+  autoCrew: (id: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/autocrew`, {}),
+  addCrew: (leadId: string, crew: CrewSpec & { tier?: BotTierId }) => http.post<{ bot: BotManifest }>(`/api/bots/${encodeURIComponent(leadId)}/crew`, crew),
   approvals: () => http.get<{ approvals: BotApproval[] }>("/api/bots/approvals").then((r) => r.approvals),
   answer: (approvalId: string, answer: "yes" | "always" | "no") => http.post<{ ok: boolean }>(`/api/bots/approvals/${encodeURIComponent(approvalId)}`, { answer }),
   dlq: (id: string) => http.get<{ dlq: Array<{ id: string; prompt: string; reasonCode?: string; createdAt: number }> }>(`/api/bots/${encodeURIComponent(id)}/dlq`),
