@@ -6,6 +6,7 @@ import type { BotManager } from '../../bots/bot-manager.js';
 import type { BotManifest } from '../../bots/types.js';
 import { PERMISSION_TIERS, tierPermissionsFile, isPermissionTier, type PermissionTier } from '../../bots/permission-tiers.js';
 import { buildBotBundle, importBotBundle } from '../../bots/bundle.js';
+import { isValidCronExpression } from '../../bots/store.js';
 import { decodeAvatarInput, detectImage } from '../../bots/avatar.js';
 import { storeInlineAttachments } from './uploads.js';
 
@@ -240,6 +241,11 @@ app.patch('/api/bots/:id', async (c: any) => {
   const id = c.req.param('id');
   const patch = await c.req.json().catch(() => null) as Partial<BotManifest> | null;
   if (!patch) return c.json({ error: 'Invalid JSON body' }, 400);
+  if (patch.schedules !== undefined) {
+    const problem = scheduleProblem(patch.schedules);
+    if (problem) return c.json({ error: problem }, 400);
+  }
+  const previousRoutines = (botManager.store.get(id)?.schedules ?? []).map((r) => r.name);
   try {
     const updated = botManager.store.update(id, m => {
       // The id is the identity and stays immutable: directories, crew links, journals, threads and
@@ -262,6 +268,8 @@ app.patch('/api/bots/:id', async (c: any) => {
       if (patch.retention !== undefined) m.retention = patch.retention;
     });
     botManager.invalidateRuntime(id);
+    // Edited routines take effect now, not at the next restart.
+    if (patch.schedules !== undefined || patch.enabled !== undefined) botManager.syncRoutines(id, previousRoutines);
     // A config edit is roster news: the name, the description, the model, the enabled flag and the
     // autonomy limits all travel in the summaries. Without this, an open drawer kept the old name
     // until some unrelated roster change happened — the edit looked like it had not been applied.
@@ -743,3 +751,18 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 export default app;
+
+/** What's wrong with an edited schedule list, or null. Each routine: a name, a valid cron, a prompt. */
+function scheduleProblem(schedules: unknown): string | null {
+  if (!Array.isArray(schedules)) return 'schedules must be a list';
+  const names = new Set<string>();
+  for (const r of schedules as Array<Record<string, unknown>>) {
+    const name = typeof r?.name === 'string' ? r.name.trim() : '';
+    if (!/^[a-z0-9][a-z0-9-]{0,40}$/i.test(name)) return `Routine name "${name}" must be letters, numbers and dashes`;
+    if (names.has(name)) return `Two routines are called "${name}"`;
+    names.add(name);
+    if (typeof r.cron !== 'string' || !isValidCronExpression(r.cron)) return `"${name}": "${String(r.cron)}" isn't a valid schedule`;
+    if (typeof r.prompt !== 'string' || !r.prompt.trim()) return `"${name}" needs instructions`;
+  }
+  return null;
+}

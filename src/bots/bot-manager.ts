@@ -1689,6 +1689,27 @@ export class BotManager {
     }
   }
 
+  /**
+   * Re-register one bot's owner-declared routines after its schedules changed
+   * (the app's editor): routines no longer declared are removed, the rest
+   * replaced. Routines the bot created for itself are left alone.
+   */
+  syncRoutines(botId: string, previousNames: string[]): void {
+    const scheduler = this.scheduler;
+    const manifest = this.store.get(botId);
+    if (!scheduler || !manifest) return;
+    const now = new Set((manifest.schedules ?? []).map((r) => r.name));
+    for (const name of previousNames) if (!now.has(name)) scheduler.removeTask(`bot:${botId}:${name}`);
+    for (const routine of manifest.schedules ?? []) {
+      scheduler.removeTask(`bot:${botId}:${routine.name}`);
+      if (!manifest.enabled || !isValidCronExpression(routine.cron)) continue;
+      scheduler.addPersistedTask({
+        id: `bot:${botId}:${routine.name}`, cron: routine.cron, description: routine.name, prompt: routine.prompt, botId, createdAt: new Date().toISOString(),
+      });
+    }
+    scheduler.persistSchedules();
+  }
+
   // ---- control plane -------------------------------------------------------
 
   async halt(botId: string, jobId?: string): Promise<boolean> {
