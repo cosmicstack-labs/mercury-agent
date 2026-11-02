@@ -1086,7 +1086,7 @@ export class Agent {
    */
   private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
     if (!running) return;
-    const web = this.channels.get('web' as any) as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
+    const web = this.channels.get('web') as unknown as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
     if (!web?.sendQueued) return;
     const busyWith = (this.currentActivity && this.currentMessage === running ? this.currentActivity : running.content)
       .replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
