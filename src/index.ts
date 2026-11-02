@@ -96,7 +96,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
 import { setCloudReload } from './web/api/cloud.js';
@@ -3526,6 +3526,11 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setWebStop(() => agent.stopAllWork('stopped'));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
   setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
+  setWebResearchControls({
+    state: (id) => agent.researchMode.stateFor(id),
+    finish: (id) => agent.finishResearch(id),
+    off: (id) => { if (agent.researchMode.armedForSession(id)) agent.researchMode.setOff(); webChannel.sendResearchArmed(false, id); },
+  });
   setWebBudgetControls({ config: () => config, tokens: () => tokenBudget, saver: () => agent.saverMode });
   // Titles made before they were checked: fix them once, quietly, after start-up.
   if (!daemonOwnsRuntime) {

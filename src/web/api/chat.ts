@@ -53,6 +53,7 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       sequence: message.sequence,
       ...(typeof message.metadata?.voiceRole === 'string' ? { voice: message.metadata.voiceRole } : {}),
       ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
+      ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
       ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
         ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
         : {}),
@@ -83,6 +84,16 @@ let queueControls: { state: (threadId: string) => QueueState; prioritize: (threa
 /** The agent's line of turns: where a chat stands, and moving one to the front ("do mine first"). */
 export function setQueueControls(controls: typeof queueControls): void {
   queueControls = controls;
+}
+
+/** Research runs per chat: what's going on, "write the report now". */
+let researchControls: {
+  state: (sessionId: string) => Record<string, unknown>;
+  finish: (sessionId: string) => { ok: boolean; reason?: string };
+  off: (sessionId: string) => void;
+} | null = null;
+export function setResearchControls(controls: typeof researchControls): void {
+  researchControls = controls;
 }
 /** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
 export function setStopCallback(fn: () => Promise<string>): void {
@@ -763,6 +774,36 @@ chat.get('/api/chat/threads/:id/queue', (c) => {
 chat.post('/api/chat/threads/:id/queue/first', (c) => {
   if (!queueControls) return c.json({ error: 'Not available on this runtime' }, 503);
   return c.json({ moved: queueControls.prioritize(c.req.param('id')) });
+});
+
+// This chat's research: switched on for the next message, running (phase, sources…), or its last run.
+chat.get('/api/chat/threads/:id/research', (c) => {
+  if (!researchControls) return c.json({ armed: false, run: null });
+  return c.json(researchControls.state(c.req.param('id')));
+});
+
+// "Write the report now": stop searching and write the report from what was read.
+chat.post('/api/chat/threads/:id/research/finish', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  const r = researchControls.finish(c.req.param('id'));
+  return r.ok ? c.json({ ok: true }) : c.json({ ok: false, error: r.reason }, 409);
+});
+
+// Research off for this chat's next message (a run already going is stopped with Stop).
+chat.post('/api/chat/threads/:id/research/off', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  researchControls.off(c.req.param('id'));
+  return c.json({ ok: true });
+});
+
+// The owner's answer to a research plan: { action: 'start' | 'cancel', questions?: string[] }.
+chat.post('/api/chat/research/plan/:id', async (c) => {
+  if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
+  const body: { action?: unknown; questions?: unknown } = await c.req.json<{ action?: unknown; questions?: unknown }>().catch(() => ({}));
+  if (body.action !== 'start' && body.action !== 'cancel') return c.json({ error: 'Send { action: "start" } or { action: "cancel" }.' }, 400);
+  const questions = Array.isArray(body.questions) ? body.questions.filter((q): q is string => typeof q === 'string').slice(0, 8) : undefined;
+  const ok = webChannel.answerResearchPlan(c.req.param('id'), body.action, questions);
+  return ok ? c.json({ ok: true }) : c.json({ ok: false, error: 'That plan was already answered or has expired.' }, 410);
 });
 
 chat.post('/api/chat/threads/:id/save', async (c) => {

@@ -15,6 +15,7 @@ import { UserAvatar, useDisplayName } from "~/components/UserAvatar";
 import { usePulse } from "~/app/pulse";
 import { ArtifactStrip } from "~/components/artifacts/ArtifactCard";
 import { UndoMessage } from "./UndoMessage";
+import { ResearchReport } from "./Research";
 import { ReadAloudButton, ReadAloudNotice, useReadingThis } from "~/components/readAloud/ReadAloud";
 
 /**
@@ -72,7 +73,12 @@ export const Message = memo(function Message({ message, undoable = false }: { me
         )}
         {body && <Markdown text={body} />}
         {stopped && <StoppedMarker partial={!!body} />}
-        {message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+        {message.research
+          ? <ResearchReport run={message.research} content={body} />
+          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+        {message.research && message.artifacts && message.artifacts.filter((a) => a.id !== message.research?.report?.id).length > 0 && (
+          <ArtifactStrip items={message.artifacts.filter((a) => a.id !== message.research?.report?.id)} />
+        )}
         <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} />
         <ReadAloudNotice id={message.id} />
       </div>

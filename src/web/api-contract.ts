@@ -51,6 +51,7 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'threads.save',      // POST /api/chat/threads/:id/save { saved } — thread.savedAt
   'cloud.signin',      // GET /api/cloud/status, POST/GET/DELETE /api/cloud/signin (browser pairing from any client)       // POST /api/voice/check { vendor, key?, endpoint? }
   'brain.map',         // GET /api/brain/map[?archive=1] — themes, sub-themes, notes, related links
+  'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 
 export interface ApiContractInfo {

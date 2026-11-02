@@ -61,6 +61,60 @@ export interface ChatMessage {
   stopped?: boolean;
   /** Files this turn made that are worth keeping (images, PDFs, reports…). */
   artifacts?: import("./artifacts").ArtifactRef[];
+  /** This answer is a research report: how the run went. */
+  research?: ResearchSnapshot;
+}
+
+/** A page a research run tried to read. */
+export interface ResearchSource {
+  url: string;
+  domain: string;
+  title?: string;
+  status: "read" | "failed";
+  reason?: string;
+  cited?: boolean;
+  at: number;
+}
+
+export interface ResearchSearch {
+  query: string;
+  results: number;
+  ok: boolean;
+  reason?: string;
+  at: number;
+}
+
+export type ResearchOutcome = "done" | "partial" | "stopped" | "failed" | "cancelled";
+
+/** A research run as the runtime reports it (research events, a report's metadata). */
+export interface ResearchSnapshot {
+  runId: string;
+  topic: string;
+  state: "running" | ResearchOutcome;
+  phase: "planning" | "searching" | "reading" | "writing";
+  questions: string[];
+  startedAt: number;
+  endedAt?: number;
+  steps: number;
+  maxSteps: number;
+  searches: number;
+  failedSearches: number;
+  read: number;
+  failed: number;
+  cited: number;
+  sourceList: ResearchSource[];
+  searchList: ResearchSearch[];
+  cut?: string;
+  report?: import("./artifacts").ArtifactRef;
+}
+
+/** A proposed research plan waiting for Start. */
+export interface ResearchPlanPrompt {
+  id: string;
+  runId: string;
+  topic: string;
+  questions: string[];
+  expiresAt: number;
 }
 
 export interface ThoughtStep {

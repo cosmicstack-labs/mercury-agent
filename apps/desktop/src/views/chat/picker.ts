@@ -31,7 +31,7 @@ export type PickerItem =
 const DESKTOP_COMMANDS = new Set([
   "/help", "/whatsnew", "/status", "/progress", "/log",
   "/models", "/models use ", "/cloud models", "/cloud use ",
-  "/research", "/research on", "/research off", "/research ",
+  "/research", "/research on", "/research off", "/research plan ", "/research continue", "/research retry", "/research ",
   "/budget", "/saver", "/saver toggle", "/memory", "/tools", "/mcp",
   "/skills", "/skills search ", "/skills install ",
   "/plugins", "/plugins search ", "/plugins install ", "/plugins update",

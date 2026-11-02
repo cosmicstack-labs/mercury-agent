@@ -134,11 +134,14 @@ export const CHAT_COMMAND_HELP: ReadonlyArray<readonly [string, string]> = [
   ['/code chat', 'Switch back to regular chat instantly (alias: /code back)'],
   ['/chat', 'Return to chat mode (tears down Mercury Code if active)'],
   ['/code toggle', 'Cycle through: off → auto → plan → execute → off'],
-  ['/research', 'Show research mode status'],
-  ['/research on', 'Enable deep research mode (web research + rich markdown article)'],
-  ['/research off', 'Exit research mode'],
-  ['/research toggle', 'Toggle research mode on/off'],
-  ['/research <topic>', 'Enable research mode for a specific topic'],
+  ['/research', 'Show research status'],
+  ['/research on', 'Research your next message here (live sources, full report), then switch off'],
+  ['/research off', 'Cancel research for your next message'],
+  ['/research toggle', 'Switch research on/off for your next message'],
+  ['/research <topic>', 'Research a topic now'],
+  ['/research plan <topic>', 'Show the research plan first; edit it, then start'],
+  ['/research continue', 'Continue the last research here, filling its gaps'],
+  ['/research retry', "Retry the sources the last research couldn't read"],
   ['/ws exit', 'Exit workspace IDE mode back to general chat'],
   ['/ws open <path>', 'Open a workspace directory in IDE mode'],
   ['/ws refresh', 'Refresh file tree + git status panel'],
@@ -435,11 +438,14 @@ export function getTelegramHelp(): string {
   lines.push('');
 
   lines.push('**Research Mode**');
-  lines.push('/research — Show current research mode status');
-  lines.push('/research on — Enable deep web research + rich markdown article');
-  lines.push('/research off — Exit research mode');
-  lines.push('/research toggle — Toggle research mode');
-  lines.push('/research <topic> — Enable research mode for a specific topic');
+  lines.push('/research — Show research status');
+  lines.push('/research on — Research your next message (live sources, full report), then switch off');
+  lines.push('/research off — Cancel research for your next message');
+  lines.push('/research toggle — Switch research on/off for your next message');
+  lines.push('/research <topic> — Research a topic now');
+  lines.push('/research plan <topic> — Show the plan first; edit it, then start');
+  lines.push('/research continue — Continue the last research, filling its gaps');
+  lines.push("/research retry — Retry the sources the last research couldn't read");
   lines.push('');
 
   lines.push('**Sub-Agents**');

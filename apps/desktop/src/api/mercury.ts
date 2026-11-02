@@ -60,6 +60,14 @@ export const chat = {
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
   /** Put this chat's waiting message first in line. */
   queueFirst: (threadId: string) => http.post<{ moved: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/queue/first`, {}),
+  /** This chat's research: on for the next message, the run going now, or its last one. */
+  research: (threadId: string) => http.get<{ armed: boolean; planFirst?: boolean; topic?: string | null; run: import("./types").ResearchSnapshot | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research`),
+  /** Stop searching and write the report from what was read. */
+  finishResearch: (threadId: string) => http.post<{ ok: boolean }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research/finish`, {}),
+  /** Research off for this chat's next message. */
+  researchOff: (threadId: string) => http.post<{ ok: boolean }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research/off`, {}),
+  /** Start (with these sub-questions) or cancel a proposed research plan. */
+  answerResearchPlan: (id: string, action: "start" | "cancel", questions?: string[]) => http.post<{ ok: boolean }>(`/api/chat/research/plan/${encodeURIComponent(id)}`, { action, questions }),
   /** Every slash command with what it does (the "/" picker). */
   commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),

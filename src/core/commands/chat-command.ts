@@ -36,7 +36,7 @@ import {
 } from '../../utils/config.js';
 import { MAX_STEPS } from '../agent.js';
 import path from 'node:path';
-import type { ChannelMessage, ChannelType } from '../../types/channel.js';
+import type { ChannelType } from '../../types/channel.js';
 import { createProvider, ProviderRegistry as ProviderRegistryImpl } from '../../providers/registry.js';
 import { ProgrammingMode } from '../programming-mode.js';
 import { logger } from '../../utils/logger.js';
@@ -1204,56 +1204,90 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
 
   if (cmd.startsWith('/research')) {
     const rawArgs = trimmed.slice('/research'.length).trim();
+    const sub = rawArgs.toLowerCase();
+    const web = channel instanceof WebChannel ? channel : null;
+    // Research a message as a real user turn in this chat: the same session
+    // as the command (without it the turn, and its report, went to another one).
+    const asked = agent.currentMessage?.channelId === channelId ? agent.currentMessage : null;
+    const research = (content: string, opts: { topic?: string; planFirst?: boolean } = {}): void => {
+      agent.researchMode.setOn(opts.topic ?? content.slice(0, 160), { sessionId: channelId, planFirst: opts.planFirst });
+      web?.sendResearchArmed(true, channelId, { topic: opts.topic ?? content.slice(0, 160), planFirst: opts.planFirst });
+      agent.enqueueMessage({
+        id: `research-${Date.now().toString(36)}`,
+        channelId,
+        channelType: channelType as ChannelType,
+        senderId: 'user',
+        senderName: 'You',
+        content,
+        timestamp: Date.now(),
+        ...(asked?.sessionId ? { sessionId: asked.sessionId } : {}),
+        ...(asked?.metadata ? { metadata: { ...asked.metadata } } : {}),
+      });
+    };
 
-    if (!rawArgs || rawArgs.toLowerCase() === 'status') {
+    if (!rawArgs || sub === 'status') {
       await channel.send(agent.researchMode.getStatusText(), channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'on') {
-      agent.researchMode.setOn();
-      await channel.send(
-        'Research mode: **On**\nI will perform deep, multi-source web research and produce a full markdown research article. Long tasks are expected. Use `/research off` to exit.',
-        channelId,
-      );
+    if (sub === 'on' || sub === 'plan') {
+      agent.researchMode.setOn(undefined, { sessionId: channelId, planFirst: sub === 'plan' });
+      web?.sendResearchArmed(true, channelId, { planFirst: sub === 'plan' });
+      await channel.send(`Research: **On** for your next message here${sub === 'plan' ? ' (plan first)' : ''}. I'll search live sources, cross-check them and write a full report; then research switches off again. \`/research off\` cancels.`, channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'off') {
+    if (sub === 'off') {
       agent.researchMode.setOff();
-      await channel.send('Research mode: **Off**\nBack to normal conversation mode.', channelId);
+      web?.sendResearchArmed(false, channelId);
+      await channel.send('Research: **Off**. Back to normal conversation.', channelId);
       return true;
     }
 
-    if (rawArgs.toLowerCase() === 'toggle') {
-      const newState = agent.researchMode.toggle();
-      await channel.send(`Research mode: **${newState === 'on' ? 'On' : 'Off'}**`, channelId);
+    if (sub === 'toggle') {
+      const on = !agent.researchMode.armedForSession(channelId);
+      if (on) agent.researchMode.setOn(undefined, { sessionId: channelId });
+      else agent.researchMode.setOff();
+      web?.sendResearchArmed(on, channelId);
+      await channel.send(`Research: **${on ? 'On' : 'Off'}**${on ? ' for your next message here' : ''}`, channelId);
       return true;
     }
 
-    // Treat remaining args as a topic + enable research mode
-    agent.researchMode.setOn(rawArgs);
-    if (channel instanceof WebChannel) {
-      channel.sendHeartbeat(`Research mode: On. Topic: ${rawArgs}. I will gather live sources and produce a full research article.`, channelId);
-    } else {
-      await channel.send(
-        `Research mode: **On**\nTopic: ${rawArgs}\nI will gather live sources and produce a full research article. Use \`/research off\` to exit.`,
-        channelId,
-      );
+    // Pick up where the last run in this chat left off.
+    if (sub === 'continue' || sub === 'retry') {
+      const last = agent.researchMode.runFor(channelId);
+      if (!last) {
+        await channel.send('There is no earlier research in this chat to continue. Use `/research <topic>` to start one.', channelId);
+        return true;
+      }
+      const snap = last.snapshot();
+      if (sub === 'retry') {
+        const failed = last.failedSources().slice(0, 12);
+        if (!failed.length) {
+          await channel.send('Every source in the last research was read; there is nothing to retry.', channelId);
+          return true;
+        }
+        research(`Retry the sources that couldn't be read in the research on "${snap.topic}", then update the report with anything new. Try each once more; if one fails again, find another source for the same point.\n${failed.map((f) => `- ${f.url} (${f.reason ?? 'failed'})`).join('\n')}`, { topic: snap.topic });
+        return true;
+      }
+      const gaps = [
+        ...(snap.cut ? [`it stopped early because ${snap.cut}`] : []),
+        ...last.failedSources().slice(0, 8).map((f) => `${f.domain} couldn't be read (${f.reason ?? 'failed'})`),
+      ];
+      research(`Continue the research on "${snap.topic}". Build on the report already in this conversation: keep what it established, fill in what it doesn't cover, and write the full updated report.${gaps.length ? `\nKnown gaps:\n${gaps.map((g) => `- ${g}`).join('\n')}` : ''}`, { topic: snap.topic });
+      return true;
     }
-    // Enqueue the topic as a real user message so the agent immediately
-    // begins researching it, rather than only setting mode + topic and
-    // waiting for the user to repeat themselves.
-    const researchTopicMsg: ChannelMessage = {
-      id: `research-${Date.now().toString(36)}`,
-      channelId,
-      channelType: channelType as ChannelType,
-      senderId: 'user',
-      senderName: 'You',
-      content: rawArgs,
-      timestamp: Date.now(),
-    };
-    agent.enqueueMessage(researchTopicMsg);
+
+    // "/research plan <topic>": show the plan before starting.
+    const planned = /^plan\s+(.+)$/is.exec(rawArgs);
+    if (planned) {
+      research(planned[1].trim(), { planFirst: true });
+      return true;
+    }
+
+    // Anything else is the topic: research it now.
+    if (!web) await channel.send(`Research: **On**\nTopic: ${rawArgs}\nI'll gather live sources and write a full report.`, channelId);
+    research(rawArgs);
     return true;
   }
 

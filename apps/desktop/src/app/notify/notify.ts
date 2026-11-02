@@ -19,7 +19,7 @@ import { playSound } from "./sounds";
 import { useNotify, worthTelling } from "./store";
 
 export interface ActivityEvent {
-  kind: "started" | "needs_you" | "resolved" | "done" | "stopped" | "failed";
+  kind: "started" | "needs_you" | "resolved" | "done" | "stopped" | "failed" | "research";
   sessionId: string;
   title?: string;
   id?: string;
@@ -27,6 +27,32 @@ export interface ActivityEvent {
   ms?: number;
   preview?: string;
   message?: string;
+  /** kind "research": how a research run ended, and what it found. */
+  state?: "done" | "partial" | "stopped" | "failed";
+  topic?: string;
+  read?: number;
+  cited?: number;
+  failed?: number;
+  report?: string;
+}
+
+/**
+ * A research run's own update follows its "done" by a moment and says more
+ * ("Research ready: … · 41 sources"), so a "done" waits briefly for it.
+ */
+const heldDone = new Map<string, ReturnType<typeof setTimeout>>();
+const HOLD_DONE_MS = 1500;
+
+/** "Research ready: solar storms" and "41 sources read · 23 cited · 3 couldn't be read". */
+export function researchNotice(e: ActivityEvent): { kind: "done" | "failed"; title: string; body: string } {
+  const topic = (e.topic || e.title || "your question").replace(/\s+/g, " ").slice(0, 90);
+  const counts = [`${e.read ?? 0} source${e.read === 1 ? "" : "s"} read`, e.cited ? `${e.cited} cited` : "", e.failed ? `${e.failed} couldn't be read` : ""].filter(Boolean).join(" · ");
+  switch (e.state) {
+    case "done": return { kind: "done", title: `Research ready: ${topic}`, body: counts };
+    case "partial": return { kind: "done", title: `Partial research report: ${topic}`, body: `Stopped early, written from what was read. ${counts}` };
+    case "stopped": return { kind: "failed", title: `Research stopped: ${topic}`, body: counts };
+    default: return { kind: "failed", title: `Research didn't finish: ${topic}`, body: `${counts}. Open it to continue.` };
+  }
 }
 
 /** Which surface a session belongs to. */
@@ -174,7 +200,11 @@ export function handleActivity(e: ActivityEvent): void {
         void import("../events").then(({ refreshThreads }) => refreshThreads());
       }
       if (watching(e.sessionId) || !worthTelling(e.kind, e.ms ?? 0, n.prefs)) return;
-      if (e.kind === "done") tell("done", e.sessionId, `Done: ${label(e)}`, e.preview || "Mercury finished.");
+      if (e.kind === "done") {
+        const sessionId = e.sessionId;
+        clearTimeout(heldDone.get(sessionId));
+        heldDone.set(sessionId, setTimeout(() => { heldDone.delete(sessionId); tell("done", sessionId, `Done: ${label(e)}`, e.preview || "Mercury finished."); }, HOLD_DONE_MS));
+      }
       else tell("failed", e.sessionId, `Stopped with an error: ${label(e)}`, e.message || "Something went wrong.");
       // First long task: offer system notifications, once.
       if (!n.prefs.asked) {
@@ -186,6 +216,17 @@ export function handleActivity(e: ActivityEvent): void {
     case "stopped":
       n.clearWaiting(e.sessionId);
       return;
+    case "research": {
+      // Said instead of the plain "Done" it follows.
+      const held = heldDone.get(e.sessionId);
+      if (held) { clearTimeout(held); heldDone.delete(e.sessionId); }
+      // No "done" waiting: the turn was short or watched, or its failure or stop was already told.
+      if (!held) return;
+      if (watching(e.sessionId)) return;
+      const r = researchNotice(e);
+      tell(r.kind, e.sessionId, r.title, r.body);
+      return;
+    }
   }
 }
 

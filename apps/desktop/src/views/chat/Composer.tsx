@@ -1,4 +1,4 @@
-import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, X } from "lucide-react";
+import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
@@ -63,6 +63,10 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
+  // Research the next message (one run, then back to off). Chat only.
+  const [researchNext, setResearchNext] = useState<ResearchNext>("off");
+  const threadKey = useConversation((s) => s.activeId);
+  useEffect(() => { setResearchNext("off"); }, [threadKey]);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -193,7 +197,8 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   }
 
   async function submit(override?: string) {
-    const content = (override ?? (token ? `${token.fill}${text}` : text)).trim();
+    let content = (override ?? (token ? `${token.fill}${text}` : text)).trim();
+    if (surface === "chat" && researchNext !== "off" && content && !/^[/#]/.test(content)) content = `/research ${researchNext === "plan" ? "plan " : ""}${content}`;
     if ((!content && files.length === 0) || sending) return;
     setSending(true);
     setError(null);
@@ -201,6 +206,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
       await sendMessage(surface, content, files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })), code);
       setText("");
       setToken(null);
+      setResearchNext("off");
       for (const f of files) if (f.preview) URL.revokeObjectURL(f.preview);
       setFiles([]);
     } catch (err) {
@@ -284,7 +290,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
               else if (e.key === "Escape" && busy) { e.preventDefault(); stop(); }
               if (e.key === "Tab" && e.shiftKey && onCycleMode) { e.preventDefault(); onCycleMode(); }
             }}
-            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? (token ? (token.hint || (token.kind === "skill" ? "What should the skill do?" : "Add details, or press Enter")) : placeholder)}
+            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? (researchNext !== "off" && !token ? "What should Mercury research?" : token ? (token.hint || (token.kind === "skill" ? "What should the skill do?" : "Add details, or press Enter")) : placeholder)}
             rows={1}
             disabled={!connected}
             className={cx("block max-h-[240px] w-full resize-none overflow-y-auto bg-transparent pb-1 pt-4 text-md leading-[26px] text-ink caret-accent placeholder:truncate placeholder:text-ink4", mono ? "pl-3 pr-5 font-mono text-[14.5px]" : token ? "pl-2.5 pr-5" : "px-5")}
@@ -308,6 +314,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
               </Tooltip>
             )}
             <ModelPicker />
+            {surface === "chat" && <ResearchToggle value={researchNext} onChange={(v) => { setResearchNext(v); ref.current?.focus(); }} />}
             {surface === "chat" && <ModePicker />}
             <div className="flex-1" />
             {busy ? (
@@ -398,6 +405,29 @@ function ModelPicker() {
         </div>
       ))}
       {groups.size === 0 && <MenuItem disabled>No providers configured</MenuItem>}
+    </Menu>
+  );
+}
+
+type ResearchNext = "off" | "on" | "plan";
+
+/** Research the next message: a full report from live sources, optionally with a plan to check first. */
+function ResearchToggle({ value, onChange }: { value: ResearchNext; onChange: (v: ResearchNext) => void }) {
+  const on = value !== "off";
+  return (
+    <Menu
+      side="top"
+      trigger={
+        <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", on ? "bg-accent/10 text-accent" : "text-ink3")} aria-label="Research" aria-pressed={on}>
+          <Telescope size={14} />
+          {on ? (value === "plan" ? "Research · plan first" : "Research") : "Research"}
+        </button>
+      }
+    >
+      <MenuLabel>Your next message</MenuLabel>
+      <MenuItem selected={value === "off"} onSelect={() => onChange("off")}>Normal answer</MenuItem>
+      <MenuItem selected={value === "on"} onSelect={() => onChange("on")} hint="many sources, a full report">Deep research</MenuItem>
+      <MenuItem selected={value === "plan"} onSelect={() => onChange("plan")} hint="check the questions first">Deep research, plan first</MenuItem>
     </Menu>
   );
 }
