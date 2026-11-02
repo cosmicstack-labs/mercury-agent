@@ -22,7 +22,7 @@ import { errorText } from "./Models";
 
 const TEST_SECONDS = 6;
 
-export function DevicesCard() {
+export function DevicesCard({ pluginId }: { pluginId?: string } = {}) {
   const [plugins, setPlugins] = useState<DevicePlugin[] | null>(null);
   const [remote, setRemote] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,14 +30,14 @@ export function DevicesCard() {
   const load = useCallback(async () => {
     try {
       const r = await devicesApi.list();
-      setPlugins(r.plugins);
+      setPlugins(pluginId ? r.plugins.filter((p) => p.id === pluginId) : r.plugins);
       setRemote(false);
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.data.remote) setRemote(true);
       else setError(errorText(e));
     }
-  }, []);
+  }, [pluginId]);
 
   useEffect(() => {
     void load();
@@ -59,7 +59,7 @@ export function DevicesCard() {
   if (plugins.length === 0) {
     return (
       <Shell>
-        <p className="text-sm text-ink3">Optimus isn't running. Turn it on in Plugins to set up its microphone and permissions.</p>
+        <p className="text-sm text-ink3">{pluginId ? "It isn't running yet. Turn it on above to check its microphone and permissions." : "Optimus isn't running. Turn it on in Plugins to set up its microphone and permissions."}</p>
       </Shell>
     );
   }
@@ -367,32 +367,5 @@ function Steps({ steps }: { steps: string[] }) {
     <ol className="flex list-decimal flex-col gap-1 pl-4 text-xs text-ink2 marker:text-ink4">
       {steps.map((s, i) => <li key={i} className="pl-1">{s}</li>)}
     </ol>
-  );
-}
-
-/** One line per permission for the plugin's own page: dot, name, state. */
-export function PermissionSummary({ pluginId, onOpen }: { pluginId: string; onOpen: () => void }) {
-  const [report, setReport] = useState<DeviceReport | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void devicesApi.list().then((r) => { if (alive) setReport(r.plugins.find((p) => p.id === pluginId)?.report ?? null); }).catch(() => {});
-    return () => { alive = false; };
-  }, [pluginId]);
-  if (!report) return null;
-  const shown = report.permissions.filter((p) => p.used);
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-        {shown.map((p) => (
-          <span key={p.kind} className="flex items-center gap-1.5 text-xs text-ink2">
-            <span className={cx("h-2 w-2 rounded-full", DOT[p.state])} aria-hidden="true" />
-            {p.label}
-            <span className="text-ink4">{WORD[p.state].toLowerCase()}</span>
-          </span>
-        ))}
-        {!report.microphones.on && <span className="flex items-center gap-1.5 text-xs text-ink2"><MicOff size={12} className="text-ink4" /> microphone off</span>}
-      </div>
-      <div><Button size="sm" variant="ghost" onClick={onOpen}>Microphone & permissions</Button></div>
-    </div>
   );
 }
