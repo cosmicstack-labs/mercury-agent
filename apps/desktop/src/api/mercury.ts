@@ -5,7 +5,7 @@
 
 import { http, ApiError } from "./client";
 import type { SkillDraft,
-  BotManifest, BotRunRecord, BotStatus, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  BotInboxEntry, BotManifest, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
@@ -82,7 +82,7 @@ export const code = {
 };
 
 export const bots = {
-  list: () => http.get<{ bots: BotStatus[]; available: boolean }>("/api/bots"),
+  list: () => http.get<{ bots: BotStatus[]; available: boolean; unread?: number }>("/api/bots"),
   get: (id: string) => http.get<{ bot: BotManifest; state: BotStatus | null; journal: BotRunRecord[] }>(`/api/bots/${encodeURIComponent(id)}`),
   message: (id: string, message: string) => http.post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${encodeURIComponent(id)}/message`, { message }),
   enable: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/enable`),
@@ -98,6 +98,20 @@ export const bots = {
   cost: (days: number) => http.get<CostReport>(`/api/bots-cost?days=${days}`),
   avatarUrl: (id: string) => `/api/bots/${encodeURIComponent(id)}/avatar`,
   runNow: (id: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/run`, {}),
+  /** Resume a stopped bot (and its switched-off routines). */
+  start: (id: string) => http.post<{ ok: boolean; message: string }>(`/api/bots/${encodeURIComponent(id)}/start`, {}),
+  create: (input: { id: string; name: string; description?: string; persona?: string; tier?: BotTierId; manifest?: Partial<BotManifest> }) =>
+    http.post<{ bot: BotManifest }>("/api/bots", input),
+  update: (id: string, patch: Partial<BotManifest>) => http.patch<{ bot: BotManifest }>(`/api/bots/${encodeURIComponent(id)}`, patch),
+  persona: (id: string) => http.get<{ persona: string }>(`/api/bots/${encodeURIComponent(id)}/persona`).then((r) => r.persona),
+  setPersona: (id: string, persona: string) => http.put<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/persona`, { persona }),
+  tiers: () => http.get<{ tiers: BotTier[] }>("/api/bots/tiers").then((r) => r.tiers),
+  setTier: (id: string, tier: BotTierId) => http.put<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/permissions`, { tier }),
+  inbox: (opts: { unread?: boolean; bot?: string; limit?: number } = {}) =>
+    http.get<{ entries: BotInboxEntry[]; unread: number }>(`/api/bots/inbox?limit=${opts.limit ?? 100}${opts.unread ? "&unread=1" : ""}${opts.bot ? `&bot=${encodeURIComponent(opts.bot)}` : ""}`),
+  markRead: (ids?: string[]) => http.post<{ ok: boolean; unread: number }>("/api/bots/inbox/read", ids ? { ids } : {}),
+  dlq: (id: string) => http.get<{ dlq: Array<{ id: string; prompt: string; reasonCode?: string; createdAt: number }> }>(`/api/bots/${encodeURIComponent(id)}/dlq`),
+  replay: (id: string, jobId: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/replay/${encodeURIComponent(jobId)}`, {}),
 };
 
 export const plugins = {

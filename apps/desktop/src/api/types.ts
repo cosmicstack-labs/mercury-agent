@@ -148,6 +148,30 @@ export interface BotStatus {
   parent?: string;
   crewWorking?: number;
   hasAvatar?: boolean;
+  /** Unread inbox entries from this bot. */
+  unread?: number;
+  /** Permission tier, or "custom" for a hand-edited permissions file. */
+  tier?: BotTierId | "custom";
+  /** Stopped by the owner; stays stopped until Start. */
+  stopped?: boolean;
+  description?: string;
+  routinePausedUntil?: number;
+}
+
+export type BotTierId = "readonly" | "builder" | "operator" | "full";
+
+export interface BotTier {
+  id: BotTierId;
+  label: string;
+  description: string;
+  deny: string[];
+}
+
+export interface BotSchedule {
+  name: string;
+  cron: string;
+  prompt: string;
+  expects?: "work" | "message" | "check";
 }
 
 export interface BotManifest {
@@ -158,8 +182,25 @@ export interface BotManifest {
   fleetRole?: "lead" | "crew";
   parent?: string;
   model?: { provider?: string; model?: string };
-  schedules?: Array<{ name: string; cron: string; prompt: string }>;
-  autonomy?: { maxSteps?: number; dailyTokenBudget?: number };
+  schedules?: BotSchedule[];
+  autonomy?: { maxSteps?: number; dailyTokenBudget?: number; maxTokensPerTurn?: number; maxTurnMinutes?: number };
+  memory?: { scope?: "own" | "shared-read" | "none"; learn?: boolean };
+}
+
+/** One thing a bot did for you (GET /api/bots/inbox). */
+export interface BotInboxEntry {
+  id: string;
+  botId: string;
+  botName: string;
+  runId: string;
+  kind: "result" | "failed" | "needs-you";
+  title: string;
+  summary: string;
+  files: string[];
+  complete?: boolean;
+  reasonCode?: string;
+  at: number;
+  read: boolean;
 }
 
 export interface BotRunRecord {
@@ -177,6 +218,11 @@ export interface BotRunRecord {
   steps?: number;
   toolCalls?: number;
   outcome?: string;
+  /** How the bot closed the run: result, no_update (quiet) or failure. */
+  report?: "result" | "no_update" | "failure";
+  complete?: boolean;
+  /** Files delivered by this run. */
+  deliverables?: string[];
 }
 
 export interface Deliverable {

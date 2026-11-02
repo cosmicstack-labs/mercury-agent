@@ -189,8 +189,29 @@ export function handleActivity(e: ActivityEvent): void {
   }
 }
 
-/** Open the conversation an alert is about. */
+/**
+ * A bot's inbox entry: a result, a failure it reported, or a run that needs
+ * you. Told through the same layers as a conversation (sound, banner when the
+ * app is in the background, in-app alert when it's in front), unless you're
+ * already looking at the bots.
+ */
+export function tellBotInbox(entry: { botId: string; botName: string; kind: "result" | "failed" | "needs-you"; title: string; summary: string }): void {
+  const n = useNotify.getState();
+  if (useVoice.getState().active) return;
+  if (useUi.getState().view === "bots" && windowFocused()) return;
+  if (entry.kind === "needs-you" && !n.prefs.needsYou) return;
+  const body = entry.summary.replace(/\s+/g, " ").slice(0, 180);
+  if (entry.kind === "result") tell("done", `bot:${entry.botId}`, entry.title, body || "Finished.");
+  else if (entry.kind === "failed") tell("failed", `bot:${entry.botId}`, entry.title, body);
+  else tell("needs", `bot:${entry.botId}`, entry.title, body || "It needs you.");
+}
+
+/** Open the conversation (or bot) an alert is about. */
 export function openFromAlert(sessionId: string): void {
+  if (sessionId.startsWith("bot:")) {
+    useUi.getState().openBot(sessionId.slice(4));
+    return;
+  }
   const surface = surfaceOf(sessionId);
   useUi.getState().setView(surface);
   void import("../events").then(({ openThread }) => openThread(surface, sessionId));

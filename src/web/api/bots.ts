@@ -259,7 +259,8 @@ app.patch('/api/bots/:id', async (c: any) => {
       }
       if (patch.enabled !== undefined) m.enabled = patch.enabled;
       if (patch.description !== undefined) m.description = patch.description;
-      if (patch.model !== undefined) m.model = patch.model;
+      // null clears the choice: back to Mercury's default model.
+      if (patch.model !== undefined) { if (patch.model) m.model = patch.model; else delete m.model; }
       if (patch.tools !== undefined) m.tools = patch.tools;
       if (patch.memory !== undefined) m.memory = patch.memory;
       if (patch.comms !== undefined) m.comms = patch.comms;

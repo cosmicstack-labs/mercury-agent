@@ -54,7 +54,7 @@ export function Activity({ bots }: { bots: Array<{ id: string; name: string; has
                 <span className="line-clamp-1 text-sm text-ink">{r.summary || r.error || r.reasonCode || r.state}</span>
                 <span className="text-xs text-ink4">{bots.length > 1 && bot ? `${bot.name} · ` : ""}{new Date(r.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · {r.trigger}</span>
               </span>
-              <Badge tone={r.state === "completed" ? "accent" : r.state === "failed" ? "red" : "neutral"}>{r.state}</Badge>
+              <Badge tone={r.outcome === "failed" || r.state === "failed" ? "red" : r.outcome === "quiet" ? "neutral" : r.state === "completed" ? "accent" : "neutral"}>{runLabel(r)}</Badge>
               <Mono className="w-[150px] shrink-0 text-right">{Math.round(r.durationMs / 1000)}s · {compact(r.tokensIn + r.tokensOut)} tok</Mono>
             </button>
             {isOpen && <RunDetail botId={r.botId} runId={r.runId} />}
@@ -103,12 +103,20 @@ function RunDetail({ botId, runId }: { botId: string; runId: string }) {
           </ol>
         </section>
         <section>
-          <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-ink4">Concluded</h4>
+          <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-ink4">{rec.report === "no_update" ? "Nothing new" : rec.report === "failure" ? "Couldn't do it" : "Concluded"}</h4>
           <Markdown text={t.output || rec.summary || "(no output)"} />
         </section>
+        {rec.deliverables && rec.deliverables.length > 0 && (
+          <section>
+            <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-ink4">Delivered</h4>
+            <ul className="flex flex-col gap-1">
+              {rec.deliverables.map((f) => <li key={f} className="break-all font-mono text-xs text-ink2" data-selectable>{f}</li>)}
+            </ul>
+          </section>
+        )}
       </div>
       <aside className="flex flex-col gap-3 text-sm">
-        <Stat label="Outcome" value={rec.outcome ?? rec.state} />
+        <Stat label="Outcome" value={runLabel(rec)} />
         <Stat label="Duration" value={`${(rec.durationMs / 1000).toFixed(1)} s`} />
         <Stat label="Steps / tool calls" value={`${rec.steps ?? "—"} / ${rec.toolCalls ?? t.trace.length}`} />
         <Stat label="Tokens in" value={rec.tokensIn.toLocaleString()} />
@@ -127,4 +135,17 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
       <div className="text-ink">{value}</div>
     </div>
   );
+}
+
+/** A run in words: how the bot closed it when it did, else what it did. */
+function runLabel(r: { state: string; outcome?: string; report?: string; complete?: boolean }): string {
+  if (r.state === "failed") return "failed";
+  if (r.outcome === "failed") return "couldn't do it";
+  if (r.outcome === "quiet") return "nothing new";
+  if (r.outcome === "deliverable") return r.complete ? "delivered · done" : "delivered";
+  if (r.outcome === "message") return r.complete ? "reported · done" : "reported";
+  if (r.outcome === "action") return "acted";
+  if (r.outcome === "delegated") return "delegated";
+  if (r.outcome === "none" && r.state === "completed") return "no result";
+  return r.state;
 }

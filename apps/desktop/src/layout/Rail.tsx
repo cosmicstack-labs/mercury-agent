@@ -1,7 +1,7 @@
 import { Bot, Brain, Code2, MessageSquare, Puzzle, Settings, Sparkles, Layers } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { cx } from "~/lib/cx";
-import { useChat, useRuntimeState, useUi, type View } from "~/app/store";
+import { useChat, useRuntimeState, useUi, type View, useBots } from "~/app/store";
 import { Mark } from "~/components/Logo";
 import { LABELS } from "~/components/indicators/StateOrb";
 import { Tooltip } from "~/components/ui/Tooltip";
@@ -33,6 +33,9 @@ export function Rail({ connectionName }: { connectionName: string }) {
   const waiting = useNotify((s) => s.waiting);
   const codeIds = useCodeSessions((s) => s.sessions);
   const threads = useChat((s) => s.threads);
+  // Bots: amber when one needs you, blue when the inbox has something unread.
+  const botsWaiting = useBots((s) => s.bots.filter((b) => b.needsYou).length);
+  const botsUnread = useBots((s) => s.unread);
   // Count only conversations that are in that list, so every dot here has a dot to find there.
   const dots = useMemo(() => {
     const code = new Set(codeIds.map((c) => c.id));
@@ -79,6 +82,9 @@ export function Rail({ connectionName }: { connectionName: string }) {
                 if (d.unread > 0) return <span className="absolute right-1.5 top-1.5 block h-1.5 w-1.5 rounded-full bg-blue" aria-label={`${d.unread} with something new`} />;
                 return null;
               })()}
+              {v === "bots" && (botsWaiting > 0
+                ? <span className="absolute right-1.5 top-1.5 block h-1.5 w-1.5 rounded-full bg-amber" aria-label={`${botsWaiting} bot${botsWaiting === 1 ? "" : "s"} need you`} />
+                : botsUnread > 0 ? <span className="absolute right-1.5 top-1.5 block h-1.5 w-1.5 rounded-full bg-blue" aria-label={`${botsUnread} unread in the bots inbox`} /> : null)}
             </button>
           </Tooltip>
         ))}

@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { openStream } from "~/api/stream";
 import * as api from "~/api/mercury";
 import { ApiError, http } from "~/api/client";
-import type { BotActivityEvent, ChatMessage, CodeMode, PendingPrompt } from "~/api/types";
+import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, PendingPrompt } from "~/api/types";
 import { useBots, useChat, useRuntimeState, type AgentState } from "./store";
 import { conversations, useCodeSessions, type ConversationStore, type Surface } from "./conversation";
 import type { ArtifactRef } from "~/api/artifacts";
@@ -26,6 +26,21 @@ export function useRuntimeEvents(enabled: boolean): void {
     if (!enabled) return;
     const stream = openStream("/api/bots/events", {
       onEvent: (event, raw) => {
+        if (event === "bot_roster") {
+          // Roster news (an edit, a new crew member, a delete) from any screen.
+          const r = safeJson<{ bots: BotStatus[] }>(raw);
+          if (r?.bots) useBots.getState().setBots(r.bots, true);
+          return;
+        }
+        if (event === "bot_inbox") {
+          // A result, a reported failure, or a run that needs you.
+          const entry = safeJson<BotInboxEntry>(raw);
+          if (!entry) return;
+          useBots.getState().inboxChanged();
+          void refreshBots();
+          void import("./notify/notify").then(({ tellBotInbox }) => tellBotInbox(entry));
+          return;
+        }
         if (event !== "bot_activity") return;
         const ev = safeJson<BotActivityEvent>(raw);
         if (!ev || ev.kind === "thinking") return;
@@ -242,8 +257,8 @@ export async function setThreadSaved(threadId: string, saved: boolean): Promise<
 
 export async function refreshBots(): Promise<void> {
   try {
-    const { bots, available } = await api.bots.list();
-    useBots.getState().setBots(bots, available);
+    const { bots, available, unread } = await api.bots.list();
+    useBots.getState().setBots(bots, available, unread);
   } catch { /* bots unavailable on this runtime */ }
 }
 

@@ -28,6 +28,10 @@ interface UiState {
   pluginFocus: string | null;
   openPlugin(id: string): void;
   clearPluginFocus(): void;
+  /** What Bots should show next: a bot's page, or "inbox" (from a notification). */
+  botFocus: string | null;
+  openBot(target: string): void;
+  clearBotFocus(): void;
 }
 
 export const useUi = create<UiState>((set) => ({
@@ -43,6 +47,9 @@ export const useUi = create<UiState>((set) => ({
   pluginFocus: null,
   openPlugin: (id) => set({ view: "plugins", pluginFocus: id }),
   clearPluginFocus: () => set({ pluginFocus: null }),
+  botFocus: null,
+  openBot: (target) => set({ view: "bots", botFocus: target }),
+  clearBotFocus: () => set({ botFocus: null }),
 }));
 
 interface RuntimeState {
@@ -98,7 +105,12 @@ interface BotsState {
   bots: BotStatus[];
   available: boolean;
   activity: Record<string, string>;
-  setBots(bots: BotStatus[], available: boolean): void;
+  /** Unread inbox entries across every bot. */
+  unread: number;
+  /** Bumped when an inbox entry arrives, so open lists reload. */
+  inboxVersion: number;
+  setBots(bots: BotStatus[], available: boolean, unread?: number): void;
+  inboxChanged(unread?: number): void;
   setActivity(botId: string, label: string | null): void;
 }
 
@@ -106,7 +118,10 @@ export const useBots = create<BotsState>((set) => ({
   bots: [],
   available: true,
   activity: {},
-  setBots: (bots, available) => set({ bots, available }),
+  unread: 0,
+  inboxVersion: 0,
+  setBots: (bots, available, unread) => set(unread === undefined ? { bots, available } : { bots, available, unread }),
+  inboxChanged: (unread) => set((s) => ({ inboxVersion: s.inboxVersion + 1, ...(unread === undefined ? {} : { unread }) })),
   setActivity: (botId, label) => set((s) => {
     const activity = { ...s.activity };
     if (label === null) delete activity[botId];
