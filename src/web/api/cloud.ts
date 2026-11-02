@@ -1,3 +1,4 @@
+import { requireOwner } from '../owner-gate.js';
 import { Hono } from 'hono';
 import { getActiveProviders, isProviderConfigured, loadConfig, updateConfig, type MercuryConfig, type ProviderName } from '../../utils/config.js';
 import { isChatModelId } from '../../utils/provider-models.js';
@@ -118,6 +119,9 @@ function publicPairing() {
 }
 
 cloud.post('/api/cloud/signin', async (c) => {
+  // Signing in to a Cloud account lets that account send Mercury commands: the owner decides.
+  const wait = requireOwner(c, { id: 'cloud.signin', title: 'Connect Mercury to a Mercury Cloud account' });
+  if (wait) return wait;
   if (pairing?.status === 'pending' && Date.now() - pairing.startedAt < 290_000) return c.json(publicPairing());
   const config = loadConfig();
   const apiUrl = config.cloud.apiUrl || MERCURY_CLOUD_API_URL;

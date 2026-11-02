@@ -11,7 +11,7 @@
  * settings there, so it's accepted from this machine only.
  */
 import { Hono, type Context } from 'hono';
-import { isLoopbackRequest } from '../middleware.js';
+import { isThisComputer } from '../middleware.js';
 import { getPluginManager } from '../../plugins/manager.js';
 import { deviceFeed } from '../../plugins/device-feed.js';
 
@@ -20,7 +20,7 @@ const devices = new Hono();
 const KINDS = ['microphone', 'screen', 'accessibility', 'camera'] as const;
 
 function localOnly(c: Context): Response | null {
-  if (isLoopbackRequest(c)) return null;
+  if (isThisComputer(c)) return null;
   return c.json({ error: 'Microphone and permissions are set on the computer Mercury runs on. Open Mercury there.', remote: true }, 403);
 }
 

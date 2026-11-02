@@ -293,6 +293,12 @@ export interface MercuryConfig {
      * self-hosted web build or a dev server here. Never '*'.
      */
     corsOrigins?: string[];
+    /**
+     * Host names this server may be reached by directly, besides localhost —
+     * only for a proxy of your own that rewrites Host and adds no forwarding
+     * headers. Anything else is refused (DNS rebinding).
+     */
+    allowedHosts?: string[];
   };
   mcp?: McpConfig;
   /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */

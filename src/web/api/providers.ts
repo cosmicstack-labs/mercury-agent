@@ -1,3 +1,4 @@
+import { requireOwner } from '../owner-gate.js';
 import { Hono } from 'hono';
 import { getActiveProviders, isProviderConfigured, loadConfig, saveConfig, type MercuryConfig, type ProviderConfig, type ProviderName } from '../../utils/config.js';
 import { PROVIDER_META, validateApiKey, validateBaseUrl, validateModelName } from '../../providers/provider-meta.js';
@@ -80,11 +81,23 @@ function looksMasked(key: string): boolean {
   return key.includes('•');
 }
 
-/** Merge what the user typed over what is saved; an omitted key keeps the saved one. */
-function draft(saved: ProviderConfig, body: { apiKey?: unknown; baseUrl?: unknown; model?: unknown }): ProviderConfig {
+/** The base URL the user typed differs from the saved one. */
+function newBaseUrl(saved: ProviderConfig, body: { baseUrl?: unknown }): boolean {
+  if (typeof body.baseUrl !== 'string' || !body.baseUrl.trim()) return false;
+  return body.baseUrl.trim().replace(/\/+$/, '') !== String(saved.baseUrl ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * Merge what the user typed over what is saved; an omitted key keeps the
+ * saved one — except for a check against a different address: the saved
+ * key never goes to a server it wasn't saved for (a "test" of an attacker's
+ * URL would otherwise hand it the key).
+ */
+function draft(saved: ProviderConfig, body: { apiKey?: unknown; baseUrl?: unknown; model?: unknown }, opts: { forCheck?: boolean } = {}): ProviderConfig {
+  const typedKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : null;
   return {
     ...saved,
-    apiKey: typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : saved.apiKey,
+    apiKey: typedKey ?? (opts.forCheck && newBaseUrl(saved, body) ? '' : saved.apiKey),
     baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim() ? body.baseUrl.trim().replace(/\/+$/, '') : saved.baseUrl,
     model: typeof body.model === 'string' ? body.model.trim() : saved.model,
   };
@@ -154,7 +167,7 @@ providers.post('/api/providers/:name/check', async (c) => {
   if (!isName(name)) return c.json({ ok: false, error: 'Unknown provider' }, 400);
   const body = (await c.req.json().catch(() => ({}))) as { apiKey?: unknown; baseUrl?: unknown };
   const config = loadConfig();
-  const pc = draft(config.providers[name], body);
+  const pc = draft(config.providers[name], body, { forCheck: true });
   const issues = PROVIDER_META[name].signInOnly ? [] : problems(name, pc, body);
   if (issues.length) return c.json({ ok: false, error: issues[0].error, field: issues[0].field, problems: issues });
   const started = Date.now();
@@ -231,6 +244,11 @@ providers.post('/api/providers/:name', async (c) => {
     return c.json({ error: `${meta.label} signs in with your account (run \`mercury doctor\`); it has no key to set.` }, 400);
   }
 
+  // Pointing a saved key at another server, from another device, is the owner's call.
+  if (newBaseUrl(p, body) && !(typeof body.apiKey === 'string' && body.apiKey.trim())) {
+    const wait = requireOwner(c, { id: `providers.baseUrl:${name}`, title: `Send the ${meta.label} key to a different server`, detail: String(body.baseUrl) });
+    if (wait) return wait;
+  }
   const next = draft(p, body);
   if (body.apiKey === '' || body.apiKey === null) next.apiKey = '';
   if (body.baseUrl === '' || body.baseUrl === null) next.baseUrl = '';

@@ -26,8 +26,8 @@ Add to `~/.mercury/mercury.yaml`:
 web:
   enabled: true
   port: 6174        # default
-  username: mercury
-  password: Mercury@123
 ```
 
-Or use environment variables: `MERCURY_PORT`, `MERCURY_WEB_USER`, `MERCURY_WEB_PASS`.
+The sign-in password is set during `mercury setup` (or `mercury web-reset-password`) and stored as a bcrypt hash, never in this file. The port can also come from `MERCURY_PORT`.
+
+Remote access (other devices, the IP allow-list, device limits) is managed with `/server` in the terminal or `mercury server`.

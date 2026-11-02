@@ -54,7 +54,7 @@ export function apiCors(extra: readonly string[] | undefined): MiddlewareHandler
   return cors({
     origin: (origin) => (allowed.has(origin) ? origin : null),
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'Last-Event-ID', 'Cache-Control'],
+    allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'Last-Event-ID', 'Cache-Control', 'X-Mercury-Approval'],
     exposeHeaders: ['Content-Type', 'Content-Disposition'],
     maxAge: 600,
     credentials: false,

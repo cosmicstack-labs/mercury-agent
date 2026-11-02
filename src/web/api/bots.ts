@@ -1,3 +1,6 @@
+import { requireOwner } from '../owner-gate.js';
+import { trackStream } from '../../security/live-streams.js';
+import { principalKey, principalOf } from '../middleware.js';
 import { Hono } from 'hono';
 import { openFolder, tildify } from '../../bots/open-folder.js';
 import type { Context } from 'hono';
@@ -90,6 +93,13 @@ app.post('/api/bots/inbox/read', async (c: Context) => {
 });
 
 // Onboard a bot
+/** Tiers that run commands or reach the whole home folder: from another device, the owner decides. */
+const POWERFUL_TIERS = new Set(['operator', 'full']);
+function gateTier(c: any, tier: string | undefined, botId: string): Response | null {
+  if (!tier || !POWERFUL_TIERS.has(tier)) return null;
+  return requireOwner(c, { id: `bots.tier:${botId}:${tier}`, title: `Give the bot “${botId}” ${tier === 'full' ? 'full access to this computer' : 'permission to run commands'}` });
+}
+
 app.post('/api/bots', async (c: any) => {
   if (!botManager) {
     return c.json({ error: 'Bots not available' }, 400);
@@ -102,6 +112,8 @@ app.post('/api/bots', async (c: any) => {
   if (body.tier !== undefined && !isPermissionTier(body.tier)) {
     return c.json({ error: `Unknown permission tier: ${body.tier}` }, 400);
   }
+  const tierWait = gateTier(c, body.tier, String(body.id));
+  if (tierWait) return tierWait;
   try {
     const manifest = botManager.store.create({
       id: body.id,
@@ -179,13 +191,16 @@ app.get('/api/bots/events', (c: any) => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); }
       }, 15000);
 
-      c.req.raw.signal?.addEventListener('abort', () => {
+      const cleanup = () => {
         clearInterval(keepalive);
         unsubscribe();
         unsubscribeInbox();
         unsubscribeApprovals();
         rosterSseClients.delete(client);
-      });
+        untrack();
+      };
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal?.addEventListener('abort', cleanup);
     },
     cancel() {},
   });
@@ -247,6 +262,9 @@ app.post('/api/bots/import', async (c: any) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
   const bundle = await c.req.json().catch(() => null) as any;
   if (!bundle) return c.json({ error: 'Invalid JSON body' }, 400);
+  // A bundle brings its own permissions and schedules.
+  const importWait = requireOwner(c, { id: 'bots.import', title: 'Import bots (with their own permissions and schedules)' });
+  if (importWait) return importWait;
   try {
     const report = importBotBundle(botManager.store, bundle, c.req.query('overwrite') === '1' ? { overwrite: true } : {});
     for (const created of report.created) botManager.invalidateRuntime(created);
@@ -488,6 +506,8 @@ app.post('/api/bots/:id/crew', async (c: any) => {
   if (body.tier !== undefined && !isPermissionTier(body.tier)) {
     return c.json({ error: `Unknown permission tier: ${body.tier}` }, 400);
   }
+  const tierWait = gateTier(c, body.tier, String(body.id));
+  if (tierWait) return tierWait;
   const result = botManager.addCrew(id, { id: body.id, name: body.name, description: body.description, persona: body.persona });
   if (!result.ok) return c.json({ error: result.error }, 400);
   // A tier choice overrides the crew's verbatim lead inheritance (§2.5:
@@ -593,6 +613,10 @@ app.put('/api/bots/:id/permissions', async (c: any) => {
   const id = c.req.param('id');
   if (!botManager.store.exists(id)) return c.json({ error: 'Bot not found' }, 404);
   const body = await c.req.json().catch(() => null) as { tier?: string; permissions?: any } | null;
+  const permWait = body?.permissions !== undefined
+    ? requireOwner(c, { id: `bots.permissions:${c.req.param('id')}`, title: `Rewrite the permissions of the bot “${c.req.param('id')}”` })
+    : gateTier(c, body?.tier, c.req.param('id'));
+  if (permWait) return permWait;
   if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
   try {
     if (body.tier !== undefined) {

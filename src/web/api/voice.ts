@@ -1,3 +1,5 @@
+import { trackStream } from '../../security/live-streams.js';
+import { principalKey, principalOf } from '../middleware.js';
 import { Hono } from 'hono';
 import { voiceFeed, VOICE_ACTIONS, type VoiceAction } from '../../plugins/voice-feed.js';
 import { checkVoiceKey, VOICE_KEY_ENV, VOICE_VENDORS, type VoiceVendor } from '../../plugins/voice-check.js';
@@ -43,7 +45,9 @@ voice.get('/api/voice/events', (c) => {
       const keepalive = setInterval(() => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); }
       }, 15000);
-      c.req.raw.signal?.addEventListener('abort', () => { clearInterval(keepalive); unsubscribe(); });
+      const cleanup = () => { clearInterval(keepalive); unsubscribe(); untrack(); };
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal?.addEventListener('abort', cleanup);
     },
     cancel() {},
   });

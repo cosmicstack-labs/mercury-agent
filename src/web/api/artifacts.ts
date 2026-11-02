@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { artifactStore, type Artifact } from '../../artifacts/store.js';
 import type { ArtifactKind } from '../../artifacts/classify.js';
 import type { SessionRepository } from '../../sessions/index.js';
-import { isLoopbackRequest } from '../middleware.js';
+import { isThisComputer } from '../middleware.js';
 import { canConvert, CONVERT_MIME, convertedName, convertFile, type ConvertFormat } from '../../artifacts/convert/index.js';
 import { logger } from '../../utils/logger.js';
 
@@ -79,7 +79,7 @@ artifacts.get('/api/artifacts/folder', (c) => {
 });
 
 artifacts.post('/api/artifacts/folder/tidy', (c) => {
-  if (!isLoopbackRequest(c)) return c.json({ error: 'Tidying files only works on the computer Mercury runs on.' }, 403);
+  if (!isThisComputer(c)) return c.json({ error: 'Tidying files only works on the computer Mercury runs on.' }, 403);
   const folders = chatFoldersFor(outputRoot(outputSetting()));
   const moved: Array<{ name: string; to: string }> = [];
   const failed: Array<{ name: string; error: string }> = [];
@@ -149,7 +149,7 @@ artifacts.get('/api/artifacts/:id/file', (c) => {
 });
 
 artifacts.post('/api/artifacts/:id/export', async (c) => {
-  if (!isLoopbackRequest(c)) return c.json({ error: 'Saving to a folder only works on the computer Mercury runs on. Use Download instead.' }, 403);
+  if (!isThisComputer(c)) return c.json({ error: 'Saving to a folder only works on the computer Mercury runs on. Use Download instead.' }, 403);
   const a = artifactStore().get(c.req.param('id'));
   if (!a || !existsSync(a.storedPath)) return c.json({ error: 'Not found' }, 404);
   const body = (await c.req.json().catch(() => ({}))) as { dest?: unknown; as?: unknown };

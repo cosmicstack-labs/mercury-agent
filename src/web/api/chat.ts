@@ -1,3 +1,7 @@
+import { trackStream } from '../../security/live-streams.js';
+import { isThisComputer, principalKey, principalOf } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
+import { protectedReason } from '../../security/protected-paths.js';
 import { Hono } from 'hono';
 import { commandCatalog } from '../../core/commands/catalog.js';
 import { getPluginManager } from '../../plugins/manager.js';
@@ -178,15 +182,15 @@ chat.get('/api/chat/activity', (c) => {
   }
   const stream = new ReadableStream({
     start(controller) {
-      const clientId = ch.addActivityClient(controller);
+      const clientId = ch.addActivityClient(controller, isThisComputer(c));
       const encoder = new TextEncoder();
       const send = (data: string) => { try { controller.enqueue(encoder.encode(data)); } catch { /* closed */ } };
       send(`event: connected\ndata: ${JSON.stringify({ id: clientId })}\n\n`);
       const keepalive = setInterval(() => send(': keepalive\n\n'), 15000);
-      c.req.raw.signal.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        ch.removeActivityClient(clientId);
-      });
+      const cleanup = () => { clearInterval(keepalive); ch.removeActivityClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
     },
   });
   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' } });
@@ -227,10 +231,10 @@ chat.get('/api/chat/events', (c) => {
         send(`: keepalive\n\n`);
       }, 15000);
 
-      c.req.raw.signal.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        webChannel?.removeSSEClient(clientId);
-      });
+      const cleanup = () => { clearInterval(keepalive); webChannel?.removeSSEClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
     },
     cancel() {},
   });
@@ -341,6 +345,15 @@ chat.put('/api/chat/settings', async (c) => {
   const body = await c.req.json<Partial<ChatWebSettings>>();
   const current = webChannel.getSettings();
   const stored = loadSettings();
+  // Widening what Mercury may do, from another device, is the owner's call.
+  if (body.bypassPermissions === true && !current.bypassPermissions) {
+    const wait = requireOwner(c, { id: 'permissions.allow-all', title: 'Turn on Allow All (Mercury acts without asking)' });
+    if (wait) return wait;
+  }
+  if (typeof body.workspace === 'string' && body.workspace !== stored.workspace) {
+    const wait = requireOwner(c, { id: `workspace.root:${body.workspace}`, title: 'Change the workspace folder', detail: body.workspace });
+    if (wait) return wait;
+  }
   const next: ChatWebSettings = {
     bypassPermissions: body.bypassPermissions ?? current.bypassPermissions,
     restrictUser: body.restrictUser ?? current.restrictUser,
@@ -658,6 +671,8 @@ chat.get('/api/workspace/file', (c) => {
   if (!isInsideWorkspace(fullPath, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
+  const off = protectedReason(fullPath, !isThisComputer(c));
+  if (off) return c.json({ error: off }, 403);
 
   if (!existsSync(fullPath)) {
     return c.json({ error: 'File not found' }, 404);
@@ -700,6 +715,9 @@ chat.put('/api/workspace/root', async (c) => {
   if (!existsSync(resolvedPath)) {
     return c.json({ error: 'Directory does not exist' }, 404);
   }
+  // The workspace bounds what the file endpoints reach: from another device, the owner decides where it is.
+  const wait = requireOwner(c, { id: `workspace.root:${resolvedPath}`, title: 'Change the workspace folder', detail: resolvedPath });
+  if (wait) return wait;
   const stat = statSync(resolvedPath);
   if (!stat.isDirectory()) {
     return c.json({ error: 'Path is not a directory' }, 400);

@@ -17,6 +17,11 @@ import { DeepSeekProvider } from '../providers/deepseek.js';
 import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
 import { chatFoldersFor, outputRoot, researchDir, type ChatFolders } from '../artifacts/output-dir.js';
+import { ownerApprovals } from '../security/owner-approvals.js';
+import { approvalAnsweredText, approvalRequestText, isOwnerSender, newLocationText, parseApprovalReply } from '../security/approval-messages.js';
+import { audit } from '../security/audit.js';
+import { setApprovalRoutes } from '../web/owner-gate.js';
+import { onDeviceNewLocation } from '../web/middleware.js';
 import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
 import { getMercuryHome } from '../utils/config.js';
 import { createProvider } from '../providers/registry.js';
@@ -669,6 +674,7 @@ export class Agent {
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
     this.channels.onIncomingMessage((msg) => this.enqueueMessage(msg));
+    this.wireOwnerApprovals();
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
@@ -714,6 +720,58 @@ export class Agent {
         await channel.send(message).catch((e) => logger.warn({ e }, 'bot alert send failed'));
       }
     });
+  }
+
+  /**
+   * Security questions for the owner (owner-approvals): sent to every
+   * messaging channel they connected and shown in the CLI here; answered by
+   * a reply with the code from an admin of that channel, /server here, or
+   * Mercury Desktop on this computer.
+   */
+  private wireOwnerApprovals(): void {
+    const messaging = () => this.channels.getActiveChannels().filter((t) => t !== 'cli' && t !== 'web' && t !== 'internal').map((t) => this.channels.get(t)).filter((ch): ch is NonNullable<typeof ch> => !!ch && ch.isReady() && !ch.noBroadcast);
+    const label = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+    setApprovalRoutes(() => [...messaging().map((ch) => label(ch.type)), 'this computer (/server or Mercury Desktop)']);
+    ownerApprovals().onChange((a, change) => {
+      const cli = this.channels.get('cli');
+      if (change === 'new') {
+        const text = approvalRequestText(a);
+        for (const ch of messaging()) void ch.send(text).catch((e) => logger.warn({ e, channel: ch.type }, 'Owner approval: send failed'));
+        if (cli instanceof CLIChannel) cli.sendSystemNotice(`${text.replace(/Reply “approve (\w+)” to allow it, or “deny \w+”/, 'Answer with /server approve $1 (or deny $1)')}`);
+        const web = this.channels.get('web');
+        if (web instanceof WebChannel) web.sendOwnerApproval(a, 'new');
+      } else {
+        const web = this.channels.get('web');
+        if (web instanceof WebChannel) web.sendOwnerApproval(a, 'decided');
+      }
+    });
+    onDeviceNewLocation((device, ip) => {
+      const text = newLocationText(device.name, ip);
+      for (const ch of messaging()) void ch.send(text).catch(() => {});
+      const cli = this.channels.get('cli');
+      if (cli instanceof CLIChannel) cli.sendSystemNotice(text);
+    });
+  }
+
+  /** A messaging-channel reply to a security question. True when it was one (and nothing else should see it). */
+  private answerOwnerApproval(msg: ChannelMessage): boolean {
+    if (msg.channelType === 'cli' || msg.channelType === 'web' || msg.channelType === 'internal') return false;
+    const reply = parseApprovalReply(msg.content);
+    if (!reply) return false;
+    const pending = ownerApprovals().find(reply.code);
+    if (!pending || pending.status !== 'pending') return false;
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!isOwnerSender(msg)) {
+      void channel?.send('Only the owner (an admin of this chat) can answer that.', msg.channelId).catch(() => {});
+      audit('action.denied', { who: pending.who, detail: `answer from a non-admin on ${msg.channelType} ignored`, by: msg.channelType });
+      return true;
+    }
+    const decided = ownerApprovals().decide(reply.code, reply.decision, msg.channelType);
+    if (!decided) return false;
+    if (decided.kind === 'action') audit(decided.status === 'allowed' ? 'action.allowed' : 'action.denied', { who: decided.who, ip: decided.ip, detail: decided.title, by: msg.channelType });
+    else if (decided.status === 'denied') audit('pair.denied', { who: decided.who, ip: decided.ip, by: msg.channelType });
+    void channel?.send(approvalAnsweredText(decided), msg.channelId).catch(() => {});
+    return true;
   }
 
   getBotManager(): import('../bots/bot-manager.js').BotManager | undefined {
@@ -775,6 +833,10 @@ export class Agent {
     logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
 
     const trimmed = msg.content.trim();
+
+    // "approve K7Q2M": the owner answering a security question (a new device,
+    // a remote sensitive action) from their messaging channel.
+    if (this.answerOwnerApproval(msg)) return;
 
     // Onboarding from a chat without a bot thread (Telegram, web, Discord):
     // the next plain message in THAT chat is the new bot's persona — same

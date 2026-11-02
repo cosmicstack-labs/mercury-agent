@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
@@ -2175,14 +2175,24 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         console.log(chalk.dim('  Password unchanged.'));
       }
     } else {
-      console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+      console.log(chalk.dim('  This password signs in the dashboard and new devices (Mercury Desktop, phones).'));
+      console.log(chalk.dim('  Press Enter to have Mercury make a strong one for you.'));
       console.log('');
-      const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
-      if (webPassword.trim()) {
-        setWebPassword(webPassword.trim());
+      let chosen = '';
+      for (let attempt = 0; attempt < 3 && !chosen; attempt++) {
+        const typed = (await ask(chalk.white('  Web dashboard password [generate one]: '))).trim();
+        if (!typed) break;
+        if (typed.length < 10) { console.log(chalk.yellow('  Use at least 10 characters (or press Enter to generate one).')); continue; }
+        chosen = typed;
+      }
+      if (chosen) {
+        setWebPassword(chosen);
         console.log(chalk.green('  ✓ Web dashboard password set.'));
       } else {
-        console.log(chalk.dim('  Using default password: Mercury@123'));
+        const { initWebAuth: makeAuth, isWebAuthInitialized } = await import('./web/auth.js');
+        const generated = !isWebAuthInitialized() ? makeAuth().password : (() => { const p = randomBytes(12).toString('base64url'); setWebPassword(p); return p; })();
+        console.log(chalk.green(`  ✓ Username: mercury   Password: ${chalk.bold(generated)}`));
+        console.log(chalk.dim('  Save it in your password manager — it is shown only now. Change it any time with /server.'));
       }
     }
   } else {
@@ -2995,7 +3005,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cloudClient.on('skill.install', async (msg) => {
         const skillUrl = msg.payload?.skillUrl as string | undefined;
         if (skillUrl) {
-          logger.info({ skillUrl }, 'Cloud command: install skill');
+          logger.info('Cloud command: install skill (asking the owner)');
+          // A skill is instructions Mercury follows from then on: the owner decides, not the Cloud account.
+          const { askOwner } = await import('./security/owner-approvals.js');
+          if (!(await askOwner({ title: 'Install a skill sent by Mercury Cloud', who: 'Mercury Cloud', detail: skillUrl.slice(0, 300) }))) {
+            cloudClient!.send({ type: 'skill.ack', agentId: config.cloud.agentId, payload: { success: false, error: 'The owner did not approve installing this skill.' }, timestamp: new Date().toISOString() });
+            return;
+          }
           try {
             await skillLoader.installFromUrl(skillUrl);
             cloudClient!.send({
@@ -3297,6 +3313,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           if (!suppliedSessionId || (action !== 'allow-all' && action !== 'ask-me')) {
             cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid permission mode request.' } });
             return;
+          }
+          if (action === 'allow-all') {
+            // Acting without asking, switched on from Cloud: the owner confirms it first.
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'notice', data: { message: 'Waiting for the owner to approve Allow All on their own device…' } });
+            const { askOwner } = await import('./security/owner-approvals.js');
+            if (!(await askOwner({ title: 'Turn on Allow All for a chat, from Mercury Cloud', who: 'Mercury Cloud' }))) {
+              cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'The owner did not approve Allow All.' } });
+              return;
+            }
           }
           webChannel.setSessionPermissionMode(suppliedSessionId, action);
           cloudClient!.sendStream({

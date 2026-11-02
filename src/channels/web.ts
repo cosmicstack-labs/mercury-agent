@@ -22,7 +22,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -109,14 +109,25 @@ export class WebChannel extends BaseChannel {
     this.sseClients.delete(id);
   }
 
-  addActivityClient(controller: ReadableStreamDefaultController): string {
+  addActivityClient(controller: ReadableStreamDefaultController, thisComputer = false): string {
     const id = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.activityClients.set(id, new SSEClient(controller, id));
+    if (thisComputer) this.localActivityClients.add(id);
     return id;
+  }
+
+  /** Activity screens on this computer: the only ones that get security questions (they can answer them). */
+  private localActivityClients = new Set<string>();
+
+  /** A security question for the owner (owner-approvals), to Mercury Desktop on this computer only. */
+  sendOwnerApproval(a: { id: string; code: string; kind: string; title: string; detail?: string; who: string; ip?: string; expiresAt: number; status: string }, change: 'new' | 'decided'): void {
+    const out: ChatEvent = { type: 'owner_approval', data: { change, id: a.id, code: a.code, kind: a.kind, title: a.title, detail: a.detail, who: a.who, ip: a.ip, expiresAt: a.expiresAt, status: a.status } };
+    for (const id of this.localActivityClients) this.activityClients.get(id)?.send(out);
   }
 
   removeActivityClient(id: string): void {
     this.activityClients.delete(id);
+    this.localActivityClients.delete(id);
   }
 
   setSessionTitleLookup(fn: (sessionId: string) => string | undefined): void {

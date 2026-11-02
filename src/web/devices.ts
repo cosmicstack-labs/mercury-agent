@@ -2,15 +2,20 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getMercuryHome } from '../utils/config.js';
+import { readRemoteSettings } from '../security/remote-settings.js';
 
 /**
  * Device tokens — long-lived bearer credentials for clients that are not on
  * this machine's loopback: Mercury Desktop on another computer, a phone,
  * a script on a server. One token per device, revocable one at a time.
  *
- * Why not the web session? Sessions live in memory, die with the process and
- * are cookie-shaped; a desktop app needs something it can keep in the OS
- * keychain and present as `Authorization: Bearer` from any address.
+ * Why not the web session? Sessions are cookie-shaped and end after a week;
+ * a desktop app needs something it can keep in the OS keychain and present
+ * as `Authorization: Bearer` from any address.
+ *
+ * Lifecycle: a remote device pairs only once the owner approves it
+ * (owner-approvals), stops working after `idleDays` unused (/server), and
+ * revoking it also closes its open event streams (live-streams).
  *
  * Why not the attach token? That one is a per-boot, loopback-only secret
  * for `mercury attach` and must stay that way.
@@ -31,6 +36,15 @@ export interface DeviceRecord {
   tokenHash: string;
   createdAt: string;
   lastSeenAt: string | null;
+  /** The address it last connected from (as the tunnel reported it), and the app. */
+  lastIp?: string;
+  lastAgent?: string;
+  /** Addresses it has connected from (newest last, up to 8): a new one is worth telling the owner. */
+  knownIps?: string[];
+  /** Who let it in: "cli" (made on this computer), "telegram", "desktop"… */
+  approvedBy?: string;
+  /** Set once by the upgrade that added idle expiry: the clock for old devices starts then. */
+  idleSince?: string;
 }
 
 export interface DeviceSummary {
@@ -39,6 +53,11 @@ export interface DeviceSummary {
   platform: string;
   createdAt: string;
   lastSeenAt: string | null;
+  lastIp?: string;
+  lastAgent?: string;
+  approvedBy?: string;
+  /** When it stops working if it isn't used (idle expiry), or null when it never does. */
+  expiresAt: string | null;
 }
 
 interface DevicesFile {
@@ -98,8 +117,35 @@ export function listDevices(): DeviceSummary[] {
   return readFile().devices.map(toSummary);
 }
 
+/** The moment idle expiry counts from: last use, else when it was made (or the upgrade, for old devices). */
+function idleFrom(d: DeviceRecord): number {
+  return Math.max(...[d.lastSeenAt, d.createdAt, d.idleSince].map((t) => (t ? Date.parse(t) : 0)).filter((n) => Number.isFinite(n)));
+}
+
+function expiresAtOf(d: DeviceRecord, idleDays = readRemoteSettings().idleDays): number | null {
+  return idleDays > 0 ? idleFrom(d) + idleDays * 86_400_000 : null;
+}
+
 function toSummary(d: DeviceRecord): DeviceSummary {
-  return { id: d.id, name: d.name, platform: d.platform, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt };
+  const exp = expiresAtOf(d);
+  return {
+    id: d.id, name: d.name, platform: d.platform, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt,
+    ...(d.lastIp ? { lastIp: d.lastIp } : {}), ...(d.lastAgent ? { lastAgent: d.lastAgent } : {}), ...(d.approvedBy ? { approvedBy: d.approvedBy } : {}),
+    expiresAt: exp ? new Date(exp).toISOString() : null,
+  };
+}
+
+/**
+ * Devices made before idle expiry existed keep working: their clock starts
+ * now, once, instead of expiring them on upgrade for being old.
+ */
+export function migrateDevices(now = Date.now()): number {
+  const data = readFile();
+  const old = data.devices.filter((d) => !d.idleSince);
+  if (!old.length) return 0;
+  for (const d of old) d.idleSince = new Date(now).toISOString();
+  writeFile(data);
+  return old.length;
 }
 
 export interface CreatedDevice {
@@ -109,7 +155,6 @@ export interface CreatedDevice {
 }
 
 const MAX_NAME_LENGTH = 64;
-const MAX_DEVICES = 200;
 
 export function normalizeDeviceName(name: unknown): string {
   // eslint-disable-next-line no-control-regex -- strips control characters on purpose
@@ -122,10 +167,11 @@ export function normalizePlatform(platform: unknown): string {
   return p || 'unknown';
 }
 
-export function createDevice(name: unknown, platform?: unknown): CreatedDevice {
+export function createDevice(name: unknown, platform?: unknown, approvedBy?: string): CreatedDevice {
   const data = readFile();
-  if (data.devices.length >= MAX_DEVICES) {
-    throw new Error(`Too many devices (${MAX_DEVICES}); revoke one first`);
+  const max = readRemoteSettings().maxDevices;
+  if (data.devices.length >= max) {
+    throw new Error(`This Mercury already has ${data.devices.length} devices (the limit is ${max}). Revoke one, or raise the limit with /server.`);
   }
   let id = randomBytes(4).toString('hex');
   while (data.devices.some((d) => d.id === id)) id = randomBytes(4).toString('hex');
@@ -137,6 +183,8 @@ export function createDevice(name: unknown, platform?: unknown): CreatedDevice {
     tokenHash: hashSecret(secret),
     createdAt: new Date().toISOString(),
     lastSeenAt: null,
+    idleSince: new Date().toISOString(),
+    ...(approvedBy ? { approvedBy } : {}),
   };
   data.devices.push(record);
   writeFile(data);
@@ -158,23 +206,79 @@ export function looksLikeDeviceToken(token: string): boolean {
   return TOKEN_RE.test(token);
 }
 
+export type DeviceCheck =
+  | { ok: true; device: DeviceSummary }
+  | { ok: false; expired?: DeviceSummary };
+
 /**
- * Resolve a bearer token to its device, or null. Constant-time on the
- * secret; the id lookup is by equality, which only reveals whether an id
- * exists — ids are not secret.
+ * Resolve a bearer token to its device. Constant-time on the secret; the id
+ * lookup is by equality, which only reveals whether an id exists — ids are
+ * not secret. A device unused for longer than the idle limit has expired:
+ * its record goes (so it can't come back), and the caller is told so it can
+ * ask the owner to approve it again.
  */
-export function validateDeviceToken(token: string): DeviceSummary | null {
+export function checkDeviceToken(token: string, now = Date.now()): DeviceCheck {
   const match = TOKEN_RE.exec(token);
-  if (!match) return null;
+  if (!match) return { ok: false };
   const [, id, secret] = match;
   const data = readFile();
   const record = data.devices.find((d) => d.id === id);
-  if (!record) return null;
+  if (!record) return { ok: false };
   const expected = Buffer.from(record.tokenHash, 'hex');
   const actual = Buffer.from(hashSecret(secret), 'hex');
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return { ok: false };
+  const exp = expiresAtOf(record);
+  if (exp !== null && now > exp) {
+    const summary = toSummary(record);
+    data.devices = data.devices.filter((d) => d.id !== id);
+    try { writeFile(data); } catch { /* still refused */ }
+    return { ok: false, expired: summary };
+  }
   touchLastSeen(data, record);
-  return toSummary(record);
+  return { ok: true, device: toSummary(record) };
+}
+
+/** Resolve a bearer token to its device, or null (expired counts as no). */
+export function validateDeviceToken(token: string): DeviceSummary | null {
+  const r = checkDeviceToken(token);
+  return r.ok ? r.device : null;
+}
+
+/**
+ * Where a device connected from. Returns true when it's an address this
+ * device hasn't used before (and it has used others): worth telling the owner.
+ */
+export function noteDeviceSeen(id: string, ip: string | null, agent: string | null): boolean {
+  const data = readFile();
+  const d = data.devices.find((x) => x.id === id);
+  if (!d) return false;
+  const ua = agent ? agent.replace(/[^\x20-\x7e]/g, '').slice(0, 120) : undefined;
+  const known = d.knownIps ?? [];
+  const isNew = !!ip && !known.includes(ip);
+  if (!isNew && d.lastIp === (ip ?? d.lastIp) && d.lastAgent === (ua ?? d.lastAgent)) return false;
+  if (ip) {
+    d.lastIp = ip;
+    d.knownIps = [...known.filter((k) => k !== ip), ip].slice(-8);
+  }
+  if (ua) d.lastAgent = ua;
+  try { writeFile(data); } catch { /* cosmetic */ }
+  return isNew && known.length > 0;
+}
+
+/** Revoke every device; how many. */
+export function revokeAllDevices(): string[] {
+  const data = readFile();
+  const ids = data.devices.map((d) => d.id);
+  if (!ids.length) return [];
+  data.devices = [];
+  writeFile(data);
+  for (const id of ids) lastSeenWrites.delete(id);
+  return ids;
+}
+
+export function getDevice(id: string): DeviceSummary | null {
+  const d = readFile().devices.find((x) => x.id === id);
+  return d ? toSummary(d) : null;
 }
 
 function touchLastSeen(data: DevicesFile, record: DeviceRecord): void {

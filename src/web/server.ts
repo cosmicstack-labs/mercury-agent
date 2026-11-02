@@ -32,6 +32,9 @@ import mcpRoutes, { setMcpManager } from './api/mcp.js';
 import pluginRoutes from './api/plugins.js';
 import voiceRoutes from './api/voice.js';
 import deviceRoutes from './api/devices.js';
+import securityRoutes from './api/security.js';
+import { bodyLimit } from 'hono/body-limit';
+import { migrateDevices } from './devices.js';
 import { BoardManager } from '../core/board-manager.js';
 import { isBetterSqlite3Available } from '../memory/second-brain-db.js';
 
@@ -89,6 +92,19 @@ const spaIndexPath = join(uiDir, 'index.html');
 const spaAvailable = existsSync(spaIndexPath);
 
 app.use('*', errorHandler);
+// Baseline headers on everything; pages also refuse to be framed (clickjacking).
+app.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('X-Content-Type-Options', 'nosniff');
+  c.res.headers.set('Referrer-Policy', 'no-referrer');
+  if ((c.res.headers.get('Content-Type') ?? '').startsWith('text/html')) {
+    c.res.headers.set('X-Frame-Options', 'DENY');
+    if (!c.res.headers.has('Content-Security-Policy')) c.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+  }
+});
+// Sign-in bodies are tiny: refuse big ones before reading them (they arrive without a credential).
+app.use('/api/auth/*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }));
+app.use('/login', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.text('Request too large', 413) }));
 // CORS before the guard: a preflight (OPTIONS) carries no credential and
 // must be answered, not rejected. API routes only; the dashboard itself is
 // same-origin.
@@ -119,6 +135,7 @@ app.route('/', mcpRoutes);
 app.route('/', pluginRoutes);
 app.route('/', voiceRoutes);
 app.route('/', deviceRoutes);
+app.route('/', securityRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {
@@ -277,6 +294,8 @@ process.on('unhandledRejection', (reason: any) => {
 export function startWebServer(): { port: number; url: string } {
   const port = getWebPort();
   initWebAuth();
+  // Devices from before idle expiry start their clock now (they keep working).
+  try { migrateDevices(); } catch { /* checked again next start */ }
 
   if (spaAvailable) {
     logger.info(`React UI loaded from: ${uiDir}`);

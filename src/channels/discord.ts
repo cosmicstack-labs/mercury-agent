@@ -924,10 +924,14 @@ export class DiscordChannel extends BaseChannel {
     const resolver = this.pendingApprovals.get(customId);
     if (resolver) {
       if (customId.startsWith('perm_') || customId.startsWith('perm_mode_') || customId.startsWith('loop_')) {
-        const metadata = this.lastMessageMetadata;
-        if (metadata && !metadata.isDM && !metadata.isAdmin) {
-          await interaction.reply({ content: 'Only admins can approve actions in server channels.', flags: MessageFlags.Ephemeral });
-          return;
+        // Whoever CLICKED must be an admin (not whoever sent the last message):
+        // in a server channel anyone can press a button.
+        if (interaction.inGuild() && interaction.guild) {
+          const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+          if (!(await this.isGuildAdmin(member, interaction.guild))) {
+            await interaction.reply({ content: 'Only admins can approve actions in server channels.', flags: MessageFlags.Ephemeral });
+            return;
+          }
         }
       }
       this.pendingApprovals.delete(customId);

@@ -28,10 +28,7 @@ The server binds to `127.0.0.1` only and is not exposed to the network. The web 
 
 The dashboard is protected by username/password authentication.
 
-**Default credentials:**
-
-- Username: `mercury`
-- Password: `Mercury@123`
+There is no default password. `mercury setup` asks you for one (at least 10 characters) or generates a strong one and shows it once. The username is `mercury`. Lost it? Run `mercury web-reset-password`.
 
 You will be redirected to `/login` for any unauthenticated request. After logging in, an HTTP-only session cookie is set. Sign out from **Settings → Account** or by closing the session in your browser.
 

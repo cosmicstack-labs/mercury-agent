@@ -1,3 +1,4 @@
+import { requireOwner } from '../owner-gate.js';
 import { Hono } from 'hono';
 import type { BaseProvider } from '../../providers/base.js';
 import { BUILDER_VERIFIED_NOTE, buildSkillDraft, draftProblem, type SkillDraft } from '../../skills/builder.js';
@@ -101,6 +102,9 @@ system.post('/api/skills/install', async (c) => {
   } catch {
     return c.json({ success: false, error: 'invalid url' }, 400);
   }
+  // A skill is instructions Mercury follows from then on: from another device, the owner decides.
+  const wait = requireOwner(c, { id: `skills.install:${url}`, title: 'Install a skill from a web address', detail: url });
+  if (wait) return wait;
 
   try {
     const loader = new SkillLoader();
@@ -173,6 +177,8 @@ system.get('/api/permissions', (c) => {
 
 system.put('/api/permissions', async (c) => {
   const body = await c.req.json();
+  const wait = requireOwner(c, { id: 'permissions.manifest', title: "Change what Mercury's shell, file and git tools may do" });
+  if (wait) return wait;
   const manager = new PermissionManager();
   const current = manager.getManifest();
   const next: PermissionsManifest = {

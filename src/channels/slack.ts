@@ -199,6 +199,11 @@ export class SlackChannel extends BaseChannel {
       }
 
       const resolver = this.pendingApprovals.get(actionId);
+      // In a channel anyone can press a button: only an admin's click counts (a DM has only the owner).
+      if (resolver && channel && !channel.startsWith('D') && !findSlackAdmin(this.config, userId)) {
+        try { await client.chat.postEphemeral({ channel, user: userId, text: 'Only admins can approve actions in this channel.' }); } catch { /* best effort */ }
+        return;
+      }
       if (resolver) {
         this.pendingApprovals.delete(actionId);
         for (const suffix of [':yes', ':always', ':no', ':ask-me', ':allow-all']) {
