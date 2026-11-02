@@ -120,11 +120,12 @@ function KindIcon({ kind }: { kind: BotInboxEntry["kind"] }) {
 }
 
 /** The inbox entry in the sidebar: an icon, "Inbox", and the unread count. */
-export function InboxRow({ active, unread, onClick }: { active: boolean; unread: number; onClick: () => void }) {
+export function InboxRow({ active, unread, waiting = 0, onClick }: { active: boolean; unread: number; waiting?: number; onClick: () => void }) {
   return (
     <button onClick={onClick} className={cx("mb-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left", active ? "bg-ink/[0.07]" : "hover:bg-ink/[0.05]")}>
       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/[0.06]"><InboxIcon size={15} className="text-ink2" /></span>
       <span className="flex-1 text-sm font-medium text-ink">Inbox</span>
+      {waiting > 0 && <span className="rounded-full bg-amber px-1.5 text-2xs font-semibold leading-5 text-black" aria-label={`${waiting} waiting for your answer`}>{waiting} asking</span>}
       {unread > 0 && <span className="rounded-full bg-accent px-1.5 text-2xs font-semibold leading-5 text-on-accent">{unread}</span>}
     </button>
   );

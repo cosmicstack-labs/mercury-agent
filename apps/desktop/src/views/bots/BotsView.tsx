@@ -18,6 +18,7 @@ import { Deliverables } from "./Deliverables";
 import { Activity } from "./Activity";
 import { Usage } from "./Usage";
 import { BotInbox, InboxRow } from "./Inbox";
+import { PendingApprovals } from "./Approvals";
 import { CreateBot } from "./CreateBot";
 import { BotSettings } from "./BotSettings";
 import { describeCron } from "./BotForms";
@@ -60,6 +61,7 @@ export function BotsView() {
   const available = useBots((s) => s.available);
   const activity = useBots((s) => s.activity);
   const unread = useBots((s) => s.unread);
+  const waiting = useBots((s) => s.approvals.length);
   const focus = useUi((s) => s.botFocus);
   // "inbox", "new", or a bot id.
   const [selected, setSelected] = useState<string | null>(null);
@@ -92,7 +94,7 @@ export function BotsView() {
           </span>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-          <InboxRow active={selected === "inbox"} unread={unread} onClick={() => setSelected("inbox")} />
+          <InboxRow active={selected === "inbox"} unread={unread} waiting={waiting} onClick={() => setSelected("inbox")} />
           {bots.length === 0 && <p className="px-2 pt-1 text-sm text-ink4">No bots yet. Press New bot to make one.</p>}
 
           {fleets.map((f) => {
@@ -145,6 +147,7 @@ export function BotsView() {
               <h1 className="text-xl font-semibold tracking-tight text-ink">Inbox</h1>
               <p className="mt-0.5 text-sm text-ink3">What your bots did, newest first. Runs with nothing new stay quiet; every run is in a bot's Activity.</p>
             </div>
+            <PendingApprovals />
             <BotInbox bots={bots} onOpenBot={setSelected} />
           </div>
         ) : selectedFleet ? (
@@ -230,6 +233,7 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={lead.id} status={lead} subtitle={`Fleet lead · ${crew.length} crew`} crewCount={crew.length} onDeleted={() => onSelect(null)} />
+      {members.map((m) => <PendingApprovals key={m.id} botId={m.id} />)}
       <TabBar tab={tab} onChange={setTab} fleet />
       {tab === "overview" && (
         <>
@@ -270,6 +274,7 @@ function BotDetail({ id, status, onDeleted }: { id: string; status: BotStatus | 
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={id} status={status} onDeleted={onDeleted} />
+      <PendingApprovals botId={id} />
       <TabBar tab={tab} onChange={setTab} fleet={false} />
       {tab === "overview" && <BotBody id={id} status={status} />}
       {tab === "results" && <BotInbox bots={status ? [status] : []} botId={id} />}

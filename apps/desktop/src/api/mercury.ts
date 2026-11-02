@@ -5,7 +5,7 @@
 
 import { http, ApiError } from "./client";
 import type { SkillDraft,
-  BotInboxEntry, BotManifest, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  BotApproval, BotInboxEntry, BotManifest, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
@@ -110,6 +110,8 @@ export const bots = {
   inbox: (opts: { unread?: boolean; bot?: string; limit?: number } = {}) =>
     http.get<{ entries: BotInboxEntry[]; unread: number }>(`/api/bots/inbox?limit=${opts.limit ?? 100}${opts.unread ? "&unread=1" : ""}${opts.bot ? `&bot=${encodeURIComponent(opts.bot)}` : ""}`),
   markRead: (ids?: string[]) => http.post<{ ok: boolean; unread: number }>("/api/bots/inbox/read", ids ? { ids } : {}),
+  approvals: () => http.get<{ approvals: BotApproval[] }>("/api/bots/approvals").then((r) => r.approvals),
+  answer: (approvalId: string, answer: "yes" | "always" | "no") => http.post<{ ok: boolean }>(`/api/bots/approvals/${encodeURIComponent(approvalId)}`, { answer }),
   dlq: (id: string) => http.get<{ dlq: Array<{ id: string; prompt: string; reasonCode?: string; createdAt: number }> }>(`/api/bots/${encodeURIComponent(id)}/dlq`),
   replay: (id: string, jobId: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/replay/${encodeURIComponent(jobId)}`, {}),
 };

@@ -187,6 +187,18 @@ export interface BotManifest {
   memory?: { scope?: "own" | "shared-read" | "none"; learn?: boolean };
 }
 
+/** A bot waiting for your answer mid-run (GET /api/bots/approvals). */
+export interface BotApproval {
+  id: string;
+  botId: string;
+  botName: string;
+  runId: string;
+  /** "Run command: …", "Write to file: …", "Read file: …" */
+  prompt: string;
+  at: number;
+  expiresAt: number;
+}
+
 /** One thing a bot did for you (GET /api/bots/inbox). */
 export interface BotInboxEntry {
   id: string;
@@ -199,6 +211,8 @@ export interface BotInboxEntry {
   files: string[];
   complete?: boolean;
   reasonCode?: string;
+  /** A question that may still be waiting for your answer. */
+  approvalId?: string;
   at: number;
   read: boolean;
 }

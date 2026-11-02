@@ -34,7 +34,7 @@ export function Rail({ connectionName }: { connectionName: string }) {
   const codeIds = useCodeSessions((s) => s.sessions);
   const threads = useChat((s) => s.threads);
   // Bots: amber when one needs you, blue when the inbox has something unread.
-  const botsWaiting = useBots((s) => s.bots.filter((b) => b.needsYou).length);
+  const botsWaiting = useBots((s) => s.bots.filter((b) => b.needsYou).length + s.approvals.length);
   const botsUnread = useBots((s) => s.unread);
   // Count only conversations that are in that list, so every dot here has a dot to find there.
   const dots = useMemo(() => {

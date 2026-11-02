@@ -5,7 +5,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { create } from "zustand";
-import type { BotStatus, ChatThread, PendingPrompt } from "~/api/types";
+import type { BotStatus, ChatThread, PendingPrompt, BotApproval } from "~/api/types";
 
 export type View = "chat" | "artifacts" | "code" | "bots" | "brain" | "plugins" | "skills" | "settings";
 
@@ -109,6 +109,9 @@ interface BotsState {
   unread: number;
   /** Bumped when an inbox entry arrives, so open lists reload. */
   inboxVersion: number;
+  /** Bots waiting for your answer right now. */
+  approvals: BotApproval[];
+  setApprovals(approvals: BotApproval[]): void;
   setBots(bots: BotStatus[], available: boolean, unread?: number): void;
   inboxChanged(unread?: number): void;
   setActivity(botId: string, label: string | null): void;
@@ -120,6 +123,8 @@ export const useBots = create<BotsState>((set) => ({
   activity: {},
   unread: 0,
   inboxVersion: 0,
+  approvals: [],
+  setApprovals: (approvals) => set({ approvals }),
   setBots: (bots, available, unread) => set(unread === undefined ? { bots, available } : { bots, available, unread }),
   inboxChanged: (unread) => set((s) => ({ inboxVersion: s.inboxVersion + 1, ...(unread === undefined ? {} : { unread }) })),
   setActivity: (botId, label) => set((s) => {

@@ -32,6 +32,11 @@ export function useRuntimeEvents(enabled: boolean): void {
           if (r?.bots) useBots.getState().setBots(r.bots, true);
           return;
         }
+        if (event === "bot_approval") {
+          // A bot asked, or its question was answered or timed out.
+          void refreshApprovals();
+          return;
+        }
         if (event === "bot_inbox") {
           // A result, a reported failure, or a run that needs you.
           const entry = safeJson<BotInboxEntry>(raw);
@@ -255,7 +260,14 @@ export async function setThreadSaved(threadId: string, saved: boolean): Promise<
   }
 }
 
+export async function refreshApprovals(): Promise<void> {
+  try {
+    useBots.getState().setApprovals(await api.bots.approvals());
+  } catch { /* an older runtime has no approvals */ }
+}
+
 export async function refreshBots(): Promise<void> {
+  void refreshApprovals();
   try {
     const { bots, available, unread } = await api.bots.list();
     useBots.getState().setBots(bots, available, unread);
