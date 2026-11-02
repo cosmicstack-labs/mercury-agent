@@ -5,6 +5,22 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
+            "title": "Your agent returned 200 OK. It may still have failed",
+            "summary": "What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.",
+            "date_modified": "2026-10-31T00:00:00.000Z",
+            "author": {
+                "name": "Tashir Khan",
+                "url": "https://github.com/tashiriskhan"
+            },
+            "tags": [
+                "Engineering",
+                "Runtime"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/running-an-agent-overnight",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/running-an-agent-overnight",
