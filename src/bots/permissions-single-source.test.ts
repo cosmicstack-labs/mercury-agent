@@ -70,13 +70,14 @@ describe('permissions.yaml — single source of truth', () => {
     expect(readonly.paths).toEqual([{ scope: 'self', read: true, write: true, execute: false }]);
   });
 
-  it('the tool gate comes from permissions.yaml, and a deny left in a legacy manifest block still applies', () => {
+  it('the tool gate comes from permissions.yaml, overriding any legacy manifest block', () => {
     const all = { read_file: {}, run_command: {}, write_file: {} } as any;
     const manifest = { tools: { deny: ['run_command'] } } as any;
-    // Deny wins from either source: a bot.yaml deny the owner wrote is never
-    // silently overridden by a permissions.yaml that doesn't repeat it.
+    // permissions.yaml is the single source: its deny wins over bot.yaml (whose
+    // deny list is the materialized default on every loaded manifest — a tier
+    // that grants run_command must be able to).
     let out = filterBotTools(all, manifest, { tools: { deny: ['write_file'] } });
-    expect(Object.keys(out).sort()).toEqual(['read_file']);
+    expect(Object.keys(out).sort()).toEqual(['read_file', 'run_command']);
     // No permissions.tools + explicit legacy manifest block → honored.
     out = filterBotTools(all, manifest, {});
     expect(Object.keys(out).sort()).toEqual(['read_file', 'write_file']);

@@ -34,6 +34,8 @@ export interface BotInboxEntry {
   complete?: boolean;
   /** Why it needs you (reason code) for needs-you entries. */
   reasonCode?: string;
+  /** A bot's question waiting for your answer (POST /api/bots/approvals/:id). */
+  approvalId?: string;
   at: number;
   read: boolean;
 }

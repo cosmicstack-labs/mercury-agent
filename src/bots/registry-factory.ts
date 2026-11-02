@@ -75,6 +75,12 @@ export interface BotRegistryDeps {
    * fleet-shared folder next to the bots root. Unset = not granted.
    */
   sandbox?: { workspace: string; shared: string };
+  /**
+   * Ask the owner about something outside the bot's grants (a command, a file
+   * outside its folders). Resolves "yes" | "always" | "no"; the runtime answers
+   * "no" when nobody replies in time. Unset = never ask (fail closed).
+   */
+  ask?: (prompt: string) => Promise<string>;
 }
 
 /**
@@ -136,6 +142,7 @@ export function createBotCapabilityRegistry(deps: BotRegistryDeps): CapabilityRe
   pm.setAutoApproveAll(false);
   pm.setFailClosed(true);
   pm.setCurrentContext('bot', deps.botId);
+  if (deps.ask) pm.onAsk(deps.ask);
 
   // Relative paths and shell commands resolve inside the bot's workspace,
   // never the daemon's cwd (a bot with a wide grant wrote "sandbox/…" files
@@ -167,10 +174,10 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
     ?? (explicitManifestTools ? manifest.tools : undefined)
     ?? { deny: [...BOT_DANGEROUS_TOOLS] };
   const allow = gate.allow ?? [];
-  // Deny always wins, from either source: a bot.yaml that still lists denied
-  // tools must not be silently overridden by a permissions.yaml without them
-  // (both are the owner's word; the stricter one applies).
-  const deny = new Set([...(gate.deny ?? []), ...(explicitManifestTools ? manifest.tools?.deny ?? [] : [])]);
+  // permissions.yaml wins over bot.yaml: every loaded manifest carries the
+  // default dangerous-tool deny list (normalizeBotManifest), so a union would
+  // make the permission tiers unable to grant anything.
+  const deny = new Set(gate.deny ?? []);
   const out: Record<string, any> = {};
   for (const [name, tool] of Object.entries(all)) {
     if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name)) continue;

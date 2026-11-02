@@ -42,6 +42,22 @@ app.get('/api/bots/inbox', (c: Context) => {
   return c.json({ entries, unread: botManager.inbox.unread(botId), available: true });
 });
 
+// Bots asking the owner mid-run: what's waiting, and the answer.
+app.get('/api/bots/approvals', (c: Context) => {
+  if (!botManager) return c.json({ approvals: [], available: false });
+  return c.json({ approvals: botManager.approvals.list(c.req.query('bot') || undefined), available: true });
+});
+
+app.post('/api/bots/approvals/:id', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { answer?: unknown };
+  if (body.answer !== 'yes' && body.answer !== 'always' && body.answer !== 'no') return c.json({ error: 'answer must be yes, always or no' }, 400);
+  if (!botManager.approvals.answer(c.req.param('id') ?? '', body.answer)) {
+    return c.json({ error: 'That question is no longer waiting (answered, timed out, or the run ended).' }, 409);
+  }
+  return c.json({ ok: true });
+});
+
 // Mark read: { ids: [...] } for some entries, {} for everything.
 app.post('/api/bots/inbox/read', async (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
@@ -134,6 +150,8 @@ app.get('/api/bots/events', (c: any) => {
       const unsubscribe = bm.onBotActivity((ev) => client.send('bot_activity', ev));
       // A new inbox entry: the desktop turns it into a notification.
       const unsubscribeInbox = bm.inbox.onEntry((entry) => client.send('bot_inbox', entry));
+      // A bot asked, or its question was answered / timed out: the app shows or clears the buttons.
+      const unsubscribeApprovals = bm.approvals.onChange((e) => client.send('bot_approval', e));
 
       const keepalive = setInterval(() => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); }
@@ -143,6 +161,7 @@ app.get('/api/bots/events', (c: any) => {
         clearInterval(keepalive);
         unsubscribe();
         unsubscribeInbox();
+        unsubscribeApprovals();
         rosterSseClients.delete(client);
       });
     },

@@ -12,6 +12,7 @@ import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { UserMemoryStore } from '../memory/user-memory.js';
 import { UserMemoryStore as UserMemoryStoreImpl } from '../memory/user-memory.js';
 import { BotInbox } from './inbox.js';
+import { BotApprovals, durableGrant } from './approvals.js';
 import { detectTier } from './permission-tiers.js';
 import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FILENAME, isValidCronExpression } from './store.js';
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
@@ -242,6 +243,8 @@ export class BotManager {
   private dueTimer?: ReturnType<typeof setInterval>;
   /** What the bots did for the owner, kept until read (Bots 2.0). */
   readonly inbox: BotInbox;
+  /** Bots asking the owner mid-run, waiting for an answer (Bots 2.0). */
+  readonly approvals = new BotApprovals();
   /** job id → how many hand-offs deep it is (owner-started work is 0). */
   private jobDepth = new Map<string, number>();
   /** running job id → tasks it has handed off so far. */
@@ -564,6 +567,50 @@ export class BotManager {
     }
     logger.info({ requester, batchId: batch.id, tasks: out.length }, 'Fleet batch dispatched');
     return { ok: true, batchId: batch.id, tasks: out };
+  }
+
+  /**
+   * A bot wants something outside its grants. The question goes to the
+   * owner's inbox (and their phone, if an alert channel is set up) and the run
+   * waits for the answer; no answer in `bots.approvalWaitMinutes` (default 10)
+   * is a no. "Always" goes into this bot's own permissions file, never the
+   * global one.
+   */
+  private async askOwner(botId: string, prompt: string): Promise<string> {
+    const manifest = this.store.get(botId);
+    const runId = [...(this.running.get(botId) ?? [])][0];
+    if (!manifest || !runId) return 'no';
+    const minutes = Math.max(1, Math.min(60, this.config.bots?.approvalWaitMinutes ?? 10));
+    const { approval, answer } = this.approvals.ask({ botId, botName: manifest.name, runId, prompt }, minutes * 60_000);
+    const what = prompt.split('\n')[0];
+    this.emitBotActivity({ botId, jobId: runId, kind: 'step', label: 'Waiting for your approval', stepIndex: 0, elapsedMs: 0 });
+    const entry = this.inbox.add({
+      botId, botName: manifest.name, runId, kind: 'needs-you', approvalId: approval.id, files: [],
+      title: `${manifest.name} asks: ${what.slice(0, 120)}`,
+      summary: `${prompt}\n\nThe run is waiting for your answer. Without one in ${minutes} minute${minutes === 1 ? '' : 's'}, it's refused.`,
+    });
+    if (this.alert) {
+      void this.alert(`🔐 **${manifest.name}** asks: ${what}. Answer in Mercury Desktop (Bots → Inbox) within ${minutes} min, or it's refused.`).catch(() => {});
+    }
+    const result = await answer;
+    this.inbox.markRead([entry.id]);
+    if (result === 'always') this.persistGrant(botId, prompt);
+    logger.info({ botId, runId, answer: result, what: what.slice(0, 80) }, 'Bot approval answered');
+    return result;
+  }
+
+  /** "Always": make the owner's yes part of this bot's permissions.yaml. */
+  private persistGrant(botId: string, prompt: string): void {
+    const grant = durableGrant(prompt);
+    if (!grant) return;
+    const perms = this.store.readPermissions(botId);
+    if ('command' in grant) {
+      perms.autoApproveCommands = [...new Set([...(perms.autoApproveCommands ?? []), grant.command])];
+    } else {
+      perms.paths = mergePathScopes(perms.paths, [{ scope: grant.path, read: true, write: grant.write }]);
+    }
+    this.store.writePermissions(botId, perms);
+    logger.info({ botId, grant }, 'Owner granted a bot permission permanently');
   }
 
   /**
@@ -1204,6 +1251,7 @@ export class BotManager {
       if (heartbeat) clearInterval(heartbeat);
       running.delete(job.id);
       this.jobFanout.delete(job.id);
+      this.approvals.cancelRun(job.id);
       this.aborts.delete(`${botId}:${job.id}`);
       if (running.size === 0) this.activity.delete(botId);
       // Mail-arrival race: a reply (e.g. a crew's task result) delivered
@@ -1360,6 +1408,8 @@ export class BotManager {
       sandbox: { workspace: this.store.sandboxDir(botId), shared: this.store.sharedSandboxDir() },
       userMemory: this.userMemoryFor(botId, manifest),
       config: this.config,
+      // Outside its grants the bot asks the owner (and waits a while) instead of failing outright.
+      ask: (prompt) => this.askOwner(botId, prompt),
     });
     // Filter FIRST (strips interactive/global-mutation tools and applies the
     // permissions.yaml tool gate), THEN add the bot-specific tools —
@@ -1762,6 +1812,7 @@ export class BotManager {
     const hadRunning = !!running && running.size > 0;
     for (const id of running ?? []) {
       if (jobId && id !== jobId) continue;
+      this.approvals.cancelRun(id);
       this.aborts.get(`${botId}:${id}`)?.abort();
     }
     // Queued-but-not-started jobs leave the in-memory lane; their durable rows

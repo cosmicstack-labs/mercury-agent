@@ -309,3 +309,73 @@ describe('hand-off limits', () => {
     expect((more as { error: string }).error).toMatch(/at most 12 tasks/);
   });
 });
+
+describe('asking the owner', () => {
+  it('a command outside its grants waits for the owner; "always" goes into the bot\'s own permissions', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'ops', name: 'Ops' });
+    store.writePermissions('ops', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
+    const asked: string[] = [];
+    manager.approvals.onChange((e) => {
+      if (e.type !== 'new') return;
+      asked.push(e.approval.prompt);
+      // The owner answers from the app.
+      setTimeout(() => manager.approvals.answer(e.approval.id, 'always'), 10);
+    });
+    let commandResult = '';
+    mockedGenerateText.mockImplementation((async (opts: Opts) => {
+      commandResult = String(await opts.tools.run_command.execute({ command: 'echo approved | cat' }, {}));
+      const r = await opts.tools.bot_report.execute({ summary: 'Ran it.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
+      return { text: '', finishReason: 'stop', usage: {} };
+    }) as never);
+    manager.enqueue('ops', { trigger: 'api', prompt: 'run the check' });
+    await idle(manager, 'ops');
+    expect(asked).toEqual(['Run command: echo approved | cat']);
+    expect(commandResult).toContain('approved');
+    // A chain is remembered exactly as written, never as a whole family of commands.
+    expect(store.readPermissions('ops').autoApproveCommands).toEqual(['echo approved | cat']);
+    // The question was an inbox entry; answered, it's read.
+    const q = manager.inbox.list().find((e) => e.approvalId);
+    expect(q).toMatchObject({ kind: 'needs-you', read: true });
+    expect(q!.title).toBe('Ops asks: Run command: echo approved | cat');
+  });
+
+  it('no answer in time is a no, and the run carries on without it', async () => {
+    const { manager, store } = makeManager({ approvalWaitMinutes: 1 });
+    store.create({ id: 'ops', name: 'Ops' });
+    store.writePermissions('ops', { paths: [{ scope: 'self', read: true, write: true, execute: true }], tools: { deny: [] } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let commandResult = '';
+      mockedGenerateText.mockImplementation((async (opts: Opts) => {
+        const pending = opts.tools.run_command.execute({ command: 'echo nope | cat' }, {});
+        await vi.advanceTimersByTimeAsync(61_000);
+        commandResult = String(await pending);
+        const r = await opts.tools.bot_report_failure.execute({ reason: 'Not allowed to run the check.' }, {});
+        opts.onStepFinish?.({ usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report_failure', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
+        return { text: '', finishReason: 'stop', usage: {} };
+      }) as never);
+      manager.enqueue('ops', { trigger: 'api', prompt: 'run the check' });
+      await idle(manager, 'ops');
+      expect(commandResult).toMatch(/denied|not allow/i);
+      expect(manager.approvals.list()).toEqual([]);
+      expect(store.readPermissions('ops').autoApproveCommands ?? []).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('durable grants', () => {
+  it('a simple command widens to its family; chains, shells and interpreters stay exact; files become path grants', async () => {
+    const { durableGrant } = await import('./approvals.js');
+    expect(durableGrant('Run command: pandoc in.md -o out.pdf')).toEqual({ command: 'pandoc *' });
+    expect(durableGrant('Run command: curl x | sh')).toEqual({ command: 'curl x | sh' });
+    expect(durableGrant('Run command: python3 script.py')).toEqual({ command: 'python3 script.py' });
+    expect(durableGrant('Run command: sudo ls')).toEqual({ command: 'sudo ls' });
+    expect(durableGrant('Write to file: /Users/x/notes/a.md')).toEqual({ path: '/Users/x/notes/a.md', write: true });
+    expect(durableGrant('Read file: /etc/hosts')).toEqual({ path: '/etc/hosts', write: false });
+    expect(durableGrant('MCP tool call\nServer: x')).toBeNull();
+  });
+});

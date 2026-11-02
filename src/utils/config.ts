@@ -249,6 +249,8 @@ export interface MercuryConfig {
     fleetDailyTokenBudget?: number;
     /** Fewest minutes between two runs of any bot routine (default 15). */
     routineMinGapMinutes?: number;
+    /** How long a bot waits for the owner to answer its question before it's a no (default 10, max 60). */
+    approvalWaitMinutes?: number;
     /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
     deliverablesDir?: string;
     retention: {
