@@ -30,6 +30,12 @@ export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
 export const BOT_STATE_FILENAME = 'state.md';
 /** Routine state (paused routines, no-outcome streaks) — ADR-020. */
 export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
+/** Per-job conversation checkpoints (resume an interrupted run). */
+export const BOT_CHECKPOINTS_DIRNAME = 'checkpoints';
+const CHECKPOINT_MAX_BYTES = 4 * 1024 * 1024;
+function safeJobId(jobId: string): string {
+  return jobId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
 /** Fleet-level list of bots the owner stopped. */
 export const BOT_HELD_FILENAME = 'stopped.json';
 /**
@@ -38,7 +44,7 @@ export const BOT_HELD_FILENAME = 'stopped.json';
  * used to copy their own profile folders into sandbox/ and outputs/ as
  * "mirrors", which the scan then reported as duplicate bots on every boot.
  */
-export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME]);
+export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME, 'checkpoints']);
 
 export interface BotRoutineState {
   /**
@@ -316,6 +322,34 @@ export class BotStore {
       return;
     }
     atomicWrite(file, state + '\n');
+  }
+
+  /**
+   * A job's conversation so far, written after every finished step so an
+   * interrupted run (provider error, pause, restart) resumes instead of
+   * starting over. Removed when the job is settled. Oversized ones are skipped.
+   */
+  writeCheckpoint(id: string, jobId: string, messages: unknown[]): void {
+    try {
+      const body = JSON.stringify({ at: Date.now(), messages });
+      if (body.length > CHECKPOINT_MAX_BYTES) return;
+      const dir = join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME);
+      mkdirSync(dir, { recursive: true });
+      atomicWrite(join(dir, `${safeJobId(jobId)}.json`), body);
+    } catch { /* best effort */ }
+  }
+
+  readCheckpoint(id: string, jobId: string): unknown[] | undefined {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), 'utf-8')) as { messages?: unknown[] };
+      return Array.isArray(raw.messages) && raw.messages.length > 0 ? raw.messages : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  clearCheckpoint(id: string, jobId: string): void {
+    try { rmSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), { force: true }); } catch { /* gone */ }
   }
 
   /** Bots the owner stopped (/bots stop, the app's Stop). Durable: a restart must not undo a stop. */

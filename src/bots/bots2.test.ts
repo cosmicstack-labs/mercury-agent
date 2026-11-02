@@ -251,3 +251,39 @@ describe('deliveries', () => {
     expect(second.path).toBe(first.path);
   });
 });
+
+describe('resuming an interrupted run', () => {
+  it('a retry after a network error continues from the last finished step instead of starting over', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'scout', name: 'Scout' });
+    const seen: Array<Array<{ role?: string; content: unknown }>> = [];
+    let call = 0;
+    const toolCall = { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'web_search', input: { q: 'oxide' } }] };
+    const toolResult = { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'web_search', output: { type: 'text', value: 'Oxide raised a Series D' } }] };
+    mockedGenerateText.mockImplementation((async (opts: Opts) => {
+      seen.push(opts.messages ?? []);
+      call++;
+      if (call === 1) {
+        // One step done (a search and its result), then the connection drops.
+        opts.onStepFinish?.({ usage: { inputTokens: 100, outputTokens: 5 }, toolCalls: [], toolResults: [], response: { messages: [toolCall, toolResult] } });
+        throw new Error('read ECONNRESET');
+      }
+      const r = await opts.tools.bot_report.execute({ summary: 'Oxide raised a Series D.' }, {});
+      opts.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 1 }, toolCalls: [{ toolName: 'bot_report', toolCallId: 'r' }], toolResults: [{ toolCallId: 'r', output: { type: 'text', value: r } }] });
+      return { text: '', finishReason: 'stop', usage: {} };
+    }) as never);
+
+    manager.enqueue('scout', { trigger: 'api', prompt: 'any news on Oxide?' });
+    await vi.waitFor(() => expect(call).toBe(2), { timeout: 5000 });
+    await idle(manager, 'scout');
+
+    const retry = seen[1];
+    // The search and its result are there: nothing to redo.
+    expect(retry.some((m) => JSON.stringify(m.content).includes('Oxide raised a Series D'))).toBe(true);
+    expect(retry.some((m) => m.role === 'user' && String(m.content).startsWith('[Resumed]'))).toBe(true);
+    expect(manager.inbox.list()[0]).toMatchObject({ kind: 'result', summary: 'Oxide raised a Series D.' });
+    // Settled: the checkpoint is gone.
+    const [row] = manager.getJournal('scout', 1);
+    expect(store.readCheckpoint('scout', row.runId)).toBeUndefined();
+  });
+});

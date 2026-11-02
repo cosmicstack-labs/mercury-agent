@@ -103,6 +103,14 @@ export interface BotTurnInput {
   jobId?: string;
   prompt: string;
   /**
+   * The conversation of an interrupted run of this job (a retry after a
+   * provider error, a step-budget pause, a restart mid-run): the turn picks up
+   * from it instead of redoing every finished step.
+   */
+  resume?: ModelMessage[];
+  /** After every finished step: the conversation so far (without the system prompt), to resume from. */
+  onCheckpoint?: (messages: ModelMessage[]) => void;
+  /**
    * Photos and PDFs for this turn, already on disk. The runtime reads them here:
    * a caption-less photo becomes `(Attached: names)` because a provider rejects an
    * empty text block, and a model without vision gets a note instead of pixels.
@@ -182,6 +190,10 @@ export interface BotTurnOutput {
 
 const MAX_STEPS_DEFAULT = 25;
 
+/** Said to the model when a run resumes from its checkpoint. */
+const RESUME_NOTE = '[Resumed] This run was interrupted (an error, a pause or a restart) and continues here. '
+  + 'Everything above already happened: do not redo finished steps or deliver a file twice. Carry on from where it stopped, then close the run as usual.';
+
 /** 'thinking' tail emission cadence — a live preview, not a firehose. */
 const THINKING_EMIT_INTERVAL_MS = 300;
 /** Rolling tail cap per field; surfaces render the tail bottom-anchored. */
@@ -246,12 +258,16 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
     ...(prompt.volatile ? [{ role: 'system', content: prompt.volatile } as ModelMessage] : []),
   ];
   const leadingSystem = messages.length;
+  const resuming = (input.resume?.length ?? 0) > 0;
 
-  for (const m of input.mail) {
+  if (resuming) {
+    messages.push(...input.resume!, { role: 'user', content: RESUME_NOTE });
+  }
+  for (const m of resuming ? [] : input.mail) {
     messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
   }
-  const files = input.attachments ?? [];
-  const caption = turnCaption(input.prompt, files);
+  const files = resuming ? [] : input.attachments ?? [];
+  const caption = resuming ? '' : turnCaption(input.prompt, files);
   if (caption) {
     messages.push({ role: 'user', content: caption });
   }
@@ -339,6 +355,9 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   try {
     emit({ kind: 'turn-start', stepIndex: 0, label: input.prompt ? input.prompt.slice(0, 80) : 'Checking inbox' });
     while (stepsRemaining > 0 && !governor.signal.aborted) {
+      // This round's steps (assistant tool calls + tool results), cumulative: what the next
+      // round and a resumed run need to see, not just the round's last words.
+      let roundMessages: ModelMessage[] = [];
       // streamText, not generateText: the deltas are the real-time feedback
       // inside the bot's thread (reasoning + reply tails). Same options and
       // step-count semantics; the result's final promises preserve the old
@@ -375,9 +394,13 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
             elapsedMs: typeof durationMs === 'number' ? durationMs : undefined,
           });
         },
-        onStepFinish: ({ usage, toolCalls, toolResults }: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[] }) => {
+        onStepFinish: ({ usage, toolCalls, toolResults, response }: { usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: unknown[]; toolResults?: unknown[]; response?: { messages?: unknown[] } }) => {
           if (governor.signal.aborted) return;
           stepsRemaining--;
+          if (Array.isArray(response?.messages)) {
+            roundMessages = response.messages as ModelMessage[];
+            try { input.onCheckpoint?.([...messages.slice(leadingSystem), ...roundMessages]); } catch { /* a checkpoint is best effort */ }
+          }
           if (usage) {
             tokensIn += usage.inputTokens ?? 0;
             tokensOut += usage.outputTokens ?? 0;
@@ -445,7 +468,9 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         throw new Error('Generation was interrupted before completion (no finish signal from provider)');
       }
 
-      if (result.text) {
+      if (roundMessages.length > 0) {
+        messages.push(...roundMessages);
+      } else if (result.text) {
         messages.push({ role: 'assistant', content: result.text });
       }
 

@@ -1002,8 +1002,11 @@ export class BotManager {
         setTimeout(() => this.resumeDueJobs(), delay).unref?.();
       } else if (turnLimited) {
         this.queue.settle(job.id, 'done');
+        this.store.clearCheckpoint(botId, job.id);
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
+        // A replay from the dead-letter queue starts fresh: the failure may be in the conversation itself.
+        this.store.clearCheckpoint(botId, job.id);
         this.needsYou.add(botId);
         logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
         // A routine failing again and again tells the owner once, on the first
@@ -1018,6 +1021,7 @@ export class BotManager {
         setTimeout(() => this.resumeDueJobs(), 2000).unref?.();
       } else {
         this.queue.settle(job.id, 'done');
+        this.store.clearCheckpoint(botId, job.id);
       }
 
       // Deliver the outcome — the bot thread is the ONLY local surface
@@ -1232,6 +1236,9 @@ export class BotManager {
         provider: resolveProvider(this.providers, manifest, this.config),
         tokenBudget: this.tokenBudget,
         abortSignal: signal,
+        // Pick up an interrupted run of this job where it stopped; checkpoint every step.
+        resume: this.store.readCheckpoint(botId, job.id) as Parameters<typeof runBotTurn>[0]['resume'],
+        onCheckpoint: (messages) => this.store.writeCheckpoint(botId, job.id, messages),
       },
       cleanup: () => { /* per-bot registries are persistent, nothing to restore */ },
     };
