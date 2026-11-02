@@ -113,6 +113,8 @@ export class ResearchRun {
   steps = 0;
   /** The owner asked to stop searching and write the report now. */
   finishRequested = false;
+  /** This run made (or was given) the plan checklist, so its end may close it. */
+  planned = false;
   outcome: 'running' | ResearchOutcome = 'running';
   endedAt?: number;
   cut?: string;
@@ -138,6 +140,10 @@ export class ResearchRun {
     this.steps++;
     const args = (input ?? {}) as Record<string, unknown>;
     const text = typeof result === 'string' ? result : JSON.stringify(result ?? '');
+    if (tool === 'update_plan') {
+      this.planned = true;
+      return;
+    }
     if (tool === 'web_search') {
       this.phase = 'searching';
       const query = typeof args.query === 'string' ? args.query : '';
@@ -288,11 +294,28 @@ export function sourcesAppendix(run: ResearchRun): string {
   return lines.join('\n');
 }
 
+const WRITING_STEP = /^(synthesi[sz]e|write|compile|draft|summari[sz]e|produce|create|assemble|finali[sz]e)\b/i;
+
+/**
+ * The checklist when a run ends. Models tick the research steps as they go
+ * but rarely the last one ("Write the report"), so a finished run left the
+ * checklist stuck on it. Finished: every step is done. A report written after
+ * a cut: the writing step is done, the questions it didn't reach stay open.
+ * Stopped or failed: left as it was. Null = nothing to change.
+ */
+export function closePlan<T extends { label: string; status: 'pending' | 'active' | 'done' }>(steps: T[], outcome: ResearchOutcome | 'running'): T[] | null {
+  if (!steps.length) return null;
+  let next: T[];
+  if (outcome === 'done') next = steps.map((s) => ({ ...s, status: 'done' as const }));
+  else if (outcome === 'partial') next = steps.map((s) => (WRITING_STEP.test(s.label.trim()) ? { ...s, status: 'done' as const } : s.status === 'active' ? { ...s, status: 'pending' as const } : s));
+  else return null;
+  return next.some((s, i) => s.status !== steps[i].status) ? next : null;
+}
+
 /** Plan steps the model hasn't marked done: what the report doesn't cover yet. */
 export function unansweredFrom(plan: Array<{ label: string; status: string }> | undefined): string[] {
   // "Write the report" steps are the writing, not a question the report misses.
-  const writing = /^(synthesi[sz]e|write|compile|draft|summari[sz]e|produce|create|assemble|finali[sz]e)\b/i;
-  return (plan ?? []).filter((s) => s.status !== 'done' && !writing.test(s.label.trim())).map((s) => s.label);
+  return (plan ?? []).filter((s) => s.status !== 'done' && !WRITING_STEP.test(s.label.trim())).map((s) => s.label);
 }
 
 /**

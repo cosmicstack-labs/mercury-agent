@@ -35,6 +35,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const waiting = useConversation((s) => s.waiting);
   const stopping = useConversation((s) => s.stopping);
   const notice = useConversation((s) => s.notice);
+  const researching = useConversation((s) => s.research?.run?.state === "running");
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(PAGE);
@@ -143,7 +144,8 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
       </div>
 
       <ResearchBar />
-      <PlanCard surface={composer.surface} />
+      {/* While research runs, its bar shows the questions (and Details the checklist): one progress display, not two. */}
+      {!researching && <PlanCard surface={composer.surface} />}
       <Composer {...composer} />
     </section>
   );

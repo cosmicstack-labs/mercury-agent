@@ -46,7 +46,7 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import { classifyResearchIntent } from './research-intent.js';
-import { coverageSection, parsePlanLines, reportBody, reportFileName, RESEARCH_PLAN_SYSTEM, RESEARCH_WRITE_SYSTEM, sourcesAppendix, unansweredFrom, type ResearchRun } from './research-run.js';
+import { closePlan, coverageSection, parsePlanLines, reportBody, reportFileName, RESEARCH_PLAN_SYSTEM, RESEARCH_WRITE_SYSTEM, sourcesAppendix, unansweredFrom, type ResearchRun } from './research-run.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { fallbackSessionTitle, isThinOpening, normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
@@ -1231,6 +1231,7 @@ export class Agent {
       run.setQuestions(answer.questions);
       if (answer.timedOut) channel.sendNotice('No answer on the plan, so the research started with it as proposed.', msg.channelId);
       channel.sendPlan(run.questions.map((label) => ({ label, status: 'pending' })), msg.channelId);
+      run.planned = true;
       return true;
     } finally {
       clearInterval(keepAlive);
@@ -4823,6 +4824,12 @@ export class Agent {
       }
       if (researchRun) {
         researchRun.end('failed', 'it ended before writing a report');
+        // Close the checklist the run worked through (models rarely tick the last step).
+        const planChannel = this.channels.getChannelForMessage(msg);
+        if (researchRun.planned && planChannel instanceof WebChannel) {
+          const closed = closePlan(planChannel.plans.get(msg.channelId)?.steps ?? [], researchRun.outcome);
+          if (closed) planChannel.sendPlan(closed, msg.channelId);
+        }
         this.emitResearch(msg, researchRun);
         this.researchMode.endRun();
       }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coverageSection, fetchFailure, parsePlanLines, reportBody, reportFileName, ResearchRun, sourcesAppendix, stepFailure, unansweredFrom } from './research-run.js';
+import { closePlan, coverageSection, fetchFailure, parsePlanLines, reportBody, reportFileName, ResearchRun, sourcesAppendix, stepFailure, unansweredFrom } from './research-run.js';
 import { ResearchMode } from './research-mode.js';
 
 const page = (title: string) => `# ${title}\n\n${'Real page text about the topic. '.repeat(20)}`;
@@ -146,5 +146,36 @@ describe('the report kept', () => {
     expect(reportBody('Done. Here is a summary: key takeaways…', run.writtenArticle)).toBe(article.trim());
     // A real article in the reply wins over a short file.
     expect(reportBody(article, { content: '# Short\n\nnotes' })).toBe(article.trim());
+  });
+});
+
+describe('the checklist when a run ends', () => {
+  const plan = [
+    { label: 'Who builds them', status: 'done' as const },
+    { label: 'What they cost', status: 'active' as const },
+    { label: 'Synthesize findings into a report', status: 'pending' as const },
+  ];
+
+  it('a finished run ticks every step (models skip the last one)', () => {
+    expect(closePlan(plan, 'done')?.map((s) => s.status)).toEqual(['done', 'done', 'done']);
+  });
+
+  it('a report written after a cut ticks the writing, keeps the unreached questions open', () => {
+    expect(closePlan(plan, 'partial')?.map((s) => s.status)).toEqual(['done', 'pending', 'done']);
+  });
+
+  it('a stopped or failed run leaves it, and an already-closed plan is no change', () => {
+    expect(closePlan(plan, 'stopped')).toBeNull();
+    expect(closePlan(plan, 'failed')).toBeNull();
+    expect(closePlan(plan.map((s) => ({ ...s, status: 'done' as const })), 'done')).toBeNull();
+    expect(closePlan([], 'done')).toBeNull();
+  });
+
+  it('only a run that made the plan closes it', () => {
+    const run = new ResearchRun('t', 's1', 10);
+    expect(run.planned).toBe(false);
+    run.observe('update_plan', { steps: [] }, 'Plan updated');
+    expect(run.planned).toBe(true);
+    expect(run.snapshot().steps).toBe(1);
   });
 });
