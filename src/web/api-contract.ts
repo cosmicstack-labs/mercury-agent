@@ -52,6 +52,7 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'cloud.signin',      // GET /api/cloud/status, POST/GET/DELETE /api/cloud/signin (browser pairing from any client)       // POST /api/voice/check { vendor, key?, endpoint? }
   'brain.map',         // GET /api/brain/map[?archive=1] — themes, sub-themes, notes, related links
   'artifacts.convert', // GET /api/artifacts/:id/file?as=pdf|docx, POST /api/artifacts/:id/export { dest, as } — Markdown/text as PDF or Word
+  'artifacts.folder',  // GET /api/artifacts/folder (the output folder, loose files), POST /api/artifacts/folder/tidy
   'chat.favicon',      // GET /api/chat/favicon?domain= — a site's icon (204 when it has none), fetched and cached by the runtime
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);

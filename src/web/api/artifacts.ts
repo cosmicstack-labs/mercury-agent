@@ -1,5 +1,7 @@
-import { copyFileSync, createReadStream, existsSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
+import { copyFileSync, createReadStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { chatFoldersFor, freeName, outputRoot } from '../../artifacts/output-dir.js';
 import { Readable } from 'node:stream';
 import { Hono } from 'hono';
 import { artifactStore, type Artifact } from '../../artifacts/store.js';
@@ -20,10 +22,27 @@ const asFormat = (v: unknown): ConvertFormat | null => (v === 'pdf' || v === 'do
  *   GET    /api/artifacts/:id/file?as=pdf|docx                 a Markdown/text artifact as a PDF or Word document
  *   POST   /api/artifacts/:id/export { dest, as? }             Save as… (this computer only), converted when `as` is given
  *   DELETE /api/artifacts/:id                                  forget one (Mercury's copy only)
+ *   GET    /api/artifacts/folder                               the output folder (~/mercury-artifacts) and files Mercury left loose in the home folder
+ *   POST   /api/artifacts/folder/tidy                          move those loose files into their chats' folders (this computer only)
  */
 
 let sessions: SessionRepository | null = null;
 export function setArtifactSessions(repo: SessionRepository | null): void { sessions = repo; }
+
+/** The configured output folder (artifacts.outputDir), read when asked so a config change applies. */
+let outputSetting: () => string | undefined = () => undefined;
+export function setArtifactOutputDir(fn: () => string | undefined): void { outputSetting = fn; }
+
+/** Files Mercury made that sit loose in the home folder (from before the output folder existed). */
+function strays(): Artifact[] {
+  const home = resolve(homedir());
+  const seen = new Set<string>();
+  return artifactStore().all().filter((a) => {
+    if (seen.has(a.originalPath)) return false;
+    seen.add(a.originalPath);
+    return resolve(dirname(a.originalPath)) === home && existsSync(a.originalPath);
+  });
+}
 
 const KINDS: Array<ArtifactKind | 'all'> = ['all', 'image', 'video', 'audio', 'pdf', 'document', 'text', 'file'];
 
@@ -50,6 +69,35 @@ artifacts.get('/api/artifacts', (c) => {
     limit: Number(c.req.query('limit') ?? 40) || 40,
   });
   return c.json({ items: r.items.map(withThread), nextCursor: r.nextCursor, counts: r.counts });
+});
+
+artifacts.get('/api/artifacts/folder', (c) => {
+  const root = outputRoot(outputSetting());
+  const home = resolve(homedir());
+  const display = root === home ? '~' : root.startsWith(`${home}/`) ? `~${root.slice(home.length)}` : root;
+  return c.json({ path: root, display, exists: existsSync(root), strays: strays().map((a) => ({ id: a.id, name: a.name, path: a.originalPath, threadId: a.threadId, threadTitle: withThread(a).threadTitle })) });
+});
+
+artifacts.post('/api/artifacts/folder/tidy', (c) => {
+  if (!isLoopbackRequest(c)) return c.json({ error: 'Tidying files only works on the computer Mercury runs on.' }, 403);
+  const folders = chatFoldersFor(outputRoot(outputSetting()));
+  const moved: Array<{ name: string; to: string }> = [];
+  const failed: Array<{ name: string; error: string }> = [];
+  for (const a of strays()) {
+    try {
+      const thread = withThread(a);
+      const dir = folders.pathFor(a.threadId, thread.threadTitle || a.name.replace(/\.[^.]+$/, ''), a.createdAt);
+      mkdirSync(dir, { recursive: true });
+      const to = join(dir, freeName(dir, a.name));
+      try { renameSync(a.originalPath, to); } catch { copyFileSync(a.originalPath, to); unlinkSync(a.originalPath); }
+      // Every record of this file (the same file in two threads) follows it.
+      for (const same of artifactStore().all().filter((x) => x.originalPath === a.originalPath)) artifactStore().relocate(same.id, to);
+      moved.push({ name: a.name, to });
+    } catch (err) {
+      failed.push({ name: a.name, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return c.json({ moved, failed });
 });
 
 artifacts.get('/api/artifacts/:id', (c) => {

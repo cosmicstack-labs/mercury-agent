@@ -104,7 +104,7 @@ import { spawnDetachedRestart } from './cli/daemon.js';
 import { recordVoiceCalls } from './plugins/voice-calls.js';
 import { setChannelRuntime } from './web/api/channels.js';
 import { setSkillBuilder } from './web/api/system.js';
-import { setArtifactSessions } from './web/api/artifacts.js';
+import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
 import { artifactStore } from './artifacts/store.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
@@ -2530,6 +2530,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const sessions = new SessionRepository();
   // Artifacts follow their thread: drop those whose thread is gone (deleted anywhere), now and every hour.
   setArtifactSessions(sessions);
+  setArtifactOutputDir(() => config.artifacts?.outputDir);
   const sweepArtifacts = () => {
     try {
       const removed = artifactStore().reconcile((id) => { try { return sessions.get(id).status !== 'deleted'; } catch { return false; } });

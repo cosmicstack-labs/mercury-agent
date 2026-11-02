@@ -16,6 +16,7 @@ import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
+import { chatFoldersFor, outputRoot, researchDir, type ChatFolders } from '../artifacts/output-dir.js';
 import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
 import { getMercuryHome } from '../utils/config.js';
 import { createProvider } from '../providers/registry.js';
@@ -1182,6 +1183,11 @@ export class Agent {
     });
   }
 
+  /** One folder per chat in the output folder (~/mercury-artifacts/Chats). */
+  private chatFolders(): ChatFolders {
+    return chatFoldersFor(outputRoot(this.config.artifacts?.outputDir));
+  }
+
   /** Tell screens how a research run stands (the desktop's chip, panel and report card). */
   private emitResearch(msg: ChannelMessage, run: ResearchRun): void {
     const channel = this.channels.getChannelForMessage(msg);
@@ -1258,7 +1264,7 @@ export class Agent {
   /** Keep a research report as a file with the conversation (Artifacts), with every source consulted. */
   private saveResearchReport(run: ResearchRun, text: string, threadId: string): Artifact | null {
     try {
-      const dir = path.join(getMercuryHome(), 'research');
+      const dir = researchDir(outputRoot(this.config.artifacts?.outputDir));
       mkdirSync(dir, { recursive: true });
       const title = /^#\s+(.+)$/m.exec(text)?.[1]?.trim() || run.topic;
       const file = path.join(dir, reportFileName(title, run.startedAt));
@@ -2792,6 +2798,9 @@ export class Agent {
       this.markProgress('Starting...');
       this.pushLiveActivity('Starting task');
     };
+    // This chat's folder in ~/mercury-artifacts for the turn, if it gets one (set below).
+    let chatFolder: string | null = null;
+    let cwdBeforeChatFolder: string | null = null;
     // Research switched on for this chat: this message is the run.
     const researchRun = !isSlashCommand && msg.channelType !== 'internal' && this.researchMode.armedForSession(msg.channelId)
       ? this.researchMode.beginRun(msg.channelId, msg.content, this.saverMode.adjustMaxSteps(MAX_STEPS) * 3)
@@ -3008,7 +3017,34 @@ export class Agent {
         }
       }
 
+      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+      const externalConversationId = msg.channelType === 'cli'
+        ? 'current'
+        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
+      canonicalSessionId = canonicalSession.id;
+
+      // A normal chat that would write loose files into the home folder (the
+      // daemon's folder) writes into its own folder in ~/mercury-artifacts.
+      // Code sessions, workspaces, a terminal opened in a project: unchanged.
+      if (!isSlashCommand && msg.channelType !== 'internal' && !this.programmingMode.isActive()
+        && path.resolve(this.capabilities.getCwd()) === path.resolve(homedir())) {
+        try {
+          const firstWords = canonicalSession.messages.find((m) => m.role === 'user')?.content ?? msg.content;
+          // A real title when the chat has one; otherwise its first words (titles come after the first reply).
+          const label = canonicalSession.title && canonicalSession.titleSource !== 'fallback' ? canonicalSession.title : fallbackSessionTitle(firstWords) || firstWords;
+          const dir = this.chatFolders().open(canonicalSession.id, label, canonicalSession.createdAt || Date.now());
+          cwdBeforeChatFolder = this.capabilities.getCwd();
+          chatFolder = dir;
+          this.capabilities.setCwd(dir);
+          this.capabilities.permissions.addTempScope(dir, true, true);
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Chat folder unavailable; working in the home folder');
+        }
+      }
+
       let systemPrompt = this.buildSystemPrompt();
+      if (chatFolder) systemPrompt += `\n- Files you make go in the working directory (this chat's folder in the owner's Mercury artifacts folder), unless the owner names another place. Use relative paths or that folder; never write loose files into the home folder.`;
       if (msg.metadata?.workContinuation === true) {
         const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
         const reason = typeof msg.metadata.continuationReason === 'string' ? msg.metadata.continuationReason : 'The prior execution was interrupted.';
@@ -3019,12 +3055,6 @@ export class Agent {
       } else if (msg.metadata?.workRecovered === true) {
         systemPrompt += '\n\n[SYSTEM: RECOVERED WORK] This request was recovered after the agent restarted or its prior run was interrupted. Inspect the current filesystem, external state, and conversation before acting. Do not repeat side effects that may already have completed. Continue from observed state, and explicitly report any ambiguity you cannot safely resolve.';
       }
-      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
-      const externalConversationId = msg.channelType === 'cli'
-        ? 'current'
-        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
-      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
-      canonicalSessionId = canonicalSession.id;
       const canonicalMessageId = typeof msg.metadata?.canonicalMessageId === 'string' ? msg.metadata.canonicalMessageId : undefined;
       const requestId = typeof msg.metadata?.requestId === 'string' ? msg.metadata.requestId : undefined;
       this.sessions.appendMessage(canonicalSession.id, {
@@ -4787,6 +4817,10 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      if (chatFolder) {
+        if (cwdBeforeChatFolder && this.capabilities.getCwd() === chatFolder) this.capabilities.setCwd(cwdBeforeChatFolder);
+        this.chatFolders().close(chatFolder);
+      }
       if (researchRun) {
         researchRun.end('failed', 'it ended before writing a report');
         this.emitResearch(msg, researchRun);

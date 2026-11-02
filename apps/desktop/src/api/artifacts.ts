@@ -37,6 +37,10 @@ export const artifactsApi = {
   get: (id: string) => http.get<{ artifact: ArtifactItem }>(`/api/artifacts/${encodeURIComponent(id)}`).then((r) => r.artifact),
   remove: (id: string) => http.delete<{ ok: boolean }>(`/api/artifacts/${encodeURIComponent(id)}`),
   /** Save a copy to a folder on the computer Mercury runs on. */
+  /** Where Mercury saves what it makes (~/mercury-artifacts), and files it left loose in the home folder. */
+  folder: () => http.get<{ path: string; display: string; exists: boolean; strays: Array<{ id: string; name: string; path: string; threadId: string; threadTitle: string | null }> }>("/api/artifacts/folder"),
+  /** Move those loose files into their chats' folders. */
+  tidy: () => http.post<{ moved: Array<{ name: string; to: string }>; failed: Array<{ name: string; error: string }> }>("/api/artifacts/folder/tidy", {}),
   /** Save a copy on this computer; `as` makes a Markdown/text artifact a PDF or Word document. */
   exportTo: (id: string, dest: string, as?: "pdf" | "docx") => http.post<{ ok: boolean; path: string }>(`/api/artifacts/${encodeURIComponent(id)}/export`, { dest, ...(as ? { as } : {}) }),
 };

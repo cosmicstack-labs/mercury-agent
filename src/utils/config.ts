@@ -295,6 +295,10 @@ export interface MercuryConfig {
     corsOrigins?: string[];
   };
   mcp?: McpConfig;
+  /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
+  artifacts?: {
+    outputDir?: string;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {
