@@ -35,6 +35,8 @@ export function DevicesCard({ pluginId }: { pluginId?: string } = {}) {
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.data.remote) setRemote(true);
+      // Mercury before 1.4.3 has no /api/devices.
+      else if (e instanceof ApiError && e.status === 404) setError("This version of Mercury doesn't report the microphone and permissions yet. Update Mercury on the computer it runs on (mercury upgrade), then come back.");
       else setError(errorText(e));
     }
   }, [pluginId]);
@@ -54,7 +56,7 @@ export function DevicesCard({ pluginId }: { pluginId?: string } = {}) {
       </Shell>
     );
   }
-  if (error) return <Shell><p className="text-sm text-red">{error}</p></Shell>;
+  if (error) return <Shell><p className="text-sm text-ink3">{error}</p></Shell>;
   if (!plugins) return <Shell><Spinner size={16} /></Shell>;
   if (plugins.length === 0) {
     return (

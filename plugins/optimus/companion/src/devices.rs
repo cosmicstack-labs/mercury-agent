@@ -804,13 +804,15 @@ mod os {
         }
     }
 
+    /// Linux has no microphone permission to refuse, and a raw ALSA device can still work without
+    /// a sound server (or under an older Mercury that doesn't pass the session's details): never
+    /// block a session here, just say what looks wrong. A silent mic still shows in the app's test.
     pub fn mic_ready() -> Result<(), String> {
         let e = mic_entry();
-        if e["state"] == "granted" {
-            return Ok(());
+        if e["state"] != "granted" {
+            crate::core::log(format!("microphone: {}", e["detail"].as_str().unwrap_or("")));
         }
-        let steps: Vec<String> = e["steps"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        Err(format!("{} {}", e["detail"].as_str().unwrap_or(""), steps.join(" ")))
+        Ok(())
     }
 
     pub fn audio_steps() -> Vec<String> {
