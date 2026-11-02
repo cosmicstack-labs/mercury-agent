@@ -124,11 +124,19 @@ pub async fn press(sh: Arc<Shared>, from_tool: bool) -> Result<String, String> {
         return Err(why);
     }
     let instructions = decision.get("instructions").and_then(Value::as_str).unwrap_or("").to_string();
+    // A blocked or switched-off microphone says so here; otherwise the OS hands over silence and nothing explains it.
+    // (On macOS the first time this shows the system prompt and waits for the answer.)
+    let ready = tokio::task::spawn_blocking(crate::devices::mic_ready).await.unwrap_or_else(|e| Err(e.to_string()));
+    if let Err(reason) = ready {
+        *sh.session.lock().unwrap() = None;
+        sh.out.notify("mercury/call/ended", json!({ "callId": call_id, "direction": "incoming", "outcome": format!("failed: {reason}"), "durationSec": 0, "transcript": [] }));
+        return Err(reason);
+    }
     let audio = match audio::open() {
         Ok(a) => a,
         Err(e) => {
             *sh.session.lock().unwrap() = None;
-            let reason = format!("{e}{}", if cfg!(target_os = "macos") { " (allow Optimus under Privacy & Security → Microphone)" } else { "" });
+            let reason = e;
             sh.out.notify("mercury/call/ended", json!({ "callId": call_id, "direction": "incoming", "outcome": format!("failed: {reason}"), "durationSec": 0, "transcript": [] }));
             return Err(reason);
         }

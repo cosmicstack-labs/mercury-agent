@@ -1,7 +1,8 @@
 //! Microphone and speaker for listening mode (cpal, every OS).
 //!
 //! The voice links speak 16 kHz mono PCM16 in 60 ms frames (like a phone
-//! call). Here the default input is mixed to mono and resampled to that, and
+//! call). Here the owner's microphone (devices.rs: their pick, or the system
+//! default) is mixed to mono and resampled to that, and
 //! link audio is resampled to the default output's rate and played.
 //!
 //! Without headphones the mic would hear Mercury's own voice; `Output`
@@ -149,7 +150,7 @@ impl Audio {
     }
 }
 
-/// Open the default microphone and speaker. The streams live on their own
+/// Open the owner's microphone and the default speaker. The streams live on their own
 /// thread (they aren't Send on every OS) until the returned `Audio` is dropped.
 pub fn open() -> Result<Audio, String> {
     let (mic_tx, mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
@@ -161,7 +162,10 @@ pub fn open() -> Result<Audio, String> {
         .spawn(move || {
             let host = cpal::default_host();
             let started = (|| -> Result<(cpal::Stream, cpal::Stream, Arc<Output>, String), String> {
-                let input = host.default_input_device().ok_or("no microphone found")?;
+                let (input, note) = crate::devices::input_device()?;
+                if let Some(n) = note {
+                    crate::core::log(n);
+                }
                 let output = host.default_output_device().ok_or("no speaker found")?;
                 let in_cfg = input.default_input_config().map_err(|e| format!("microphone: {e}"))?;
                 let out_cfg = output.default_output_config().map_err(|e| format!("speaker: {e}"))?;

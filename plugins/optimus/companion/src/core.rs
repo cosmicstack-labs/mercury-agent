@@ -184,6 +184,25 @@ pub fn run(inbox: std::sync::mpsc::Receiver<Value>, send: impl Fn(Value) + Send 
                 });
                 continue;
             }
+            // The "Microphone & permissions" screen: not screen work, so not behind the ops lock.
+            if name.starts_with("device_") {
+                rt.spawn_blocking(move || {
+                    let r = match name.as_str() {
+                        "device_status" => Ok(crate::devices::status()),
+                        "device_request" => crate::devices::request(&args),
+                        "device_select" => crate::devices::select(&args),
+                        "device_test" if sh.session.lock().unwrap().is_some() => {
+                            Err("A voice session is using the microphone right now: its level shows in the call. Test again after it ends.".into())
+                        }
+                        "device_test" => crate::devices::mic_test(&args, |level| {
+                            sh.out.notify("mercury/device/level", json!({ "kind": "microphone", "level": level }));
+                        }),
+                        other => Err(format!("unknown device operation {other}")),
+                    };
+                    sh.out.op_result(id, r);
+                });
+                continue;
+            }
             // In a voice session, say what's happening as it happens.
             if let Some(line) = narration(&name, &args) {
                 if let Some(s) = shared.session.lock().unwrap().as_ref() {

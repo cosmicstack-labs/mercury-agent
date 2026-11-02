@@ -19,6 +19,7 @@ import { PLUGIN_API_VERSION, type PluginManifest } from '../types.js';
 import { currentPlatform } from '../store.js';
 import { PLUGIN_IMAGE_TYPES, publishTool, toolContent, unpublishPlugin } from '../tool-bridge.js';
 import type { PluginRuntime, RuntimeDeps } from './types.js';
+import { deviceFeed } from '../device-feed.js';
 
 export const OUT_OF_PROCESS = {
   initTimeoutMs: 20_000,
@@ -35,6 +36,20 @@ const MCP_PROTOCOL_VERSION = '2025-06-18';
 
 /** Environment variables passed through to plugin processes; nothing else leaks. */
 const PASS_ENV = ['PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'COMSPEC', 'PATHEXT', 'WINDIR'];
+
+/**
+ * Linux desktop-session addresses, passed only to plugins that use the desktop
+ * (`permissions.desktop`): without them a plugin can't reach the screen (X11,
+ * Wayland), the sound server (PipeWire, PulseAudio) or the session bus.
+ */
+const DESKTOP_ENV = ['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'XDG_SESSION_TYPE', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP', 'DESKTOP_SESSION', 'DBUS_SESSION_BUS_ADDRESS', 'PULSE_SERVER', 'PIPEWIRE_RUNTIME_DIR'];
+
+/** The parts of Mercury's environment a plugin gets: the basics, plus the desktop session for desktop plugins. */
+export function passedEnv(desktop: boolean, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of desktop ? [...PASS_ENV, ...DESKTOP_ENV] : PASS_ENV) if (source[k]) env[k] = source[k]!;
+  return env;
+}
 
 interface Pending {
   resolve(value: unknown): void;
@@ -93,8 +108,7 @@ export class OutOfProcessRuntime implements PluginRuntime {
   }
 
   private buildEnv(extra: Record<string, string>): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const k of PASS_ENV) if (process.env[k]) env[k] = process.env[k]!;
+    const env = passedEnv(this.manifest.permissions.desktop === true);
     for (const [k, v] of Object.entries(this.deps.secrets)) if (v !== undefined) env[k] = v;
     env.MERCURY_PLUGIN_ID = this.manifest.id;
     env.MERCURY_PLUGIN_VERSION = this.manifest.version;
@@ -243,6 +257,18 @@ export class OutOfProcessRuntime implements PluginRuntime {
     });
   }
 
+  /**
+   * The app's microphone and permissions screen (`mercury/device/*`), for
+   * plugins that use the desktop. A plugin that doesn't know the method says
+   * so; a timeout fails that call only.
+   */
+  deviceRequest(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+    if (!method.startsWith('mercury/device/')) return Promise.reject(new Error(`not a device method: ${method}`));
+    if (!this.manifest.permissions.desktop) return Promise.reject(new Error(`"${this.manifest.id}" doesn't use this computer's devices.`));
+    if (!this.ready) return Promise.reject(new Error('the plugin process is not running'));
+    return this.request(method, params, timeoutMs, undefined, false);
+  }
+
   /** Plugin API 1.1 channel notifications to the plugin (`mercury/call/*`). */
   channelNotify(method: string, params: unknown): void {
     if (method.startsWith('mercury/') && this.ready) this.notify(method, params);
@@ -284,6 +310,8 @@ export class OutOfProcessRuntime implements PluginRuntime {
     if (msg.method) {
       if (msg.method === 'notifications/tools/list_changed' && this.ready) {
         this.refreshTools().catch((err) => this.deps.onError(`tools/list after change: ${(err as Error).message}`));
+      } else if (msg.method === 'mercury/device/level' && this.manifest.permissions.desktop) {
+        deviceFeed.level(this.manifest.id, msg.params);
       } else if (msg.method.startsWith('mercury/') && this.manifest.contributes.channel) {
         try {
           this.deps.onNotification?.(msg.method, msg.params);

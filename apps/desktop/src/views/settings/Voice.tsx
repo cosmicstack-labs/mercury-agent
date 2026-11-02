@@ -7,6 +7,7 @@ import { Input } from "~/components/ui/Input";
 import { Switch } from "~/components/ui/Switch";
 import { Badge, Spinner } from "~/components/ui/bits";
 import { cx } from "~/lib/cx";
+import { DevicesCard } from "./Devices";
 import { errorText } from "./Models";
 
 /**
@@ -85,6 +86,8 @@ export function VoiceSettings({ onOpenModels }: { onOpenModels: () => void }) {
 
   return (
     <section className="flex flex-col gap-5">
+      <DevicesCard />
+
       <Card title="How you talk to Mercury">
         {HOW.filter(applies).map((k) => <FieldRow key={k} f={byKey.get(k)!} onSave={set} lists={lists} values={values} />)}
       </Card>

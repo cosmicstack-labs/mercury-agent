@@ -35,6 +35,7 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'code.session',      // POST /api/chat/send { programming, cwd } — per-session coding
   'chat.uploads',      // attachments on messages + GET /api/chat/uploads/:month/:file
   'voice',             // /api/voice, /api/voice/events, /api/voice/control (Optimus)
+  'devices',           // /api/devices: desktop plugins' permissions, microphone choice and test
   'usage.history',     // GET /api/usage/history?days= — tokens per local day
   'brain.people',      // PATCH/merge persons, person checks, GET /api/brain/graph/v2
   'chat.stop',         // POST /api/chat/stop — interrupt the running turn (same as /stop)

@@ -7,6 +7,8 @@ import { Switch } from "~/components/ui/Switch";
 import { Badge, Mono, Spinner } from "~/components/ui/bits";
 import { ConfirmButton, IconTile } from "~/components/ui/kit";
 import { cx } from "~/lib/cx";
+import { useUi } from "~/app/store";
+import { PermissionSummary } from "~/views/settings/Devices";
 import { ChannelPanel } from "./ChannelPanel";
 import { applies, SettingField } from "./SettingField";
 import { needsSetup, setupKeys } from "./SetupFlow";
@@ -144,6 +146,12 @@ export function PluginDetail({ id, onSetup, onChanged, onRemoved }: { id: string
               </div>
             )}
           </div>
+        </Section>
+      )}
+
+      {p.permissions?.desktop && p.running && (
+        <Section title="Microphone & permissions">
+          <PermissionSummary pluginId={id} onOpen={() => useUi.getState().openSettings("voice")} />
         </Section>
       )}
 

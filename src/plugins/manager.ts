@@ -543,6 +543,32 @@ export class PluginManager {
     }
   }
 
+  // ── devices (the app's microphone and permissions screen) ────────────
+
+  /** Plugins that use this computer (`permissions.desktop`) and are running. */
+  devicePlugins(): Array<{ id: string; name: string }> {
+    return [...this.running.entries()]
+      .filter(([, r]) => r.manifest.permissions.desktop && r.runtime instanceof OutOfProcessRuntime)
+      .map(([id, r]) => ({ id, name: r.manifest.name }));
+  }
+
+  /** `mercury/device/*` on a running desktop plugin. */
+  async deviceRequest(id: string, method: 'status' | 'request' | 'select' | 'test', params: unknown, timeoutMs: number): Promise<unknown> {
+    const run = this.running.get(id);
+    if (!run) {
+      if (!readState().plugins[id]) throw new Error(`Plugin "${id}" is not installed.`);
+      throw new Error(`"${id}" is not running. Turn it on first.`);
+    }
+    if (!(run.runtime instanceof OutOfProcessRuntime)) throw new Error(`"${id}" doesn't use this computer's devices.`);
+    try {
+      return await run.runtime.deviceRequest(`mercury/device/${method}`, params, timeoutMs);
+    } catch (err) {
+      // Versions before the devices screen answer "unknown method".
+      if (/unknown method/i.test((err as Error).message)) throw new Error(`This version of ${run.manifest.name} can't report devices yet. Update it: mercury plugins update ${id}`);
+      throw err;
+    }
+  }
+
   // ── channels (plugin API 1.1) ────────────────────────────────────────
 
   private liveChannel(id: string): PluginChannel {

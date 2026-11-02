@@ -18,6 +18,7 @@
 
 mod audio;
 mod core;
+mod devices;
 mod hotkey;
 mod links;
 #[cfg(target_os = "macos")]
@@ -204,7 +205,7 @@ const TOOL_DESCRIPTIONS: [(&str, &str); 7] = [
     ("act_consequential", "Same as act, for the step that commits something: submit a form, send a message or email, post, pay or buy, delete, install, change a setting. The owner approves it first, so say what it will do."),
     ("open", "Open an app by name (\"Chrome\", \"Notes\", \"Freeform\"), a URL, or a file/folder path. Faster and more reliable than clicking through menus. If the app isn't installed, the reply lists what is. For drawing use Freeform (Mac), Paint (Windows) or a web canvas like https://excalidraw.com."),
     ("windows", "List open windows (app and title), front first."),
-    ("permissions", "Check what the OS lets Optimus do (macOS: Accessibility and Screen Recording). With request=true, shows the system prompts and opens the right Settings page."),
+    ("permissions", "Check what the OS lets Optimus do (macOS: Accessibility, Screen Recording and Microphone). With request=true, shows the system prompts and opens the right Settings page."),
     ("listen", "Start a voice conversation on this computer right now (as if the owner pressed the talk key): Mercury listens through the microphone and answers out loud. Use when the owner asks to talk instead of type."),
 ];
 
@@ -354,6 +355,20 @@ fn main() {
                 });
             }
             m if m.starts_with("mercury/channel/") => reply(&shell, &id, channel_request(m, &params)),
+            // Mercury's "Microphone & permissions" screen. Works with control off too: it's how the owner sets it up.
+            "mercury/device/status" | "mercury/device/request" | "mercury/device/select" | "mercury/device/test" => {
+                let sh = shell.clone();
+                std::thread::spawn(move || {
+                    let (op, secs) = match method.as_str() {
+                        "mercury/device/status" => ("device_status", 20),
+                        "mercury/device/request" => ("device_request", 90),
+                        "mercury/device/select" => ("device_select", 20),
+                        _ => ("device_test", 40),
+                    };
+                    let r = sh.op(op, &params, Duration::from_secs(secs));
+                    reply(&sh, &id, r);
+                });
+            }
             _ => reply(&shell, &id, Err(format!("unknown method {method}"))),
         }
     }
