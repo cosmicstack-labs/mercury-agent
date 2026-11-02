@@ -58,6 +58,8 @@ export const chat = {
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
+  /** Put this chat's waiting message first in line. */
+  queueFirst: (threadId: string) => http.post<{ moved: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/queue/first`, {}),
   /** Every slash command with what it does (the "/" picker). */
   commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),

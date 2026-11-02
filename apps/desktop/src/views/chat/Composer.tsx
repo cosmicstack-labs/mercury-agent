@@ -213,7 +213,9 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
 
   const busy = agent === "thinking" || agent === "streaming" || agent === "working";
   // While Mercury works the send button is a stop button; typing a follow-up turns it back into send.
-  const showStop = busy && text.trim().length === 0 && files.length === 0;
+  // A chat waiting behind another's turn has nothing of its own to stop: Stop would stop the other chat.
+  const waiting = useConversation((s) => s.waiting);
+  const showStop = busy && !waiting && text.trim().length === 0 && files.length === 0;
   function stop() {
     setError(null);
     void stopTurn(convStore).catch((err) => setError(err instanceof Error ? `Couldn't stop: ${err.message}` : "Couldn't stop"));

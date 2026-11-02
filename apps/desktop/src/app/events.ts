@@ -119,7 +119,13 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       // in a terminal, another device) reaches every toggle on screen.
       if (data.permission === "allow-all" || data.permission === "ask-me") useRuntimeState.getState().setAllowAll(data.permission === "allow-all");
       break;
+    case "queued":
+      // Waiting behind another chat's turn: say so, instead of "Thinking".
+      conv.setWaiting({ position: Number(data.position) || 1, busyWith: typeof data.busyWith === "string" ? data.busyWith : undefined, busySessionId: typeof data.busySessionId === "string" ? data.busySessionId : undefined });
+      conv.setAgent("thinking");
+      break;
     case "thinking":
+      conv.setWaiting(null);
       conv.setAgent("thinking");
       conv.setLive((l) => l);
       break;
@@ -141,10 +147,12 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       break;
     }
     case "reasoning":
+      conv.setWaiting(null);
       if (data.done === true) break;
       if (typeof data.text === "string" && data.text) conv.setLive((l) => ({ ...l, reasoning: (l.reasoning + data.text).slice(-20_000) }));
       break;
     case "step_start": {
+      conv.setWaiting(null);
       const tool = String(data.tool ?? "");
       conv.setStep({ total: Number(data.totalSteps ?? 0), current: Number(data.step ?? data.stepNumber ?? 0), tool });
       conv.setAgent("working");
@@ -166,10 +174,12 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       break;
     }
     case "text_delta":
+      conv.setWaiting(null);
       conv.setAgent("streaming");
       conv.appendStreaming(String(data.text ?? ""));
       break;
     case "text_done": {
+      conv.setWaiting(null);
       const text = String(data.fullText ?? data.text ?? raw);
       // The runtime's reply to a stop is its "⏹ Task stopped" note: end the turn as stopped.
       if (isStopNote(text) || (store.getState().stopping && !text.trim())) { finishStopped(store); void refreshThreads(); break; }
@@ -199,6 +209,7 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       if (typeof data.id === "string") conv.removePrompt(data.id);
       break;
     case "error": {
+      conv.setWaiting(null);
       const message = typeof data.message === "string" ? data.message : raw || "Something went wrong";
       conv.clearStreaming();
       conv.clearLive();
@@ -292,6 +303,15 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
         const kind = p.type === "choice_prompt" ? "choice" : p.type === "permission_continue" ? "continue" : "permission";
         store.getState().addPrompt(toPrompt(kind, p, String(p.prompt ?? p.question ?? "")));
       }
+    })
+    .catch(() => { /* older Mercury */ });
+  // Still waiting in line behind another chat? (Opened after the message was sent.)
+  store.getState().setWaiting(null);
+  void http.get<{ state: string; position?: number; busyWith?: string; busySessionId?: string }>(`/api/chat/threads/${encodeURIComponent(id)}/queue`)
+    .then((q) => {
+      if (store.getState().activeId !== id || q.state !== "queued") return;
+      store.getState().setWaiting({ position: q.position ?? 1, busyWith: q.busyWith, busySessionId: q.busySessionId });
+      store.getState().setAgent("thinking");
     })
     .catch(() => { /* older Mercury */ });
   // The plan Mercury was working through in this conversation, if any.

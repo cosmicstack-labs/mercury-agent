@@ -25,6 +25,12 @@ export interface ConversationState {
   live: ThoughtTrace | null;
   /** The stop button was pressed and the runtime hasn't confirmed yet. */
   stopping: boolean;
+  /**
+   * This chat's message is waiting in line: Mercury runs one turn at a time
+   * and another chat's is running. Cleared when this chat's turn starts.
+   */
+  waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
+  setWaiting(waiting: ConversationState["waiting"]): void;
   setStopping(stopping: boolean): void;
   /** Text to put in the box (an undone message); the composer takes it once. */
   draft: string | null;
@@ -55,6 +61,8 @@ function makeConversation(surface: Surface): ConversationStore {
     messages: [],
     streaming: "",
     loading: false,
+    waiting: null,
+    setWaiting: (waiting) => set({ waiting }),
     agent: "idle",
     step: null,
     prompts: [],

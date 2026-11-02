@@ -10,6 +10,7 @@ import { Approval } from "~/components/indicators/Approval";
 import { ThinkingDots } from "~/components/indicators/Thinking";
 import { Message, StreamingMessage } from "./Message";
 import { Composer, type ComposerProps } from "./Composer";
+import { WaitingNotice } from "./Waiting";
 
 const PAGE = 30;
 
@@ -29,6 +30,7 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const step = useConversation((s) => s.step);
   const prompts = useConversation((s) => s.prompts);
   const live = useConversation((s) => s.live);
+  const waiting = useConversation((s) => s.waiting);
   const stopping = useConversation((s) => s.stopping);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -103,7 +105,9 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
             {(streaming || (live && (agent === "thinking" || agent === "working" || agent === "streaming" || agent === "needs-you"))) && (
               <StreamingMessage text={streaming} live={live} stopping={stopping} />
             )}
-            {!streaming && !live && (agent === "thinking" || agent === "working") && (
+            {waiting && !streaming ? (
+              <WaitingNotice threadId={activeId} waiting={waiting} />
+            ) : !streaming && !live && (agent === "thinking" || agent === "working") && (
               <ThinkingDots label={stopping ? "Stopping" : agent === "working" && step?.tool ? `Running ${step.tool}` : "Thinking"} className="pl-10" />
             )}
             {prompts.map((p, i) => (
