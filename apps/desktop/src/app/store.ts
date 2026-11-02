@@ -52,12 +52,15 @@ interface RuntimeState {
   model: string;
   step: { total: number; current: number; tool: string } | null;
   prompts: PendingPrompt[];
+  /** Ask Me (false) or Allow All (true); null until known. One copy for every toggle on screen. */
+  allowAll: boolean | null;
   setConnected(connected: boolean): void;
   setAgent(agent: AgentState): void;
   setProvider(provider: string, model: string): void;
   setStep(step: RuntimeState["step"]): void;
   addPrompt(prompt: PendingPrompt): void;
   removePrompt(id: string): void;
+  setAllowAll(allowAll: boolean): void;
 }
 
 export const useRuntimeState = create<RuntimeState>((set, get) => ({
@@ -67,6 +70,8 @@ export const useRuntimeState = create<RuntimeState>((set, get) => ({
   model: "",
   step: null,
   prompts: [],
+  allowAll: null,
+  setAllowAll: (allowAll) => set({ allowAll }),
   setConnected: (connected) => set({ connected, agent: connected ? (get().agent === "offline" ? "idle" : get().agent) : "offline" }),
   setAgent: (agent) => set({ agent }),
   setProvider: (provider, model) => set({ provider, model }),

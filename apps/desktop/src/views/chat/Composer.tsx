@@ -2,7 +2,8 @@ import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Squar
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
-import type { ChatSettings, ModelsResponse } from "~/api/types";
+import type { ModelsResponse } from "~/api/types";
+import { usePermissionMode } from "~/app/permission";
 import { useRuntimeState } from "~/app/store";
 import { startCall, useVoice } from "~/app/voice";
 import { sendMessage, stopTurn, type CodeTurn } from "~/app/events";
@@ -349,19 +350,16 @@ function ModelPicker() {
 }
 
 function ModePicker() {
-  const [settings, setSettings] = useState<ChatSettings | null>(null);
-  useEffect(() => { void api.chat.settings().then(setSettings).catch(() => setSettings(null)); }, []);
-  const allowAll = settings?.bypassPermissions === true;
-  async function set(next: boolean) {
-    try { setSettings(await api.chat.updateSettings({ bypassPermissions: next })); } catch { /* keep */ }
-  }
+  const { allowAll: mode, setAllowAll } = usePermissionMode();
+  const allowAll = mode === true;
+  const set = setAllowAll;
   return (
     <Menu
       side="top"
       trigger={
         <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", allowAll ? "text-accent" : "text-amber")} aria-label="Approval mode">
           {allowAll ? <ShieldCheck size={13} /> : <Shield size={13} />}
-          {settings ? (allowAll ? "Allow All" : "Ask Me") : "…"}
+          {mode !== null ? (allowAll ? "Allow All" : "Ask Me") : "…"}
         </button>
       }
     >

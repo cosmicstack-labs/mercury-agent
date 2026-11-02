@@ -94,6 +94,11 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
     case "provider":
       useRuntimeState.getState().setProvider(String(data.provider ?? ""), String(data.model ?? ""));
       break;
+    case "status":
+      // The runtime's live status: a permission change made anywhere (a toggle here, /permissions
+      // in a terminal, another device) reaches every toggle on screen.
+      if (data.permission === "allow-all" || data.permission === "ask-me") useRuntimeState.getState().setAllowAll(data.permission === "allow-all");
+      break;
     case "thinking":
       conv.setAgent("thinking");
       conv.setLive((l) => l);
