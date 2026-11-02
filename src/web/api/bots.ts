@@ -28,7 +28,26 @@ app.get('/api/bots', (c: any) => {
   if (!botManager) {
     return c.json({ bots: [], available: false });
   }
-  return c.json({ bots: botManager.getStatusSummaries(), queue: botManager.queue.counts(), available: true });
+  return c.json({ bots: botManager.getStatusSummaries(), queue: botManager.queue.counts(), available: true, unread: botManager.inbox.unread() });
+});
+
+// The owner's inbox (Bots 2.0): results, reported failures and runs that need
+// the owner, newest first. `?unread=1` for unread only, `?bot=<id>` for one bot.
+app.get('/api/bots/inbox', (c: Context) => {
+  if (!botManager) return c.json({ entries: [], unread: 0, available: false });
+  const limit = Math.max(1, Math.min(500, Number(c.req.query('limit')) || 100));
+  const botId = c.req.query('bot') || undefined;
+  const entries = botManager.inbox.list({ limit, botId, unreadOnly: c.req.query('unread') === '1' });
+  return c.json({ entries, unread: botManager.inbox.unread(botId), available: true });
+});
+
+// Mark read: { ids: [...] } for some entries, {} for everything.
+app.post('/api/bots/inbox/read', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: unknown };
+  const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string').slice(0, 1000) : undefined;
+  botManager.inbox.markRead(ids);
+  return c.json({ ok: true, unread: botManager.inbox.unread() });
 });
 
 // Onboard a bot
@@ -112,6 +131,8 @@ app.get('/api/bots/events', (c: any) => {
       rosterSseClients.add(client);
 
       const unsubscribe = bm.onBotActivity((ev) => client.send('bot_activity', ev));
+      // A new inbox entry: the desktop turns it into a notification.
+      const unsubscribeInbox = bm.inbox.onEntry((entry) => client.send('bot_inbox', entry));
 
       const keepalive = setInterval(() => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { clearInterval(keepalive); }
@@ -120,6 +141,7 @@ app.get('/api/bots/events', (c: any) => {
       c.req.raw.signal?.addEventListener('abort', () => {
         clearInterval(keepalive);
         unsubscribe();
+        unsubscribeInbox();
         rosterSseClients.delete(client);
       });
     },

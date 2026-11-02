@@ -1,4 +1,5 @@
-import { streamText, stepCountIs } from 'ai';
+import { streamText, stepCountIs, tool, zodSchema } from 'ai';
+import { z } from 'zod';
 import { withAttachments } from '../core/attachments.js';
 import type { ChannelAttachment } from '../types/channel.js';
 import type { ModelMessage, Tool } from 'ai';
@@ -52,8 +53,26 @@ export type BotActivityEvent = {
  */
 export type BotExpectedOutcome = 'work' | 'message' | 'check';
 
-/** What the tool trace proves the run did — the journal's `outcome`. */
-export type BotOutcome = 'deliverable' | 'action' | 'delegated' | 'message' | 'none';
+/**
+ * What the run did — the journal's `outcome`. Evidence from the tool trace
+ * (deliverable, action, delegated), the bot's own report (message: a finding
+ * or answer for the owner; quiet: nothing new, said with bot_no_update;
+ * failed: bot_report_failure), else none.
+ */
+export type BotOutcome = 'deliverable' | 'action' | 'delegated' | 'message' | 'quiet' | 'failed' | 'none';
+
+/**
+ * How the bot itself closed the run (Bots 2.0): every unattended run ends with
+ * exactly one of these. A result goes to the owner's inbox; no_update is
+ * recorded quietly (no notification); failure is a failed run even when the
+ * turn itself finished.
+ */
+export interface BotRunReport {
+  kind: 'result' | 'no_update' | 'failure';
+  summary: string;
+  /** result: the job is finished (a goal met), not just progress. */
+  complete?: boolean;
+}
 
 /** Hard per-turn limits (ADR-020). Overridable per bot via `autonomy`. */
 export interface BotTurnLimits {
@@ -150,6 +169,8 @@ export interface BotTurnOutput {
   /** Largest single-step prompt the provider saw — the context-growth meter. */
   peakInputTokens: number;
   outcome: BotOutcome;
+  /** The bot's own close of the run, when it gave one. */
+  report?: BotRunReport;
   /** Paths of files delivered via bot_deliver this turn. */
   deliverables: string[];
   /** The reply claimed delivery/execution but the trace shows none. */
@@ -214,8 +235,17 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   const expects: BotExpectedOutcome = input.expects ?? defaultExpectation(input.trigger);
   const startedAt = Date.now();
 
-  const system = buildBotSystemPrompt(input);
-  const messages: ModelMessage[] = [];
+  // Prompt caching: the stable prefix (identity, persona, rules, folders,
+  // fleet protocol — ~10-20k tokens) is re-sent on every step. Marked for
+  // Anthropic's cache it costs a tenth from the second step on; the per-run
+  // parts (memory, recent runs, state, budget) follow the marker so they
+  // never invalidate it. Providers that don't know the option ignore it.
+  const prompt = buildBotSystemPrompt(input);
+  const messages: ModelMessage[] = [
+    { role: 'system', content: prompt.stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } } as ModelMessage,
+    ...(prompt.volatile ? [{ role: 'system', content: prompt.volatile } as ModelMessage] : []),
+  ];
+  const leadingSystem = messages.length;
 
   for (const m of input.mail) {
     messages.push({ role: 'user', content: `Message from 🤖 ${m.from}:\n\n${m.content}` });
@@ -225,8 +255,8 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   if (caption) {
     messages.push({ role: 'user', content: caption });
   }
-  if (messages.length === 0) {
-    messages.push({ role: 'user', content: 'You have no specific task. Check your inbox and report your status.' });
+  if (messages.length === leadingSystem) {
+    messages.push({ role: 'user', content: 'You have no specific task. Check your inbox; if nothing needs doing, call bot_no_update.' });
   }
   if (files.length > 0) {
     // Same transformation channels get: image/file parts for a model that takes them,
@@ -290,16 +320,21 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
   deadline.unref?.();
   const halted = (): boolean => input.abortSignal.aborted;
 
-  const tools = wrapBotTools(input.tools, {
-    sandbox: input.sandbox,
-    limits,
-    onDelivered: (path) => deliveries.push(path),
-  });
+  let report: BotRunReport | undefined;
+  const tools = {
+    ...wrapBotTools(input.tools, {
+      sandbox: input.sandbox,
+      limits,
+      onDelivered: (path) => deliveries.push(path),
+    }),
+    ...runReportTools((r) => { report = r; }),
+  };
 
   const baseOutput = () => ({
     tokensIn, tokensOut, toolsUsed: [...toolsUsed], startedAt, steps: stepIndex, toolCalls: trace.length,
-    peakInputTokens, deliverables: [...deliveries], outcomeNudged, trace: [...trace],
+    peakInputTokens, deliverables: [...deliveries], outcomeNudged, trace: [...trace], ...(report ? { report } : {}),
   });
+  const outcomeNow = (text: string): BotOutcome => computeOutcome({ trace, deliveries, expects, text, sandbox: input.sandbox, report });
 
   try {
     emit({ kind: 'turn-start', stepIndex: 0, label: input.prompt ? input.prompt.slice(0, 80) : 'Checking inbox' });
@@ -312,7 +347,6 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       let streamError: unknown = null;
       const stream = streamText({
         model: provider.getModelInstance(),
-        system,
         messages,
         tools,
         stopWhen: stepCountIs(stepsRemaining),
@@ -439,7 +473,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
 
       // Consume newly arrived mailbox messages before finishing, so a
       // handoff delivered mid-turn is not lost to the next scheduling gap.
-      if (!governor.signal.aborted && stepsRemaining > 0) {
+      if (!governor.signal.aborted && stepsRemaining > 0 && !report) {
         const fresh = input.pollMail();
         if (fresh.length > 0) {
           for (const m of fresh) {
@@ -453,8 +487,8 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       // A run expected to produce work that only read and wrote notes gets
       // exactly one nudge — deliver now, or say plainly that nothing was
       // done. Bounded like the execute guard; never a loop.
-      if (!governor.signal.aborted && expects === 'work' && !outcomeNudged
-        && computeOutcome({ trace, deliveries, expects, text: result.text, sandbox: input.sandbox }) === 'none') {
+      if (!governor.signal.aborted && expects === 'work' && !outcomeNudged && !report
+        && outcomeNow(result.text) === 'none') {
         outcomeNudged = true;
         emit({ kind: 'step', stepIndex, label: 'no deliverable yet — asking for one' });
         messages.push({ role: 'user', content: noOutcomePrompt(input) });
@@ -480,14 +514,15 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
         status: 'paused',
         output: 'Step budget reached before the turn completed — remaining work continues next turn.',
         reasonCode: 'step_budget',
-        outcome: computeOutcome({ trace, deliveries, expects, text: '', sandbox: input.sandbox }),
+        outcome: outcomeNow(''),
         claimedWithoutAction: false,
         ...baseOutput(),
       };
     }
 
-    const output = (lastResult?.text || '').trim() || '(no text response)';
-    const outcome = computeOutcome({ trace, deliveries, expects, text: lastResult?.text ?? '', sandbox: input.sandbox });
+    // The bot's own report is what the owner reads; its last words are the fallback.
+    const output = (report?.summary || lastResult?.text || '').trim() || '(no text response)';
+    const outcome = outcomeNow(lastResult?.text ?? '');
     const claimedWithoutAction = outcome === 'none' && CLAIM_PATTERN.test(output);
 
     tokenBudget.recordUsage({
@@ -516,7 +551,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
       output: `Turn failed: ${message}`,
       error: message,
       reasonCode: classifyFailure(err),
-      outcome: computeOutcome({ trace, deliveries, expects, text: '', sandbox: input.sandbox }),
+      outcome: outcomeNow(''),
       claimedWithoutAction: false,
       ...baseOutput(),
     };
@@ -679,7 +714,10 @@ export function computeOutcome(input: {
   expects: BotExpectedOutcome;
   text: string;
   sandbox: { workspace: string; shared: string };
+  report?: BotRunReport;
 }): BotOutcome {
+  // A reported failure is a failure, whatever else happened on the way.
+  if (input.report?.kind === 'failure') return 'failed';
   if (input.deliveries.length > 0) return 'deliverable';
   const roots = [input.sandbox.workspace, input.sandbox.shared];
   for (const t of input.trace) {
@@ -689,17 +727,21 @@ export function computeOutcome(input: {
     if (t.name === 'run_command' && t.arg && !isReadOnlyCommand(t.arg)) return 'action';
   }
   if (input.trace.some((t) => t.ok && t.name === 'bot_send' && t.task)) return 'delegated';
+  if (input.report?.kind === 'no_update') return 'quiet';
+  // A reported finding is a result for the owner, even without a file.
+  if (input.report?.kind === 'result' && input.report.summary.trim().length > 0) return 'message';
   if (input.expects === 'message' && input.text.trim().length > 0) return 'message';
   return 'none';
 }
 
 function noOutcomePrompt(input: BotTurnInput): string {
   const where = input.deliverablesDir ? ` into ${input.deliverablesDir}` : '';
-  return `[outcome check] This run has produced no deliverable and taken no action — only reads and notes in your sandbox. `
+  return `[outcome check] This run has not been closed: no deliverable, no action, and no report. `
     + `Notes are not work. Do ONE of these now, then stop:\n`
-    + `1. If you have a finished result, deliver it with bot_deliver${where} and name the file in your reply.\n`
-    + `2. If the task needs an action (a command, a change outside your sandbox, a delegation), do it.\n`
-    + `3. If there was genuinely nothing to do, reply with one line starting "Nothing to do:" and the reason. Do not write a record about it.`;
+    + `1. A finished file: deliver it with bot_deliver${where}, then call bot_report with what it is.\n`
+    + `2. A finding or answer for the owner (no file needed): call bot_report with it.\n`
+    + `3. Nothing new or nothing to do: call bot_no_update with one line why. Do not write a record about it.\n`
+    + `4. You couldn't do it: call bot_report_failure with the reason.`;
 }
 
 // ---- context compaction ---------------------------------------------------
@@ -801,9 +843,66 @@ export function wrapBotTools(
   return out;
 }
 
+// ---- closing a run --------------------------------------------------------
+
+/**
+ * The three ways a run ends (Bots 2.0). The bot says which — a tool call, not
+ * a phrase to match — so "nothing new" is recorded quietly, a finding reaches
+ * the owner's inbox, and a run that couldn't do its job is a failure even
+ * when the turn itself finished.
+ */
+export function runReportTools(onReport: (r: BotRunReport) => void): Record<string, Tool> {
+  const done = 'Recorded. Stop now: end your turn without further tool calls.';
+  return {
+    bot_report: tool({
+      description:
+        'Close this run with a result for the owner: what you did or found, in a few plain sentences (they read it in their inbox). '
+        + 'Deliver any finished files with bot_deliver first; they are attached automatically. complete: true when the job is finished, not just progress.',
+      inputSchema: zodSchema(z.object({
+        summary: z.string().min(1).max(4000).describe('What you did or found, for the owner. Plain sentences; lead with the answer.'),
+        complete: z.boolean().optional().describe('true = the job is done (its goal is met); omit for progress.'),
+      })),
+      execute: async ({ summary, complete }: { summary: string; complete?: boolean }) => {
+        onReport({ kind: 'result', summary: summary.trim(), ...(complete ? { complete: true } : {}) });
+        return done;
+      },
+    }) as Tool,
+    bot_no_update: tool({
+      description:
+        'Close this run with nothing new to report (nothing changed, nothing to do). It is recorded quietly: the owner is not notified. '
+        + 'Use it instead of writing a status note or saying "nothing to do".',
+      inputSchema: zodSchema(z.object({
+        reason: z.string().max(300).optional().describe('One line: why there is nothing new.'),
+      })),
+      execute: async ({ reason }: { reason?: string }) => {
+        onReport({ kind: 'no_update', summary: (reason ?? '').trim() || 'Nothing new.' });
+        return done;
+      },
+    }) as Tool,
+    bot_report_failure: tool({
+      description:
+        'Close this run as failed: you could not do the job (missing access, broken input, a service down). Say why, and what would fix it. '
+        + 'The owner is told. Do not use it for "nothing to do" (that is bot_no_update).',
+      inputSchema: zodSchema(z.object({
+        reason: z.string().min(1).max(1000).describe('What stopped you, and what would fix it.'),
+      })),
+      execute: async ({ reason }: { reason: string }) => {
+        onReport({ kind: 'failure', summary: reason.trim() });
+        return done;
+      },
+    }) as Tool,
+  };
+}
+
 // ---- system prompt --------------------------------------------------------
 
-function buildBotSystemPrompt(input: BotTurnInput): string {
+/**
+ * The bot's system prompt in two parts. `stable` is the same on every run of
+ * this bot (identity, persona, rules, folders, roster, fleet protocol), so a
+ * provider can cache it; `volatile` changes per run (memory retrieved for this
+ * prompt, recent runs, state note, crew states, budget) and follows it.
+ */
+export function buildBotSystemPrompt(input: BotTurnInput): { stable: string; volatile: string } {
   const { manifest } = input;
   let prompt = `You are "${manifest.name}", a Mercury bot (id: ${manifest.id}).\n`;
   if (manifest.description) {
@@ -812,25 +911,12 @@ function buildBotSystemPrompt(input: BotTurnInput): string {
   prompt += '\n';
   prompt += input.persona;
 
-  // Scoped memory injection — mirrors the main agent's injection site, but
-  // into the bot's own namespace (scope own/shared-read; scope none = null).
-  if (input.userMemory) {
-    try {
-      const query = input.mail.map(m => m.content).join(' ') || input.prompt;
-      const relevant = input.userMemory.retrieveRelevant(query, { maxRecords: 5, maxChars: 900 });
-      if (relevant?.context) {
-        prompt += `\n\n[Bot memory — auto-retrieved context]\n${relevant.context}`;
-      }
-    } catch (err: any) {
-      logger.warn({ botId: manifest.id, err: err?.message }, 'Bot memory retrieval failed — continuing without');
-    }
-  }
-
   prompt += `\n\nOperating rules:
 - You run unattended: NEVER ask the user questions or wait for confirmation. If a required input is missing, state the assumption you are proceeding with.
 - Actions you lack permission for are denied automatically (fail-closed). Do not attempt workarounds; report what you could not do.
 - Stay in your specialty; say so plainly when a request falls outside it.
-- Work, don't narrate: a run is judged by what it delivered or changed, not by what it wrote about itself. Do not write records, receipts, logs or status files about your own runs — Mercury keeps the journal. If there is nothing to do, say "Nothing to do:" and the reason, and stop.`;
+- Work, don't narrate: a run is judged by what it delivered or changed, not by what it wrote about itself. Do not write records, receipts, logs or status files about your own runs — Mercury keeps the journal.
+- END EVERY RUN WITH EXACTLY ONE of: bot_report (a result or finding for the owner; deliver files first), bot_no_update (nothing new — recorded quietly, nobody is notified), bot_report_failure (you couldn't do it, and why). Then stop.`;
 
   // Sandbox: the bot's always-granted work areas (rw+x, no permission ask).
   prompt += `\n\nSandbox (always granted — read, write, execute; no permission needed):
@@ -842,17 +928,7 @@ Anything outside these two areas and your declared Access grants is denied.`;
     prompt += `\n\nDeliverables — where the owner finds your results: ${input.deliverablesDir}
 - When a result is finished, call bot_deliver on the file (give it a human title; mark final: true for the finished piece the owner asked for). Never write there by hand.
 - Intermediate stages (research, drafts, checks) are delivered as work, not finals; the lead delivers the final.
-- Name the delivered file in your reply.`;
-  }
-
-  // Continuity (ADR-021): what the journal already knows, and the bot's own
-  // note. Together they replace "records about records" — nothing here
-  // needs to be written to disk by the bot.
-  if (input.recentRuns) {
-    prompt += `\n\nYour recent runs (from the journal — you do not need to record these):\n${input.recentRuns}`;
-  }
-  if (input.stateNote) {
-    prompt += `\n\nYour working state (set with bot_state; replace it when it changes):\n${input.stateNote}`;
+- Then close the run with bot_report saying what you delivered.`;
   }
 
   const roster = manifest.comms?.canMessage ?? [];
@@ -860,23 +936,15 @@ Anything outside these two areas and your declared Access grants is denied.`;
     prompt += `\n\nBots you can message via bot_send: ${roster.join(', ')}.`;
   }
 
-  const toolNames = Object.keys(input.tools);
-  if (toolNames.length > 0) {
-    prompt += `\n\nAvailable tools: ${toolNames.join(', ')}`;
-  }
-
   if (input.skillsPrompt) {
     prompt += `\n\n${input.skillsPrompt}`;
     prompt += `\nSkill scripts are subject to your access grants: a skill whose scripts you cannot run from its own directory can be copied into your sandbox workspace and run from there.`;
   }
 
-  // Fleet hierarchy: the lead orchestrates, the crew executes.
+  // Fleet hierarchy: the lead orchestrates, the crew executes. The crew list
+  // (with live states) is per-run; the protocol is stable.
   if (input.fleet?.role === 'lead') {
-    const roster = input.fleet.crew.length > 0
-      ? input.fleet.crew.map(c => `- ${c.name} (${c.id})${c.description ? ` — ${c.description}` : ''} [${c.state}]`).join('\n')
-      : '(EMPTY — build your team first, see below)';
-    prompt += `\n\nYou lead a fleet of crew bots:
-${roster}
+    prompt += `\n\nYou lead a fleet of crew bots (the current crew is listed below, under "This run").
 
 Fleet protocol:
 - SELF-ORGANIZE: if your crew is empty or lacks a specialist the task needs, BUILD IT FIRST with bot_spawn — design each sub-bot's role and persona from YOUR persona and the current task (e.g. a product lead spawns research/QA/support specialists). Do not report that you lack a team; hire one. Then delegate.
@@ -885,13 +953,42 @@ Fleet protocol:
 - MONITOR with fleet_status / fleet_tasks only when you need to — results come to you.
 - You may create specialists with bot_spawn (crew cap: ${input.fleet.maxCrew}) and retire your own crew with bot_retire.
 - Crew run CONCURRENTLY — dispatch independent work in parallel rather than sequentially.
-- You SYNTHESIZE: crew results arrive in your mailbox attributed by bot; combine them and report a single coherent outcome.${input.fleet.leadName ? `\n- You are also crew of **${input.fleet.leadName}** — your task results return to it automatically; treat it as your manager.` : ''}`;
+- You SYNTHESIZE: crew results arrive in your mailbox attributed by bot; combine them and report a single coherent outcome with bot_report.${input.fleet.leadName ? `\n- You are also crew of **${input.fleet.leadName}** — your task results return to it automatically; treat it as your manager.` : ''}`;
   } else if (input.fleet?.role === 'crew') {
-    prompt += `\n\nYou are crew in **${input.fleet.leadName ?? 'your lead'}'s** fleet. Tasks delegated to you (mailbox messages with a task) return your result to the lead automatically when you finish — make your final output a complete, self-contained report. Use bot_send to ask the lead questions mid-task.`;
+    prompt += `\n\nYou are crew in **${input.fleet.leadName ?? 'your lead'}'s** fleet. Tasks delegated to you (mailbox messages with a task) return your result to the lead automatically when you finish — make your bot_report a complete, self-contained report. Use bot_send to ask the lead questions mid-task.`;
   }
 
-  const remaining = input.tokenBudget.getRemaining();
-  prompt += `\n\nToken budget remaining: ${remaining}`;
+  // ---- per run -----------------------------------------------------------
+  let volatile = '';
+  // Scoped memory injection — mirrors the main agent's injection site, but
+  // into the bot's own namespace (scope own/shared-read; scope none = null).
+  if (input.userMemory) {
+    try {
+      const query = input.mail.map(m => m.content).join(' ') || input.prompt;
+      const relevant = input.userMemory.retrieveRelevant(query, { maxRecords: 5, maxChars: 900 });
+      if (relevant?.context) {
+        volatile += `\n\n[Bot memory — auto-retrieved context]\n${relevant.context}`;
+      }
+    } catch (err: any) {
+      logger.warn({ botId: manifest.id, err: err?.message }, 'Bot memory retrieval failed — continuing without');
+    }
+  }
+  // Continuity (ADR-021): what the journal already knows, and the bot's own
+  // note. Together they replace "records about records" — nothing here
+  // needs to be written to disk by the bot.
+  if (input.recentRuns) {
+    volatile += `\n\nYour recent runs (from the journal — you do not need to record these):\n${input.recentRuns}`;
+  }
+  if (input.stateNote) {
+    volatile += `\n\nYour working state (set with bot_state; replace it when it changes):\n${input.stateNote}`;
+  }
+  if (input.fleet?.role === 'lead') {
+    const crew = input.fleet.crew.length > 0
+      ? input.fleet.crew.map(c => `- ${c.name} (${c.id})${c.description ? ` — ${c.description}` : ''} [${c.state}]`).join('\n')
+      : '(EMPTY — build your team first, see the fleet protocol)';
+    volatile += `\n\nYour crew right now:\n${crew}`;
+  }
+  volatile += `\n\nToken budget remaining: ${input.tokenBudget.getRemaining()}`;
 
-  return prompt;
+  return { stable: prompt, volatile: `This run:${volatile}` };
 }

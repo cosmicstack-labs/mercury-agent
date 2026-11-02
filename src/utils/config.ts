@@ -247,6 +247,8 @@ export interface MercuryConfig {
     suggestedDailyTokenBudget?: number;
     /** Fleet-wide daily token cap across all bots (0 = unlimited). ADR-020. */
     fleetDailyTokenBudget?: number;
+    /** Fewest minutes between two runs of any bot routine (default 15). */
+    routineMinGapMinutes?: number;
     /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
     deliverablesDir?: string;
     retention: {

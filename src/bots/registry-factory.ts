@@ -32,7 +32,24 @@ const ALWAYS_STRIPPED = new Set([
   'send_message',        // channel messaging belongs to the owning surfaces
   'send_file',
   'bot_send',            // replaced by the bot-scoped instance after filtering
+  'dispatch_bot',        // the owner's way to wake a bot; a bot uses bot_send
 ]);
+
+/**
+ * Tool groups a bot gets only when its gate names them (an allow entry with the
+ * group name, e.g. "spotify", or a tool's own name). Every tool schema is re-sent
+ * on every step, and a writer bot has no use for 15 Spotify controls: off by
+ * default, they cost nothing.
+ */
+const OPT_IN_GROUPS: Array<{ group: string; match: (name: string) => boolean }> = [
+  { group: 'spotify', match: (n) => n.startsWith('spotify_') },
+  { group: 'github', match: (n) => ['github_api', 'create_issue', 'list_issues', 'create_pr', 'review_pr'].includes(n) },
+  { group: 'git', match: (n) => n.startsWith('git_') },
+];
+
+function optInGroup(name: string): string | undefined {
+  return OPT_IN_GROUPS.find((g) => g.match(name))?.group;
+}
 
 export interface BotRegistryDeps {
   botId: string;
@@ -150,7 +167,10 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
     ?? (explicitManifestTools ? manifest.tools : undefined)
     ?? { deny: [...BOT_DANGEROUS_TOOLS] };
   const allow = gate.allow ?? [];
-  const deny = new Set(gate.deny ?? []);
+  // Deny always wins, from either source: a bot.yaml that still lists denied
+  // tools must not be silently overridden by a permissions.yaml without them
+  // (both are the owner's word; the stricter one applies).
+  const deny = new Set([...(gate.deny ?? []), ...(explicitManifestTools ? manifest.tools?.deny ?? [] : [])]);
   const out: Record<string, any> = {};
   for (const [name, tool] of Object.entries(all)) {
     if (ALWAYS_STRIPPED.has(name) || isMcpToolName(name)) continue;
@@ -163,7 +183,9 @@ export function filterBotTools(all: Record<string, any>, manifest: BotManifest, 
       out[name] = tool;
       continue;
     }
-    if (allow.length > 0 && !allow.includes(name)) continue;
+    const group = optInGroup(name);
+    if (group && !allow.includes(group) && !allow.includes(name)) continue;
+    if (allow.length > 0 && !allow.includes(name) && !(group && allow.includes(group))) continue;
     out[name] = tool;
   }
   return out;

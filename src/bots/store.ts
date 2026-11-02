@@ -30,6 +30,8 @@ export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
 export const BOT_STATE_FILENAME = 'state.md';
 /** Routine state (paused routines, no-outcome streaks) — ADR-020. */
 export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
+/** Fleet-level list of bots the owner stopped. */
+export const BOT_HELD_FILENAME = 'stopped.json';
 /**
  * Data directories that live INSIDE a bot's profile dir but are never bot
  * profiles themselves. The roster scan does not descend into them: bots
@@ -49,6 +51,10 @@ export interface BotRoutineState {
   noOutcomeStreak: Record<string, number>;
   /** Routine key → how many times it has been paused (cooldown backoff); reset by a productive run. */
   pauseCount?: Record<string, number>;
+  /** Routine key → when its last run ended (ISO): the minimum gap survives a restart. */
+  lastEnd?: Record<string, string>;
+  /** Routine key → consecutive failed runs; at the limit the routine is switched off. */
+  failStreak?: Record<string, number>;
 }
 
 /**
@@ -200,7 +206,7 @@ falls outside it.
 - Include the evidence (links, file paths, numbers) behind each claim.
 `;
 
-function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
+export function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
   const tmp = `${filePath}.tmp-${process.pid}`;
   writeFileSync(tmp, content, { encoding: 'utf-8', mode });
   renameSync(tmp, filePath);
@@ -312,10 +318,29 @@ export class BotStore {
     atomicWrite(file, state + '\n');
   }
 
+  /** Bots the owner stopped (/bots stop, the app's Stop). Durable: a restart must not undo a stop. */
+  readHeld(): Set<string> {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botsRoot, BOT_HELD_FILENAME), 'utf-8'));
+      return new Set(Array.isArray(raw) ? raw.filter((x: unknown): x is string => typeof x === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  writeHeld(held: Set<string>): void {
+    try {
+      mkdirSync(this.botsRoot, { recursive: true });
+      atomicWrite(join(this.botsRoot, BOT_HELD_FILENAME), JSON.stringify([...held].sort()) + '\n');
+    } catch (err) {
+      logger.warn({ err: (err as Error)?.message }, 'Could not persist stopped bots');
+    }
+  }
+
   readRoutineState(id: string): BotRoutineState {
     try {
       const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), 'utf-8'));
-      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {} };
+      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {}, lastEnd: raw.lastEnd ?? {}, failStreak: raw.failStreak ?? {} };
     } catch {
       return { paused: {}, noOutcomeStreak: {}, pauseCount: {} };
     }

@@ -109,6 +109,11 @@ beforeEach(() => {
 // afterEach disposes all of them before the tmpdir is deleted.
 const activeManagers: Array<{ dispose: () => void }> = [];
 
+/** The bot's system prompt as the model sees it: a `system` string, or leading system messages (cached prefix + per-run part). */
+function systemText(opts: { system?: string; messages?: Array<{ role?: string; content: unknown }> }): string {
+  return opts.system ?? (opts.messages ?? []).filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n');
+}
+
 describe('BotManager queue + turn lifecycle', () => {
   let root: string;
   let store: BotStore;
@@ -338,7 +343,7 @@ describe('BotManager queue + turn lifecycle', () => {
     seedBot(store, 'pathfinder');
     let systemPrompt = '';
     mockedGenerateText.mockImplementation(async (opts: any) => {
-      systemPrompt = opts.system ?? '';
+      systemPrompt = systemText(opts);
       return { text: 'ok', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
     });
     manager.enqueue('pathfinder', { trigger: 'chat', prompt: 'hi' });
@@ -848,7 +853,7 @@ describe('Bot skill access (native + own library)', () => {
     seedBot(store, 'skilled');
     let systemPrompt = '';
     mockedGenerateText.mockImplementation(async (opts: any) => {
-      systemPrompt = opts.system ?? '';
+      systemPrompt = systemText(opts);
       return { text: 'ok', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as any;
     });
     manager.enqueue('skilled', { trigger: 'chat', prompt: 'hi' });
@@ -1165,6 +1170,8 @@ describe('bot governance (ADR-020)', () => {
   });
 
   it('a work routine that produces nothing three runs in a row is paused, told once, and resumed by start', async () => {
+    // Back-to-back runs of one routine: lift the 15-minute floor for this test.
+    (manager as unknown as { config: { bots: { routineMinGapMinutes?: number } } }).config.bots.routineMinGapMinutes = 0;
     seedBot(store, 'writer');
     const alerts: string[] = [];
     manager.setAlert(async (m) => { alerts.push(m); });
