@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { resolve, isAbsolute } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 
-export function createCdTool(getCwd: () => string, setCwd: (dir: string) => void) {
+export function createCdTool(getCwd: () => string, setCwd: (dir: string) => boolean | void) {
   return tool({
     description: 'Change the current working directory. All subsequent file operations, shell commands, and git operations will use this directory. Use this before running commands in a specific project folder.',
     inputSchema: zodSchema(z.object({
@@ -26,7 +26,9 @@ export function createCdTool(getCwd: () => string, setCwd: (dir: string) => void
         return `Error: Cannot access: ${resolved}`;
       }
 
-      setCwd(resolved);
+      if (setCwd(resolved) === false) {
+        return `Error: you can only change directory inside your own work folders. Use absolute paths to work with ${resolved}.`;
+      }
       return `Changed directory to ${resolved}`;
     },
   });

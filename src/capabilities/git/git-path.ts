@@ -1,8 +1,9 @@
-import { resolve, isAbsolute } from 'node:path';
+import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import type { PermissionManager } from '../permissions.js';
 import { readDenialMessage } from '../filesystem/verified-read.js';
 import { pinnedBinary, pinnedSearchDirs, minimalEnv } from '../shell/argv-lane.js';
+import { resolveToolPath, type CwdSource } from '../filesystem/resolve-path.js';
 
 /**
  * Resolve a model-chosen path against the tool cwd and run it through the
@@ -14,10 +15,10 @@ import { pinnedBinary, pinnedSearchDirs, minimalEnv } from '../shell/argv-lane.j
  */
 export async function checkGitReadPath(
   permissions: PermissionManager,
-  getCwd: () => string,
+  getCwd: CwdSource,
   path: string,
 ): Promise<{ resolved: string; error?: undefined } | { resolved: string; error: string }> {
-  const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
+  const resolved = resolveToolPath(path, getCwd);
   const check = await permissions.checkFsAccess(resolved, 'read');
   if (!check.allowed) {
     return { resolved, error: readDenialMessage(resolved, check) };

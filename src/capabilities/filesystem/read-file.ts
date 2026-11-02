@@ -1,9 +1,10 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import { readFileSync, closeSync } from 'node:fs';
-import { resolve, isAbsolute } from 'node:path';
+import { resolve } from 'node:path';
 import type { PermissionManager } from '../permissions.js';
 import { openVerified, readDenialMessage } from './verified-read.js';
+import { resolveToolPath, type CwdSource } from './resolve-path.js';
 
 /** Cap on tool-result size — the full file text is echoed into the LLM
  * conversation and retained for every subsequent agent step (the AI SDK
@@ -11,14 +12,14 @@ import { openVerified, readDenialMessage } from './verified-read.js';
  * keeping a 75-step task's retained heap in the low tens of MB. */
 const MAX_RESULT_CHARS = 64 * 1024;
 
-export function createReadFileTool(permissions: PermissionManager, getCwd: () => string) {
+export function createReadFileTool(permissions: PermissionManager, getCwd: CwdSource) {
   return tool({
     description: 'Read the contents of a file. The path must be within an allowed scope. Files larger than 64KB are returned truncated — read specific ranges with run_command if you need more.',
     inputSchema: zodSchema(z.object({
       path: z.string().describe('Absolute or relative path to the file'),
     })),
     execute: async ({ path }) => {
-      const resolved = isAbsolute(path) ? resolve(path) : resolve(getCwd(), path);
+      const resolved = resolveToolPath(path, getCwd);
       const check = await permissions.checkFsAccess(resolved, 'read');
       if (!check.allowed) {
         return readDenialMessage(resolved, check);
