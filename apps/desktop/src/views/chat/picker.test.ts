@@ -46,3 +46,24 @@ describe("composer pickers", () => {
     expect(matchSkills("#web", skills)[0]).toMatchObject({ fill: "#web-search " });
   });
 });
+
+describe("relevant commands and chips", () => {
+  it("keeps the commands that make sense in the app, plus Code's own in Code, plus every plugin command", async () => {
+    const { relevantCommands } = await import("./picker");
+    const all: CommandEntry[] = ["/help", "/menu", "/ws open ", "/sessions", "/code diff", "/bots send ", "/bots dlq clear"].map((c) => ({ command: c, usage: c, description: "", takesArgument: c.endsWith(" "), source: "mercury" as const }));
+    all.push({ command: "/weather ", usage: "/weather …", description: "", takesArgument: true, source: "plugin", plugin: "W" });
+    expect(relevantCommands(all, "chat").map((c) => c.command)).toEqual(["/help", "/bots send ", "/weather "]);
+    expect(relevantCommands(all, "code").map((c) => c.command)).toEqual(["/help", "/code diff", "/bots send ", "/weather "]);
+  });
+
+  it("splits a sent message into its command and the rest", async () => {
+    const { splitCommand } = await import("./picker");
+    const known = ["/bots", "/bots send ", "/models use "];
+    expect(splitCommand("/bots send scout write the brief", known)).toEqual({ token: "/bots send", rest: "scout write the brief" });
+    expect(splitCommand("/bots", known)).toEqual({ token: "/bots", rest: "" });
+    expect(splitCommand("/unknown thing", known)).toEqual({ token: "/unknown", rest: "thing" });
+    expect(splitCommand("#research the oxide raise")).toEqual({ token: "#research", rest: "the oxide raise" });
+    expect(splitCommand("hello")).toBeNull();
+    expect(splitCommand("/ slash alone")).toBeNull();
+  });
+});

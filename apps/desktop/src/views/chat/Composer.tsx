@@ -6,7 +6,8 @@ import type { ModelsResponse } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
 import { useBots, useRuntimeState } from "~/app/store";
 import { CommandPicker } from "./CommandPicker";
-import { matchCommands, matchSkills, pickerMode, type CommandEntry, type PickerItem, type SkillEntry } from "./picker";
+import { CommandChip } from "./CommandChip";
+import { matchCommands, matchSkills, pickerMode, relevantCommands, setKnownCommands, type CommandEntry, type PickerItem, type SkillEntry } from "./picker";
 import { startCall, useVoice } from "~/app/voice";
 import { sendMessage, stopTurn, type CodeTurn } from "~/app/events";
 import { useConversation, useConversationStore, type Surface } from "~/app/conversation";
@@ -73,17 +74,23 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   textRef.current = text;
 
   // "/" commands and "#" skills, as in the terminal: a list above the box while you type.
-  const mode = pickerMode(text);
+  /** A picked command or skill: a chip before the text, which holds only what follows it. */
+  const [token, setToken] = useState<PickerItem | null>(null);
+  const mode = token ? null : pickerMode(text);
   const [commands, setCommands] = useState<CommandEntry[]>(commandCache ?? []);
   const [skills, setSkills] = useState<SkillEntry[]>(skillCache ?? []);
   const bots = useBots((s) => s.bots);
+  // The list also lets the chat draw earlier commands as chips: load it once, up front.
   useEffect(() => {
-    if (mode === "command" && !commandCache) void api.chat.commands().then((c) => { commandCache = c; setCommands(c); }).catch(() => {});
+    if (!commandCache) void api.chat.commands().then((c) => { commandCache = c; setKnownCommands(c.map((x) => x.command)); setCommands(c); }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (mode === "command" && !commandCache) void api.chat.commands().then((c) => { commandCache = c; setKnownCommands(c.map((x) => x.command)); setCommands(c); }).catch(() => {});
     if (mode === "skill" && !skillCache) void api.skills.list().then((r) => { skillCache = r.skills; setSkills(r.skills); }).catch(() => {});
   }, [mode]);
   const items = useMemo<PickerItem[]>(
-    () => (mode === "command" ? matchCommands(text, commands, bots) : mode === "skill" ? matchSkills(text, skills) : []),
-    [mode, text, commands, skills, bots],
+    () => (mode === "command" ? matchCommands(text, relevantCommands(commands, surface), bots) : mode === "skill" ? matchSkills(text, skills) : []),
+    [mode, text, commands, skills, bots, surface],
   );
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -91,8 +98,9 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   /** Fill the box with a pick; a command that needs nothing more runs straight away when `run`. */
   function choose(item: PickerItem, run: boolean) {
     if (run && item.runs) { void submit(item.fill); return; }
-    setText(item.fill);
-    requestAnimationFrame(() => { const el = ref.current; if (el) { el.focus(); el.setSelectionRange(item.fill.length, item.fill.length); } });
+    setToken(item);
+    setText("");
+    requestAnimationFrame(() => ref.current?.focus());
   }
   const dictation = useDictation((spoken, mode) => {
     const next = joinText(textRef.current, spoken);
@@ -185,13 +193,14 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   }
 
   async function submit(override?: string) {
-    const content = (override ?? text).trim();
+    const content = (override ?? (token ? `${token.fill}${text}` : text)).trim();
     if ((!content && files.length === 0) || sending) return;
     setSending(true);
     setError(null);
     try {
       await sendMessage(surface, content, files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })), code);
       setText("");
+      setToken(null);
       for (const f of files) if (f.preview) URL.revokeObjectURL(f.preview);
       setFiles([]);
     } catch (err) {
@@ -209,7 +218,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     setError(null);
     void stopTurn(convStore).catch((err) => setError(err instanceof Error ? `Couldn't stop: ${err.message}` : "Couldn't stop"));
   }
-  const canSend = connected && !blockedReason && (text.trim().length > 0 || files.length > 0);
+  const canSend = connected && !blockedReason && (text.trim().length > 0 || files.length > 0 || token !== null);
   const canSendRef = useRef(false);
   canSendRef.current = connected && !blockedReason;
   const pickerOpen = items.length > 0 && dismissed !== text && !recording && connected && !blockedReason;
@@ -251,6 +260,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           ) : (
           <div className="flex">
           {mono && <span aria-hidden="true" className="pointer-events-none select-none pl-5 pt-4 font-mono text-md leading-[26px] text-accent">&gt;</span>}
+          {token && <CommandChip label={token.label} kind={token.kind} onRemove={() => { setToken(null); ref.current?.focus(); }} className={mono ? "ml-2 mt-[15px]" : "ml-4 mt-[15px]"} />}
           <textarea
             ref={ref}
             value={text}
@@ -264,15 +274,18 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); choose(items[active], true); return; }
                 if (e.key === "Escape") { e.preventDefault(); setDismissed(text); return; }
               }
+              // The chip goes back to text on Backspace (to edit it) and away on Esc, like a token field.
+              if (token && !text && e.key === "Backspace") { e.preventDefault(); setText(token.fill.trimEnd()); setToken(null); return; }
+              if (token && !text && e.key === "Escape") { e.preventDefault(); setToken(null); return; }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
               if (e.key === "Escape" && text) { e.preventDefault(); setText(""); }
               else if (e.key === "Escape" && busy) { e.preventDefault(); stop(); }
               if (e.key === "Tab" && e.shiftKey && onCycleMode) { e.preventDefault(); onCycleMode(); }
             }}
-            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? placeholder}
+            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? (token ? (token.hint || (token.kind === "skill" ? "What should the skill do?" : "Add details, or press Enter")) : placeholder)}
             rows={1}
             disabled={!connected}
-            className={cx("block max-h-[240px] w-full resize-none overflow-y-auto bg-transparent pb-1 pt-4 text-md leading-[26px] text-ink caret-accent placeholder:truncate placeholder:text-ink4", mono ? "pl-3 pr-5 font-mono text-[14.5px]" : "px-5")}
+            className={cx("block max-h-[240px] w-full resize-none overflow-y-auto bg-transparent pb-1 pt-4 text-md leading-[26px] text-ink caret-accent placeholder:truncate placeholder:text-ink4", mono ? "pl-3 pr-5 font-mono text-[14.5px]" : token ? "pl-2.5 pr-5" : "px-5")}
             aria-label="Message"
           />
           </div>

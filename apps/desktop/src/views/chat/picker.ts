@@ -22,6 +22,52 @@ export type PickerItem =
   | { kind: "command"; key: string; label: string; hint: string; description: string; fill: string; runs: boolean; plugin?: string }
   | { kind: "skill"; key: string; label: string; hint: string; description: string; fill: string; runs: false };
 
+/**
+ * The commands worth offering in the app. The terminal's list also has its
+ * own screens (/menu, /code exit, /ws …), display switches (/view, /stream)
+ * and things the app has buttons for (sessions, Ask Me / Allow All, the bot
+ * pages); those stay in the terminal. Plugins' commands are always offered.
+ */
+const DESKTOP_COMMANDS = new Set([
+  "/help", "/whatsnew", "/status", "/progress", "/log",
+  "/models", "/models use ", "/cloud models", "/cloud use ",
+  "/research", "/research on", "/research off", "/research ",
+  "/budget", "/saver", "/saver toggle", "/memory", "/tools", "/mcp",
+  "/skills", "/skills search ", "/skills install ",
+  "/plugins", "/plugins search ", "/plugins install ", "/plugins update",
+  "/agents", "/agents stop ", "/bg list", "/bg cancel ", "/stop",
+  "/bots", "/bots send ", "/bots run ", "/bots stop ", "/bots start ", "/bots cost",
+  "/call ", "/calls", "/spotify",
+]);
+
+/** Extra commands in the Code view. */
+const CODE_COMMANDS = new Set(["/code plan", "/code execute", "/code diff", "/code init", "/code agent "]);
+
+/** Commands the runtime knows, once loaded: the chat uses them to draw a sent command as a chip. */
+let known: string[] = [];
+export function setKnownCommands(commands: readonly string[]): void { known = [...commands]; }
+export function knownCommands(): readonly string[] { return known; }
+
+/** The catalog, narrowed to what this view offers. */
+export function relevantCommands(catalog: readonly CommandEntry[], surface: "chat" | "code"): CommandEntry[] {
+  return catalog.filter((c) => c.source === "plugin" || DESKTOP_COMMANDS.has(c.command) || (surface === "code" && CODE_COMMANDS.has(c.command)));
+}
+
+/**
+ * A sent message's command (or skill) and the rest, so the chat can show the
+ * command as a chip: the longest known command it starts with, else its first
+ * word; a "#skill" is its first word.
+ */
+export function splitCommand(text: string, commands: readonly string[] = known): { token: string; rest: string } | null {
+  if (!/^[/#][^\s]/.test(text)) return null;
+  if (text.startsWith("/")) {
+    const hit = commands.map((k) => k.trim()).filter((k) => text === k || text.startsWith(`${k} `)).sort((a, b) => b.length - a.length)[0];
+    if (hit) return { token: hit, rest: text.slice(hit.length).trim() };
+  }
+  const [token, ...rest] = text.split(/\s+/);
+  return { token, rest: rest.join(" ") };
+}
+
 /** "/bots <action> " subcommands whose argument is a bot id. */
 const BOT_ARG = /^(\/bots\s+(?:open|send|journal|inbox|budget|edit|delete|enable|disable|stop|start|run|persona|show|folder|fetch|tasks|crew|promote|demote|permissions|export|add-crew|remove-crew)\s+)(\S*)$/i;
 
