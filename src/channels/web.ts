@@ -21,7 +21,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued';
   data?: Record<string, unknown>;
 }
 
@@ -185,6 +185,16 @@ export class WebChannel extends BaseChannel {
    * attached terminal kept streaming the old id: replies to the new session
    * never reached it, and it showed "Thinking" forever.
    */
+  /**
+   * This chat's message is waiting: Mercury runs one turn at a time, and
+   * another one (`busySessionId`, doing `busyWith`) is ahead of it. Sent when it
+   * joins the line and whenever the line moves; the turn's own events follow
+   * when it starts.
+   */
+  sendQueued(targetId: string, data: { position: number; busyWith?: string; busySessionId?: string }): void {
+    this.broadcast({ type: 'queued', data: { targetId, ...data } });
+  }
+
   sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
     this.broadcast({ type: 'session_switched', data: { targetId, id: session.id, shortId: session.shortId, alias: session.alias, title: session.title } });
   }

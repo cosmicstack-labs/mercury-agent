@@ -78,6 +78,12 @@ let busyFn: ((sessionId: string) => boolean) | null = null;
 export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
   busyFn = fn;
 }
+type QueueState = { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string };
+let queueControls: { state: (threadId: string) => QueueState; prioritize: (threadId: string) => number } | null = null;
+/** The agent's line of turns: where a chat stands, and moving one to the front ("do mine first"). */
+export function setQueueControls(controls: typeof queueControls): void {
+  queueControls = controls;
+}
 /** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
 export function setStopCallback(fn: () => Promise<string>): void {
   stopFn = fn;
@@ -747,6 +753,18 @@ chat.post('/api/chat/threads/:id/delete', async (c) => {
 });
 
 /** Save a thread to come back to later, or unsave it: { saved: boolean }. */
+// Where this chat's message stands: running, waiting in line (and behind what), or nothing.
+chat.get('/api/chat/threads/:id/queue', (c) => {
+  if (!queueControls) return c.json({ state: 'none' });
+  return c.json(queueControls.state(c.req.param('id')));
+});
+
+// "Do mine first": this chat's waiting messages go to the front of the line.
+chat.post('/api/chat/threads/:id/queue/first', (c) => {
+  if (!queueControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  return c.json({ moved: queueControls.prioritize(c.req.param('id')) });
+});
+
 chat.post('/api/chat/threads/:id/save', async (c) => {
   const id = c.req.param('id');
   if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);

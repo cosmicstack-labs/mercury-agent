@@ -1076,6 +1076,49 @@ export class Agent {
       this.messageQueue.push({ message, workKey });
     }
     if (workKey) this.queuedWorkKeys.add(workKey);
+    this.announceQueue();
+  }
+
+  /**
+   * Tell every waiting desktop/web chat where it stands: its place in line,
+   * and the turn running now (which chat, and what it's doing). Without this
+   * a waiting chat showed "Thinking" for a turn that hadn't started.
+   */
+  private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
+    if (!running) return;
+    const web = this.channels.get('web' as any) as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
+    if (!web?.sendQueued) return;
+    const busyWith = (this.currentActivity && this.currentMessage === running ? this.currentActivity : running.content)
+      .replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
+    const busySessionId = running.channelType === 'web' ? running.channelId : undefined;
+    this.messageQueue.forEach((item, i) => {
+      const m = item.message;
+      if (m.channelType !== 'web' || m.channelId === busySessionId) return;
+      web.sendQueued!(m.channelId, { position: i + 1, busyWith, busySessionId });
+    });
+  }
+
+  /** Where one chat's work stands, for a chat opened while it waits. */
+  queueStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string } {
+    if (this.processing && this.currentMessage?.channelId === channelId) return { state: 'running' };
+    const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId);
+    if (at === -1) return { state: 'none' };
+    const running = this.processing ? this.currentMessage : null;
+    return {
+      state: 'queued',
+      position: at + 1,
+      busyWith: running ? (this.currentActivity || running.content).replace(/\s+/g, ' ').trim().slice(0, 90) : undefined,
+      busySessionId: running?.channelType === 'web' ? running.channelId : undefined,
+    };
+  }
+
+  /** "Do mine first": this chat's waiting messages move to the front of the line (in their order). */
+  prioritize(channelId: string): number {
+    const mine = this.messageQueue.filter((i) => i.message.channelId === channelId);
+    if (mine.length === 0) return 0;
+    this.messageQueue = [...mine, ...this.messageQueue.filter((i) => i.message.channelId !== channelId)];
+    this.announceQueue();
+    return mine.length;
   }
 
   /** Is a turn for this session running, or waiting in the queue? */
@@ -1902,6 +1945,8 @@ export class Agent {
         const item = this.messageQueue.shift()!;
         const msg = item.message;
         if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+        // The line moved: everyone still waiting learns their new place and what runs now.
+        this.announceQueue(msg);
         this.currentWorkKey = item.workKey ?? null;
         try {
           if (item.workKey) this.workLedger.markRunning(item.workKey);
