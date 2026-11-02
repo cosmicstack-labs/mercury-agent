@@ -1,10 +1,12 @@
 import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { ModelsResponse } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
-import { useRuntimeState } from "~/app/store";
+import { useBots, useRuntimeState } from "~/app/store";
+import { CommandPicker } from "./CommandPicker";
+import { matchCommands, matchSkills, pickerMode, type CommandEntry, type PickerItem, type SkillEntry } from "./picker";
 import { startCall, useVoice } from "~/app/voice";
 import { sendMessage, stopTurn, type CodeTurn } from "~/app/events";
 import { useConversation, useConversationStore, type Surface } from "~/app/conversation";
@@ -51,6 +53,10 @@ export interface ComposerProps {
   modeLabel?: string;
 }
 
+/** Loaded once per app run: the "/" commands and the "#" skills. */
+let commandCache: CommandEntry[] | null = null;
+let skillCache: SkillEntry[] | null = null;
+
 export function Composer({ surface, placeholder, code, extra, blockedReason, mono, draft, onDraftConsumed, onCycleMode, modeLabel }: ComposerProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
@@ -65,6 +71,29 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   const connected = useRuntimeState((s) => s.connected);
   const textRef = useRef(text);
   textRef.current = text;
+
+  // "/" commands and "#" skills, as in the terminal: a list above the box while you type.
+  const mode = pickerMode(text);
+  const [commands, setCommands] = useState<CommandEntry[]>(commandCache ?? []);
+  const [skills, setSkills] = useState<SkillEntry[]>(skillCache ?? []);
+  const bots = useBots((s) => s.bots);
+  useEffect(() => {
+    if (mode === "command" && !commandCache) void api.chat.commands().then((c) => { commandCache = c; setCommands(c); }).catch(() => {});
+    if (mode === "skill" && !skillCache) void api.skills.list().then((r) => { skillCache = r.skills; setSkills(r.skills); }).catch(() => {});
+  }, [mode]);
+  const items = useMemo<PickerItem[]>(
+    () => (mode === "command" ? matchCommands(text, commands, bots) : mode === "skill" ? matchSkills(text, skills) : []),
+    [mode, text, commands, skills, bots],
+  );
+  const [active, setActive] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  useEffect(() => { setActive(0); }, [text]);
+  /** Fill the box with a pick; a command that needs nothing more runs straight away when `run`. */
+  function choose(item: PickerItem, run: boolean) {
+    if (run && item.runs) { void submit(item.fill); return; }
+    setText(item.fill);
+    requestAnimationFrame(() => { const el = ref.current; if (el) { el.focus(); el.setSelectionRange(item.fill.length, item.fill.length); } });
+  }
   const dictation = useDictation((spoken, mode) => {
     const next = joinText(textRef.current, spoken);
     if (mode === "send") { void submit(next); return; }
@@ -183,6 +212,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   const canSend = connected && !blockedReason && (text.trim().length > 0 || files.length > 0);
   const canSendRef = useRef(false);
   canSendRef.current = connected && !blockedReason;
+  const pickerOpen = items.length > 0 && dismissed !== text && !recording && connected && !blockedReason;
 
   return (
     <div className="shrink-0 px-8 pb-6 pt-2">
@@ -194,13 +224,14 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           onDragLeave={() => setDragging(false)}
           onDrop={(e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length) void addFiles(e.dataTransfer.files); }}
           className={cx(
-            "rounded-[28px] border bg-surface transition-[border-color,box-shadow] duration-150",
+            "relative rounded-[28px] border bg-surface transition-[border-color,box-shadow] duration-150",
             "shadow-[0_1px_2px_rgb(0_0_0/0.04),0_4px_16px_-8px_rgb(0_0_0/0.12)]",
             "focus-within:border-line-strong focus-within:shadow-[0_0_0_4px_rgb(var(--ink)/0.05),0_4px_16px_-8px_rgb(0_0_0/0.16)]",
             dragging ? "border-accent border-dashed" : "border-line",
             !connected && "opacity-70",
           )}
         >
+          {pickerOpen && mode && <CommandPicker items={items} active={Math.min(active, items.length - 1)} mode={mode} onHover={setActive} onPick={(item) => choose(item, true)} />}
           {files.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-4">
               {files.map((f) => (
@@ -226,6 +257,13 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); void addFiles(e.clipboardData.files); } }}
             onKeyDown={(e) => {
+              if (pickerOpen) {
+                if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => (a + 1) % items.length); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => (a - 1 + items.length) % items.length); return; }
+                if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); choose(items[active], false); return; }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); choose(items[active], true); return; }
+                if (e.key === "Escape") { e.preventDefault(); setDismissed(text); return; }
+              }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
               if (e.key === "Escape" && text) { e.preventDefault(); setText(""); }
               else if (e.key === "Escape" && busy) { e.preventDefault(); stop(); }

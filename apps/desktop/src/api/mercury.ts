@@ -4,6 +4,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
+import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
   McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
@@ -57,6 +58,8 @@ export const chat = {
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
+  /** Every slash command with what it does (the "/" picker). */
+  commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),
   updateSettings: (patch: Partial<ChatSettings>) => http.put<ChatSettings>("/api/chat/settings", patch),
   models: () => http.get<ModelsResponse>("/api/chat/models"),
