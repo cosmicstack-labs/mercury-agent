@@ -543,6 +543,11 @@ export class PluginManager {
     }
   }
 
+  /** Slash commands the running plugins add, for the "/" picker. */
+  commandHelp(): Array<{ name: string; description: string; plugin: string }> {
+    return [...this.running.values()].flatMap((r) => r.manifest.contributes.commands.map((c) => ({ name: c.name, description: c.description, plugin: r.manifest.name })));
+  }
+
   // ── devices (the app's microphone and permissions screen) ────────────
 
   /** Plugins that use this computer (`permissions.desktop`) and are running. */

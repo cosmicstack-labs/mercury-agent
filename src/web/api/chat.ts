@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { commandCatalog } from '../../core/commands/catalog.js';
+import { getPluginManager } from '../../plugins/manager.js';
 import { artifactStore } from '../../artifacts/store.js';
 import { scopedProgrammingState } from '../../core/programming-mode.js';
 import { isInsideWorkspace } from './workspace-ide.js';
@@ -131,6 +133,14 @@ const chat = new Hono();
 // ─── SSE Events ──────────────────────────────────────────────
 
 /** The conversation's latest plan checklist (update_plan), for a client opening the thread. */
+// The "/" picker: every slash command, with what it does (the terminal's list, the manual's words,
+// and the commands running plugins add). Sent as a message, a command runs exactly as typed.
+chat.get('/api/chat/commands', (c) => {
+  let plugins: Array<{ name: string; description: string; plugin: string }> = [];
+  try { plugins = getPluginManager().commandHelp(); } catch { /* plugins not started */ }
+  return c.json({ commands: commandCatalog(plugins) });
+});
+
 chat.get('/api/chat/plan', (c) => {
   if (!webChannel) return c.json({ plan: null });
   const id = c.req.query('sessionId');
