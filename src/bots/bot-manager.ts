@@ -118,6 +118,10 @@ export const NO_OUTCOME_PAUSE_AFTER = 3;
 export const ROUTINE_MIN_GAP_MINUTES = 15;
 /** A routine that fails this many runs in a row is switched off until the owner starts it again. */
 export const ROUTINE_FAIL_OFF_AFTER = 5;
+/** Hand-offs nest at most this deep: owner → lead → crew → crew's crew. */
+export const MAX_HANDOFF_DEPTH = 3;
+/** One run hands off at most this many tasks, across all its delegate calls. */
+export const MAX_HANDOFFS_PER_RUN = 12;
 /** First no-outcome cooldown; doubles per repeat up to NO_OUTCOME_PAUSE_MAX_MS. A pause always ends by itself. */
 export const NO_OUTCOME_PAUSE_MS = 6 * 60 * 60 * 1000;
 export const NO_OUTCOME_PAUSE_MAX_MS = 24 * 60 * 60 * 1000;
@@ -238,6 +242,10 @@ export class BotManager {
   private dueTimer?: ReturnType<typeof setInterval>;
   /** What the bots did for the owner, kept until read (Bots 2.0). */
   readonly inbox: BotInbox;
+  /** job id → how many hand-offs deep it is (owner-started work is 0). */
+  private jobDepth = new Map<string, number>();
+  /** running job id → tasks it has handed off so far. */
+  private jobFanout = new Map<string, number>();
 
   constructor(deps: BotManagerDeps) {
     this.config = deps.config;
@@ -545,22 +553,48 @@ export class BotManager {
       if (t.bot === requester) return { ok: false, error: 'You cannot delegate to yourself' };
       if (!roster.includes(t.bot)) return { ok: false, error: `"${t.bot}" is not in your crew (${roster.join(', ') || 'no crew yet — bot_spawn one'})` };
     }
+    const handoff = this.handoffCheck(requester, spec.tasks.length);
+    if (!handoff.ok) return handoff;
     const deadlineAt = Date.now() + (spec.deadlineMinutes ?? DEFAULT_TASK_DEADLINE_MINUTES) * 60_000;
     const batch = this.tasks.createBatch({ requester, label: spec.label, wakeWhen: spec.wakeWhen ?? 'all', deadlineAt });
     const out: Array<{ id: string; assignee: string; duplicated: boolean }> = [];
     for (const t of spec.tasks) {
-      const r = this.startTask({ batchId: batch.id, requester, assignee: t.bot, goal: t.goal, acceptance: t.acceptance });
+      const r = this.startTask({ batchId: batch.id, requester, assignee: t.bot, goal: t.goal, acceptance: t.acceptance }, undefined, handoff.depth);
       out.push({ id: r.task.id, assignee: t.bot, duplicated: r.duplicated });
     }
     logger.info({ requester, batchId: batch.id, tasks: out.length }, 'Fleet batch dispatched');
     return { ok: true, batchId: batch.id, tasks: out };
   }
 
-  private startTask(input: Omit<BotTask, 'id' | 'status' | 'createdAt' | 'jobId'>, previous?: BotTaskResult): { task: BotTask; duplicated: boolean } {
+  /**
+   * May `requester` hand off `count` more tasks now? Work nests at most
+   * MAX_HANDOFF_DEPTH deep (a lead's crew can't keep delegating downwards
+   * forever), and one run hands off at most MAX_HANDOFFS_PER_RUN tasks. The
+   * refusal says what to do instead, so the model stops trying.
+   */
+  private handoffCheck(requester: string, count: number): { ok: true; depth: number } | { ok: false; error: string } {
+    const running = [...(this.running.get(requester) ?? [])];
+    const depth = Math.max(0, ...running.map((j) => this.jobDepth.get(j) ?? 0)) + 1;
+    if (depth > MAX_HANDOFF_DEPTH) {
+      return { ok: false, error: `Hand-off limit: this work is already ${depth - 1} hand-offs deep (max ${MAX_HANDOFF_DEPTH}). Do it yourself, or report back to whoever asked you with what you have.` };
+    }
+    const job = running[0];
+    const used = job ? this.jobFanout.get(job) ?? 0 : 0;
+    if (used + count > MAX_HANDOFFS_PER_RUN) {
+      return { ok: false, error: `Hand-off limit: one run can hand off at most ${MAX_HANDOFFS_PER_RUN} tasks (${used} so far). Wait for those results, or combine tasks.` };
+    }
+    if (job) this.jobFanout.set(job, used + count);
+    return { ok: true, depth };
+  }
+
+  private startTask(input: Omit<BotTask, 'id' | 'status' | 'createdAt' | 'jobId'>, previous?: BotTaskResult, depth?: number): { task: BotTask; duplicated: boolean } {
     const created = this.tasks.createTask(input);
     if (created.duplicated) return created;
     const requesterName = this.store.get(input.requester)?.name ?? input.requester;
+    // Pipeline stages chain on the lead's behalf: one level below it.
+    const level = depth ?? Math.max(0, ...[...(this.running.get(input.requester) ?? [])].map((j) => this.jobDepth.get(j) ?? 0)) + 1;
     const job = this.enqueue(input.assignee, { trigger: 'mailbox', prompt: renderTaskPrompt(created.task, requesterName, previous), fromBot: input.requester });
+    if (job.accepted && job.jobId) this.jobDepth.set(job.jobId, level);
     if (!job.accepted) {
       this.tasks.update(created.task.id, { status: 'failed', completedAt: Date.now(), result: { outcome: 'none', summary: `could not dispatch: ${job.reasonCode}`, deliverables: [], reasonCode: job.reasonCode } });
       this.onTaskSettled(created.task.id);
@@ -1003,10 +1037,12 @@ export class BotManager {
       } else if (turnLimited) {
         this.queue.settle(job.id, 'done');
         this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
       } else if (output.status === 'failed') {
         this.queue.settle(job.id, 'dead', output.reasonCode);
         // A replay from the dead-letter queue starts fresh: the failure may be in the conversation itself.
         this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
         this.needsYou.add(botId);
         logger.warn({ botId, jobId: job.id, reasonCode: output.reasonCode }, 'Bot turn failed permanently — moved to DLQ (replayable via /bots dlq)');
         // A routine failing again and again tells the owner once, on the first
@@ -1022,6 +1058,7 @@ export class BotManager {
       } else {
         this.queue.settle(job.id, 'done');
         this.store.clearCheckpoint(botId, job.id);
+        this.jobDepth.delete(job.id);
       }
 
       // Deliver the outcome — the bot thread is the ONLY local surface
@@ -1166,6 +1203,7 @@ export class BotManager {
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       running.delete(job.id);
+      this.jobFanout.delete(job.id);
       this.aborts.delete(`${botId}:${job.id}`);
       if (running.size === 0) this.activity.delete(botId);
       // Mail-arrival race: a reply (e.g. a crew's task result) delivered

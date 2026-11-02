@@ -287,3 +287,25 @@ describe('resuming an interrupted run', () => {
     expect(store.readCheckpoint('scout', row.runId)).toBeUndefined();
   });
 });
+
+describe('hand-off limits', () => {
+  it('work nests at most three hand-offs deep, and one run hands off at most twelve tasks', async () => {
+    const { manager, store } = makeManager();
+    store.create({ id: 'lead', name: 'Lead', manifest: { fleetRole: 'lead' } });
+    for (const id of ['a', 'b', 'c', 'd']) store.create({ id, name: id.toUpperCase(), manifest: { parent: 'lead', fleetRole: 'crew' } });
+    type Internals = { running: Map<string, Set<string>>; jobDepth: Map<string, number> };
+    const m = manager as unknown as Internals;
+    // The lead is running a job that is already three hand-offs deep.
+    m.running.set('lead', new Set(['deep-job']));
+    m.jobDepth.set('deep-job', 3);
+    const deep = manager.delegate('lead', { tasks: [{ bot: 'a', goal: 'research this thoroughly please' }] });
+    expect(deep).toMatchObject({ ok: false });
+    expect((deep as { error: string }).error).toMatch(/Hand-off limit: .*3 hand-offs deep/);
+    // A fresh run at the top: thirteen tasks in one run is one too many.
+    m.running.set('lead', new Set(['top-job']));
+    const tasks = Array.from({ length: 12 }, (_, i) => ({ bot: ['a', 'b', 'c', 'd'][i % 4], goal: `task number ${i} with enough words` }));
+    expect(manager.delegate('lead', { tasks })).toMatchObject({ ok: true });
+    const more = manager.delegate('lead', { tasks: [{ bot: 'a', goal: 'one more task with words' }] });
+    expect((more as { error: string }).error).toMatch(/at most 12 tasks/);
+  });
+});
