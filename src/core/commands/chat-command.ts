@@ -1202,6 +1202,43 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     return true;
   }
 
+  if (cmd === '/server' || cmd.startsWith('/server ')) {
+    // Remote access is managed on the computer Mercury runs on: the terminal
+    // here, or Mercury Desktop / an attached terminal on this computer —
+    // never from a phone chat or a remote device.
+    const here = channelType === 'cli' || agent.currentMessage?.metadata?.thisComputer === true;
+    if (!here) {
+      await channel.send('`/server` works only on the computer Mercury runs on (its terminal, or Mercury Desktop there).', channelId);
+      return true;
+    }
+    const { runServerCommand } = await import('../../security/server-menu.js');
+    const { localServerOps } = await import('../../security/server-ops.js');
+    const ops = localServerOps({ cloudConnected: () => !!ctx.config().cloud?.enabled, by: channelType === 'cli' ? 'cli' : 'desktop' });
+    const args = trimmed.slice('/server'.length);
+    const prompt = channel as typeof channel & { presentChoicePrompt?: (q: string, o: Array<{ value: string; label: string }>, t?: string) => Promise<string> };
+    const say = async (text: string) => { await channel.send(text, channelId); };
+    if (channel instanceof CLIChannel) {
+      await channel.withMenu(async (select) => {
+        await runServerCommand(args, ops, {
+          choose: async (title, options) => (await select(title, options)) || null,
+          say,
+          // Shown in the menu, not the transcript.
+          secret: async (text) => { await select(text, [{ value: 'ok', label: "I've copied it" }]); },
+        });
+      });
+      return true;
+    }
+    await runServerCommand(args, ops, {
+      choose: async (title, options) => (typeof prompt.presentChoicePrompt === 'function' ? (await prompt.presentChoicePrompt(title, options, channelId)) || null : null),
+      say,
+      secret: async (text) => {
+        if (typeof prompt.presentChoicePrompt === 'function') await prompt.presentChoicePrompt(text, [{ value: 'ok', label: "I've copied it" }], channelId);
+        else await say(text);
+      },
+    });
+    return true;
+  }
+
   if (cmd.startsWith('/research')) {
     const rawArgs = trimmed.slice('/research'.length).trim();
     const sub = rawArgs.toLowerCase();

@@ -61,6 +61,7 @@ import { registerPluginsCli } from './cli/plugins-cli.js';
 import { PersonVerifier, personCheckPrompt, parsePersonCheck } from './memory/person-verifier.js';
 import { setPersonVerifier } from './web/api/brain.js';
 import { registerDevicesCli } from './cli/devices-cli.js';
+import { registerServerCli } from './cli/server-cli.js';
 import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
 import { runStorageDoctor } from './utils/storage-doctor.js';
@@ -4214,7 +4215,18 @@ program
   .option('--storage', 'Show SQLite backend, database files and row counts')
   .option('--mcp', 'Connect to each configured MCP server and report its status')
   .option('--plugins', 'Check installed plugins and why any are turned off')
+  .option('--security', 'Check remote access and security (password, devices, file permissions, tunnel)')
   .action(async (opts) => {
+    if (opts.security) {
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const { findingsText } = await import('./security/server-menu.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      console.log(`\n  Security: ${summarizeFindings(findings)}\n`);
+      console.log(findingsText(findings).split('\n').map((l) => `  ${l}`).join('\n'));
+      console.log(chalk.dim('\n  Manage remote access with `mercury server` (or /server in the terminal chat).\n'));
+      if (findings.some((f) => f.level === 'risk')) process.exitCode = 1;
+      return;
+    }
     {
       // Keys that cannot be right — say so before anything is tried.
       const { checkKeyShapes } = await import('./providers/key-shape.js');
@@ -4237,6 +4249,14 @@ program
     }
     const mcpSummary = summarizeMcpConfig(loadConfig().mcp);
     if (mcpSummary) console.log(chalk.dim(`  ${mcpSummary}`));
+    {
+      // One line about security on every doctor run; details with --security.
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const summary = summarizeFindings(findings);
+      const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
+      console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));
+    }
     if (opts.plugins) {
       const { runPluginDoctor } = await import('./cli/plugins-cli.js');
       await runPluginDoctor();
@@ -5096,6 +5116,7 @@ serviceCmd
   });
 
 registerDevicesCli(program);
+registerServerCli(program);
 
   program
   .command('upgrade')

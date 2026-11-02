@@ -37,7 +37,7 @@ export const RESERVED_PLUGIN_IDS: ReadonlySet<string> = new Set(['mcp']);
  */
 export const RESERVED_COMMANDS: ReadonlySet<string> = new Set([
   'agents', 'bg', 'bot', 'bots', 'budget', 'call', 'calls', 'chat', 'cloud', 'code', 'halt', 'help', 'log', 'memory', 'menu', 'models', 'model',
-  'permissions', 'plugin', 'plugins', 'progress', 'research', 'reset', 'saver', 'session', 'sessions', 'skills', 'spotify',
+  'permissions', 'plugin', 'plugins', 'progress', 'research', 'reset', 'server', 'saver', 'session', 'sessions', 'skills', 'spotify',
   'status', 'stop', 'stream', 'tools', 'update', 'view', 'whatsnew', 'ws', 'start', 'skip', 'new', 'compact', 'clear',
   'approve', 'deny', 'yes', 'no', 'cancel', 'pair', 'unpair', 'telegram', 'discord', 'slack', 'signal', 'web', 'exit', 'quit',
   'usage', 'cost', 'doctor', 'settings', 'config', 'login', 'logout', 'upgrade', 'version', 'about', 'mcp',

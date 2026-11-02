@@ -15,6 +15,7 @@ import { isThisComputer, originOf, principalKey, principalLabel, principalOf } f
  */
 
 export const ACTION_APPROVAL_TTL_MS = 10 * 60_000;
+const MAX_OPEN_PER_DEVICE = 3;
 
 /** Where approvals reach the owner ("Telegram", "this computer"), for the message the device shows. */
 let routes: () => string[] = () => ['this computer'];
@@ -54,8 +55,15 @@ export function requireOwner(c: Context, action: SensitiveAction): Response | nu
     if (known && known.status === 'denied') return c.json({ error: `The owner said no to: ${action.title}.`, approvalDenied: true }, 403);
     if (known && known.status === 'pending') return c.json({ error: `Still waiting for the owner to approve: ${action.title}.`, approvalRequired: true, approvalId: known.id, code: known.code, where: whereToApprove() }, 428);
   }
-  const a = approvals.request({ kind: 'action', title: action.title, detail: action.detail, who, ip, scope: { principal: key, action: action.id } }, ACTION_APPROVAL_TTL_MS);
-  audit('action.requested', { who, ip, detail: action.title });
+  // Asking again (a retry, a double click) reuses the question already waiting:
+  // a device can't flood the owner's phone. Three open questions per device at most.
+  const scope = { principal: key, action: action.id };
+  const open = approvals.pendingFor(scope);
+  if (!open && approvals.pendingCount(key) >= MAX_OPEN_PER_DEVICE) {
+    return c.json({ error: 'Too many questions are waiting for the owner from this device. Wait for an answer first.', tooManyApprovals: true }, 429);
+  }
+  const a = open ?? approvals.request({ kind: 'action', title: action.title, detail: action.detail, who, ip, scope }, ACTION_APPROVAL_TTL_MS);
+  if (!open) audit('action.requested', { who, ip, detail: action.title });
   return c.json({
     error: `Waiting for the owner to approve: ${action.title}. Approve it on ${whereToApprove()} (code ${a.code}), then try again.`,
     approvalRequired: true,

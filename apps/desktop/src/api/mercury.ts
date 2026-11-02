@@ -7,7 +7,7 @@ import { http, ApiError } from "./client";
 import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
   BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
 export const health = {
@@ -27,22 +27,45 @@ export const health = {
 };
 
 export const auth = {
-  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string): Promise<PairResponse> => {
+  /** Sign in for a device token. From another device the owner approves it first (a PendingPair). */
+  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string): Promise<PairResponse | PendingPair> => {
     const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, deviceName, platform }),
     });
-    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse> & { error?: string };
+    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse & PendingPair> & { error?: string };
     if (!res.ok) {
       const retry = res.headers.get("Retry-After");
       throw new ApiError(body.error || `Pairing failed (${res.status})`, res.status, retry ? Number(retry) : null);
     }
-    return body as PairResponse;
+    return body as PairResponse | PendingPair;
+  },
+  /** Ask how a pairing stands; the runtime answers within ~25 s if the owner decides meanwhile. */
+  pollPair: async (baseUrl: string, pairingId: string, pollToken: string, signal?: AbortSignal): Promise<{ status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string }> => {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pairingId, pollToken }),
+      signal,
+    });
+    return (await res.json().catch(() => ({ status: "error", error: `Mercury answered ${res.status}` }))) as { status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string };
+  },
+  /** Sign a device out on a runtime it may not be connected to right now (removing a remote connection). */
+  revokeAt: async (baseUrl: string, token: string): Promise<void> => {
+    await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/revoke`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) });
   },
   devices: () => http.get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
   revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   revokeSelf: () => http.post<{ success: boolean }>("/api/auth/token/revoke"),
+};
+
+/** The owner's security questions, on the runtime's own computer. */
+export const security = {
+  approvals: () => http.get<{ pending: OwnerApproval[]; routes: string[] }>("/api/security/approvals"),
+  decide: (id: string, decision: "allow" | "deny") => http.post<{ approval: OwnerApproval }>(`/api/security/approvals/${encodeURIComponent(id)}`, { decision, by: "desktop" }),
+  /** A question this device asked (a 428): how it stands. */
+  status: (id: string) => http.get<{ status: OwnerApproval["status"]; code?: string }>(`/api/security/approvals/${encodeURIComponent(id)}/status`),
 };
 
 export const chat = {

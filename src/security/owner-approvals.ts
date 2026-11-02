@@ -122,6 +122,17 @@ export class OwnerApprovals {
     return true;
   }
 
+  /** A question this principal already has waiting for this action (asking again doesn't ask again). */
+  pendingFor(scope: { principal: string; action: string }): OwnerApproval | null {
+    const a = [...this.items.values()].find((x) => x.status === 'pending' && x.scope?.principal === scope.principal && x.scope?.action === scope.action && this.now() <= x.expiresAt);
+    return a ? { ...a } : null;
+  }
+
+  /** How many questions this principal has waiting. */
+  pendingCount(principal: string): number {
+    return [...this.items.values()].filter((x) => x.status === 'pending' && x.scope?.principal === principal && this.now() <= x.expiresAt).length;
+  }
+
   pending(): OwnerApproval[] {
     this.sweep();
     return [...this.items.values()].filter((a) => a.status === 'pending').sort((x, y) => x.at - y.at).map((a) => ({ ...a }));

@@ -300,7 +300,7 @@ chat.post('/api/chat/send', async (c) => {
       }
       codeCwd = resolvedCwd;
     }
-    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, programming ? { programming, cwd: codeCwd } : undefined);
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c) });
     return c.json({
       sent: true,
       sessionId: session.id,

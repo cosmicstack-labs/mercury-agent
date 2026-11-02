@@ -107,6 +107,12 @@ export const useConnections = create<ConnectionsState>((set, get) => ({
   },
 
   async remove(id) {
+    // Sign this app out on the remote too, so the token stops working there, not only here.
+    const conn = get().connections.find((c) => c.id === id);
+    if (conn?.kind === "remote") {
+      const token = await desktop.secretGet(secretKeyFor(id)).catch(() => null);
+      if (token) await import("~/api/mercury").then(({ auth }) => auth.revokeAt(conn.baseUrl, token)).catch(() => { /* offline: it expires when unused */ });
+    }
     await desktop.secretDelete(secretKeyFor(id)).catch(() => {});
     const connections = get().connections.filter((c) => c.id !== id);
     const activeId = get().activeId === id ? null : get().activeId;

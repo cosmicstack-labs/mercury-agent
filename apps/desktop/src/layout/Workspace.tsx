@@ -23,6 +23,7 @@ import { CloudBanner } from "~/views/settings/Cloud";
 import { CallLayer } from "~/views/call/Call";
 import { useNotifications } from "~/app/notify/notify";
 import { Alerts } from "~/components/Alerts";
+import { OwnerApprovalCards, WaitingForOwner } from "~/components/OwnerApprovals";
 
 registerBuiltinStatusItems();
 
@@ -34,6 +35,8 @@ registerBuiltinStatusItems();
  */
 export function Workspace({ connection, health, onSwitchConnection }: { connection: Connection; health: HealthInfo; onSwitchConnection: () => void }) {
   const view = useUi((s) => s.view);
+  // Security questions are answered here only when this app runs on the Mercury computer.
+  const localConnection = connection.kind === "local";
   useRuntimeEvents(true);
   useNotifications(true);
   usePulsePolling(connection.id);
@@ -67,6 +70,8 @@ export function Workspace({ connection, health, onSwitchConnection }: { connecti
       <StatusBar />
       <CallLayer />
       <Alerts />
+      <WaitingForOwner />
+      <OwnerApprovalCards local={localConnection} />
     </div>
   );
 }

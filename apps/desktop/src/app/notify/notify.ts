@@ -264,6 +264,15 @@ export function useNotifications(enabled: boolean): void {
     if (!enabled) return;
     const stream = openStream("/api/chat/activity", {
       onEvent: (event, raw) => {
+        if (event === "owner_approval") {
+          // A device or a remote action waiting for the owner (only sent to an app on the Mercury computer).
+          try {
+            const data = JSON.parse(raw) as Record<string, unknown>;
+            void import("~/components/OwnerApprovals").then(({ onOwnerApprovalEvent }) => onOwnerApprovalEvent(data));
+            if (data.change === "new" && !windowFocused()) tell("needs", "security", data.kind === "pair" ? "A new device wants to connect" : "Mercury needs your approval", `${String(data.kind === "pair" ? data.who : data.title ?? "")} · code ${String(data.code ?? "")}`);
+          } catch { /* ignore a bad line */ }
+          return;
+        }
         if (event !== "activity") return;
         try { handleActivity(JSON.parse(raw) as ActivityEvent); } catch { /* ignore a bad line */ }
       },

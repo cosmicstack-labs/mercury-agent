@@ -27,6 +27,41 @@ export interface PairResponse {
   features: string[];
 }
 
+/** Pairing from another device: the runtime's owner approves it first. */
+export interface PendingPair {
+  pending: true;
+  pairingId: string;
+  pollToken: string;
+  /** Short code the owner sees ("approve K7Q2M"). */
+  code: string;
+  /** Where the owner approves it ("Telegram or this computer…"). */
+  where: string;
+  expiresAt: number;
+}
+
+/** A remote device asked for something sensitive: the owner approves it first. */
+export interface ApprovalNeeded {
+  approvalRequired: true;
+  approvalId: string;
+  code: string;
+  where: string;
+  error: string;
+  expiresAt?: number;
+}
+
+/** A security question waiting for the owner (Mercury Desktop on the runtime's own computer). */
+export interface OwnerApproval {
+  id: string;
+  code: string;
+  kind: "pair" | "action";
+  title: string;
+  detail?: string;
+  who: string;
+  ip?: string;
+  expiresAt: number;
+  status: "pending" | "allowed" | "denied" | "expired";
+}
+
 // ── Chat ──
 export interface ChatThread {
   id: string;

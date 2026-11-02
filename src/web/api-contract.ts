@@ -54,6 +54,7 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'artifacts.convert', // GET /api/artifacts/:id/file?as=pdf|docx, POST /api/artifacts/:id/export { dest, as } — Markdown/text as PDF or Word
   'artifacts.folder',  // GET /api/artifacts/folder (the output folder, loose files), POST /api/artifacts/folder/tidy
   'chat.favicon',      // GET /api/chat/favicon?domain= — a site's icon (204 when it has none), fetched and cached by the runtime
+  'security.remote',   // device pairing needs the owner (202 + POST /api/auth/token/pending), sensitive remote actions 428 + X-Mercury-Approval, /api/security/* (this computer), SSE 'owner_approval' (local activity), expired devices 401 { expired }
   'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 

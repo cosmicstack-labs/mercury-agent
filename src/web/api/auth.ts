@@ -157,6 +157,8 @@ interface PendingPairing {
   deviceName: unknown;
   platform: unknown;
   ip?: string;
+  /** Who asked (the sign-in limiter's key), so one client can't pile up questions. */
+  client: string;
   /** Set once the token was handed out: a second poll can't mint another. */
   done?: boolean;
 }
@@ -208,6 +210,9 @@ auth.post('/api/auth/token', async (c) => {
     }
   }
 
+  // One waiting sign-in per client at a time: asking again doesn't message the owner again.
+  const waitingHere = [...pairings.values()].filter((p) => !p.done && p.client === key && ownerApprovals().get(p.approvalId)?.status === 'pending');
+  if (waitingHere.length >= 2) return c.json({ error: 'A sign-in from here is already waiting for the owner. Wait for their answer.' }, 429);
   // Check the limit now, not after the owner said yes.
   if (listDevices().length >= (await import('../../security/remote-settings.js')).readRemoteSettings().maxDevices) {
     return c.json({ error: 'This Mercury has reached its device limit. Revoke a device, or raise the limit with /server.' }, 409);
@@ -224,7 +229,7 @@ auth.post('/api/auth/token', async (c) => {
   }, PAIRING_TTL_MS);
   const pairingId = randomBytes(12).toString('base64url');
   const pollToken = randomBytes(24).toString('base64url');
-  pairings.set(pairingId, { approvalId: approval.id, pollHash: sha(pollToken), deviceName: body.deviceName, platform: body.platform, ip });
+  pairings.set(pairingId, { approvalId: approval.id, pollHash: sha(pollToken), deviceName: body.deviceName, platform: body.platform, ip, client: key });
   const timer = setTimeout(() => pairings.delete(pairingId), PAIRING_TTL_MS + 5 * 60_000);
   timer.unref?.();
   audit('pair.requested', { who: name, ip });

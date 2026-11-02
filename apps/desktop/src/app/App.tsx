@@ -10,6 +10,10 @@ import { Button } from "~/components/ui/Button";
 import { desktop } from "~/shell/tauri";
 import { updateLocalRuntime } from "~/shell/updateLocal";
 import { configureApi } from "~/api/client";
+import { installApprovalHandler } from "~/components/OwnerApprovals";
+
+// A remote Mercury asks its owner before some actions: wait for the answer, then carry on.
+installApprovalHandler();
 import { useRuntimeState } from "./store";
 
 /**

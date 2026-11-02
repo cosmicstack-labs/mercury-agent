@@ -130,6 +130,26 @@ describe('the owner approves sensitive actions from other devices', () => {
     expect((await a.request('http://127.0.0.1/api/danger', { method: 'POST', ...bearer(phone.token, { 'X-Mercury-Approval': ask.approvalId }) }, LAN)).status).toBe(428);
   });
 
+  it("asking again reuses the waiting question, and a device can't flood the owner", async () => {
+    const a = await app();
+    const phone = await device();
+    const sent: string[] = [];
+    ownerApprovals().onChange((q, change) => { if (change === 'new') sent.push(q.id); });
+    const one = (await (await a.request('http://127.0.0.1/api/danger', { method: 'POST', ...bearer(phone.token) }, LAN)).json()) as { approvalId: string };
+    const two = (await (await a.request('http://127.0.0.1/api/danger', { method: 'POST', ...bearer(phone.token) }, LAN)).json()) as { approvalId: string };
+    expect(two.approvalId).toBe(one.approvalId);
+    expect(sent).toHaveLength(1);
+    const { requireOwner } = await import('../web/owner-gate.js');
+    const b = new Hono();
+    const { authGuard } = await import('../web/middleware.js');
+    b.use('*', authGuard);
+    b.post('/api/x/:n', (c) => requireOwner(c, { id: `x.${c.req.param('n')}`, title: 'x' }) ?? c.json({}));
+    expect((await b.request('http://127.0.0.1/api/x/1', { method: 'POST', ...bearer(phone.token) }, LAN)).status).toBe(428);
+    expect((await b.request('http://127.0.0.1/api/x/2', { method: 'POST', ...bearer(phone.token) }, LAN)).status).toBe(428);
+    expect((await b.request('http://127.0.0.1/api/x/3', { method: 'POST', ...bearer(phone.token) }, LAN)).status).toBe(429);
+    expect(sent).toHaveLength(3);
+  });
+
   it('a denial is a 403 that says so; on this computer nothing is asked', async () => {
     const a = await app();
     const phone = await device();

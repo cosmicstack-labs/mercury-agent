@@ -12,6 +12,17 @@ export interface ApiTarget {
 let target: ApiTarget = { baseUrl: "", token: null };
 let unauthorizedHandler: (() => void) | null = null;
 
+/**
+ * A remote runtime asks its owner before some actions (428 + an approval id).
+ * The app waits for the owner's answer (approvalHandler shows that), then
+ * repeats the request once with the approval. False = denied or given up.
+ */
+export type ApprovalHandler = (needed: { approvalId: string; code: string; where: string; error: string; expiresAt?: number }) => Promise<boolean>;
+let approvalHandler: ApprovalHandler | null = null;
+export function setApprovalHandler(fn: ApprovalHandler | null): void {
+  approvalHandler = fn;
+}
+
 export function configureApi(next: Partial<ApiTarget> & { onUnauthorized?: (() => void) | null }): void {
   target = {
     baseUrl: next.baseUrl === undefined ? target.baseUrl : normalizeBaseUrl(next.baseUrl),
@@ -56,10 +67,18 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   });
   if (res.status === 401) {
     unauthorizedHandler?.();
-    throw new ApiError("Unauthorized", 401);
+    // An expired device (unused too long) is told why.
+    const body = (await res.json().catch(() => ({}))) as { error?: string; expired?: boolean };
+    throw new ApiError(body.expired && body.error ? body.error : "Unauthorized", 401, null, body);
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
+    const asked = (init.headers as Record<string, string> | undefined)?.["X-Mercury-Approval"];
+    if (res.status === 428 && body.approvalRequired === true && typeof body.approvalId === "string" && approvalHandler && !asked) {
+      const ok = await approvalHandler({ approvalId: body.approvalId, code: String(body.code ?? ""), where: String(body.where ?? "the computer Mercury runs on"), error: String(body.error ?? ""), expiresAt: typeof body.expiresAt === "number" ? body.expiresAt : undefined });
+      if (!ok) throw new ApiError("The owner didn't approve this.", 403, null, { approvalDenied: true });
+      return request<T>(path, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), "X-Mercury-Approval": body.approvalId } });
+    }
     const retry = res.headers.get("Retry-After");
     throw new ApiError(body.error || `Request failed (${res.status})`, res.status, retry ? Number(retry) : null, body);
   }
