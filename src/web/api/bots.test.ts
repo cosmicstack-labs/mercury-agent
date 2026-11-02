@@ -466,3 +466,24 @@ describe('web bots API — editing routines and the inbox', () => {
     expect(roster.bots.find((b: { id: string }) => b.id === 'scout')).toMatchObject({ unread: 1, tier: expect.any(String) });
   });
 });
+
+describe('web bots API — persona builder and plan', () => {
+  const post = (path: string, body: unknown) =>
+    app.request(path, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  it('the persona builder needs some text, and says so plainly when no model can build', async () => {
+    expect((await post('/api/bots/persona-builder', { text: 'hi' })).status).toBe(400);
+    // The stub provider answers "ok": not a persona, so nothing is replaced.
+    const res = await post('/api/bots/persona-builder', { text: 'Watch Hacker News for Rust posts and report new ones.', name: 'Rust Watch' });
+    expect(res.status).toBe(503);
+    expect((await jreq(res)).error).toMatch(/unchanged/);
+  });
+
+  it('the plan falls back to one bot when the model gives no usable plan, and creates nothing', async () => {
+    const before = store.list().length;
+    const body = await jreq(await post('/api/bots/plan', { name: 'Newsroom', description: 'News', persona: 'Write the news' }));
+    expect(body.plan).toMatchObject({ shape: 'solo', crew: [] });
+    expect(typeof body.maxCrew).toBe('number');
+    expect(store.list().length).toBe(before);
+  });
+});

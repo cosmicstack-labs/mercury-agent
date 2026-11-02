@@ -18,7 +18,7 @@ import { BotStore, deliverableFileName, BOT_JOURNAL_FILENAME, BOT_PERMISSIONS_FI
 import { BotJournal, type BotTranscript, type BotUsage } from './journal.js';
 import { BotQueue, idempotencyKeyFor, LEASE_SECONDS, type DurableBotJob } from './queue.js';
 import { sweepSharedSandbox } from './retention.js';
-import { proposeCrew } from './fleet-onboarding.js';
+import { planBotShape, proposeCrew, type BotShapePlan } from './fleet-onboarding.js';
 import { createBotCapabilityRegistry, filterBotTools } from './registry-factory.js';
 import { createBotSendTool } from './tools/bot-send.js';
 import { BotTaskStore, renderTaskPrompt, renderBatchDigest, isTerminalTask, type BotTask, type BotTaskResult } from './tasks.js';
@@ -1466,6 +1466,16 @@ export class BotManager {
   // ---- fleet management (shared by onboarding, lead tools, API) -----------
 
   /** Max crew per lead — CrewAI guidance: 3-6 for delegation accuracy. */
+  /** The persona builder (no save): rough instructions → the structured persona format. Null when unavailable. */
+  async buildPersona(text: string, name: string): Promise<string | null> {
+    return refinePersona(text, name || 'Bot', this.providers.getDefault());
+  }
+
+  /** "Let Mercury decide": solo or fleet for what the owner described, with a proposed crew. Nothing is created. */
+  async planShape(input: { name: string; description: string; persona: string }): Promise<BotShapePlan> {
+    return planBotShape(input, this.providers.getDefault(), this.maxCrew());
+  }
+
   maxCrew(): number {
     return this.config.bots?.fleets?.maxCrew ?? 6;
   }

@@ -42,6 +42,27 @@ app.get('/api/bots/inbox', (c: Context) => {
   return c.json({ entries, unread: botManager.inbox.unread(botId), available: true });
 });
 
+// The persona builder, for the app's editors: rough instructions in, the
+// structured persona out. Nothing is saved; the owner reviews it first.
+app.post('/api/bots/persona-builder', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; name?: unknown };
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (text.length < 10) return c.json({ error: 'Write a few words about what the bot should do first.' }, 400);
+  const persona = await botManager.buildPersona(text, typeof body.name === 'string' ? body.name.slice(0, 60) : 'Bot');
+  if (!persona) return c.json({ error: 'The persona builder isn\'t available right now (no model answered). Your text is unchanged.' }, 503);
+  return c.json({ persona });
+});
+
+// "Let Mercury decide": one bot or a fleet for this job, and the proposed crew. Nothing is created.
+app.post('/api/bots/plan', async (c: Context) => {
+  if (!botManager) return c.json({ error: 'Bots not available' }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { name?: unknown; description?: unknown; persona?: unknown };
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const plan = await botManager.planShape({ name: str(body.name, 60) || 'Bot', description: str(body.description, 300), persona: str(body.persona, 8000) });
+  return c.json({ plan, maxCrew: botManager.maxCrew() });
+});
+
 // Bots asking the owner mid-run: what's waiting, and the answer.
 app.get('/api/bots/approvals', (c: Context) => {
   if (!botManager) return c.json({ approvals: [], available: false });
