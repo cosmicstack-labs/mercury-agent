@@ -1472,7 +1472,7 @@ export class BotManager {
   }
 
   /** "Let Mercury decide": solo or fleet for what the owner described, with a proposed crew. Nothing is created. */
-  async planShape(input: { name: string; description: string; persona: string }): Promise<BotShapePlan> {
+  async planShape(input: { name: string; description: string; persona: string; fleet?: boolean }): Promise<BotShapePlan> {
     return planBotShape(input, this.providers.getDefault(), this.maxCrew());
   }
 

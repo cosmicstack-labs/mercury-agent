@@ -90,7 +90,7 @@ export interface BotShapePlan {
  * anything created. Unusable output falls back to solo with no crew.
  */
 export async function planBotShape(
-  input: { name: string; description: string; persona: string },
+  input: { name: string; description: string; persona: string; fleet?: boolean },
   provider: BaseProvider,
   maxCrew = 6,
 ): Promise<BotShapePlan> {
@@ -105,7 +105,9 @@ What it should do:
 ${input.persona.slice(0, 4000) || '(not written yet)'}
 """
 
-Choose "fleet" ONLY when the job has clearly separate stages or specialties that each need their own focus (e.g. research → write → fact-check → publish, or monitoring several unrelated sources). Every hand-off costs a full extra run, so a single focused job, a monitor, a digest, a researcher or a writer is "solo". When in doubt, choose solo.
+${input.fleet
+    ? 'The owner has decided this is a FLEET: answer "fleet" and design the crew — the fewest distinct specialists that cover the job.'
+    : 'Choose "fleet" ONLY when the job has clearly separate stages or specialties that each need their own focus (e.g. research → write → fact-check → publish, or monitoring several unrelated sources). Every hand-off costs a full extra run, so a single focused job, a monitor, a digest, a researcher or a writer is "solo". When in doubt, choose solo.'}
 
 Output ONLY JSON, no preamble, no code fences:
 {

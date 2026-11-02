@@ -57,9 +57,10 @@ app.post('/api/bots/persona-builder', async (c: Context) => {
 // "Let Mercury decide": one bot or a fleet for this job, and the proposed crew. Nothing is created.
 app.post('/api/bots/plan', async (c: Context) => {
   if (!botManager) return c.json({ error: 'Bots not available' }, 400);
-  const body = (await c.req.json().catch(() => ({}))) as { name?: unknown; description?: unknown; persona?: unknown };
+  const body = (await c.req.json().catch(() => ({}))) as { name?: unknown; description?: unknown; persona?: unknown; fleet?: unknown };
   const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
-  const plan = await botManager.planShape({ name: str(body.name, 60) || 'Bot', description: str(body.description, 300), persona: str(body.persona, 8000) });
+  // fleet: true = the owner chose a fleet; only the crew is being designed.
+  const plan = await botManager.planShape({ name: str(body.name, 60) || 'Bot', description: str(body.description, 300), persona: str(body.persona, 8000), fleet: body.fleet === true });
   return c.json({ plan, maxCrew: botManager.maxCrew() });
 });
 
