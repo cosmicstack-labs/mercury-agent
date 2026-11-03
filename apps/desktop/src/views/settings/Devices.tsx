@@ -88,7 +88,24 @@ function Shell({ children, badge, title = "Microphone & permissions" }: { childr
 
 function PluginDevices({ plugin, multiple, onChange, onReload }: { plugin: DevicePlugin; multiple: boolean; onChange: (r: DeviceReport) => void; onReload: () => Promise<void> }) {
   const [updating, setUpdating] = useState(false);
+  const [result, setResult] = useState<{ text: string; ok: boolean } | null>(null);
   const title = multiple ? `${plugin.name}: microphone & permissions` : "Microphone & permissions";
+
+  // Say what happened: an update that found nothing newer, or failed, used to look like a button that did nothing.
+  async function update() {
+    setUpdating(true);
+    setResult(null);
+    try {
+      const r = await api.plugins.update(plugin.id);
+      const mine = r.changed.find((c) => c.id === plugin.id);
+      if (mine) { setResult({ text: `Updated ${plugin.name} to ${mine.to}.`, ok: true }); await onReload(); }
+      else setResult({ text: `No newer ${plugin.name} is available yet. Mercury checks the catalog again later.`, ok: false });
+    } catch (e) {
+      setResult({ text: errorText(e), ok: false });
+    } finally {
+      setUpdating(false);
+    }
+  }
   if (!plugin.report) {
     const outdated = /update it/i.test(plugin.error ?? "");
     return (
@@ -96,9 +113,10 @@ function PluginDevices({ plugin, multiple, onChange, onReload }: { plugin: Devic
         <p className="text-sm text-ink3">{plugin.error}</p>
         {outdated && (
           <div>
-            <Button size="sm" variant="primary" disabled={updating} onClick={() => { setUpdating(true); void api.plugins.update(plugin.id).then(onReload).catch(() => {}).finally(() => setUpdating(false)); }}>
+            <Button size="sm" variant="primary" disabled={updating} onClick={() => void update()}>
               {updating ? <Spinner size={13} /> : null} Update {plugin.name}
             </Button>
+            {result && <p className={result.ok ? "mt-2 text-xs text-accent" : "mt-2 text-xs text-amber"}>{result.text}</p>}
           </div>
         )}
       </Shell>
