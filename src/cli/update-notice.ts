@@ -28,6 +28,8 @@ interface UpdateState {
   checkedAt?: number;
   /** Latest version observed by the last successful check. */
   latestSeen?: string;
+  /** Manifest messages already shown in the terminal (by id). */
+  shownMessages?: string[];
 }
 
 const STATE_PATH = () => join(getMercuryHome(), 'update-state.json');
@@ -162,4 +164,16 @@ export function latestSeenUpdate(currentVersion: string): string | null {
   const state = loadUpdateState();
   if (state.latestSeen && isNewerVersion(state.latestSeen, currentVersion)) return state.latestSeen;
   return null;
+}
+/** Manifest message ids the terminal already showed. */
+export function shownMessageIds(): Set<string> {
+  return new Set(loadUpdateState().shownMessages ?? []);
+}
+
+/** Remember shown messages, and the newest version seen (for `/update ignore`). */
+export function rememberNotices(ids: string[], latest?: string | null): void {
+  const state = loadUpdateState();
+  if (ids.length) state.shownMessages = [...new Set([...(state.shownMessages ?? []), ...ids])].slice(-200);
+  if (latest) state.latestSeen = latest;
+  saveUpdateState(state);
 }

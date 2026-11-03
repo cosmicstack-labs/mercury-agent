@@ -1201,6 +1201,11 @@ export class Agent {
   }
 
   /** Is a turn for this session running, or waiting in the queue? */
+  /** Messages waiting behind the running one (the updater waits for them). */
+  get queuedCount(): number {
+    return this.messageQueue.length;
+  }
+
   isBusyWith(sessionId: string): boolean {
     const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
     if (this.processing && of(this.currentMessage) === sessionId) return true;

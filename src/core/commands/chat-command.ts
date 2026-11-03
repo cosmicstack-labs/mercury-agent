@@ -163,7 +163,12 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
     const runningVersion = channelType === 'cli' && channel instanceof CLIChannel
       ? (channel.getTuiState().version || 'dev')
       : 'dev';
-    await channel.send(whatsNewText(runningVersion), channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
+    // The signed update manifest's notes for this version, when it has them.
+    const { readManifestCache, latestFor } = await import('../../updates/manifest.js');
+    const cached = readManifestCache().manifest;
+    const release = [latestFor(cached, 'server', 'stable'), latestFor(cached, 'server', 'dev')].find((r) => r && r.version === runningVersion.replace(/^v/, '') && r.notes);
+    const text = release?.notes ? `${release.notes}${release.notesUrl ? `\n\n${release.notesUrl}` : ''}` : whatsNewText(runningVersion);
+    await channel.send(text, channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
     return true;
   }
 
@@ -174,6 +179,12 @@ export async function handleChatCommand(agent: Agent, content: string, channelTy
       const runningVersion = channelType === 'cli' && channel instanceof CLIChannel
         ? (channel.getTuiState().version || 'dev')
         : 'dev';
+      const { readManifestCache, requiredFor } = await import('../../updates/manifest.js');
+      const required = requiredFor(readManifestCache().manifest, 'server', runningVersion);
+      if (required) {
+        await channel.send(`This update is required and can't be ignored: ${required.reason} Run \`mercury upgrade\` in your terminal; it goes back on its own if anything fails.`, channelId);
+        return true;
+      }
       const target = latestSeenUpdate(runningVersion);
       if (!target) {
         await channel.send('Nothing to ignore — no update was offered for this version.', channelId);

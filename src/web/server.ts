@@ -33,6 +33,7 @@ import pluginRoutes from './api/plugins.js';
 import voiceRoutes from './api/voice.js';
 import deviceRoutes from './api/devices.js';
 import securityRoutes from './api/security.js';
+import updatesRoutes from './api/updates.js';
 import { bodyLimit } from 'hono/body-limit';
 import { migrateDevices } from './devices.js';
 import { BoardManager } from '../core/board-manager.js';
@@ -136,6 +137,7 @@ app.route('/', pluginRoutes);
 app.route('/', voiceRoutes);
 app.route('/', deviceRoutes);
 app.route('/', securityRoutes);
+app.route('/', updatesRoutes);
 
 // ── Legacy static assets (vendor fonts, icons, wasm — still needed by React SPA) ──
 app.get('/vendor/*', (c) => {

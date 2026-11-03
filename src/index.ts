@@ -61,6 +61,7 @@ import { registerPluginsCli } from './cli/plugins-cli.js';
 import { PersonVerifier, personCheckPrompt, parsePersonCheck } from './memory/person-verifier.js';
 import { setPersonVerifier } from './web/api/brain.js';
 import { registerDevicesCli } from './cli/devices-cli.js';
+import { registerUpdateCli, runUpgrade } from './cli/upgrade-cli.js';
 import { registerServerCli } from './cli/server-cli.js';
 import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
@@ -3559,6 +3560,19 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
     off: (id) => { if (agent.researchMode.armedForSession(id)) agent.researchMode.setOff(); webChannel.sendResearchArmed(false, id); },
   });
   setWebBudgetControls({ config: () => config, tokens: () => tokenBudget, saver: () => agent.saverMode });
+  // Updates wait for running work: a reply, queued messages, bot turns.
+  {
+    const { setUpdateBusyProbe, reconcileUpdateJob } = await import('./updates/server-updater.js');
+    const { versionString } = await import('./web/api/status.js');
+    setUpdateBusyProbe(() => {
+      if (agent.processing) return 'a reply';
+      if (agent.queuedCount > 0) return agent.queuedCount === 1 ? 'a queued message' : `${agent.queuedCount} queued messages`;
+      const bots = botManager?.runningJobs() ?? 0;
+      if (bots > 0) return bots === 1 ? 'a bot run' : `${bots} bot runs`;
+      return null;
+    });
+    try { reconcileUpdateJob(versionString()); } catch (err) { logger.debug({ err }, 'updates: reconcile failed'); }
+  }
   // Titles made before they were checked: fix them once, quietly, after start-up.
   if (!daemonOwnsRuntime) {
     const titleRepair = setTimeout(() => { void agent.repairSessionTitles().catch(() => {}); }, 20_000);
@@ -4257,6 +4271,13 @@ program
       const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
       console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));
     }
+    try {
+      // One line about updates: current, newest, required, blocked.
+      const { serverUpdateStatus } = await import('./updates/status.js');
+      const { updatesLine } = await import('./updates/notices.js');
+      const u = updatesLine(await serverUpdateStatus({ current: pkgVersion }));
+      console.log(u.level === 'risk' ? chalk.red(u.text) : u.level === 'note' ? chalk.yellow(u.text) : chalk.dim(u.text));
+    } catch { /* offline: say nothing */ }
     if (opts.plugins) {
       const { runPluginDoctor } = await import('./cli/plugins-cli.js');
       await runPluginDoctor();
@@ -5118,28 +5139,20 @@ serviceCmd
 registerDevicesCli(program);
 registerServerCli(program);
 
-  program
+registerUpdateCli(program, pkgVersion);
+
+program
   .command('upgrade')
-  .description('Upgrade Mercury to the latest version')
+  .description('Upgrade Mercury to the latest version (goes back on its own if the new version fails)')
   .option('--force', 'Reinstall even when already on the latest version')
-  .action(async (opts: { force?: boolean }) => {
-    console.log('');
-    console.log(chalk.cyan(`  Mercury ${chalk.white(`v${pkgVersion}`)}`));
-    // Already current? Say so and touch nothing — not the daemon, not the
-    // binary. (This used to stop the daemon and re-run the installer
-    // unconditionally: "upgrade" on the latest build was a restart.)
-    if (!opts.force) {
-      const { fetchLatestVersion } = await import('./cli/latest-version.js');
-      const channel = isDevBuild(pkgVersion) ? 'dev' : 'stable';
-      const latest = await fetchLatestVersion(channel);
-      if (latest && latest === pkgVersion) {
-        console.log(chalk.green(`  ✓ Already on the latest ${channel === 'dev' ? 'dev build' : 'version'} (v${pkgVersion}). Nothing to do.`));
-        console.log(chalk.dim('  Use mercury upgrade --force to reinstall anyway.'));
-        console.log('');
-        return;
-      }
-      if (latest) console.log(chalk.dim(`  Latest on the ${channel} channel: v${latest}`));
-    }
+  .option('--check', 'Only show whether a newer version exists and what is in it')
+  .option('--now', "Don't wait for running work to finish")
+  .action(async (opts: { force?: boolean; check?: boolean; now?: boolean }) => {
+    await runUpgrade(pkgVersion, opts, legacyReinstall);
+  });
+
+/** `--force` on the newest version: re-run the installer (binary) or npm (npm install), as before. */
+async function legacyReinstall(): Promise<void> {
     // A dev binary upgrades itself in place on the same channel (re-running
     // the dev installer below); npm builds take the npm stable track.
     if (isDevBuild(pkgVersion)) {
@@ -5269,7 +5282,7 @@ registerServerCli(program);
     }
 
     console.log('');
-  });
+  }
 
 program
   .command('code')

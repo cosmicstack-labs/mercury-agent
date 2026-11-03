@@ -17,14 +17,21 @@ describe('latest version resolution (mercury upgrade is a no-op when current)', 
     expect(parseDevVersionFromReleaseName('Mercury Dev')).toBeNull();
   });
 
-  it('the launcher checks the channel version before stopping the daemon or running an installer', () => {
-    const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
-    const cmd = index.slice(index.indexOf(".command('upgrade')"), index.indexOf(".command('upgrade')") + 6000);
-    const check = cmd.indexOf('fetchLatestVersion(');
-    const stop = cmd.indexOf('await stopDaemon()');
-    expect(check).toBeGreaterThan(0);
-    expect(stop).toBeGreaterThan(check);
-    expect(cmd).toContain("Already on the latest");
+  it('the launcher checks the newest version before stopping anything; only --force reinstalls the same one', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const index = readFileSync(join(here, '..', 'index.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const cmd = index.slice(index.indexOf(".command('upgrade')"), index.indexOf(".command('upgrade')") + 1200);
     expect(cmd).toContain("'--force'");
+    expect(cmd).toContain('runUpgrade(');
+    const cli = readFileSync(join(here, 'upgrade-cli.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const run = cli.slice(cli.indexOf('export async function runUpgrade('));
+    const check = run.indexOf('serverUpdateStatus(');
+    const reinstall = run.indexOf('legacyReinstall()');
+    const update = run.indexOf('updateViaRunning(');
+    expect(check).toBeGreaterThan(0);
+    expect(reinstall).toBeGreaterThan(check);
+    expect(update).toBeGreaterThan(check);
+    expect(run).toContain('Already on the newest');
+    expect(run.slice(0, reinstall)).toContain('if (opts.force)');
   });
 });

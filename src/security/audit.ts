@@ -13,7 +13,8 @@ export type AuditKind =
   | 'pair.requested' | 'pair.approved' | 'pair.denied' | 'pair.expired' | 'pair.local'
   | 'device.revoked' | 'device.expired' | 'device.new-location' | 'device.blocked'
   | 'action.requested' | 'action.allowed' | 'action.denied'
-  | 'remote.changed' | 'login.failed' | 'login.locked' | 'password.changed';
+  | 'remote.changed' | 'login.failed' | 'login.locked' | 'password.changed'
+  | 'update.started';
 
 export interface AuditEntry {
   at: string;

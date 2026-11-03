@@ -1928,6 +1928,13 @@ export class BotManager {
   }
 
   /** Fire a bot's configured routine immediately, or send a bare wake turn. */
+  /** How many bot turns are running right now (the updater waits for them). */
+  runningJobs(): number {
+    let n = 0;
+    for (const set of this.running.values()) n += set.size;
+    return n;
+  }
+
   runNow(botId: string, routineName?: string): { accepted: boolean; jobId?: string; reasonCode?: string } {
     const manifest = this.store.get(botId);
     if (!manifest) return { accepted: false, reasonCode: 'target_unknown' };
