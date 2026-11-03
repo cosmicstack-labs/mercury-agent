@@ -1,0 +1,147 @@
+---
+id: macos
+title: Mercury Desktop on macOS
+sidebar_label: macOS guide & fixes
+description: "Install Mercury Desktop on a Mac, open it the first time, and fix 'Apple could not verify', 'is damaged' and other macOS problems, step by step."
+keywords: [mercury desktop mac, macos, apple could not verify, is damaged and can't be opened, gatekeeper, xattr quarantine, install mercury mac]
+---
+
+Everything about Mercury Desktop on a Mac in one place: installing it, opening it the first time, and what to do when macOS gets in the way. If someone sent you this link, jump to [Fixing problems](#fixing-problems).
+
+You need macOS 11 (Big Sur) or newer, on an Apple Silicon (M1 and newer) or an Intel Mac.
+
+## Install: one command (recommended)
+
+Open **Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type `Terminal`, press <kbd>Return</kbd>), paste this and press <kbd>Return</kbd>:
+
+```bash
+curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh
+```
+
+That's all. In about a minute Mercury is in **Applications** and opens by itself, with no security prompt.
+
+What the command does, in order:
+
+1. Picks the build for your Mac (Apple Silicon or Intel, also when Terminal runs under Rosetta).
+2. Downloads Mercury from the [GitHub release](https://github.com/cosmicstack-labs/mercury-agent/releases/latest).
+3. Checks the download's SHA-256 against the one GitHub recorded for it, and checks the app's code signature is intact. If anything doesn't match, it installs nothing.
+4. Closes Mercury Desktop if it's open (Mercury itself keeps running, so no chat or bot stops), replaces the app, and keeps the old one until the new one is in place.
+5. Opens it.
+
+You can [read the script](https://mercuryagent.sh/install-desktop.sh) before running it. Run the same command again any time to reinstall or repair the app.
+
+**Why there's no prompt this way:** macOS checks apps that a browser downloaded, because the browser marks them as coming from the internet. Mercury Desktop isn't signed with an Apple Developer ID yet, so that check stops it. A download made with `curl` isn't marked, so the check doesn't run.
+
+Options, if you need them:
+
+| Variable | What it does |
+|---|---|
+| `MERCURY_VERSION=1.5.0` | Install that version instead of the latest |
+| `MERCURY_APP_DIR=~/Applications` | Install somewhere else (default: `/Applications`, or `~/Applications` if you can't write there) |
+| `MERCURY_NO_OPEN=1` | Don't open the app afterwards |
+
+For example: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | MERCURY_VERSION=1.5.0 sh`
+
+## Install: download the .dmg
+
+If you'd rather not use Terminal:
+
+1. On the [download page](/download), choose **macOS → Apple Silicon** or **Intel**. Not sure which Mac you have? Open the Apple menu → **About This Mac**: "Chip: Apple M…" is Apple Silicon, "Processor: Intel" is Intel.
+2. Open the `.dmg` and drag **Mercury** onto **Applications**.
+3. Open Mercury from Applications. The first time, macOS stops it. Follow [Opening it the first time](#opening-it-the-first-time).
+
+## Opening it the first time
+
+Only needed for the `.dmg`. Installed with the command above? Skip this.
+
+1. Open Mercury. macOS says **"Apple could not verify 'Mercury' is free of malware that may harm your Mac or compromise your privacy."** Click **Done** (not Move to Trash).
+2. Open the Apple menu → **System Settings** → **Privacy & Security**.
+3. Scroll down to **Security**. You'll see *"Mercury" was blocked to protect your Mac*. Click **Open Anyway**.
+4. Enter your Mac's password (or use Touch ID), then click **Open Anyway** once more.
+
+Mercury opens, and macOS won't ask again for this copy. Updates install from inside the app without asking either.
+
+The **Open Anyway** button appears only for about an hour after you tried to open the app. If you don't see it, open Mercury once more, click **Done**, and go back to **Privacy & Security**.
+
+On macOS 14 (Sonoma) and older there's a shortcut: in **Applications**, right-click (or <kbd>Control</kbd>-click) **Mercury**, choose **Open**, then **Open** again. macOS 15 and newer removed this shortcut.
+
+## First run
+
+The first screen asks where Mercury should run:
+
+- **Install Mercury here** sets up Mercury on this Mac: it downloads the release, checks it against the release's checksums, and runs it as a login item so it starts when you log in. No terminal, no Node.js.
+- **Connect elsewhere** connects to a Mercury on another machine. The owner of that Mercury approves this Mac with a 5-character code.
+
+The rest is in [Install & first run](./mercury-desktop#first-run-where-should-mercury-run).
+
+## Fixing problems
+
+### "Apple could not verify 'Mercury' is free of malware"
+
+This is the expected first-launch message for a downloaded `.dmg`. Allow it once: [Opening it the first time](#opening-it-the-first-time). Or skip the whole thing by installing with the [one command](#install-one-command-recommended), which replaces the copy you have.
+
+### "Mercury is damaged and can't be opened. You should move it to the Trash."
+
+The app isn't damaged; macOS says this about some unsigned apps that came from a browser. Install with the [one command](#install-one-command-recommended), or clear the browser's mark on the copy you have:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Mercury.app
+```
+
+Then open Mercury again. If you installed it in your own Applications folder, use `~/Applications/Mercury.app` instead.
+
+### There's no "Open Anyway" button in Privacy & Security
+
+Open Mercury first and click **Done** on the warning; the button appears after that, for about an hour. Still nothing? Your Mac may be managed by an organisation that only allows App Store or identified developers' apps. Ask your administrator, or install with the [one command](#install-one-command-recommended).
+
+### "You can't open the application because it is not supported on this type of Mac" or it quits at once
+
+You probably have the build for the other chip. Check the Apple menu → **About This Mac**, then reinstall with the [one command](#install-one-command-recommended), which picks the right one. Mercury Desktop needs macOS 11 or newer.
+
+### The install command says "GitHub is limiting requests"
+
+GitHub limits how often one network can ask about releases. Wait a few minutes and run it again, or [download the .dmg](#install-download-the-dmg).
+
+### The install command says "The download doesn't match its checksum"
+
+The file that arrived isn't the one in the release, usually because a proxy or a broken connection changed it. Nothing was installed. Run the command again; if it keeps happening on this network, try another one.
+
+### "Mercury Desktop is still open. Quit it and run this again."
+
+Quit Mercury Desktop (<kbd>⌘</kbd> <kbd>Q</kbd>, or right-click its icon in the menu bar → **Quit Mercury**) and run the command again. Your chats and bots aren't affected: they run in Mercury itself, not in the app.
+
+### Mercury opens but says it can't reach Mercury
+
+The app is fine; the Mercury runtime on this Mac isn't running. In Terminal:
+
+```bash
+mercury status
+mercury start
+```
+
+If `mercury` isn't found, open the app and choose **Install Mercury here**. The runtime's log is in `~/.mercury/daemon.log`.
+
+### Optimus asks for Accessibility, Screen Recording or the Microphone
+
+That's the [Optimus plugin](/blog/how-optimus-works) asking for what it needs to use your computer: **Accessibility** (mouse and keyboard), **Screen Recording** (seeing the screen) and the **Microphone** (if you talk to it). Turn them on in **System Settings → Privacy & Security**. macOS asks you to confirm Screen Recording again about once a month.
+
+## Updates
+
+Mercury Desktop updates itself: an **Update** button appears in the top right when a new version is out. The download is signed with Mercury's update key and checked before it installs, so macOS doesn't stop it. See [Updating Mercury](./updating).
+
+To reinstall or go back to a specific version, run the install command again (with `MERCURY_VERSION` for a specific one).
+
+## Uninstall
+
+1. Quit Mercury Desktop and drag **Mercury** from **Applications** to the Trash.
+2. Optional, the app's own settings and caches:
+
+   ```bash
+   rm -rf ~/Library/Application\ Support/sh.mercuryagent.desktop \
+          ~/Library/Caches/sh.mercuryagent.desktop \
+          ~/Library/Logs/sh.mercuryagent.desktop
+   ```
+
+   Saved logins to remote Mercurys are in **Keychain Access** under `sh.mercuryagent.desktop`.
+
+3. Removing the app doesn't remove Mercury itself (the runtime, your memory and chats in `~/.mercury`). To remove that too, run `mercury uninstall`. It asks before deleting your data (`--keep-data` keeps it, `--purge-data` deletes it).

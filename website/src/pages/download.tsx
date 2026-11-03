@@ -104,6 +104,7 @@ export default function Download(): React.ReactElement {
                 </ol>
                 <p className="mx-dlp__alt">On older macOS versions you can also right-click Mercury in Applications and choose <strong>Open</strong>.</p>
                 <p className="mx-dlp__alt">If macOS says Mercury "is damaged", run <code>xattr -dr com.apple.quarantine /Applications/Mercury.app</code> in Terminal, then open it again.</p>
+                <p className="mx-dlp__alt">Something else? The <Link to="/docs/desktop/macos">macOS guide</Link> covers every message macOS shows.</p>
               </div>
               <div>
                 <h3>Windows</h3>

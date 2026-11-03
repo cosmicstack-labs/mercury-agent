@@ -46,7 +46,7 @@ c_bold()   { printf '\033[1m%s\033[0m'   "$1"; }
 info()  { printf '%s %s\n' "$(c_green '→')"  "$1"; }
 warn()  { printf '%s %s\n' "$(c_yellow '!')" "$1" >&2; }
 err()   { printf '%s %s\n' "$(c_red 'x')"    "$1" >&2; }
-die()   { err "$1"; exit 1; }
+die()   { err "$1"; printf '  Help: https://mercuryagent.sh/docs/desktop/macos\n' >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -177,7 +177,8 @@ fi
 xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
 
 printf '\n%s %s\n' "$(c_green '✓')" "$(c_bold "Mercury Desktop ${version} installed in ${app_dir}")"
-printf '  Updates arrive inside the app. To remove it, drag %s to the Trash.\n\n' "$APP_NAME"
+printf '  Updates arrive inside the app. To remove it, drag %s to the Trash.\n' "$APP_NAME"
+printf '  Guide and fixes: https://mercuryagent.sh/docs/desktop/macos\n\n'
 
 if [ "${MERCURY_NO_OPEN:-}" != "1" ]; then
   open "$target" || warn "Open Mercury from ${app_dir} to start it."

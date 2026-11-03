@@ -9,6 +9,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'desktop/mercury-desktop',
+        'desktop/macos',
         'desktop/updating',
         'desktop/remote-access',
       ],

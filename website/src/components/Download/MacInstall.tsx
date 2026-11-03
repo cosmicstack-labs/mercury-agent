@@ -31,7 +31,8 @@ export default function MacInstall({ className, title = 'Recommended on a Mac' }
       </div>
       <p className="mx-install__note">
         Paste it into Terminal. It picks the build for your Mac, checks the download's SHA-256, installs Mercury in Applications and
-        opens it, with no security prompt. <a href="/install-desktop.sh">Read the script first</a>.
+        opens it, with no security prompt. <a href="/install-desktop.sh">Read the script first</a> ·{' '}
+        <a href="/docs/desktop/macos">Mac guide &amp; fixes</a>.
       </p>
     </div>
   );
