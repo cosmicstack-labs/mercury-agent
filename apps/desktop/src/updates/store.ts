@@ -3,7 +3,7 @@
    manifest says. One store so the Update button, the panel, the force
    screen, Settings and the toasts all agree.
 
-   Rules (docs/updates.md):
+   Rules (UPDATES.md):
    - nothing here blocks the app unless a VERIFIED manifest (or the
      server's own check) says an update is required;
    - downloads run quietly in the background and resume; failures are

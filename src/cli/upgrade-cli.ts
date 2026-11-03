@@ -8,7 +8,7 @@ import { HEALTH_TIMEOUT_MS, readJob, realWorkerSteps, runUpdateWorker, startServ
 
 /**
  * `mercury upgrade` and `mercury update`: the same fail-safe update the
- * apps start (docs/updates.md §2), in a terminal, with a progress bar.
+ * apps start (UPDATES.md §2), in a terminal, with a progress bar.
  *
  *   mercury upgrade            update to the newest version (waits for running work)
  *   mercury upgrade --now      don't wait for running work

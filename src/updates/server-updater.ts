@@ -8,7 +8,7 @@ import { NotAvailableError, downloadRelease, downloadsDir, type DownloadProgress
 import { NPM_PACKAGE, type InstallInfo, type InstallKind } from './install-kind.js';
 
 /**
- * Updating the server without breaking it (docs/updates.md §2).
+ * Updating the server without breaking it (UPDATES.md §2).
  *
  * The running Mercury does the safe half: waits for running work, downloads
  * (resumable, checksum-verified) and backs up the settings files, all while

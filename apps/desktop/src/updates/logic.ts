@@ -2,7 +2,7 @@
    Update rules, kept pure so they're tested: version order, how loud
    the Update button is, whether a force update applies and whether its
    "continue anyway" still holds, and which manifest messages show.
-   See docs/updates.md.
+   See UPDATES.md.
    ═══════════════════════════════════════════════════════════════ */
 
 import type { ManifestMessage, Minimum, UpdateManifest } from "./types";

@@ -1,4 +1,4 @@
-/* The shapes in docs/updates.md, as the desktop reads them. */
+/* The shapes in UPDATES.md, as the desktop reads them. */
 
 export interface ChannelRelease {
   version: string;

@@ -6,7 +6,7 @@ import { verifyMinisign } from './minisign.js';
 import { UPDATE_PUBLIC_KEY } from './public-key.js';
 
 /**
- * The update manifest (docs/updates.md §1): one signed file that says what
+ * The update manifest (UPDATES.md §1): one signed file that says what
  * the newest Mercury and Mercury Desktop are, which versions must update,
  * and what to tell people.
  *

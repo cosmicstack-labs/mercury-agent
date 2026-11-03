@@ -7,7 +7,7 @@ name: Desktop release
 # to website/static/desktop/ and records the release in the update manifest).
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the
-# updater key, docs/updates.md). Optional macOS signing: APPLE_CERTIFICATE,
+# updater key, UPDATES.md). Optional macOS signing: APPLE_CERTIFICATE,
 # APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD,
 # APPLE_TEAM_ID.
 

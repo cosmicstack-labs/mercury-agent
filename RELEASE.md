@@ -1,31 +1,38 @@
-# Release v1.4.2
+# Release v1.5.0
 
-## ☿ Mercury Agent v1.4.2
+## ☿ Mercury Agent v1.5.0: Mercury Desktop
 
-Web search finds things again, with no key and with any model, and the research prompt now asks only when you actually want a research article.
+Mercury now has a desktop app for macOS, Windows and Linux. It runs Mercury on your computer or connects to Mercury on a server, keeps itself and your servers up to date, and asks you before anyone new gets in.
 
-### Web search
-- **Three sources that answer.** `web_search` asks [Parallel's public search](https://search.parallel.ai/mcp) first (keyless, built for agents, about a second, with excerpts and dates), then DuckDuckGo's html page, then its lite page. Bing's web feed, which had started returning unrelated pages, and the engines that refuse automated requests are gone.
-- **DuckDuckGo read exactly.** Both pages are parsed from their real markup: the title, the real address behind DuckDuckGo's redirect, and the snippet. Ads are dropped, a bot challenge is retried once, and a page Mercury can't read is reported instead of looking empty.
-- **News links open the article.** News comes from Parallel's article links, then Bing News with its redirects unwrapped to the publisher, then Google News and Hacker News.
-- **Never the model's own search.** Results come only from Mercury's search tools, so search works the same whichever model you use.
-- **You can see what happened.** Every result ends with a `Searched:` trail, such as `Parallel: timed out → DuckDuckGo: 8 results`, so "nothing found" and "every source was blocked" read differently.
-- The built-in `web-search` skill (1.3.0) describes the sources. An installed skill that scraped DuckDuckGo directly is replaced, and your copy is kept as `SKILL.md.replaced.bak`.
+### Mercury Desktop (new)
+- **One app for chat, code, bots and research.** It installs and starts Mercury on this computer for you, or connects to any number of Mercury servers (one window per server, switch in a click).
+- **Download it at [mercuryagent.sh/download](https://mercuryagent.sh/download).** This first release isn't code-signed yet: macOS asks you to allow it once (System Settings → Privacy & Security → Open Anyway), Windows SmartScreen once (More info → Run anyway).
+- **Bots 2.0 in the app.** An inbox of run reports, create and edit bots in words, answer a bot's question mid-run (Allow once, Always allow, Deny), design a fleet's crew or let Mercury decide.
+- **Commands and skills in the composer** (`/` and `#`), saved chats, microphone and permissions for Optimus on every OS.
 
-### Chat
-- **The research prompt asks only when you mean it.** It used to fire on words like "latest" or "explain", so instructions such as "convert the latest epub" got a research question. One short model call now decides; instructions, quick questions and today's news never get the prompt.
-- **Quick answer comes first**, so an accidental Enter never starts a long research run.
+### Updates that never leave you broken
+- **An Update button, top right, like Chrome's.** It appears only when the app or one of your servers has an update, gets more noticeable the longer it waits, and shows what's new before you update. Settings → About checks the app and every server in one go, and "Update everything" does them all.
+- **Server updates roll back by themselves.** `mercury upgrade` (and the desktop) waits for running work, downloads with checksums (resuming if interrupted), backs up, installs, starts the new version and checks it works. If it doesn't, the old version and your settings come back on their own.
+- **Desktop updates** download in the background, resume after a dropped connection, are verified before install, and install when you restart or quit.
+- **Required updates** (for example a security fix) show a full screen; continuing without updating takes ticking every risk. Everything else is dismissible.
+- **One signed update notice** tells every install what's current; an unsigned or tampered one is ignored, and being offline never blocks anything.
 
-### Upgrade
+### Remote access you control
+- **New devices need your approval.** A phone or laptop signing in shows a code; you approve it with `approve CODE` on Telegram or WhatsApp, in `/server`, or in Mercury Desktop.
+- **Sensitive actions from a remote device ask you first** (the shell, Allow All, plugins, channel tokens, restarts, server updates). Remote shell is off by default.
+- **Tunnels no longer count as "this computer"**, unused devices expire after 30 days, revoking a device cuts it off at once, and a known device from a new address tells you.
+- **`/server` and `mercury server`**: remote access on/off, allowed IP addresses, device tokens (list, make, revoke), approvals and the security log. `mercury doctor --security` checks it all.
 
-**npm:**
-```
-npm install -g @cosmicstack/mercury-agent@1.4.2
-mercury restart
-```
+### Research
+- **One visible run**: a plan you can approve, live progress with failures and their reasons, "Write the report now", and a report even when a run is cut short.
+- **Reports export as PDF and Word**, sources show their site icons, and everything Mercury makes is saved in `~/mercury-artifacts` (one folder per chat) instead of loose in your home folder.
 
-**Standalone binary:** `mercury upgrade`, or re-run the one-line installer from mercuryagent.sh.
+### Also in this release
+- **MCP servers**: Mercury can use tools from Model Context Protocol servers (`mercury mcp add`).
+- **Chat attachments** (photos and PDFs), bots take files too, bot avatars, renaming bots.
+- Runcrate provider preset; a declared vision capability beats the name-based guess; a zero daily budget means no ceiling; Telegram keeps typing while Mercury prepares.
 
-No config changes needed.
-
-**Full Changelog**: https://github.com/cosmicstack-labs/mercury-agent/compare/v1.4.1...v1.4.2
+### Install
+- **Desktop:** [mercuryagent.sh/download](https://mercuryagent.sh/download)
+- **Server / CLI:** `curl -fsSL https://mercuryagent.sh/install.sh | sh` · Windows: `irm https://mercuryagent.sh/install.ps1 | iex` · npm: `npm i -g @cosmicstack/mercury-agent`
+- **Already installed:** `mercury upgrade`

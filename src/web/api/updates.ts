@@ -9,7 +9,7 @@ import { compareVersions } from '../../updates/manifest.js';
 import { detectInstall } from '../../updates/install-kind.js';
 
 /**
- * Updating this Mercury (docs/updates.md §2):
+ * Updating this Mercury (UPDATES.md §2):
  *
  *   GET  /api/updates[?seen=1]        version, newest, required, the job
  *   POST /api/updates/check           the same, checked again now (rate limited)

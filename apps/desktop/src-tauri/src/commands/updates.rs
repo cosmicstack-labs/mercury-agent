@@ -1,5 +1,5 @@
 //! Updates for Mercury Desktop itself, and the signed update manifest
-//! (docs/updates.md).
+//! (UPDATES.md).
 //!
 //!  - `updates_manifest`: fetch `manifest.json` + `.sig`, verify the minisign
 //!    signature with the updater's public key (the one in tauri.conf.json:

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Edit and sign the update manifest (docs/updates.md):
+ * Edit and sign the update manifest (UPDATES.md):
  * website/static/updates/manifest.json + manifest.json.sig.
  *
  *   node scripts/update-manifest.mjs show
@@ -22,6 +22,7 @@
  * website deploys.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -64,19 +65,29 @@ const app = (name) => (name === 'server' || name === 'desktop' ? name : die(`Say
 const version = (v) => (VERSION_RE.test(String(v)) ? String(v) : die(`"${v}" is not a version like 1.5.0.`));
 const isoDay = (v) => (v ? (Number.isNaN(Date.parse(v)) ? die(`"${v}" is not a date.`) : new Date(v).toISOString()) : null);
 
-function keyPaths() {
-  const key = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || join(homedir(), '.tauri/mercury-updates.key');
-  if (!existsSync(key)) die(`No signing key at ${key}. Set TAURI_SIGNING_PRIVATE_KEY_PATH.`);
-  let password = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
-  if (password === undefined && existsSync(`${key}.password`)) password = readFileSync(`${key}.password`, 'utf-8').trim();
-  return { key, password: password ?? '' };
+/**
+ * The signing key: TAURI_SIGNING_PRIVATE_KEY (the key text, as in CI) or the
+ * key file (TAURI_SIGNING_PRIVATE_KEY_PATH, default ~/.tauri/mercury-updates.key,
+ * with its password from TAURI_SIGNING_PRIVATE_KEY_PASSWORD or the .password
+ * file beside it). The password travels in the environment, never argv.
+ */
+function signingEnv() {
+  const env = { ...process.env };
+  if (env.TAURI_SIGNING_PRIVATE_KEY) return env;
+  const key = env.TAURI_SIGNING_PRIVATE_KEY_PATH || join(homedir(), '.tauri/mercury-updates.key');
+  if (!existsSync(key)) die(`No signing key: set TAURI_SIGNING_PRIVATE_KEY, or put the key at ${key}.`);
+  env.TAURI_SIGNING_PRIVATE_KEY = readFileSync(key, 'utf-8').trim();
+  if (env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === undefined && existsSync(`${key}.password`)) {
+    env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = readFileSync(`${key}.password`, 'utf-8').trim();
+  }
+  delete env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+  return env;
 }
 
 function sign() {
   if (!existsSync(TAURI)) die('Install the desktop dependencies first (cd apps/desktop && npm ci): signing uses the Tauri CLI.');
-  const { key, password } = keyPaths();
   if (existsSync(SIG)) unlinkSync(SIG);
-  execFileSync(TAURI, ['signer', 'sign', '-f', key, '-p', password, FILE], { stdio: ['ignore', 'ignore', 'inherit'] });
+  execFileSync(TAURI, ['signer', 'sign', FILE], { stdio: ['ignore', 'ignore', 'inherit'], env: signingEnv() });
   if (!existsSync(SIG)) die('Signing wrote no signature.');
   console.log(`✓ Signed ${FILE.replace(`${ROOT}/`, '')}`);
 }
@@ -88,16 +99,29 @@ function save(m) {
   sign();
 }
 
+/**
+ * Check the committed signature with the public key every install has
+ * (tauri.conf.json's updater pubkey): Ed25519 over BLAKE2b-512 of the file
+ * (minisign "ED"), plus the global signature over the trusted comment.
+ * The same check as src/updates/minisign.ts, without needing a build.
+ */
 function verify() {
-  // The runtime's verifier is the one clients use; run it on the committed files.
-  const out = execFileSync(process.execPath, ['--import', 'tsx', '-e', `
-    import { readFileSync } from 'node:fs';
-    import { verifyMinisign } from ${JSON.stringify(join(ROOT, 'src/updates/minisign.ts'))};
-    import { UPDATE_PUBLIC_KEY } from ${JSON.stringify(join(ROOT, 'src/updates/public-key.ts'))};
-    const ok = verifyMinisign(readFileSync(${JSON.stringify(FILE)}), readFileSync(${JSON.stringify(SIG)}, 'utf-8').trim(), UPDATE_PUBLIC_KEY);
-    console.log(ok ? 'ok' : 'bad');
-  `], { cwd: ROOT, encoding: 'utf-8' }).trim();
-  if (!out.endsWith('ok')) die('The signature does not match the manifest.');
+  const conf = JSON.parse(readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf-8'));
+  const b64text = (v) => Buffer.from(v.trim(), 'base64').toString('utf8');
+  const lines = (t) => t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const pkRaw = Buffer.from(lines(b64text(conf.plugins.updater.pubkey)).find((l) => !/^untrusted comment:/i.test(l)), 'base64');
+  const sigLines = lines(b64text(readFileSync(SIG, 'utf-8')));
+  const sigRaw = Buffer.from(sigLines[1], 'base64');
+  const trusted = sigLines[2].replace(/^trusted comment:\s?/i, '');
+  const globalSig = Buffer.from(sigLines[3], 'base64');
+  const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: pkRaw.subarray(10, 42).toString('base64url') }, format: 'jwk' });
+  const alg = sigRaw.subarray(0, 2).toString('latin1');
+  const data = readFileSync(FILE);
+  const message = alg === 'ED' ? createHash('blake2b512').update(data).digest() : data;
+  const ok = sigRaw.subarray(2, 10).equals(pkRaw.subarray(2, 10))
+    && cryptoVerify(null, message, key, sigRaw.subarray(10, 74))
+    && cryptoVerify(null, Buffer.concat([sigRaw.subarray(10, 74), Buffer.from(trusted, 'utf8')]), key, globalSig);
+  if (!ok) die('The signature does not match the manifest.');
   console.log('✓ Signature verifies with the public key clients have.');
 }
 

@@ -7,7 +7,7 @@ import { compareVersions, getManifest, latestFor, messagesFor, readManifestCache
 import { blockedFor, justUpdated, markJustUpdatedSeen, readJob, updatesHome, type UpdateJob } from './server-updater.js';
 
 /**
- * What GET /api/updates says (docs/updates.md §2): this server's version,
+ * What GET /api/updates says (UPDATES.md §2): this server's version,
  * the newest one, whether it must update, and how an update is going.
  */
 
