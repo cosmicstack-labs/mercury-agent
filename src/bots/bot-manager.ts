@@ -1080,7 +1080,9 @@ export class BotManager {
         const delay = Math.min(15000, 1000 * 2 ** job.attempts);
         this.queue.retry(job.id, job.attempts + 1, Date.now() + delay);
         logger.info({ botId, jobId: job.id, reasonCode: output.reasonCode, retryIn: delay }, 'Bot turn failed transiently — retrying in place');
-        setTimeout(() => this.resumeDueJobs(), delay).unref?.();
+        // A little past due: a timer can fire a millisecond early, and the job
+        // would then wait for the next 30 s sweep.
+        setTimeout(() => this.resumeDueJobs(), delay + 50).unref?.();
       } else if (turnLimited) {
         this.queue.settle(job.id, 'done');
         this.store.clearCheckpoint(botId, job.id);
