@@ -27,7 +27,7 @@ import ReleaseDownloads from '@site/src/components/Download/ReleaseDownloads';
 ## Mercury Desktop
 
 - **Install or connect.** The first screen finds a Mercury on this computer, installs one (the release is checked against its SHA-256 checksums and runs as a service), or connects to Mercury elsewhere. Several connections at once. See [Install & first run](/docs/desktop/mercury-desktop).
-- **Not code-signed yet.** macOS and Windows ask once before the first launch. The [download page](/download) has the steps. Updates are signed and checked before they install.
+- **Not code-signed yet.** A downloaded installer asks once before the first launch; the [download page](/download) has the steps. On a Mac, `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh` installs it with no prompt (it checks the download's SHA-256 first). Updates are signed and checked before they install.
 
 ## Remote access the owner controls
 

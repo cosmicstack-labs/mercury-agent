@@ -14,6 +14,22 @@ It runs on macOS (Apple Silicon and Intel, macOS 11 or newer), Windows 10 and 11
 
 ## Download
 
+### On a Mac: one command (recommended)
+
+Paste this into Terminal:
+
+```bash
+curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh
+```
+
+It picks the build for your Mac (Apple Silicon or Intel), downloads it from the GitHub release, checks its SHA-256 against the one GitHub recorded and checks its code signature, puts Mercury in **Applications** and opens it. If anything doesn't match, it installs nothing. Run it again any time to reinstall; a running Mercury Desktop is closed first, while Mercury itself keeps running. [Read the script](https://mercuryagent.sh/install-desktop.sh) before you run it if you like.
+
+Installed this way, Mercury opens on the first try with no security prompt: macOS only asks about apps a browser downloaded, and the app isn't signed with an Apple Developer ID yet.
+
+Options: `MERCURY_VERSION=1.5.0` installs a specific version, `MERCURY_APP_DIR=~/Applications` installs somewhere else, and `MERCURY_NO_OPEN=1` doesn't open it afterwards.
+
+### Every platform
+
 Get it from the [download page](/download). It picks the right build for your computer. Every build is also on [GitHub Releases](https://github.com/cosmicstack-labs/mercury-agent/releases).
 
 | Computer | File |
@@ -28,6 +44,8 @@ Get it from the [download page](/download). It picks the right build for your co
 Mercury Desktop 1.5.0 isn't code-signed with an Apple or Windows certificate yet, so your computer asks once before it opens it. Signing is coming in a later release. Updates are different: every update is signed with Mercury's update key and checked before it installs (see [Updating Mercury](/docs/desktop/updating)).
 
 ### macOS
+
+Installed with the Terminal command above? There's nothing to do. With the `.dmg`:
 
 1. Open the `.dmg` and drag **Mercury** to **Applications**.
 2. Open Mercury. macOS says "Apple could not verify Mercury is free of malware". Click **Done**.

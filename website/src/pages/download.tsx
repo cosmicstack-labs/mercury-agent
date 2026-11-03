@@ -5,6 +5,7 @@ import Head from '@docusaurus/Head';
 import Layout from '@theme/Layout';
 import clsx from 'clsx';
 import InstallCommand from '@site/src/components/Home/InstallCommand';
+import MacInstall from '@site/src/components/Download/MacInstall';
 import { SITE_URL } from '@site/src/components/Home/data';
 import { detect, type DetectedOs } from '@site/src/components/Download/detect';
 import { asset, sizeOf, DESKTOP, GITHUB_RELEASES, LABEL, releaseDate, type AssetKey } from '@site/src/components/Download/release';
@@ -28,6 +29,8 @@ function Platform({ group, mine }: { group: (typeof GROUPS)[number]; mine: boole
         {group.title}
         {mine && <span className="mx-dlp__mine">This computer</span>}
       </h2>
+      {group.os === 'macos' && items.length > 0 && <MacInstall className="mx-dlp__mac" />}
+      {group.os === 'macos' && items.length > 0 && <p className="mx-dlp__or">Or download the app:</p>}
       {items.length === 0 ? (
         <p className="mx-dlp__none">
           Not in this release yet. See <a href={GITHUB_RELEASES} target="_blank" rel="noopener noreferrer">all releases on GitHub</a>.
@@ -93,6 +96,7 @@ export default function Download(): React.ReactElement {
             <div className="mx-dlp__steps">
               <div>
                 <h3>macOS</h3>
+                <p>Installed with the Terminal command above? Nothing to do: it opens straight away. With the <code>.dmg</code>:</p>
                 <ol>
                   <li>Open the <code>.dmg</code> and drag Mercury to Applications.</li>
                   <li>Open Mercury. macOS says it can't verify the developer ("Apple could not verify…"). Click <strong>Done</strong>.</li>

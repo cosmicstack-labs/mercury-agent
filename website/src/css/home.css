@@ -461,3 +461,10 @@
   .mx-hero-install__head { justify-content: center; }
   .mx-platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* The recommended Mac install (Terminal one-liner). */
+.mx-macinstall { max-width: none; margin: 0 0 4px; }
+.mx-macinstall__title { margin: 0 0 8px; font-size: 0.82rem; font-weight: 600; color: var(--mx-accent); text-transform: uppercase; letter-spacing: 0.04em; }
+.mx-hero-install__or, .mx-dlp__or { margin: 16px 0 10px; font-size: 0.82rem; color: var(--mx-ink-3); text-align: center; }
+.mx-dlp__or { text-align: left; }
+.mx-dlp__mac { margin-bottom: 4px; }

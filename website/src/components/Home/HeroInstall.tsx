@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from '@docusaurus/Link';
 import clsx from 'clsx';
 import DesktopDownload from '@site/src/components/Download/DesktopDownload';
 import PlatformGrid from '@site/src/components/Download/PlatformGrid';
+import MacInstall from '@site/src/components/Download/MacInstall';
+import { detect } from '@site/src/components/Download/detect';
 import { DESKTOP, releaseDate } from '@site/src/components/Download/release';
 import InstallCommand from './InstallCommand';
 
@@ -15,6 +17,8 @@ type Tab = 'desktop' | 'server';
  */
 export default function HeroInstall({ className }: { className?: string }): React.ReactElement {
   const [tab, setTab] = useState<Tab>('desktop');
+  const [mac, setMac] = useState(false);
+  useEffect(() => { detect().then((d) => setMac(d.os === 'macos')).catch(() => {}); }, []);
   return (
     <section className={clsx('mx-hero-install', className)} aria-label="Install Mercury">
       <div className="mx-hero-install__head">
@@ -34,10 +38,12 @@ export default function HeroInstall({ className }: { className?: string }): Reac
 
       {tab === 'desktop' ? (
         <div className="mx-hero-install__body" role="tabpanel">
+          {mac && <MacInstall />}
+          {mac && <p className="mx-hero-install__or">Or download it</p>}
           <DesktopDownload />
           <PlatformGrid />
           <p className="mx-hero-install__note">
-            Free and open source. Not code-signed yet: your computer asks once before the first launch (<Link to="/download#first-open">how</Link>).
+            Free and open source. Not code-signed yet: {mac ? 'a downloaded .dmg' : 'your computer'} asks once before the first launch (<Link to="/download#first-open">how</Link>).
             Updates arrive in the app.
           </p>
         </div>

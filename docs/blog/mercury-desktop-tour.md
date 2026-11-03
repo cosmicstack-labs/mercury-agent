@@ -64,7 +64,7 @@ Plugins install from **Plugins**, with their setup on one page. With the [Optimu
 
 ## What isn't there yet
 
-This first release isn't code-signed with an Apple or Windows certificate, so macOS and Windows ask once before the first launch. The [download page](/download#first-open) shows the clicks. Updates are signed with Mercury's update key and checked before they install, so after that first launch you're covered.
+This first release isn't code-signed with an Apple or Windows certificate, so a downloaded installer asks once before the first launch. The [download page](/download#first-open) shows the clicks. On a Mac you can skip that: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh` checks the download and installs the app, and it opens straight away. Updates are signed with Mercury's update key and checked before they install, so after that first launch you're covered.
 
 A Mercury server still answers one chat at a time. Running several turns side by side is the next change to the runtime.
 
