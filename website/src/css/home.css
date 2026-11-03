@@ -340,8 +340,42 @@
 .mx-final .mx-lead { margin-bottom: 40px; }
 .mx-final__links { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; margin-top: 36px; font-size: 0.92rem; }
 
+/* ---------- Mercury Desktop download ---------- */
+.mx-dl { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 34px; }
+.mx-dl__main { height: 52px; padding: 0 26px; font-size: 1.02rem; }
+.mx-dl__meta { margin: 0; font-size: 0.86rem; color: var(--mx-ink-3); text-align: center; }
+.mx-dl__mobile { max-width: 34rem; margin: 0 auto; font-size: 0.98rem; color: var(--mx-ink-2); text-align: center; line-height: 1.6; }
+.mx-server-path { margin-top: 40px; }
+.mx-server-path__label { font-family: var(--mx-mono); font-size: 0.74rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mx-ink-3); text-align: center; margin: 0 0 4px; }
+.mx-server-path .mx-install.mx-hero__install { margin-top: 10px; }
+
+.mx-dlp { padding-top: 72px; }
+.mx-dlp .mx-head { margin-bottom: 40px; }
+.mx-dlp__notice { padding: 14px 18px; border: 1px solid var(--mx-line-2); border-radius: 12px; background: var(--mx-accent-wash); color: var(--mx-ink); margin: 0 0 24px; }
+.mx-dlp__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.mx-dlp__os { border: 1px solid var(--mx-line); border-radius: 16px; background: var(--mx-surface); padding: 22px 22px 18px; }
+.mx-dlp__os.is-mine { border-color: var(--mx-accent); box-shadow: 0 0 0 1px var(--mx-accent); }
+.mx-dlp__os-title { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; color: var(--mx-ink); margin: 0 0 14px; }
+.mx-dlp__mine { font-family: var(--mx-mono); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mx-accent); }
+.mx-dlp__list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.mx-dlp__file { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border: 1px solid var(--mx-line); border-radius: 10px; text-decoration: none !important; transition: border-color .2s, background .2s; }
+.mx-dlp__file:hover { border-color: var(--mx-ink-3); background: var(--mx-bg-alt); }
+.mx-dlp__what { color: var(--mx-ink); font-weight: 500; }
+.mx-dlp__detail { font-size: 0.84rem; color: var(--mx-ink-3); }
+.mx-dlp__none { font-size: 0.9rem; color: var(--mx-ink-3); margin: 0; }
+.mx-dlp__first, .mx-dlp__server { margin-top: 64px; }
+.mx-dlp__first > p, .mx-dlp__server > p { max-width: 46rem; color: var(--mx-ink-2); line-height: 1.65; }
+.mx-dlp__steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.mx-dlp__steps > div { border: 1px solid var(--mx-line); border-radius: 16px; padding: 18px 20px; background: var(--mx-surface); }
+.mx-dlp__steps h3 { font-size: 1rem; color: var(--mx-ink); margin: 0 0 8px; }
+.mx-dlp__steps ol { padding-left: 1.1rem; margin: 0; font-size: 0.92rem; line-height: 1.6; color: var(--mx-ink-2); }
+.mx-dlp__steps li + li { margin-top: 6px; }
+.mx-dlp__alt { font-size: 0.84rem; color: var(--mx-ink-3); margin: 10px 0 0; }
+.mx-dlp__server .mx-install { margin: 18px 0 0; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 996px) {
+  .mx-dlp__grid, .mx-dlp__steps { grid-template-columns: 1fr; }
   .mx-split, .mx-chapter { grid-template-columns: 1fr; gap: 40px; }
   .mx-chapter--flip .mx-chapter__copy { order: 0; }
   .mx-notyet { grid-template-columns: 1fr; }

@@ -1,9 +1,13 @@
-import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowUp, AudioLines, ChevronDown, Paperclip, Shield, ShieldCheck, Square, Telescope, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
-import type { ChatSettings, ModelsResponse } from "~/api/types";
-import { useRuntimeState } from "~/app/store";
+import type { ModelsResponse } from "~/api/types";
+import { usePermissionMode } from "~/app/permission";
+import { useBots, useRuntimeState } from "~/app/store";
+import { CommandPicker } from "./CommandPicker";
+import { CommandChip } from "./CommandChip";
+import { matchCommands, matchSkills, pickerMode, relevantCommands, setKnownCommands, type CommandEntry, type PickerItem, type SkillEntry } from "./picker";
 import { startCall, useVoice } from "~/app/voice";
 import { sendMessage, stopTurn, type CodeTurn } from "~/app/events";
 import { useConversation, useConversationStore, type Surface } from "~/app/conversation";
@@ -50,11 +54,19 @@ export interface ComposerProps {
   modeLabel?: string;
 }
 
+/** Loaded once per app run: the "/" commands and the "#" skills. */
+let commandCache: CommandEntry[] | null = null;
+let skillCache: SkillEntry[] | null = null;
+
 export function Composer({ surface, placeholder, code, extra, blockedReason, mono, draft, onDraftConsumed, onCycleMode, modeLabel }: ComposerProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
+  // Research the next message (one run, then back to off). Chat only.
+  const [researchNext, setResearchNext] = useState<ResearchNext>("off");
+  const threadKey = useConversation((s) => s.activeId);
+  useEffect(() => { setResearchNext("off"); }, [threadKey]);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -64,6 +76,36 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   const connected = useRuntimeState((s) => s.connected);
   const textRef = useRef(text);
   textRef.current = text;
+
+  // "/" commands and "#" skills, as in the terminal: a list above the box while you type.
+  /** A picked command or skill: a chip before the text, which holds only what follows it. */
+  const [token, setToken] = useState<PickerItem | null>(null);
+  const mode = token ? null : pickerMode(text);
+  const [commands, setCommands] = useState<CommandEntry[]>(commandCache ?? []);
+  const [skills, setSkills] = useState<SkillEntry[]>(skillCache ?? []);
+  const bots = useBots((s) => s.bots);
+  // The list also lets the chat draw earlier commands as chips: load it once, up front.
+  useEffect(() => {
+    if (!commandCache) void api.chat.commands().then((c) => { commandCache = c; setKnownCommands(c.map((x) => x.command)); setCommands(c); }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (mode === "command" && !commandCache) void api.chat.commands().then((c) => { commandCache = c; setKnownCommands(c.map((x) => x.command)); setCommands(c); }).catch(() => {});
+    if (mode === "skill" && !skillCache) void api.skills.list().then((r) => { skillCache = r.skills; setSkills(r.skills); }).catch(() => {});
+  }, [mode]);
+  const items = useMemo<PickerItem[]>(
+    () => (mode === "command" ? matchCommands(text, relevantCommands(commands, surface), bots) : mode === "skill" ? matchSkills(text, skills) : []),
+    [mode, text, commands, skills, bots, surface],
+  );
+  const [active, setActive] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  useEffect(() => { setActive(0); }, [text]);
+  /** Fill the box with a pick; a command that needs nothing more runs straight away when `run`. */
+  function choose(item: PickerItem, run: boolean) {
+    if (run && item.runs) { void submit(item.fill); return; }
+    setToken(item);
+    setText("");
+    requestAnimationFrame(() => ref.current?.focus());
+  }
   const dictation = useDictation((spoken, mode) => {
     const next = joinText(textRef.current, spoken);
     if (mode === "send") { void submit(next); return; }
@@ -155,13 +197,16 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
   }
 
   async function submit(override?: string) {
-    const content = (override ?? text).trim();
+    let content = (override ?? (token ? `${token.fill}${text}` : text)).trim();
+    if (surface === "chat" && researchNext !== "off" && content && !/^[/#]/.test(content)) content = `/research ${researchNext === "plan" ? "plan " : ""}${content}`;
     if ((!content && files.length === 0) || sending) return;
     setSending(true);
     setError(null);
     try {
       await sendMessage(surface, content, files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })), code);
       setText("");
+      setToken(null);
+      setResearchNext("off");
       for (const f of files) if (f.preview) URL.revokeObjectURL(f.preview);
       setFiles([]);
     } catch (err) {
@@ -174,14 +219,17 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
 
   const busy = agent === "thinking" || agent === "streaming" || agent === "working";
   // While Mercury works the send button is a stop button; typing a follow-up turns it back into send.
-  const showStop = busy && text.trim().length === 0 && files.length === 0;
+  // A chat waiting behind another's turn has nothing of its own to stop: Stop would stop the other chat.
+  const waiting = useConversation((s) => s.waiting);
+  const showStop = busy && !waiting && text.trim().length === 0 && files.length === 0;
   function stop() {
     setError(null);
     void stopTurn(convStore).catch((err) => setError(err instanceof Error ? `Couldn't stop: ${err.message}` : "Couldn't stop"));
   }
-  const canSend = connected && !blockedReason && (text.trim().length > 0 || files.length > 0);
+  const canSend = connected && !blockedReason && (text.trim().length > 0 || files.length > 0 || token !== null);
   const canSendRef = useRef(false);
   canSendRef.current = connected && !blockedReason;
+  const pickerOpen = items.length > 0 && dismissed !== text && !recording && connected && !blockedReason;
 
   return (
     <div className="shrink-0 px-8 pb-6 pt-2">
@@ -193,13 +241,14 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           onDragLeave={() => setDragging(false)}
           onDrop={(e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length) void addFiles(e.dataTransfer.files); }}
           className={cx(
-            "rounded-[28px] border bg-surface transition-[border-color,box-shadow] duration-150",
+            "relative rounded-[28px] border bg-surface transition-[border-color,box-shadow] duration-150",
             "shadow-[0_1px_2px_rgb(0_0_0/0.04),0_4px_16px_-8px_rgb(0_0_0/0.12)]",
             "focus-within:border-line-strong focus-within:shadow-[0_0_0_4px_rgb(var(--ink)/0.05),0_4px_16px_-8px_rgb(0_0_0/0.16)]",
             dragging ? "border-accent border-dashed" : "border-line",
             !connected && "opacity-70",
           )}
         >
+          {pickerOpen && mode && <CommandPicker items={items} active={Math.min(active, items.length - 1)} mode={mode} onHover={setActive} onPick={(item) => choose(item, true)} />}
           {files.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-4">
               {files.map((f) => (
@@ -219,21 +268,32 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           ) : (
           <div className="flex">
           {mono && <span aria-hidden="true" className="pointer-events-none select-none pl-5 pt-4 font-mono text-md leading-[26px] text-accent">&gt;</span>}
+          {token && <CommandChip label={token.label} kind={token.kind} onRemove={() => { setToken(null); ref.current?.focus(); }} className={mono ? "ml-2 mt-[15px]" : "ml-4 mt-[15px]"} />}
           <textarea
             ref={ref}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); void addFiles(e.clipboardData.files); } }}
             onKeyDown={(e) => {
+              if (pickerOpen) {
+                if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => (a + 1) % items.length); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => (a - 1 + items.length) % items.length); return; }
+                if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); choose(items[active], false); return; }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); choose(items[active], true); return; }
+                if (e.key === "Escape") { e.preventDefault(); setDismissed(text); return; }
+              }
+              // The chip goes back to text on Backspace (to edit it) and away on Esc, like a token field.
+              if (token && !text && e.key === "Backspace") { e.preventDefault(); setText(token.fill.trimEnd()); setToken(null); return; }
+              if (token && !text && e.key === "Escape") { e.preventDefault(); setToken(null); return; }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
               if (e.key === "Escape" && text) { e.preventDefault(); setText(""); }
               else if (e.key === "Escape" && busy) { e.preventDefault(); stop(); }
               if (e.key === "Tab" && e.shiftKey && onCycleMode) { e.preventDefault(); onCycleMode(); }
             }}
-            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? placeholder}
+            placeholder={!connected ? "Waiting for Mercury…" : blockedReason ?? (researchNext !== "off" && !token ? "What should Mercury research?" : token ? (token.hint || (token.kind === "skill" ? "What should the skill do?" : "Add details, or press Enter")) : placeholder)}
             rows={1}
             disabled={!connected}
-            className={cx("block max-h-[240px] w-full resize-none overflow-y-auto bg-transparent pb-1 pt-4 text-md leading-[26px] text-ink caret-accent placeholder:truncate placeholder:text-ink4", mono ? "pl-3 pr-5 font-mono text-[14.5px]" : "px-5")}
+            className={cx("block max-h-[240px] w-full resize-none overflow-y-auto bg-transparent pb-1 pt-4 text-md leading-[26px] text-ink caret-accent placeholder:truncate placeholder:text-ink4", mono ? "pl-3 pr-5 font-mono text-[14.5px]" : token ? "pl-2.5 pr-5" : "px-5")}
             aria-label="Message"
           />
           </div>
@@ -254,6 +314,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
               </Tooltip>
             )}
             <ModelPicker />
+            {surface === "chat" && <ResearchToggle value={researchNext} onChange={(v) => { setResearchNext(v); ref.current?.focus(); }} />}
             {surface === "chat" && <ModePicker />}
             <div className="flex-1" />
             {busy ? (
@@ -348,20 +409,40 @@ function ModelPicker() {
   );
 }
 
+type ResearchNext = "off" | "on" | "plan";
+
+/** Research the next message: a full report from live sources, optionally with a plan to check first. */
+function ResearchToggle({ value, onChange }: { value: ResearchNext; onChange: (v: ResearchNext) => void }) {
+  const on = value !== "off";
+  return (
+    <Menu
+      side="top"
+      trigger={
+        <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", on ? "bg-accent/10 text-accent" : "text-ink3")} aria-label="Research" aria-pressed={on}>
+          <Telescope size={14} />
+          {on ? (value === "plan" ? "Research · plan first" : "Research") : "Research"}
+        </button>
+      }
+    >
+      <MenuLabel>Your next message</MenuLabel>
+      <MenuItem selected={value === "off"} onSelect={() => onChange("off")}>Normal answer</MenuItem>
+      <MenuItem selected={value === "on"} onSelect={() => onChange("on")} hint="many sources, a full report">Deep research</MenuItem>
+      <MenuItem selected={value === "plan"} onSelect={() => onChange("plan")} hint="check the questions first">Deep research, plan first</MenuItem>
+    </Menu>
+  );
+}
+
 function ModePicker() {
-  const [settings, setSettings] = useState<ChatSettings | null>(null);
-  useEffect(() => { void api.chat.settings().then(setSettings).catch(() => setSettings(null)); }, []);
-  const allowAll = settings?.bypassPermissions === true;
-  async function set(next: boolean) {
-    try { setSettings(await api.chat.updateSettings({ bypassPermissions: next })); } catch { /* keep */ }
-  }
+  const { allowAll: mode, setAllowAll } = usePermissionMode();
+  const allowAll = mode === true;
+  const set = setAllowAll;
   return (
     <Menu
       side="top"
       trigger={
         <button className={cx("flex h-8 items-center gap-1.5 rounded-md px-2 text-sm hover:bg-ink/[0.06]", allowAll ? "text-accent" : "text-amber")} aria-label="Approval mode">
           {allowAll ? <ShieldCheck size={13} /> : <Shield size={13} />}
-          {settings ? (allowAll ? "Allow All" : "Ask Me") : "…"}
+          {mode !== null ? (allowAll ? "Allow All" : "Ask Me") : "…"}
         </button>
       }
     >

@@ -12,7 +12,7 @@ export const NPM_URL = 'https://www.npmjs.com/package/@cosmicstack/mercury-agent
 export const SKILLS_URL = 'https://skills.mercuryagent.sh';
 
 /** Bump on release, together with the announcement bar in docusaurus.config.ts. */
-export const RELEASE = { version: '1.4.0', name: 'Pluggy Mercury', notes: '/docs/releases/1.4.0' };
+export const RELEASE = { version: '1.5.0', name: 'Mercury Desktop', notes: '/docs/releases/1.5.0' };
 
 export const SEO = {
   title: 'Mercury Agent: the soul-driven AI agent, loyal only to you',
@@ -304,14 +304,14 @@ export const COMPARE: { head: string[]; rows: CompareRow[] } = {
     ['Long-term memory', 'Second Brain (SQLite, auto-extract, conflict resolution)', 'Auto memory', 'AGENTS.md', 'GEMINI.md'],
     ['Token budget', 'Daily budget + overrides + live stats', '—', '—', '—'],
     ['Security model', 'Permission modes + blocklist + scopes', 'Sandboxed execution + prompts', 'OS-level sandbox', 'Sandbox profiles'],
-    ['MCP external tools', '—', '✓', '✓', '✓'],
-    ['IDE surface', 'Built-in workspace (files, git)', 'VS Code, JetBrains, Desktop', 'VS Code, Cursor, Windsurf', 'IDE integrations'],
+    ['MCP external tools', '✓ (each call asks in Ask Me mode)', '✓', '✓', '✓'],
+    ['IDE surface', 'Mercury Desktop + built-in workspace (files, git)', 'VS Code, JetBrains, Desktop', 'VS Code, Cursor, Windsurf', 'IDE integrations'],
     ['License', 'MIT', 'Source-available', 'Apache-2.0', 'Apache-2.0'],
   ],
 };
 
 export const NOT_YET = [
-  { title: 'No MCP yet', body: 'Mercury doesn’t speak the Model Context Protocol today. Skills and ~50 built-in tools cover most ground, and MCP is on the roadmap.' },
+  { title: 'Desktop app not code-signed yet', body: 'Mercury Desktop 1.5.0 isn’t signed with an Apple or Windows certificate, so macOS and Windows ask once before the first launch. Its updates are signed and checked before they install.' },
   { title: 'No OS-level sandbox', body: 'Safety comes from approvals, a blocklist, and folder scopes. The process itself is not sandboxed, so Ask Me is the default for a reason.' },
   { title: 'Signal skips Windows', body: 'The signal-cli bridge runs natively on Linux, and on macOS with Java 17+. Every other channel works on all three operating systems.' },
 ];
@@ -335,10 +335,10 @@ export const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'Which platforms does it run on?',
-    a: 'macOS, Linux, and Windows, as standalone binaries or through npm (Node.js 20+). It also runs on Android via Termux and on any cloud VM.',
+    a: 'Mercury Desktop runs on macOS (Apple Silicon and Intel), Windows and Linux. The Mercury runtime runs on the same three as a standalone binary or through npm (Node.js 22+), on Android via Termux, and on any cloud VM. Mercury Desktop can connect to any of them.',
   },
   {
     q: 'Does it support MCP?',
-    a: 'Not yet. Mercury uses its own skills, based on the Agent Skills spec with 126+ in the registry, plus ~50 built-in tools. MCP support is on the roadmap.',
+    a: 'Yes, since 1.5.0. Add a local or remote MCP server with mercury mcp add, allow the tools you want, and the agent can call them next to its ~50 built-in tools and 126+ skills. Every MCP call asks first in Ask Me mode.',
   },
 ];

@@ -5,7 +5,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { create } from "zustand";
-import type { BotStatus, ChatThread, PendingPrompt } from "~/api/types";
+import type { BotStatus, ChatThread, PendingPrompt, BotApproval } from "~/api/types";
 
 export type View = "chat" | "artifacts" | "code" | "bots" | "brain" | "plugins" | "skills" | "settings";
 
@@ -28,6 +28,10 @@ interface UiState {
   pluginFocus: string | null;
   openPlugin(id: string): void;
   clearPluginFocus(): void;
+  /** What Bots should show next: a bot's page, or "inbox" (from a notification). */
+  botFocus: string | null;
+  openBot(target: string): void;
+  clearBotFocus(): void;
 }
 
 export const useUi = create<UiState>((set) => ({
@@ -43,6 +47,9 @@ export const useUi = create<UiState>((set) => ({
   pluginFocus: null,
   openPlugin: (id) => set({ view: "plugins", pluginFocus: id }),
   clearPluginFocus: () => set({ pluginFocus: null }),
+  botFocus: null,
+  openBot: (target) => set({ view: "bots", botFocus: target }),
+  clearBotFocus: () => set({ botFocus: null }),
 }));
 
 interface RuntimeState {
@@ -52,12 +59,15 @@ interface RuntimeState {
   model: string;
   step: { total: number; current: number; tool: string } | null;
   prompts: PendingPrompt[];
+  /** Ask Me (false) or Allow All (true); null until known. One copy for every toggle on screen. */
+  allowAll: boolean | null;
   setConnected(connected: boolean): void;
   setAgent(agent: AgentState): void;
   setProvider(provider: string, model: string): void;
   setStep(step: RuntimeState["step"]): void;
   addPrompt(prompt: PendingPrompt): void;
   removePrompt(id: string): void;
+  setAllowAll(allowAll: boolean): void;
 }
 
 export const useRuntimeState = create<RuntimeState>((set, get) => ({
@@ -67,6 +77,8 @@ export const useRuntimeState = create<RuntimeState>((set, get) => ({
   model: "",
   step: null,
   prompts: [],
+  allowAll: null,
+  setAllowAll: (allowAll) => set({ allowAll }),
   setConnected: (connected) => set({ connected, agent: connected ? (get().agent === "offline" ? "idle" : get().agent) : "offline" }),
   setAgent: (agent) => set({ agent }),
   setProvider: (provider, model) => set({ provider, model }),
@@ -93,7 +105,15 @@ interface BotsState {
   bots: BotStatus[];
   available: boolean;
   activity: Record<string, string>;
-  setBots(bots: BotStatus[], available: boolean): void;
+  /** Unread inbox entries across every bot. */
+  unread: number;
+  /** Bumped when an inbox entry arrives, so open lists reload. */
+  inboxVersion: number;
+  /** Bots waiting for your answer right now. */
+  approvals: BotApproval[];
+  setApprovals(approvals: BotApproval[]): void;
+  setBots(bots: BotStatus[], available: boolean, unread?: number): void;
+  inboxChanged(unread?: number): void;
   setActivity(botId: string, label: string | null): void;
 }
 
@@ -101,7 +121,12 @@ export const useBots = create<BotsState>((set) => ({
   bots: [],
   available: true,
   activity: {},
-  setBots: (bots, available) => set({ bots, available }),
+  unread: 0,
+  inboxVersion: 0,
+  approvals: [],
+  setApprovals: (approvals) => set({ approvals }),
+  setBots: (bots, available, unread) => set(unread === undefined ? { bots, available } : { bots, available, unread }),
+  inboxChanged: (unread) => set((s) => ({ inboxVersion: s.inboxVersion + 1, ...(unread === undefined ? {} : { unread }) })),
   setActivity: (botId, label) => set((s) => {
     const activity = { ...s.activity };
     if (label === null) delete activity[botId];

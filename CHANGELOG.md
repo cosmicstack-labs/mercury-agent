@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 1.5.0 — Mercury Desktop, updates that roll back, remote access you control
+
+### Mercury Desktop (new)
+- **One app for chat, code, bots and research.** It installs and starts Mercury on this computer for you, or connects to any number of Mercury servers (one window per server, switch in a click).
+- **Download it at [mercuryagent.sh/download](https://mercuryagent.sh/download).** This first release isn't code-signed yet: macOS asks you to allow it once (System Settings → Privacy & Security → Open Anyway), Windows SmartScreen once (More info → Run anyway).
+- **Bots 2.0 in the app.** An inbox of run reports, create and edit bots in words, answer a bot's question mid-run (Allow once, Always allow, Deny), design a fleet's crew or let Mercury decide.
+- **Commands and skills in the composer** (`/` and `#`), saved chats, microphone and permissions for Optimus on every OS.
+
+### Updates that never leave you broken
+- **An Update button, top right, like Chrome's.** It appears only when the app or one of your servers has an update, gets more noticeable the longer it waits, and shows what's new before you update. Settings → About checks the app and every server in one go, and "Update everything" does them all.
+- **Server updates roll back by themselves.** `mercury upgrade` (and the desktop) waits for running work, downloads with checksums (resuming if interrupted), backs up, installs, starts the new version and checks it works. If it doesn't, the old version and your settings come back on their own.
+- **Desktop updates** download in the background, resume after a dropped connection, are verified before install, and install when you restart or quit.
+- **Required updates** (for example a security fix) show a full screen; continuing without updating takes ticking every risk. Everything else is dismissible.
+- **One signed update notice** tells every install what's current; an unsigned or tampered one is ignored, and being offline never blocks anything.
+
+### Remote access you control
+- **New devices need your approval.** A phone or laptop signing in shows a code; you approve it with `approve CODE` on Telegram or WhatsApp, in `/server`, or in Mercury Desktop.
+- **Sensitive actions from a remote device ask you first** (the shell, Allow All, plugins, channel tokens, restarts, server updates). Remote shell is off by default.
+- **Tunnels no longer count as "this computer"**, unused devices expire after 30 days, revoking a device cuts it off at once, and a known device from a new address tells you.
+- **`/server` and `mercury server`**: remote access on/off, allowed IP addresses, device tokens (list, make, revoke), approvals and the security log. `mercury doctor --security` checks it all.
+
+### Research
+- **One visible run**: a plan you can approve, live progress with failures and their reasons, "Write the report now", and a report even when a run is cut short.
+- **Reports export as PDF and Word**, sources show their site icons, and everything Mercury makes is saved in `~/mercury-artifacts` (one folder per chat) instead of loose in your home folder.
+
+### Also in this release
+- **Chat attachments** (photos and PDFs), bots take files too, bot avatars, renaming bots.
+- Runcrate provider preset; a declared vision capability beats the name-based guess; a zero daily budget means no ceiling; Telegram keeps typing while Mercury prepares.
+
+
 ### MCP servers (ADR-029)
 - **MCP servers: Mercury can use tools from Model Context Protocol servers.** Add a local server (`mercury mcp add files --stdio npx -- -y @modelcontextprotocol/server-filesystem ~/Documents`) or a remote one (`--http <url>`), allow the tools you want (`mercury mcp allow`), and the agent can call them next to its built-in tools. Every MCP call asks first in Ask Me mode, and Allow All does not cover MCP tools; only tools you list in `autoApprove` run without a prompt, and only those run in scheduled tasks. Secrets stay in `.env` as `${env:NAME}` references and are masked everywhere they could appear. Local servers get a minimal environment, never Mercury's API keys, and remote servers go through the SSRF guard. Check health with `mercury mcp test`, `mercury doctor --mcp`, `/mcp` in chat, or the new read-only **MCP** dashboard page. The agent's file tools now always ask before writing `mercury.yaml`, `permissions.yaml` or `.env`, even under Allow All. See [MCP Servers](https://mercuryagent.sh/docs/integrations/mcp) and ADR-029.
 

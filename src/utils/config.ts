@@ -247,6 +247,10 @@ export interface MercuryConfig {
     suggestedDailyTokenBudget?: number;
     /** Fleet-wide daily token cap across all bots (0 = unlimited). ADR-020. */
     fleetDailyTokenBudget?: number;
+    /** Fewest minutes between two runs of any bot routine (default 15). */
+    routineMinGapMinutes?: number;
+    /** How long a bot waits for the owner to answer its question before it's a no (default 10, max 60). */
+    approvalWaitMinutes?: number;
     /** Owner-visible folder for finished results (default: ~/Documents/Mercury). */
     deliverablesDir?: string;
     retention: {
@@ -289,8 +293,18 @@ export interface MercuryConfig {
      * self-hosted web build or a dev server here. Never '*'.
      */
     corsOrigins?: string[];
+    /**
+     * Host names this server may be reached by directly, besides localhost —
+     * only for a proxy of your own that rewrites Host and adds no forwarding
+     * headers. Anything else is refused (DNS rebinding).
+     */
+    allowedHosts?: string[];
   };
   mcp?: McpConfig;
+  /** Where the files Mercury makes go (default ~/mercury-artifacts): Research/ and one folder per chat. */
+  artifacts?: {
+    outputDir?: string;
+  };
 }
 
 function getEnv(key: string, fallback: string = ''): string {

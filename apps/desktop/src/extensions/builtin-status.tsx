@@ -2,7 +2,8 @@ import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef } from "
 import { Bot, CalendarClock, Code2, Coins, Cpu, Layers, Server, Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
-import type { ChatSettings, CodeStatus } from "~/api/types";
+import type { CodeStatus } from "~/api/types";
+import { usePermissionMode } from "~/app/permission";
 import { useBots, useRuntimeState, useUi } from "~/app/store";
 import { refreshPulse, usePulse, type ScheduleInfo } from "~/app/pulse";
 import { http } from "~/api/client";
@@ -223,14 +224,11 @@ function Model() {
 }
 
 function Approval() {
-  const [settings, setSettings] = useState<ChatSettings | null>(null);
-  const view = useUi((s) => s.view);
-  useEffect(() => { void api.chat.settings().then(setSettings).catch(() => {}); }, [view]);
-  if (!settings) return null;
-  const allowAll = settings.bypassPermissions;
+  const { allowAll, setAllowAll } = usePermissionMode();
+  if (allowAll === null) return null;
   return (
     <StatusButton title="Click to switch Ask Me / Allow All" tone={allowAll ? "accent" : "amber"}
-      onClick={() => void api.chat.updateSettings({ bypassPermissions: !allowAll }).then(setSettings).catch(() => {})}>
+      onClick={() => void setAllowAll(!allowAll)}>
       {allowAll ? <ShieldCheck size={13} /> : <Shield size={13} />}
       <span>{allowAll ? "Allow All" : "Ask Me"}</span>
     </StatusButton>

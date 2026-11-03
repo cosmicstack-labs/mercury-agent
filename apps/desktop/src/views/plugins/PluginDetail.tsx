@@ -1,22 +1,23 @@
-import { AlertTriangle, ArrowUpCircle, Download, Globe, KeyRound, ListChecks, Monitor, RotateCcw, Sparkles, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowUpCircle, ChevronRight, Download, Globe, KeyRound, ListChecks, Monitor, RotateCcw, Sparkles, Trash2, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import * as api from "~/api/mercury";
 import type { PluginItem, PluginSetting } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { Switch } from "~/components/ui/Switch";
-import { Badge, Mono, Spinner } from "~/components/ui/bits";
+import { Badge, Mono, Segmented, Spinner } from "~/components/ui/bits";
 import { ConfirmButton, IconTile } from "~/components/ui/kit";
 import { cx } from "~/lib/cx";
+import { useUi } from "~/app/store";
+import { DevicesCard } from "~/views/settings/Devices";
 import { ChannelPanel } from "./ChannelPanel";
 import { applies, SettingField } from "./SettingField";
 import { needsSetup, setupKeys } from "./SetupFlow";
 
 /**
- * One plugin, everything about it on one page: on or off; what needs
- * attention and how to fix it; setup again; the account it's linked to;
- * every setting, in the plugin's own sections; what it can reach (sites,
- * keys, the screen) and what it adds (tools, commands); update, roll back,
- * remove (with or without its data).
+ * One plugin on one page, most-used first: on or off; what needs attention;
+ * for a plugin that uses this computer, its microphone and permissions; the
+ * account it's linked to; its settings, one tab per section; and, folded
+ * away, what it can reach and adds, with roll back and remove.
  */
 
 function errorText(e: unknown): string {
@@ -38,6 +39,7 @@ export function PluginDetail({ id, onSetup, onChanged, onRemoved }: { id: string
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [purge, setPurge] = useState(false);
+  const [tab, setTab] = useState("general");
 
   const load = useCallback(async () => {
     try { setP(await api.plugins.info(id)); setError(null); } catch (e) { setError(errorText(e)); }
@@ -67,6 +69,15 @@ export function PluginDetail({ id, onSetup, onChanged, onRemoved }: { id: string
   const attention = needsSetup(p);
   const hasSetup = setupKeys(p).length > 0 || (!!p.channel && p.channel.type !== "desktop");
   const updatable = p.status === "update-available";
+  // Tabs: the ungrouped settings first, then each section that has something to show.
+  const tabs = [
+    ...(loose.length ? [{ value: "general", label: "General" }] : []),
+    ...groups.filter((g) => shown.some((s) => s.group === g.id)).map((g) => ({ value: g.id, label: g.label.replace(/^[^\p{L}\p{N}]+/u, "") })),
+  ];
+  const activeTab = tabs.some((t) => t.value === tab) ? tab : tabs[0]?.value ?? "general";
+  const activeGroup = groups.find((g) => g.id === activeTab);
+  // Optimus's voice has its own, tidier screen (engine cards, key checks): link there instead of repeating it.
+  const voiceElsewhere = !!activeGroup && activeGroup.id === "voice" && p.channel?.type === "desktop";
 
   return (
     <div className="flex flex-col gap-6 px-6 py-6">
@@ -115,6 +126,8 @@ export function PluginDetail({ id, onSetup, onChanged, onRemoved }: { id: string
         </section>
       )}
 
+      {p.permissions?.desktop && p.enabled && <DevicesCard pluginId={id} />}
+
       {p.channel && p.channel.type !== "desktop" && (
         <Section title="Account" hint="The account Mercury talks through.">
           {p.enabled ? <ChannelPanel id={id} name={p.name} /> : <p className="text-sm text-ink3">Turn {p.name} on to link an account.</p>}
@@ -123,63 +136,66 @@ export function PluginDetail({ id, onSetup, onChanged, onRemoved }: { id: string
 
       {shown.length > 0 && (
         <Section title="Settings" hint="Changes apply at once; the plugin restarts if it needs to." action={hasSetup && !attention ? <Button size="sm" variant="ghost" onClick={onSetup}><Sparkles size={13} /> Run setup again</Button> : null}>
-          <div className="flex flex-col gap-4">
-            {groups.map((g) => {
-              const fields = shown.filter((s) => s.group === g.id);
-              if (!fields.length) return null;
-              return (
-                <div key={g.id} className="flex flex-col gap-4 rounded-xl border border-line p-4">
-                  <div>
-                    <div className="flex items-center gap-2"><span className="text-sm font-medium text-ink">{g.label.replace(/^[^\p{L}\p{N}]+/u, "")}</span><Badge tone={g.ready ? "accent" : "amber"}>{g.ready ? "ready" : "needs setup"}</Badge></div>
-                    {g.description && <p className="text-xs text-ink3">{g.description}</p>}
-                  </div>
-                  {fields.map((s) => <SettingField key={s.key} s={s} onSave={(v) => saveSetting(s.key, v)} />)}
-                </div>
-              );
-            })}
-            {loose.length > 0 && (
-              <div className="flex flex-col gap-4 rounded-xl border border-line p-4">
-                {groups.length > 0 && <span className="text-sm font-medium text-ink">General</span>}
-                {orderLoose(loose).map((s) => <SettingField key={s.key} s={s} onSave={(v) => saveSetting(s.key, v)} />)}
+          {tabs.length > 1 && <div><Segmented value={activeTab} onChange={setTab} options={tabs} /></div>}
+          {voiceElsewhere ? (
+            <div className="flex items-center gap-3 rounded-xl border border-line p-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2"><span className="text-sm font-medium text-ink">Voice</span><Badge tone={activeGroup!.ready ? "accent" : "amber"}>{activeGroup!.ready ? "ready" : "needs setup"}</Badge></div>
+                <p className="text-xs text-ink3">Who listens and speaks, its keys, and how a conversation behaves are set in Settings → AI → Voice.</p>
               </div>
-            )}
-          </div>
+              <Button size="sm" variant="primary" onClick={() => useUi.getState().openSettings("voice")}>Open voice settings</Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4 rounded-xl border border-line p-4">
+              {activeGroup?.description && <p className="text-xs text-ink3">{activeGroup.description}</p>}
+              {(activeGroup ? shown.filter((s) => s.group === activeGroup.id) : orderLoose(loose)).map((s) => <SettingField key={s.key} s={s} onSave={(v) => saveSetting(s.key, v)} />)}
+            </div>
+          )}
         </Section>
       )}
 
-      <Section title="What it can do and reach">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Fact icon={<Wrench size={13} />} title={`${p.tools.length} tool${p.tools.length === 1 ? "" : "s"}${p.commands.length ? ` · ${p.commands.length} command${p.commands.length === 1 ? "" : "s"}` : ""}`}
-            body={[...p.tools.map((t) => t.replace(/^[^_]+__/, "")), ...p.commands].join(", ") || "None"} />
-          <Fact icon={<Globe size={13} />} title="Internet" body={p.permissions?.network?.length ? p.permissions.network.join(", ") : "No internet access"} />
-          <Fact icon={<KeyRound size={13} />} title="Keys it can read" body={p.permissions?.secrets?.length ? p.permissions.secrets.join(", ") : "None"} />
-          <Fact icon={<Monitor size={13} />} title="Runs" body={`${p.kind === "in-process" ? "Inside Mercury" : "In its own process"}${p.permissions?.desktop ? " · uses this computer's screen, mouse and keyboard" : ""}${p.sizeBytes ? ` · ${size(p.sizeBytes)}` : ""}`} />
-        </div>
-      </Section>
+      <details className="group rounded-xl border border-line">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm text-ink2 hover:text-ink">
+          <ChevronRight size={14} className="text-ink4 transition-transform group-open:rotate-90" />
+          <span className="font-medium text-ink">About {p.name}</span>
+          <span className="text-xs text-ink4">· {p.tools.length} tool{p.tools.length === 1 ? "" : "s"} · version {p.installedVersion} · roll back or remove</span>
+        </summary>
+        <div className="flex flex-col gap-6 border-t border-line px-4 py-4">
+          <Section title="What it can do and reach">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Fact icon={<Wrench size={13} />} title={`${p.tools.length} tool${p.tools.length === 1 ? "" : "s"}${p.commands.length ? ` · ${p.commands.length} command${p.commands.length === 1 ? "" : "s"}` : ""}`}
+                body={[...p.tools.map((t) => t.replace(/^[^_]+__/, "")), ...p.commands].join(", ") || "None"} />
+              <Fact icon={<Globe size={13} />} title="Internet" body={p.permissions?.network?.length ? p.permissions.network.join(", ") : "No internet access"} />
+              <Fact icon={<KeyRound size={13} />} title="Keys it can read" body={p.permissions?.secrets?.length ? p.permissions.secrets.join(", ") : "None"} />
+              <Fact icon={<Monitor size={13} />} title="Runs" body={`${p.kind === "in-process" ? "Inside Mercury" : "In its own process"}${p.permissions?.desktop ? " · uses this computer's screen, mouse and keyboard" : ""}${p.sizeBytes ? ` · ${size(p.sizeBytes)}` : ""}`} />
+            </div>
+          </Section>
 
-      <Section title="Version and removal">
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-ink2">Installed <Mono>{p.installedVersion}</Mono>{p.latestVersion && p.latestVersion !== p.installedVersion ? <> · catalog <Mono>{p.latestVersion}</Mono></> : null}</span>
-            <span className="flex-1" />
-            {p.previousVersion && (
-              <ConfirmButton size="sm" variant="ghost" confirmLabel={`Go back to ${p.previousVersion}?`} loading={busy === "rollback"}
-                onConfirm={() => void run("rollback", async () => { const r = await api.plugins.rollback(id); setNote({ text: `Rolled back from ${r.from} to ${r.to}.`, ok: true }); })}>
-                <RotateCcw size={13} /> Roll back to {p.previousVersion}
-              </ConfirmButton>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-red/25 bg-red/[0.03] px-3 py-2.5">
-            <Trash2 size={14} className="text-red" />
-            <span className="flex-1 text-sm text-ink2">Remove {p.name}</span>
-            <label className="flex items-center gap-1.5 text-xs text-ink3"><input type="checkbox" checked={purge} onChange={(e) => setPurge(e.target.checked)} className="accent-[var(--red,#d14)]" /> also delete its data and settings</label>
-            <ConfirmButton size="sm" variant="ghost" confirmLabel={purge ? "Remove with data?" : "Remove?"} loading={busy === "remove"} onConfirm={() => void (async () => {
-              setBusy("remove");
-              try { await api.plugins.uninstall(id, purge); onRemoved(); } catch (e) { setNote({ text: errorText(e), ok: false }); setBusy(null); }
-            })()}>Remove</ConfirmButton>
-          </div>
+          <Section title="Version and removal">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-ink2">Installed <Mono>{p.installedVersion}</Mono>{p.latestVersion && p.latestVersion !== p.installedVersion ? <> · catalog <Mono>{p.latestVersion}</Mono></> : null}</span>
+                <span className="flex-1" />
+                {p.previousVersion && (
+                  <ConfirmButton size="sm" variant="ghost" confirmLabel={`Go back to ${p.previousVersion}?`} loading={busy === "rollback"}
+                    onConfirm={() => void run("rollback", async () => { const r = await api.plugins.rollback(id); setNote({ text: `Rolled back from ${r.from} to ${r.to}.`, ok: true }); })}>
+                    <RotateCcw size={13} /> Roll back to {p.previousVersion}
+                  </ConfirmButton>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-red/25 bg-red/[0.03] px-3 py-2.5">
+                <Trash2 size={14} className="text-red" />
+                <span className="flex-1 text-sm text-ink2">Remove {p.name}</span>
+                <label className="flex items-center gap-1.5 text-xs text-ink3"><input type="checkbox" checked={purge} onChange={(e) => setPurge(e.target.checked)} className="accent-[var(--red,#d14)]" /> also delete its data and settings</label>
+                <ConfirmButton size="sm" variant="ghost" confirmLabel={purge ? "Remove with data?" : "Remove?"} loading={busy === "remove"} onConfirm={() => void (async () => {
+                  setBusy("remove");
+                  try { await api.plugins.uninstall(id, purge); onRemoved(); } catch (e) { setNote({ text: errorText(e), ok: false }); setBusy(null); }
+                })()}>Remove</ConfirmButton>
+              </div>
+            </div>
+          </Section>
         </div>
-      </Section>
+      </details>
     </div>
   );
 }

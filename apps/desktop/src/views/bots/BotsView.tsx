@@ -1,11 +1,11 @@
-import { ChevronDown, Play, RefreshCw, Square, Trash2 } from "lucide-react";
+import { ChevronDown, LayoutGrid, Play, Plus, RefreshCw, Shield, ShieldAlert, Square, Trash2 } from "lucide-react";
 import { DictationNotice, MicButton, RecordingBar, joinText, useDictation } from "~/components/dictation/Dictation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "~/lib/cx";
 import * as api from "~/api/mercury";
 import type { BotManifest, BotStatus } from "~/api/types";
 import type { AgentState } from "~/app/store";
-import { useBots } from "~/app/store";
+import { useBots, useUi } from "~/app/store";
 import { refreshBots } from "~/app/events";
 import { Button } from "~/components/ui/Button";
 import { Switch } from "~/components/ui/Switch";
@@ -17,6 +17,13 @@ import { ConfirmButton } from "~/components/ui/kit";
 import { Deliverables } from "./Deliverables";
 import { Activity } from "./Activity";
 import { Usage } from "./Usage";
+import { BotInbox, InboxRow } from "./Inbox";
+import { PendingApprovals } from "./Approvals";
+import { BotsOverview } from "./Overview";
+import { CrewActions, MakeFleet } from "./FleetTools";
+import { CreateBot } from "./CreateBot";
+import { BotSettings } from "./BotSettings";
+import { describeCron } from "./BotForms";
 
 /**
  * Bots, organised the way they work: each fleet is a lead with its crew
@@ -55,13 +62,23 @@ export function BotsView() {
   const bots = useBots((s) => s.bots);
   const available = useBots((s) => s.available);
   const activity = useBots((s) => s.activity);
+  const unread = useBots((s) => s.unread);
+  const waiting = useBots((s) => s.approvals.length);
+  const focus = useUi((s) => s.botFocus);
+  // "inbox", "new", or a bot id.
   const [selected, setSelected] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const { fleets, solo } = useMemo(() => organise(bots), [bots]);
 
+  // A notification or another screen asked for something specific.
   useEffect(() => {
-    if (!selected && bots.length) setSelected(fleets[0]?.lead.id ?? solo[0]?.id ?? null);
-  }, [bots, selected, fleets, solo]);
+    if (!focus) return;
+    setSelected(focus);
+    useUi.getState().clearBotFocus();
+  }, [focus]);
+  useEffect(() => {
+    if (!selected) setSelected(bots.length ? "all" : "new");
+  }, [bots.length, selected]);
 
   if (!available) return <Empty title="Bots are not available on this runtime" body="Enable bots in the runtime's configuration to see them here." />;
 
@@ -73,10 +90,20 @@ export function BotsView() {
       <aside className="flex w-[300px] shrink-0 flex-col border-r border-line bg-soft">
         <header className="flex h-[52px] shrink-0 items-center justify-between px-4" data-tauri-drag-region>
           <span className="text-base font-medium text-ink">Bots</span>
-          <Button variant="ghost" size="sm" icon onClick={() => void refreshBots()} aria-label="Refresh"><RefreshCw size={14} /></Button>
+          <span className="flex items-center gap-1" data-no-drag>
+            <Button variant="ghost" size="sm" icon onClick={() => void refreshBots()} aria-label="Refresh"><RefreshCw size={14} /></Button>
+            <Button variant="secondary" size="sm" onClick={() => setSelected("new")}><Plus size={14} /> New bot</Button>
+          </span>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-          {bots.length === 0 && <p className="px-2 text-sm text-ink4">No bots yet. Create one with `mercury bots create`.</p>}
+          <InboxRow active={selected === "inbox"} unread={unread} waiting={waiting} onClick={() => setSelected("inbox")} />
+          <button onClick={() => setSelected("all")} className={cx("mb-3 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left", selected === "all" ? "bg-ink/[0.07]" : "hover:bg-ink/[0.05]")}>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/[0.06]"><LayoutGrid size={15} className="text-ink2" /></span>
+            <span className="flex-1 text-sm font-medium text-ink">All bots</span>
+            <span className="text-xs text-ink4">{fleets.length ? `${fleets.length} fleet${fleets.length === 1 ? "" : "s"} · ` : ""}{bots.length}</span>
+          </button>
+          {fleets.length > 0 && <div className="px-2.5 pb-1 text-2xs font-medium uppercase tracking-wider text-ink4">Fleets</div>}
+          {bots.length === 0 && <p className="px-2 pt-1 text-sm text-ink4">No bots yet. Press New bot to make one.</p>}
 
           {fleets.map((f) => {
             const working = f.crew.filter((c) => c.state === "running").length + (f.lead.state === "running" ? 1 : 0);
@@ -85,14 +112,15 @@ export function BotsView() {
               <div key={f.lead.id} className="mb-3">
                 <div className={cx("flex items-center rounded-lg", selected === f.lead.id ? "bg-ink/[0.07]" : "hover:bg-ink/[0.05]")}>
                   <button onClick={() => setSelected(f.lead.id)} className="flex min-w-0 flex-1 items-center gap-3 px-2.5 py-2 text-left">
-                    <BotAvatar id={f.lead.id} name={f.lead.name} hasAvatar={f.lead.hasAvatar} size={36} dimmed={!f.lead.enabled} />
+                    <BotAvatar id={f.lead.id} name={f.lead.name} hasAvatar={f.lead.hasAvatar} size={36} dimmed={!f.lead.enabled || f.lead.stopped} />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium text-ink">{f.lead.name}</span>
                         {f.lead.needsYou && <span className="block h-1.5 w-1.5 shrink-0 rounded-full bg-amber" aria-label="needs you" />}
                       </span>
-                      <span className="block truncate text-xs text-ink3">Fleet · {f.crew.length} crew{working ? ` · ${working} working` : ""}</span>
+                      <span className="block truncate text-xs text-ink3">Fleet · {f.crew.length} crew{working ? ` · ${working} working` : ""}{f.lead.stopped ? " · stopped" : ""}</span>
                     </span>
+                    <UnreadBadge n={f.lead.unread} />
                   </button>
                   <button onClick={() => setCollapsed((c) => ({ ...c, [f.lead.id]: !isCollapsed }))} className="mr-1.5 rounded p-1 text-ink4 hover:text-ink" aria-label={isCollapsed ? "Show crew" : "Hide crew"} aria-expanded={!isCollapsed}>
                     <ChevronDown size={15} className={cx("transition-transform", isCollapsed && "-rotate-90")} />
@@ -111,25 +139,49 @@ export function BotsView() {
 
           {solo.length > 0 && (
             <>
-              <div className="px-2.5 pb-1 pt-2 text-2xs font-medium uppercase tracking-wider text-ink4">On their own</div>
+              <div className="px-2.5 pb-1 pt-2 text-2xs font-medium uppercase tracking-wider text-ink4">{fleets.length ? "On their own" : "Your bots"}</div>
               {solo.map((b) => <BotRow key={b.id} bot={b} activity={activity[b.id]} active={selected === b.id} onClick={() => setSelected(b.id)} size={32} />)}
             </>
           )}
         </div>
       </aside>
 
-      <section className="min-w-0 flex-1 overflow-y-auto">
-        {selectedFleet ? <FleetDetail fleet={selectedFleet} activity={activity} onSelect={setSelected} /> : selected ? <BotDetail id={selected} status={selectedBot} onDeleted={() => setSelected(null)} /> : <Empty title="Pick a bot" />}
+      <section className={cx("min-w-0 flex-1", selected === "new" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+        {selected === "new" ? (
+          <CreateBot existingIds={bots.map((b) => b.id)} onCancel={() => setSelected(bots.length ? "all" : null)} onCreated={(id) => setSelected(id)} />
+        ) : selected === "all" ? (
+          <BotsOverview fleets={fleets} solo={solo} onOpen={setSelected} onNew={() => setSelected("new")} />
+        ) : selected === "inbox" ? (
+          <div className="mx-auto flex max-w-[860px] flex-col gap-5 px-8 py-7">
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight text-ink">Inbox</h1>
+              <p className="mt-0.5 text-sm text-ink3">What your bots did, newest first. Runs with nothing new stay quiet; every run is in a bot's Activity.</p>
+            </div>
+            <PendingApprovals />
+            <BotInbox bots={bots} onOpenBot={setSelected} />
+          </div>
+        ) : selectedFleet ? (
+          <FleetDetail fleet={selectedFleet} activity={activity} onSelect={setSelected} />
+        ) : selected ? (
+          <BotDetail id={selected} status={selectedBot} onDeleted={() => setSelected("all")} />
+        ) : (
+          <Empty title="Pick a bot" />
+        )}
       </section>
     </div>
   );
+}
+
+function UnreadBadge({ n }: { n?: number }) {
+  if (!n) return null;
+  return <span className="shrink-0 rounded-full bg-accent px-1.5 text-2xs font-semibold leading-5 text-on-accent" aria-label={`${n} unread`}>{n}</span>;
 }
 
 function BotRow({ bot, activity, active, onClick, size }: { bot: BotStatus; activity?: string; active: boolean; onClick: () => void; size: number }) {
   return (
     <button onClick={onClick} className={cx("flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left", active ? "bg-ink/[0.07]" : "hover:bg-ink/[0.05]")}>
       <span className="relative">
-        <BotAvatar id={bot.id} name={bot.name} hasAvatar={bot.hasAvatar} size={size} dimmed={!bot.enabled} />
+        <BotAvatar id={bot.id} name={bot.name} hasAvatar={bot.hasAvatar} size={size} dimmed={!bot.enabled || bot.stopped} />
         <StateOrb state={orbFor(bot)} size={8} className="absolute -bottom-0.5 -right-0.5 rounded-full bg-soft p-[1.5px]" />
       </span>
       <span className="min-w-0 flex-1">
@@ -137,6 +189,7 @@ function BotRow({ bot, activity, active, onClick, size }: { bot: BotStatus; acti
         <span className={cx("block truncate text-xs", bot.state === "running" ? "text-accent" : "text-ink3")}>{activity ?? describe(bot)}</span>
       </span>
       {bot.needsYou && <span className="block h-1.5 w-1.5 shrink-0 rounded-full bg-amber" aria-label="needs you" />}
+      <UnreadBadge n={bot.unread} />
     </button>
   );
 }
@@ -151,6 +204,7 @@ function orbFor(b: BotStatus): AgentState {
 
 function describe(b: BotStatus): string {
   if (!b.enabled) return "Off";
+  if (b.stopped) return "Stopped";
   if (b.state === "running") return "Working";
   if (b.state === "queued") return "Queued";
   if (b.state === "paused") return "Paused";
@@ -158,14 +212,16 @@ function describe(b: BotStatus): string {
   return "Idle";
 }
 
-type Tab = "overview" | "deliverables" | "activity" | "usage";
+type Tab = "overview" | "results" | "deliverables" | "activity" | "usage" | "settings";
 
 function TabBar({ tab, onChange, fleet }: { tab: Tab; onChange: (t: Tab) => void; fleet: boolean }) {
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "overview", label: "Overview" },
-    { id: "deliverables", label: fleet ? "Fleet deliverables" : "Deliverables" },
+    { id: "results", label: "Results" },
+    { id: "deliverables", label: fleet ? "Fleet files" : "Files" },
     { id: "activity", label: "Activity" },
     { id: "usage", label: "Usage" },
+    { id: "settings", label: "Settings" },
   ];
   return (
     <div className="flex gap-1 border-b border-line" role="tablist">
@@ -187,11 +243,12 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={lead.id} status={lead} subtitle={`Fleet lead · ${crew.length} crew`} crewCount={crew.length} onDeleted={() => onSelect(null)} />
+      {members.map((m) => <PendingApprovals key={m.id} botId={m.id} />)}
       <TabBar tab={tab} onChange={setTab} fleet />
       {tab === "overview" && (
         <>
           <div className="flex flex-col gap-3">
-            <SectionTitle>Crew</SectionTitle>
+            <SectionTitle right={<CrewActions leadId={lead.id} leadName={lead.name} crewCount={crew.length} />}>Crew</SectionTitle>
             <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-3">
               {crew.map((b) => (
                 <button key={b.id} onClick={() => onSelect(b.id)} className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 text-left hover:border-line-strong">
@@ -205,15 +262,17 @@ function FleetDetail({ fleet, activity, onSelect }: { fleet: Fleet; activity: Re
                   </span>
                 </button>
               ))}
-              {crew.length === 0 && <p className="text-sm text-ink4">No crew yet.</p>}
+              {crew.length === 0 && <p className="text-sm text-ink4">No crew yet. Add a member, or let Mercury suggest them.</p>}
             </div>
           </div>
           <BotBody id={lead.id} status={lead} />
         </>
       )}
+      {tab === "results" && <BotInbox bots={members} botId={lead.id} />}
       {tab === "deliverables" && <Deliverables bots={members} />}
       {tab === "activity" && <Activity bots={members} />}
       {tab === "usage" && <Usage bots={members} />}
+      {tab === "settings" && <BotSettings id={lead.id} status={lead} />}
     </div>
   );
 }
@@ -225,11 +284,15 @@ function BotDetail({ id, status, onDeleted }: { id: string; status: BotStatus | 
   return (
     <div className="mx-auto flex max-w-[1000px] flex-col gap-6 px-8 py-7">
       <BotHeader id={id} status={status} onDeleted={onDeleted} />
+      <PendingApprovals botId={id} />
       <TabBar tab={tab} onChange={setTab} fleet={false} />
+      {tab === "overview" && status && !status.parent && status.fleetRole !== "lead" && <MakeFleet id={id} name={status.name} />}
       {tab === "overview" && <BotBody id={id} status={status} />}
+      {tab === "results" && <BotInbox bots={status ? [status] : []} botId={id} />}
       {tab === "deliverables" && <Deliverables bots={me} />}
       {tab === "activity" && <Activity bots={me} />}
       {tab === "usage" && <Usage bots={me} />}
+      {tab === "settings" && <BotSettings id={id} status={status} />}
     </div>
   );
 }
@@ -272,12 +335,17 @@ function BotHeader({ id, status, subtitle, crewCount = 0, onDeleted }: { id: str
             <Mono>{bot.id}</Mono>
             {bot.model?.model && <Badge>{bot.model.model}</Badge>}
             {bot.autonomy?.dailyTokenBudget && <Badge>{bot.autonomy.dailyTokenBudget.toLocaleString()} tokens/day</Badge>}
+            {status?.tier && <TierBadge tier={status.tier} />}
+            {status?.stopped && <Badge tone="amber">stopped</Badge>}
             {status?.needsYou && <Badge tone="amber">needs you</Badge>}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Switch id={`bot-${id}`} checked={bot.enabled} onCheckedChange={(v) => void toggle(v)} label={bot.enabled ? "On" : "Off"} />
-          {status?.state === "running" ? (
+          {status?.stopped || status?.needsYou ? (
+            // Start lifts a stop, re-runs held work, and turns switched-off routines back on.
+            <Button size="sm" variant="primary" onClick={() => void api.bots.start(id).then(refreshBots)}><Play size={13} /> Start</Button>
+          ) : status?.state === "running" ? (
             <Button size="sm" variant="outline" onClick={() => void api.bots.stop(id).then(refreshBots)}><Square size={13} /> Stop</Button>
           ) : (
             <Button size="sm" variant="outline" disabled={!bot.enabled} onClick={() => void api.bots.runNow(id).then(refreshBots)}><Play size={13} /> Run now</Button>
@@ -336,8 +404,7 @@ function BotBody({ id, status }: { id: string; status: BotStatus | null }) {
           <SectionTitle>Schedules</SectionTitle>
           {bot.schedules.map((s) => (
             <div key={s.name} className="flex items-center gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm">
-              <span className="text-ink">{s.name}</span>
-              <Mono>{s.cron}</Mono>
+              <span className="text-ink">{describeCron(s.cron)}</span>
               <span className="min-w-0 flex-1 truncate text-sm text-ink3">{s.prompt}</span>
             </div>
           ))}
@@ -356,4 +423,15 @@ function ago(ts: number): string {
   const h = Math.round(m / 60);
   if (h < 48) return `${h} h ago`;
   return `${Math.round(h / 24)} d ago`;
+}
+
+const TIER_LABEL: Record<string, string> = { readonly: "read only", builder: "writes files", operator: "runs commands", full: "full access", custom: "custom permissions" };
+
+function TierBadge({ tier }: { tier: string }) {
+  return (
+    <Badge tone={tier === "full" || tier === "custom" ? "amber" : "neutral"}>
+      {tier === "full" ? <ShieldAlert size={11} className="mr-1 inline" /> : <Shield size={11} className="mr-1 inline" />}
+      {TIER_LABEL[tier] ?? tier}
+    </Badge>
+  );
 }

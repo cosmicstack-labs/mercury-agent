@@ -59,21 +59,29 @@ pub fn permission_report(request: bool) -> Value {
         } else if !screen {
             let _ = Command::new("open").arg(PANE_SCREEN).status();
         }
+        // Talking needs the microphone: ask now, while the owner is setting up, not in the middle
+        // of the first voice session (where a hidden prompt left Optimus hearing silence).
+        if crate::core::voice_enabled() && crate::devices::mic_state() == "not-asked" {
+            let _ = crate::devices::ask_microphone();
+        }
     }
+    let mic = crate::devices::mic_state();
     let mark = |b: bool| if b { "✅" } else { "❌" };
     let mut text = format!(
-        "macOS permissions for Optimus:\n{} Accessibility (mouse and keyboard)\n{} Screen Recording (see the screen)",
+        "macOS permissions for Optimus:\n{} Accessibility (mouse and keyboard)\n{} Screen Recording (see the screen)\n{} Microphone (talking to Optimus){}",
         mark(ax),
-        mark(screen)
+        mark(screen),
+        mark(mic == "granted"),
+        if mic == "not-asked" { ": not asked yet" } else { "" }
     );
-    if !ax || !screen {
+    if !ax || !screen || mic != "granted" {
         text.push_str(
             "\nTo fix: System Settings → Privacy & Security, turn on \"Optimus\" under each one that's off. \
              If Screen Recording asks to quit and reopen, Optimus restarts by itself on its next use. \
              macOS asks to confirm Screen Recording again about once a month.",
         );
     }
-    json!({ "ready": ax && screen, "accessibility": ax, "screenRecording": screen, "text": text })
+    json!({ "ready": ax && screen, "accessibility": ax, "screenRecording": screen, "microphone": mic, "text": text })
 }
 
 /// `optimus agent --socket <path>`: run the core for one connection, then exit.

@@ -2426,16 +2426,20 @@ export class CLIChannel extends BaseChannel {
   private async announceVersionNotices(version: string): Promise<void> {
     if (process.env.VITEST || process.env.MERCURY_NO_UPDATE_CHECK === '1') return;
     try {
-      const { shouldShowWhatsNewHint, markWhatsNewHintShown, maybeCheckForUpdate } = await this.updateNoticeApi();
+      const { shouldShowWhatsNewHint, markWhatsNewHintShown, getIgnoredUpdateVersion, shownMessageIds, rememberNotices } = await this.updateNoticeApi();
       if (shouldShowWhatsNewHint(version)) {
         markWhatsNewHintShown(version);
         this.sendSystemNotice(`☿ Mercury v${version} is here. Type \`/whatsnew\` to see what's new.`);
       }
-      const latest = await maybeCheckForUpdate(version);
-      if (latest) {
-        this.setUpdateAvailable(latest);
-        this.sendSystemNotice(`⬆ Update available: v${version} → v${latest}. Run \`mercury upgrade\` in your terminal when you're ready — or ignore this version with \`/update ignore\`.`);
-      }
+      // The signed update manifest decides "required" and carries messages;
+      // without it, the plain version look-up still offers updates.
+      const { serverUpdateStatus } = await import('../updates/status.js');
+      const { startupNotices } = await import('../updates/notices.js');
+      const status = await serverUpdateStatus({ current: version });
+      const out = startupNotices(status, getIgnoredUpdateVersion(), shownMessageIds());
+      rememberNotices(out.shown, status.latest?.version);
+      if (out.badge) this.setUpdateAvailable(out.badge);
+      for (const n of out.notices) this.sendSystemNotice(n);
     } catch (err) {
       logger.debug({ err }, 'announceVersionNotices failed (non-fatal)');
     }

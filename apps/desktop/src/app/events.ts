@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { openStream } from "~/api/stream";
 import * as api from "~/api/mercury";
 import { ApiError, http } from "~/api/client";
-import type { BotActivityEvent, ChatMessage, CodeMode, PendingPrompt } from "~/api/types";
+import type { BotActivityEvent, BotInboxEntry, BotStatus, ChatMessage, CodeMode, PendingPrompt, ResearchPlanPrompt, ResearchSnapshot } from "~/api/types";
 import { useBots, useChat, useRuntimeState, type AgentState } from "./store";
 import { conversations, useCodeSessions, type ConversationStore, type Surface } from "./conversation";
 import type { ArtifactRef } from "~/api/artifacts";
@@ -26,6 +26,26 @@ export function useRuntimeEvents(enabled: boolean): void {
     if (!enabled) return;
     const stream = openStream("/api/bots/events", {
       onEvent: (event, raw) => {
+        if (event === "bot_roster") {
+          // Roster news (an edit, a new crew member, a delete) from any screen.
+          const r = safeJson<{ bots: BotStatus[] }>(raw);
+          if (r?.bots) useBots.getState().setBots(r.bots, true);
+          return;
+        }
+        if (event === "bot_approval") {
+          // A bot asked, or its question was answered or timed out.
+          void refreshApprovals();
+          return;
+        }
+        if (event === "bot_inbox") {
+          // A result, a reported failure, or a run that needs you.
+          const entry = safeJson<BotInboxEntry>(raw);
+          if (!entry) return;
+          useBots.getState().inboxChanged();
+          void refreshBots();
+          void import("./notify/notify").then(({ tellBotInbox }) => tellBotInbox(entry));
+          return;
+        }
         if (event !== "bot_activity") return;
         const ev = safeJson<BotActivityEvent>(raw);
         if (!ev || ev.kind === "thinking") return;
@@ -83,6 +103,37 @@ function safeJson<T>(raw: string): T | null {
 /** Artifacts that arrived before their reply did: attached when it lands. */
 const pendingArtifacts = new WeakMap<ConversationStore, ArtifactRef[]>();
 
+/** Is a step's result a failure? The runtime says so now; older ones only by the text. */
+export function stepFailed(data: Record<string, unknown>, summary: string | undefined): boolean {
+  if (typeof data.failed === "boolean") return data.failed;
+  return !!summary && /^(error|failed|denied|blocked|HTTP [45]\d\d\b|Request to .* timed out)/i.test(summary.trim());
+}
+
+const FINAL_RESEARCH = new Set(["done", "partial", "stopped", "failed", "cancelled"]);
+
+/** A research update: the chip and panel follow it; a finished run's report card goes on its answer. */
+function onResearch(store: ConversationStore, data: Record<string, unknown>): void {
+  const conv = store.getState();
+  if (data.state === "armed" || data.state === "off") {
+    const armed = data.state === "armed";
+    conv.setResearch((r) => ({ ...r, armed, planFirst: armed && data.planFirst === true, topic: typeof data.topic === "string" ? data.topic : null }));
+    return;
+  }
+  if (typeof data.runId !== "string") return;
+  const run = data as unknown as ResearchSnapshot;
+  conv.setResearch((r) => ({ ...r, armed: false, planFirst: false, run }));
+  if (!FINAL_RESEARCH.has(run.state) || run.state === "cancelled") return;
+  // The answer is the last assistant message (the run's final update comes after it).
+  const msgs = store.getState().messages;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "user") break;
+    if (msgs[i].role === "assistant") {
+      store.getState().setMessages([...msgs.slice(0, i), { ...msgs[i], research: run }, ...msgs.slice(i + 1)]);
+      return;
+    }
+  }
+}
+
 export function handleEvent(store: ConversationStore, event: string, raw: string): void {
   const conv = store.getState();
   const data = safeJson<Record<string, unknown>>(raw) ?? {};
@@ -94,9 +145,32 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
     case "provider":
       useRuntimeState.getState().setProvider(String(data.provider ?? ""), String(data.model ?? ""));
       break;
+    case "status":
+      // The runtime's live status: a permission change made anywhere (a toggle here, /permissions
+      // in a terminal, another device) reaches every toggle on screen.
+      if (data.permission === "allow-all" || data.permission === "ask-me") useRuntimeState.getState().setAllowAll(data.permission === "allow-all");
+      break;
+    case "queued":
+      // Waiting behind another chat's turn: say so, instead of "Thinking".
+      conv.setWaiting({ position: Number(data.position) || 1, busyWith: typeof data.busyWith === "string" ? data.busyWith : undefined, busySessionId: typeof data.busySessionId === "string" ? data.busySessionId : undefined });
+      conv.setAgent("thinking");
+      break;
     case "thinking":
+      conv.setWaiting(null);
       conv.setAgent("thinking");
       conv.setLive((l) => l);
+      break;
+    case "research":
+      onResearch(store, data);
+      break;
+    case "research_plan":
+      conv.setResearchPlan(data as unknown as ResearchPlanPrompt);
+      break;
+    case "research_plan_resolved":
+      if (conv.researchPlan?.id === data.id) conv.setResearchPlan(null);
+      break;
+    case "notice":
+      if (typeof data.message === "string") conv.setNotice({ message: data.message, level: data.level === "warning" ? "warning" : "info", at: Date.now() });
       break;
     case "plan": {
       const steps = Array.isArray(data.steps) ? (data.steps as Array<{ label: string; status: "pending" | "active" | "done" }>) : [];
@@ -116,10 +190,12 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       break;
     }
     case "reasoning":
+      conv.setWaiting(null);
       if (data.done === true) break;
       if (typeof data.text === "string" && data.text) conv.setLive((l) => ({ ...l, reasoning: (l.reasoning + data.text).slice(-20_000) }));
       break;
     case "step_start": {
+      conv.setWaiting(null);
       const tool = String(data.tool ?? "");
       conv.setStep({ total: Number(data.totalSteps ?? 0), current: Number(data.step ?? data.stepNumber ?? 0), tool });
       conv.setAgent("working");
@@ -129,22 +205,27 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
     case "step_done": {
       const tool = String(data.tool ?? "");
       const summary = typeof data.summary === "string" ? data.summary : undefined;
-      const failed = !!summary && /^(error|failed|denied|blocked)\b/i.test(summary.trim());
+      // "HTTP 403" and "timed out" are failures too (they used to show a green check).
+      const failed = stepFailed(data, summary);
+      const shown = failed && typeof data.reason === "string" && data.reason ? data.reason : summary;
       conv.setStep({ total: Number(data.totalSteps ?? 0), current: Number(data.stepNumber ?? 0), tool });
       conv.setLive((l) => {
         const steps = [...l.steps];
         for (let i = steps.length - 1; i >= 0; i--) {
-          if (steps[i].status === "running" && steps[i].tool === tool) { steps[i] = { ...steps[i], status: failed ? "error" : "done", summary, endedAt: Date.now() }; break; }
+          if (steps[i].status === "running" && steps[i].tool === tool) { steps[i] = { ...steps[i], status: failed ? "error" : "done", summary: shown, endedAt: Date.now() }; break; }
         }
         return { ...l, steps };
       });
       break;
     }
     case "text_delta":
+      conv.setWaiting(null);
       conv.setAgent("streaming");
       conv.appendStreaming(String(data.text ?? ""));
       break;
     case "text_done": {
+      conv.setWaiting(null);
+      conv.setNotice(null);
       const text = String(data.fullText ?? data.text ?? raw);
       // The runtime's reply to a stop is its "⏹ Task stopped" note: end the turn as stopped.
       if (isStopNote(text) || (store.getState().stopping && !text.trim())) { finishStopped(store); void refreshThreads(); break; }
@@ -174,6 +255,8 @@ export function handleEvent(store: ConversationStore, event: string, raw: string
       if (typeof data.id === "string") conv.removePrompt(data.id);
       break;
     case "error": {
+      conv.setWaiting(null);
+      conv.setNotice(null);
       const message = typeof data.message === "string" ? data.message : raw || "Something went wrong";
       conv.clearStreaming();
       conv.clearLive();
@@ -235,10 +318,17 @@ export async function setThreadSaved(threadId: string, saved: boolean): Promise<
   }
 }
 
-export async function refreshBots(): Promise<void> {
+export async function refreshApprovals(): Promise<void> {
   try {
-    const { bots, available } = await api.bots.list();
-    useBots.getState().setBots(bots, available);
+    useBots.getState().setApprovals(await api.bots.approvals());
+  } catch { /* an older runtime has no approvals */ }
+}
+
+export async function refreshBots(): Promise<void> {
+  void refreshApprovals();
+  try {
+    const { bots, available, unread } = await api.bots.list();
+    useBots.getState().setBots(bots, available, unread);
   } catch { /* bots unavailable on this runtime */ }
 }
 
@@ -257,9 +347,27 @@ export async function openThread(surface: Surface, id: string | null): Promise<v
     .then((r) => {
       if (store.getState().activeId !== id) return;
       for (const p of r.prompts ?? []) {
+        if (p.type === "research_plan") { store.getState().setResearchPlan(p as unknown as ResearchPlanPrompt); continue; }
         const kind = p.type === "choice_prompt" ? "choice" : p.type === "permission_continue" ? "continue" : "permission";
         store.getState().addPrompt(toPrompt(kind, p, String(p.prompt ?? p.question ?? "")));
       }
+    })
+    .catch(() => { /* older Mercury */ });
+  // Still waiting in line behind another chat? (Opened after the message was sent.)
+  store.getState().setWaiting(null);
+  void http.get<{ state: string; position?: number; busyWith?: string; busySessionId?: string }>(`/api/chat/threads/${encodeURIComponent(id)}/queue`)
+    .then((q) => {
+      if (store.getState().activeId !== id || q.state !== "queued") return;
+      store.getState().setWaiting({ position: q.position ?? 1, busyWith: q.busyWith, busySessionId: q.busySessionId });
+      store.getState().setAgent("thinking");
+    })
+    .catch(() => { /* older Mercury */ });
+  // Research here: on for the next message, or a run going (opened mid-run, it picks up live).
+  void api.chat.research(id)
+    .then((r) => {
+      if (store.getState().activeId !== id) return;
+      if (r.armed || r.run) store.getState().setResearch(() => ({ armed: r.armed, planFirst: r.planFirst, topic: r.topic ?? null, run: r.run }));
+      if (r.run?.state === "running") store.getState().setAgent("working");
     })
     .catch(() => { /* older Mercury */ });
   // The plan Mercury was working through in this conversation, if any.

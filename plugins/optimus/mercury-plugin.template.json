@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "optimus",
   "name": "Optimus",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Mercury uses your computer like a person: sees the screen, moves the mouse, types and opens apps, by chat or out loud with a talk key. macOS, Windows and Linux. Asks before anything that submits, sends, pays or deletes.",
   "kind": "out-of-process",
   "author": "Cosmic Stack",
@@ -56,7 +56,7 @@
       },
       {
         "name": "permissions",
-        "description": "Check what the OS lets Optimus do (macOS: Accessibility and Screen Recording). With request=true, shows the system prompts and opens the right Settings page.",
+        "description": "Check what the OS lets Optimus do (macOS: Accessibility, Screen Recording and Microphone). With request=true, shows the system prompts and opens the right Settings page.",
         "readOnly": true,
         "timeoutMs": 60000
       },

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as pathResolve } from 'node:path';
 import { Command } from 'commander';
@@ -61,6 +61,8 @@ import { registerPluginsCli } from './cli/plugins-cli.js';
 import { PersonVerifier, personCheckPrompt, parsePersonCheck } from './memory/person-verifier.js';
 import { setPersonVerifier } from './web/api/brain.js';
 import { registerDevicesCli } from './cli/devices-cli.js';
+import { registerUpdateCli, runUpgrade } from './cli/upgrade-cli.js';
+import { registerServerCli } from './cli/server-cli.js';
 import { SECOND_BRAIN_UNAVAILABLE_MESSAGE } from './memory/second-brain-db.js';
 import { isSqliteAvailable } from './utils/sqlite-driver.js';
 import { runStorageDoctor } from './utils/storage-doctor.js';
@@ -96,7 +98,7 @@ import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
-import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setBudgetControls as setWebBudgetControls } from './web/server.js';
+import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
 import { validateApiKey, validateBaseUrl, validateModelName } from './providers/provider-meta.js';
 import { setFirstProviderHandler, setProvidersReload } from './web/api/providers.js';
 import { setCloudReload } from './web/api/cloud.js';
@@ -104,7 +106,7 @@ import { spawnDetachedRestart } from './cli/daemon.js';
 import { recordVoiceCalls } from './plugins/voice-calls.js';
 import { setChannelRuntime } from './web/api/channels.js';
 import { setSkillBuilder } from './web/api/system.js';
-import { setArtifactSessions } from './web/api/artifacts.js';
+import { setArtifactOutputDir, setArtifactSessions } from './web/api/artifacts.js';
 import { artifactStore } from './artifacts/store.js';
 import { isWebAuthInitialized, setWebPassword, writeAttachToken, initWebAuth } from './web/auth.js';
 import { startLoopLagMonitor } from './utils/loop-lag.js';
@@ -2175,14 +2177,24 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
         console.log(chalk.dim('  Password unchanged.'));
       }
     } else {
-      console.log(chalk.dim('  Default password is Mercury@123 — set a custom one now or press Enter to keep it.'));
+      console.log(chalk.dim('  This password signs in the dashboard and new devices (Mercury Desktop, phones).'));
+      console.log(chalk.dim('  Press Enter to have Mercury make a strong one for you.'));
       console.log('');
-      const webPassword = await ask(chalk.white('  Web dashboard password [Mercury@123]: '));
-      if (webPassword.trim()) {
-        setWebPassword(webPassword.trim());
+      let chosen = '';
+      for (let attempt = 0; attempt < 3 && !chosen; attempt++) {
+        const typed = (await ask(chalk.white('  Web dashboard password [generate one]: '))).trim();
+        if (!typed) break;
+        if (typed.length < 10) { console.log(chalk.yellow('  Use at least 10 characters (or press Enter to generate one).')); continue; }
+        chosen = typed;
+      }
+      if (chosen) {
+        setWebPassword(chosen);
         console.log(chalk.green('  ✓ Web dashboard password set.'));
       } else {
-        console.log(chalk.dim('  Using default password: Mercury@123'));
+        const { initWebAuth: makeAuth, isWebAuthInitialized } = await import('./web/auth.js');
+        const generated = !isWebAuthInitialized() ? makeAuth().password : (() => { const p = randomBytes(12).toString('base64url'); setWebPassword(p); return p; })();
+        console.log(chalk.green(`  ✓ Username: mercury   Password: ${chalk.bold(generated)}`));
+        console.log(chalk.dim('  Save it in your password manager — it is shown only now. Change it any time with /server.'));
       }
     }
   } else {
@@ -2530,6 +2542,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   const sessions = new SessionRepository();
   // Artifacts follow their thread: drop those whose thread is gone (deleted anywhere), now and every hour.
   setArtifactSessions(sessions);
+  setArtifactOutputDir(() => config.artifacts?.outputDir);
   const sweepArtifacts = () => {
     try {
       const removed = artifactStore().reconcile((id) => { try { return sessions.get(id).status !== 'deleted'; } catch { return false; } });
@@ -2994,7 +3007,13 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
       cloudClient.on('skill.install', async (msg) => {
         const skillUrl = msg.payload?.skillUrl as string | undefined;
         if (skillUrl) {
-          logger.info({ skillUrl }, 'Cloud command: install skill');
+          logger.info('Cloud command: install skill (asking the owner)');
+          // A skill is instructions Mercury follows from then on: the owner decides, not the Cloud account.
+          const { askOwner } = await import('./security/owner-approvals.js');
+          if (!(await askOwner({ title: 'Install a skill sent by Mercury Cloud', who: 'Mercury Cloud', detail: skillUrl.slice(0, 300) }))) {
+            cloudClient!.send({ type: 'skill.ack', agentId: config.cloud.agentId, payload: { success: false, error: 'The owner did not approve installing this skill.' }, timestamp: new Date().toISOString() });
+            return;
+          }
           try {
             await skillLoader.installFromUrl(skillUrl);
             cloudClient!.send({
@@ -3297,6 +3316,15 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
             cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'Invalid permission mode request.' } });
             return;
           }
+          if (action === 'allow-all') {
+            // Acting without asking, switched on from Cloud: the owner confirms it first.
+            cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'notice', data: { message: 'Waiting for the owner to approve Allow All on their own device…' } });
+            const { askOwner } = await import('./security/owner-approvals.js');
+            if (!(await askOwner({ title: 'Turn on Allow All for a chat, from Mercury Cloud', who: 'Mercury Cloud' }))) {
+              cloudClient!.sendStream({ conversationId, sessionId: suppliedSessionId, requestId, event: 'error', data: { message: 'The owner did not approve Allow All.' } });
+              return;
+            }
+          }
           webChannel.setSessionPermissionMode(suppliedSessionId, action);
           cloudClient!.sendStream({
             conversationId,
@@ -3525,7 +3553,26 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   setCloudReload(() => agent.reloadProviders());
   setWebStop(() => agent.stopAllWork('stopped'));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
+  setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
+  setWebResearchControls({
+    state: (id) => agent.researchMode.stateFor(id),
+    finish: (id) => agent.finishResearch(id),
+    off: (id) => { if (agent.researchMode.armedForSession(id)) agent.researchMode.setOff(); webChannel.sendResearchArmed(false, id); },
+  });
   setWebBudgetControls({ config: () => config, tokens: () => tokenBudget, saver: () => agent.saverMode });
+  // Updates wait for running work: a reply, queued messages, bot turns.
+  {
+    const { setUpdateBusyProbe, reconcileUpdateJob } = await import('./updates/server-updater.js');
+    const { versionString } = await import('./web/api/status.js');
+    setUpdateBusyProbe(() => {
+      if (agent.processing) return 'a reply';
+      if (agent.queuedCount > 0) return agent.queuedCount === 1 ? 'a queued message' : `${agent.queuedCount} queued messages`;
+      const bots = botManager?.runningJobs() ?? 0;
+      if (bots > 0) return bots === 1 ? 'a bot run' : `${bots} bot runs`;
+      return null;
+    });
+    try { reconcileUpdateJob(versionString()); } catch (err) { logger.debug({ err }, 'updates: reconcile failed'); }
+  }
   // Titles made before they were checked: fix them once, quietly, after start-up.
   if (!daemonOwnsRuntime) {
     const titleRepair = setTimeout(() => { void agent.repairSessionTitles().catch(() => {}); }, 20_000);
@@ -4182,7 +4229,18 @@ program
   .option('--storage', 'Show SQLite backend, database files and row counts')
   .option('--mcp', 'Connect to each configured MCP server and report its status')
   .option('--plugins', 'Check installed plugins and why any are turned off')
+  .option('--security', 'Check remote access and security (password, devices, file permissions, tunnel)')
   .action(async (opts) => {
+    if (opts.security) {
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const { findingsText } = await import('./security/server-menu.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      console.log(`\n  Security: ${summarizeFindings(findings)}\n`);
+      console.log(findingsText(findings).split('\n').map((l) => `  ${l}`).join('\n'));
+      console.log(chalk.dim('\n  Manage remote access with `mercury server` (or /server in the terminal chat).\n'));
+      if (findings.some((f) => f.level === 'risk')) process.exitCode = 1;
+      return;
+    }
     {
       // Keys that cannot be right — say so before anything is tried.
       const { checkKeyShapes } = await import('./providers/key-shape.js');
@@ -4205,6 +4263,21 @@ program
     }
     const mcpSummary = summarizeMcpConfig(loadConfig().mcp);
     if (mcpSummary) console.log(chalk.dim(`  ${mcpSummary}`));
+    {
+      // One line about security on every doctor run; details with --security.
+      const { securityCheck, summarizeFindings } = await import('./security/check.js');
+      const findings = securityCheck({ cloudConnected: loadConfig().cloud?.enabled === true });
+      const summary = summarizeFindings(findings);
+      const line = `  Security: ${summary}${summary === 'All good' ? '' : ' — run `mercury doctor --security`'}`;
+      console.log(findings.some((f) => f.level === 'risk') ? chalk.yellow(line) : chalk.dim(line));
+    }
+    try {
+      // One line about updates: current, newest, required, blocked.
+      const { serverUpdateStatus } = await import('./updates/status.js');
+      const { updatesLine } = await import('./updates/notices.js');
+      const u = updatesLine(await serverUpdateStatus({ current: pkgVersion }));
+      console.log(u.level === 'risk' ? chalk.red(u.text) : u.level === 'note' ? chalk.yellow(u.text) : chalk.dim(u.text));
+    } catch { /* offline: say nothing */ }
     if (opts.plugins) {
       const { runPluginDoctor } = await import('./cli/plugins-cli.js');
       await runPluginDoctor();
@@ -5064,29 +5137,22 @@ serviceCmd
   });
 
 registerDevicesCli(program);
+registerServerCli(program);
 
-  program
+registerUpdateCli(program, pkgVersion);
+
+program
   .command('upgrade')
-  .description('Upgrade Mercury to the latest version')
+  .description('Upgrade Mercury to the latest version (goes back on its own if the new version fails)')
   .option('--force', 'Reinstall even when already on the latest version')
-  .action(async (opts: { force?: boolean }) => {
-    console.log('');
-    console.log(chalk.cyan(`  Mercury ${chalk.white(`v${pkgVersion}`)}`));
-    // Already current? Say so and touch nothing — not the daemon, not the
-    // binary. (This used to stop the daemon and re-run the installer
-    // unconditionally: "upgrade" on the latest build was a restart.)
-    if (!opts.force) {
-      const { fetchLatestVersion } = await import('./cli/latest-version.js');
-      const channel = isDevBuild(pkgVersion) ? 'dev' : 'stable';
-      const latest = await fetchLatestVersion(channel);
-      if (latest && latest === pkgVersion) {
-        console.log(chalk.green(`  ✓ Already on the latest ${channel === 'dev' ? 'dev build' : 'version'} (v${pkgVersion}). Nothing to do.`));
-        console.log(chalk.dim('  Use mercury upgrade --force to reinstall anyway.'));
-        console.log('');
-        return;
-      }
-      if (latest) console.log(chalk.dim(`  Latest on the ${channel} channel: v${latest}`));
-    }
+  .option('--check', 'Only show whether a newer version exists and what is in it')
+  .option('--now', "Don't wait for running work to finish")
+  .action(async (opts: { force?: boolean; check?: boolean; now?: boolean }) => {
+    await runUpgrade(pkgVersion, opts, legacyReinstall);
+  });
+
+/** `--force` on the newest version: re-run the installer (binary) or npm (npm install), as before. */
+async function legacyReinstall(): Promise<void> {
     // A dev binary upgrades itself in place on the same channel (re-running
     // the dev installer below); npm builds take the npm stable track.
     if (isDevBuild(pkgVersion)) {
@@ -5216,7 +5282,7 @@ registerDevicesCli(program);
     }
 
     console.log('');
-  });
+  }
 
 program
   .command('code')

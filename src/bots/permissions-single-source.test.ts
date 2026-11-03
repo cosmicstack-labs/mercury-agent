@@ -73,7 +73,9 @@ describe('permissions.yaml — single source of truth', () => {
   it('the tool gate comes from permissions.yaml, overriding any legacy manifest block', () => {
     const all = { read_file: {}, run_command: {}, write_file: {} } as any;
     const manifest = { tools: { deny: ['run_command'] } } as any;
-    // permissions.yaml is the single source: its deny wins over bot.yaml.
+    // permissions.yaml is the single source: its deny wins over bot.yaml (whose
+    // deny list is the materialized default on every loaded manifest — a tier
+    // that grants run_command must be able to).
     let out = filterBotTools(all, manifest, { tools: { deny: ['write_file'] } });
     expect(Object.keys(out).sort()).toEqual(['read_file', 'run_command']);
     // No permissions.tools + explicit legacy manifest block → honored.
@@ -179,6 +181,23 @@ describe('fleet permission inheritance (crew runs on the lead\'s permissions)', 
     // ambiguity survives a startup.
     expect(store.get('ghost-child')).toBeNull();
     void readFileSync;
+  });
+});
+
+describe('bot tool filter', () => {
+  const bare = { id: 'x' } as unknown as Parameters<typeof filterBotTools>[1];
+  const toolset = (names: string[]) => Object.fromEntries(names.map((n) => [n, {}])) as Parameters<typeof filterBotTools>[0];
+  it('Spotify, GitHub and git tools are opt-in by group: off unless the gate names them', () => {
+    const all = toolset(['read_file', 'spotify_play', 'spotify_pause', 'github_api', 'create_pr', 'git_status', 'web_search']);
+    const deny = { tools: { deny: [] } };
+    expect(Object.keys(filterBotTools(all, bare, deny)).sort()).toEqual(['read_file', 'web_search']);
+    const withGroups = { tools: { allow: ['read_file', 'web_search', 'spotify', 'git'] } };
+    expect(Object.keys(filterBotTools(all, bare, withGroups)).sort()).toEqual(['git_status', 'read_file', 'spotify_pause', 'spotify_play', 'web_search']);
+    expect(Object.keys(filterBotTools(all, bare, { tools: { deny: [], allow: [] } }))).not.toContain('create_pr');
+  });
+
+  it('a bot never gets dispatch_bot (that is how the owner wakes bots)', () => {
+    expect(Object.keys(filterBotTools(toolset(['dispatch_bot', 'read_file']), bare, { tools: { deny: [] } }))).toEqual(['read_file']);
   });
 });
 

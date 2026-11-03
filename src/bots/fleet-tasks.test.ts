@@ -39,6 +39,11 @@ const stubProvider = { name: 'stub', model: 'stub-model', isAvailable: () => tru
 const providers = { get: (name?: string) => (name === 'cheap' ? { ...stubProvider, name: 'cheap' } : name === 'stub' ? stubProvider : undefined), getDefault: () => stubProvider } as never;
 const tokenBudget = { recordUsage: () => {}, getRemaining: () => 100000, canAfford: () => true, getStatusText: () => 'ok', getUsagePercentage: () => 0 } as never;
 
+/** The bot's system prompt as the model sees it: a `system` string, or leading system messages (cached prefix + per-run part). */
+function systemText(opts: { system?: string; messages?: Array<{ role?: string; content: unknown }> }): string {
+  return opts.system ?? (opts.messages ?? []).filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n');
+}
+
 describe('fleet tasks (ADR-021)', () => {
   let root: string;
   let store: BotStore;
@@ -239,7 +244,7 @@ describe('fleet tasks (ADR-021)', () => {
 
   it('continuity: the bot sees its recent runs and its own state note instead of writing records', async () => {
     const prompts: string[] = [];
-    mockedGenerateText.mockImplementation((async (opts: StepOpts & { system?: string }) => { prompts.push(opts.system ?? ''); return reply('done something'); }) as never);
+    mockedGenerateText.mockImplementation((async (opts: StepOpts & { system?: string }) => { prompts.push(systemText(opts)); return reply('done something'); }) as never);
     store.writeState('alpha', 'Working on: the Oxide dossier. Pending: fact-check.');
     manager.enqueue('alpha', { trigger: 'chat', prompt: 'first' });
     await idle('alpha');
@@ -409,6 +414,8 @@ describe('liveness contract', () => {
   });
 
   it('a no-outcome cooldown ends by itself, backs off, and resets after a productive run', async () => {
+    // Back-to-back runs of one routine: lift the 15-minute floor for this test.
+    (manager as unknown as { config: MercuryConfig }).config.bots.routineMinGapMinutes = 0;
     const alerts: string[] = [];
     manager.setAlert(async (m) => { alerts.push(m); });
     store.update('watch', m => { m.schedules = [{ name: 'cycle', cron: '0 * * * *', prompt: 'cycle' }]; });
@@ -451,13 +458,15 @@ describe('liveness contract', () => {
     expect(store.readRoutineState('watch').pauseCount?.['bot:watch:cycle']).toBeUndefined();
   });
 
-  it('a cadence declared in bot.yaml is honoured as written; bot-created routines get the 30-minute floor', async () => {
+  it('every routine waits at least 15 minutes between runs, the owner\'s own too; bot-created routines get the 30-minute floor', async () => {
     mockedGenerateText.mockImplementation((async () => reply('ok')) as never);
     store.update('watch', m => { m.schedules = [{ name: 'fast', cron: '*/5 * * * *', prompt: 'x' }]; });
     expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'fast 1', routineId: 'bot:watch:fast' }).accepted).toBe(true);
     await idle('watch');
-    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'fast 2', routineId: 'bot:watch:fast' }).accepted).toBe(true);
-    await idle('watch');
+    // A 5-minute cron on a lead spent hundreds of millions of tokens: the floor applies to it too.
+    expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'fast 2', routineId: 'bot:watch:fast' })).toMatchObject({ accepted: false, reasonCode: 'too_soon' });
+    // …and survives a restart: the last end is kept with the routine.
+    expect(store.readRoutineState('watch').lastEnd?.['bot:watch:fast']).toBeTruthy();
     expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'self 1', routineId: 'bot:watch:routine-self' }).accepted).toBe(true);
     await idle('watch');
     expect(manager.enqueue('watch', { trigger: 'cron', prompt: 'self 2', routineId: 'bot:watch:routine-self' })).toMatchObject({ accepted: false, reasonCode: 'too_soon' });

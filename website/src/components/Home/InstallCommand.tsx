@@ -20,7 +20,7 @@ const METHODS: { id: Method; label: string; cmd: string; note: React.ReactNode }
     id: 'npm',
     label: 'npm',
     cmd: 'npm i -g @cosmicstack/mercury-agent',
-    note: <>Requires Node.js 20+. Then run <code>mercury</code>.</>,
+    note: <>Requires Node.js 22+. Then run <code>mercury</code>.</>,
   },
   {
     id: 'bun',

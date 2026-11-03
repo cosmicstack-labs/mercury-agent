@@ -40,4 +40,7 @@ echo "✓ Published ${PKG_NAME}@${PKG_VERSION}"
 
 echo "Tagging git..."
 git tag -a "v${PKG_VERSION}" -m "v${PKG_VERSION}"
-echo "Done. Push with: git push origin main --tags"
+echo "Done. Push with: git push origin main --tags"echo ""
+echo "Apps learn about the release from the signed update manifest (UPDATES.md)."
+echo "Once the GitHub release and its binaries are up, record it and deploy the website:"
+echo "  node scripts/update-manifest.mjs release server ${PKG_VERSION} --notes RELEASE.md"

@@ -1,5 +1,12 @@
+import { trackStream } from '../../security/live-streams.js';
+import { isThisComputer, principalKey, principalOf } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
+import { protectedReason } from '../../security/protected-paths.js';
 import { Hono } from 'hono';
+import { commandCatalog } from '../../core/commands/catalog.js';
+import { getPluginManager } from '../../plugins/manager.js';
 import { artifactStore } from '../../artifacts/store.js';
+import { favicons } from '../favicons.js';
 import { scopedProgrammingState } from '../../core/programming-mode.js';
 import { isInsideWorkspace } from './workspace-ide.js';
 import { storeInlineAttachments, attachmentRefs, resolveUploadRef, uploadMime } from './uploads.js';
@@ -51,6 +58,7 @@ function toThread(session: ReturnType<SessionRepository['get']>, includeMessages
       sequence: message.sequence,
       ...(typeof message.metadata?.voiceRole === 'string' ? { voice: message.metadata.voiceRole } : {}),
       ...(Array.isArray(message.metadata?.artifacts) && message.metadata.artifacts.length ? { artifacts: message.metadata.artifacts } : {}),
+      ...(message.metadata?.research && typeof message.metadata.research === 'object' ? { research: message.metadata.research } : {}),
       ...(Array.isArray(message.metadata?.attachments) && message.metadata.attachments.length > 0
         ? { attachments: (message.metadata.attachments as Array<{ name: string; kind: string; mime?: string; ref: string }>).map((a) => ({ name: a.name, kind: a.kind, mime: a.mime, url: `/api/chat/uploads/${a.ref}` })) }
         : {}),
@@ -75,6 +83,22 @@ let busyFn: ((sessionId: string) => boolean) | null = null;
 /** Whether a session has a turn running or queued (undo waits for it). */
 export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
   busyFn = fn;
+}
+type QueueState = { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string };
+let queueControls: { state: (threadId: string) => QueueState; prioritize: (threadId: string) => number } | null = null;
+/** The agent's line of turns: where a chat stands, and moving one to the front ("do mine first"). */
+export function setQueueControls(controls: typeof queueControls): void {
+  queueControls = controls;
+}
+
+/** Research runs per chat: what's going on, "write the report now". */
+let researchControls: {
+  state: (sessionId: string) => Record<string, unknown>;
+  finish: (sessionId: string) => { ok: boolean; reason?: string };
+  off: (sessionId: string) => void;
+} | null = null;
+export function setResearchControls(controls: typeof researchControls): void {
+  researchControls = controls;
 }
 /** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
 export function setStopCallback(fn: () => Promise<string>): void {
@@ -131,6 +155,14 @@ const chat = new Hono();
 // ─── SSE Events ──────────────────────────────────────────────
 
 /** The conversation's latest plan checklist (update_plan), for a client opening the thread. */
+// The "/" picker: every slash command, with what it does (the terminal's list, the manual's words,
+// and the commands running plugins add). Sent as a message, a command runs exactly as typed.
+chat.get('/api/chat/commands', (c) => {
+  let plugins: Array<{ name: string; description: string; plugin: string }> = [];
+  try { plugins = getPluginManager().commandHelp(); } catch { /* plugins not started */ }
+  return c.json({ commands: commandCatalog(plugins) });
+});
+
 chat.get('/api/chat/plan', (c) => {
   if (!webChannel) return c.json({ plan: null });
   const id = c.req.query('sessionId');
@@ -150,15 +182,15 @@ chat.get('/api/chat/activity', (c) => {
   }
   const stream = new ReadableStream({
     start(controller) {
-      const clientId = ch.addActivityClient(controller);
+      const clientId = ch.addActivityClient(controller, isThisComputer(c));
       const encoder = new TextEncoder();
       const send = (data: string) => { try { controller.enqueue(encoder.encode(data)); } catch { /* closed */ } };
       send(`event: connected\ndata: ${JSON.stringify({ id: clientId })}\n\n`);
       const keepalive = setInterval(() => send(': keepalive\n\n'), 15000);
-      c.req.raw.signal.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        ch.removeActivityClient(clientId);
-      });
+      const cleanup = () => { clearInterval(keepalive); ch.removeActivityClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
     },
   });
   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' } });
@@ -199,10 +231,10 @@ chat.get('/api/chat/events', (c) => {
         send(`: keepalive\n\n`);
       }, 15000);
 
-      c.req.raw.signal.addEventListener('abort', () => {
-        clearInterval(keepalive);
-        webChannel?.removeSSEClient(clientId);
-      });
+      const cleanup = () => { clearInterval(keepalive); webChannel?.removeSSEClient(clientId); untrack(); };
+      // Revoking the device (or signing the browser out) ends this stream at once.
+      const untrack = trackStream(principalKey(principalOf(c)), () => { cleanup(); try { controller.close(); } catch { /* closed */ } });
+      c.req.raw.signal.addEventListener('abort', cleanup);
     },
     cancel() {},
   });
@@ -268,7 +300,7 @@ chat.post('/api/chat/send', async (c) => {
       }
       codeCwd = resolvedCwd;
     }
-    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, programming ? { programming, cwd: codeCwd } : undefined);
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c) });
     return c.json({
       sent: true,
       sessionId: session.id,
@@ -313,6 +345,15 @@ chat.put('/api/chat/settings', async (c) => {
   const body = await c.req.json<Partial<ChatWebSettings>>();
   const current = webChannel.getSettings();
   const stored = loadSettings();
+  // Widening what Mercury may do, from another device, is the owner's call.
+  if (body.bypassPermissions === true && !current.bypassPermissions) {
+    const wait = requireOwner(c, { id: 'permissions.allow-all', title: 'Turn on Allow All (Mercury acts without asking)' });
+    if (wait) return wait;
+  }
+  if (typeof body.workspace === 'string' && body.workspace !== stored.workspace) {
+    const wait = requireOwner(c, { id: `workspace.root:${body.workspace}`, title: 'Change the workspace folder', detail: body.workspace });
+    if (wait) return wait;
+  }
   const next: ChatWebSettings = {
     bypassPermissions: body.bypassPermissions ?? current.bypassPermissions,
     restrictUser: body.restrictUser ?? current.restrictUser,
@@ -630,6 +671,8 @@ chat.get('/api/workspace/file', (c) => {
   if (!isInsideWorkspace(fullPath, rootDir)) {
     return c.json({ error: 'Path outside workspace' }, 403);
   }
+  const off = protectedReason(fullPath, !isThisComputer(c));
+  if (off) return c.json({ error: off }, 403);
 
   if (!existsSync(fullPath)) {
     return c.json({ error: 'File not found' }, 404);
@@ -672,6 +715,9 @@ chat.put('/api/workspace/root', async (c) => {
   if (!existsSync(resolvedPath)) {
     return c.json({ error: 'Directory does not exist' }, 404);
   }
+  // The workspace bounds what the file endpoints reach: from another device, the owner decides where it is.
+  const wait = requireOwner(c, { id: `workspace.root:${resolvedPath}`, title: 'Change the workspace folder', detail: resolvedPath });
+  if (wait) return wait;
   const stat = statSync(resolvedPath);
   if (!stat.isDirectory()) {
     return c.json({ error: 'Path is not a directory' }, 400);
@@ -737,6 +783,61 @@ chat.post('/api/chat/threads/:id/delete', async (c) => {
 });
 
 /** Save a thread to come back to later, or unsave it: { saved: boolean }. */
+// Where this chat's message stands: running, waiting in line (and behind what), or nothing.
+chat.get('/api/chat/threads/:id/queue', (c) => {
+  if (!queueControls) return c.json({ state: 'none' });
+  return c.json(queueControls.state(c.req.param('id')));
+});
+
+// "Do mine first": this chat's waiting messages go to the front of the line.
+chat.post('/api/chat/threads/:id/queue/first', (c) => {
+  if (!queueControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  return c.json({ moved: queueControls.prioritize(c.req.param('id')) });
+});
+
+// This chat's research: switched on for the next message, running (phase, sources…), or its last run.
+chat.get('/api/chat/threads/:id/research', (c) => {
+  if (!researchControls) return c.json({ armed: false, run: null });
+  return c.json(researchControls.state(c.req.param('id')));
+});
+
+// "Write the report now": stop searching and write the report from what was read.
+chat.post('/api/chat/threads/:id/research/finish', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  const r = researchControls.finish(c.req.param('id'));
+  return r.ok ? c.json({ ok: true }) : c.json({ ok: false, error: r.reason }, 409);
+});
+
+// Research off for this chat's next message (a run already going is stopped with Stop).
+chat.post('/api/chat/threads/:id/research/off', (c) => {
+  if (!researchControls) return c.json({ error: 'Not available on this runtime' }, 503);
+  researchControls.off(c.req.param('id'));
+  return c.json({ ok: true });
+});
+
+// A site's icon for the source lists (fetched and cached by the runtime; the apps load nothing from third parties).
+chat.get('/api/chat/favicon', async (c) => {
+  const icon = await favicons().get(c.req.query('domain') ?? '');
+  if (!icon) return c.body(null, 204, { 'Cache-Control': 'private, max-age=86400' });
+  return new Response(new Uint8Array(icon.bytes), { status: 200, headers: {
+    'Content-Type': icon.mime,
+    'Cache-Control': 'private, max-age=604800',
+    // An SVG opened on its own can't run anything.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'X-Content-Type-Options': 'nosniff',
+  } });
+});
+
+// The owner's answer to a research plan: { action: 'start' | 'cancel', questions?: string[] }.
+chat.post('/api/chat/research/plan/:id', async (c) => {
+  if (!webChannel) return c.json({ error: 'Web channel not initialized' }, 503);
+  const body: { action?: unknown; questions?: unknown } = await c.req.json<{ action?: unknown; questions?: unknown }>().catch(() => ({}));
+  if (body.action !== 'start' && body.action !== 'cancel') return c.json({ error: 'Send { action: "start" } or { action: "cancel" }.' }, 400);
+  const questions = Array.isArray(body.questions) ? body.questions.filter((q): q is string => typeof q === 'string').slice(0, 8) : undefined;
+  const ok = webChannel.answerResearchPlan(c.req.param('id'), body.action, questions);
+  return ok ? c.json({ ok: true }) : c.json({ ok: false, error: 'That plan was already answered or has expired.' }, 410);
+});
+
 chat.post('/api/chat/threads/:id/save', async (c) => {
   const id = c.req.param('id');
   if (!sessions) return c.json({ error: 'Session repository not initialized' }, 503);

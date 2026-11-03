@@ -35,6 +35,7 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'code.session',      // POST /api/chat/send { programming, cwd } — per-session coding
   'chat.uploads',      // attachments on messages + GET /api/chat/uploads/:month/:file
   'voice',             // /api/voice, /api/voice/events, /api/voice/control (Optimus)
+  'devices',           // /api/devices: desktop plugins' permissions, microphone choice and test
   'usage.history',     // GET /api/usage/history?days= — tokens per local day
   'brain.people',      // PATCH/merge persons, person checks, GET /api/brain/graph/v2
   'chat.stop',         // POST /api/chat/stop — interrupt the running turn (same as /stop)
@@ -50,6 +51,12 @@ export const API_FEATURES: readonly string[] = Object.freeze([
   'threads.save',      // POST /api/chat/threads/:id/save { saved } — thread.savedAt
   'cloud.signin',      // GET /api/cloud/status, POST/GET/DELETE /api/cloud/signin (browser pairing from any client)       // POST /api/voice/check { vendor, key?, endpoint? }
   'brain.map',         // GET /api/brain/map[?archive=1] — themes, sub-themes, notes, related links
+  'artifacts.convert', // GET /api/artifacts/:id/file?as=pdf|docx, POST /api/artifacts/:id/export { dest, as } — Markdown/text as PDF or Word
+  'artifacts.folder',  // GET /api/artifacts/folder (the output folder, loose files), POST /api/artifacts/folder/tidy
+  'chat.favicon',      // GET /api/chat/favicon?domain= — a site's icon (204 when it has none), fetched and cached by the runtime
+  'security.remote',   // device pairing needs the owner (202 + POST /api/auth/token/pending), sensitive remote actions 428 + X-Mercury-Approval, /api/security/* (this computer), SSE 'owner_approval' (local activity), expired devices 401 { expired }
+  'updates',           // GET /api/updates[?seen=1], POST /api/updates/check, POST /api/updates/server { version?, now? } (202; remote → 428 owner), POST /api/updates/server/cancel — see UPDATES.md
+  'chat.research',     // SSE 'research' / 'research_plan' / 'research_plan_resolved' / 'notice'; GET /api/chat/threads/:id/research, POST …/research/finish, …/research/off, POST /api/chat/research/plan/:id; message.research; step_done { failed, reason }
 ]);
 
 export interface ApiContractInfo {

@@ -1,6 +1,7 @@
-import { Copy, Download, FileText, FolderOpen, MessageSquareText, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, Download, FileText, FolderOpen, MessageSquareText, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { artifactBlobUrl, artifactText, artifactsApi, formatBytes, KIND_LABEL, type ArtifactItem, type ArtifactKind } from "~/api/artifacts";
+import { artifactBlobUrl, artifactText, artifactsApi, canExportAsDocument, exportArtifact, formatBytes, KIND_LABEL, type ArtifactItem, type ArtifactKind, type ExportFormat } from "~/api/artifacts";
+import { Menu, MenuItem } from "~/components/ui/Menu";
 import { Markdown } from "~/components/Markdown";
 import { Button } from "~/components/ui/Button";
 import { Badge, Spinner } from "~/components/ui/bits";
@@ -36,24 +37,23 @@ export function ArtifactViewer({ id, onOpenThread, onDeleted }: { id: string; on
     return () => { live = false; };
   }, [id]);
 
-  async function saveAs() {
+  async function saveAs(format: ExportFormat = "original") {
     if (!a) return;
     setNote(null);
     try {
-      if (isTauri && local) {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const dest = await save({ defaultPath: a.name, title: `Save ${a.name}` });
-        if (!dest) return;
-        await artifactsApi.exportTo(a.id, dest);
-        setNote({ text: `Saved to ${dest}`, ok: true });
-      } else {
+      if (format === "original" && !(isTauri && local)) {
         const url = await artifactBlobUrl(a.id);
         if (!url) throw new Error("Couldn't load the file.");
         const link = document.createElement("a");
         link.href = url;
         link.download = a.name;
         link.click();
+        return;
       }
+      if (format !== "original") setNote({ text: `Making the ${format === "pdf" ? "PDF" : "Word document"}…`, ok: true });
+      const dest = await exportArtifact(a, format, !!local, isTauri);
+      if (dest === null) { setNote(null); return; }
+      setNote({ text: dest ? `Saved to ${dest}` : "Downloaded.", ok: true });
     } catch (e) { setNote({ text: errorText(e), ok: false }); }
   }
 
@@ -81,6 +81,12 @@ export function ArtifactViewer({ id, onOpenThread, onDeleted }: { id: string; on
 
       <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2">
         <Button size="sm" variant="primary" onClick={() => void saveAs()}><Download size={13} /> {isTauri && local ? "Save as…" : "Download"}</Button>
+        {canExportAsDocument(a) && (
+          <Menu trigger={<Button size="sm" variant="secondary" aria-label="Export as"><FileText size={13} /> Export as <ChevronDown size={12} /></Button>}>
+            <MenuItem onSelect={() => void saveAs("pdf")} hint="links stay clickable">PDF</MenuItem>
+            <MenuItem onSelect={() => void saveAs("docx")} hint="opens in Word, Pages, Google Docs">Word (.docx)</MenuItem>
+          </Menu>
+        )}
         {isTauri && local && a.originalExists && <Button size="sm" variant="ghost" onClick={() => void reveal()}><FolderOpen size={13} /> Show in Finder</Button>}
         <Button size="sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(a.originalPath); setNote({ text: "Path copied.", ok: true }); }}><Copy size={13} /> Copy path</Button>
         {onOpenThread && a.threadExists && <Button size="sm" variant="ghost" onClick={() => onOpenThread(a.threadId)}><MessageSquareText size={13} /> Open conversation</Button>}

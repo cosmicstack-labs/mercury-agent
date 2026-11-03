@@ -27,6 +27,41 @@ export interface PairResponse {
   features: string[];
 }
 
+/** Pairing from another device: the runtime's owner approves it first. */
+export interface PendingPair {
+  pending: true;
+  pairingId: string;
+  pollToken: string;
+  /** Short code the owner sees ("approve K7Q2M"). */
+  code: string;
+  /** Where the owner approves it ("Telegram or this computer…"). */
+  where: string;
+  expiresAt: number;
+}
+
+/** A remote device asked for something sensitive: the owner approves it first. */
+export interface ApprovalNeeded {
+  approvalRequired: true;
+  approvalId: string;
+  code: string;
+  where: string;
+  error: string;
+  expiresAt?: number;
+}
+
+/** A security question waiting for the owner (Mercury Desktop on the runtime's own computer). */
+export interface OwnerApproval {
+  id: string;
+  code: string;
+  kind: "pair" | "action";
+  title: string;
+  detail?: string;
+  who: string;
+  ip?: string;
+  expiresAt: number;
+  status: "pending" | "allowed" | "denied" | "expired";
+}
+
 // ── Chat ──
 export interface ChatThread {
   id: string;
@@ -61,6 +96,60 @@ export interface ChatMessage {
   stopped?: boolean;
   /** Files this turn made that are worth keeping (images, PDFs, reports…). */
   artifacts?: import("./artifacts").ArtifactRef[];
+  /** This answer is a research report: how the run went. */
+  research?: ResearchSnapshot;
+}
+
+/** A page a research run tried to read. */
+export interface ResearchSource {
+  url: string;
+  domain: string;
+  title?: string;
+  status: "read" | "failed";
+  reason?: string;
+  cited?: boolean;
+  at: number;
+}
+
+export interface ResearchSearch {
+  query: string;
+  results: number;
+  ok: boolean;
+  reason?: string;
+  at: number;
+}
+
+export type ResearchOutcome = "done" | "partial" | "stopped" | "failed" | "cancelled";
+
+/** A research run as the runtime reports it (research events, a report's metadata). */
+export interface ResearchSnapshot {
+  runId: string;
+  topic: string;
+  state: "running" | ResearchOutcome;
+  phase: "planning" | "searching" | "reading" | "writing";
+  questions: string[];
+  startedAt: number;
+  endedAt?: number;
+  steps: number;
+  maxSteps: number;
+  searches: number;
+  failedSearches: number;
+  read: number;
+  failed: number;
+  cited: number;
+  sourceList: ResearchSource[];
+  searchList: ResearchSearch[];
+  cut?: string;
+  report?: import("./artifacts").ArtifactRef;
+}
+
+/** A proposed research plan waiting for Start. */
+export interface ResearchPlanPrompt {
+  id: string;
+  runId: string;
+  topic: string;
+  questions: string[];
+  expiresAt: number;
 }
 
 export interface ThoughtStep {
@@ -148,6 +237,30 @@ export interface BotStatus {
   parent?: string;
   crewWorking?: number;
   hasAvatar?: boolean;
+  /** Unread inbox entries from this bot. */
+  unread?: number;
+  /** Permission tier, or "custom" for a hand-edited permissions file. */
+  tier?: BotTierId | "custom";
+  /** Stopped by the owner; stays stopped until Start. */
+  stopped?: boolean;
+  description?: string;
+  routinePausedUntil?: number;
+}
+
+export type BotTierId = "readonly" | "builder" | "operator" | "full";
+
+export interface BotTier {
+  id: BotTierId;
+  label: string;
+  description: string;
+  deny: string[];
+}
+
+export interface BotSchedule {
+  name: string;
+  cron: string;
+  prompt: string;
+  expects?: "work" | "message" | "check";
 }
 
 export interface BotManifest {
@@ -158,8 +271,54 @@ export interface BotManifest {
   fleetRole?: "lead" | "crew";
   parent?: string;
   model?: { provider?: string; model?: string };
-  schedules?: Array<{ name: string; cron: string; prompt: string }>;
-  autonomy?: { maxSteps?: number; dailyTokenBudget?: number };
+  schedules?: BotSchedule[];
+  autonomy?: { maxSteps?: number; dailyTokenBudget?: number; maxTokensPerTurn?: number; maxTurnMinutes?: number };
+  memory?: { scope?: "own" | "shared-read" | "none"; learn?: boolean };
+}
+
+/** A crew member, proposed by Mercury or written by you. */
+export interface CrewSpec {
+  id: string;
+  name: string;
+  description: string;
+  persona: string;
+}
+
+/** "Let Mercury decide" (POST /api/bots/plan). */
+export interface BotPlan {
+  shape: "solo" | "fleet";
+  reason: string;
+  crew: CrewSpec[];
+}
+
+/** A bot waiting for your answer mid-run (GET /api/bots/approvals). */
+export interface BotApproval {
+  id: string;
+  botId: string;
+  botName: string;
+  runId: string;
+  /** "Run command: …", "Write to file: …", "Read file: …" */
+  prompt: string;
+  at: number;
+  expiresAt: number;
+}
+
+/** One thing a bot did for you (GET /api/bots/inbox). */
+export interface BotInboxEntry {
+  id: string;
+  botId: string;
+  botName: string;
+  runId: string;
+  kind: "result" | "failed" | "needs-you";
+  title: string;
+  summary: string;
+  files: string[];
+  complete?: boolean;
+  reasonCode?: string;
+  /** A question that may still be waiting for your answer. */
+  approvalId?: string;
+  at: number;
+  read: boolean;
 }
 
 export interface BotRunRecord {
@@ -177,6 +336,11 @@ export interface BotRunRecord {
   steps?: number;
   toolCalls?: number;
   outcome?: string;
+  /** How the bot closed the run: result, no_update (quiet) or failure. */
+  report?: "result" | "no_update" | "failure";
+  complete?: boolean;
+  /** Files delivered by this run. */
+  deliverables?: string[];
 }
 
 export interface Deliverable {

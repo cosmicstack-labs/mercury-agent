@@ -1,7 +1,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { getHeapStatistics } from 'node:v8';
 import type { ChannelMessage, ChannelType } from '../types/channel.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -16,6 +16,12 @@ import type { ScheduledTaskManifest } from './scheduler.js';
 import { DeepSeekProvider } from '../providers/deepseek.js';
 import { ArtifactCollector } from '../artifacts/collector.js';
 import { artifactStore, type Artifact } from '../artifacts/store.js';
+import { chatFoldersFor, outputRoot, researchDir, type ChatFolders } from '../artifacts/output-dir.js';
+import { ownerApprovals } from '../security/owner-approvals.js';
+import { approvalAnsweredText, approvalRequestText, isOwnerSender, newLocationText, parseApprovalReply } from '../security/approval-messages.js';
+import { audit } from '../security/audit.js';
+import { setApprovalRoutes } from '../web/owner-gate.js';
+import { onDeviceNewLocation } from '../web/middleware.js';
 import { artifactKindLabel, artifactRef, formatBytes } from '../artifacts/ref.js';
 import { getMercuryHome } from '../utils/config.js';
 import { createProvider } from '../providers/registry.js';
@@ -45,6 +51,7 @@ import { WebChannel } from '../channels/web.js';
 import type { ArrowSelectOption } from '../utils/arrow-select.js';
 import { setAskUserHandler } from '../capabilities/interaction/ask-user.js';
 import { classifyResearchIntent } from './research-intent.js';
+import { closePlan, coverageSection, parsePlanLines, reportBody, reportFileName, RESEARCH_PLAN_SYSTEM, RESEARCH_WRITE_SYSTEM, sourcesAppendix, unansweredFrom, type ResearchRun } from './research-run.js';
 import type { SpotifyClient } from '../spotify/client.js';
 import { fallbackSessionTitle, isThinOpening, normalizeGeneratedSessionTitle, SessionResolutionError, type SessionRepository } from '../sessions/index.js';
 import { PLAYER_CONTROLS, handlePlayerAction, formatNowPlaying } from '../spotify/ui.js';
@@ -97,7 +104,7 @@ import { verbPoolFor } from '../ui/status-word.js';
 import { StallWatchdog } from './stall-watchdog.js';
 import { setProgressPulse } from './progress-pulse.js';
 import { selectActiveTools } from './tool-exposure.js';
-import { createTaskSurface } from './task-surface.js';
+import { createTaskSurface, type DoneInput } from './task-surface.js';
 import { buildFileChangePreview } from '../utils/file-preview.js';
 import { whatsNewText } from '../utils/whats-new.js';
 import { handleBotsCommand as handleBotsCommandImpl } from './commands/bots-command.js';
@@ -429,6 +436,21 @@ class ToolCallLoopDetector {
  * envelope, so failures were detected by accident and the loop detector's
  * failed flag never fired.
  */
+/**
+ * The result of toolCalls[i]. Results of parallel calls don't always come
+ * back in call order, so match by the call's id; by position only when there
+ * is no id. (By position, a fetch_url step showed a search's results.)
+ */
+export function resultFor(toolCalls: readonly unknown[] | undefined, toolResults: readonly unknown[] | undefined, i: number): unknown {
+  if (!toolResults) return undefined;
+  const id = (toolCalls?.[i] as { toolCallId?: unknown } | undefined)?.toolCallId;
+  if (typeof id === 'string' && id) {
+    const match = toolResults.find((r) => (r as { toolCallId?: unknown } | null)?.toolCallId === id);
+    if (match !== undefined) return match;
+  }
+  return toolResults[i];
+}
+
 export function toolResultValue(tr: unknown): unknown {
   if (tr && typeof tr === 'object') {
     const o = tr as { output?: unknown; result?: unknown };
@@ -652,6 +674,7 @@ export class Agent {
     this.scheduler.setOnScheduledTask(async (manifest) => this.handleScheduledTask(manifest));
 
     this.channels.onIncomingMessage((msg) => this.enqueueMessage(msg));
+    this.wireOwnerApprovals();
 
     this.scheduler.onHeartbeat(async () => {
       await this.heartbeat();
@@ -697,6 +720,58 @@ export class Agent {
         await channel.send(message).catch((e) => logger.warn({ e }, 'bot alert send failed'));
       }
     });
+  }
+
+  /**
+   * Security questions for the owner (owner-approvals): sent to every
+   * messaging channel they connected and shown in the CLI here; answered by
+   * a reply with the code from an admin of that channel, /server here, or
+   * Mercury Desktop on this computer.
+   */
+  private wireOwnerApprovals(): void {
+    const messaging = () => this.channels.getActiveChannels().filter((t) => t !== 'cli' && t !== 'web' && t !== 'internal').map((t) => this.channels.get(t)).filter((ch): ch is NonNullable<typeof ch> => !!ch && ch.isReady() && !ch.noBroadcast);
+    const label = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+    setApprovalRoutes(() => [...messaging().map((ch) => label(ch.type)), 'this computer (/server or Mercury Desktop)']);
+    ownerApprovals().onChange((a, change) => {
+      const cli = this.channels.get('cli');
+      if (change === 'new') {
+        const text = approvalRequestText(a);
+        for (const ch of messaging()) void ch.send(text).catch((e) => logger.warn({ e, channel: ch.type }, 'Owner approval: send failed'));
+        if (cli instanceof CLIChannel) cli.sendSystemNotice(`${text.replace(/Reply “approve (\w+)” to allow it, or “deny \w+”/, 'Answer with /server approve $1 (or deny $1)')}`);
+        const web = this.channels.get('web');
+        if (web instanceof WebChannel) web.sendOwnerApproval(a, 'new');
+      } else {
+        const web = this.channels.get('web');
+        if (web instanceof WebChannel) web.sendOwnerApproval(a, 'decided');
+      }
+    });
+    onDeviceNewLocation((device, ip) => {
+      const text = newLocationText(device.name, ip);
+      for (const ch of messaging()) void ch.send(text).catch(() => {});
+      const cli = this.channels.get('cli');
+      if (cli instanceof CLIChannel) cli.sendSystemNotice(text);
+    });
+  }
+
+  /** A messaging-channel reply to a security question. True when it was one (and nothing else should see it). */
+  private answerOwnerApproval(msg: ChannelMessage): boolean {
+    if (msg.channelType === 'cli' || msg.channelType === 'web' || msg.channelType === 'internal') return false;
+    const reply = parseApprovalReply(msg.content);
+    if (!reply) return false;
+    const pending = ownerApprovals().find(reply.code);
+    if (!pending || pending.status !== 'pending') return false;
+    const channel = this.channels.getChannelForMessage(msg);
+    if (!isOwnerSender(msg)) {
+      void channel?.send('Only the owner (an admin of this chat) can answer that.', msg.channelId).catch(() => {});
+      audit('action.denied', { who: pending.who, detail: `answer from a non-admin on ${msg.channelType} ignored`, by: msg.channelType });
+      return true;
+    }
+    const decided = ownerApprovals().decide(reply.code, reply.decision, msg.channelType);
+    if (!decided) return false;
+    if (decided.kind === 'action') audit(decided.status === 'allowed' ? 'action.allowed' : 'action.denied', { who: decided.who, ip: decided.ip, detail: decided.title, by: msg.channelType });
+    else if (decided.status === 'denied') audit('pair.denied', { who: decided.who, ip: decided.ip, by: msg.channelType });
+    void channel?.send(approvalAnsweredText(decided), msg.channelId).catch(() => {});
+    return true;
   }
 
   getBotManager(): import('../bots/bot-manager.js').BotManager | undefined {
@@ -758,6 +833,10 @@ export class Agent {
     logger.info({ from: msg.channelType, content: msg.content.slice(0, 50) }, 'Message enqueued');
 
     const trimmed = msg.content.trim();
+
+    // "approve K7Q2M": the owner answering a security question (a new device,
+    // a remote sensitive action) from their messaging channel.
+    if (this.answerOwnerApproval(msg)) return;
 
     // Onboarding from a chat without a bot thread (Telegram, web, Discord):
     // the next plain message in THAT chat is the new bot's persona — same
@@ -1076,9 +1155,57 @@ export class Agent {
       this.messageQueue.push({ message, workKey });
     }
     if (workKey) this.queuedWorkKeys.add(workKey);
+    this.announceQueue();
+  }
+
+  /**
+   * Tell every waiting desktop/web chat where it stands: its place in line,
+   * and the turn running now (which chat, and what it's doing). Without this
+   * a waiting chat showed "Thinking" for a turn that hadn't started.
+   */
+  private announceQueue(running: ChannelMessage | null = this.processing ? this.currentMessage : null): void {
+    if (!running) return;
+    const web = this.channels.get('web') as unknown as { sendQueued?: (t: string, d: { position: number; busyWith?: string; busySessionId?: string }) => void } | undefined;
+    if (!web?.sendQueued) return;
+    const busyWith = (this.currentActivity && this.currentMessage === running ? this.currentActivity : running.content)
+      .replace(/^\W+/u, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'another task';
+    const busySessionId = running.channelType === 'web' ? running.channelId : undefined;
+    this.messageQueue.forEach((item, i) => {
+      const m = item.message;
+      if (m.channelType !== 'web' || m.channelId === busySessionId) return;
+      web.sendQueued!(m.channelId, { position: i + 1, busyWith, busySessionId });
+    });
+  }
+
+  /** Where one chat's work stands, for a chat opened while it waits. */
+  queueStateFor(channelId: string): { state: 'running' | 'queued' | 'none'; position?: number; busyWith?: string; busySessionId?: string } {
+    if (this.processing && this.currentMessage?.channelId === channelId) return { state: 'running' };
+    const at = this.messageQueue.findIndex((i) => i.message.channelId === channelId);
+    if (at === -1) return { state: 'none' };
+    const running = this.processing ? this.currentMessage : null;
+    return {
+      state: 'queued',
+      position: at + 1,
+      busyWith: running ? (this.currentActivity || running.content).replace(/\s+/g, ' ').trim().slice(0, 90) : undefined,
+      busySessionId: running?.channelType === 'web' ? running.channelId : undefined,
+    };
+  }
+
+  /** "Do mine first": this chat's waiting messages move to the front of the line (in their order). */
+  prioritize(channelId: string): number {
+    const mine = this.messageQueue.filter((i) => i.message.channelId === channelId);
+    if (mine.length === 0) return 0;
+    this.messageQueue = [...mine, ...this.messageQueue.filter((i) => i.message.channelId !== channelId)];
+    this.announceQueue();
+    return mine.length;
   }
 
   /** Is a turn for this session running, or waiting in the queue? */
+  /** Messages waiting behind the running one (the updater waits for them). */
+  get queuedCount(): number {
+    return this.messageQueue.length;
+  }
+
   isBusyWith(sessionId: string): boolean {
     const of = (m: ChannelMessage | null | undefined) => m?.sessionId ?? (typeof m?.metadata?.sessionId === 'string' ? m.metadata.sessionId : undefined);
     if (this.processing && of(this.currentMessage) === sessionId) return true;
@@ -1123,6 +1250,118 @@ export class Agent {
     });
   }
 
+  /** One folder per chat in the output folder (~/mercury-artifacts/Chats). */
+  private chatFolders(): ChatFolders {
+    return chatFoldersFor(outputRoot(this.config.artifacts?.outputDir));
+  }
+
+  /** Tell screens how a research run stands (the desktop's chip, panel and report card). */
+  private emitResearch(msg: ChannelMessage, run: ResearchRun): void {
+    const channel = this.channels.getChannelForMessage(msg);
+    if (channel instanceof WebChannel) channel.sendResearch(run.snapshot(), msg.channelId);
+  }
+
+  /** How long a proposed research plan waits for Start before it starts as proposed. */
+  private static readonly RESEARCH_PLAN_WAIT_MS = 10 * 60 * 1000;
+
+  /**
+   * Plan first: one small model call proposes the sub-questions; the owner
+   * edits them and presses Start, or cancels. False = cancelled. A plan that
+   * can't be drafted just starts the research (the owner asked for it).
+   */
+  private async planResearch(msg: ChannelMessage, channel: WebChannel, run: ResearchRun): Promise<boolean> {
+    run.phase = 'planning';
+    this.emitResearch(msg, run);
+    this.markProgress('Planning the research...');
+    let questions: string[] = [];
+    try {
+      const model = this.providers.getDefault().getModelInstance();
+      const out = await generateText({ model, system: RESEARCH_PLAN_SYSTEM, messages: [{ role: 'user', content: run.topic }], maxOutputTokens: 400 });
+      questions = parsePlanLines(out.text);
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Research plan: drafting failed; starting without one');
+    }
+    if (!questions.length) {
+      channel.sendNotice("Couldn't draft a plan, so the research is starting without one.", msg.channelId, 'warning');
+      return true;
+    }
+    run.setQuestions(questions);
+    this.emitResearch(msg, run);
+    // Waiting for the owner is not a stall.
+    const keepAlive = setInterval(() => this.markProgress('Waiting for you to start the research...'), 20_000);
+    try {
+      const answer = await channel.askResearchPlan(run.id, run.topic, questions, msg.channelId, Agent.RESEARCH_PLAN_WAIT_MS);
+      if (answer.action === 'cancel') {
+        run.end('cancelled', 'you cancelled it');
+        return false;
+      }
+      run.setQuestions(answer.questions);
+      if (answer.timedOut) channel.sendNotice('No answer on the plan, so the research started with it as proposed.', msg.channelId);
+      channel.sendPlan(run.questions.map((label) => ({ label, status: 'pending' })), msg.channelId);
+      run.planned = true;
+      return true;
+    } finally {
+      clearInterval(keepAlive);
+      this.markProgress('Starting the research...');
+    }
+  }
+
+  /**
+   * The report from the pages a run read, without the conversation: for a
+   * run cut short. Tries the default model, then the others.
+   */
+  private async writeResearchFromNotes(run: ResearchRun): Promise<string | null> {
+    const notes = run.notesText();
+    if (!notes.trim()) return null;
+    const names = [this.providers.getDefault().name, ...this.providers.listAvailable()].filter((n, i, a) => a.indexOf(n) === i);
+    const prompt = `Research question: ${run.topic}\n${run.questions.length ? `Sub-questions:\n${run.questions.map((q) => `- ${q}`).join('\n')}\n` : ''}\nSource notes (what was read before the research stopped):\n\n${notes}`;
+    for (const name of names.slice(0, 4)) {
+      const provider = this.providers.get(name);
+      if (!provider) continue;
+      try {
+        const out = await generateText({ model: provider.getModelInstance(), system: RESEARCH_WRITE_SYSTEM, messages: [{ role: 'user', content: prompt }], maxOutputTokens: 6000 });
+        const text = out.text.trim();
+        if (text) return text;
+      } catch (err) {
+        logger.warn({ provider: name, err: err instanceof Error ? err.message : String(err) }, 'Research: report writing failed on this provider');
+      }
+    }
+    return null;
+  }
+
+  /** Keep a research report as a file with the conversation (Artifacts), with every source consulted. */
+  private saveResearchReport(run: ResearchRun, text: string, threadId: string): Artifact | null {
+    try {
+      const dir = researchDir(outputRoot(this.config.artifacts?.outputDir));
+      mkdirSync(dir, { recursive: true });
+      const title = /^#\s+(.+)$/m.exec(text)?.[1]?.trim() || run.topic;
+      const file = path.join(dir, reportFileName(title, run.startedAt));
+      const appendix = sourcesAppendix(run);
+      writeFileSync(file, `${text.trim()}\n${appendix ? `\n---\n\n${appendix}\n` : ''}`, 'utf-8');
+      const saved = artifactStore().add({ threadId, path: file, kind: 'text', tool: 'research', surface: 'chat' });
+      run.report = { ...artifactRef(saved) };
+      return saved;
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Research: saving the report failed');
+      return null;
+    }
+  }
+
+  /**
+   * "Write the report now" from a screen: stop searching and write it from
+   * what was read. False when there's no research running in that chat.
+   */
+  finishResearch(sessionId: string): { ok: boolean; reason?: string } {
+    const run = this.researchMode.currentRun();
+    if (!run || run.sessionId !== sessionId || run.outcome !== 'running') return { ok: false, reason: 'No research is running in this chat.' };
+    if (run.readCount() === 0) return { ok: false, reason: 'Nothing has been read yet, so there is nothing to write from. Stop it instead, or let it read a few sources.' };
+    if (!this.currentAbort || this.currentAbort.signal.aborted) return { ok: false, reason: 'The research is already finishing.' };
+    run.finishRequested = true;
+    this.currentAbortReason = 'stopped';
+    this.currentAbort.abort();
+    return { ok: true };
+  }
+
   /** One small model call: does this message ask for a full research article? */
   private async wantsResearch(text: string): Promise<boolean> {
     let model: ReturnType<ReturnType<ProviderRegistry['getDefault']>['getModelInstance']>;
@@ -1156,9 +1395,10 @@ export class Agent {
     // research-shaped question asks again. Quick answer is listed FIRST, so
     // the picker starts on it and an accidental Enter never starts a long
     // research run.
+    const planOption = channel instanceof WebChannel ? ['Full research, show me the plan first'] : [];
     const choice = await this.presentChoiceWithTimeout(
       `This looks like a research question. ${explanation}\n\nHow do you want to proceed?`,
-      ['Quick answer (normal conversation)', 'Full research mode (deep, multi-source article)'],
+      ['Quick answer (normal conversation)', 'Full research mode (deep, multi-source article)', ...planOption],
       msg.channelId,
       msg.channelType,
       MERCURY_CODE_HANDOFF_TIMEOUT_MS,
@@ -1166,9 +1406,11 @@ export class Agent {
     );
 
     if (choice.toLowerCase().startsWith('full')) {
-      this.researchMode.setOn(msg.content.trim().slice(0, 120));
+      const planFirst = /plan first/i.test(choice);
+      this.researchMode.setOn(msg.content.trim().slice(0, 160), { sessionId: msg.channelId, planFirst });
       if (channel instanceof WebChannel) {
-        channel.sendHeartbeat('Research mode: On. Gathering sources and building the article now — this may take a while.', msg.channelId);
+        // The research chip says it from here on (state, phase, sources).
+        channel.sendResearchArmed(true, msg.channelId, { topic: msg.content.trim().slice(0, 160), planFirst });
       } else {
         await channel.send('Research mode: **On**. Gathering sources and building the article now — this may take a while.', msg.channelId).catch(() => {});
       }
@@ -1741,12 +1983,11 @@ export class Agent {
         logger.warn({ elapsedSec, stallSec, msgId: msg.id }, 'Foreground task stalled — aborting');
         this.currentAbortReason = 'stalled';
         this.currentAbort.abort();
-        if (channel) {
-          void channel.send(
-            `Mercury detected a stalled provider after ${stallSec}s without progress. Reconnecting and retrying automatically.`,
-            msg.channelId,
-          ).catch((e) => logger.warn({ e }, 'channel send failed'));
-        }
+        const stallLine = `Mercury detected a stalled provider after ${stallSec}s without progress. Reconnecting and retrying automatically.`;
+        // On the apps this is a note in the running turn, not its answer
+        // (sent as a reply, it ended the turn on screen while the retry ran).
+        if (channel instanceof WebChannel) channel.sendNotice(stallLine, msg.channelId, 'warning');
+        else if (channel) void channel.send(stallLine, msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
         timer = setTimeout(tick, HEARTBEAT_MAX_MS);
         return;
       }
@@ -1755,12 +1996,17 @@ export class Agent {
       const handoffHint = elapsedMs >= LONG_TASK_HANDOFF_SUGGEST_MS
         ? '\nUse /bg current to move to background.'
         : '';
+      const stepBudget = this.saverMode.adjustMaxSteps(MAX_STEPS) * this.researchMode.getMaxStepsMultiplier();
       const stepInfo = this.completedStepCount > 0
-        ? ` · step ${this.completedStepCount}/${MAX_STEPS}`
+        ? ` · step ${this.completedStepCount}/${stepBudget}`
+        : '';
+      const run = this.researchMode.currentRun();
+      const researchInfo = run && run.sessionId === msg.channelId
+        ? ` · researching: ${run.snapshot().searches} searches, ${run.readCount()} sources read${run.failedSources().length ? `, ${run.failedSources().length} failed` : ''}`
         : '';
       const narrative = formatNarrative(this.stepNarrative, this.currentActivity, 3);
       const narrativeBlock = narrative ? `\n${narrative}` : '';
-      const heartbeatText = `⏳ Working... ${elapsedSec}s elapsed${stepInfo}.${narrativeBlock}${handoffHint}`;
+      const heartbeatText = `⏳ Working... ${elapsedSec}s elapsed${stepInfo}${researchInfo}.${narrativeBlock}${handoffHint}`;
 
       // CLI: update one message in place instead of stacking new ones.
       // Web/cloud: send a non-terminal heartbeat so the cloud response handler stays alive.
@@ -1902,6 +2148,8 @@ export class Agent {
         const item = this.messageQueue.shift()!;
         const msg = item.message;
         if (item.workKey) this.queuedWorkKeys.delete(item.workKey);
+        // The line moved: everyone still waiting learns their new place and what runs now.
+        this.announceQueue(msg);
         this.currentWorkKey = item.workKey ?? null;
         try {
           if (item.workKey) this.workLedger.markRunning(item.workKey);
@@ -2618,6 +2866,14 @@ export class Agent {
       this.markProgress('Starting...');
       this.pushLiveActivity('Starting task');
     };
+    // This chat's folder in ~/mercury-artifacts for the turn, if it gets one (set below).
+    let chatFolder: string | null = null;
+    let cwdBeforeChatFolder: string | null = null;
+    // Research switched on for this chat: this message is the run.
+    const researchRun = !isSlashCommand && msg.channelType !== 'internal' && this.researchMode.armedForSession(msg.channelId)
+      ? this.researchMode.beginRun(msg.channelId, msg.content, this.saverMode.adjustMaxSteps(MAX_STEPS) * 3)
+      : null;
+    if (researchRun) this.emitResearch(msg, researchRun);
     if (!isSlashCommand) raiseTurnIndicator();
     const stopHeartbeat = isSlashCommand ? () => {} : this.startForegroundHeartbeat(msg);
     const heapBaseline = process.memoryUsage().heapUsed;
@@ -2829,7 +3085,34 @@ export class Agent {
         }
       }
 
+      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
+      const externalConversationId = msg.channelType === 'cli'
+        ? 'current'
+        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
+      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
+      canonicalSessionId = canonicalSession.id;
+
+      // A normal chat that would write loose files into the home folder (the
+      // daemon's folder) writes into its own folder in ~/mercury-artifacts.
+      // Code sessions, workspaces, a terminal opened in a project: unchanged.
+      if (!isSlashCommand && msg.channelType !== 'internal' && !this.programmingMode.isActive()
+        && path.resolve(this.capabilities.getCwd()) === path.resolve(homedir())) {
+        try {
+          const firstWords = canonicalSession.messages.find((m) => m.role === 'user')?.content ?? msg.content;
+          // A real title when the chat has one; otherwise its first words (titles come after the first reply).
+          const label = canonicalSession.title && canonicalSession.titleSource !== 'fallback' ? canonicalSession.title : fallbackSessionTitle(firstWords) || firstWords;
+          const dir = this.chatFolders().open(canonicalSession.id, label, canonicalSession.createdAt || Date.now());
+          cwdBeforeChatFolder = this.capabilities.getCwd();
+          chatFolder = dir;
+          this.capabilities.setCwd(dir);
+          this.capabilities.permissions.addTempScope(dir, true, true);
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Chat folder unavailable; working in the home folder');
+        }
+      }
+
       let systemPrompt = this.buildSystemPrompt();
+      if (chatFolder) systemPrompt += `\n- Files you make go in the working directory (this chat's folder in the owner's Mercury artifacts folder), unless the owner names another place. Use relative paths or that folder; never write loose files into the home folder.`;
       if (msg.metadata?.workContinuation === true) {
         const attempt = typeof msg.metadata.continuationAttempt === 'number' ? msg.metadata.continuationAttempt : 1;
         const reason = typeof msg.metadata.continuationReason === 'string' ? msg.metadata.continuationReason : 'The prior execution was interrupted.';
@@ -2840,12 +3123,6 @@ export class Agent {
       } else if (msg.metadata?.workRecovered === true) {
         systemPrompt += '\n\n[SYSTEM: RECOVERED WORK] This request was recovered after the agent restarted or its prior run was interrupted. Inspect the current filesystem, external state, and conversation before acting. Do not repeat side effects that may already have completed. Continue from observed state, and explicitly report any ambiguity you cannot safely resolve.';
       }
-      const suppliedSessionId = msg.sessionId ?? (typeof msg.metadata?.sessionId === 'string' ? msg.metadata.sessionId : undefined);
-      const externalConversationId = msg.channelType === 'cli'
-        ? 'current'
-        : typeof msg.metadata?.externalConversationId === 'string' ? msg.metadata.externalConversationId : msg.channelId;
-      const canonicalSession = this.sessions.getOrCreateBound(msg.channelType, externalConversationId, suppliedSessionId);
-      canonicalSessionId = canonicalSession.id;
       const canonicalMessageId = typeof msg.metadata?.canonicalMessageId === 'string' ? msg.metadata.canonicalMessageId : undefined;
       const requestId = typeof msg.metadata?.requestId === 'string' ? msg.metadata.requestId : undefined;
       this.sessions.appendMessage(canonicalSession.id, {
@@ -2962,6 +3239,8 @@ export class Agent {
       let cliResponseStreamed = false;
       let requiresContinuationApproval = false;
       let memoryPressureStop = false;
+      // Why a research run is ending before its article ("you asked it to finish now").
+      let researchCut: string | null = null;
       const loopDetector = new ToolCallLoopDetector();
       let loopWarningSent = false;
       let selfCheckCount = 0;
@@ -3000,11 +3279,19 @@ export class Agent {
         surface: this.programmingMode.isActive() ? 'code' : 'chat',
         mercuryHome: getMercuryHome(),
       });
+      // Research runs: every search and page read, shown live as it happens.
+      const observeResearch = (tool: string, input: unknown, value: unknown): void => {
+        if (!researchRun) return;
+        try {
+          researchRun.observe(tool, input, value);
+          this.emitResearch(msg, researchRun);
+        } catch { /* watching must never break a turn */ }
+      };
       const noteToolSteps = (toolCalls: readonly any[] | undefined, toolResults: readonly any[] | undefined): void => {
         if (!toolCalls || !toolResults) return;
         for (let i = 0; i < toolCalls.length; i++) {
           const tc = toolCalls[i];
-          const raw = toolResultValue(toolResults[i]);
+          const raw = toolResultValue(resultFor(toolCalls, toolResults, i));
           const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '');
           turnToolTrace.push(formatToolTraceLine({
             tool: tc.toolName,
@@ -3041,6 +3328,81 @@ export class Agent {
       // render and the agent decides.
       const surface = createTaskSurface(channel, msg.channelType, msg.channelId);
       surface.begin();
+
+      // Research, plan first: propose the sub-questions, let the owner edit
+      // them, and start (or not) on their word. Only screens that can show
+      // an editable plan get this; elsewhere the run starts straight away.
+      if (researchRun?.planFirst) {
+        if (channel instanceof WebChannel) {
+          const suffixBefore = this.researchMode.getSystemPromptSuffix();
+          const go = await this.planResearch(msg, channel, researchRun);
+          // The prompt was built before the plan existed: give the model the approved one.
+          if (go && suffixBefore) systemPrompt = systemPrompt.replace(suffixBefore, this.researchMode.getSystemPromptSuffix());
+          if (!go) {
+            if (this.currentWorkKey) {
+              this.workLedger.markCompleted(this.currentWorkKey, 'Research cancelled before it started.');
+              this.workLedger.markDelivered(this.currentWorkKey);
+            }
+            await channel.send('Research cancelled. Nothing was searched.', msg.channelId).catch(() => {});
+            this.lifecycle.transition('idle');
+            return;
+          }
+        }
+        researchRun.phase = 'searching';
+        this.emitResearch(msg, researchRun);
+      }
+
+      /**
+       * A research run that can't finish normally (a stop with "write the
+       * report now", the step budget, every provider failing) still gives
+       * the owner a report: written from the pages it read, with what it
+       * couldn't cover. False when there's nothing to write from, or the
+       * writing failed too; the caller's own ending then applies.
+       */
+      const deliverResearchReport = async (cut: string): Promise<boolean> => {
+        if (!researchRun || !channel || msg.channelType === 'internal' || researchRun.readCount() === 0) return false;
+        researchRun.phase = 'writing';
+        this.emitResearch(msg, researchRun);
+        this.markProgress('Writing the report from what was gathered...');
+        const body = await this.writeResearchFromNotes(researchRun).catch((err) => {
+          logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Research: writing the report from notes failed');
+          return null;
+        });
+        if (!body) return false;
+        const unanswered = unansweredFrom(channel instanceof WebChannel ? channel.plans.get(msg.channelId)?.steps : undefined);
+        researchRun.markCited(body);
+        const coverage = coverageSection(researchRun, { cut, unanswered });
+        const text = coverage ? `${body}\n\n${coverage}` : body;
+        researchRun.end('partial', cut);
+        const saved = canonicalSessionId ? this.saveResearchReport(researchRun, text, canonicalSessionId) : null;
+        if (canonicalSessionId) {
+          this.sessions.appendMessage(canonicalSessionId, {
+            role: 'assistant',
+            content: text,
+            externalMessageId: `${msg.id}:assistant`,
+            metadata: {
+              channelType: msg.channelType, channelId: msg.channelId, traceId,
+              elapsedMs: Date.now() - startTime, steps: this.completedStepCount,
+              research: researchRun.snapshot(),
+              ...(saved ? { artifacts: [artifactRef(saved)] } : {}),
+            },
+          });
+        }
+        if (saved) this.announceArtifacts(channel, [saved], msg.channelId);
+        if (this.currentWorkKey) this.workLedger.markCompleted(this.currentWorkKey, text);
+        const reportDone: DoneInput = {
+          finalText: text,
+          elapsedMs: Date.now() - startTime,
+          stepCount: this.completedStepCount,
+          meta: { provider: 'unknown', model: 'unknown', inputTokens: 0, outputTokens: 0, totalTokens: 0, budgetUsed: this.tokenBudget.getDailyUsed(), budgetTotal: this.tokenBudget.getBudget(), budgetPercentage: this.tokenBudget.getUsagePercentage() },
+          traceId,
+          alreadyStreamed: false,
+        };
+        await surface.done(reportDone);
+        if (this.currentWorkKey) this.workLedger.markDelivered(this.currentWorkKey);
+        this.lifecycle.transition('idle');
+        return true;
+      };
 
       // Saver-mode-aware request limits. When saver is off these resolve to
       // the original constants (byte-identical to pre-saver behavior).
@@ -3127,17 +3489,18 @@ export class Agent {
                       if (typeof cmd === 'string') {
                       executeCommandsRun.push(cmd);
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = toolResultValue(toolResults[i]);
+                        const vResult = toolResultValue(resultFor(toolCalls, toolResults, i));
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
                         recordVerification(cmd, vText);
                       }
                     }
                     }
-                    const trValue = toolResultValue(toolResults[i]);
+                    const trValue = toolResultValue(resultFor(toolCalls, toolResults, i));
                     recordExecuteToolResult(tc.toolName, trValue);
                     this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, trValue);
                     this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
                     artifactCollector.observe(tc.toolName, tc.input, trValue, this.capabilities.getCwd());
+                    observeResearch(tc.toolName, tc.input, trValue);
                     const resultStr = typeof trValue === 'string' ? trValue : JSON.stringify(trValue ?? '');
                     const failed = resultStr.length < 5000 && (
                       resultStr.startsWith('Error:') ||
@@ -3257,7 +3620,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             (channel as CLIChannel).sendStepDone(tcName, toolResultValue(tr));
@@ -3271,7 +3634,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             void tgCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -3285,7 +3648,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             void sigCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -3299,7 +3662,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             webCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId);
@@ -3313,7 +3676,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             void dcCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -3327,7 +3690,7 @@ export class Agent {
                       }
                       if (toolResults) {
                         for (let i = 0; i < toolResults.length; i++) {
-                          const tr = toolResults[i] as any;
+                          const tr = resultFor(toolCalls, toolResults, i) as any;
                           const tcName = toolCalls[i]?.toolName as string | undefined;
                           if (tcName) {
                             void Promise.resolve(slCh.sendStepDone(tcName, toolResultValue(tr), msg.channelId)).catch((e) => logger.warn({ e }, 'channel send failed'));
@@ -3383,16 +3746,17 @@ export class Agent {
                     if (typeof cmd === 'string') {
                       executeCommandsRun.push(cmd);
                       if (VERIFICATION_COMMAND_PATTERN.test(cmd)) {
-                        const vResult = toolResultValue(toolResults[i]);
+                        const vResult = toolResultValue(resultFor(toolCalls, toolResults, i));
                         const vText = typeof vResult === 'string' ? vResult : JSON.stringify(vResult ?? '');
                         recordVerification(cmd, vText);
                       }
                     }
                   }
-                  recordExecuteToolResult(tc.toolName, toolResultValue(toolResults[i]));
-                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, toolResultValue(toolResults[i]));
+                  recordExecuteToolResult(tc.toolName, toolResultValue(resultFor(toolCalls, toolResults, i)));
+                  this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, toolResultValue(resultFor(toolCalls, toolResults, i)));
                   this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
-                  artifactCollector.observe(tc.toolName, tc.input, toolResultValue(toolResults[i]), this.capabilities.getCwd());
+                  artifactCollector.observe(tc.toolName, tc.input, toolResultValue(resultFor(toolCalls, toolResults, i)), this.capabilities.getCwd());
+                  observeResearch(tc.toolName, tc.input, toolResultValue(resultFor(toolCalls, toolResults, i)));
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -3710,10 +4074,18 @@ export class Agent {
             continue;
           }
           if (this.currentAbortReason === 'backgrounded') {
+            researchRun?.end('stopped', 'it was moved to the background');
             result = { text: 'This task was moved to the background and will report back when it finishes.', usage: undefined };
             break;
           }
+          if (this.currentAbortReason === 'stopped' && researchRun?.finishRequested && researchRun.readCount() > 0) {
+            // "Write the report now": stop searching, keep what was read.
+            this.currentAbortReason = null;
+            researchCut = 'you asked it to finish now';
+            break;
+          }
           if (this.currentAbortReason === 'stopped' || this.currentAbortReason === 'halted') {
+            researchRun?.end('stopped', 'you stopped it');
             result = { text: `⏹ Task ${this.currentAbortReason}. Its work entry was cancelled — a restart will not resume it. Send the request again or ask me to continue if you change your mind.`, usage: undefined };
             this.currentAbortReason = null;
             break;
@@ -3767,6 +4139,12 @@ export class Agent {
             await this.sendFallbackNotice(msg, line).catch((e) => logger.warn({ e }, 'channel send failed'));
           }
         }
+      }
+
+      if (!result && researchRun && !memoryPressureStop) {
+        const cut = researchCut ?? (lastError ? `of an error (${whitelabelProviderError(lastError)})` : 'it was interrupted');
+        if (await deliverResearchReport(cut)) return;
+        researchRun.end('failed', cut);
       }
 
       if (!result) {
@@ -3994,7 +4372,7 @@ export class Agent {
                 for (let i = 0; i < toolCalls.length; i++) {
                   const tc = toolCalls[i];
                   executeTurnToolsUsed.add(tc.toolName);
-                  const guardToolResult = toolResultValue(toolResults[i]);
+                  const guardToolResult = toolResultValue(resultFor(toolCalls, toolResults, i));
                   recordExecuteToolResult(tc.toolName, guardToolResult);
                   // Remember WHY the work did not land, so an honest pause
                   // can tell the user what actually blocked it.
@@ -4005,6 +4383,7 @@ export class Agent {
                   this.maybeShowFileChange(channel, msg, tc.toolName, tc.input, guardToolResult);
                   this.maybeRecordPlanProgress(channel, tc.toolName, tc.input, msg.channelId);
                   artifactCollector.observe(tc.toolName, tc.input, guardToolResult, this.capabilities.getCwd());
+                  observeResearch(tc.toolName, tc.input, guardToolResult);
                   loopDetector.record(tc.toolName, tc.input as Record<string, any>, false);
                 }
               }
@@ -4212,6 +4591,8 @@ export class Agent {
 
       if (!loopAbortController.signal.aborted && turnEnd() === 'steps-exhausted') {
         logger.warn({ steps: lastRoundSteps, budget: effectiveMaxSteps }, 'Step budget exhausted past continuation bound — pausing task honestly');
+        if (await deliverResearchReport(`it used its whole step budget (${effectiveMaxSteps} steps)`)) return;
+        researchRun?.end('failed', `it used its whole step budget (${effectiveMaxSteps} steps)`);
         await pauseHonestly(
           STEPS_PAUSED_BANNER,
           'Step budget reached with work pending. Send "continue" to resume with a fresh budget.',
@@ -4270,7 +4651,26 @@ export class Agent {
       // Recompute AFTER the guard: the continuation's output (not the
       // original narration) must be what reaches the session store, the
       // work ledger, and the final delivery.
-      const finalText = (result.text || '').trim() || '(no text response)';
+      let finalText = (result.text || '').trim() || '(no text response)';
+      let researchReportText: string | null = null;
+
+      // A research run: an empty answer still gets a report from what was
+      // read; a finished one says what it couldn't read and is kept as a file.
+      if (researchRun && researchRun.outcome === 'running') {
+        if (!(result.text || '').trim()) {
+          if (await deliverResearchReport('the model returned no text')) return;
+          researchRun.end('failed', 'the model returned no text');
+        } else {
+          researchReportText = reportBody(finalText, researchRun.writtenArticle);
+          researchRun.markCited(researchReportText);
+          const coverage = coverageSection(researchRun);
+          if (coverage) {
+            finalText = `${finalText}\n\n${coverage}`;
+            researchReportText = `${researchReportText}\n\n${coverage}`;
+          }
+          researchRun.end('done');
+        }
+      }
 
       // Store plan output when in plan mode for later execution
       if (this.programmingMode.isPlan() && preGuardText !== '(no text response)') {
@@ -4322,6 +4722,10 @@ export class Agent {
       if (canonicalSessionId && artifactCollector.size > 0) {
         try { turnArtifacts = artifactCollector.finalize(canonicalSessionId, artifactStore()); } catch (err) { logger.warn({ err }, 'Keeping artifacts failed'); }
       }
+      if (researchRun?.outcome === 'done' && canonicalSessionId) {
+        const saved = this.saveResearchReport(researchRun, researchReportText ?? finalText, canonicalSessionId);
+        if (saved) turnArtifacts = [saved, ...turnArtifacts.filter((a) => a.id !== saved.id)];
+      }
       if (canonicalSessionId) {
         if (turnToolTrace.length > 0) {
           this.sessions.appendMessage(canonicalSessionId, {
@@ -4356,6 +4760,7 @@ export class Agent {
             outputTokens: result.usage?.outputTokens ?? 0,
             ...(lastVerificationNote ? { verification: lastVerificationNote } : {}),
             ...(turnArtifacts.length ? { artifacts: turnArtifacts.map(artifactRef) } : {}),
+            ...(researchRun ? { research: researchRun.snapshot() } : {}),
           },
         });
         if (turnArtifacts.length && channel) this.announceArtifacts(channel, turnArtifacts, msg.channelId);
@@ -4480,6 +4885,21 @@ export class Agent {
       } catch { /* best effort */ }
       this.lifecycle.transition('idle');
     } finally {
+      if (chatFolder) {
+        if (cwdBeforeChatFolder && this.capabilities.getCwd() === chatFolder) this.capabilities.setCwd(cwdBeforeChatFolder);
+        this.chatFolders().close(chatFolder);
+      }
+      if (researchRun) {
+        researchRun.end('failed', 'it ended before writing a report');
+        // Close the checklist the run worked through (models rarely tick the last step).
+        const planChannel = this.channels.getChannelForMessage(msg);
+        if (researchRun.planned && planChannel instanceof WebChannel) {
+          const closed = closePlan(planChannel.plans.get(msg.channelId)?.steps ?? [], researchRun.outcome);
+          if (closed) planChannel.sendPlan(closed, msg.channelId);
+        }
+        this.emitResearch(msg, researchRun);
+        this.researchMode.endRun();
+      }
       clearInterval(memoryGuard);
       stallWatchdog.stop();
       stopHeartbeat();

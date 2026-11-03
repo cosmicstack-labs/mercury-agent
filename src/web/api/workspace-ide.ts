@@ -6,6 +6,10 @@ import { getMercuryHome, loadConfig } from '../../utils/config.js';
 import { generateText } from 'ai';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { resolveShell } from '../../utils/platform.js';
+import { protectedReason, realInside } from '../../security/protected-paths.js';
+import { isThisComputer } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
+import { readRemoteSettings } from '../../security/remote-settings.js';
 
 let providerRegistry: ProviderRegistry | undefined;
 
@@ -46,10 +50,15 @@ export function git(args: readonly string[], cwd?: string): string {
   }).trim();
 }
 
-/** True when the path resolves inside the workspace (not merely shares its prefix). */
+/**
+ * True when the path resolves inside the workspace (not merely shares its
+ * prefix), after following symlinks: a link in the workspace pointing at
+ * ~/.ssh is outside it.
+ */
 export function isInsideWorkspace(filePath: string, root: string = getWorkspaceRoot()): boolean {
   const rel = relative(resolve(root), resolve(root, filePath));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
+  return realInside(resolve(root, filePath), root);
 }
 
 /**
@@ -291,6 +300,8 @@ ide.put('/api/workspace/file', async (c) => {
     if (!isInsideWorkspace(fullPath, root)) {
       return c.json({ error: 'Path outside workspace' }, 403);
     }
+    const off = protectedReason(fullPath, !isThisComputer(c));
+    if (off) return c.json({ error: off }, 403);
     writeFileSync(fullPath, body.content, 'utf8');
     return c.json({ success: true, path: body.path });
   } catch (err: any) {
@@ -306,6 +317,15 @@ ide.post('/api/terminal/exec', async (c) => {
   const body = await c.req.json<{ command: string; cwd?: string }>();
   try {
     if (!body.command?.trim()) return c.json({ error: 'command is required' }, 400);
+    // A shell from another device: off unless the owner turned it on (/server),
+    // and then every command waits for the owner's yes.
+    if (!isThisComputer(c)) {
+      if (!readRemoteSettings().allowShell) {
+        return c.json({ error: 'The terminal is off for remote devices. The owner can turn it on with /server on the computer Mercury runs on.', remoteShellOff: true }, 403);
+      }
+      const wait = requireOwner(c, { id: `terminal.exec:${body.command.trim().slice(0, 200)}`, title: 'Run a shell command', detail: body.command.trim().slice(0, 300) });
+      if (wait) return wait;
+    }
 
     const root = getWorkspaceRoot();
     const cwd = body.cwd ? resolve(root, body.cwd) : root;

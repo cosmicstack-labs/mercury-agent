@@ -10,6 +10,9 @@ import { Approval } from "~/components/indicators/Approval";
 import { ThinkingDots } from "~/components/indicators/Thinking";
 import { Message, StreamingMessage } from "./Message";
 import { Composer, type ComposerProps } from "./Composer";
+import { WaitingNotice } from "./Waiting";
+import { ResearchBar, ResearchPlan } from "./Research";
+import { AlertTriangle, Info } from "lucide-react";
 
 const PAGE = 30;
 
@@ -29,7 +32,10 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
   const step = useConversation((s) => s.step);
   const prompts = useConversation((s) => s.prompts);
   const live = useConversation((s) => s.live);
+  const waiting = useConversation((s) => s.waiting);
   const stopping = useConversation((s) => s.stopping);
+  const notice = useConversation((s) => s.notice);
+  const researching = useConversation((s) => s.research?.run?.state === "running");
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(PAGE);
@@ -103,9 +109,18 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
             {(streaming || (live && (agent === "thinking" || agent === "working" || agent === "streaming" || agent === "needs-you"))) && (
               <StreamingMessage text={streaming} live={live} stopping={stopping} />
             )}
-            {!streaming && !live && (agent === "thinking" || agent === "working") && (
+            {waiting && !streaming ? (
+              <WaitingNotice threadId={activeId} waiting={waiting} />
+            ) : !streaming && !live && (agent === "thinking" || agent === "working") && (
               <ThinkingDots label={stopping ? "Stopping" : agent === "working" && step?.tool ? `Running ${step.tool}` : "Thinking"} className="pl-10" />
             )}
+            {notice && busy && (
+              <p className={cx("ml-10 flex items-start gap-2 text-xs", notice.level === "warning" ? "text-amber" : "text-ink3")} role="status">
+                {notice.level === "warning" ? <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden="true" /> : <Info size={13} className="mt-px shrink-0" aria-hidden="true" />}
+                {notice.message}
+              </p>
+            )}
+            <ResearchPlan />
             {prompts.map((p, i) => (
               <div key={p.id} className="min-w-0 pl-10">
                 <Approval prompt={p} onAnswer={(v) => answerPrompt(store, p, v)} keys={i === prompts.length - 1} />
@@ -128,7 +143,9 @@ export function Conversation({ header, empty, composer }: { header: ReactNode; e
       )}
       </div>
 
-      <PlanCard surface={composer.surface} />
+      <ResearchBar />
+      {/* While research runs, its bar shows the questions (and Details the checklist): one progress display, not two. */}
+      {!researching && <PlanCard surface={composer.surface} />}
       <Composer {...composer} />
     </section>
   );

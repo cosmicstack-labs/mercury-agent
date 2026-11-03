@@ -13,7 +13,7 @@ const PAGE = 40;
  * New and search on top. Renders a page at a time and adds the next page as
  * the list scrolls.
  */
-export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchLabel, renderMeta, pinned, savedOnly = false, onLeaveSaved }: {
+export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchLabel, renderMeta, pinned, savedOnly = false, onLeaveSaved, onShowSaved }: {
   threads: ChatThread[];
   activeId: string | null;
   onOpen: (id: string) => void;
@@ -23,9 +23,11 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
   renderMeta?: (t: ChatThread) => React.ReactNode;
   /** Shown above the sessions (e.g. the live Optimus voice session). */
   pinned?: React.ReactNode;
-  /** Only the saved threads, newest save first (⌘⇧S); the list doesn't mark them otherwise. */
+  /** Only the saved threads, newest save first (⌘⇧S or the bookmark by search); the list doesn't mark them otherwise. */
   savedOnly?: boolean;
   onLeaveSaved?: () => void;
+  /** Opens the saved list; the button shows only once something is saved. */
+  onShowSaved?: () => void;
 }) {
   const unread = useNotify((s) => s.unread);
   const waiting = useNotify((s) => s.waiting);
@@ -40,6 +42,7 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
       : [...threads].sort((a, b) => stamp(b).localeCompare(stamp(a)));
     return q ? sorted.filter((t) => (t.title || t.alias || "").toLowerCase().includes(q)) : sorted;
   }, [threads, query, savedOnly]);
+  const hasSaved = useMemo(() => threads.some((t) => t.savedAt), [threads]);
   const page = filtered.slice(0, limit);
   const groups = useMemo<Array<[string, ChatThread[]]>>(() => (savedOnly ? (page.length ? [["Saved", page]] : []) : groupByDay(page)), [page, savedOnly]);
 
@@ -70,10 +73,23 @@ export function ThreadList({ threads, activeId, onOpen, onNew, newLabel, searchL
           <span className="flex-1 text-left">{newLabel}</span>
           <kbd className="font-mono text-xs text-ink4">⌘N</kbd>
         </button>
-        <label className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-ink4 hover:bg-ink/[0.04] focus-within:bg-ink/[0.05]">
-          <Search size={16} aria-hidden="true" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchLabel} className="w-full bg-transparent text-base text-ink placeholder:text-ink4" aria-label={searchLabel} />
-        </label>
+        <div className="flex items-center gap-1">
+          <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-ink4 hover:bg-ink/[0.04] focus-within:bg-ink/[0.05]">
+            <Search size={16} aria-hidden="true" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchLabel} className="w-full bg-transparent text-base text-ink placeholder:text-ink4" aria-label={searchLabel} />
+          </label>
+          {onShowSaved && (savedOnly || hasSaved) && (
+            <button
+              onClick={savedOnly ? onLeaveSaved : onShowSaved}
+              className={cx("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg hover:bg-ink/[0.05]", savedOnly ? "bg-ink/[0.07] text-ink" : "text-ink4 hover:text-ink")}
+              aria-label={savedOnly ? "Show all chats" : "Show saved chats"}
+              aria-pressed={savedOnly}
+              title={savedOnly ? "All chats (⌘⇧S)" : "Saved chats (⌘⇧S)"}
+              data-no-drag>
+              <Bookmark size={16} aria-hidden="true" fill={savedOnly ? "currentColor" : "none"} />
+            </button>
+          )}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {savedOnly && (

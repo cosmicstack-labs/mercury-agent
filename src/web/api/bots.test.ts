@@ -419,3 +419,71 @@ describe('web bots API — files on a bot message', () => {
     await expect(jreq(res)).resolves.toEqual({ error: 'message is required' });
   });
 });
+
+describe('web bots API — editing routines and the inbox', () => {
+  const patch = (id: string, body: unknown) =>
+    app.request(`/api/bots/${id}`, { method: 'PATCH', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  it('refuses a routine without a valid schedule, a name or instructions', async () => {
+    store.create({ id: 'poster', name: 'Poster' });
+    for (const bad of [
+      [{ name: 'daily', cron: 'every day', prompt: 'post' }],
+      [{ name: 'has space', cron: '0 9 * * *', prompt: 'post' }],
+      [{ name: 'daily', cron: '0 9 * * *', prompt: '  ' }],
+      [{ name: 'daily', cron: '0 9 * * *', prompt: 'a' }, { name: 'daily', cron: '0 10 * * *', prompt: 'b' }],
+    ]) {
+      expect((await patch('poster', { schedules: bad })).status).toBe(400);
+    }
+  });
+
+  it('an edited routine takes effect now: added, replaced, and removed from the scheduler', async () => {
+    const tasks = new Map<string, string>();
+    manager.setScheduler({
+      addPersistedTask: (m: { id: string; cron: string }) => { tasks.set(m.id, m.cron); },
+      removeTask: (id: string) => { tasks.delete(id); },
+      persistSchedules: () => {},
+      getManifests: () => [],
+      addDelayedTask: () => {},
+    } as never);
+    store.create({ id: 'poster', name: 'Poster' });
+    expect((await patch('poster', { schedules: [{ name: 'morning', cron: '0 9 * * *', prompt: 'post' }] })).status).toBe(200);
+    expect([...tasks]).toEqual([['bot:poster:morning', '0 9 * * *']]);
+    await patch('poster', { schedules: [{ name: 'evening', cron: '0 18 * * *', prompt: 'post' }] });
+    expect([...tasks]).toEqual([['bot:poster:evening', '0 18 * * *']]);
+  });
+
+  it('the inbox lists results newest first and marks them read', async () => {
+    store.create({ id: 'scout', name: 'Scout' });
+    manager.inbox.add({ botId: 'scout', botName: 'Scout', runId: 'r1', kind: 'result', title: 'Scout: first', summary: 'a', files: [] });
+    manager.inbox.add({ botId: 'scout', botName: 'Scout', runId: 'r2', kind: 'failed', title: 'Scout: second', summary: 'b', files: [] });
+    const listed = await jreq(await app.request('/api/bots/inbox'));
+    expect(listed.unread).toBe(2);
+    expect(listed.entries.map((e: { runId: string }) => e.runId)).toEqual(['r2', 'r1']);
+    await app.request('/api/bots/inbox/read', { method: 'POST', body: JSON.stringify({ ids: [listed.entries[0].id] }), headers: { 'Content-Type': 'application/json' } });
+    expect((await jreq(await app.request('/api/bots/inbox?unread=1'))).entries.map((e: { runId: string }) => e.runId)).toEqual(['r1']);
+    const roster = await jreq(await app.request('/api/bots'));
+    expect(roster.unread).toBe(1);
+    expect(roster.bots.find((b: { id: string }) => b.id === 'scout')).toMatchObject({ unread: 1, tier: expect.any(String) });
+  });
+});
+
+describe('web bots API — persona builder and plan', () => {
+  const post = (path: string, body: unknown) =>
+    app.request(path, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+
+  it('the persona builder needs some text, and says so plainly when no model can build', async () => {
+    expect((await post('/api/bots/persona-builder', { text: 'hi' })).status).toBe(400);
+    // The stub provider answers "ok": not a persona, so nothing is replaced.
+    const res = await post('/api/bots/persona-builder', { text: 'Watch Hacker News for Rust posts and report new ones.', name: 'Rust Watch' });
+    expect(res.status).toBe(503);
+    expect((await jreq(res)).error).toMatch(/unchanged/);
+  });
+
+  it('the plan falls back to one bot when the model gives no usable plan, and creates nothing', async () => {
+    const before = store.list().length;
+    const body = await jreq(await post('/api/bots/plan', { name: 'Newsroom', description: 'News', persona: 'Write the news' }));
+    expect(body.plan).toMatchObject({ shape: 'solo', crew: [] });
+    expect(typeof body.maxCrew).toBe('number');
+    expect(store.list().length).toBe(before);
+  });
+});

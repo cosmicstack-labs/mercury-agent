@@ -1,0 +1,124 @@
+---
+id: updating
+title: "Updating Mercury"
+sidebar_label: "Updating"
+description: "How Mercury Desktop and the Mercury runtime update: the Update button, resumable signed downloads, server updates with automatic rollback, required updates and messages."
+keywords: [mercury update, mercury upgrade, auto update, rollback, desktop update, required update]
+---
+
+# Updating Mercury
+
+There are two things to keep current: **Mercury Desktop** (the app) and **Mercury** itself (the runtime, on this computer or on a server). Both update the same careful way: download in the background, check the download, install, and confirm the new version works. If it doesn't, they put the old version back.
+
+Nothing pops up uninvited. The one exception is an update marked as required, described [below](#required-updates).
+
+## How Mercury knows what's new
+
+Mercury publishes one update notice at `https://mercuryagent.sh/updates/manifest.json`. It lists the newest versions with their release notes, the oldest version still supported, and any message for people running Mercury. The notice is signed. Mercury and Mercury Desktop ignore a notice whose signature doesn't check out, and an older notice than one they've already seen.
+
+If the notice can't be fetched (you're offline, a firewall blocks it), nothing is blocked. Mercury falls back to asking GitHub or npm for the newest version and keeps working.
+
+Mercury checks at most every 6 hours. **Check for updates** asks right away.
+
+## Mercury Desktop
+
+### The Update button
+
+When something can be updated, an **Update** button appears at the top right of the window, like Chrome's. It covers the app and every server the app connects to. Its colour rises the longer an update waits:
+
+| Waiting | Colour |
+|---|---|
+| Under 2 days | Grey |
+| 2 to 4 days | Accent |
+| 4 to 7 days | Amber |
+| 7 days or more | Red |
+
+A security update is red from the start. A required update reads **Update required** and can't be hidden.
+
+### The updates panel
+
+Click the button to open the panel. It has a row for Mercury Desktop and one for each server with an update:
+
+- the version you have and the new one, with **What's new** to read the notes before you update;
+- the action: **Download**, **Restart to update**, or **Update server**;
+- live progress: bytes, speed, time left and the current step;
+- **Later**, which hides that update for 24 hours.
+
+When more than one thing can be updated, **Update all** updates them together.
+
+### Downloads
+
+With **Download updates automatically** on (the default), the app downloads a new version in the background. Nothing installs until you restart.
+
+- A dropped connection doesn't start the download over. The app resumes from the bytes it has, even after you quit and reopen it.
+- The app waits up to 30 seconds for data before it reconnects, and tries up to 5 times.
+- **Cancel** stops a download and keeps what it has. **Resume download** continues from there.
+- A download only counts as ready after its signature checks out. One that doesn't match is deleted, so the next try starts clean.
+
+### Installing
+
+- **Restart to update** installs the update and reopens the app. If a reply is still coming in, the app asks first. The reply keeps running on the server and is there when the app is back.
+- **Install a downloaded update when I quit** (on by default) installs it the next time you quit, so the next start is the new version.
+
+If an update fails 3 times, the app stops retrying that version and offers **Download from website** instead.
+
+### Check for updates
+
+**Settings → About** has **Check for updates**. It checks Mercury Desktop and every server you connect to in one go, then says either "Everything is up to date" or what it found. **Update everything** then updates each server that can update itself and restarts the app last, once the servers are done. The tray menu has **Check for Updates…** too.
+
+## Mercury on a server
+
+### From Mercury Desktop
+
+A server's row in the updates panel has **Update server**. From a device other than that server's own computer, the owner approves the update first (the same 5-character code as [new devices](/docs/desktop/remote-access#owner-approvals)). The panel follows the update through the server's restart and reconnects when it's back.
+
+### From the command line
+
+```bash
+mercury update          # what's new, and whether an update is required
+mercury update check    # ask again now
+mercury upgrade --check # the same, from upgrade
+mercury upgrade         # update to the newest version
+mercury upgrade --now   # don't wait for running work
+mercury upgrade --force # reinstall even when already on the newest version
+```
+
+With Mercury running, `mercury upgrade` asks the running Mercury to do the update, so it can wait for running work and come back as the new version. With Mercury stopped, the command does every step itself and leaves Mercury stopped.
+
+### What a server update does
+
+1. **Waits for running work.** A reply, a queued message or a bot run finishes first, for up to 10 minutes. **Update now without waiting** in the app (or `--now`) skips the wait.
+2. **Downloads** the new version, resuming if the connection drops, and checks it against the release's SHA-256 checksums. An npm install fetches the exact version into npm's cache.
+3. **Backs up** the current program and Mercury's settings files in `~/.mercury`.
+4. **Stops Mercury, installs the new version and starts it.**
+5. **Checks it works.** The new version must answer as the new version within 90 seconds.
+6. **If it doesn't, rolls back.** Mercury puts the old program and settings back and starts the old version. If the new version crashes on start, this happens in about 15 seconds.
+
+Mercury is offline only between steps 4 and 6, usually a few seconds.
+
+If a release is announced but its files aren't published yet, the update stops before anything changes and says to try again later. That doesn't count as a failure. If an update to one version really fails 3 times, Mercury stops offering it on its own. `mercury upgrade` still tries, and shows what went wrong.
+
+A Mercury running from a source checkout doesn't update itself. Update it with `git pull` and a build.
+
+## Required updates
+
+Sometimes a version has to go, usually for a security fix. The update notice then names the oldest supported version and says why.
+
+**Mercury Desktop** shows a full-screen notice that Escape and clicking outside don't close. It explains the reason and has **Update now** with live progress. You can still minimise the window. **Continue without updating** asks you to tick every box first:
+
+- I understand this version has a known problem that the update fixes.
+- Mercury may stop working with my servers or some features until I update.
+- I'm responsible for anything exposed while I stay on this version.
+- I'll update as soon as I can.
+
+That lasts until the app restarts or for 24 hours, whichever comes first, and the top-right button stays red meanwhile. The same screen appears when the server the window is connected to is below its required version. If you can't update that server yourself, it says what the owner has to run.
+
+**On a server**, a required update shows in the terminal every time Mercury starts, in `mercury doctor` and in `mercury update`, and `/update ignore` can't silence it.
+
+## What's new
+
+After Mercury Desktop or a server you connect to moves to a newer version, the app shows a toast once: "Mercury Desktop updated to 1.5.0 · What's new". It opens the release notes. **Settings → About → What's new** opens them again. In the terminal, `/whatsnew` shows the notes for the version you run.
+
+## Messages
+
+The update notice can carry a short message for people on certain versions. Mercury Desktop shows an information message once as a toast, and a warning or critical one as a banner under the top bar. You can dismiss a message, except a critical one marked as permanent. The terminal shows each message once when Mercury starts.

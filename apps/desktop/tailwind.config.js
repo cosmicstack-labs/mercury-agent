@@ -24,6 +24,7 @@ export default {
       blue: "rgb(var(--blue) / <alpha-value>)",
       amber: "rgb(var(--amber) / <alpha-value>)",
       red: "rgb(var(--red) / <alpha-value>)",
+      ok: "rgb(var(--ok) / <alpha-value>)",
       white: "#ffffff",
       black: "#000000",
     },

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import { readAttachToken } from '../auth.js';
-import { isLoopbackRequest } from '../middleware.js';
+import { authenticateRequest, isThisComputer } from '../middleware.js';
+import { requireOwner } from '../owner-gate.js';
 import { spawnDetachedRestart } from '../../cli/daemon.js';
 
 let restartSpawner: () => boolean = spawnDetachedRestart;
@@ -28,21 +28,15 @@ export function setShutdownHandler(handler: (() => void) | null): void {
   shutdownHandler = handler;
 }
 
-function bearerToken(header: string | undefined): string | null {
-  if (!header) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match ? match[1].trim() : null;
-}
-
 /**
- * Apply saved configuration by restarting the runtime. Loopback only — the
- * dashboard runs on this machine; the auth guard has already admitted the
- * session (or attach token). Providers, channels and keys are read at boot,
+ * Apply saved configuration by restarting the runtime. On this computer it
+ * just happens; from another device the owner approves it first. Providers, channels and keys are read at boot,
  * so this is how a dashboard save actually takes effect.
  */
 lifecycle.post('/api/restart', (c) => {
-  if (!isLoopbackRequest(c)) {
-    return c.json({ error: 'Restart is only accepted from this machine' }, 403);
+  if (!isThisComputer(c)) {
+    const wait = requireOwner(c, { id: 'runtime.restart', title: 'Restart Mercury' });
+    if (wait) return wait;
   }
   if (!restartSpawner()) {
     return c.json({ error: 'Could not start the restart helper — run `mercury restart` in a terminal' }, 503);
@@ -51,12 +45,8 @@ lifecycle.post('/api/restart', (c) => {
 });
 
 lifecycle.post('/api/shutdown', (c) => {
-  if (!isLoopbackRequest(c)) {
-    return c.json({ error: 'Shutdown is only accepted from this machine' }, 403);
-  }
-  const token = bearerToken(c.req.header('Authorization'));
-  const expected = readAttachToken();
-  if (!token || !expected || token !== expected) {
+  // Only a process on this computer holding the attach token (`mercury stop`).
+  if (authenticateRequest(c)?.kind !== 'attach') {
     return c.json({ error: 'Shutdown requires the local attach token' }, 403);
   }
   if (!shutdownHandler) {

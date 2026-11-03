@@ -4,9 +4,10 @@
    ═══════════════════════════════════════════════════════════════ */
 
 import { http, ApiError } from "./client";
+import type { CommandEntry } from "~/views/chat/picker";
 import type { SkillDraft,
-  BotManifest, BotRunRecord, BotStatus, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
-  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PluginItem, ReasoningChoice, Skill, DeviceSummary,
+  BotApproval, BotInboxEntry, BotManifest, BotPlan, CrewSpec, BotRunRecord, BotStatus, BotTier, BotTierId, ChatMessage, ChatSettings, ChatThread, CodeStatus, HealthInfo,
+  McpServer, ModelsResponse, CodeMode, CostReport, Deliverable, RunTranscript, PairResponse, PendingPair, OwnerApproval, PluginItem, ReasoningChoice, Skill, DeviceSummary,
 } from "./types";
 
 export const health = {
@@ -26,22 +27,45 @@ export const health = {
 };
 
 export const auth = {
-  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string): Promise<PairResponse> => {
+  /** Sign in for a device token. From another device the owner approves it first (a PendingPair). */
+  pair: async (baseUrl: string, username: string, password: string, deviceName: string, platform: string): Promise<PairResponse | PendingPair> => {
     const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, deviceName, platform }),
     });
-    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse> & { error?: string };
+    const body = (await res.json().catch(() => ({}))) as Partial<PairResponse & PendingPair> & { error?: string };
     if (!res.ok) {
       const retry = res.headers.get("Retry-After");
       throw new ApiError(body.error || `Pairing failed (${res.status})`, res.status, retry ? Number(retry) : null);
     }
-    return body as PairResponse;
+    return body as PairResponse | PendingPair;
+  },
+  /** Ask how a pairing stands; the runtime answers within ~25 s if the owner decides meanwhile. */
+  pollPair: async (baseUrl: string, pairingId: string, pollToken: string, signal?: AbortSignal): Promise<{ status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string }> => {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pairingId, pollToken }),
+      signal,
+    });
+    return (await res.json().catch(() => ({ status: "error", error: `Mercury answered ${res.status}` }))) as { status: "pending" | "approved" | "denied" | "expired" | "error"; token?: string; device?: DeviceSummary; error?: string };
+  },
+  /** Sign a device out on a runtime it may not be connected to right now (removing a remote connection). */
+  revokeAt: async (baseUrl: string, token: string): Promise<void> => {
+    await fetch(`${baseUrl.replace(/\/+$/, "")}/api/auth/token/revoke`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) });
   },
   devices: () => http.get<{ devices: DeviceSummary[]; current: string | null }>("/api/auth/devices"),
   revokeDevice: (id: string) => http.delete<{ success: boolean }>(`/api/auth/devices/${encodeURIComponent(id)}`),
   revokeSelf: () => http.post<{ success: boolean }>("/api/auth/token/revoke"),
+};
+
+/** The owner's security questions, on the runtime's own computer. */
+export const security = {
+  approvals: () => http.get<{ pending: OwnerApproval[]; routes: string[] }>("/api/security/approvals"),
+  decide: (id: string, decision: "allow" | "deny") => http.post<{ approval: OwnerApproval }>(`/api/security/approvals/${encodeURIComponent(id)}`, { decision, by: "desktop" }),
+  /** A question this device asked (a 428): how it stands. */
+  status: (id: string) => http.get<{ status: OwnerApproval["status"]; code?: string }>(`/api/security/approvals/${encodeURIComponent(id)}/status`),
 };
 
 export const chat = {
@@ -57,6 +81,18 @@ export const chat = {
   save: (threadId: string, saved: boolean) => http.post<{ id: string; saved: boolean; savedAt: string | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/save`, { saved }),
   undo: (threadId: string, content: string) => http.post<{ ok: boolean; content: string; removed: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/undo`, { content }),
   answer: (promptId: string, action: string, targetId?: string) => http.post<{ resolved: boolean }>(`/api/chat/permission/${encodeURIComponent(promptId)}`, { action, targetId }),
+  /** Put this chat's waiting message first in line. */
+  queueFirst: (threadId: string) => http.post<{ moved: number }>(`/api/chat/threads/${encodeURIComponent(threadId)}/queue/first`, {}),
+  /** This chat's research: on for the next message, the run going now, or its last one. */
+  research: (threadId: string) => http.get<{ armed: boolean; planFirst?: boolean; topic?: string | null; run: import("./types").ResearchSnapshot | null }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research`),
+  /** Stop searching and write the report from what was read. */
+  finishResearch: (threadId: string) => http.post<{ ok: boolean }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research/finish`, {}),
+  /** Research off for this chat's next message. */
+  researchOff: (threadId: string) => http.post<{ ok: boolean }>(`/api/chat/threads/${encodeURIComponent(threadId)}/research/off`, {}),
+  /** Start (with these sub-questions) or cancel a proposed research plan. */
+  answerResearchPlan: (id: string, action: "start" | "cancel", questions?: string[]) => http.post<{ ok: boolean }>(`/api/chat/research/plan/${encodeURIComponent(id)}`, { action, questions }),
+  /** Every slash command with what it does (the "/" picker). */
+  commands: () => http.get<{ commands: CommandEntry[] }>("/api/chat/commands").then((r) => r.commands),
   settings: () => http.get<ChatSettings>("/api/chat/settings"),
   updateSettings: (patch: Partial<ChatSettings>) => http.put<ChatSettings>("/api/chat/settings", patch),
   models: () => http.get<ModelsResponse>("/api/chat/models"),
@@ -82,7 +118,7 @@ export const code = {
 };
 
 export const bots = {
-  list: () => http.get<{ bots: BotStatus[]; available: boolean }>("/api/bots"),
+  list: () => http.get<{ bots: BotStatus[]; available: boolean; unread?: number }>("/api/bots"),
   get: (id: string) => http.get<{ bot: BotManifest; state: BotStatus | null; journal: BotRunRecord[] }>(`/api/bots/${encodeURIComponent(id)}`),
   message: (id: string, message: string) => http.post<{ accepted: boolean; jobId?: string; reasonCode?: string }>(`/api/bots/${encodeURIComponent(id)}/message`, { message }),
   enable: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/enable`),
@@ -98,6 +134,30 @@ export const bots = {
   cost: (days: number) => http.get<CostReport>(`/api/bots-cost?days=${days}`),
   avatarUrl: (id: string) => `/api/bots/${encodeURIComponent(id)}/avatar`,
   runNow: (id: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/run`, {}),
+  /** Resume a stopped bot (and its switched-off routines). */
+  start: (id: string) => http.post<{ ok: boolean; message: string }>(`/api/bots/${encodeURIComponent(id)}/start`, {}),
+  create: (input: { id: string; name: string; description?: string; persona?: string; tier?: BotTierId; manifest?: Partial<BotManifest> }) =>
+    http.post<{ bot: BotManifest }>("/api/bots", input),
+  update: (id: string, patch: Partial<BotManifest>) => http.patch<{ bot: BotManifest }>(`/api/bots/${encodeURIComponent(id)}`, patch),
+  persona: (id: string) => http.get<{ persona: string }>(`/api/bots/${encodeURIComponent(id)}/persona`).then((r) => r.persona),
+  setPersona: (id: string, persona: string) => http.put<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/persona`, { persona }),
+  tiers: () => http.get<{ tiers: BotTier[] }>("/api/bots/tiers").then((r) => r.tiers),
+  setTier: (id: string, tier: BotTierId) => http.put<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/permissions`, { tier }),
+  inbox: (opts: { unread?: boolean; bot?: string; limit?: number } = {}) =>
+    http.get<{ entries: BotInboxEntry[]; unread: number }>(`/api/bots/inbox?limit=${opts.limit ?? 100}${opts.unread ? "&unread=1" : ""}${opts.bot ? `&bot=${encodeURIComponent(opts.bot)}` : ""}`),
+  markRead: (ids?: string[]) => http.post<{ ok: boolean; unread: number }>("/api/bots/inbox/read", ids ? { ids } : {}),
+  /** The persona builder: rough instructions → the structured persona. Nothing is saved. */
+  buildPersona: (text: string, name: string) => http.post<{ persona: string }>("/api/bots/persona-builder", { text, name }).then((r) => r.persona),
+  /** Solo or fleet for this job, with a proposed crew. fleet: true = you already chose a fleet. */
+  plan: (input: { name: string; description: string; persona: string; fleet?: boolean }) => http.post<{ plan: BotPlan; maxCrew: number }>("/api/bots/plan", input),
+  promote: (id: string) => http.post<{ ok: boolean }>(`/api/bots/${encodeURIComponent(id)}/promote`, {}),
+  /** Mercury designs and adds crew to a lead, in the background (roster updates arrive live). */
+  autoCrew: (id: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/autocrew`, {}),
+  addCrew: (leadId: string, crew: CrewSpec & { tier?: BotTierId }) => http.post<{ bot: BotManifest }>(`/api/bots/${encodeURIComponent(leadId)}/crew`, crew),
+  approvals: () => http.get<{ approvals: BotApproval[] }>("/api/bots/approvals").then((r) => r.approvals),
+  answer: (approvalId: string, answer: "yes" | "always" | "no") => http.post<{ ok: boolean }>(`/api/bots/approvals/${encodeURIComponent(approvalId)}`, { answer }),
+  dlq: (id: string) => http.get<{ dlq: Array<{ id: string; prompt: string; reasonCode?: string; createdAt: number }> }>(`/api/bots/${encodeURIComponent(id)}/dlq`),
+  replay: (id: string, jobId: string) => http.post<{ accepted: boolean }>(`/api/bots/${encodeURIComponent(id)}/replay/${encodeURIComponent(jobId)}`, {}),
 };
 
 export const plugins = {

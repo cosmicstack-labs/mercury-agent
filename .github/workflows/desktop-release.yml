@@ -1,0 +1,91 @@
+name: Desktop release
+
+# Builds signed Mercury Desktop bundles and the updater's latest.json into a
+# DRAFT GitHub release (desktop-v<version>). Run by hand only. Nothing reaches
+# users until a person publishes the draft and runs
+# `node scripts/promote-desktop-release.mjs <version>` (which copies latest.json
+# to website/static/desktop/ and records the release in the update manifest).
+#
+# Secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the
+# updater key, UPDATES.md). Optional macOS signing: APPLE_CERTIFICATE,
+# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD,
+# APPLE_TEAM_ID.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_tag:
+        description: 'Runtime release the app installs on a fresh computer (empty = latest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: Bundle (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, label: macOS arm64, args: '--target aarch64-apple-darwin', rust: aarch64-apple-darwin }
+          - { os: macos-14, label: macOS x64, args: '--target x86_64-apple-darwin', rust: x86_64-apple-darwin }
+          - { os: ubuntu-22.04, label: Linux x64, args: '', rust: '' }
+          - { os: windows-latest, label: Windows x64, args: '', rust: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            apps/desktop/package-lock.json
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci --no-audit --no-fund
+        working-directory: ui
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/desktop
+      - name: Check the updater key is set
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set: updates could not be verified. Add it in the repository secrets."
+            exit 1
+          fi
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MERCURY_RUNTIME_TAG: ${{ inputs.runtime_tag }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tagName: desktop-v__VERSION__
+          releaseName: Mercury Desktop __VERSION__
+          releaseBody: 'Draft: write the notes, publish, then run `node scripts/promote-desktop-release.mjs __VERSION__`.'
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json

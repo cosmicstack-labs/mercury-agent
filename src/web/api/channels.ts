@@ -1,3 +1,4 @@
+import { requireOwner } from '../owner-gate.js';
 import { Hono } from 'hono';
 import {
   approveDiscordPendingRequest, approveSignalPendingRequest, approveSlackPendingRequest, approveTelegramPendingRequest,
@@ -172,6 +173,9 @@ channels.post('/api/channels/:type/check', async (c) => {
   const type = c.req.param('type');
   if (!isType(type)) return c.json({ ok: false, message: 'Unknown channel' }, 400);
   const body = (await c.req.json().catch(() => ({}))) as Draft;
+  // A channel's token decides who can talk to Mercury as the owner.
+  const wait = requireOwner(c, { id: `channels.settings:${type}`, title: `Change the ${type} channel's settings or token` });
+  if (wait) return wait;
   const bad = maskedProblem(body);
   if (bad) return c.json({ ok: false, field: bad, message: 'That is the hidden form of the saved key. Paste the full key, or leave it empty to keep the saved one.' });
   return c.json(await check(type, merged(type, live(), body)));
@@ -223,6 +227,11 @@ channels.post('/api/channels/:type/access', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { action?: unknown; id?: unknown; role?: unknown };
   const action = String(body.action ?? '');
   const id = typeof body.id === 'string' ? body.id.trim() : typeof body.id === 'number' ? String(body.id) : '';
+  // Letting someone in (or making them an admin) is the owner's call; removing people isn't gated.
+  if (action === 'approve' || action === 'promote' || action === 'add') {
+    const wait = requireOwner(c, { id: `channels.access:${type}:${action}:${id}`, title: `${action === 'promote' ? 'Make an admin' : 'Let someone in'} on ${type}`, detail: id || undefined });
+    if (wait) return wait;
+  }
   const config = live();
   const r = applyAccess(type, config, action, id, body.role === 'admin' ? 'admin' : body.role === 'member' ? 'member' : undefined);
   if (!r.ok) return c.json({ error: r.error }, r.status ?? 400);
@@ -304,6 +313,8 @@ interface LinkState { status: 'starting' | 'waiting' | 'linked' | 'failed'; uri?
 let link: LinkState | null = null;
 
 channels.post('/api/channels/signal/link', async (c) => {
+  const wait = requireOwner(c, { id: 'channels.signal.link', title: 'Link a Signal account to Mercury' });
+  if (wait) return wait;
   if (link && (link.status === 'starting' || link.status === 'waiting') && Date.now() - link.startedAt < 120_000) return c.json(link);
   link = { status: 'starting', startedAt: Date.now() };
   const current = link;

@@ -50,8 +50,33 @@ Out of scope:
 - The content and behaviour of skills you install yourself.
 - Attacks that require an already-compromised host account or the Mercury
   config directory (`~/.mercury`), or a dashboard deliberately exposed beyond
-  `127.0.0.1` without a reverse proxy and authentication.
+  `127.0.0.1` without a tunnel or proxy and authentication.
+- What a device you approved does while it is approved (revoke it with
+  `/server`).
 - A model being persuaded to *ask* for something that you then approve.
+
+## Remote access
+
+Mercury listens on `127.0.0.1` only; other devices reach it through a tunnel
+or VPN you set up (Tailscale Serve, Cloudflare Tunnel…). What protects it then
+(ADR-035 in `DECISIONS.md`):
+
+- **Only this computer counts as local.** A request is local only when it
+  comes straight from this machine, with no proxy headers and a localhost
+  Host. Everything through a tunnel is remote, even though the tunnel itself
+  connects from 127.0.0.1.
+- **New devices need your approval.** Signing in from another device asks
+  you (on your Telegram/WhatsApp/Discord/Slack/Signal chat, or `/server` and
+  Mercury Desktop on this computer) before a token is issued. Unused devices
+  expire after 30 days; revoking one closes its live connections.
+- **A paired device is trusted like you, but can't make itself permanent.**
+  Actions that could outlive its access or hand out secrets — the terminal,
+  Allow All, the workspace folder, Mercury's permissions, powerful bots,
+  skills from a URL, plugins, channel tokens and admins, Cloud sign-in, a
+  provider's server address, restart, the password — wait for your approval.
+- **`/server`** (or `mercury server`) turns remote access off, limits it to
+  addresses you list, and manages devices; `mercury doctor --security` checks
+  the setup.
 
 ## A note on the permission model
 

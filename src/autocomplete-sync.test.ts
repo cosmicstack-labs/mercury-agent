@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 // This test lives in src/, so dirname is already the src directory.
 const root = dirname(fileURLToPath(import.meta.url));
 const appSrc = readFileSync(join(root, 'ui', 'App.tsx'), 'utf8');
-const composerSrc = readFileSync(join(root, 'ui', 'input-composer.tsx'), 'utf8');
+const slashListSrc = readFileSync(join(root, 'core', 'commands', 'slash-list.ts'), 'utf8');
 const attachSrc = readFileSync(join(root, 'ui', 'attach-tui.tsx'), 'utf8');
 const manualSrc = readFileSync(join(root, 'utils', 'manual.ts'), 'utf8');
 
@@ -35,7 +35,7 @@ describe('slash autocomplete & help stay in sync', () => {
       '/code chat',
       '/code back',
     ]) {
-      expect(composerSrc).toContain(`'${cmd}'`);
+      expect(slashListSrc).toContain(`'${cmd}'`);
     }
   });
 

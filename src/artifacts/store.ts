@@ -106,6 +106,21 @@ export class ArtifactStore {
     return true;
   }
 
+  /** Every record, newest first (not paged: for sweeps over all of them). */
+  all(): Artifact[] {
+    return [...this.load()];
+  }
+
+  /** The owner's file moved (tidied into the output folder): remember where it is now. */
+  relocate(id: string, originalPath: string): Artifact | null {
+    const a = this.load().find((x) => x.id === id);
+    if (!a) return null;
+    a.originalPath = originalPath;
+    a.name = basename(originalPath);
+    this.save();
+    return a;
+  }
+
   /** The thread was deleted: its artifacts go too (Mercury's copies; the owner's originals stay). */
   removeThread(threadId: string): number {
     const items = this.load();

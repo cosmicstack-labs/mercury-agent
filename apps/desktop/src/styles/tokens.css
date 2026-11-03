@@ -22,6 +22,7 @@
   --blue: 37 99 235;        /* #2563EB  unread */
   --amber: 183 121 31;      /* #B7791F */
   --red: 197 48 48;         /* #C53030 */
+  --ok: 26 158 110;         /* #1A9E6E  allowed / working: green whatever the tint */
   --glow: 26 158 110;
   color-scheme: light;
 }
@@ -41,6 +42,7 @@
   --blue: 96 165 250;       /* #60A5FA  unread */
   --amber: 245 196 81;      /* #F5C451 */
   --red: 255 107 107;       /* #FF6B6B */
+  --ok: 52 225 161;         /* #34E1A1 */
   --glow: 52 225 161;
   color-scheme: dark;
 }

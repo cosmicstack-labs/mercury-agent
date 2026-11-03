@@ -4,6 +4,7 @@ import type { ChannelMessage, ChannelAttachment } from '../types/channel.js';
 import { logger } from '../utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import { userFacingAiError } from '../utils/redact.js';
+import { stepFailure, type ResearchSnapshot } from '../core/research-run.js';
 
 type CloudEventHandler = (event: ChatEvent) => boolean;
 
@@ -21,7 +22,7 @@ interface PendingInteraction {
 }
 
 export interface ChatEvent {
-  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched';
+  type: 'activity' | 'thinking' | 'reasoning' | 'plan' | 'artifacts' | 'provider' | 'heartbeat' | 'step_start' | 'step_done' | 'text_delta' | 'text_done' | 'permission_request' | 'permission_continue' | 'permission_mode' | 'permission_resolved' | 'choice_prompt' | 'choice_resolved' | 'loop_warning' | 'error' | 'bot_activity' | 'status' | 'session_switched' | 'queued' | 'research' | 'research_plan' | 'research_plan_resolved' | 'notice' | 'owner_approval';
   data?: Record<string, unknown>;
 }
 
@@ -85,6 +86,11 @@ export class WebChannel extends BaseChannel {
       client.close();
     }
     this.sseClients.clear();
+    for (const [id, plan] of this.researchPlans) {
+      clearTimeout(plan.timer);
+      plan.resolve({ action: 'cancel', questions: plan.questions });
+      this.researchPlans.delete(id);
+    }
     for (const [id, interaction] of this.pendingInteractions) {
       clearTimeout(interaction.timer);
       interaction.resolve(interaction.kind === 'mode' ? 'ask-me' : interaction.kind === 'choice' ? '' : 'no');
@@ -103,14 +109,25 @@ export class WebChannel extends BaseChannel {
     this.sseClients.delete(id);
   }
 
-  addActivityClient(controller: ReadableStreamDefaultController): string {
+  addActivityClient(controller: ReadableStreamDefaultController, thisComputer = false): string {
     const id = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.activityClients.set(id, new SSEClient(controller, id));
+    if (thisComputer) this.localActivityClients.add(id);
     return id;
+  }
+
+  /** Activity screens on this computer: the only ones that get security questions (they can answer them). */
+  private localActivityClients = new Set<string>();
+
+  /** A security question for the owner (owner-approvals), to Mercury Desktop on this computer only. */
+  sendOwnerApproval(a: { id: string; code: string; kind: string; title: string; detail?: string; who: string; ip?: string; expiresAt: number; status: string }, change: 'new' | 'decided'): void {
+    const out: ChatEvent = { type: 'owner_approval', data: { change, id: a.id, code: a.code, kind: a.kind, title: a.title, detail: a.detail, who: a.who, ip: a.ip, expiresAt: a.expiresAt, status: a.status } };
+    for (const id of this.localActivityClients) this.activityClients.get(id)?.send(out);
   }
 
   removeActivityClient(id: string): void {
     this.activityClients.delete(id);
+    this.localActivityClients.delete(id);
   }
 
   setSessionTitleLookup(fn: (sessionId: string) => string | undefined): void {
@@ -119,7 +136,63 @@ export class WebChannel extends BaseChannel {
 
   /** Prompts still waiting in a session, as the events that asked them. */
   pendingFor(sessionId: string): ChatEvent[] {
-    return [...this.pendingInteractions.values()].filter((i) => i.sessionId === sessionId && i.event).map((i) => i.event!);
+    const prompts = [...this.pendingInteractions.values()].filter((i) => i.sessionId === sessionId && i.event).map((i) => i.event!);
+    const plans = [...this.researchPlans.values()].filter((p) => p.sessionId === sessionId).map((p) => p.event);
+    return [...prompts, ...plans];
+  }
+
+  /** Research plans waiting for the owner's Start (see askResearchPlan). */
+  private researchPlans = new Map<string, { sessionId?: string; event: ChatEvent; resolve: (a: { action: 'start' | 'cancel'; questions: string[] }) => void; timer: ReturnType<typeof setTimeout>; questions: string[] }>();
+
+  /**
+   * Show a research plan the owner can edit, and wait for Start or Cancel.
+   * Nobody answering in `timeoutMs` starts the plan as proposed: they asked
+   * for the research, the plan was only a chance to steer it.
+   */
+  askResearchPlan(runId: string, topic: string, questions: string[], targetId: string | undefined, timeoutMs: number): Promise<{ action: 'start' | 'cancel'; questions: string[]; timedOut?: boolean }> {
+    const id = `rplan_${runId}`;
+    const event: ChatEvent = { type: 'research_plan', data: { id, runId, topic, questions, targetId, expiresAt: Date.now() + timeoutMs } };
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.researchPlans.delete(id)) return;
+        this.broadcast({ type: 'research_plan_resolved', data: { id, action: 'start', targetId } });
+        resolve({ action: 'start', questions, timedOut: true });
+      }, timeoutMs);
+      timer.unref?.();
+      this.researchPlans.set(id, { sessionId: targetId, event, resolve, timer, questions });
+      this.broadcast(event);
+    });
+  }
+
+  /** The owner's answer to a research plan. False when it's gone (answered, timed out). */
+  answerResearchPlan(id: string, action: 'start' | 'cancel', questions?: string[]): boolean {
+    const p = this.researchPlans.get(id);
+    if (!p) return false;
+    this.researchPlans.delete(id);
+    clearTimeout(p.timer);
+    const kept = (questions ?? p.questions).map((q) => String(q).trim()).filter(Boolean).slice(0, 8);
+    p.resolve({ action, questions: kept.length ? kept : p.questions });
+    this.broadcast({ type: 'research_plan_resolved', data: { id, action, targetId: p.sessionId } });
+    return true;
+  }
+
+  /** A research run as it stands: phase, counts, sources and how each went. */
+  sendResearch(snapshot: ResearchSnapshot, targetId?: string): void {
+    this.broadcast({ type: 'research', data: { ...snapshot, targetId } });
+  }
+
+  /** Research switched on (or off) for a chat's next message. */
+  sendResearchArmed(armed: boolean, targetId: string | undefined, info: { topic?: string | null; planFirst?: boolean } = {}): void {
+    this.broadcast({ type: 'research', data: { state: armed ? 'armed' : 'off', topic: info.topic ?? null, planFirst: !!info.planFirst, targetId } });
+  }
+
+  /**
+   * A line about the turn that is not its answer: "the provider stalled,
+   * retrying". Sent as text_done it ended the turn on screen while the work
+   * went on.
+   */
+  sendNotice(message: string, targetId?: string, level: 'info' | 'warning' = 'info'): void {
+    this.broadcast({ type: 'notice', data: { message, level, targetId } });
   }
 
   /**
@@ -142,8 +215,18 @@ export class WebChannel extends BaseChannel {
       case 'choice_prompt':
         data = { kind: 'needs_you', id: d.id, prompt: String(d.prompt ?? d.question ?? '').slice(0, 300) };
         break;
+      case 'research_plan':
+        data = { kind: 'needs_you', id: d.id, prompt: `Research plan ready: ${String(d.topic ?? '').slice(0, 200)}` };
+        break;
+      case 'research':
+        // A finished (or cut-short) research run: the notification can say what came of it.
+        if (d.state === 'done' || d.state === 'partial' || d.state === 'stopped' || d.state === 'failed') {
+          data = { kind: 'research', state: d.state, topic: String(d.topic ?? '').slice(0, 200), read: d.read, cited: d.cited, failed: d.failed, report: (d.report as { name?: string } | undefined)?.name };
+        }
+        break;
       case 'permission_resolved':
       case 'choice_resolved':
+      case 'research_plan_resolved':
         data = { kind: 'resolved', id: d.id };
         break;
       case 'text_done': {
@@ -185,6 +268,16 @@ export class WebChannel extends BaseChannel {
    * attached terminal kept streaming the old id: replies to the new session
    * never reached it, and it showed "Thinking" forever.
    */
+  /**
+   * This chat's message is waiting: Mercury runs one turn at a time, and
+   * another one (`busySessionId`, doing `busyWith`) is ahead of it. Sent when it
+   * joins the line and whenever the line moves; the turn's own events follow
+   * when it starts.
+   */
+  sendQueued(targetId: string, data: { position: number; busyWith?: string; busySessionId?: string }): void {
+    this.broadcast({ type: 'queued', data: { targetId, ...data } });
+  }
+
   sendSessionSwitched(targetId: string, session: { id: string; shortId: string; alias: string; title: string }): void {
     this.broadcast({ type: 'session_switched', data: { targetId, id: session.id, shortId: session.shortId, alias: session.alias, title: session.title } });
   }
@@ -436,12 +529,13 @@ export class WebChannel extends BaseChannel {
   }
 
   sendStepDone(toolName: string, result: unknown, targetId?: string): void {
-    const summary = typeof result === 'string'
-      ? result.slice(0, 200)
-      : String(result).slice(0, 200);
+    const text = typeof result === 'string' ? result : String(result);
+    const summary = text.slice(0, 200);
+    // Whether it failed, decided here: "HTTP 403 …" and "timed out" are text, not errors.
+    const reason = stepFailure(toolName, text);
     this.broadcast({
       type: 'step_done',
-      data: { tool: toolName, summary, targetId },
+      data: { tool: toolName, summary, failed: reason !== null, ...(reason ? { reason } : {}), targetId },
     });
   }
 
@@ -486,7 +580,7 @@ export class WebChannel extends BaseChannel {
    * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
    * present is what lets the runtime hand a photo to a vision model instead of a path.
    */
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string }): void {
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean }): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -509,6 +603,8 @@ export class WebChannel extends BaseChannel {
         // folder apply to this turn only; the agent restores the rest after.
         ...(scope?.programming ? { programming: scope.programming } : {}),
         ...(scope?.cwd ? { programmingCwd: scope.cwd } : {}),
+        // Sent from this computer (Mercury Desktop or an attached terminal here): /server is allowed.
+        ...(scope?.thisComputer ? { thisComputer: true } : {}),
       },
     };
     this.emit(msg);

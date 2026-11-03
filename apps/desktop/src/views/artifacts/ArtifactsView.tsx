@@ -10,6 +10,7 @@ import { Button } from "~/components/ui/Button";
 import { Spinner } from "~/components/ui/bits";
 import { SearchField } from "~/components/ui/kit";
 import { cx } from "~/lib/cx";
+import { OutputFolder } from "./OutputFolder";
 
 /**
  * Artifacts: everything Mercury made (images, videos, audio, PDFs,
@@ -118,6 +119,7 @@ export function ArtifactsView() {
           )}
         </div>
 
+        <OutputFolder visible={visible} onTidied={() => void load(false)} />
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {error && <p className="mb-3 text-sm text-red">{error}</p>}
           {!loaded && <div className="p-6"><Spinner size={16} /></div>}

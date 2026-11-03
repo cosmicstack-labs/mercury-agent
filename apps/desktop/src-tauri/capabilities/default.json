@@ -24,6 +24,17 @@
     "deep-link:default",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$HOME/mercury-artifacts"
+        },
+        {
+          "path": "$HOME/mercury-artifacts/**"
+        }
+      ]
+    },
     "os:default",
     "os:allow-hostname",
     "process:default",

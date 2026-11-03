@@ -1,3 +1,4 @@
+import { commandTouchesMercuryCredentials, isMercuryCredentialPath } from '../security/protected-paths.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -732,6 +733,10 @@ export class PermissionManager {
    * calls, because the file system can change between them.
    */
   async checkFsAccess(path: string, mode: 'read' | 'write'): Promise<FsAccessResult> {
+    // Mercury's login credentials are off limits to its own tools, whatever the scopes or mode.
+    if (isMercuryCredentialPath(path)) {
+      return { allowed: false, reason: "Permission denied: that is one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", code: 'denied' };
+    }
     if (mode === 'write') return this.checkScopedAccess(path, mode);
 
     const resolved = resolve(path);
@@ -883,13 +888,24 @@ export class PermissionManager {
       if (tempScope && tempScope.write) return { allowed: true };
     }
 
-    // Fail-closed mode (bots): the explicitly granted scope IS the approval.
-    // No prompting in either direction — in-scope writes run, out-of-scope
-    // writes deny, and nothing ever waits for a user who isn't there.
+    // Fail-closed mode (bots): the explicitly granted scope IS the approval —
+    // in-scope access runs without prompting. Outside it, a bot whose runtime
+    // set an ask handler (Bots 2.0) asks the owner, who may not be there: the
+    // handler answers "no" when nobody replies in time, and the access denies.
+    // Nothing here ever writes the global permissions file.
     if (this.failClosed) {
       if (scope && scope.write) return { allowed: true };
       if (tempScope && tempScope.write) return { allowed: true };
-      return { allowed: false, reason: `Fail-closed: no granted write scope covers ${path}` };
+      if (this.askHandler && channelType === 'bot' && !this.isProtectedConfigPath(path)) {
+        const answer = await this.askHandler(`${mode === 'write' ? 'Write to file' : 'Read file'}: ${resolved}`);
+        if (answer === 'yes' || answer === 'always') {
+          // Covers the rest of this run; "always" is made durable by the bot runtime.
+          this.addTempScope(resolved, true, mode === 'write');
+          return { allowed: true };
+        }
+        return { allowed: false, reason: `The owner didn't allow ${mode === 'write' ? 'writing' : 'reading'} ${path}` };
+      }
+      return { allowed: false, reason: `Fail-closed: no granted ${mode} scope covers ${path}` };
     }
 
     // Write access in ask-me mode: ALWAYS prompt the user, even if scope exists
@@ -947,6 +963,9 @@ export class PermissionManager {
     }
 
     const trimmed = command.trim();
+    if (commandTouchesMercuryCredentials(trimmed)) {
+      return { allowed: false, reason: "Blocked: the command names one of Mercury's login credential files (device tokens, password, sessions). Manage devices with /server.", needsApproval: false };
+    }
     const segments = splitShellSegments(trimmed);
     const ctx = this.ctx();
     const cwd = options.cwd ?? this.cwd;

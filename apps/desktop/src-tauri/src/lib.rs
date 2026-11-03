@@ -36,6 +36,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(commands::updates::UpdaterState::new())
         .invoke_handler(tauri::generate_handler![
             commands::local::detect_local_runtime,
             commands::local::read_attach_token,
@@ -45,6 +46,13 @@ pub fn run() {
             commands::secrets::secret_get,
             commands::secrets::secret_set,
             commands::secrets::secret_delete,
+            commands::updates::updates_manifest,
+            commands::updates::desktop_update_check,
+            commands::updates::desktop_update_status,
+            commands::updates::desktop_update_download,
+            commands::updates::desktop_update_cancel,
+            commands::updates::desktop_update_install,
+            commands::updates::desktop_update_set_install_on_quit,
             notch::notch_show,
             notch::notch_hide,
         ])
@@ -78,6 +86,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_main(app);
+            }
+            // Quitting with a downloaded update installs it (Settings → About can turn this off).
+            if let tauri::RunEvent::Exit = event {
+                commands::updates::install_on_quit(app);
             }
             let _ = (app, &event);
         });

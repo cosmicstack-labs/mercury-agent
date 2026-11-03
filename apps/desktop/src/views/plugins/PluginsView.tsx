@@ -183,14 +183,16 @@ export function PluginsView() {
         )}
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      {/* The setup flow keeps its own scrolling: its Back / Continue bar must stay on screen,
+          so the page around it never scrolls (a note above it would push the bar out of view). */}
+      <main className={cx("min-w-0 flex-1", pane?.kind === "setup" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
         {note && (
-          <div className={cx("mx-6 mt-4 rounded-lg border px-3 py-2 text-sm", note.ok ? "border-accent/30 bg-accent/[0.05] text-ink2" : "border-red/30 bg-red/[0.05] text-red")}>
+          <div className={cx("mx-6 mt-4 shrink-0 rounded-lg border px-3 py-2 text-sm", note.ok ? "border-accent/30 bg-accent/[0.05] text-ink2" : "border-red/30 bg-red/[0.05] text-red")}>
             {note.text}{!note.ok && /from this machine|loopback/i.test(note.text) ? " Plugins can only be changed on the computer Mercury runs on." : ""}
           </div>
         )}
         {pane?.kind === "plugin" && <PluginDetail key={pane.id} id={pane.id} onSetup={() => setPane({ kind: "setup", id: pane.id })} onChanged={() => void load()} onRemoved={() => { setNote({ text: "Removed.", ok: true }); setPane(null); void load(); }} />}
-        {pane?.kind === "setup" && <div className="h-full"><SetupFlow key={pane.id} id={pane.id} onClose={() => setPane({ kind: "plugin", id: pane.id })} onChanged={() => void load()} /></div>}
+        {pane?.kind === "setup" && <div className="min-h-0 flex-1"><SetupFlow key={pane.id} id={pane.id} onClose={() => setPane({ kind: "plugin", id: pane.id })} onChanged={() => void load()} /></div>}
         {pane?.kind === "catalog" && (() => {
           const p = items.find((x) => x.id === pane.id);
           return p ? <CatalogDetail p={p} installing={installing === p.id} onInstall={() => void install(p.id, { fromCatalog: true })} /> : null;

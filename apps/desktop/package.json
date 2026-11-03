@@ -1,7 +1,7 @@
 {
   "name": "mercury-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.5.0",
   "description": "Mercury Desktop \u2014 native shell for the Mercury agent runtime",
   "type": "module",
   "scripts": {

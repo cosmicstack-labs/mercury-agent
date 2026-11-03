@@ -1,4 +1,6 @@
 import { Check, ChevronRight, Copy, Square, Wrench } from "lucide-react";
+import { CommandChip } from "./CommandChip";
+import { splitCommand } from "./picker";
 import { memo, useState } from "react";
 import type { ChatMessage, ThoughtTrace } from "~/api/types";
 import { Mark } from "~/components/Logo";
@@ -13,6 +15,7 @@ import { UserAvatar, useDisplayName } from "~/components/UserAvatar";
 import { usePulse } from "~/app/pulse";
 import { ArtifactStrip } from "~/components/artifacts/ArtifactCard";
 import { UndoMessage } from "./UndoMessage";
+import { ResearchReport } from "./Research";
 import { ReadAloudButton, ReadAloudNotice, useReadingThis } from "~/components/readAloud/ReadAloud";
 
 /**
@@ -35,7 +38,7 @@ export const Message = memo(function Message({ message, undoable = false }: { me
           {files.length > 0 && <Attachments items={files} />}
           {text && (
             <p className="whitespace-pre-wrap break-words rounded-[22px] rounded-tr-md bg-ink/[0.065] px-4 py-2.5 text-base leading-[1.6] text-ink [overflow-wrap:anywhere]" data-selectable>
-              {text}
+              <CommandText text={text} />
             </p>
           )}
           <MessageMeta timestamp={message.timestamp} copy={text || undefined} align="end" undo={undoable ? message : undefined} />
@@ -70,7 +73,12 @@ export const Message = memo(function Message({ message, undoable = false }: { me
         )}
         {body && <Markdown text={body} />}
         {stopped && <StoppedMarker partial={!!body} />}
-        {message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+        {message.research
+          ? <ResearchReport run={message.research} content={body} />
+          : message.artifacts && message.artifacts.length > 0 && <ArtifactStrip items={message.artifacts} />}
+        {message.research && message.artifacts && message.artifacts.filter((a) => a.id !== message.research?.report?.id).length > 0 && (
+          <ArtifactStrip items={message.artifacts.filter((a) => a.id !== message.research?.report?.id)} />
+        )}
         <MessageMeta timestamp={message.timestamp} copy={body || undefined} listen={body ? { id: message.id, text: body } : undefined} />
         <ReadAloudNotice id={message.id} />
       </div>
@@ -193,5 +201,17 @@ export function StreamingMessage({ text, live, stopping = false }: { text: strin
         {text && <><Markdown text={text} streaming /><StreamCaret /></>}
       </div>
     </div>
+  );
+}
+
+/** A sent command or skill pick: the command as a chip, then the rest as written. */
+function CommandText({ text }: { text: string }) {
+  const parts = splitCommand(text);
+  if (!parts) return <>{text}</>;
+  return (
+    <>
+      <CommandChip label={parts.token} kind={parts.token.startsWith("#") ? "skill" : "command"} className="mr-1.5 -translate-y-px" />
+      {parts.rest}
+    </>
   );
 }

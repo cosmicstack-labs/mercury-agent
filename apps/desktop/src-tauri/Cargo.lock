@@ -2409,12 +2409,14 @@ dependencies = [
 
 [[package]]
 name = "mercury-desktop"
-version = "0.1.0"
+version = "1.5.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs 6.0.0",
  "flate2",
  "keyring",
  "log",
+ "minisign-verify",
  "objc2-app-kit",
  "reqwest 0.12.28",
  "serde",
@@ -2435,6 +2437,7 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tokio",
 ]
 
 [[package]]

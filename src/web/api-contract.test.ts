@@ -85,16 +85,39 @@ describe('api contract', () => {
     }, REMOTE);
     expect(bad.status).toBe(401);
 
-    const res = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
+    // From another device the owner approves it first: 202 with a code…
+    const asked = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password, deviceName: 'Desktop', platform: 'macos' }),
     }, REMOTE);
+    expect(asked.status).toBe(202);
+    const pending = await asked.json() as { pending: boolean; pairingId: string; pollToken: string; code: string; token?: string };
+    expect(pending.pending).toBe(true);
+    expect(pending.token).toBeUndefined();
+    expect(pending.code).toMatch(/^[A-Z2-9]{5}$/);
+    const poll = () => authRoutes.request('http://127.0.0.1:6174/api/auth/token/pending', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairingId: pending.pairingId, pollToken: pending.pollToken, waitMs: 10 }),
+    }, REMOTE);
+    expect(((await (await poll()).json()) as { status: string }).status).toBe('pending');
+    // A wrong poll token learns nothing.
+    const forged = await authRoutes.request('http://127.0.0.1:6174/api/auth/token/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingId: pending.pairingId, pollToken: 'x'.repeat(32) }) }, REMOTE);
+    expect(forged.status).toBe(404);
+    // …the owner says yes (here: as the CLI would), and the next poll gets the token, once.
+    const { ownerApprovals } = await import('../security/owner-approvals.js');
+    expect(ownerApprovals().decide(pending.code, 'allow', 'cli')?.status).toBe('allowed');
+    const res = await poll();
     expect(res.status).toBe(200);
     const body = await res.json() as { token: string; device: { id: string; name: string }; apiVersion: number; features: string[] };
+    expect((await poll()).status).toBe(404);
     expect(body.token).toMatch(/^mdt_/);
     expect(body.device.name).toBe('Desktop');
     expect(body.apiVersion).toBe(API_VERSION);
+    // On this computer there's no one to ask.
+    const here = await authRoutes.request('http://127.0.0.1:6174/api/auth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, deviceName: 'Laptop' }) }, LOOPBACK);
+    expect(here.status).toBe(200);
+    expect(((await here.json()) as { token: string }).token).toMatch(/^mdt_/);
     expect(Array.isArray(body.features)).toBe(true);
 
     const list = await authRoutes.request('http://127.0.0.1:6174/api/auth/devices', { headers: { Authorization: `Bearer ${body.token}` } }, REMOTE);

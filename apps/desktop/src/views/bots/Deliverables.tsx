@@ -69,7 +69,7 @@ export function Deliverables({ bots }: { bots: Array<{ id: string; name: string;
   );
 }
 
-function Preview({ d, onDeleted }: { d: Deliverable; onDeleted: () => void }) {
+export function Preview({ d, onDeleted }: { d: Deliverable; onDeleted: () => void }) {
   const [text, setText] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);

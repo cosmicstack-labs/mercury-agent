@@ -4,7 +4,7 @@ vi.mock("~/api/mercury", () => ({ chat: {} }));
 const played: string[] = [];
 vi.mock("./sounds", () => ({ playSound: (id: string) => played.push(id), SOUNDS: [], CUSTOM_MAX_BYTES: 1 }));
 
-const { handleActivity } = await import("./notify");
+const { handleActivity, researchNotice } = await import("./notify");
 const { useNotify, DEFAULT_PREFS, worthTelling } = await import("./store");
 const { conversations } = await import("../conversation");
 const { useUi } = await import("../store");
@@ -29,8 +29,31 @@ describe("notifications", () => {
   });
 
   it("a long task finishing elsewhere gets a blue dot and a sound", () => {
+    vi.useFakeTimers();
     handleActivity({ kind: "done", sessionId: "other", title: "Research", ms: 45_000, preview: "Report ready" });
     expect(useNotify.getState().unread.other).toBeTruthy();
+    vi.advanceTimersByTime(2_000);
+    expect(played).toEqual(["pop"]);
+    vi.useRealTimers();
+  });
+
+  it("a research run says what it found instead of a plain Done", () => {
+    vi.useFakeTimers();
+    handleActivity({ kind: "done", sessionId: "other", title: "Solar", ms: 400_000, preview: "# Solar storms" });
+    handleActivity({ kind: "research", sessionId: "other", state: "partial", topic: "solar storms", read: 12, cited: 7, failed: 3 });
+    vi.advanceTimersByTime(2_000);
+    // One notification, not two.
+    expect(played).toEqual(["pop"]);
+    vi.useRealTimers();
+    const r = researchNotice({ kind: "research", sessionId: "other", state: "partial", topic: "solar storms", read: 12, cited: 7, failed: 3 });
+    expect(r.title).toBe("Partial research report: solar storms");
+    expect(r.body).toMatch(/12 sources read · 7 cited · 3 couldn't be read/);
+    expect(researchNotice({ kind: "research", sessionId: "x", state: "done", topic: "t", read: 1 }).title).toBe("Research ready: t");
+  });
+
+  it("a research run's stop or failure isn't told twice", () => {
+    handleActivity({ kind: "failed", sessionId: "other", ms: 400_000, message: "providers failed" });
+    handleActivity({ kind: "research", sessionId: "other", state: "failed", topic: "x", read: 0 });
     expect(played).toEqual(["pop"]);
   });
 

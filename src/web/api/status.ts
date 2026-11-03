@@ -44,7 +44,8 @@ export function getStatus(): AgentStatus {
 const status = new Hono();
 
 let runtimeVersion = '';
-function versionString(): string {
+/** The running Mercury's version (for display and the updater). */
+export function versionString(): string {
   if (runtimeVersion) return runtimeVersion;
   try {
     // tsup bakes the version into the bundle (globalThis.__MERCURY_VERSION__);

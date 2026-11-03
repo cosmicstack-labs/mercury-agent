@@ -1,0 +1,108 @@
+---
+id: remote-access
+title: "Remote access & security"
+sidebar_label: "Remote access & security"
+description: "Let other devices use your Mercury safely: owner approvals for new devices and sensitive actions, device tokens and their lifecycle, allowed addresses, /server and mercury doctor --security."
+keywords: [mercury remote access, device token, owner approval, tunnel, tailscale, cloudflare tunnel, security, allowed ips]
+---
+
+# Remote access & security
+
+Mercury only listens on `127.0.0.1`. To use it from another device (Mercury Desktop on your laptop, the web dashboard from your phone), you put a tunnel or proxy in front of it, such as Tailscale or Cloudflare Tunnel. Mercury treats anything that arrives that way as remote, even when the tunnel runs on the same machine.
+
+You stay in control: a new device needs your approval, and a remote device has to ask you before it does anything that could take over your Mercury.
+
+## What counts as "this computer"
+
+A request is from this computer only when it comes from `127.0.0.1` **and** carries no proxy or tunnel header (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`, `Tailscale-*` and similar) **and** names `localhost` as its host. Mercury Desktop and the terminal on this computer use Mercury's local attach token, which is never accepted through a tunnel.
+
+A request straight to this machine that names some other host is refused, which blocks DNS-rebinding attacks. If you run Mercury behind your own proxy on another name, add that name to `web.allowedHosts` in `mercury.yaml`.
+
+## Owner approvals
+
+When a remote device needs your permission, Mercury asks you with a 5-character code. You answer once, from any of these:
+
+- **Telegram, WhatsApp or another connected chat:** reply `approve K7Q2M` or `deny K7Q2M`. Only an admin of that chat can answer.
+- **The terminal on this computer:** `/server approve K7Q2M` in chat, or `mercury server approve K7Q2M` in a shell.
+- **Mercury Desktop on this computer:** Approve or Deny on the card it shows.
+
+The device that asked can never answer its own question. Nobody answering within 10 minutes means no.
+
+### New devices
+
+Signing in from another device with the dashboard password doesn't give it access straight away. The device shows "Waiting for the owner to approve this device" and the code, and gets its token once you approve. Signing in from this computer needs no approval.
+
+### Sensitive actions
+
+An approved device can chat, run things under your current permission mode and read results. These need your approval each time:
+
+- the terminal (and it's off entirely for remote devices unless you turn it on);
+- changing the workspace folder, turning Allow All on, or changing the permissions file;
+- operator or full-access bots, raw bot permissions and bot imports;
+- installing skills from a URL, and plugins;
+- channel settings and tokens, letting someone into a channel or making them an admin, Signal linking;
+- Mercury Cloud sign-in, and changing a provider's server address without a new key;
+- restarting Mercury, changing the password or username, and revoking another device;
+- a board's working folder;
+- starting a server update.
+
+Mercury Cloud asks you the same way before it turns Allow All on or installs a skill. If a device repeats a request while your answer is pending, Mercury doesn't ask you again.
+
+## Devices and their tokens
+
+Each approved device gets a device token (`mdt_…`) that Mercury Desktop keeps in the system keychain.
+
+- **Expiry.** A device not used for 30 days is signed out and needs your approval again.
+- **Limit.** 10 devices at most. Mercury checks the limit before it asks you.
+- **New location.** When a known device connects from an address it hasn't used before, Mercury tells you.
+- **Revoke.** Revoking a device cuts its open connections at once.
+- **Password change.** Changing the dashboard password signs out every other browser, and can sign out all devices too.
+
+To make a token by hand for a device that can't sign in itself, run `/server token <name>` (or `mercury devices add "<name>"`) on this computer. It's shown once.
+
+## /server and mercury server
+
+`/server` in the terminal chat opens a menu for remote access. It works only on the computer Mercury runs on: in the terminal, an attached terminal, or Mercury Desktop there. `mercury server` gives the same commands from a shell.
+
+```text
+/server                 open the menu
+/server status          what can connect, and how
+/server on | off        allow or refuse other devices
+/server approve <code>  let a waiting device or action through (deny <code> to refuse)
+/server devices         paired devices · /server revoke <id|name> · /server revoke-all
+/server token <name>    make a token for a device by hand (shown once)
+/server allow-ip <ip|range> · remove-ip <ip|range> · allow-any
+/server shell on|off    the terminal for remote devices (each command still asks you)
+/server expire <days>|never · /server limit <n>
+/server check           the security check · /server log  the security log
+```
+
+The settings live in `~/.mercury/remote.json` and apply at once:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Other devices may connect. `/server off` refuses them all. |
+| `allowIps` | empty (any) | Addresses or CIDR ranges allowed to connect. |
+| `allowShell` | `false` | Whether remote devices get a terminal. Each command still asks you. |
+| `maxDevices` | `10` | How many devices can be paired. |
+| `idleDays` | `30` | Days unused before a device is signed out. |
+
+### Allowed addresses
+
+With an address list set, Mercury refuses any client whose address isn't on it. It needs a tunnel that passes the real client address (Tailscale and Cloudflare do). If the tunnel hides it, Mercury refuses the client rather than guessing, and `/server` warns you.
+
+## The security check
+
+```bash
+mercury doctor --security
+```
+
+It checks the dashboard password, devices, file permissions on Mercury's secrets and how your tunnel forwards requests. Every `mercury doctor` run shows a one-line summary of it, and `/server check` shows the same findings.
+
+The security log, `~/.mercury/security/audit.jsonl`, records failed and locked sign-ins, pairings, approvals and refusals, revocations, expired devices, new locations, blocked requests, password and setting changes, and started updates. `/server log` shows the latest entries.
+
+## Things to know
+
+- **A proxy without forwarding headers looks local.** If you put Mercury behind your own proxy (plain nginx, for example), make it send `X-Forwarded-For` and keep the original host. A proxy that sends neither and rewrites the host to `localhost` makes remote requests look local. The attach token still protects the most sensitive operations, and the security check flags it.
+- **An approved device is trusted like you while it's paired.** It answers its own Ask Me prompts and runs things under your permission mode. Revoke a device you no longer use.
+- **Keep the tunnel private if you can.** A Tailscale tailnet, or Cloudflare Access in front of a Cloudflare Tunnel, means only your devices can reach the sign-in page at all.

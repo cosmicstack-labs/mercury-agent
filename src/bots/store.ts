@@ -30,13 +30,21 @@ export const BOT_TRANSCRIPTS_DIRNAME = 'transcripts';
 export const BOT_STATE_FILENAME = 'state.md';
 /** Routine state (paused routines, no-outcome streaks) — ADR-020. */
 export const BOT_ROUTINE_STATE_FILENAME = 'routine-state.json';
+/** Per-job conversation checkpoints (resume an interrupted run). */
+export const BOT_CHECKPOINTS_DIRNAME = 'checkpoints';
+const CHECKPOINT_MAX_BYTES = 4 * 1024 * 1024;
+function safeJobId(jobId: string): string {
+  return jobId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+/** Fleet-level list of bots the owner stopped. */
+export const BOT_HELD_FILENAME = 'stopped.json';
 /**
  * Data directories that live INSIDE a bot's profile dir but are never bot
  * profiles themselves. The roster scan does not descend into them: bots
  * used to copy their own profile folders into sandbox/ and outputs/ as
  * "mirrors", which the scan then reported as duplicate bots on every boot.
  */
-export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME]);
+export const BOT_DATA_DIRNAMES: ReadonlySet<string> = new Set([BOT_SANDBOX_DIRNAME, 'outputs', 'skills', BOT_TRANSCRIPTS_DIRNAME, 'checkpoints']);
 
 export interface BotRoutineState {
   /**
@@ -49,6 +57,10 @@ export interface BotRoutineState {
   noOutcomeStreak: Record<string, number>;
   /** Routine key → how many times it has been paused (cooldown backoff); reset by a productive run. */
   pauseCount?: Record<string, number>;
+  /** Routine key → when its last run ended (ISO): the minimum gap survives a restart. */
+  lastEnd?: Record<string, string>;
+  /** Routine key → consecutive failed runs; at the limit the routine is switched off. */
+  failStreak?: Record<string, number>;
 }
 
 /**
@@ -200,7 +212,7 @@ falls outside it.
 - Include the evidence (links, file paths, numbers) behind each claim.
 `;
 
-function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
+export function atomicWrite(filePath: string, content: string, mode: number = 0o600): void {
   const tmp = `${filePath}.tmp-${process.pid}`;
   writeFileSync(tmp, content, { encoding: 'utf-8', mode });
   renameSync(tmp, filePath);
@@ -312,10 +324,57 @@ export class BotStore {
     atomicWrite(file, state + '\n');
   }
 
+  /**
+   * A job's conversation so far, written after every finished step so an
+   * interrupted run (provider error, pause, restart) resumes instead of
+   * starting over. Removed when the job is settled. Oversized ones are skipped.
+   */
+  writeCheckpoint(id: string, jobId: string, messages: unknown[]): void {
+    try {
+      const body = JSON.stringify({ at: Date.now(), messages });
+      if (body.length > CHECKPOINT_MAX_BYTES) return;
+      const dir = join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME);
+      mkdirSync(dir, { recursive: true });
+      atomicWrite(join(dir, `${safeJobId(jobId)}.json`), body);
+    } catch { /* best effort */ }
+  }
+
+  readCheckpoint(id: string, jobId: string): unknown[] | undefined {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), 'utf-8')) as { messages?: unknown[] };
+      return Array.isArray(raw.messages) && raw.messages.length > 0 ? raw.messages : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  clearCheckpoint(id: string, jobId: string): void {
+    try { rmSync(join(this.botDir(id), BOT_CHECKPOINTS_DIRNAME, `${safeJobId(jobId)}.json`), { force: true }); } catch { /* gone */ }
+  }
+
+  /** Bots the owner stopped (/bots stop, the app's Stop). Durable: a restart must not undo a stop. */
+  readHeld(): Set<string> {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.botsRoot, BOT_HELD_FILENAME), 'utf-8'));
+      return new Set(Array.isArray(raw) ? raw.filter((x: unknown): x is string => typeof x === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  writeHeld(held: Set<string>): void {
+    try {
+      mkdirSync(this.botsRoot, { recursive: true });
+      atomicWrite(join(this.botsRoot, BOT_HELD_FILENAME), JSON.stringify([...held].sort()) + '\n');
+    } catch (err) {
+      logger.warn({ err: (err as Error)?.message }, 'Could not persist stopped bots');
+    }
+  }
+
   readRoutineState(id: string): BotRoutineState {
     try {
       const raw = JSON.parse(readFileSync(join(this.botDir(id), BOT_ROUTINE_STATE_FILENAME), 'utf-8'));
-      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {} };
+      return { paused: raw.paused ?? {}, noOutcomeStreak: raw.noOutcomeStreak ?? {}, pauseCount: raw.pauseCount ?? {}, lastEnd: raw.lastEnd ?? {}, failStreak: raw.failStreak ?? {} };
     } catch {
       return { paused: {}, noOutcomeStreak: {}, pauseCount: {} };
     }

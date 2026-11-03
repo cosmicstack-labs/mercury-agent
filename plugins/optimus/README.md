@@ -17,9 +17,11 @@ Setup asks:
 
 Change any of it later in `/plugins optimus`.
 
-- **macOS:** Optimus builds `Optimus.app` in its data folder and signs it with a certificate made on your Mac (no Apple account involved), then asks for two permissions in System Settings → Privacy & Security: **Accessibility** (mouse and keyboard) and **Screen Recording** (seeing the screen). The permissions survive updates. macOS asks you to confirm Screen Recording again about once a month.
-- **Windows:** nothing to grant. Windows running as administrator (Task Manager, installers) can't be controlled yet.
-- **Linux:** works fully on X11. On Wayland, screenshots go through the desktop's screen-sharing prompt, and input and the talk key reach only X11 apps for now (use chat, or the `listen` tool).
+- **macOS:** Optimus builds `Optimus.app` in its data folder and signs it with a certificate made on your Mac (no Apple account involved), then asks for three permissions in System Settings → Privacy & Security: **Accessibility** (mouse and keyboard), **Screen Recording** (seeing the screen) and, if you talk to it, the **Microphone**. The permissions survive updates. macOS asks you to confirm Screen Recording again about once a month.
+- **Windows:** Windows never asks per app. The microphone works when Settings → Privacy & security → Microphone has "Microphone access" and "Let desktop apps access your microphone" on (Windows 10: Settings → Privacy → Microphone, "Allow desktop apps…"). Windows running as administrator (Task Manager, installers) can't be controlled yet.
+- **Linux:** works fully on X11. On Wayland, screenshots go through the desktop's screen-sharing prompt, and input and the talk key reach only X11 apps for now (use chat, or the `listen` tool). Linux has no microphone permission: Optimus reaches the microphone through PipeWire or PulseAudio in your desktop session.
+
+**Microphone & permissions in Mercury Desktop** (Settings → AI → Voice) shows each of these for your OS with a green, amber or red dot, the exact steps to fix one that's off, an Allow button where the OS can prompt (macOS) and a button that opens the right settings page. Pick which microphone Optimus listens with, turn the microphone off for Optimus altogether, and press **Test** for a live level meter (grey when silent, green for speech, orange when loud). A blocked microphone is reported when a session starts, instead of Optimus hearing silence.
 
 ## Talking to it
 
@@ -30,7 +32,6 @@ Change any of it later in `/plugins optimus`.
 - **Saying "stop"** ("cancel", "ruko", "bas") halts every action and the task at once; **"bye"** does the same and ends the session. Silence for 60 seconds ends it too.
 - Links and details go to your Mercury chat. Approvals are asked out loud.
 - With speakers, the mic is muted while Mercury talks so it doesn't hear itself. With headphones, turn on "I use headphones" in `/plugins optimus` → 🎙 Voice to interrupt just by talking.
-- macOS asks once for the **Microphone** for Optimus.
 
 ## What it can do
 

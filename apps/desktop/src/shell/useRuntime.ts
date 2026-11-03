@@ -74,7 +74,10 @@ export function useRuntime(connection: Connection, onUnauthorized: () => void): 
     }
 
     void bringUp();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // A server update finished on this connection: reconnect onto the new version.
+    const onReconnect = (e: Event) => { if ((e as CustomEvent<{ connectionId: string }>).detail?.connectionId === connection.id) retry(); };
+    window.addEventListener("mercury:reconnect", onReconnect);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("mercury:reconnect", onReconnect); };
   }, [connection, attempt, retry]);
 
   return { status, retry };
