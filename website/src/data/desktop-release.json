@@ -38,5 +38,55 @@
       "name": "Mercury-1.5.0-1.x86_64.rpm",
       "size": 5896909
     }
+  },
+  "server": {
+    "npm": "@cosmicstack/mercury-agent@1.5.0",
+    "assets": {
+      "macos-arm64": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-macos-arm64",
+        "name": "mercury-macos-arm64",
+        "size": 95649122
+      },
+      "macos-x64": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-macos-x64",
+        "name": "mercury-macos-x64",
+        "size": 104607200
+      },
+      "linux-x64": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-linux-x64",
+        "name": "mercury-linux-x64",
+        "size": 115566768
+      },
+      "linux-x64-baseline": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-linux-x64-baseline",
+        "name": "mercury-linux-x64-baseline",
+        "size": 115566768
+      },
+      "linux-arm64": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-linux-arm64",
+        "name": "mercury-linux-arm64",
+        "size": 115657720
+      },
+      "windows-x64": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-win-x64.exe",
+        "name": "mercury-win-x64.exe",
+        "size": 121716224
+      },
+      "windows-x64-baseline": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/mercury-win-x64-baseline.exe",
+        "name": "mercury-win-x64-baseline.exe",
+        "size": 121716224
+      },
+      "web": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/web.tar.gz",
+        "name": "web.tar.gz",
+        "size": 1377545
+      },
+      "checksums": {
+        "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/checksums.txt",
+        "name": "checksums.txt",
+        "size": 691
+      }
+    }
   }
 }

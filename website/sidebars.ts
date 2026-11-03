@@ -95,6 +95,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'releases/releases',
         'releases/1.5.0',
+        'releases/1.4.2',
+        'releases/1.4.1',
         'releases/1.4.0',
         'releases/1.3.1',
         'releases/1.3.0',

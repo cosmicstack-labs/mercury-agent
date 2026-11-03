@@ -19,6 +19,15 @@
             <category>Releases</category>
         </item>
         <item>
+            <title><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-desktop-tour</link>
+            <guid>https://mercuryagent.sh/blog/mercury-desktop-tour</guid>
+            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.]]></description>
+            <category>Product</category>
+            <category>Releases</category>
+        </item>
+        <item>
             <title><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
             <link>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</link>
             <guid>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</guid>

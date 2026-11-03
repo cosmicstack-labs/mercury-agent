@@ -52,7 +52,7 @@
 
 .mx-home main { overflow-x: clip; }
 .mx-wrap { max-width: var(--mx-w); margin: 0 auto; padding: 0 24px; }
-.mx-home a:not(.mx-btn):not(.mx-cloud-row):not(.mx-pill) { color: var(--mx-accent); }
+.mx-home a:not(.mx-btn):not(.mx-cloud-row):not(.mx-pill):not(.mx-platforms__item) { color: var(--mx-accent); }
 .mx-home code, [data-theme] .mx-home code {
   font-family: var(--mx-mono);
   font-size: 0.88em;
@@ -411,4 +411,53 @@
 @media (prefers-reduced-motion: reduce) {
   .mx-term__cursor { animation: none; }
   .mx-btn, .mx-surface-tab { transition: none; }
+}
+
+/* ── Hero install card: Desktop app | Server / CLI ── */
+.mx-hero-install {
+  width: 100%; max-width: 660px; margin: 34px auto 0; text-align: left;
+  border: 1px solid var(--mx-line-2); border-radius: 16px; background: var(--mx-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px -18px rgba(0, 0, 0, 0.25);
+}
+.mx-hero-install__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px 10px 10px; border-bottom: 1px solid var(--mx-line);
+}
+.mx-hero-install__tabs { display: flex; gap: 4px; }
+.mx-hero-install__tab {
+  appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+  padding: 6px 12px; border-radius: 9px; font: inherit; font-size: 0.9rem; font-weight: 500; color: var(--mx-ink-3);
+}
+.mx-hero-install__tab:hover { color: var(--mx-ink); }
+.mx-hero-install__tab.is-active { color: var(--mx-ink); background: var(--mx-bg-alt); border-color: var(--mx-line); }
+.mx-hero-install__version { margin: 0; font-size: 0.82rem; color: var(--mx-ink-3); display: flex; align-items: center; gap: 8px; }
+.mx-hero-install__badge {
+  font-family: var(--mx-mono); font-size: 0.76rem; padding: 2px 7px; border-radius: 999px;
+  color: var(--mx-accent); background: var(--mx-accent-wash); border: 1px solid var(--mx-line);
+}
+.mx-hero-install__body { padding: 18px 18px 16px; }
+.mx-hero-install__body .mx-dl { margin-top: 0; }
+.mx-hero-install__body .mx-install { max-width: none; }
+.mx-hero-install__lead { margin: 0 0 12px; font-size: 0.92rem; color: var(--mx-ink-2); }
+.mx-hero-install__note { margin: 14px 0 0; font-size: 0.8rem; color: var(--mx-ink-3); text-align: center; }
+.mx-hero-install__body .mx-install + .mx-hero-install__note { text-align: left; }
+
+/* Every platform, one click each. */
+.mx-platforms { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.mx-platforms__item {
+  display: flex; align-items: center; gap: 9px; height: 100%; padding: 9px 10px;
+  border: 1px solid var(--mx-line); border-radius: 10px; text-decoration: none; color: var(--mx-ink);
+  transition: border-color .15s, background .15s;
+}
+.mx-platforms__item:hover { color: var(--mx-ink); text-decoration: none; }
+.mx-platforms__item:hover { border-color: var(--mx-line-2); background: var(--mx-bg-alt); }
+.mx-platforms__icon { display: inline-flex; color: var(--mx-ink-2); }
+.mx-platforms__text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.mx-platforms__os { font-size: 0.86rem; font-weight: 600; }
+.mx-platforms__what { font-size: 0.74rem; color: var(--mx-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 640px) {
+  .mx-hero-install { border-radius: 14px; }
+  .mx-hero-install__head { justify-content: center; }
+  .mx-platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

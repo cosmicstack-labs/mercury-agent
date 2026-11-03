@@ -1,0 +1,24 @@
+---
+title: "v1.4.2 — Search that finds things"
+sidebar_label: "v1.4.2"
+description: "Web search with no key and any model: Parallel, then DuckDuckGo, parsed exactly; a research prompt that asks only when you mean it."
+keywords: [mercury, mercury-agent, release, 1.4.2]
+---
+
+# v1.4.2 — Search that finds things
+
+> **Search that finds things, and a research prompt that asks only when you mean it.**
+
+Released 2026-10-25. Install or update: `mercury upgrade`, `npm i -g @cosmicstack/mercury-agent@1.4.2`, or the [GitHub release](https://github.com/cosmicstack-labs/mercury-agent/releases/tag/v1.4.2).
+
+### Web search
+- **Three web sources, the ones that work.** `web_search` asks [Parallel's public search](https://search.parallel.ai/mcp) first (keyless MCP built for agents, about a second, with excerpts and dates), then DuckDuckGo's html page, then its lite page. Brave, Wikipedia, Hacker News and Bing's web feed are gone from web search: Brave refuses automated requests and the others answered general questions badly. News keeps Parallel (article links only, section fronts dropped), then Bing News, Google News and Hacker News.
+- **DuckDuckGo parsed exactly.** Both pages are read from their real markup: each result's title, the real address behind DuckDuckGo's redirect, and the snippet; ads (`result--ad`, sponsored rows) are dropped. A challenge is retried once after a short pause, and a page that is neither results nor "No results" is reported as "page not recognised" instead of silently empty. Tests run against saved copies of both real pages.
+- **News links open the article.** News search used Google News first, whose links are Google redirects (`news.google.com/rss/articles/…`) that can't be turned into the publisher's address. Bing News now comes first and its links are unwrapped to the real article; Google News is the fallback, and its links are marked as redirects.
+- **Search never depends on the model.** Results come only from Mercury's own search tools, never from a provider's built-in web search, so search works the same with every model.
+- **The web-search skill (1.3.0) explains the sources** and tells the model to report which ones failed and why when a search comes back empty.
+- **You can see what happened.** Every result ends with the trail, for example `Searched: Parallel: timed out → DuckDuckGo: 8 results`, so "nothing found" and "everything was blocked" read differently.
+
+### Chat
+- **The research prompt asks only when you want research.** It used to fire on words ("latest", "recent", "explain", "today's news"), so "convert the latest epub" or "explain how my build works and fix it" got a research question. The words now only decide whether to check; one short model call decides whether you asked for an in-depth, multi-source write-up. Instructions, quick questions and today's news never get the prompt, and a failed or slow check means no prompt.
+- **Quick answer comes first.** The picker starts on "Quick answer", so an accidental Enter never starts a long research run.

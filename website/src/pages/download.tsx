@@ -1,3 +1,4 @@
+import Heading from '@theme/Heading';
 import React, { useEffect, useState } from 'react';
 import Link from '@docusaurus/Link';
 import Head from '@docusaurus/Head';
@@ -84,7 +85,7 @@ export default function Download(): React.ReactElement {
           </div>
 
           <section className="mx-dlp__first" aria-labelledby="first-open">
-            <h2 id="first-open" className="mx-h3">Opening it the first time</h2>
+            <Heading as="h2" id="first-open" className="mx-h3">Opening it the first time</Heading>
             <p>
               This release isn't code-signed yet, so your computer asks before it opens the app once. Signing is coming in a
               later release. Every update after that is checked against Mercury's update signature before it installs.

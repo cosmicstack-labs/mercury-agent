@@ -7,6 +7,7 @@ import Killipi from '@site/src/components/Killipi';
 import Terminal from '@site/src/components/Home/Terminal';
 import InstallCommand from '@site/src/components/Home/InstallCommand';
 import DesktopDownload from '@site/src/components/Download/DesktopDownload';
+import HeroInstall from '@site/src/components/Home/HeroInstall';
 import {
   SITE_URL, GITHUB_URL, NPM_URL, SKILLS_URL, RELEASE, SEO, HERO_SCRIPT, CHAPTERS,
   SURFACES, CLOUD, CHANNELS, PROVIDERS, COMPARE, NOT_YET, FAQ,
@@ -93,17 +94,13 @@ function Hero({ stars }: { stars: string | null }) {
           you’re away. It runs on your machine, asks before it acts, and works with any model,
           from Mercury Desktop, your terminal, browser, Telegram, Discord, Slack, or Signal.
         </p>
-        <DesktopDownload />
+        <HeroInstall />
         <div className="mx-hero__links">
           <Link to="/docs" className="mx-btn mx-btn--primary">Read the docs</Link>
           <a href={GITHUB_URL} className="mx-btn" target="_blank" rel="noopener noreferrer">
             <GithubIcon /> Star on GitHub{stars && <span className="mx-btn__count">{stars}</span>}
           </a>
         </div>
-      </div>
-      <div className="mx-wrap mx-server-path">
-        <p className="mx-server-path__label">Or run Mercury on a server</p>
-        <InstallCommand className="mx-hero__install" />
       </div>
       <div className="mx-wrap mx-hero__demo">
         <Terminal lines={HERO_SCRIPT} title="mercury — ~/projects/acme" syncGlyph />

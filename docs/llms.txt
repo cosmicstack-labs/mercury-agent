@@ -22,6 +22,7 @@ Install: `curl -fsSL https://mercuryagent.sh/install.sh | sh` (macOS/Linux), `ir
 ## Blog
 
 - [Mercury 1.5: Mercury Desktop](https://mercuryagent.sh/blog/mercury-1-5.md) (2026-11-03): Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.
+- [A tour of Mercury Desktop: one app, every Mercury you run](https://mercuryagent.sh/blog/mercury-desktop-tour.md) (2026-11-03): What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.
 - [Your agent returned 200 OK. It may still have failed](https://mercuryagent.sh/blog/agent-observability-first-wrong-step.md) (2026-10-31): What to record in an AI agent run to find its first wrong step, and what Mercury records today. Based on OpenTelemetry's GenAI agent spans and a code review.
 - [Running an agent overnight: what breaks first](https://mercuryagent.sh/blog/running-an-agent-overnight.md) (2026-10-27): We read Mercury's scheduler and budget code and reproduced one behaviour, to find what fails during long unattended runs: skipped tasks, quiet errors, overlapping jobs and budget stops.
 - [How Optimus works: an agent that uses your computer](https://mercuryagent.sh/blog/how-optimus-works.md) (2026-10-24): Inside Optimus, the Mercury plugin that sees your screen, moves the mouse and types: its processes, how it looks and acts, voice control, and the safety rails.

@@ -16,12 +16,45 @@ title: Full Command Reference
 | `mercury doctor` | Reconfigure settings — press Enter to keep current values |
 | `mercury doctor --platform` | Show cross-platform terminal/daemon compatibility diagnostics |
 | `mercury doctor --mcp` | Connect to every enabled MCP server and report its status |
+| `mercury doctor --security` | Check remote access and security: password, devices, file permissions, the tunnel |
 | `mercury setup` | Re-run the setup wizard (same as doctor) |
 | `mercury help` | Show the full manual (tools, commands, config paths) |
 | `mercury service install` | Install as system service (auto-start on boot) |
 | `mercury service uninstall` | Uninstall the system service |
 | `mercury service status` | Show system service status |
 | `mercury --verbose` | Start with debug logging on stderr |
+
+## Updating
+
+Mercury updates itself safely: it waits for running work, downloads the new version and checks it, backs up, installs, and checks the new version starts. If it doesn't, the old version and your settings come back on their own. See [Updating Mercury](../desktop/updating).
+
+| Command | Description |
+|---------|-------------|
+| `mercury upgrade` | Update to the latest version (rolls back on its own if the new one fails) |
+| `mercury upgrade --check` | Only show whether a newer version exists and what's in it |
+| `mercury upgrade --now` | Don't wait for running work to finish |
+| `mercury upgrade --force` | Reinstall even when already on the latest version |
+| `mercury update` | Is there a newer Mercury, and what's in it |
+| `mercury update check` | Ask again now instead of using the last check |
+
+## Remote access and security
+
+`mercury server` (and `/server` in a chat on this computer) controls who can reach this Mercury from other devices. See [Remote access & security](../desktop/remote-access).
+
+| Command | Description |
+|---------|-------------|
+| `mercury server` | Open the menu |
+| `mercury server status` | What can connect, and how |
+| `mercury server on` / `off` | Allow or refuse other devices |
+| `mercury server approve <code>` | Let a waiting device or action through (`deny <code>` refuses) |
+| `mercury server devices` | Paired devices; `revoke <id or name>`, `revoke-all` |
+| `mercury server token <name>` | Make a token for a device by hand (shown once) |
+| `mercury server allow-ip <ip or range>` | Allow only these addresses; `remove-ip`, `allow-any` |
+| `mercury server shell on` / `off` | The terminal for remote devices (each command still asks you) |
+| `mercury server expire <days>` / `never` | Sign out devices unused this long (default 30 days) |
+| `mercury server limit <n>` | The most devices that can be paired (default 10) |
+| `mercury server check` | The security check (same as `mercury doctor --security`) |
+| `mercury server log` | The security log |
 
 ## Skills registry
 

@@ -5,7 +5,7 @@
 ## 1.5.0 — Mercury Desktop, updates that roll back, remote access you control
 
 ### Mercury Desktop (new)
-- **One app for chat, code, bots and research.** It installs and starts Mercury on this computer for you, or connects to any number of Mercury servers (one window per server, switch in a click).
+- **One app for chat, code, bots and research.** It installs and starts Mercury on this computer for you, or connects to any number of Mercury servers and switches between them from the top bar.
 - **Download it at [mercuryagent.sh/download](https://mercuryagent.sh/download).** This first release isn't code-signed yet: macOS asks you to allow it once (System Settings → Privacy & Security → Open Anyway), Windows SmartScreen once (More info → Run anyway).
 - **Bots 2.0 in the app.** An inbox of run reports, create and edit bots in words, answer a bot's question mid-run (Allow once, Always allow, Deny), design a fleet's crew or let Mercury decide.
 - **Commands and skills in the composer** (`/` and `#`), saved chats, microphone and permissions for Optimus on every OS.

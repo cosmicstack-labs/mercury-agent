@@ -22,6 +22,19 @@
         <category label="Releases" term="Releases"/>
     </entry>
     <entry>
+        <title type="html"><![CDATA[A tour of Mercury Desktop: one app, every Mercury you run]]></title>
+        <id>https://mercuryagent.sh/blog/mercury-desktop-tour</id>
+        <link href="https://mercuryagent.sh/blog/mercury-desktop-tour"/>
+        <updated>2026-11-03T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.]]></summary>
+        <author>
+            <name>Mercury Engineering</name>
+            <uri>https://github.com/cosmicstack-labs/mercury-agent</uri>
+        </author>
+        <category label="Product" term="Product"/>
+        <category label="Releases" term="Releases"/>
+    </entry>
+    <entry>
         <title type="html"><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
         <id>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</id>
         <link href="https://mercuryagent.sh/blog/agent-observability-first-wrong-step"/>

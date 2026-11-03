@@ -13,7 +13,7 @@ Mercury 1.5.0 is out, and with it Mercury Desktop: an app for macOS (Apple Silic
 
 The first screen looks for Mercury on your computer. If it finds one, it connects. If it doesn't, **Install Mercury here** downloads the release for your machine, checks it against the release's SHA-256 checksums, and runs it as a service. **Connect elsewhere** adds a Mercury on another machine, and you can keep several connections and switch between them.
 
-Inside are chat, a coding workspace per project, research with live progress, bots and their results inbox, and notifications when something needs you. [Install & first run](/docs/desktop/mercury-desktop) covers the details.
+Inside are chat, a coding workspace per project, research with live progress, bots and their results inbox, and notifications when something needs you. [Install & first run](/docs/desktop/mercury-desktop) covers the details, and [a tour of Mercury Desktop](/blog/mercury-desktop-tour) walks through every part of it.
 
 One honest caveat: this first release isn't code-signed with an Apple or Windows certificate. macOS and Windows ask once before the first launch, and the [download page](/download) shows the clicks. Updates are a different matter. Each one is signed with Mercury's update key and checked before it installs.
 

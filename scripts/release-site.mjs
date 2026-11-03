@@ -82,6 +82,22 @@ if (withDesktop) {
       'linux-rpm': find(/\.x86_64\.rpm$/),
     }).filter(([, v]) => v)),
   };
+  // The server's downloads too, for the docs' release page.
+  const server = (name) => { const a = byName.get(name); return a ? { url: a.browser_download_url, name: a.name, size: a.size } : undefined; };
+  downloads.server = {
+    npm: `@cosmicstack/mercury-agent@${version}`,
+    assets: Object.fromEntries(Object.entries({
+      'macos-arm64': server('mercury-macos-arm64'),
+      'macos-x64': server('mercury-macos-x64'),
+      'linux-x64': server('mercury-linux-x64'),
+      'linux-x64-baseline': server('mercury-linux-x64-baseline'),
+      'linux-arm64': server('mercury-linux-arm64'),
+      'windows-x64': server('mercury-win-x64.exe'),
+      'windows-x64-baseline': server('mercury-win-x64-baseline.exe'),
+      'web': server('web.tar.gz'),
+      'checksums': server('checksums.txt'),
+    }).filter(([, v]) => v)),
+  };
   const missing = ['macos-arm64', 'macos-x64', 'windows-x64-setup', 'linux-appimage'].filter((k) => !downloads.assets[k]);
   if (missing.length) die(`Release v${version} is missing desktop downloads: ${missing.join(', ')}.`);
   const dl = join(ROOT, 'website/src/data/desktop-release.json');

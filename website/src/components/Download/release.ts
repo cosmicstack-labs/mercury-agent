@@ -58,3 +58,32 @@ export function releaseDate(): string {
   if (Number.isNaN(d.getTime())) return DESKTOP.date;
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
+
+/* ── the server (CLI) downloads of the same release ── */
+
+export type ServerKey =
+  | 'macos-arm64' | 'macos-x64'
+  | 'linux-x64' | 'linux-x64-baseline' | 'linux-arm64'
+  | 'windows-x64' | 'windows-x64-baseline'
+  | 'web' | 'checksums';
+
+interface ServerRelease { npm: string; assets: Partial<Record<ServerKey, Asset>> }
+
+export const SERVER: ServerRelease = ((data as { server?: ServerRelease }).server) ?? { npm: '@cosmicstack/mercury-agent', assets: {} };
+
+export function serverAsset(key: ServerKey): Asset | null {
+  const a = SERVER.assets[key];
+  return a && a.url ? a : null;
+}
+
+export const SERVER_LABEL: Record<ServerKey, { os: string; what: string }> = {
+  'macos-arm64': { os: 'macOS', what: 'Apple Silicon' },
+  'macos-x64': { os: 'macOS', what: 'Intel' },
+  'linux-x64': { os: 'Linux', what: 'x64' },
+  'linux-x64-baseline': { os: 'Linux', what: 'x64, older CPUs (no AVX2)' },
+  'linux-arm64': { os: 'Linux', what: 'ARM64 (Raspberry Pi 4/5, Graviton)' },
+  'windows-x64': { os: 'Windows', what: 'x64' },
+  'windows-x64-baseline': { os: 'Windows', what: 'x64, older CPUs (no AVX2)' },
+  web: { os: 'All', what: 'Web dashboard assets (web.tar.gz)' },
+  checksums: { os: 'All', what: 'SHA-256 checksums (checksums.txt)' },
+};

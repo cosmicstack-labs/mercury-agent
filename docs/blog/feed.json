@@ -21,6 +21,22 @@
             ]
         },
         {
+            "id": "https://mercuryagent.sh/blog/mercury-desktop-tour",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-desktop-tour",
+            "title": "A tour of Mercury Desktop: one app, every Mercury you run",
+            "summary": "What's inside Mercury Desktop 1.5.0: chat, research, code, bots, memory and voice, plus connecting to several Mercury servers and keeping them all updated.",
+            "date_modified": "2026-11-03T00:00:00.000Z",
+            "author": {
+                "name": "Mercury Engineering",
+                "url": "https://github.com/cosmicstack-labs/mercury-agent"
+            },
+            "tags": [
+                "Product",
+                "Releases"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
