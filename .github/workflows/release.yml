@@ -192,14 +192,16 @@ jobs:
           done
       - run: npm ci --no-audit --no-fund
       - run: npm run build
-      - name: Make the release public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "v${{ needs.server.outputs.version }}" --draft=false --latest
+      # npm first: its token is the credential most likely to have expired,
+      # and a failure here still leaves nothing public.
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
+      - name: Make the release public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ needs.server.outputs.version }}" --draft=false --latest
 
   website:
     name: Website (downloads, updates, docs)
