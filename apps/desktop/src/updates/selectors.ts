@@ -98,6 +98,7 @@ export function updatableOf(items: UpdateItem[], s: Snapshot): UpdateItem[] {
   return items.filter((i) => {
     if (!i.next) return false;
     if (i.kind === "desktop") return s.desktop.phase !== "installing";
+    if (i.release?.downloadable === false) return false;
     const e = s.servers[i.connection!.id];
     const a = e?.action;
     return !!e?.info?.canSelfUpdate && !!a && (a.phase === "idle" || a.phase === "error" || (a.phase === "finished" && a.job.state !== "done"));

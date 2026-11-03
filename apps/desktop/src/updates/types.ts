@@ -5,6 +5,8 @@ export interface ChannelRelease {
   date?: string;
   notes?: string;
   notesUrl?: string;
+  /** Server only: false for an hour after its files turned out not to be published yet. */
+  downloadable?: boolean;
 }
 
 export interface Minimum {

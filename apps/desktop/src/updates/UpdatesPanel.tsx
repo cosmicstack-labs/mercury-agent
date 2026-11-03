@@ -307,6 +307,7 @@ export function ServerRow({ item, compact = false }: { item: UpdateItem; compact
       {blocked && a.phase === "idle" && (
         <p className="mt-2 text-xs text-ink3">Updating to {blocked.version} failed {blocked.failures} times{blocked.lastError ? ` (${blocked.lastError})` : ""}, so Mercury stopped trying on its own. On {local ? "this computer" : "that computer"}, run <code className="font-mono">mercury upgrade</code> to see what's wrong, or try once more.</p>
       )}
+      {item.release?.downloadable === false && a.phase === "idle" && <p className="mt-2 text-xs text-ink3">{item.next} was announced but its files aren't published yet. Nothing was changed; Mercury checks again later.</p>}
       {cannot && item.next && <p className="mt-2 text-xs text-ink3">{info?.cannotReason ?? "This Mercury can't update itself."} {local ? "Run" : "On that computer, run"} <code className="font-mono">mercury upgrade</code>.</p>}
       {!info && item.next && <p className="mt-2 text-xs text-ink3">This Mercury is too old to update from here. {local ? "Run" : "On that computer, run"} <code className="font-mono">mercury upgrade</code> once; after that it updates from this app.</p>}
       {confirm && <p className="mt-2 text-xs text-amber">Mercury is answering right now. The update waits until running work is done (up to 10 minutes), or can start right away and stop it.</p>}
@@ -317,7 +318,7 @@ export function ServerRow({ item, compact = false }: { item: UpdateItem; compact
         {a.phase === "finished" && <Button size="sm" variant="ghost" onClick={() => clearServerAction(conn)}>Dismiss</Button>}
         {!item.required && a.phase === "idle" && item.next && <Button size="sm" variant="ghost" onClick={() => later(item.key)}>Later</Button>}
         {confirm && <Button size="sm" variant="outline" onClick={() => start(true)}>Update now</Button>}
-        {item.next && info?.canSelfUpdate && (a.phase === "idle" || a.phase === "error" || (a.phase === "finished" && a.job.state !== "done")) && (
+        {item.next && info?.canSelfUpdate && item.release?.downloadable !== false && (a.phase === "idle" || a.phase === "error" || (a.phase === "finished" && a.job.state !== "done")) && (
           <Button size="sm" variant="primary" onClick={() => { if (confirm) { setConfirm(false); void updateServer(conn); } else start(); }}>
             {confirm ? "Wait, then update" : a.phase === "idle" ? (blocked ? "Try again" : "Update server") : <><RotateCcw size={12} /> Try again</>}
           </Button>
