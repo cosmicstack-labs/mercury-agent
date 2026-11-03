@@ -46,6 +46,8 @@ const STALL: Duration = Duration::from_secs(30);
 pub struct UpdaterState {
     update: Mutex<Option<Update>>,
     downloading: AtomicBool,
+    /// "Cancel" on a running download: it stops and keeps its bytes (it resumes next time).
+    cancel: AtomicBool,
     install_on_quit: AtomicBool,
 }
 
@@ -390,6 +392,8 @@ enum Fail {
     Retry(String),
     /// Won't get better by retrying (404, too large, disk).
     Stop(String),
+    /// The user cancelled.
+    Cancelled,
 }
 
 /// `Content-Range: bytes 100-999/1000` → 1000.
@@ -398,7 +402,7 @@ fn total_from_content_range(v: &str) -> Option<u64> {
 }
 
 /// One attempt: continue from what's on disk when the server allows it.
-async fn fetch_once(client: &reqwest::Client, url: &str, dir: &Path, version: &str, em: &Emitting<'_>) -> Result<(), Fail> {
+async fn fetch_once(client: &reqwest::Client, url: &str, dir: &Path, version: &str, em: &Emitting<'_>, cancel: &AtomicBool) -> Result<(), Fail> {
     let part = part_path(dir, version);
     let meta_file = meta_path(dir, version);
     let mut meta: PartMeta = fs::read_to_string(&meta_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
@@ -467,6 +471,10 @@ async fn fetch_once(client: &reqwest::Client, url: &str, dir: &Path, version: &s
             Ok(Ok(None)) => break,
             Ok(Ok(Some(c))) => c,
         };
+        if cancel.load(Ordering::Relaxed) {
+            let _ = file.flush();
+            return Err(Fail::Cancelled);
+        }
         file.write_all(&chunk).map_err(|e| Fail::Stop(format!("can't write the download (disk full?): {e}")))?;
         done += chunk.len() as u64;
         if done > MAX_PACKAGE_BYTES {
@@ -490,6 +498,17 @@ async fn fetch_once(client: &reqwest::Client, url: &str, dir: &Path, version: &s
     Ok(())
 }
 
+/// The error a cancelled download returns (the app shows no error for it).
+const CANCELLED: &str = "Download cancelled.";
+
+/// Stop a running download. Its bytes stay: "Resume download" continues from there.
+#[tauri::command]
+pub fn desktop_update_cancel(state: State<'_, UpdaterState>) {
+    if state.downloading.load(Ordering::Relaxed) {
+        state.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 struct Busy<'a>(&'a AtomicBool);
 impl Drop for Busy<'_> {
     fn drop(&mut self) { self.0.store(false, Ordering::Relaxed); }
@@ -506,6 +525,7 @@ pub async fn desktop_update_download(app: AppHandle, state: State<'_, UpdaterSta
         return Err("Already downloading.".into());
     }
     let _busy = Busy(&state.downloading);
+    state.cancel.store(false, Ordering::Relaxed);
     let client = http()?;
     let url = update.download_url.to_string();
     let mut em = Emitting { app: &app, version: update.version.clone(), attempt: 1 };
@@ -515,8 +535,13 @@ pub async fn desktop_update_download(app: AppHandle, state: State<'_, UpdaterSta
     let mut ok = false;
     for attempt in 1..=ATTEMPTS {
         em.attempt = attempt;
-        match fetch_once(&client, &url, &dir, &update.version, &em).await {
+        match fetch_once(&client, &url, &dir, &update.version, &em, &state.cancel).await {
             Ok(()) => { ok = true; break; }
+            Err(Fail::Cancelled) => {
+                let have = fs::metadata(part_path(&dir, &update.version)).map(|m| m.len()).unwrap_or(0);
+                em.send("cancelled", have, None, None, "Download cancelled");
+                return Err(CANCELLED.into());
+            }
             Err(Fail::Stop(e)) => { last = e; break; }
             Err(Fail::Retry(e)) => {
                 last = e;
@@ -525,6 +550,10 @@ pub async fn desktop_update_download(app: AppHandle, state: State<'_, UpdaterSta
                 let have = fs::metadata(part_path(&dir, &update.version)).map(|m| m.len()).unwrap_or(0);
                 em.send("retrying", have, None, None, format!("{last}. Trying again in {} s (attempt {} of {ATTEMPTS})", wait.as_secs(), attempt + 1));
                 tokio::time::sleep(wait).await;
+                if state.cancel.load(Ordering::Relaxed) {
+                    em.send("cancelled", have, None, None, "Download cancelled");
+                    return Err(CANCELLED.into());
+                }
             }
         }
     }

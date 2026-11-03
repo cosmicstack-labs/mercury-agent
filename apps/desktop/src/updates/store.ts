@@ -18,7 +18,8 @@ import { useConnections, type Connection } from "~/shell/connections";
 import { useNotify } from "~/app/notify/store";
 import { useRuntimeState } from "~/app/store";
 import { updatesNative } from "./native";
-import { approvalStatus, fetchServerUpdates, serverVersion, startServerUpdate, ServerError } from "./server";
+import { approvalStatus, cancelServerUpdate, fetchServerUpdates, serverVersion, startServerUpdate, ServerError } from "./server";
+import { itemsOf, updatableOf, type UpdateItem } from "./selectors";
 import { isNewer, LATER_MS, MAX_FAILURES, messagesFor, type ForceAck } from "./logic";
 import { JOB_FINISHED, type DesktopUpdateInfo, type DownloadProgress, type ManifestResult, type ServerUpdates, type UpdateJob } from "./types";
 
@@ -130,6 +131,10 @@ interface UpdatesState {
   whatsNew: WhatsNew | null;
   lastFullCheck: number;
   checking: boolean;
+  /** The last check the user asked for: what it found, for "Everything is up to date" / "2 updates found". */
+  manualCheck: { at: number; found: number } | null;
+  /** "Update everything" is running: servers first, then this app restarts once they're done. */
+  updatingAll: boolean;
 
   setPrefs(patch: Partial<UpdatePrefs>): void;
   setPanel(open: boolean): void;
@@ -151,6 +156,8 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
   whatsNew: null,
   lastFullCheck: 0,
   checking: false,
+  manualCheck: null,
+  updatingAll: false,
 
   setPrefs: (patch) => {
     const prefs = { ...get().prefs, ...patch };
@@ -193,7 +200,8 @@ export async function initUpdates(): Promise<void> {
     progressUnlisten = await updatesNative.onProgress((p) => {
       const d = useUpdates.getState().desktop;
       if (d.available && p.version !== d.available.version) return;
-      useUpdates.setState({ desktop: { ...d, progress: p, phase: p.phase === "ready" ? "ready" : p.phase === "error" ? d.phase : "downloading" } });
+      const phase = p.phase === "ready" ? "ready" : p.phase === "error" ? d.phase : p.phase === "cancelled" ? "idle" : "downloading";
+      useUpdates.setState({ desktop: { ...d, progress: p.phase === "cancelled" ? null : p, phase } });
     });
   }
   const status = await updatesNative.status().catch(() => null);
@@ -217,8 +225,63 @@ export async function checkAll(force = false): Promise<void> {
     if (manifest) useUpdates.setState({ manifest });
     await Promise.allSettled([checkDesktop(), ...useConnections.getState().connections.map((c) => checkServer(c, force))]);
     announce();
+    if (force) useUpdates.setState({ manualCheck: { at: Date.now(), found: updatableNow().length } });
   } finally {
     useUpdates.setState({ checking: false });
+  }
+}
+
+/** What "Update everything" would update now: this app and every server that can update itself. */
+export function updatableNow(): UpdateItem[] {
+  const s = useUpdates.getState();
+  return updatableOf(itemsOf(s, useConnections.getState().connections, Date.now()), s);
+}
+
+/** Check now, and update whatever was found. */
+export async function checkAndUpdateAll(): Promise<void> {
+  await checkAll(true);
+  await updateEverything();
+}
+
+/**
+ * Every server that can update itself starts (owner approval where needed);
+ * this app downloads meanwhile and restarts last, once the servers are done,
+ * so their progress is never cut off halfway. A reply running here keeps the
+ * restart waiting for the user (the panel's "Restart to update").
+ */
+export async function updateEverything(): Promise<void> {
+  if (useUpdates.getState().updatingAll) return;
+  const items = updatableNow();
+  if (!items.length) return;
+  useUpdates.setState({ updatingAll: true, panelOpen: true });
+  try {
+    const servers = items.filter((i) => i.kind === "server").map((i) => updateServer(i.connection!));
+    const desktopItem = items.find((i) => i.kind === "desktop");
+    const downloaded = desktopItem
+      ? useUpdates.getState().desktop.available?.ready ? Promise.resolve(true) : downloadDesktop()
+      : Promise.resolve(false);
+    const [, ready] = await Promise.all([Promise.allSettled(servers), downloaded]);
+    if (!desktopItem || !ready || !useUpdates.getState().updatingAll) return;
+    const a = useRuntimeState.getState().agent;
+    if (a === "thinking" || a === "streaming" || a === "working" || a === "needs-you") return;
+    await installDesktop();
+  } finally {
+    useUpdates.setState({ updatingAll: false });
+  }
+}
+
+/** Stop a desktop download (keeps its bytes) and an "Update everything" waiting on it. */
+export async function cancelDesktopDownload(): Promise<void> {
+  useUpdates.setState({ updatingAll: false });
+  await updatesNative.cancel().catch(() => {});
+}
+
+/** Cancel a server update that hasn't stopped Mercury yet. */
+export async function cancelServer(conn: Connection): Promise<void> {
+  try {
+    await cancelServerUpdate(conn);
+  } catch (err) {
+    useUpdates.getState().setServer(conn.id, { action: { phase: "error", message: err instanceof Error ? err.message : String(err) } });
   }
 }
 
@@ -259,6 +322,13 @@ export async function downloadDesktop(): Promise<boolean> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message === "Already downloading.") return false;
+    if (message === "Download cancelled.") {
+      // Not a failure: the bytes stay and "Resume download" picks up from there.
+      const cur = useUpdates.getState();
+      useUpdates.setState({ desktop: { ...cur.desktop, phase: "idle", progress: null, error: null, available: cur.desktop.available ? { ...cur.desktop.available } : null } });
+      void checkDesktop();
+      return false;
+    }
     const cur = useUpdates.getState();
     const prev = cur.prefs.failures[key]?.count ?? 0;
     cur.setPrefs({ failures: { ...cur.prefs.failures, [key]: { count: prev + 1, lastError: message } } });

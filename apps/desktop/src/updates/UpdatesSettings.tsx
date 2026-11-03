@@ -4,13 +4,15 @@ import { Mono } from "~/components/ui/bits";
 import { Button } from "~/components/ui/Button";
 import { useConnections } from "~/shell/connections";
 import { updatesNative } from "./native";
-import { checkAll, useUpdates, type WhatsNew } from "./store";
+import { checkAll, checkAndUpdateAll, updateEverything, useUpdates, type WhatsNew } from "./store";
 import { DesktopRow, ServerRow } from "./UpdatesPanel";
 import { useUpdateView } from "./useUpdateView";
 
 /** Settings → About: versions, check now, what's new, the two switches, every server. */
 export function UpdatesSettings() {
-  const { items } = useUpdateView();
+  const { items, updatable } = useUpdateView();
+  const manualCheck = useUpdates((s) => s.manualCheck);
+  const updatingAll = useUpdates((s) => s.updatingAll);
   const prefs = useUpdates((s) => s.prefs);
   const setPrefs = useUpdates((s) => s.setPrefs);
   const desktop = useUpdates((s) => s.desktop);
@@ -29,6 +31,23 @@ export function UpdatesSettings() {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* One place for both: this app and every server it connects to. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3">
+        <span className="min-w-0 flex-1 text-sm">
+          <span className="block text-ink">Updates</span>
+          <span className="block text-xs text-ink3">
+            {checking ? "Checking Mercury Desktop and your servers…"
+              : updatable.length ? `${updatable.length} update${updatable.length > 1 ? "s" : ""} ready to install: ${updatable.map((i) => `${i.name} ${i.next}`).join(", ")}.`
+              : manualCheck && Date.now() - manualCheck.at < 10 * 60_000 ? "Everything is up to date."
+              : "Mercury Desktop and every server you connect to."}
+          </span>
+        </span>
+        <Button size="sm" variant="secondary" loading={checking} onClick={() => void checkAll(true)}>Check for updates</Button>
+        {updatable.length > 0
+          ? <Button size="sm" variant="primary" loading={updatingAll} onClick={() => void updateEverything()}>{updatable.length > 1 ? "Update everything" : "Update"}</Button>
+          : !checking && <Button size="sm" variant="ghost" onClick={() => void checkAndUpdateAll()}>Check and update</Button>}
+      </div>
+
       <div className="rounded-lg border border-line bg-surface">
         <div className="flex items-center gap-2.5 px-4 py-3 text-sm">
           <Laptop size={15} className="text-ink3" />
@@ -41,8 +60,7 @@ export function UpdatesSettings() {
           </p>
         )}
         <div className="flex items-center gap-3 border-t border-line px-4 py-2.5">
-          <Button size="sm" variant="secondary" loading={checking} onClick={() => void checkAll(true)}>Check for updates</Button>
-          <button className="text-xs text-accent hover:underline" onClick={whatsNew}>What's new</button>
+          <button className="text-xs text-accent hover:underline" onClick={whatsNew}>What's new in {desktop.current || "this version"}</button>
           {manifest && !manifest.verified && manifest.manifest && <span className="text-xs text-amber">The update notice couldn't be verified, so it's ignored.</span>}
         </div>
       </div>

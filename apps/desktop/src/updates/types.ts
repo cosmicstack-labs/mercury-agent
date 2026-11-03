@@ -66,7 +66,7 @@ export interface DesktopUpdateStatus {
 }
 
 export interface DownloadProgress {
-  phase: "downloading" | "verifying" | "ready" | "retrying" | "error";
+  phase: "downloading" | "verifying" | "ready" | "retrying" | "error" | "cancelled";
   version: string;
   downloaded: number;
   total: number | null;

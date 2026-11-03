@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ackHolds, compareVersions, messagesFor, requiredBy, snoozed, timeLeft, urgencyOf, versionMatches } from "./logic";
-import { buttonOf, forceOf, itemsOf, type Snapshot } from "./selectors";
+import { buttonOf, forceOf, itemsOf, updatableOf, type Snapshot } from "./selectors";
 import type { Connection } from "~/shell/connections";
 import type { ServerUpdates, UpdateManifest } from "./types";
 
@@ -139,6 +139,28 @@ describe("the Update button", () => {
     });
     const items = itemsOf(s, [conn("old")], NOW);
     expect(items[0]).toMatchObject({ kind: "server", current: "1.3.0", next: "1.5.0" });
+  });
+});
+
+describe("Update everything", () => {
+  const entry = (id: string, over: Partial<ServerUpdates> = {}, action: Snapshot["servers"][string]["action"] = { phase: "idle" }) =>
+    ({ connectionId: id, info: serverInfo(over), version: "1.4.2", error: null, checkedAt: NOW, action });
+  it("takes this app and every server that can update itself, and nothing already running", () => {
+    const s = snap({
+      desktop: { current: "0.1.0", available: { version: "0.2.0", currentVersion: "0.1.0", date: null, notes: null, ready: false, partialBytes: 0 }, phase: "idle", progress: null, error: null, checkedAt: NOW },
+      servers: {
+        home: entry("home"),
+        src: entry("src", { canSelfUpdate: false, install: "source" }),
+        busy: entry("busy", {}, { phase: "approval", code: "K7Q2M", where: "Telegram" }),
+        current: entry("current", { updateAvailable: false, latest: null }),
+      },
+    });
+    const items = itemsOf(s, [conn("home"), conn("src"), conn("busy"), conn("current")], NOW);
+    expect(updatableOf(items, s).map((i) => i.name)).toEqual(["Mercury Desktop", "home"]);
+  });
+  it("nothing while this app is installing", () => {
+    const s = snap({ desktop: { current: "0.1.0", available: { version: "0.2.0", currentVersion: "0.1.0", date: null, notes: null, ready: true, partialBytes: 0 }, phase: "installing", progress: null, error: null, checkedAt: NOW } });
+    expect(updatableOf(itemsOf(s, [], NOW), s)).toEqual([]);
   });
 });
 

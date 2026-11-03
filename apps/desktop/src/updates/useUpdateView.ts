@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useConnections } from "~/shell/connections";
 import { useUpdates, LAUNCH_ID } from "./store";
-import { bannerMessages, buttonOf, forceOf, itemsOf } from "./selectors";
+import { bannerMessages, buttonOf, forceOf, itemsOf, updatableOf } from "./selectors";
 
 /** A clock that ticks once a minute: the button gets louder with age, an acknowledgement ends after 24 h. */
 export function useMinuteClock(): number {
@@ -27,6 +27,7 @@ export function useUpdateView() {
     const items = itemsOf(snap, connections, now);
     return {
       items,
+      updatable: updatableOf(items, snap),
       button: buttonOf(items, desktop.phase === "ready"),
       force: forceOf(items, activeId, acks, LAUNCH_ID, now),
       banners: bannerMessages(snap, now),

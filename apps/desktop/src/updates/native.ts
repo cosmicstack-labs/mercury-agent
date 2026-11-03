@@ -23,6 +23,11 @@ export const updatesNative = {
     if (!isTauri) return Promise.reject(new Error("Not running inside Mercury Desktop"));
     return invoke<DesktopUpdateInfo>("desktop_update_download");
   },
+  /** Stop a running download; its bytes stay, so it resumes next time. */
+  cancel(): Promise<void> {
+    if (!isTauri) return Promise.resolve();
+    return invoke<void>("desktop_update_cancel");
+  },
   /** Installs and restarts the app (on Windows the installer takes over). */
   install(): Promise<void> {
     if (!isTauri) return Promise.reject(new Error("Not running inside Mercury Desktop"));

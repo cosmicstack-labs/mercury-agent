@@ -8,7 +8,7 @@ import { useRuntimeState } from "~/app/store";
 import { desktop as native } from "~/shell/tauri";
 import { formatBytes, MAX_FAILURES, timeLeft, type Urgency } from "./logic";
 import type { UpdateItem } from "./selectors";
-import { busyOn, checkAll, clearServerAction, desktopKey, downloadDesktop, installDesktop, stopWaiting, updateServer, useUpdates } from "./store";
+import { busyOn, cancelDesktopDownload, cancelServer, checkAll, clearServerAction, desktopKey, downloadDesktop, installDesktop, stopWaiting, updateEverything, updateServer, useUpdates } from "./store";
 import type { ManifestMessage, UpdateJob } from "./types";
 import { useUpdateView } from "./useUpdateView";
 
@@ -54,6 +54,8 @@ export function UpdatesPanel({ items, onClose }: { items: UpdateItem[]; onClose:
   const ref = useRef<HTMLDivElement>(null);
   const checking = useUpdates((s) => s.checking);
   const checkedAt = useUpdates((s) => s.lastFullCheck);
+  const updatingAll = useUpdates((s) => s.updatingAll);
+  const { updatable } = useUpdateView();
   const openSettings = useUi((s) => s.openSettings);
   useEffect(() => {
     const down = (e: MouseEvent) => {
@@ -79,8 +81,9 @@ export function UpdatesPanel({ items, onClose }: { items: UpdateItem[]; onClose:
       </div>
       <div className="flex items-center justify-between border-t border-line px-4 py-2 text-xs text-ink4">
         <span>{checking ? "Checking…" : checkedAt ? `Checked ${ago(checkedAt)}` : ""}</span>
-        <span className="flex gap-3">
+        <span className="flex items-center gap-3">
           <button className="hover:text-ink" onClick={() => void checkAll(true)} disabled={checking}>Check now</button>
+          {updatable.length > 1 && <Button size="sm" variant="primary" loading={updatingAll} onClick={() => void updateEverything()}>Update all</Button>}
           <button className="hover:text-ink" onClick={() => { onClose(); openSettings("about"); }}>Settings</button>
         </span>
       </div>
@@ -183,9 +186,12 @@ export function DesktopRow({ item, compact = false }: { item: UpdateItem; compac
       {d.phase === "downloading" && (
         <>
           <Bar percent={p?.percent ?? null} />
-          <div className="mt-1 flex justify-between text-xs text-ink3">
+          <div className="mt-1 flex justify-between gap-3 text-xs text-ink3">
             <span>{p?.phase === "retrying" ? p.message : p?.phase === "verifying" ? "Checking the signature…" : `Downloading ${formatBytes(p?.downloaded)}${p?.total ? ` of ${formatBytes(p.total)}` : ""}`}</span>
-            <span>{p ? timeLeft(p.downloaded, p.total, p.bytesPerSec) ?? "" : ""}</span>
+            <span className="flex gap-3">
+              {p ? timeLeft(p.downloaded, p.total, p.bytesPerSec) ?? "" : ""}
+              {p?.phase !== "verifying" && <button className="text-ink3 hover:text-ink" onClick={() => void cancelDesktopDownload()}>Cancel</button>}
+            </span>
           </div>
         </>
       )}
@@ -229,6 +235,8 @@ const STEP: Record<UpdateJob["state"], string> = {
   cancelled: "Cancelled",
 };
 
+const CANCELLABLE: UpdateJob["state"][] = ["waiting-idle", "downloading", "verifying", "backing-up"];
+
 export function ServerRow({ item, compact = false }: { item: UpdateItem; compact?: boolean }) {
   const conn = item.connection!;
   const entry = useUpdates((s) => s.servers[conn.id]);
@@ -271,7 +279,11 @@ export function ServerRow({ item, compact = false }: { item: UpdateItem; compact
               : a.phase === "restarting" ? `Restarting ${conn.name}… (it's offline for a moment)`
               : job ? `${STEP[job.state]}${job.message && job.message !== STEP[job.state] ? ` · ${job.message}` : ""}${job.total ? ` · ${formatBytes(job.bytes)} of ${formatBytes(job.total)}` : ""}` : ""}
           </div>
-          {job?.state === "waiting-idle" && <button onClick={() => start(true)} className="mt-1 text-xs text-accent hover:underline">Update now without waiting</button>}
+          <div className="mt-1 flex gap-3 text-xs">
+            {job?.state === "waiting-idle" && <button onClick={() => start(true)} className="text-accent hover:underline">Update now without waiting</button>}
+            {/* Only before Mercury is stopped: after that, finishing (or rolling back) is the safe way out. */}
+            {job && CANCELLABLE.includes(job.state) && <button onClick={() => void cancelServer(conn)} className="text-ink3 hover:text-ink">Cancel</button>}
+          </div>
         </>
       )}
       {a.phase === "finished" && (

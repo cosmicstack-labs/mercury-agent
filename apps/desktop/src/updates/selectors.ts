@@ -93,6 +93,17 @@ export function itemsOf(s: Snapshot, connections: Connection[], now: number): Up
   return items;
 }
 
+/** What "Update everything" updates: this app and every server that can update itself and isn't already. */
+export function updatableOf(items: UpdateItem[], s: Snapshot): UpdateItem[] {
+  return items.filter((i) => {
+    if (!i.next) return false;
+    if (i.kind === "desktop") return s.desktop.phase !== "installing";
+    const e = s.servers[i.connection!.id];
+    const a = e?.action;
+    return !!e?.info?.canSelfUpdate && !!a && (a.phase === "idle" || a.phase === "error" || (a.phase === "finished" && a.job.state !== "done"));
+  });
+}
+
 /** What the top-right button says, or null when there is nothing to do. */
 export interface ButtonState { label: string; urgency: Urgency; required: boolean; count: number }
 

@@ -50,6 +50,7 @@ pub fn run() {
             commands::updates::desktop_update_check,
             commands::updates::desktop_update_status,
             commands::updates::desktop_update_download,
+            commands::updates::desktop_update_cancel,
             commands::updates::desktop_update_install,
             commands::updates::desktop_update_set_install_on_quit,
             notch::notch_show,

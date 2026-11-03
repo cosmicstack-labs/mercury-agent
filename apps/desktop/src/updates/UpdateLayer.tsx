@@ -3,7 +3,8 @@ import { useEffect } from "react";
 import { Dialog } from "~/components/ui/Dialog";
 import { Markdown } from "~/components/Markdown";
 import { cx } from "~/lib/cx";
-import { desktop as native } from "~/shell/tauri";
+import { desktop as native, isTauri } from "~/shell/tauri";
+import { useUi } from "~/app/store";
 import { useConnections } from "~/shell/connections";
 import { ForceUpdate } from "./ForceUpdate";
 import { canDismiss } from "./logic";
@@ -32,6 +33,18 @@ export function UpdateLayer() {
     window.addEventListener("focus", onFocus);
     return () => { stop = true; clearInterval(t); window.removeEventListener("focus", onFocus); };
   }, [connectionsLoaded]);
+
+  // Tray → "Check for Updates…": Settings → About, and check this app and every server.
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | null = null;
+    let gone = false;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen("menu-check-updates", () => {
+      useUi.getState().openSettings("about");
+      void checkAll(true);
+    })).then((u) => { if (gone) u(); else unlisten = u; });
+    return () => { gone = true; unlisten?.(); };
+  }, []);
 
   // A newly chosen connection is asked at once (it may need an update the others don't).
   useEffect(() => {
