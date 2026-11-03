@@ -58,7 +58,8 @@ export function iconFor(key: AssetKey) {
  * for <this computer>" button. Before the browser has been asked (and in the
  * static HTML) it's a neutral button to /download.
  */
-export default function DesktopDownload({ className }: { className?: string }): React.ReactElement {
+/** `compact`: a small secondary button (on a Mac the Terminal install leads, the .dmg is the alternative). */
+export default function DesktopDownload({ className, compact = false }: { className?: string; compact?: boolean }): React.ReactElement {
   const [detected, setDetected] = useState<Detected>(UNKNOWN);
   const [ready, setReady] = useState(false);
 
@@ -86,11 +87,11 @@ export default function DesktopDownload({ className }: { className?: string }): 
   const size = sizeOf(main);
 
   return (
-    <div className={clsx('mx-dl', className)}>
+    <div className={clsx('mx-dl', compact && 'mx-dl--compact', className)}>
       {main && primary ? (
-        <a href={main.url} className="mx-btn mx-btn--primary mx-dl__main" data-asset={primary.key}>
+        <a href={main.url} className={clsx('mx-btn', compact ? 'mx-dl__small' : 'mx-btn--primary mx-dl__main')} data-asset={primary.key}>
           {iconFor(primary.key)}
-          <span>Download Mercury Desktop {primary.label}</span>
+          <span>{compact ? 'Download the .dmg instead' : `Download Mercury Desktop ${primary.label}`}</span>
         </a>
       ) : (
         <Link to="/download" className="mx-btn mx-btn--primary mx-dl__main">

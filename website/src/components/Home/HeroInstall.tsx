@@ -40,7 +40,7 @@ export default function HeroInstall({ className }: { className?: string }): Reac
         <div className="mx-hero-install__body" role="tabpanel">
           {mac && <MacInstall />}
           {mac && <p className="mx-hero-install__or">Or download it</p>}
-          <DesktopDownload />
+          <DesktopDownload compact={mac} />
           <PlatformGrid />
           <p className="mx-hero-install__note">
             Free and open source. Not code-signed yet: {mac ? 'a downloaded .dmg' : 'your computer'} asks once before the first launch (<Link to="/download#first-open">how</Link>).

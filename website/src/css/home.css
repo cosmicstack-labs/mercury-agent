@@ -468,3 +468,9 @@
 .mx-hero-install__or, .mx-dlp__or { margin: 16px 0 10px; font-size: 0.82rem; color: var(--mx-ink-3); text-align: center; }
 .mx-dlp__or { text-align: left; }
 .mx-dlp__mac { margin-bottom: 4px; }
+
+/* On a Mac the Terminal install leads; the .dmg is a small secondary button. */
+.mx-dl--compact { gap: 8px; }
+.mx-dl__small { height: 38px; padding: 0 16px; font-size: 0.88rem; font-weight: 500; color: var(--mx-ink-2); background: transparent; border: 1px solid var(--mx-line-2); }
+.mx-dl__small:hover { color: var(--mx-ink); border-color: var(--mx-ink-3); }
+.mx-dl--compact .mx-dl__meta { font-size: 0.8rem; }
