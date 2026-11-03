@@ -135,8 +135,8 @@ const config: Config = {
     },
     // Bump with every release, together with RELEASE in src/components/Home/data.ts.
     announcementBar: {
-      id: 'release-1-4-0',
-      content: '☿ Mercury 1.4.0, <strong>Pluggy Mercury</strong>, is out: plugins, WhatsApp voice calls, and Optimus, which uses your computer. <a href="/docs/releases/1.4.0">Read the release notes →</a>',
+      id: 'release-1-5-0',
+      content: '☿ Mercury 1.5.0 is out with <strong>Mercury Desktop</strong> for macOS, Windows and Linux, remote access you control, and updates that roll back on their own. <a href="/download">Download it →</a>',
       isCloseable: true,
     },
     navbar: {
@@ -161,7 +161,7 @@ const config: Config = {
           className: 'navbar-github',
           'aria-label': 'Mercury Agent on GitHub',
         },
-        {to: '/#install', label: 'Install', position: 'right', className: 'navbar-cta'},
+        {to: '/download', label: 'Download', position: 'right', className: 'navbar-cta'},
       ],
     },
     footer: {
@@ -170,7 +170,8 @@ const config: Config = {
         {
           title: 'Product',
           items: [
-            {label: 'Install', to: '/#install'},
+            {label: 'Download', to: '/download'},
+            {label: 'Install on a server', to: '/#install'},
             {label: 'Mercury Code', to: '/docs/integrations/coding-workspace'},
             {label: 'Mercury Bots', to: '/docs/integrations/mercury-bots'},
             {label: 'Mercury Cloud', to: '/cloud'},

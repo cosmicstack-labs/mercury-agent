@@ -5,6 +5,16 @@ const sidebars: SidebarsConfig = {
     'getting-started/installation',
     {
       type: 'category',
+      label: 'Mercury Desktop',
+      collapsed: false,
+      items: [
+        'desktop/mercury-desktop',
+        'desktop/updating',
+        'desktop/remote-access',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Platforms',
       collapsed: false,
       items: [
@@ -84,6 +94,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'releases/releases',
+        'releases/1.5.0',
         'releases/1.4.0',
         'releases/1.3.1',
         'releases/1.3.0',
