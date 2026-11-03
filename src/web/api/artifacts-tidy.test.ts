@@ -9,6 +9,7 @@ const home = await vi.hoisted(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mercury-tidy-'));
   process.env.MERCURY_HOME = path.join(dir, '.mercury');
   process.env.HOME = dir;
+  process.env.USERPROFILE = dir; // os.homedir() on Windows
   return dir;
 });
 
