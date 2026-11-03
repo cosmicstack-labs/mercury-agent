@@ -41,10 +41,12 @@ export interface CustomSound { name: string; url: string }
 
 export interface Alert {
   id: string;
-  kind: "needs" | "done" | "failed" | "ask";
+  kind: "needs" | "done" | "failed" | "ask" | "update";
   title: string;
   body: string;
   sessionId?: string;
+  /** One button (updates: "What's new", a message's link). */
+  action?: { label: string; run: () => void };
 }
 
 interface NotifyState {

@@ -20,6 +20,7 @@ import { BrainView } from "~/views/brain/BrainView";
 import { ArtifactsView } from "~/views/artifacts/ArtifactsView";
 import { ErrorBoundary } from "~/components/ErrorBoundary";
 import { CloudBanner } from "~/views/settings/Cloud";
+import { UpdateBanner } from "~/updates/UpdateLayer";
 import { CallLayer } from "~/views/call/Call";
 import { useNotifications } from "~/app/notify/notify";
 import { Alerts } from "~/components/Alerts";
@@ -53,6 +54,7 @@ export function Workspace({ connection, health, onSwitchConnection }: { connecti
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg">
       <EnvironmentBar connection={connection} health={health} />
       <CloudBanner supported={!!health.features?.includes("cloud.signin")} />
+      <UpdateBanner />
       <div className="flex min-h-0 flex-1">
         <Rail connectionName={connection.name} />
         <main className="relative flex min-w-0 flex-1 flex-col">

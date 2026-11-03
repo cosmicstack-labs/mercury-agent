@@ -1,4 +1,4 @@
-import { AlertTriangle, BellRing, CheckCircle2, Hand, X } from "lucide-react";
+import { AlertTriangle, BellRing, CheckCircle2, Hand, Sparkles, X } from "lucide-react";
 import { useEffect } from "react";
 import { askPermission, openFromAlert, sendTest } from "~/app/notify/notify";
 import { useNotify, type Alert } from "~/app/notify/store";
@@ -10,7 +10,7 @@ import { cx } from "~/lib/cx";
  * "needs you" alert stays until handled; the rest fade after a while.
  */
 
-const STAY_MS: Record<Alert["kind"], number | null> = { needs: null, ask: null, done: 9000, failed: 14000 };
+const STAY_MS: Record<Alert["kind"], number | null> = { needs: null, ask: null, done: 9000, failed: 14000, update: 20000 };
 
 export function Alerts() {
   const alerts = useNotify((s) => s.alerts);
@@ -32,7 +32,7 @@ function AlertCard({ alert: a }: { alert: Alert }) {
     return () => window.clearTimeout(t);
   }, [a.id, a.kind, dismiss]);
 
-  const Icon = a.kind === "needs" ? Hand : a.kind === "failed" ? AlertTriangle : a.kind === "ask" ? BellRing : CheckCircle2;
+  const Icon = a.kind === "needs" ? Hand : a.kind === "failed" ? AlertTriangle : a.kind === "ask" ? BellRing : a.kind === "update" ? Sparkles : CheckCircle2;
   const tone = a.kind === "needs" ? "text-amber" : a.kind === "failed" ? "text-red" : "text-accent";
   return (
     <div role={a.kind === "needs" ? "alert" : "status"} className="pointer-events-auto flex animate-fade-in gap-3 rounded-xl border border-line bg-surface/95 p-3 shadow-xl backdrop-blur">
@@ -45,6 +45,9 @@ function AlertCard({ alert: a }: { alert: Alert }) {
             <button onClick={() => { dismiss(a.id); openFromAlert(a.sessionId!); }} className="rounded-md bg-ink/[0.07] px-2.5 py-1 text-xs font-medium text-ink hover:bg-ink/[0.12]">
               {a.kind === "needs" ? "Answer" : "Open"}
             </button>
+          )}
+          {a.action && (
+            <button onClick={() => { dismiss(a.id); a.action!.run(); }} className="rounded-md bg-ink/[0.07] px-2.5 py-1 text-xs font-medium text-ink hover:bg-ink/[0.12]">{a.action.label}</button>
           )}
           {a.kind === "ask" && (
             <>

@@ -6,6 +6,7 @@ import { usePulse } from "~/app/pulse";
 import { useRuntimeState, useUi } from "~/app/store";
 import { useConnections, type Connection } from "~/shell/connections";
 import { StateOrb } from "~/components/indicators/StateOrb";
+import { UpdateButton } from "~/updates/UpdatesPanel";
 
 /**
  * Where am I? The strip across the top of the window answers it at a
@@ -61,6 +62,8 @@ export function EnvironmentBar({ connection, health }: { connection: Connection;
       <span className="font-mono text-ink4" title={connection.baseUrl} data-selectable>{host}</span>
 
       <div className="flex-1" data-tauri-drag-region />
+
+      <UpdateButton />
 
       <span className="font-mono text-ink4" title={`Runtime ${health.version} · API v${health.apiVersion ?? "?"} · pid ${health.pid}`}>
         Mercury {health.version || "?"} · API v{health.apiVersion ?? "?"}

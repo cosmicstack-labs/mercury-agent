@@ -11,6 +11,7 @@ import { desktop } from "~/shell/tauri";
 import { updateLocalRuntime } from "~/shell/updateLocal";
 import { configureApi } from "~/api/client";
 import { installApprovalHandler } from "~/components/OwnerApprovals";
+import { UpdateLayer } from "~/updates/UpdateLayer";
 
 // A remote Mercury asks its owner before some actions: wait for the answer, then carry on.
 installApprovalHandler();
@@ -26,6 +27,8 @@ export function App() {
   return (
     <TooltipProvider>
       <Root />
+      {/* Updates work on every screen: a required one shows over everything. */}
+      <UpdateLayer />
     </TooltipProvider>
   );
 }

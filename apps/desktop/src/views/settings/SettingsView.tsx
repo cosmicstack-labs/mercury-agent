@@ -1,4 +1,5 @@
 import { Activity, Info, MessagesSquare, Palette, Server, Sparkles, UserRound } from "lucide-react";
+import { UpdatesSettings } from "~/updates/UpdatesSettings";
 import { useEffect, useState } from "react";
 import { cx } from "~/lib/cx";
 import { useUi } from "~/app/store";
@@ -9,7 +10,7 @@ import { useConnections, type Connection } from "~/shell/connections";
 import { desktop, isTauri } from "~/shell/tauri";
 import { Button } from "~/components/ui/Button";
 import { Switch } from "~/components/ui/Switch";
-import { Badge, Mono, Segmented } from "~/components/ui/bits";
+import { Badge, Mono, SectionTitle, Segmented } from "~/components/ui/bits";
 import { Dialog } from "~/components/ui/Dialog";
 import { AddRemote } from "~/shell/AddRemote";
 import { StateOrb } from "~/components/indicators/StateOrb";
@@ -260,6 +261,8 @@ function About({ health, onAnalytics }: { health: HealthInfo; onAnalytics?: () =
         <button className="mt-3 text-xs text-accent hover:underline" onClick={() => void desktop.openExternal("https://mercuryagent.sh")}>mercuryagent.sh</button>
         {onAnalytics && <button className="ml-4 mt-3 text-xs text-accent hover:underline" onClick={onAnalytics}>Your activity →</button>}
       </div>
+      <SectionTitle>Updates</SectionTitle>
+      <UpdatesSettings />
     </section>
   );
 }
