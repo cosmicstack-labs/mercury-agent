@@ -33,7 +33,8 @@ import { setToolOutcomeSink, unpublishPlugin, listLiveTools, listPluginCommands 
 import { InProcessRuntime, inProcessLogger } from './runtime/in-process.js';
 import { OutOfProcessRuntime } from './runtime/out-of-process.js';
 import { PluginChannel, type ChannelStatus } from './channel-bridge.js';
-import { transcribeAudio } from './transcribe.js';
+import { transcribeFile } from './transcribe.js';
+import { currentSpeechEngine } from './speech-choice.js';
 import { CallScheduler, registerCallScheduler } from './call-schedule.js';
 import type { PluginRuntime } from './runtime/types.js';
 import { providerSecretNames, whenMatches, type WhenCondition, type CatalogEntry, type DisabledCode, type PluginListItem, type PluginManifest, type PluginProviderId, type PluginsState } from './types.js';
@@ -277,10 +278,11 @@ export class PluginManager {
           () => resolvedSettings(manifest),
           (m) => { void this.notifyFn(m); },
           (key, value) => this.setSetting(id, key, value),
-          // Voice notes: transcribed with the owner's OpenAI provider, when there is one.
+          // Voice notes: transcribed with the owner's speech service (the voice
+          // chosen in Settings → Voice, else OpenAI, Gemini, Deepgram, ElevenLabs).
           (() => {
-            const openai = providerLookup('openai');
-            return openai?.apiKey ? (path: string) => transcribeAudio(path, { apiKey: openai.apiKey!, baseUrl: openai.baseUrl }) : null;
+            const engine = currentSpeechEngine('listen');
+            return engine ? (path: string) => transcribeFile(path, currentSpeechEngine('listen') ?? engine) : null;
           })(),
         );
       }

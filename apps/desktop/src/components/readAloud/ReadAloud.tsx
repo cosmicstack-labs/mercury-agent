@@ -40,12 +40,11 @@ export function ReadAloudNotice({ id }: { id: string }) {
     <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber/40 bg-amber/[0.06] px-3 py-2 text-xs text-ink2" role="alert">
       <Volume2 size={13} className="shrink-0 text-amber" />
       <span className="min-w-0 flex-1">
-        {phase === "needs-setup" ? "Reading aloud needs a speech service. Add an OpenAI key under Models, or a Deepgram or ElevenLabs key under Voice." : error}
+        {phase === "needs-setup" ? "Reading aloud needs a speech service. Choose one under Voice (Gemini, OpenAI, Deepgram or ElevenLabs) and add its key; Mercury uses it everywhere." : error}
       </span>
       {phase === "needs-setup" && (
         <>
-          <Button type="button" size="sm" variant="primary" onClick={() => { dismiss(); openSettings("models"); }}>Add OpenAI key</Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => { dismiss(); openSettings("voice"); }}>Voice settings</Button>
+          <Button type="button" size="sm" variant="primary" onClick={() => { dismiss(); openSettings("voice"); }}>Voice settings</Button>
         </>
       )}
       <button type="button" onClick={dismiss} className="text-ink4 hover:text-ink" aria-label="Dismiss"><X size={13} /></button>

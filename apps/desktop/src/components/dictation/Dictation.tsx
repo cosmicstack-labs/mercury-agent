@@ -68,13 +68,12 @@ export function DictationNotice({ d, className }: { d: Dictation; className?: st
       <Mic size={13} className="shrink-0 text-amber" />
       <span className="min-w-0 flex-1">
         {d.phase === "needs-setup"
-          ? "Voice typing needs a speech service. Add an OpenAI key under Models, or a Deepgram or ElevenLabs key under Voice."
+          ? "Voice typing needs a speech service. Choose one under Voice (Gemini, OpenAI, Deepgram or ElevenLabs) and add its key; Mercury uses it everywhere."
           : d.error}
       </span>
       {d.phase === "needs-setup" && (
         <>
-          <Button type="button" size="sm" variant="primary" onClick={() => { d.dismiss(); openSettings("models"); }}>Add OpenAI key</Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => { d.dismiss(); openSettings("voice"); }}>Voice settings</Button>
+          <Button type="button" size="sm" variant="primary" onClick={() => { d.dismiss(); openSettings("voice"); }}>Voice settings</Button>
         </>
       )}
       <button type="button" onClick={d.dismiss} className="text-ink4 hover:text-ink" aria-label="Dismiss"><X size={13} /></button>
