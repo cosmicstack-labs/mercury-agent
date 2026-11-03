@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import MacDmgLink from './MacDmgLink';
 import Link from '@docusaurus/Link';
 import clsx from 'clsx';
 import { detect, UNKNOWN, type Detected } from './detect';
@@ -89,10 +90,10 @@ export default function DesktopDownload({ className, compact = false }: { classN
   return (
     <div className={clsx('mx-dl', compact && 'mx-dl--compact', className)}>
       {main && primary ? (
-        <a href={main.url} className={clsx('mx-btn', compact ? 'mx-dl__small' : 'mx-btn--primary mx-dl__main')} data-asset={primary.key}>
+        <MacDmgLink assetKey={primary.key} href={main.url} className={clsx('mx-btn', compact ? 'mx-dl__small' : 'mx-btn--primary mx-dl__main')}>
           {iconFor(primary.key)}
           <span>{compact ? 'Download the .dmg instead' : `Download Mercury Desktop ${primary.label}`}</span>
-        </a>
+        </MacDmgLink>
       ) : (
         <Link to="/download" className="mx-btn mx-btn--primary mx-dl__main">
           <span>Download Mercury Desktop</span>
@@ -102,7 +103,7 @@ export default function DesktopDownload({ className, compact = false }: { classN
         Version {DESKTOP.version}{size && ` · ${size}`}
         {also.map((c) => {
           const a = asset(c.key);
-          return a ? <React.Fragment key={c.key}> · <a href={a.url}>{c.label}</a></React.Fragment> : null;
+          return a ? <React.Fragment key={c.key}> · <MacDmgLink assetKey={c.key} href={a.url}>{c.label}</MacDmgLink></React.Fragment> : null;
         })}
         {' · '}<Link to="/download">Other downloads</Link>
         {detected.windowsArm && <> · runs on Windows on ARM through emulation</>}

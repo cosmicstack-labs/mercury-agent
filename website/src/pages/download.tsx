@@ -1,4 +1,5 @@
 import Heading from '@theme/Heading';
+import MacDmgLink from '@site/src/components/Download/MacDmgLink';
 import React, { useEffect, useState } from 'react';
 import Link from '@docusaurus/Link';
 import Head from '@docusaurus/Head';
@@ -39,10 +40,10 @@ function Platform({ group, mine }: { group: (typeof GROUPS)[number]; mine: boole
         <ul className="mx-dlp__list">
           {items.map(({ key, a }) => (
             <li key={key}>
-              <a href={a!.url} className="mx-dlp__file">
+              <MacDmgLink assetKey={key} href={a!.url} className="mx-dlp__file">
                 <span className="mx-dlp__what">{LABEL[key].what}</span>
                 <span className="mx-dlp__detail">{LABEL[key].detail}{sizeOf(a) && ` · ${sizeOf(a)}`}</span>
-              </a>
+              </MacDmgLink>
             </li>
           ))}
         </ul>

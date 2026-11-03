@@ -1,4 +1,5 @@
 import React from 'react';
+import MacDmgLink from './MacDmgLink';
 import clsx from 'clsx';
 import { AppleIcon, LinuxIcon, WindowsIcon } from './DesktopDownload';
 import { asset, sizeOf, type AssetKey } from './release';
@@ -20,13 +21,13 @@ export default function PlatformGrid({ className }: { className?: string }): Rea
         const size = sizeOf(a);
         return (
           <li key={p.key}>
-            <a href={a.url} className="mx-platforms__item" data-asset={p.key}>
+            <MacDmgLink assetKey={p.key} href={a.url} className="mx-platforms__item">
               <span className="mx-platforms__icon">{p.icon}</span>
               <span className="mx-platforms__text">
                 <span className="mx-platforms__os">{p.os}</span>
                 <span className="mx-platforms__what">{p.what}{size && ` · ${size}`}</span>
               </span>
-            </a>
+            </MacDmgLink>
           </li>
         );
       })}

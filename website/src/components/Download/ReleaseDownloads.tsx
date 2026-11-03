@@ -1,5 +1,6 @@
 import React from 'react';
 import Link from '@docusaurus/Link';
+import MacDmgLink from './MacDmgLink';
 import { asset, DESKTOP, LABEL, releaseDate, SERVER, SERVER_LABEL, serverAsset, sizeOf, type AssetKey, type ServerKey } from './release';
 
 const DESKTOP_KEYS: AssetKey[] = ['macos-arm64', 'macos-x64', 'windows-x64-setup', 'windows-x64-msi', 'linux-appimage', 'linux-deb', 'linux-rpm'];
@@ -29,7 +30,7 @@ export default function ReleaseDownloads(): React.ReactElement {
           {desktop.map(([k, a]) => (
             <tr key={k}>
               <td>{LABEL[k].os}: {LABEL[k].what}<br /><small>{LABEL[k].detail}</small></td>
-              <td><a href={a!.url}><code>{a!.name}</code></a></td>
+              <td><MacDmgLink assetKey={k} href={a!.url}><code>{a!.name}</code></MacDmgLink></td>
               <td>{sizeOf(a)}</td>
             </tr>
           ))}
