@@ -1,9 +1,10 @@
 /**
  * Text to speech, with the speech service the owner already set up (the
  * same one voice typing uses, see pickSpeechEngine): OpenAI
- * (gpt-4o-mini-tts, falling back to tts-1), Deepgram (Aura 2) or
- * ElevenLabs (Flash v2.5). Always MP3, so every client can play it.
- * Used to read Mercury's replies aloud in the apps.
+ * (gpt-4o-mini-tts, falling back to tts-1), Gemini (Flash TTS), Deepgram
+ * (Aura 2) or ElevenLabs (Flash v2.5). MP3, or WAV from Gemini (speechMime
+ * says which); every client plays both. Used to read Mercury's replies aloud
+ * in the apps.
  */
 import type { SpeechEngine } from './transcribe.js';
 
@@ -16,6 +17,14 @@ const OPENAI_VOICE = 'coral';
 const DEEPGRAM_MODEL = 'aura-2-thalia-en';
 const ELEVENLABS_VOICE = 'JBFqnCBsd6RMkjVDRZzb';
 const ELEVENLABS_MODEL = 'eleven_flash_v2_5';
+const GEMINI_VOICE = 'Kore';
+/** Speaking models, newest first; the next is tried when one isn't offered or is busy. */
+const GEMINI_SPEAK_MODELS = ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'];
+
+/** The audio type synthesizeSpeech returns for an engine. */
+export function speechMime(engine: SpeechEngine): string {
+  return engine.kind === 'gemini' ? 'audio/wav' : 'audio/mpeg';
+}
 
 type Fetch = typeof fetch;
 
@@ -24,7 +33,7 @@ export interface SpeakOptions {
   signal?: AbortSignal;
 }
 
-/** Speak `text` with `engine`; resolves with MP3 bytes. */
+/** Speak `text` with `engine`; resolves with audio bytes of type speechMime(engine). */
 export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts: SpeakOptions = {}): Promise<Uint8Array> {
   const input = text.trim();
   if (!input) throw new Error('nothing to say');
@@ -39,6 +48,30 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
       signal,
     });
     return audioOf(res, 'Deepgram');
+  }
+
+  if (engine.kind === 'gemini') {
+    let last: Response | null = null;
+    for (const model of GEMINI_SPEAK_MODELS) {
+      const res = await f(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'x-goog-api-key': engine.apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: input.slice(0, SPEAK_MAX_CHARS) }] }],
+          generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } } },
+        }),
+        signal,
+      });
+      if (res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> } }> };
+        const part = body.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData;
+        if (!part?.data) throw new Error('Gemini sent no audio');
+        return asWav(Buffer.from(part.data, 'base64'), part.mimeType ?? '');
+      }
+      last = res;
+      if (res.status !== 404 && res.status < 500) break;
+    }
+    return audioOf(last!, 'Gemini');
   }
 
   if (engine.kind === 'elevenlabs') {
@@ -62,6 +95,30 @@ export async function synthesizeSpeech(text: string, engine: SpeechEngine, opts:
   // An OpenAI-compatible endpoint without the newer model: try the classic one.
   if (res.status === 400 || res.status === 404) res = await say('tts-1');
   return audioOf(res, 'OpenAI');
+}
+
+/**
+ * Gemini sends a WAV file, or raw 16-bit PCM ("audio/L16;rate=24000"):
+ * the latter gets a WAV header so every player takes it.
+ */
+export function asWav(bytes: Uint8Array, mime: string): Uint8Array {
+  if (bytes.byteLength >= 12 && Buffer.from(bytes.subarray(0, 4)).toString('latin1') === 'RIFF') return bytes;
+  const rate = Number(/rate=(\d+)/i.exec(mime)?.[1] ?? 24000);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'latin1');
+  header.writeUInt32LE(36 + bytes.byteLength, 4);
+  header.write('WAVE', 8, 'latin1');
+  header.write('fmt ', 12, 'latin1');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36, 'latin1');
+  header.writeUInt32LE(bytes.byteLength, 40);
+  return new Uint8Array(Buffer.concat([header, Buffer.from(bytes)]));
 }
 
 async function audioOf(res: Response, vendor: string): Promise<Uint8Array> {

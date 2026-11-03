@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,7 +6,7 @@ const home = await vi.hoisted(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  for (const k of ['OPENAI_API_KEY', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY']) delete process.env[k];
+  for (const k of ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY']) delete process.env[k];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mercury-speak-'));
   fs.writeFileSync(path.join(dir, 'mercury.yaml'), 'identity:\n  owner: Test\n');
   process.env.MERCURY_HOME = dir;
@@ -22,7 +22,23 @@ const withOpenAI = () => writeFileSync(join(home, 'mercury.yaml'), [
   'identity:', '  owner: Test', 'providers:', '  openai:', '    name: openai', '    apiKey: sk-test-openai-000000000000', '    baseUrl: https://api.openai.com/v1', '    model: gpt-4o-mini', '    enabled: true', '',
 ].join('\n'));
 
-afterEach(() => { setSpeakFetch(undefined); delete process.env.DEEPGRAM_API_KEY; delete process.env.ELEVENLABS_API_KEY; });
+afterEach(() => {
+  setSpeakFetch(undefined);
+  delete process.env.DEEPGRAM_API_KEY; delete process.env.ELEVENLABS_API_KEY; delete process.env.GEMINI_API_KEY;
+  rmSync(join(home, 'plugins'), { recursive: true, force: true });
+  writeFileSync(join(home, 'mercury.yaml'), 'identity:\n  owner: Test\n');
+});
+
+/** Settings → Voice: what the owner picked for Optimus's voice. */
+const chooseVoice = (values: Record<string, string>) => {
+  mkdirSync(join(home, 'plugins', 'optimus'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'optimus', 'settings.json'), JSON.stringify({ settingsVersion: 1, values }));
+};
+const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45, 1, 2]);
+const geminiReply = (bytes: Uint8Array, mimeType = 'audio/wav') => ({
+  ok: true, status: 200,
+  json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') } }] } }] }),
+});
 
 describe('read aloud', () => {
   it('with no speech service, says how to turn one on', async () => {
@@ -75,5 +91,49 @@ describe('read aloud', () => {
     const res = await post('Hello');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/rejected the key/) });
+  });
+
+  it('speaks with a Gemini key and returns WAV', async () => {
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    const f = vi.fn().mockResolvedValue(geminiReply(wav));
+    setSpeakFetch(f as never);
+    expect(await (await speak.request('http://127.0.0.1/api/speak')).json()).toMatchObject({ available: true, engine: 'Gemini' });
+    const res = await post('Hello from Mercury.');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('audio/wav');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(wav);
+    const [url, init] = f.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-[^:]+tts:generateContent$/);
+    expect((init.headers as Record<string, string>)['x-goog-api-key']).toBe('gm-test-key');
+    expect(JSON.parse(String(init.body)).generationConfig.responseModalities).toEqual(['AUDIO']);
+  });
+
+  it('raw PCM from Gemini gets a WAV header', async () => {
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    setSpeakFetch(vi.fn().mockResolvedValue(geminiReply(new Uint8Array([1, 2, 3, 4]), 'audio/L16;codec=pcm;rate=24000')) as never);
+    const bytes = new Uint8Array(await (await post('Hi')).arrayBuffer());
+    expect(Buffer.from(bytes.subarray(0, 4)).toString('latin1')).toBe('RIFF');
+    expect(Buffer.from(bytes).readUInt32LE(24)).toBe(24000);
+    expect(bytes.byteLength).toBe(44 + 4);
+  });
+
+  it('the voice chosen in Settings → Voice comes first: Gemini over OpenAI', async () => {
+    withOpenAI();
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    chooseVoice({ voiceEngine: 'gemini' });
+    expect(await (await speak.request('http://127.0.0.1/api/speak')).json()).toMatchObject({ engine: 'Gemini' });
+    chooseVoice({ voiceEngine: 'openai' });
+    expect(await (await speak.request('http://127.0.0.1/api/speak')).json()).toMatchObject({ engine: 'OpenAI' });
+  });
+
+  it('a chosen voice without a key falls back to one that has a key', async () => {
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    chooseVoice({ voiceEngine: 'openai' });
+    expect(await (await speak.request('http://127.0.0.1/api/speak')).json()).toMatchObject({ engine: 'Gemini' });
+  });
+
+  it('says Gemini is an option when nothing is set up', async () => {
+    const res = await post('Hello');
+    expect(((await res.json()) as { error: string }).error).toMatch(/Gemini/);
   });
 });

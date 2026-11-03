@@ -230,6 +230,14 @@ jobs:
         working-directory: apps/desktop
       - run: npm ci --no-audit --no-fund
         working-directory: website
+      # A patch release (x.y.Z, Z > 0) changes only what installed apps read:
+      # the update manifest and the desktop update feed. The download page,
+      # hero and docs stay as they are (a fresh install updates itself).
+      - name: Patch or feature release?
+        id: kind
+        run: |
+          v="${{ needs.server.outputs.version }}"
+          if [ "${v##*.}" != "0" ]; then echo "feeds_only=true" >> "$GITHUB_OUTPUT"; else echo "feeds_only=false" >> "$GITHUB_OUTPUT"; fi
       - name: Point the site and the update manifest at the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -237,16 +245,25 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           git show "${TAG}:RELEASE.md" > /tmp/RELEASE.md
-          node scripts/release-site.mjs "${{ needs.server.outputs.version }}" --notes /tmp/RELEASE.md
-      - name: Rebuild the site (docs/)
+          node scripts/release-site.mjs "${{ needs.server.outputs.version }}" --notes /tmp/RELEASE.md ${{ steps.kind.outputs.feeds_only == 'true' && '--feeds-only' || '' }}
+      - name: Patch release — copy only the update feeds into the live site
+        if: steps.kind.outputs.feeds_only == 'true'
+        run: |
+          mkdir -p docs/updates docs/desktop
+          cp website/static/updates/manifest.json website/static/updates/manifest.json.sig docs/updates/
+          cp website/static/desktop/latest.json docs/desktop/
+      - name: Feature release — rebuild the site (docs/)
+        if: steps.kind.outputs.feeds_only != 'true'
         working-directory: website
         run: npm run build:prod
-      - name: Keep the hand-written files docs/ also holds
-        run: git ls-files -d docs | xargs -r git checkout --
+      - name: Keep the hand-written files docs/ also holds, drop stale built assets
+        if: steps.kind.outputs.feeds_only != 'true'
+        run: |
+          git ls-files -d docs | grep -v '^docs/assets/' | xargs -r git checkout --
       - name: Push to main
         run: |
           git config user.name "mercury-release[bot]"
           git config user.email "mercury@cosmicstack.org"
-          git add website/static/desktop website/static/updates website/src/data docs
+          git add -A website/static/desktop website/static/updates website/src/data docs
           git commit -m "release: v${{ needs.server.outputs.version }} on mercuryagent.sh (downloads, updates, docs)" || { echo "nothing to publish"; exit 0; }
           git push origin HEAD:main

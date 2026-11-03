@@ -6,7 +6,7 @@ const home = await vi.hoisted(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  for (const k of ['OPENAI_API_KEY', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY']) delete process.env[k];
+  for (const k of ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY']) delete process.env[k];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mercury-transcribe-'));
   fs.writeFileSync(path.join(dir, 'mercury.yaml'), 'identity:\n  owner: Test\n');
   process.env.MERCURY_HOME = dir;
@@ -22,7 +22,10 @@ const withOpenAI = () => writeFileSync(join(home, 'mercury.yaml'), [
   'identity:', '  owner: Test', 'providers:', '  openai:', '    name: openai', '    apiKey: sk-test-openai-000000000000', '    baseUrl: https://api.openai.com/v1', '    model: gpt-4o-mini', '    enabled: true', '',
 ].join('\n'));
 
-afterEach(() => { setTranscribeFetch(undefined); delete process.env.DEEPGRAM_API_KEY; });
+afterEach(() => {
+  setTranscribeFetch(undefined); delete process.env.DEEPGRAM_API_KEY; delete process.env.GEMINI_API_KEY;
+  writeFileSync(join(home, 'mercury.yaml'), 'identity:\n  owner: Test\n');
+});
 
 describe('dictation', () => {
   it('with no speech service, says how to turn one on', async () => {
@@ -65,5 +68,29 @@ describe('dictation', () => {
   it('refuses non-audio bodies', async () => {
     withOpenAI();
     expect((await post(audio, 'application/json')).status).toBe(415);
+  });
+
+  it('listens with a Gemini key: the recording goes inline, the transcript comes back', async () => {
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    const f = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: ' Hello from Mercury \n' }] } }] }) });
+    setTranscribeFetch(f as never);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ text: 'Hello from Mercury', engine: 'Gemini' });
+    const [url, init] = f.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/models\/gemini-2\.5-flash-lite:generateContent$/);
+    const part = JSON.parse(String(init.body)).contents[0].parts[0];
+    expect(part.inlineData.mimeType).toBe('audio/webm');
+    expect(Buffer.from(part.inlineData.data, 'base64')).toEqual(Buffer.from(audio));
+  });
+
+  it('a Gemini model that is busy or gone falls through to the next', async () => {
+    process.env.GEMINI_API_KEY = 'gm-test-key';
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ error: { message: 'overloaded' } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) });
+    setTranscribeFetch(f as never);
+    expect(await (await post()).json()).toMatchObject({ text: 'ok' });
+    expect(f).toHaveBeenCalledTimes(2);
   });
 });

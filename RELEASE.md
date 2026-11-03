@@ -1,38 +1,21 @@
-# Release v1.5.0
+# Release v1.5.1
 
-## ☿ Mercury Agent v1.5.0: Mercury Desktop
+## ☿ Mercury Agent v1.5.1
 
-Mercury now has a desktop app for macOS, Windows and Linux. It runs Mercury on your computer or connects to Mercury on a server, keeps itself and your servers up to date, and asks you before anyone new gets in.
+Reading aloud and voice typing now use the voice you chose, Gemini included, and the Optimus update button tells you what it did.
 
-### Mercury Desktop (new)
-- **One app for chat, code, bots and research.** It installs and starts Mercury on this computer for you, or connects to any number of Mercury servers and switches between them from the top bar.
-- **Download it at [mercuryagent.sh/download](https://mercuryagent.sh/download).** This first release isn't code-signed yet: macOS asks you to allow it once (System Settings → Privacy & Security → Open Anyway), Windows SmartScreen once (More info → Run anyway). On a Mac, `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh` installs it with no prompt.
-- **Bots 2.0 in the app.** An inbox of run reports, create and edit bots in words, answer a bot's question mid-run (Allow once, Always allow, Deny), design a fleet's crew or let Mercury decide.
-- **Commands and skills in the composer** (`/` and `#`), saved chats, microphone and permissions for Optimus on every OS.
+### Speech
+- **Your voice choice counts everywhere.** Reading a reply aloud, voice typing and voice notes from Telegram or WhatsApp use the voice service chosen in Settings → Voice when it has a key. A fresh install with only a Gemini key no longer asks for an OpenAI key.
+- **Gemini speaks and listens.** Gemini reads replies aloud (about 4 seconds for a sentence) and transcribes what you say, with the same key Optimus uses. A Gemini model that's busy or retired falls through to the next one.
+- **The "needs a speech service" notice** points to Voice settings and names every option (Gemini, OpenAI, Deepgram, ElevenLabs) instead of an "Add OpenAI key" button.
 
-### Updates that never leave you broken
-- **An Update button, top right, like Chrome's.** It appears only when the app or one of your servers has an update, gets more noticeable the longer it waits, and shows what's new before you update. Settings → About checks the app and every server in one go, and "Update everything" does them all.
-- **Server updates roll back by themselves.** `mercury upgrade` (and the desktop) waits for running work, downloads with checksums (resuming if interrupted), backs up, installs, starts the new version and checks it works. If it doesn't, the old version and your settings come back on their own.
-- **Desktop updates** download in the background, resume after a dropped connection, are verified before install, and install when you restart or quit.
-- **Required updates** (for example a security fix) show a full screen; continuing without updating takes ticking every risk. Everything else is dismissible.
-- **One signed update notice** tells every install what's current; an unsigned or tampered one is ignored, and being offline never blocks anything.
+### Mercury Desktop
+- **"Update Optimus" says what happened** on the microphone & permissions card: updated, no newer version yet, or why it failed. It used to spin for a second and show nothing.
 
-### Remote access you control
-- **New devices need your approval.** A phone or laptop signing in shows a code; you approve it with `approve CODE` on Telegram or WhatsApp, in `/server`, or in Mercury Desktop.
-- **Sensitive actions from a remote device ask you first** (the shell, Allow All, plugins, channel tokens, restarts, server updates). Remote shell is off by default.
-- **Tunnels no longer count as "this computer"**, unused devices expire after 30 days, revoking a device cuts it off at once, and a known device from a new address tells you.
-- **`/server` and `mercury server`**: remote access on/off, allowed IP addresses, device tokens (list, make, revoke), approvals and the security log. `mercury doctor --security` checks it all.
-
-### Research
-- **One visible run**: a plan you can approve, live progress with failures and their reasons, "Write the report now", and a report even when a run is cut short.
-- **Reports export as PDF and Word**, sources show their site icons, and everything Mercury makes is saved in `~/mercury-artifacts` (one folder per chat) instead of loose in your home folder.
-
-### Also in this release
-- **MCP servers**: Mercury can use tools from Model Context Protocol servers (`mercury mcp add`).
-- **Chat attachments** (photos and PDFs), bots take files too, bot avatars, renaming bots.
-- Runcrate provider preset; a declared vision capability beats the name-based guess; a zero daily budget means no ceiling; Telegram keeps typing while Mercury prepares.
+### Plugins
+- **Optimus 0.5.1 is in the catalog** (a plugin-only update, works with Mercury 1.3.9 and newer): the microphone picker, live voice-level test, off switch and permission checks on Mercury Desktop's Optimus page. Update it under Plugins → Optimus.
 
 ### Install
-- **Desktop:** [mercuryagent.sh/download](https://mercuryagent.sh/download)
+- **Desktop:** [mercuryagent.sh/download](https://mercuryagent.sh/download) · Mac: `curl -fsSL https://mercuryagent.sh/install-desktop.sh | sh`
 - **Server / CLI:** `curl -fsSL https://mercuryagent.sh/install.sh | sh` · Windows: `irm https://mercuryagent.sh/install.ps1 | iex` · npm: `npm i -g @cosmicstack/mercury-agent`
-- **Already installed:** `mercury upgrade`
+- **Already installed:** the Update button in Mercury Desktop, or `mercury upgrade`
