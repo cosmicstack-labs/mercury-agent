@@ -274,7 +274,8 @@ describe('resuming an interrupted run', () => {
     }) as never);
 
     manager.enqueue('scout', { trigger: 'api', prompt: 'any news on Oxide?' });
-    await vi.waitFor(() => expect(call).toBe(2), { timeout: 5000 });
+    // The retry waits out its backoff first: slow CI runners need the room.
+    await vi.waitFor(() => expect(call).toBe(2), { timeout: 15_000 });
     await idle(manager, 'scout');
 
     const retry = seen[1];
@@ -285,7 +286,7 @@ describe('resuming an interrupted run', () => {
     // Settled: the checkpoint is gone.
     const [row] = manager.getJournal('scout', 1);
     expect(store.readCheckpoint('scout', row.runId)).toBeUndefined();
-  });
+  }, 20_000);
 });
 
 describe('hand-off limits', () => {

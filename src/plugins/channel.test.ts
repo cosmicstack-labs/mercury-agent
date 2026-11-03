@@ -259,7 +259,8 @@ describe('plugin channels (plugin API 1.1)', () => {
     };
     const sent = () => {
       const f = join(pluginDataDir('whatsapp'), 'out.jsonl');
-      return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+      // Only whole lines: the plugin may be halfway through writing one.
+      return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter((l) => l.trim().endsWith('}')).map((l) => JSON.parse(l)) : [];
     };
     const callsim = (method: string, params: Record<string, unknown>) => inject({ method, params }, 'callsim');
 

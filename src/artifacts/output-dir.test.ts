@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ChatFolders, folderLabel, freeName, outputRoot } from './output-dir.js';
 
@@ -13,7 +13,7 @@ describe('the output folder', () => {
   it('is ~/mercury-artifacts unless set to an absolute or ~ path', () => {
     expect(outputRoot()).toBe(join(homedir(), 'mercury-artifacts'));
     expect(outputRoot('~/Work/Mercury')).toBe(join(homedir(), 'Work', 'Mercury'));
-    expect(outputRoot('/Volumes/data/out/')).toBe('/Volumes/data/out');
+    expect(outputRoot('/Volumes/data/out/')).toBe(resolve('/Volumes/data/out'));
     expect(outputRoot('relative/dir')).toBe(join(homedir(), 'mercury-artifacts'));
   });
 
