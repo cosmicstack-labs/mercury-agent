@@ -484,8 +484,14 @@ async function followJob(conn: Connection, first: UpdateJob): Promise<void> {
     await pause(1500);
     try {
       const info = await fetchServerUpdates(conn);
+      if (!info) {
+        // Up again on a version without the updates API (1.4.2 and older): health says it's back.
+        const v = await serverVersion(conn);
+        if (v === null) throw new Error("down");
+        job = { ...job, state: v === "" || v === job.to ? "done" : "rolled-back", percent: 100, message: v === "" || v === job.to ? `Updated to ${job.to}` : `Running ${v}` };
+        break;
+      }
       downSince = null;
-      if (!info) throw new Error("no updates API");
       setServer(conn.id, { info, version: info.current });
       if (info.job && info.job.id === job.id) job = info.job;
       else if (!info.job && info.current === job.to) job = { ...job, state: "done", percent: 100, message: `Updated to ${job.to}` };

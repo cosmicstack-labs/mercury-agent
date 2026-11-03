@@ -522,6 +522,30 @@ function realPrepareSteps(): PrepareSteps {
   };
 }
 
+/** Is Mercury running (as the daemon or the login service)? */
+async function runtimeAlive(): Promise<boolean> {
+  try {
+    const d = await import('../cli/daemon.js');
+    const sv = await import('../cli/service.js');
+    return d.getDaemonStatus().running || d.getForegroundRuntimeStatus().running || (sv.isServiceInstalled() && sv.isServiceRunning());
+  } catch {
+    return true; // can't tell: keep waiting for health
+  }
+}
+
+/** `mercury --version` of the program installed now (what the next start runs), or null. */
+async function installedVersion(): Promise<string | null> {
+  const { buildDaemonSpawnArgs } = await import('../cli/daemon.js');
+  const { command, args } = buildDaemonSpawnArgs();
+  const argv = [...args.slice(0, -2), '--version'];
+  return new Promise((resolve) => {
+    execFile(command, argv, { timeout: 15_000, encoding: 'utf-8' }, (err, stdout) => {
+      const line = String(stdout ?? '').trim().split('\n').pop()?.trim() ?? '';
+      resolve(!err && /^\d+\.\d+\.\d+/.test(line) ? line : null);
+    });
+  });
+}
+
 async function healthVersion(): Promise<{ version: string; booting: boolean } | null> {
   const { getWebPort } = await import('../web/auth.js');
   try {
@@ -565,10 +589,27 @@ export function realWorkerSteps(): WorkerSteps {
       d.ensureDaemonRunning();
     },
     async health(version, timeoutMs) {
-      const until = Date.now() + timeoutMs;
+      const started = Date.now();
+      const until = started + timeoutMs;
+      let installed: string | null | undefined;
+      let goneSince: number | null = null;
       while (Date.now() < until) {
+        // A new version that crashed on start doesn't get the full wait: no
+        // process for 5 s (after a 10 s grace) is an answer already.
+        if (Date.now() - started > 10_000 && !(await runtimeAlive())) {
+          goneSince ??= Date.now();
+          if (Date.now() - goneSince > 5_000) return false;
+        } else goneSince = null;
         const h = await healthVersion();
-        if (h && h.version === version && !h.booting) return true;
+        if (h && !h.booting) {
+          if (h.version === version) return true;
+          // Standalone builds up to 1.4.2 answer health with an empty version:
+          // then the program now installed says which one it is.
+          if (h.version === '') {
+            installed ??= await installedVersion();
+            if (installed === version) return true;
+          }
+        }
         await new Promise((r) => setTimeout(r, 1000));
       }
       return false;
