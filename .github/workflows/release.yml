@@ -85,7 +85,7 @@ jobs:
           done
           grep -q "^version = \"$v\"" apps/desktop/src-tauri/Cargo.toml || { echo "::error::Cargo.toml is not $v"; exit 1; }
           grep -q "^# Release v$v" RELEASE.md || { echo "::error::RELEASE.md is not the notes for v$v"; exit 1; }
-          if npm view "@cosmicstack/mercury-agent@$v" version >/dev/null 2>&1; then echo "::error::$v is already on npm"; exit 1; fi
+          if npm view "@cosmicstack/mercury-agent@$v" version >/dev/null 2>&1; then echo "::warning::$v is already on npm; the npm step will skip it"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - run: npm ci --no-audit --no-fund
       - run: npm run build
@@ -197,7 +197,14 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        # Already there (published by hand after a failed run): carry on.
+        run: |
+          v="${{ needs.server.outputs.version }}"
+          if npm view "@cosmicstack/mercury-agent@$v" version >/dev/null 2>&1; then
+            echo "$v is already on npm"
+          else
+            npm publish --access public --provenance
+          fi
       - name: Make the release public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
