@@ -4,11 +4,20 @@
         <title>Mercury Blog</title>
         <link>https://mercuryagent.sh/blog</link>
         <description>News, engineering notes and field reports from the team building Mercury.</description>
-        <lastBuildDate>Sat, 31 Oct 2026 00:00:00 GMT</lastBuildDate>
+        <lastBuildDate>Tue, 03 Nov 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
         <generator>https://github.com/jpmonette/feed</generator>
         <language>en</language>
         <copyright>© 2026 Cosmic Stack</copyright>
+        <item>
+            <title><![CDATA[Mercury 1.5: Mercury Desktop]]></title>
+            <link>https://mercuryagent.sh/blog/mercury-1-5</link>
+            <guid>https://mercuryagent.sh/blog/mercury-1-5</guid>
+            <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate>
+            <description><![CDATA[Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.]]></description>
+            <category>News</category>
+            <category>Releases</category>
+        </item>
         <item>
             <title><![CDATA[Your agent returned 200 OK. It may still have failed]]></title>
             <link>https://mercuryagent.sh/blog/agent-observability-first-wrong-step</link>

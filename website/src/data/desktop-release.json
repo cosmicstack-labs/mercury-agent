@@ -6,37 +6,37 @@
     "macos-arm64": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_aarch64.dmg",
       "name": "Mercury_1.5.0_aarch64.dmg",
-      "size": 0
+      "size": 5442931
     },
     "macos-x64": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_x64.dmg",
       "name": "Mercury_1.5.0_x64.dmg",
-      "size": 0
+      "size": 5716537
     },
     "windows-x64-setup": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_x64-setup.exe",
       "name": "Mercury_1.5.0_x64-setup.exe",
-      "size": 0
+      "size": 4381343
     },
     "windows-x64-msi": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_x64_en-US.msi",
       "name": "Mercury_1.5.0_x64_en-US.msi",
-      "size": 0
+      "size": 5365760
     },
     "linux-appimage": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_amd64.AppImage",
       "name": "Mercury_1.5.0_amd64.AppImage",
-      "size": 0
+      "size": 84449784
     },
     "linux-deb": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury_1.5.0_amd64.deb",
       "name": "Mercury_1.5.0_amd64.deb",
-      "size": 0
+      "size": 5892362
     },
     "linux-rpm": {
       "url": "https://github.com/cosmicstack-labs/mercury-agent/releases/download/v1.5.0/Mercury-1.5.0-1.x86_64.rpm",
       "name": "Mercury-1.5.0-1.x86_64.rpm",
-      "size": 0
+      "size": 5896909
     }
   }
 }

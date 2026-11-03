@@ -5,6 +5,22 @@
     "description": "News, engineering notes and field reports from the team building Mercury.",
     "items": [
         {
+            "id": "https://mercuryagent.sh/blog/mercury-1-5",
+            "content_html": null,
+            "url": "https://mercuryagent.sh/blog/mercury-1-5",
+            "title": "Mercury 1.5: Mercury Desktop",
+            "summary": "Mercury 1.5.0 ships Mercury Desktop for macOS, Windows and Linux, remote access the owner approves, and updates that roll back on their own.",
+            "date_modified": "2026-11-03T00:00:00.000Z",
+            "author": {
+                "name": "Mercury Engineering",
+                "url": "https://github.com/cosmicstack-labs/mercury-agent"
+            },
+            "tags": [
+                "News",
+                "Releases"
+            ]
+        },
+        {
             "id": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
             "content_html": null,
             "url": "https://mercuryagent.sh/blog/agent-observability-first-wrong-step",
