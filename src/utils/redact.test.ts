@@ -33,6 +33,13 @@ describe('secret redaction', () => {
     expect(out).toContain(join('Bear****', '.sig'));
   });
 
+  it('masks a short password in yaml and a Basic header in full', () => {
+    expect(redactSecrets('username: alice\n    password: s3cret\n')).toBe('username: alice\n    password: ****\n');
+    expect(redactSecrets('password = "hunter22hunter22"')).toBe('password = "****"');
+    const token = Buffer.from('alice:s3cret').toString('base64');
+    expect(redactSecrets(`Authorization: Basic ${token}`)).toBe('Authorization: Basic ****');
+  });
+
   it('leaves ordinary code and config untouched', () => {
     const code = 'const apiKeyField = "name";\nskylight.trim();\nconst tokenCount = 123456789012;';
     expect(redactSecrets(code)).toBe(code);

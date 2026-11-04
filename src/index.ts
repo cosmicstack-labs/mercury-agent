@@ -96,6 +96,7 @@ import { runWithWatchdog } from './cli/watchdog.js';
 import { setGitHubToken } from './utils/github.js';
 import { selectWithArrowKeys } from './utils/arrow-select.js';
 import { ProviderModelFetchError, fetchProviderModelCatalog } from './utils/provider-models.js';
+import { withBaseUrl } from './providers/basic-auth.js';
 import { initCloudTokenStore } from './cloud/token-store.js';
 import { clearCloudRuntimeOnline, markCloudRuntimeOnline } from './cloud/runtime-status.js';
 import { startWebServer, stopWebServer, updateStatus as updateWebStatus, setUserMemory as setWebUserMemory, setWebChannel as setWebWebChannel, setScheduler as setWebScheduler, setAgentSupervisor as setWebSupervisor, setBackgroundTaskManager as setWebBgTasks, setSpotifyClient as setWebSpotify, setProgrammingMode as setWebProgrammingMode, setModelSwitchCallback as setWebModelSwitch, setCurrentProviderCallback as setWebCurrentProvider, setStatusSnapshotCallback as setWebStatusSnapshot, setKanbanSupervisor as setWebKanban, setKanbanBoardManager as setWebBoardManager, setKanbanProviders as setWebKanbanProviders, setIDEProviders as setWebIDEProviders, setSessionRepository as setWebSessions, setSessionSyncEnabledCallback as setWebSessionSyncEnabled, setBotManager as setWebBotManager, setBotsWebhookSecret, setShutdownHandler, setMcpManager as setWebMcpManager, setStopCallback as setWebStop, setSessionBusyLookup as setWebSessionBusy, setQueueControls as setWebQueueControls, setResearchControls as setWebResearchControls, setBudgetControls as setWebBudgetControls } from './web/server.js';
@@ -468,10 +469,7 @@ async function promptOllamaLocalModelSelection(config: MercuryConfig, isReconfig
 
   console.log(chalk.dim('  Fetching Ollama Local models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('ollamaLocal', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('ollamaLocal', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Ollama Local',
       catalog.recommendedModel,
@@ -526,10 +524,7 @@ async function promptLmStudioModelSelection(config: MercuryConfig, isReconfig: b
 
   console.log(chalk.dim('  Fetching LM Studio models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('lmStudio', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('lmStudio', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'LM Studio',
       catalog.recommendedModel,
@@ -585,10 +580,7 @@ async function promptAtomicChatModelSelection(config: MercuryConfig, isReconfig:
 
   console.log(chalk.dim('  Fetching Atomic Chat models...'));
   try {
-    const catalog = await fetchProviderModelCatalog('atomicChat', {
-      ...existingConfig,
-      baseUrl,
-    });
+    const catalog = await fetchProviderModelCatalog('atomicChat', withBaseUrl(existingConfig, baseUrl));
     const model = await chooseProviderModel(
       'Atomic Chat',
       catalog.recommendedModel,
@@ -637,8 +629,7 @@ async function promptOpenAICompatSetup(config: MercuryConfig, isReconfig: boolea
   console.log(chalk.dim('  Fetching models from server...'));
   try {
     const catalog = await fetchProviderModelCatalog('openaiCompat', {
-      ...existingConfig,
-      baseUrl,
+      ...withBaseUrl(existingConfig, baseUrl),
       apiKey: resolvedApiKey,
     });
     const model = await chooseProviderModel(

@@ -95,9 +95,12 @@ function newBaseUrl(saved: ProviderConfig, body: { baseUrl?: unknown }): boolean
  */
 function draft(saved: ProviderConfig, body: { apiKey?: unknown; baseUrl?: unknown; model?: unknown }, opts: { forCheck?: boolean } = {}): ProviderConfig {
   const typedKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : null;
+  const toNewServer = opts.forCheck && newBaseUrl(saved, body);
   return {
     ...saved,
-    apiKey: typedKey ?? (opts.forCheck && newBaseUrl(saved, body) ? '' : saved.apiKey),
+    apiKey: typedKey ?? (toNewServer ? '' : saved.apiKey),
+    username: toNewServer ? undefined : saved.username,
+    password: toNewServer ? undefined : saved.password,
     baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim() ? body.baseUrl.trim().replace(/\/+$/, '') : saved.baseUrl,
     model: typeof body.model === 'string' ? body.model.trim() : saved.model,
   };
@@ -244,8 +247,9 @@ providers.post('/api/providers/:name', async (c) => {
     return c.json({ error: `${meta.label} signs in with your account (run \`mercury doctor\`); it has no key to set.` }, 400);
   }
 
-  // Pointing a saved key at another server, from another device, is the owner's call.
-  if (newBaseUrl(p, body) && !(typeof body.apiKey === 'string' && body.apiKey.trim())) {
+  // Pointing a saved key or password at another server, from another device, is the owner's call.
+  // A typed key replaces the saved key, but a saved username and password stay and would follow.
+  if (newBaseUrl(p, body) && (p.username || !(typeof body.apiKey === 'string' && body.apiKey.trim()))) {
     const wait = requireOwner(c, { id: `providers.baseUrl:${name}`, title: `Send the ${meta.label} key to a different server`, detail: String(body.baseUrl) });
     if (wait) return wait;
   }

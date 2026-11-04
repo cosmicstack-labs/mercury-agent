@@ -3,6 +3,7 @@ import type { ProviderConfig, ProviderName } from './config.js';
 import { fetchChatGPTModels } from '../auth/chatgpt-models.js';
 import { fetchGitHubModels } from '../auth/github-models.js';
 import { MERCURY_CLOUD_API_URL } from '../cloud/endpoints.js';
+import { basicAuthHeaders } from '../providers/basic-auth.js';
 
 export interface ProviderModelCatalog {
   models: string[];
@@ -351,6 +352,7 @@ async function fetchOpenAICompatModels(provider: ProviderName, config: ProviderC
   if (config.apiKey) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
+  Object.assign(headers, basicAuthHeaders(config));
 
   let errorMessage: string;
   if (provider === 'grok') {
@@ -475,7 +477,7 @@ async function fetchOllamaCloudModels(config: ProviderConfig): Promise<ProviderM
 async function fetchLmStudioModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
   const data = await fetchJson<OpenAIModelResponse>(
     `${trimTrailingSlash(config.baseUrl)}/models`,
-    {},
+    { headers: basicAuthHeaders(config) },
     'Mercury could not fetch models from LM Studio. Make sure LM Studio is running and the Developer API is enabled.',
   );
 
@@ -489,7 +491,7 @@ async function fetchLmStudioModels(config: ProviderConfig): Promise<ProviderMode
 async function fetchOllamaLocalModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
   const data = await fetchJson<OllamaTagsResponse>(
     `${trimTrailingSlash(config.baseUrl)}/tags`,
-    {},
+    { headers: basicAuthHeaders(config) },
     'Mercury could not fetch models from this Ollama Local server. Please check the base URL and try again.',
   );
 

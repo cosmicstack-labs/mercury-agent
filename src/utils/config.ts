@@ -43,6 +43,12 @@ export interface ProviderConfig {
    * local Qwen-VL called `qwen3.8-flash-next` was refused for that reason.
    */
   vision?: boolean;
+  /**
+   * HTTP Basic credentials for a server behind a reverse proxy. When `username`
+   * is set, Mercury sends `Authorization: Basic ...` instead of the Bearer key.
+   */
+  username?: string;
+  password?: string;
 }
 
 export interface TelegramAccessUser {
