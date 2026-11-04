@@ -1,21 +1,19 @@
 #!/usr/bin/env node
 /**
- * Download totals for the README badges. Server and desktop are counted
- * separately and never added together:
- *   - server:  npm all-time downloads of @cosmicstack/mercury-agent, plus the
- *              GitHub release executables (what install.sh / install.ps1 and
- *              `mercury upgrade` fetch). Only the executables are counted:
- *              every install also fetches checksums.txt and web.tar.gz, which
- *              would triple-count one install.
- *   - desktop: the Mercury Desktop packages on the same releases (.dmg,
- *              -setup.exe, .msi, .AppImage, .deb, .rpm, and the .app.tar.gz
- *              that install-desktop.sh fetches). Signatures and latest.json
- *              are skipped. Like the server binaries, these include the
- *              downloads the in-app updater makes.
+ * Total downloads across every distribution path, for the README badge:
+ *   - npm:      all-time downloads of @cosmicstack/mercury-agent
+ *   - binaries: GitHub release executables (what install.sh / install.ps1
+ *               and `mercury upgrade` fetch). Only the executables are
+ *               counted: every install also fetches checksums.txt and
+ *               web.tar.gz, which would triple-count one install.
+ *   - desktop:  Mercury Desktop packages on the same releases (.dmg,
+ *               -setup.exe, .msi, .AppImage, .deb, .rpm, and the .app.tar.gz
+ *               that install-desktop.sh fetches). Signatures and latest.json
+ *               are skipped.
  *
- * Writes two shields.io endpoint documents (.github/badges/downloads.json for
- * the server, .github/badges/desktop-downloads.json for the desktop, read by
- * the badges through raw.githubusercontent.com) plus a breakdown file.
+ * All three add up to one total. Writes a shields.io endpoint document
+ * (.github/badges/downloads.json, read by the badge through
+ * raw.githubusercontent.com) plus a breakdown file.
  * Usage: node scripts/download-stats.mjs [--dry-run]
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -25,7 +23,6 @@ const PKG = '@cosmicstack/mercury-agent';
 const REPO = 'cosmicstack-labs/mercury-agent';
 // .github/badges, not docs/: the website deploy replaces docs/ wholesale.
 const OUT = '.github/badges/downloads.json';
-const DESKTOP_OUT = '.github/badges/desktop-downloads.json';
 const BREAKDOWN = '.github/badges/downloads-breakdown.json';
 const dryRun = process.argv.includes('--dry-run');
 
@@ -87,15 +84,14 @@ function short(n) {
 }
 
 const [npm, releases] = await Promise.all([npmTotal(), releaseTotals()]);
-const server = { total: npm + releases.binaries, npm, binaries: releases.binaries };
-const { macos, windows, linux } = releases.desktop;
-const desktop = { total: macos + windows + linux, macos, windows, linux };
-const badge = (label, n) => ({ schemaVersion: 1, label, message: short(n), color: '0ea5e9', cacheSeconds: 21600 });
-const breakdown = { server, desktop, updatedAt: new Date().toISOString() };
+const { binaries } = releases;
+const desktop = Object.values(releases.desktop).reduce((a, n) => a + n, 0);
+const total = npm + binaries + desktop;
+const badge = { schemaVersion: 1, label: 'downloads', message: short(total), color: '0ea5e9', cacheSeconds: 21600 };
+const breakdown = { total, npm, binaries, desktop, desktopByPlatform: releases.desktop, updatedAt: new Date().toISOString() };
 console.log(JSON.stringify(breakdown));
 if (!dryRun) {
   mkdirSync(dirname(OUT), { recursive: true });
-  writeFileSync(OUT, JSON.stringify(badge('server downloads', server.total)) + '\n');
-  writeFileSync(DESKTOP_OUT, JSON.stringify(badge('desktop downloads', desktop.total)) + '\n');
+  writeFileSync(OUT, JSON.stringify(badge) + '\n');
   writeFileSync(BREAKDOWN, JSON.stringify(breakdown, null, 2) + '\n');
 }

@@ -1,8 +1,7 @@
 name: Downloads badge
 
-# Refreshes .github/badges/downloads.json (server: npm + installer binaries) and
-# .github/badges/desktop-downloads.json (Mercury Desktop packages), read by the
-# README's shields.io endpoint badges via raw.githubusercontent.com.
+# Refreshes .github/badges/downloads.json (npm + installer binaries + desktop downloads),
+# read by the README's shields.io endpoint badge via raw.githubusercontent.com.
 on:
   schedule:
     - cron: '17 */6 * * *'
