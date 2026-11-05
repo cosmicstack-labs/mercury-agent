@@ -90,16 +90,6 @@ struct MessageView: View {
   }
 }
 
-/// Mercury's replies are Markdown; the inline parts render natively, paragraphs and lists keep their breaks.
-struct Markdown: View {
-  var text: String
-  var body: some View {
-    let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-    Text(parsed).font(.system(size: 16)).lineSpacing(3).foregroundStyle(Theme.ink).tint(Theme.accent)
-      .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-  }
-}
-
 /// What Mercury is doing in the turn that's running: waiting, the steps, then the reply as it streams.
 struct LiveTurn: View {
   var model: ConversationModel

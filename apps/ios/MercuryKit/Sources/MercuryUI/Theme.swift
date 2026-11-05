@@ -16,6 +16,7 @@ public enum Theme {
   public static let onAccent = Color(light: 0xFFFFFF, dark: 0x04140B)
   public static let amber = Color(light: 0xB7791F, dark: 0xF5C451)
   public static let red = Color(light: 0xC53030, dark: 0xFF6B6B)
+  public static let cyan = Color(light: 0x0E7C8C, dark: 0x7FD8E8)
   public static let line = Color(light: 0x16181A, dark: 0xFFFFFF).opacity(0.08)
 
   public static let radius: CGFloat = 18
