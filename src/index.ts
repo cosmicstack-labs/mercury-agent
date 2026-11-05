@@ -206,6 +206,7 @@ const PROVIDER_OPTIONS: Array<{ key: ProviderName; label: string }> = [
   { key: 'grok', label: 'Grok (xAI)' },
   { key: 'atlascloud', label: 'Atlas Cloud' },
   { key: 'runcrate', label: 'Runcrate' },
+  { key: 'cloudgpu', label: 'CloudGPU' },
   { key: 'ollamaCloud', label: 'Ollama Cloud' },
   { key: 'ollamaLocal', label: 'Ollama Local' },
   { key: 'atomicChat', label: 'Atomic Chat' },
@@ -1512,6 +1513,23 @@ async function configure(existingConfig?: MercuryConfig): Promise<void> {
           config.providers.runcrate.apiKey = result.apiKey;
           config.providers.runcrate.model = result.model;
           config.providers.runcrate.enabled = true;
+        }
+        continue;
+      }
+
+      if (provider === 'cloudgpu') {
+        const mask = isReconfig && config.providers.cloudgpu.apiKey ? ` [${maskKey(config.providers.cloudgpu.apiKey)}]` : '';
+        const result = await promptApiKeyWithModelSelection(
+          config,
+          'cloudgpu',
+          'CloudGPU',
+          chalk.white(`  CloudGPU API key${mask}${isReconfig ? '' : ' (Enter to skip)'}: `),
+          isReconfig,
+        );
+        if (!result.skipped && result.apiKey && result.model) {
+          config.providers.cloudgpu.apiKey = result.apiKey;
+          config.providers.cloudgpu.model = result.model;
+          config.providers.cloudgpu.enabled = true;
         }
         continue;
       }
