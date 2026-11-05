@@ -6,6 +6,7 @@ struct ChatsView: View {
   @State var model: ChatsModel
   var connection: Connection
   var onNewChat: () -> Void = {}
+  var onCall: () -> Void = {}
 
   var body: some View {
     List {
@@ -38,6 +39,10 @@ struct ChatsView: View {
     .navigationTitle("Chats")
     .searchable(text: $model.query, prompt: "Search conversations")
     .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button(action: onCall) { Image(systemName: "phone") }
+          .accessibilityLabel("Call Mercury")
+      }
       ToolbarItem(placement: .primaryAction) {
         Button(action: onNewChat) {
           Image(systemName: "plus").font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.onAccent)

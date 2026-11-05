@@ -14,6 +14,14 @@ public enum Gallery {
     .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
   }
 
+  static func call(_ phase: VoiceCallModel.Phase, caption: String?, step: String? = nil, level: Float = 0) -> some View {
+    let m = ConversationModel(client: MercuryClient(baseURL: URL(string: "http://localhost")!), thread: nil)
+    if let step { m.handle("step_start", #"{"tool":"\#(step)","step":1}"#) }
+    let c = VoiceCallModel(conversation: m)
+    c.phase = phase; c.caption = caption; c.level = level; c.startedAt = Date(timeIntervalSinceNow: -134)
+    return VoiceCallView(model: c)
+  }
+
   public static func screens() -> [(name: String, view: AnyView)] {
     let store = ConnectionStore(defaults: UserDefaults(suiteName: "gallery")!)
     func connect(_ step: ConnectModel.Step, error: String? = nil) -> AnyView {
@@ -29,6 +37,9 @@ public enum Gallery {
       ("01d-connect-waiting", connect(.waiting(pairing))),
       ("01e-connect-token", connect(.token)),
       ("04-approval", AnyView(approval)),
+      ("05a-call-listening", AnyView(call(.hearing, caption: nil, level: 0.6))),
+      ("05b-call-working", AnyView(call(.working, caption: "“What's the latest news from Srinagar?”", step: "web_search"))),
+      ("05c-call-speaking", AnyView(call(.speaking, caption: "Schools reopen on Monday, and the Dal Lake cleanup moved to its second phase."))),
     ]
   }
 }

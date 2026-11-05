@@ -104,9 +104,12 @@ extension MercuryClient {
   }
 
   /// POST /api/chat/send. The reply doesn't come back here: it streams on /api/chat/events.
-  public func send(_ content: String, sessionId: String) async throws {
+  /// `voiceCall` is the call's id when this was said on a voice call: Mercury answers it for the ear.
+  public func send(_ content: String, sessionId: String, voiceCall: String? = nil) async throws {
     struct Sent: Decodable { var sent: Bool }
-    _ = try await decode(Sent.self, request("POST", "/api/chat/send", body: ["content": content, "sessionId": sessionId]))
+    var body: [String: Any] = ["content": content, "sessionId": sessionId]
+    if let voiceCall { body["voiceCall"] = voiceCall }
+    _ = try await decode(Sent.self, request("POST", "/api/chat/send", body: body))
   }
 
   /// Stops whatever Mercury is doing.

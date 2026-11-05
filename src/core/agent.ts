@@ -3849,6 +3849,8 @@ export class Agent {
           // Not the owner's words: the learning passes skip it (ADR-044).
           ...(msg.senderRole === 'member' ? { senderRole: 'member' } : {}),
           ...(msg.metadata?.channelAccess === 'general' ? { channelAccess: 'general' } : {}),
+          // Said on a phone-app call: the thread lists as a call when the call started it.
+          ...(msg.channelType === 'web' && typeof msg.metadata?.callId === 'string' ? { voiceCall: msg.metadata.callId, voiceRole: 'owner' } : {}),
           // Files the owner sent with this turn, as refs a client can fetch back.
           ...(() => { const refs = attachmentRefs(msg.metadata?.attachments); return refs.length ? { attachments: refs } : {}; })(),
         },

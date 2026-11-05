@@ -334,6 +334,8 @@ chat.post('/api/chat/send', async (c) => {
     cwd?: unknown;
     /** The desktop's Image switch: { kind: "image", aspect? } (ADR-042). */
     media?: unknown;
+    /** Said on a voice call from the phone app: the call's id. */
+    voiceCall?: unknown;
   }>();
   const content = body.content?.trim() ?? '';
   const upload = storeInlineAttachments(body.attachments);
@@ -372,7 +374,12 @@ chat.post('/api/chat/send', async (c) => {
     const media = mediaRaw?.kind === 'image' || mediaRaw?.kind === 'video' || mediaRaw?.kind === 'music'
       ? { kind: mediaRaw.kind as 'image' | 'video' | 'music', ...(mediaRaw.aspect === 'square' || mediaRaw.aspect === 'landscape' || mediaRaw.aspect === 'portrait' ? { aspect: mediaRaw.aspect } : {}) }
       : undefined;
-    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c), ...(media ? { media } : {}) });
+    const voiceCall = typeof body.voiceCall === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.voiceCall) ? body.voiceCall : undefined;
+    // A call that starts a new thread names it the way desktop calls are named (voice-calls.ts).
+    if (voiceCall && session.messages?.length === 0) {
+      sessions.updateTitle(session.id, `Voice call · ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`, 'user');
+    }
+    webChannel.emitMessageInThread(text, session.id, session.id, undefined, undefined, undefined, upload.attachments, { ...(programming ? { programming, cwd: codeCwd } : {}), thisComputer: isThisComputer(c), ...(media ? { media } : {}), ...(voiceCall ? { voiceCall } : {}) });
     return c.json({
       sent: true,
       sessionId: session.id,

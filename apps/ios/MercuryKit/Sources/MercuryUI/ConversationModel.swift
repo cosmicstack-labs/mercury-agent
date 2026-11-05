@@ -30,6 +30,10 @@ final class ConversationModel {
   let client: MercuryClient
   var listener: Task<Void, Never>?
   var onChange: () -> Void = {}
+  /// Set while a voice call runs in this conversation: what's sent is said on that call.
+  var callId: String?
+  /// A turn ended, with Mercury's reply when it gave one (a voice call reads it aloud).
+  var onTurnEnd: (ChatMessage?) -> Void = { _ in }
 
   init(client: MercuryClient, thread: ChatThread?) {
     self.client = client
@@ -75,7 +79,7 @@ final class ConversationModel {
       messages.append(ChatMessage(role: "user", content: text))
       agent = .thinking
       steps = []
-      try await client.send(text, sessionId: threadId!)
+      try await client.send(text, sessionId: threadId!, voiceCall: callId)
       onChange()
     } catch {
       self.error = error.localizedDescription
@@ -126,12 +130,14 @@ final class ConversationModel {
     case "text_done":
       let text = (data["fullText"] ?? data["text"]) as? String ?? streaming
       let stopped = text.range(of: #"^\s*⏹\s*Task (stopped|halted)"#, options: .regularExpression) != nil
+      var reply: ChatMessage?
       if stopped {
         if !streaming.isEmpty { messages.append(ChatMessage(role: "assistant", content: streaming, stopped: true)) }
       } else if !text.isEmpty {
-        messages.append(ChatMessage(role: "assistant", content: text, artifacts: pendingArtifacts.isEmpty ? nil : pendingArtifacts))
+        reply = ChatMessage(role: "assistant", content: text, artifacts: pendingArtifacts.isEmpty ? nil : pendingArtifacts)
+        messages.append(reply!)
       }
-      finishTurn()
+      finishTurn(reply: reply)
     case "plan":
       plan = (data["steps"] as? [[String: Any]] ?? []).map { PlanStep(label: $0["label"] as? String ?? "", status: $0["status"] as? String ?? "pending") }
     case "artifacts":
@@ -162,13 +168,14 @@ final class ConversationModel {
     }
   }
 
-  func finishTurn() {
+  func finishTurn(reply: ChatMessage? = nil) {
     streaming = ""
     steps = []
     pendingArtifacts = []
     queued = nil
     agent = .idle
     onChange()
+    onTurnEnd(reply)
   }
 
   static func optionLabel(_ v: String) -> String {

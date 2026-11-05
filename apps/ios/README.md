@@ -26,5 +26,11 @@ The Snapshots renderer can't draw native text fields, plain buttons or spinners
 
 ## Screens
 
-1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035). Done.
-2. Chats · 3. Conversation · 4. Approval · 5. Voice call · 6. Artifacts · 7. More: next.
+1. Connect: sign in to your Mercury, then approve the phone with a 5-character code (ADR-035).
+2. Chats · 3. Conversation · 4. Approval · 6. Artifacts · 7. More.
+5. Voice call: from Chats (a new call) or a conversation (a call in it). The phone hears one
+   thing at a time and stops when you go quiet; Mercury transcribes it (`/api/transcribe`),
+   answers in the thread (`/api/chat/send` with `voiceCall`, so the answer is written for the
+   ear), and the phone reads it aloud (`/api/speak`), then listens again. Needs a speech
+   service on the Mercury (Settings → Voice). The call works while the app is open; it
+   doesn't keep going in the background yet.

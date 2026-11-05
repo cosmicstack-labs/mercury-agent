@@ -81,6 +81,13 @@ class SSEClient {
   }
 }
 
+/** Told to the model for each turn of a call from the phone app (the reply is read aloud there). */
+export const PHONE_CALL_GUIDANCE = [
+  '## Channel: Mercury app (a voice call on the owner\'s phone)',
+  'You\'re talking with the owner out loud. Your answer is spoken: one to three short sentences, no markdown, lists, links or code.',
+  'Use your tools as usual during the call; approvals appear on their phone. When something is worth keeping (links, a list, a document), make a file and say in a sentence that it\'s in the chat.',
+].join('\n');
+
 export class WebChannel extends BaseChannel {
   readonly type = 'web' as const;
   private sseClients: Map<string, SSEClient> = new Map();
@@ -693,7 +700,7 @@ export class WebChannel extends BaseChannel {
    * `attachments` are files already on disk (see `web/api/uploads.ts`); them being
    * present is what lets the runtime hand a photo to a vision model instead of a path.
    */
-  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean; media?: { kind: 'image' | 'video' | 'music'; aspect?: string } }): void {
+  emitMessageInThread(content: string, threadId: string, sessionId?: string, requestId?: string, externalConversationId?: string, messageId?: string, attachments?: ChannelAttachment[], scope?: { programming?: string; cwd?: string; thisComputer?: boolean; media?: { kind: 'image' | 'video' | 'music'; aspect?: string }; voiceCall?: string }): void {
     if (this.restrictUser) {
       throw new Error('Web user is restricted. Disable restrict mode to continue.');
     }
@@ -720,6 +727,9 @@ export class WebChannel extends BaseChannel {
         ...(scope?.thisComputer ? { thisComputer: true } : {}),
         // The desktop's Image switch: this message asks for an image (media/intent.ts).
         ...(scope?.media ? { media: scope.media } : {}),
+        // Said on a call from the phone app: goes ahead of queued chat work, is
+        // answered for the ear, and is saved as part of that call.
+        ...(scope?.voiceCall ? { voiceCall: true, callId: scope.voiceCall, channelGuidance: PHONE_CALL_GUIDANCE } : {}),
       },
     };
     this.emit(msg);

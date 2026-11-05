@@ -8,6 +8,7 @@ struct ConversationView: View {
   @State var model: ConversationModel
   @FocusState var composing: Bool
   @State var preview: URL?
+  @State var call: VoiceCallModel?
 
   var body: some View {
     VStack(spacing: 0) {
@@ -44,8 +45,16 @@ struct ConversationView: View {
     #if os(iOS)
     .navigationBarTitleDisplayMode(.inline)
     #endif
-    .onDisappear { model.listener?.cancel() }
+    // A call over this conversation keeps listening to it.
+    .onDisappear { if call == nil { model.listener?.cancel() } }
     .quickLookPreview($preview)
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button { call = VoiceCallModel(conversation: model) } label: { Image(systemName: "phone") }
+          .accessibilityLabel("Start a voice call")
+      }
+    }
+    .callCover($call)
   }
 }
 
