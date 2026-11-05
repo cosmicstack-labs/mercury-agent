@@ -15,6 +15,7 @@ let package = Package(
     .target(name: "MercuryCore"),
     .target(name: "MercuryUI", dependencies: ["MercuryCore"]),
     .testTarget(name: "MercuryCoreTests", dependencies: ["MercuryCore"]),
+    .testTarget(name: "MercuryUITests", dependencies: ["MercuryUI", "MercuryCore"]),
     // `swift run Snapshots <dir>`: renders every screen in light and dark to PNGs (macOS only).
     .executableTarget(name: "Snapshots", dependencies: ["MercuryUI", "MercuryCore"]),
   ]

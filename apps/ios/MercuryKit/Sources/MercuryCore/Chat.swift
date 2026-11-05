@@ -30,6 +30,27 @@ public struct ChatMessage: Decodable, Identifiable, Hashable, Sendable {
   public var kind: String?
   public var content: String
   public var timestamp: Date
+  public var artifacts: [ArtifactRef]?
+  /// This turn was stopped; content is whatever was written before that.
+  public var stopped: Bool?
+
+  public init(id: String = UUID().uuidString, role: String, content: String, timestamp: Date = .now, artifacts: [ArtifactRef]? = nil, stopped: Bool? = nil) {
+    self.id = id; self.role = role; self.content = content; self.timestamp = timestamp; self.artifacts = artifacts; self.stopped = stopped
+  }
+
+  /// A message a person reads (user, assistant or a system note), not a stored tool call.
+  public var isShown: Bool {
+    (role == "user" || role == "assistant" || role == "system") && (kind == nil || kind == "message") && !content.isEmpty
+  }
+}
+
+/// A file a turn made (image, PDF, report…). The file is at GET /api/artifacts/:id/file.
+public struct ArtifactRef: Decodable, Identifiable, Hashable, Sendable {
+  public var id: String
+  public var name: String
+  public var kind: String?
+  public var mime: String?
+  public var size: Int?
 }
 
 /// One line of GET /api/chat/activity: what a conversation is doing now.
@@ -73,6 +94,30 @@ extension MercuryClient {
   public func thread(_ id: String) async throws -> ChatThread {
     try await decode(ChatThread.self, request("GET", "/api/chat/threads/\(id)"))
   }
+
+  public func createThread(title: String? = nil) async throws -> ChatThread {
+    try await decode(ChatThread.self, request("POST", "/api/chat/threads", body: title.map { ["title": $0] } ?? [:]))
+  }
+
+  /// POST /api/chat/send. The reply doesn't come back here: it streams on /api/chat/events.
+  public func send(_ content: String, sessionId: String) async throws {
+    struct Sent: Decodable { var sent: Bool }
+    _ = try await decode(Sent.self, request("POST", "/api/chat/send", body: ["content": content, "sessionId": sessionId]))
+  }
+
+  /// Stops whatever Mercury is doing.
+  public func stop() async throws {
+    _ = try await send(request("POST", "/api/chat/stop", body: [:]))
+  }
+
+  /// Answers a permission or choice prompt: "yes", "always", "no" or a choice's value.
+  public func answer(promptId: String, action: String, targetId: String?) async throws {
+    var body: [String: Any] = ["action": action]
+    if let targetId { body["targetId"] = targetId }
+    _ = try await send(request("POST", "/api/chat/permission/\(promptId)", body: body))
+  }
+
+  public func artifactURL(_ id: String) -> URL { baseURL.appending(path: "/api/artifacts/\(id)/file") }
 
   public func deleteThread(_ id: String) async throws {
     _ = try await send(request("POST", "/api/chat/threads/\(id)/delete", body: ["confirmSessionId": id]))
