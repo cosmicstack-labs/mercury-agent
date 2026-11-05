@@ -7,6 +7,7 @@ struct MainView: View {
   var connection: Connection
   @State var chats: ChatsModel
   @State var path = NavigationPath()
+  @State var artifacts: ArtifactsModel
 
   enum Route: Hashable { case newChat }
 
@@ -19,6 +20,7 @@ struct MainView: View {
   init(store: ConnectionStore, connection: Connection) {
     self.store = store; self.connection = connection
     _chats = State(initialValue: ChatsModel(client: store.client(for: connection)))
+    _artifacts = State(initialValue: ArtifactsModel(client: store.client(for: connection)))
   }
 
   var body: some View {
@@ -30,7 +32,7 @@ struct MainView: View {
       }
       .tabItem { Label("Chats", systemImage: "bubble.left") }
 
-      NavigationStack { Text("Artifacts").navigationTitle("Artifacts") } // screen 6
+      NavigationStack { ArtifactsView(model: artifacts) }
         .tabItem { Label("Artifacts", systemImage: "square.stack.3d.up") }
 
       NavigationStack {

@@ -51,6 +51,10 @@ public struct ArtifactRef: Decodable, Identifiable, Hashable, Sendable {
   public var kind: String?
   public var mime: String?
   public var size: Int?
+
+  public init(id: String, name: String, kind: String?, mime: String?, size: Int?) {
+    self.id = id; self.name = name; self.kind = kind; self.mime = mime; self.size = size
+  }
 }
 
 /// One line of GET /api/chat/activity: what a conversation is doing now.
