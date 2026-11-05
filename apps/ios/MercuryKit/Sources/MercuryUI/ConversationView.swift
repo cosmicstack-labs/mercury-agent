@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 import MercuryCore
 
 /// Screen 3: one conversation. Messages, the reply as it streams, what Mercury is doing,
@@ -6,13 +7,21 @@ import MercuryCore
 struct ConversationView: View {
   @State var model: ConversationModel
   @FocusState var composing: Bool
+  @State var preview: URL?
 
   var body: some View {
     VStack(spacing: 0) {
       ScrollViewReader { proxy in
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 18) {
-            ForEach(model.messages) { MessageView(message: $0, client: model.client) }
+            ForEach(model.messages) { m in
+              MessageView(message: m, client: model.client) { a in
+                Task {
+                  do { preview = try await model.client.download(a.id, name: a.name) }
+                  catch { model.error = error.localizedDescription }
+                }
+              }
+            }
             if model.busy { LiveTurn(model: model) }
             ForEach(model.prompts) { p in PromptCard(prompt: p) { v in Task { await model.answer(p, v) } } }
             if let e = model.error { ErrorText(text: e) }
@@ -36,12 +45,14 @@ struct ConversationView: View {
     .navigationBarTitleDisplayMode(.inline)
     #endif
     .onDisappear { model.listener?.cancel() }
+    .quickLookPreview($preview)
   }
 }
 
 struct MessageView: View {
   var message: ChatMessage
   var client: MercuryClient
+  var open: (ArtifactRef) -> Void = { _ in }
 
   var body: some View {
     switch message.role {
@@ -61,7 +72,10 @@ struct MessageView: View {
         if message.stopped == true {
           Text("Stopped").font(.system(size: 13)).foregroundStyle(Theme.ink3)
         }
-        ForEach(message.artifacts ?? []) { ArtifactCard(artifact: $0, client: client) }
+        ForEach(message.artifacts ?? []) { a in
+          Button { open(a) } label: { ArtifactCard(artifact: a, client: client) }.buttonStyle(.plain)
+            .accessibilityHint("Opens a preview")
+        }
       }
     }
   }
