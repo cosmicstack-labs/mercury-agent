@@ -35,17 +35,8 @@ struct MainView: View {
       NavigationStack { ArtifactsView(model: artifacts) }
         .tabItem { Label("Artifacts", systemImage: "square.stack.3d.up") }
 
-      NavigationStack {
-        List {
-          Section("Connection") {
-            ConnectedLine(name: connection.name)
-            Button("Disconnect", role: .destructive) { Task { await store.remove(connection.id) } }
-          }
-        }
-        .navigationTitle("More") // screen 7
-      }
+      NavigationStack { MoreView(store: store, connection: connection) }
       .tabItem { Label("More", systemImage: "ellipsis") }
     }
-    .id(connection.id)
   }
 }

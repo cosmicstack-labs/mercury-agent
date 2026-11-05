@@ -9,7 +9,7 @@ public struct RootView: View {
   public var body: some View {
     Group {
       if let active = store.active {
-        MainView(store: store, connection: active)
+        MainView(store: store, connection: active).id(active.id)
       } else {
         ConnectView(store: store)
       }
