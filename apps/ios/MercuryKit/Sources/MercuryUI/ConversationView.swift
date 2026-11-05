@@ -214,19 +214,3 @@ struct ArtifactCard: View {
     return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))"
   }
 }
-
-/// A question Mercury is waiting on (screen 4 gives it the full approval look).
-struct PromptCard: View {
-  var prompt: ConversationModel.Prompt
-  var answer: (String) -> Void
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text(prompt.text).font(.system(size: 15)).foregroundStyle(Theme.ink)
-      ForEach(prompt.options, id: \.self) { o in
-        Button(o.label) { answer(o.value) }.buttonStyle(PrimaryButtonStyle())
-      }
-    }
-    .padding(16).background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
-    .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.amber.opacity(0.5)))
-  }
-}
