@@ -1,0 +1,35 @@
+# XcodeGen spec: `xcodegen generate` makes Mercury.xcodeproj (not committed).
+name: Mercury
+options:
+  bundleIdPrefix: sh.mercuryagent
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  MercuryKit:
+    path: MercuryKit
+targets:
+  Mercury:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: MercuryKit
+        product: MercuryUI
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Mercury
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: Mercury uses the camera to scan the pairing code shown in Mercury Desktop.
+        NSMicrophoneUsageDescription: Mercury uses the microphone for voice calls and dictation.
+        NSLocalNetworkUsageDescription: Mercury connects to the Mercury running on your computer.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.mercuryagent.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.10"
