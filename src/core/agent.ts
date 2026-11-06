@@ -133,6 +133,7 @@ const NOTE_COOLDOWN_MS = 3 * 60 * 1000;
 import { runReflection } from '../learning/reflection.js';
 import { createOwnerSectionsMemo } from '../learning/owner-brief.js';
 import type { ApplyResult } from '../memory/beliefs.js';
+import { TurnUsage, type StepUsageLike } from './turn-usage.js';
 
 /**
  * Step-aware text stream for the TUI. The SDK's textStream concatenates
@@ -2197,7 +2198,7 @@ export class Agent {
     channelId: string;
     /** Mechanically force the first step to contain a tool call. */
     forceFirstTool?: boolean;
-    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined) => void | Promise<void>;
+    onStep: (toolCalls: any[] | undefined, toolResults: any[] | undefined, usage?: StepUsageLike) => void | Promise<void>;
   }): Promise<{ text: string; usage: any; reasoning?: any; finishReason?: string }> {
     this.markProgress(`Resuming with ${opts.provider.name}...`);
     const deadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
@@ -2235,8 +2236,8 @@ export class Agent {
       },
       abortSignal: opts.abortController.signal,
       experimental_include: { requestBody: false },
-      onStepFinish: async ({ toolCalls, toolResults }) => {
-        await opts.onStep(toolCalls as any[], toolResults as any[]);
+      onStepFinish: async ({ toolCalls, toolResults, usage }) => {
+        await opts.onStep(toolCalls as any[], toolResults as any[], usage);
       },
     });
     const text = (opts.channel
@@ -3232,7 +3233,15 @@ export class Agent {
           [Symbol.iterator]()
         : this.providers.getFallbackIterator();
       let result: any = null;
+      // Every model step this turn adds its own usage here (main loop,
+      // continuations, guard, verification). Report THIS, never result.usage:
+      // that is the SDK's last step only, and later rounds replace result.
+      const turnUsage = new TurnUsage();
       let usedProvider: { name: string; model: string } | null = null;
+      // The provider most recently called, even if that attempt never
+      // completed (/stop, abort, error). Usage accounting falls back to it so
+      // a stopped turn's billed steps aren't filed under "unknown".
+      let attemptedProvider: { name: string; model: string } | null = null;
       let lastError: any = null;
       let hasCompletedTool = false;
       let hasStreamedOutput = false;
@@ -3428,8 +3437,9 @@ export class Agent {
       // non-streaming): they were two ~295-line copies that differed only
       // in their memory-checkpoint label and drifted on every change. The
       // continuation rounds (resume / verification) share a lighter handler.
-      const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults }: { toolCalls?: any[]; toolResults?: any[] }): Promise<void> => {
+      const stepHandler = (path: 'stream' | 'gen') => async ({ toolCalls, toolResults, usage }: { toolCalls?: any[]; toolResults?: any[]; usage?: StepUsageLike }): Promise<void> => {
                 this.completedStepCount++;
+                turnUsage.add(usage);
                 // Completion-contract tracking: per-round step usage and how
                 // the step ended (tool calls pending = work in progress).
                 lastRoundSteps++;
@@ -3729,8 +3739,9 @@ export class Agent {
                   }
                 }
               };
-      const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined): Promise<void> => {
+      const continuationStepHandler = async (toolCalls: any[] | undefined, toolResults: any[] | undefined, usage?: StepUsageLike): Promise<void> => {
               this.completedStepCount++;
+              turnUsage.add(usage);
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
               const cliChResume = this.channels.get('cli');
@@ -3767,6 +3778,7 @@ export class Agent {
         // Per-attempt latency accounting: the only way to answer "why is
         // coding slow" with data instead of guesses.
         const attemptStartedAt = Date.now();
+        attemptedProvider = { name: provider.name, model: provider.getModel() };
         try {
           const providerDeadlineAt = Date.now() + MAX_PROVIDER_ATTEMPT_MS;
           this.markProgress(`Calling ${provider.name}...`);
@@ -3942,6 +3954,8 @@ export class Agent {
                     stopWhen: stepCountIs(effectiveMaxSteps),
                     abortSignal: loopAbortController.signal,
                     experimental_include: { requestBody: false },
+                    // Billed like any other step: count it in the turn total.
+                    onStepFinish: ({ usage }) => { turnUsage.add(usage); },
                   })),
                   loopAbortController,
                   providerDeadlineAt,
@@ -4359,8 +4373,9 @@ export class Agent {
             },
             abortSignal: loopAbortController.signal,
             experimental_include: { requestBody: false },
-            onStepFinish: async ({ toolCalls, toolResults }) => {
+            onStepFinish: async ({ toolCalls, toolResults, usage }) => {
               this.completedStepCount++;
+              turnUsage.add(usage);
               // Completion-contract tracking for the guard round.
               lastRoundSteps++;
               lastStepHadToolCalls = !!(toolCalls && toolCalls.length > 0);
@@ -4678,22 +4693,40 @@ export class Agent {
         logger.info({ planLength: preGuardText.length }, 'Plan captured from plan-mode response');
       }
 
+      // Who billed this turn: the provider that completed, else the last one
+      // called (a stopped or failed attempt still billed its finished steps).
+      const billedProvider = usedProvider ?? attemptedProvider;
+      // Whole-turn usage: every step of every round. Fall back to the last
+      // result only if no step reported (a path without step callbacks).
+      const turnTotals = turnUsage.totals().steps > 0
+        ? turnUsage.totals()
+        : (() => {
+          const fallback = new TurnUsage();
+          fallback.add(result.usage);
+          return fallback.totals();
+        })();
       this.tokenBudget.recordUsage({
-        provider: usedProvider?.name ?? 'unknown',
-        model: usedProvider?.model ?? 'unknown',
-        inputTokens: result.usage?.inputTokens ?? 0,
-        outputTokens: result.usage?.outputTokens ?? 0,
-        totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+        provider: billedProvider?.name ?? 'unknown',
+        model: billedProvider?.model ?? 'unknown',
+        inputTokens: turnTotals.inputTokens,
+        outputTokens: turnTotals.outputTokens,
+        totalTokens: turnTotals.totalTokens,
+        // The split lets tokens.cachedWeight discount cache hits in the budget.
+        cachedInputTokens: turnTotals.cachedInputTokens,
+        noCacheInputTokens: turnTotals.noCacheInputTokens,
         channelType: msg.channelType,
         agentId: this.config.cloud.agentId || undefined,
       });
       logger.info({
-        provider: usedProvider?.name,
-        model: usedProvider?.model,
-        inputTokens: result.usage?.inputTokens ?? 0,
-        cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
-        outputTokens: result.usage?.outputTokens ?? 0,
+        provider: billedProvider?.name,
+        model: billedProvider?.model,
+        inputTokens: turnTotals.inputTokens,
+        cachedInputTokens: turnTotals.cachedInputTokens,
+        noCacheInputTokens: turnTotals.noCacheInputTokens,
+        outputTokens: turnTotals.outputTokens,
+        reasoningTokens: turnTotals.reasoningTokens,
         steps: this.completedStepCount,
+        usageSteps: turnTotals.steps,
         toolCalls: turnToolTrace.length,
         historyEntries: recentMemory.length,
         activeTools: activeTools?.length ?? 'all',
@@ -4704,7 +4737,7 @@ export class Agent {
       // Estimate tokens saved by Saver Mode (cap headroom + history trim).
       // Rough: (default_cap - actual_output) when capped, plus history-window delta.
       if (saverWasActive) {
-        const actualOutput = result.usage?.outputTokens ?? 0;
+        const actualOutput = turnTotals.outputTokens;
         const outputHeadroom = Math.max(0, MODEL_OUTPUT_TOKEN_LIMIT - effectiveMaxOutputTokens);
         const outputSaved = Math.max(0, Math.min(outputHeadroom, MODEL_OUTPUT_TOKEN_LIMIT - actualOutput));
         // Rough proxy: each trimmed history message ~120 tokens average.
@@ -4740,7 +4773,7 @@ export class Agent {
           role: 'assistant',
           content: finalText,
           externalMessageId: `${msg.id}:assistant`,
-          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          tokenCount: turnTotals.totalTokens,
           reasoning: typeof result.reasoning === 'string'
             ? result.reasoning
             : result.reasoning
@@ -4750,14 +4783,15 @@ export class Agent {
             channelType: msg.channelType,
             channelId: msg.channelId,
             ...(typeof msg.metadata?.requestId === 'string' ? { requestId: msg.metadata.requestId } : {}),
-            ...(usedProvider ? { provider: usedProvider.name, model: usedProvider.model } : {}),
+            ...(billedProvider ? { provider: billedProvider.name, model: billedProvider.model } : {}),
             // Per-turn trace, shown by /trace <id>.
             traceId,
             elapsedMs: Date.now() - startTime,
             steps: this.completedStepCount,
-            inputTokens: result.usage?.inputTokens ?? 0,
-            cachedInputTokens: result.usage?.cachedInputTokens ?? 0,
-            outputTokens: result.usage?.outputTokens ?? 0,
+            inputTokens: turnTotals.inputTokens,
+            cachedInputTokens: turnTotals.cachedInputTokens,
+            noCacheInputTokens: turnTotals.noCacheInputTokens,
+            outputTokens: turnTotals.outputTokens,
             ...(lastVerificationNote ? { verification: lastVerificationNote } : {}),
             ...(turnArtifacts.length ? { artifacts: turnArtifacts.map(artifactRef) } : {}),
             ...(researchRun ? { research: researchRun.snapshot() } : {}),
@@ -4771,7 +4805,7 @@ export class Agent {
         this.shortTerm.add(msg.channelId, { id: msg.id, timestamp: msg.timestamp, role: 'user', content: msg.content });
         this.shortTerm.add(msg.channelId, {
           id: Date.now().toString(36), timestamp: Date.now(), role: 'assistant', content: finalText,
-          tokenCount: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0), reasoning: result.reasoning || undefined,
+          tokenCount: turnTotals.totalTokens, reasoning: result.reasoning || undefined,
         });
       }
 
@@ -4798,11 +4832,11 @@ export class Agent {
         const elapsed = Date.now() - startTime;
         const stepCount = this.completedStepCount;
         const completionMeta = {
-          provider: usedProvider?.name ?? 'unknown',
-          model: usedProvider?.model ?? 'unknown',
-          inputTokens: result.usage?.inputTokens ?? 0,
-          outputTokens: result.usage?.outputTokens ?? 0,
-          totalTokens: (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
+          provider: billedProvider?.name ?? 'unknown',
+          model: billedProvider?.model ?? 'unknown',
+          inputTokens: turnTotals.inputTokens,
+          outputTokens: turnTotals.outputTokens,
+          totalTokens: turnTotals.totalTokens,
           budgetUsed: this.tokenBudget.getDailyUsed(),
           budgetTotal: this.tokenBudget.getBudget(),
           budgetPercentage: this.tokenBudget.getUsagePercentage(),
@@ -5492,7 +5526,8 @@ Is this productive iteration or a stuck loop?`,
     } else if (action === 'cancel' || action === '4') {
       await channel.send(`Cancelled. ${this.tokenBudget.getStatusText()}`, channelId);
     } else if (!action || action === 'status') {
-      await channel.send(this.tokenBudget.getStatusText(), channelId);
+      const split = this.tokenBudget.getCacheSplitText();
+      await channel.send(split ? `${this.tokenBudget.getStatusText()}\n${split}` : this.tokenBudget.getStatusText(), channelId);
     } else {
       await channel.send(`Unknown budget command "${action}". Available: /budget, /budget override, /budget reset, /budget set <number>, /budget status`, channelId);
     }
