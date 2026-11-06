@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "hardlight",
+  "name": "Hardlight Local Checks",
+  "version": "0.1.0",
+  "description": "Local opaque-sRGB contrast and declared navigation-graph checks. Stateless, bounded and advisory; no network, credentials or filesystem access.",
+  "kind": "in-process",
+  "author": "Mercury; adapted from Seth Wilson and Hardlight UI contributors",
+  "license": "MIT",
+  "engines": { "mercury": ">=1.5.1 <2.0.0", "pluginApi": "^1.0.0" },
+  "entry": "index.mjs",
+  "contributes": {
+    "tools": [
+      { "name": "contrast", "description": "Measure explicit opaque sRGB foreground/background pairs for text, large text or UI. Not a WCAG conformance audit.", "readOnly": true, "timeoutMs": 5000 },
+      { "name": "navigation", "description": "Check a declared page graph for shortest task paths, missing links, ambiguous labels and unreachable pages. Not usability certification.", "readOnly": true, "timeoutMs": 5000 }
+    ],
+    "commands": []
+  },
+  "permissions": { "network": [], "secrets": [] }
+}

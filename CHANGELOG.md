@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Skills
+- **A curated pack of 21 Mercury-native skills** in `skills/mercury-adapted/`, adapted from MIT-labelled Hermes Agent and `obra/superpowers` sources: debugging, test-driven development, planning, plan and spec review, verification before completion, grounded citations, RSS reading, document-to-action extraction, batch ingest audits, resumable extraction, repository implementation analysis, simplify, skill-fleet audit, and three security/installation review skills.
+- **They use Mercury's own tools** — `delegate_task`, `schedule_task` and the Second Brain — with no Hermes-only syntax, and say so where a gate is procedural rather than enforced in code. Install with `mercury skills install --from <path>`; see `skills/mercury-adapted/README.md`.
+
+### Plugins
+- **Two local plugins**: `live-time` (current host time in any timezone) and `hardlight` (contrast checks for explicit colour pairs, plus declared page-graph navigation checks). Both in-process, read-only, no network or secrets.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech
