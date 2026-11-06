@@ -50,6 +50,8 @@ export class ScriptedProvider extends BaseProvider {
   callCount = 0;
   private readonly failFirst: number;
   private readonly failWith: string;
+  private readonly failOnCalls: Set<number>;
+  private readonly waitForAbortOnCalls: Set<number>;
   private readonly instance: MockLanguageModelV3;
 
   constructor(spec: ScriptedProviderSpec, private readonly player: ScriptPlayer) {
@@ -59,6 +61,8 @@ export class ScriptedProvider extends BaseProvider {
     this.model = model;
     this.failFirst = spec.failFirst ?? 0;
     this.failWith = spec.failWith ?? `${spec.name}: scripted outage (503 Service Unavailable)`;
+    this.failOnCalls = new Set(spec.failOnCalls);
+    this.waitForAbortOnCalls = new Set(spec.waitForAbortOnCalls);
     this.instance = new MockLanguageModelV3({
       provider: `eval.${spec.name}`,
       modelId: model,
@@ -67,19 +71,34 @@ export class ScriptedProvider extends BaseProvider {
     });
   }
 
-  private maybeFail(options: LanguageModelV3CallOptions, mode: 'stream' | 'generate'): ReturnType<ScriptPlayer['begin']> {
+  private async beginCall(options: LanguageModelV3CallOptions, mode: 'stream' | 'generate'): Promise<ReturnType<ScriptPlayer['begin']>> {
     this.callCount++;
     const record = this.player.begin(this.name, this.model, mode, options);
-    if (this.callCount <= this.failFirst) {
+    if (this.callCount <= this.failFirst || this.failOnCalls.has(this.callCount)) {
       record.error = this.failWith;
       this.player.end(record);
       throw new Error(this.failWith);
+    }
+    if (this.waitForAbortOnCalls.has(this.callCount)) {
+      try {
+        const signal = options.abortSignal;
+        if (!signal) throw new Error('Scripted abort wait requires an abort signal');
+        await new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(signal.reason ?? new Error('Aborted'));
+          if (signal.aborted) abort();
+          else signal.addEventListener('abort', abort, { once: true });
+        });
+      } catch (error) {
+        record.error = error instanceof Error ? error.message : String(error);
+        this.player.end(record);
+        throw error;
+      }
     }
     return record;
   }
 
   private async doStream(options: LanguageModelV3CallOptions) {
-    const record = this.maybeFail(options, 'stream');
+    const record = await this.beginCall(options, 'stream');
     const step = this.player.nextStep(record);
     const parts: LanguageModelV3StreamPart[] = [{ type: 'stream-start', warnings: [] }];
     if (step.text) {
@@ -103,7 +122,7 @@ export class ScriptedProvider extends BaseProvider {
   }
 
   private async doGenerate(options: LanguageModelV3CallOptions) {
-    const record = this.maybeFail(options, 'generate');
+    const record = await this.beginCall(options, 'generate');
     const step = this.player.nextStep(record);
     this.player.end(record);
     return {

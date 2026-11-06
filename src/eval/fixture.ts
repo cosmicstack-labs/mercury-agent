@@ -23,7 +23,7 @@ export interface ScriptedToolCall {
   /**
    * Recorded tool output. When present the real tool is NOT executed and
    * this is returned verbatim; when absent the real tool runs in the
-   * scenario's scratch cwd (auto-approved).
+   * scenario's scratch cwd (auto-approved by default).
    */
   result?: unknown;
 }
@@ -38,6 +38,10 @@ export interface ScriptedProviderSpec {
   /** The first N model calls to this provider throw `failWith`. */
   failFirst?: number;
   failWith?: string;
+  /** One-based model calls that fail, e.g. [2] interrupts after a real tool. */
+  failOnCalls?: number[];
+  /** One-based calls held until the real agent's abort signal fires. */
+  waitForAbortOnCalls?: number[];
 }
 
 export interface FixtureHistoryEntry {
@@ -70,6 +74,8 @@ export interface TurnExpectations {
 
 export interface ScenarioTurn {
   message: string;
+  /** Reuse an inbound transport ID to exercise the production work ledger. */
+  messageId?: string;
   /** Scripted model output, consumed one step per model call. */
   steps?: ScriptedStep[];
   /** Supplies a step when the script runs out (e.g. endless tool loops). */
@@ -82,6 +88,8 @@ export interface ScenarioTurn {
 
 export interface ScenarioFixture {
   name: string;
+  /** Default true for existing fixtures; false exercises real approval gates. */
+  autoApprove?: boolean;
   channel?: {
     /** Default 'telegram' — exercises the messaging TaskSurface. */
     type?: ChannelType;
