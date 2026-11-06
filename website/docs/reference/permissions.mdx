@@ -10,7 +10,7 @@ Mercury has a layered permission system that controls what actions the agent can
 At session start, Mercury asks you to choose a permission mode:
 
 - **🔒 Ask Me** — Mercury asks for confirmation before risky actions. Default on both CLI and Telegram.
-- **✅ Allow All** — Mercury auto-approves everything for this session. No interruptions. Resets on restart.
+- **✅ Allow All** — Mercury skips ordinary action prompts for this session. Hard blocks and filesystem scopes still apply.
 
 On **CLI**: an arrow-key menu appears at startup before the first prompt.
 
@@ -31,7 +31,7 @@ On **Telegram**: inline keyboard buttons appear with the first message. Use `/pe
 
 ### "Always" Response
 
-When prompted in Ask Me mode, choosing **"Always"** (or pressing `A`) flips to auto-approve for the rest of the session — equivalent to switching to Allow All mode.
+Choosing **"Always"** remembers the relevant approval for this interaction; it does not turn on Allow All. Shell approvals can cover a command family on local channels, while web requests retain the exact approved command. Hard-linked file writes have a separate approval from reads.
 
 ## Shell Command Tiers
 
@@ -39,11 +39,11 @@ When prompted in Ask Me mode, choosing **"Always"** (or pressing `A`) flips to a
 
 Commands like `sudo`, `rm -rf /`, `mkfs` are never executed regardless of mode.
 
-### 2. Safe Read Commands (auto-approved in any mode)
+### 2. Commands eligible for automatic approval
 
-Mercury maintains a whitelist of safe read-only commands that never require approval:
+Simple commands such as `ls`, `cat`, `head`, `tail`, `grep`, `rg`, and selected `git` read operations can run without a prompt when their arguments pass the command policy. Mercury executes them directly with a pinned executable and a minimal environment. Pipelines, shell expansion, side-effect flags, and commands outside this policy require approval.
 
-`ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `wc`, `file`, `stat`, `which`, `echo`, `pwd`, `env`, `printenv`, `date`, `whoami`, `hostname`, `uname`, `git status`, `git diff`, `git log`, `git branch`, `git show`, `git remote`, `node --version`, `npm list`, `npx tsc --noEmit`, and similar read-only operations.
+The argument check resolves existing relative filenames and symlinks against the tool's current working directory, and checks canonical targets against the working directory and readable scopes. In Ask Me mode, an explicit hard-linked operand requires command approval because another alias may lie outside those scopes. Recursive link-following flags, such as `rg --follow`, `grep -R`, and `find -L`, also leave the automatic-approval lane. Explicit owner command grants and Local Allow All retain their existing approval behavior.
 
 ### 3. Everything Else
 
@@ -57,9 +57,17 @@ Edit `~/.mercury/permissions.yaml` to customize blocked and auto-approved comman
 Mercury uses directory scopes to control file access. When the agent tries to access files in a new directory:
 
 - **Ask Me mode**: Prompts for scope approval (reads and writes)
-- **Allow All mode**: Auto-approves scope access
+- **Allow All mode**: Existing filesystem scopes still determine access
 
-Approved scopes persist for the session. The current working directory is always in scope.
+Filesystem tools check the configured scopes. The shell's automatic-approval lane also permits its working directory. Moving a shell's working directory is not an OS-level sandbox operation.
+
+`write_file` and `edit_file` retain the canonical target and file identity from before approval. They open without truncating, verify the opened descriptor and link count, then modify that descriptor. A replacement during approval is refused, and nonblocking opens prevent a replacement FIFO from hanging the write. A hard-linked file needs its own write approval because modifying it changes every alias. `create_file` records an existing canonical ancestor before approval and revalidates the parent chain before creating directories. It creates the file exclusively, so a file planted at the destination cannot be overwritten.
+
+### Security boundary
+
+These are application permission checks, **not an OS sandbox**. An approved shell command, a bot's explicit command grant, or an elevated tool runs with the Mercury process's operating-system privileges. A script can access files through its own logic; recursive commands can encounter hardlinks that were not explicit operands. Argument checks do not mediate every file opened by a child process, nor prevent a hostile process from racing directory or link changes after a check. Verified writes protect the captured existing file; parent checks followed by directory/file creation are not an atomic directory-relative sandbox operation; a separate OS process can still race those steps after validation.
+
+Use an independently configured OS sandbox or container when running untrusted programs. Mercury does not currently supply a portable Linux/Windows kernel-isolation mode, and it must not describe permission scopes as one. Native junction/hardlink tests run in the existing Windows CI matrix; passing Linux tests alone does not establish Windows runtime results.
 
 ## Mercury Autopilot (Loop Detection)
 
