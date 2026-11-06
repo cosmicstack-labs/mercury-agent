@@ -8,7 +8,9 @@ import { toInputSchema } from './schema.js';
 import { buildMcpTool } from './tool.js';
 import { createTransport, describeTarget } from './transport.js';
 import type { McpCallResultLike } from './result.js';
-import type { McpGate, McpServerConfig, McpServerState, McpServerStatus, McpToolStatus } from './types.js';
+import type { McpGate, McpResourceGate, McpServerConfig, McpServerState, McpServerStatus, McpToolStatus } from './types.js';
+import { isResourceAllowed, isResourceAutoApproved, resourcesEnabled } from './resource-policy.js';
+import { buildResourceTools, ResourceCatalog, resourceResultToText } from './resources.js';
 
 export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 export const DEFAULT_CALL_TIMEOUT_MS = 60_000;
@@ -25,6 +27,7 @@ const DEFAULT_BACKOFF: McpBackoff = { initialMs: 1_000, maxMs: 300_000, maxAttem
 
 export interface McpManagerOptions {
   gate: McpGate;
+  resourceGate?: McpResourceGate;
   onToolsChanged?: () => void;
   connectTimeoutMs?: number;
   backoff?: Partial<McpBackoff>;
@@ -48,6 +51,7 @@ interface ServerEntry {
   client?: Client;
   stderrTail: () => string;
   tools: ToolEntry[];
+  resourcesAvailable?: boolean;
   attempts: number;
   connectedAt?: number;
   generation: number;
@@ -166,7 +170,8 @@ export async function probeMcpServer(
     const created = createTransport(config, resolveSecrets(config));
     stderrTail = created.stderrTail;
     await withTimeout(client.connect(created.transport), timeoutMs, 'connect');
-    const { tools } = await withTimeout(client.listTools(), timeoutMs, 'tools/list');
+    const { tools } = client.getServerCapabilities()?.tools
+      ? await withTimeout(client.listTools(), timeoutMs, 'tools/list') : { tools: [] };
     const statuses = describeTools(id, config, tools).map((d) => d.status);
     return { ...baseStatus(id, config), state: 'connected', toolCount: statuses.length, tools: statuses };
   } catch (err) {
@@ -186,6 +191,7 @@ export class McpManager {
   private readonly connectTimeoutMs: number;
   private readonly backoff: McpBackoff;
   private closed = false;
+  private readonly resourceCatalog = new ResourceCatalog();
 
   constructor(servers: Record<string, McpServerConfig>, private readonly options: McpManagerOptions) {
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
@@ -216,7 +222,79 @@ export class McpManager {
         if (tool.tool) tools[tool.exposedName] = tool.tool;
       }
     }
+    if (this.options.resourceGate && this.resourceServers().length) {
+      Object.assign(tools, buildResourceTools({
+        servers: async (signal) => {
+          const verdict = await this.options.resourceGate!({ operation: 'servers', signal });
+          if (!verdict.allowed) throw new Error(verdict.reason ?? 'MCP resource servers are not available');
+          if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+          return this.resourceServers();
+        },
+        list: (server, cursor, signal) => this.listResources(server, cursor, signal),
+        read: (server, uri, signal) => this.readResource(server, uri, signal),
+      }));
+    }
     return tools;
+  }
+
+  private resourceServers(): string[] {
+    return [...this.servers.values()].filter((entry) => resourcesEnabled(entry.config) && entry.resourcesAvailable
+      && (entry.state === 'connected' || entry.state === 'reconnecting')).map((entry) => entry.id);
+  }
+
+  private resourceServer(id: string): ServerEntry {
+    const entry = this.servers.get(id);
+    if (!entry || !resourcesEnabled(entry.config) || !entry.resourcesAvailable || !this.options.resourceGate) {
+      throw new Error(`MCP resources are not enabled for server ${id}`);
+    }
+    return entry;
+  }
+
+  private async resourceRequest<T>(entry: ServerEntry, signal: AbortSignal | undefined, operation: (client: Client) => Promise<T>): Promise<T> {
+    if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+    const client = entry.client;
+    if (!client || entry.state !== 'connected' || this.closed) throw new Error(`server ${entry.id} is ${entry.state}`);
+    const generation = entry.generation;
+    try {
+      const result = await operation(client);
+      if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+      if (entry.generation !== generation || entry.client !== client) throw new Error('MCP server reconnected; repeat the resource request');
+      return result;
+    } catch (err) {
+      if (isConnectionError(err)) this.scheduleReconnect(entry, errorMessage(err), generation);
+      throw err;
+    }
+  }
+
+  private async listResources(serverId: string, cursor: string | undefined, signal: AbortSignal | undefined): Promise<string> {
+    const entry = this.resourceServer(serverId);
+    if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+    const verdict = await this.options.resourceGate!({ serverId, operation: 'list', autoApprove: false, signal });
+    if (!verdict.allowed) throw new Error(verdict.reason ?? 'MCP resource list was not approved');
+    if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+    if (!entry.client || entry.state !== 'connected') throw new Error(`server ${serverId} is ${entry.state}`);
+    const saved = cursor ? this.resourceCatalog.continuation(serverId, entry.generation, cursor) : undefined;
+    if (saved?.resources.length) return this.resourceCatalog.render(saved);
+    // listResources() auto-fetches every page in SDK v2. A protocol request
+    // deliberately fetches only one page, including the initial page.
+    const page = await this.resourceRequest(entry, signal, (client) => client.request({
+      method: 'resources/list',
+      params: saved?.remoteCursor ? { cursor: saved.remoteCursor } : {},
+    }, { signal, timeout: entry.config.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS }));
+    return this.resourceCatalog.render(this.resourceCatalog.prepare(serverId, entry.generation, page,
+      (uri) => isResourceAllowed(entry.config, uri)));
+  }
+
+  private async readResource(serverId: string, uri: string, signal: AbortSignal | undefined): Promise<string> {
+    const entry = this.resourceServer(serverId);
+    if (!isResourceAllowed(entry.config, uri)) throw new Error(`MCP resource URI is not allowed for server ${serverId}`);
+    if (signal?.aborted) throw new Error('MCP resource request was cancelled');
+    const verdict = await this.options.resourceGate!({ serverId, operation: 'read', uri, autoApprove: isResourceAutoApproved(entry.config, uri), signal });
+    if (!verdict.allowed) throw new Error(verdict.reason ?? 'MCP resource read was not approved');
+    const result = await this.resourceRequest(entry, signal, (client) => client.readResource({ uri }, {
+      signal, timeout: entry.config.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, cacheMode: 'bypass',
+    }));
+    return resourceResultToText(serverId, uri, result);
   }
 
   isAutoApproved(exposedName: string): boolean {
@@ -251,6 +329,7 @@ export class McpManager {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.resourceCatalog.clear();
     await Promise.allSettled(
       [...this.servers.values()].map(async (entry) => {
         if (entry.timer) clearTimeout(entry.timer);
@@ -300,7 +379,8 @@ export class McpManager {
     };
     try {
       await withTimeout(client.connect(created.transport), this.connectTimeoutMs, 'connect');
-      const { tools } = await withTimeout(client.listTools(), this.connectTimeoutMs, 'tools/list');
+      const { tools } = client.getServerCapabilities()?.tools
+        ? await withTimeout(client.listTools(), this.connectTimeoutMs, 'tools/list') : { tools: [] };
       if (entry.generation !== generation || this.closed) {
         await closeQuietly(client);
         return;
@@ -310,6 +390,7 @@ export class McpManager {
       entry.state = 'connected';
       entry.error = undefined;
       entry.connectedAt = Date.now();
+      entry.resourcesAvailable = !!client.getServerCapabilities()?.resources;
       this.applyTools(entry, tools);
       logger.info({ server: entry.id, tools: entry.tools.length }, 'MCP server connected');
     } catch (err) {
@@ -321,6 +402,7 @@ export class McpManager {
   private scheduleReconnect(entry: ServerEntry, reason: string, generation: number): void {
     if (this.closed || entry.generation !== generation) return;
     entry.generation++;
+    this.resourceCatalog.clear(entry.id);
     const client = entry.client;
     entry.client = undefined;
     if (client) void closeQuietly(client);
@@ -344,6 +426,7 @@ export class McpManager {
     entry.state = 'failed';
     entry.error = reason;
     entry.client = undefined;
+    this.resourceCatalog.clear(entry.id);
     logger.warn({ server: entry.id, reason }, 'MCP server failed');
     if (entry.tools.length) {
       entry.tools = [];

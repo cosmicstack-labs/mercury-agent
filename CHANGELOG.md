@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MCP text resources can be enabled per server: list bounded catalog pages and read sourced documents or schemas, with separate URI permissions and exact unattended approvals. Resource reads still ask under Web Allow All; cancellation and reconnect never replay a read.
+
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
 ### Speech

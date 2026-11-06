@@ -21,9 +21,15 @@ import {
   type ContextScope,
 } from './permission-context.js';
 
-import type { McpGateRequest, McpGateResult } from './mcp/types.js';
+import type { McpGateRequest, McpGateResult, McpResourceGateRequest } from './mcp/types.js';
+import { MCP_LIST_RESOURCES_TOOL, MCP_READ_RESOURCE_TOOL } from './mcp/naming.js';
 
 export type { PermissionContext } from './permission-context.js';
+
+/** Owner-only approvals must not be answered by a channel's Allow All mode. */
+export interface AskOptions {
+  alwaysAsk?: boolean;
+}
 
 /**
  * Arguments as the owner sees them in an approval prompt. Up to 4,000
@@ -389,7 +395,8 @@ export function splitShellSegments(command: string): string[] {
 export class PermissionManager {
   private manifest: PermissionsManifest;
   private readonly cwd: string;
-  private askHandler?: (prompt: string) => Promise<string>;
+  private askHandler?: (prompt: string, options?: AskOptions) => Promise<string>;
+  private approvedMcpResourcesByContext = new Map<string, Set<string>>();
   private turnAnswers: Array<{ action: string; answer: 'yes' | 'no' | 'always' }> = [];
   /**
    * The main agent's (root) context: replaced, never mutated, by the
@@ -567,11 +574,11 @@ export class PermissionManager {
     return this.ctx().senderRole;
   }
 
-  onAsk(handler: (prompt: string) => Promise<string>): void {
+  onAsk(handler: (prompt: string, options?: AskOptions) => Promise<string>): void {
     // Every answer the owner gives is evidence for the Owner Model (autonomy,
     // risk per action type); the learning loop drains it once per turn.
-    this.askHandler = async (prompt: string) => {
-      const answer = await handler(prompt);
+    this.askHandler = async (prompt: string, options?: AskOptions) => {
+      const answer = await (options ? handler(prompt, options) : handler(prompt));
       if (answer === 'yes' || answer === 'no' || answer === 'always') {
         const action = prompt.split('\n')[0].replace(/:.*$/, '').trim().slice(0, 40) || 'action';
         this.turnAnswers.push({ action, answer });
@@ -1136,6 +1143,46 @@ export class PermissionManager {
       return { allowed: true };
     }
     return { allowed: false, reason: `User denied MCP tool ${label}` };
+  }
+
+  async checkMcpResource(request: McpResourceGateRequest): Promise<McpGateResult> {
+    const { operation, signal } = request;
+    if (signal?.aborted) return { allowed: false, reason: 'MCP resource request was cancelled' };
+    const ctx = this.ctx();
+    if (ctx.senderRole === 'member' || this.failClosed) {
+      return { allowed: false, reason: 'MCP resources are unavailable to members and fail-closed agents' };
+    }
+    const toolName = operation === 'read' ? MCP_READ_RESOURCE_TOOL : MCP_LIST_RESOURCES_TOOL;
+    if (ctx.allowedTools && !ctx.allowedTools.includes(toolName)) {
+      return { allowed: false, reason: `MCP resource helper ${toolName} is not allowed in this context` };
+    }
+    // Local server enumeration needs no owner prompt, but retained helpers
+    // must still respect the current caller's role and exact tool allowlist.
+    if (operation === 'servers') return { allowed: true };
+    const { serverId, uri } = request;
+    if (operation === 'read' && uri && request.autoApprove) return { allowed: true };
+    // Resource grants never collide with tool grants, other protocols, or
+    // another URI on the same server. The caller's scoped source channel is
+    // used, so concurrent turns retain their own approval identity.
+    const channel = JSON.stringify([ctx.channelType, ctx.channelId]);
+    const key = JSON.stringify([serverId, operation, operation === 'read' ? uri : null]);
+    if (this.approvedMcpResourcesByContext.get(channel)?.has(key)) return { allowed: true };
+    if (!this.askHandler || ctx.channelType === 'internal') {
+      return { allowed: false, reason: 'MCP resources need owner approval; unattended reads require the exact URI in resources.autoApprove' };
+    }
+    const answer = await this.askHandler(
+      `MCP resource ${operation}\nServer: ${serverId}${operation === 'read' ? `\nURI: ${JSON.stringify(redactSecrets(uri ?? ''))}` : '\nList the allowed resource names and URIs (contents are not read).'}`,
+      { alwaysAsk: true },
+    );
+    if (signal?.aborted) return { allowed: false, reason: 'MCP resource request was cancelled' };
+    if (answer === 'always') {
+      const approved = this.approvedMcpResourcesByContext.get(channel) ?? new Set<string>();
+      approved.add(key);
+      this.approvedMcpResourcesByContext.set(channel, approved);
+    }
+    return answer === 'yes' || answer === 'always'
+      ? { allowed: true }
+      : { allowed: false, reason: `User denied MCP resource ${operation} on ${serverId}` };
   }
 
   private isProtectedConfigPath(path: string): boolean {
