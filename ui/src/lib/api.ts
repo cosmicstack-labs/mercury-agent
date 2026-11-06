@@ -478,7 +478,7 @@ export const mcp = {
 
 export const schedules = {
   list: () => get<{ schedules: Schedule[]; total: number }>("/api/schedules"),
-  update: (id: string, data: Partial<Schedule>) =>
+  update: (id: string, data: Partial<Schedule> & { resume?: boolean }) =>
     put<{ success: boolean; schedule: Schedule }>(`/api/schedules/${id}`, data),
   delete: (id: string) => del<{ success: boolean }>(`/api/schedules/${id}`),
 };
@@ -1036,12 +1036,16 @@ export interface McpServer {
 
 export interface Schedule {
   id: string;
+  executeAt?: string;
+  timezone?: string;
+  missedRunPolicy?: 'skip' | 'run_once';
+  paused?: boolean;
+  lastRun?: { id: string; status: 'running' | 'completed' | 'failed' | 'interrupted' | 'skipped' | 'dispatched'; startedAt: string; finishedAt?: string; error?: string };
   description: string;
   cron?: string;
   delaySeconds?: number;
   prompt?: string;
   skillName?: string;
-  lastRun?: string;
   nextRun?: string;
 }
 

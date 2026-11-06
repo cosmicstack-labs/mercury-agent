@@ -218,6 +218,51 @@ describe('BotManager queue + turn lifecycle', () => {
     }
   });
 
+  it('does not automatically retry a failed scheduled bot run and pauses its routine', async () => {
+    mockedGenerateText.mockRejectedValue(new Error('HTTP 429: too many requests'));
+    seedBot(store, 'scheduled');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
+    try {
+      const { jobId } = manager.enqueue('scheduled', { trigger: 'cron', prompt: 'Send the report', routineId: 'bot:scheduled:report' });
+      await settle();
+      expect(manager.getJournal('scheduled').map((r) => r.state)).toEqual(['failed']);
+      expect(manager.queue.pendingJobs('scheduled')).toEqual([]);
+      expect(manager.queue.listDlq('scheduled').map((j) => j.id)).toEqual([jobId]);
+      expect(store.readRoutineState('scheduled').paused['bot:scheduled:report']).toBeDefined();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await settle();
+      expect(manager.getJournal('scheduled')).toHaveLength(1);
+      expect(manager.enqueue('scheduled', { trigger: 'cron', prompt: 'Send the report again', routineId: 'bot:scheduled:report' })).toMatchObject({ accepted: false, reasonCode: 'routine_paused' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses future routines on quick restart and retains the DLQ until explicit replay is accepted', async () => {
+    seedBot(store, 'crashed');
+    manager.queue.enqueue({ id: 'previous-run', botId: 'crashed', trigger: 'cron', prompt: 'Send once', attempts: 0, createdAt: Date.now(), idempotencyKey: 'previous-schedule' });
+    manager.queue.claim('previous-run', 3600);
+    manager.dispose();
+    const restarted = makeManager(root);
+    expect(restarted.queue.listDlq('crashed').map((j) => j.id)).toEqual(['previous-run']);
+    expect(store.readRoutineState('crashed').paused['*']).toBeDefined();
+    expect(restarted.enqueue('crashed', { trigger: 'cron', prompt: 'Send once', routineId: 'bot:crashed:any-name' })).toMatchObject({ accepted: false, reasonCode: 'routine_paused' });
+    expect(mockedGenerateText).not.toHaveBeenCalled();
+    restarted.setEnabled('crashed', false);
+    expect(restarted.replayDlq('crashed', 'previous-run')).toMatchObject({ accepted: false, reasonCode: 'target_disabled' });
+    expect(restarted.queue.listDlq('crashed')).toHaveLength(1);
+    restarted.setEnabled('crashed', true);
+    mockedGenerateText.mockResolvedValue({ text: 'done', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } } as never);
+    expect(restarted.replayDlq('crashed', 'previous-run')).toMatchObject({ accepted: true });
+    expect(restarted.queue.listDlq('crashed')).toEqual([]);
+    await vi.waitFor(() => expect(restarted.getJournal('crashed')).toHaveLength(1));
+    // Explicit replay repeats just this job, not all future ticks.
+    expect(store.readRoutineState('crashed').paused['*']).toBeDefined();
+    restarted.start('crashed');
+    expect(store.readRoutineState('crashed').paused).toEqual({});
+  });
+
   it('a retried job never runs twice when the due-sweep and the backoff timer both fire (P0.7)', async () => {
     let calls = 0;
     let releaseSecond: () => void = () => {};
