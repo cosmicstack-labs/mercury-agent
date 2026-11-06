@@ -5,9 +5,14 @@
 ### Skills
 - **A curated pack of 21 Mercury-native skills** in `skills/mercury-adapted/`, adapted from MIT-labelled Hermes Agent and `obra/superpowers` sources: debugging, test-driven development, planning, plan and spec review, verification before completion, grounded citations, RSS reading, document-to-action extraction, batch ingest audits, resumable extraction, repository implementation analysis, simplify, skill-fleet audit, and three security/installation review skills.
 - **They use Mercury's own tools** — `delegate_task`, `schedule_task` and the Second Brain — with no Hermes-only syntax, and say so where a gate is procedural rather than enforced in code. Install with `mercury skills install --from <path>`; see `skills/mercury-adapted/README.md`.
+- **The pack now actually reaches you.** It ships in the npm package and, for standalone installs, as a `mercury-adapted-skills.tgz` archive beside the binaries with a checksum in `checksums.txt`. Nothing is installed for you: these are local `--from` installs, so your profile is untouched until you run the installer.
 
 ### Plugins
 - **Two local plugins**: `live-time` (current host time in any timezone) and `hardlight` (contrast checks for explicit colour pairs, plus declared page-graph navigation checks). Both in-process, read-only, no network or secrets.
+- **They ship too.** Each is packaged as a versioned archive and pinned in a community catalog as `community` tier, so promotion to `official` or a changed checksum fails the release check. Installing the skills does not enable either plugin.
+
+### Release
+- **Released artifacts now carry the skills and plugins, and are checked before they go public.** The release verifier requires all five content assets and compares every archive's contents against source; the publish job re-downloads the draft and verifies it again. Archives are inspected from the tar stream without extracting, so traversal, links, devices, duplicates and unsafe PAX paths are rejected rather than trusted.
 
 ## 1.5.1 — speech uses the voice you chose, Gemini included
 
