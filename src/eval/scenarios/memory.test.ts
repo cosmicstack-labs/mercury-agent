@@ -124,4 +124,21 @@ describe('eval · cross-turn memory carries the tool trace', () => {
     expect(JSON.stringify(turn.providerCalls[1].prompt)).toContain('tool-result');
     expect(turn.sessionEntries.find((m) => m.kind === 'tool-call')?.content).toContain('create_file path=copy.md');
   });
+
+  it('keeps a substantive prior answer after a trace-shaped prefix in the actual model input', async () => {
+    const diagnosis = 'The actual failure is a missing export. Add parseConfig to index.ts.';
+    const content = `${TRACE_HEADER}\n- read_file path=package.json → ok\n\n${diagnosis}`;
+    const result = await runScenario({
+      name: 'memory-mixed-trace-answer',
+      history: [
+        { role: 'user', content: 'Why does the build fail?' },
+        { role: 'assistant', content },
+      ],
+      turns: [{ message: 'Which export was missing?', steps: [textStep('parseConfig in index.ts.')], expect: { providerCalls: 1 } }],
+    });
+    expect(result.failures).toEqual([]);
+    const prompt = result.turns[0].providerCalls[0].prompt;
+    expect(promptText(prompt.filter((message) => message.role === 'assistant'))).toContain(diagnosis);
+    expect(promptText(prompt.filter((message) => message.role === 'system'))).not.toContain('read_file path=package.json');
+  });
 });
