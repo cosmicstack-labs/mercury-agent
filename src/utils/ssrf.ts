@@ -15,7 +15,7 @@
 
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 const DEFAULT_HEADERS = {
   'User-Agent': 'Mercury-Agent/0.1.0',
@@ -190,6 +190,18 @@ const guardedAgent = new Agent({
 
 type FetchInitWithDispatcher = RequestInit & { dispatcher?: unknown };
 
+/**
+ * The guarded agents are undici `Agent`s from the `undici` package, so they
+ * must be driven by that same package's `fetch`. Node's global fetch bundles
+ * its own undici, whose dispatcher handler API differs between majors (Node
+ * 26 ships undici 8, which rejects a v6 Agent with `invalid onError method`).
+ * undici's Request/Response types are structurally the WHATWG ones the
+ * callers use; the casts only bridge the two declaration sets.
+ */
+function fetchWithDispatcher(url: URL, init: FetchInitWithDispatcher): Promise<Response> {
+  return undiciFetch(url, init as never) as unknown as Promise<Response>;
+}
+
 /** Fetch with SSRF validation on the initial URL AND every redirect hop. */
 export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?: Record<string, string>): Promise<Response> {
   let target = rawUrl;
@@ -204,7 +216,7 @@ export async function guardedFetch(rawUrl: string, signal: AbortSignal, headers?
         headers: headers ?? DEFAULT_HEADERS,
         dispatcher: guardedAgent,
       };
-      const resp = await fetch(url, init);
+      const resp = await fetchWithDispatcher(url, init);
       if (resp.status >= 300 && resp.status < 400) {
         const location = resp.headers.get('location');
         if (location) {
@@ -269,7 +281,7 @@ export function createGuardedFetch(options: { allowPrivate?: boolean; privateHin
     if (pinned) guardedFetchPins.acquire(host, pinned);
     try {
       const guardedInit: FetchInitWithDispatcher = { ...init, redirect: 'manual', dispatcher: guardedFetchAgent };
-      return await fetch(url, guardedInit);
+      return await fetchWithDispatcher(url, guardedInit);
     } finally {
       if (pinned) guardedFetchPins.release(host);
     }
