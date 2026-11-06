@@ -10,6 +10,9 @@ vi.mock('undici', async (importOriginal) => {
   const actual = await importOriginal<typeof import('undici')>();
   return {
     ...actual,
+    // PR #286 pairs package fetch with this dispatcher. Defer either fetch
+    // entry point; the same real production DNS lookup is still exercised.
+    fetch: (...args: Parameters<typeof globalThis.fetch>) => globalThis.fetch(...args),
     // Keep the real dispatcher and capture its actual connection lookup.
     // Only the transport response is deferred; production pin handling runs.
     Agent: class extends actual.Agent {
