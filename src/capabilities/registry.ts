@@ -23,6 +23,8 @@ import { createCancelTaskTool } from './scheduler/cancel-task.js';
 import { createBudgetStatusTool } from './system/budget-status.js';
 import { createSaveMemoryTool } from './system/save-memory.js';
 import { createSearchMemoryTool } from './system/search-memory.js';
+import { createSessionHistoryTools } from './system/session-history.js';
+import type { SessionRepository } from '../sessions/repository.js';
 import { createForgetMemoryTool } from './system/forget-memory.js';
 import { createConfirmBeliefTool } from './system/confirm-belief.js';
 import { createCorrectBeliefTool } from './system/correct-belief.js';
@@ -130,6 +132,27 @@ export class CapabilityRegistry {
 
   setResearchModeGetter(getter: () => boolean): void {
     this.researchModeGetter = getter;
+  }
+
+  setSessionRepository(sessions: SessionRepository): void {
+    Object.assign(this.tools, createSessionHistoryTools(sessions, (name) => this.canReadSessions(name)));
+  }
+
+  private canReadSessions(name: string): boolean {
+    const context = this.permissions.currentContext();
+    // Some remote adapters do not authenticate a top-level senderRole. An
+    // absent role there must not grant access to the owner's other chats.
+    return !this.toolsDisabled && context.senderRole !== 'member'
+      && (context.senderRole === 'admin' || ['cli', 'web', 'desktop', 'internal'].includes(context.channelType))
+      && (context.allowedTools === undefined || context.allowedTools.includes(name));
+  }
+
+  private filterSessionTools(tools: Record<string, Tool>): Record<string, Tool> {
+    const filtered = { ...tools };
+    for (const name of ['search_sessions', 'read_session']) {
+      if (!this.canReadSessions(name)) delete filtered[name];
+    }
+    return filtered;
   }
 
   isResearchMode(): boolean {
@@ -329,9 +352,9 @@ export class CapabilityRegistry {
     if (this.toolsDisabled) return {};
     // Scheduled calls (when a calling channel plugin is running): owner only.
     if (this.permissions.getCurrentSenderRole() !== 'member' && activeCallScheduler()) {
-      return { ...this.getToolsInner(), ...callTools() };
+      return this.filterSessionTools({ ...this.getToolsInner(), ...callTools() });
     }
-    return this.getToolsInner();
+    return this.filterSessionTools(this.getToolsInner());
   }
 
   private getToolsInner(): Record<string, Tool> {
@@ -380,8 +403,8 @@ export class CapabilityRegistry {
       if (!blocked.has(name)) filtered[name] = tool;
     }
     // Plan mode: only plugin tools their manifest declares read-only.
-    if (this.permissions.getCurrentSenderRole() === 'member') return filtered;
-    return this.withPluginTools(filtered, true);
+    if (this.permissions.getCurrentSenderRole() === 'member') return this.filterSessionTools(filtered);
+    return this.filterSessionTools(this.withPluginTools(filtered, true));
   }
 
   getToolNames(): string[] {

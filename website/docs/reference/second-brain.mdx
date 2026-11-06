@@ -5,6 +5,14 @@ title: Second Brain
 
 Mercury has a persistent, structured memory that grows with every conversation. When enabled, it learns what is true about you — and how you like to work — as beliefs with evidence, retrieves what is relevant to each message, and tells you when it learned something that changes how it behaves.
 
+## Reading past conversations
+
+Saved conversations and extracted memories are different. Ask Mercury to find a previous chat or check what you said: `search_sessions` searches saved titles and dialogue, and `read_session` reads a matching transcript with its date and message references. This works even when Second Brain is disabled or the detail was never extracted into a memory. It reads the same canonical sessions shown in web and desktop chat history, including conversations imported by the existing legacy migration.
+
+Recall is available in owner CLI, web, desktop and internal turns, or remote channels that supply an explicit admin role. Channel members, remote callers without a verified role, general-access chats and workers whose tool allowlist excludes recall cannot use it. Archived chats require an explicit request; deleted sessions are never returned. Reasoning, tool traces, permission prompts and internal metadata are omitted.
+
+Results are paginated and limited to 16,000 serialized characters per call. Search scans at most 100 sessions and 32 MiB per call; individual transcript files over 8 MiB are reported as unavailable. Mercury must follow the returned offset/cursor for more results and disclose skipped records. Read cursors expire if the session changes. There is no new index, background job or model call for retrieval. Clearing a Second Brain belief does not erase its original conversation; delete that conversation separately if you want its transcript removed.
+
 ## The Owner Model: beliefs, not just facts
 
 Since 1.4.1 Mercury holds **beliefs** about you rather than a pile of facts. A belief is a claim ("prefers one command over many manual steps") with evidence for and against it, a confidence that fades unless it is seen again, the context it applies in (everywhere, one project, one channel, one domain), and a status: **candidate** (seen once) → **held** (seen in two sessions) → **confirmed** (you said so). Two beliefs that cannot both be true are **contested** and Mercury asks you once. What you state outright never fades; what Mercury inferred does, unless it keeps being true.
