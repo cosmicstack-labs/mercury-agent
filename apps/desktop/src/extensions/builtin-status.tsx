@@ -6,6 +6,7 @@ import type { CodeStatus } from "~/api/types";
 import { usePermissionMode } from "~/app/permission";
 import { useBots, useRuntimeState, useUi } from "~/app/store";
 import { refreshPulse, usePulse, type ScheduleInfo } from "~/app/pulse";
+import { scheduleDetail, scheduleIsActive } from "~/app/schedule-status";
 import { http } from "~/api/client";
 import { useConnections } from "~/shell/connections";
 import { StateOrb, LABELS } from "~/components/indicators/StateOrb";
@@ -114,14 +115,15 @@ function OptimusVoice() {
 
 function Schedules() {
   const schedules = usePulse((s) => s.schedules);
+  const active = schedules.filter(scheduleIsActive).length;
   return (
     <StatusPopover width={380} trigger={
       <Trigger title="Schedules">
         <CalendarClock size={13} />
-        <span>{schedules.length} scheduled</span>
+        <span>{active} scheduled</span>
       </Trigger>
     }>
-      <PanelTitle>Schedules · {schedules.length}</PanelTitle>
+      <PanelTitle>Schedules · {active} active{active < schedules.length ? ` · ${schedules.length - active} paused or finished` : ''}</PanelTitle>
       {schedules.length === 0 && <p className="text-sm text-ink3">Nothing scheduled.</p>}
       {schedules.map((s) => <ScheduleRow key={s.id} s={s} />)}
     </StatusPopover>
@@ -150,13 +152,15 @@ function ScheduleRow({ s }: { s: ScheduleInfo }) {
       setArmed(false);
     }
   }
-  const detail = [s.cron ? cronLabel(s.cron) : s.delaySeconds ? `in ${s.delaySeconds}s` : "", s.botId ? `bot ${s.botId}` : "", s.nextRun ? `next ${new Date(s.nextRun).toLocaleString([], { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}` : ""].filter(Boolean).join(" · ");
+  const detail = scheduleDetail(s);
+  const runError = typeof s.lastRun === 'object' ? s.lastRun.error : undefined;
   return (
     <div className={cx("group flex items-start gap-2 rounded-md px-1 py-1.5", busy && "opacity-50")}>
       <span className="mt-0.5 text-ink3"><CalendarClock size={13} /></span>
       <span className="min-w-0 flex-1">
         <span className="line-clamp-2 text-sm text-ink">{s.description || s.id}</span>
         {detail && <span className="block truncate text-xs text-ink4">{detail}</span>}
+        {runError && <span className="block text-xs text-red">{runError}</span>}
         {error && <span className="block text-xs text-red">{error}</span>}
       </span>
       {armed ? (
@@ -279,14 +283,6 @@ function Breakdown({ title, rows, total }: { title: string; rows: Array<[string,
       ))}
     </div>
   );
-}
-
-function cronLabel(cron: string): string {
-  const m = /^\*\/(\d+) \* \* \* \*$/.exec(cron.trim());
-  if (m) return `every ${m[1]} min`;
-  const h = /^0 \*\/(\d+) \* \* \*$/.exec(cron.trim());
-  if (h) return `every ${h[1]} h`;
-  return cron;
 }
 
 let registered = false;
