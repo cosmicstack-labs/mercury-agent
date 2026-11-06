@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MercuryConfig } from './config.js';
 import { getMercuryHome, saveConfig } from './config.js';
@@ -38,6 +38,7 @@ export class TokenBudget {
   private lastResetDate: string;
   private requestLog: TokenLogEntry[] = [];
   private forceNext = false;
+  private readonly forcedSessions = new Set<string>();
   private perAgentUsage: Map<string, number> = new Map();
   /** Estimated tokens saved today by saver mode (resets daily). */
   private dailySaved = 0;
@@ -78,9 +79,10 @@ export class TokenBudget {
     return safeNumber(this.dailyUsed) + estimatedTokens <= safeNumber(this.dailyBudget);
   }
 
-  isOverBudget(): boolean {
+  isOverBudget(sessionKey?: string): boolean {
     this.resetIfNewDay();
-    if (this.forceNext) {
+    if (sessionKey !== undefined && this.forcedSessions.delete(sessionKey)) return false;
+    if (sessionKey === undefined && this.forceNext) {
       this.forceNext = false;
       return false;
     }
@@ -88,9 +90,11 @@ export class TokenBudget {
     return safeNumber(this.dailyUsed) >= safeNumber(this.dailyBudget);
   }
 
-  forceAllowNext(): void {
-    this.forceNext = true;
-    logger.info('Budget override: next request will proceed regardless of budget');
+  /** Keyed overrides belong to one session; omitted keys retain legacy CLI behavior. */
+  forceAllowNext(sessionKey?: string): void {
+    if (sessionKey === undefined) this.forceNext = true;
+    else this.forcedSessions.add(sessionKey);
+    logger.info({ sessionKey }, 'Budget override: next request will proceed regardless of budget');
   }
 
   resetUsage(): void {

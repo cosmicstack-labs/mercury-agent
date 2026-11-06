@@ -25,9 +25,11 @@ export interface ConversationState {
   live: ThoughtTrace | null;
   /** The stop button was pressed and the runtime hasn't confirmed yet. */
   stopping: boolean;
+  selectionVersion: number;
+  eventVersion: number;
   /**
-   * This chat's message is waiting in line: Mercury runs one turn at a time
-   * and another chat's is running. Cleared when this chat's turn starts.
+   * This chat's message is waiting for an available execution slot.
+   * Cleared when this chat's turn starts.
    */
   waiting: { position: number; busyWith?: string; busySessionId?: string } | null;
   setWaiting(waiting: ConversationState["waiting"]): void;
@@ -80,6 +82,8 @@ function makeConversation(surface: Surface): ConversationStore {
     prompts: [],
     live: null,
     stopping: false,
+    selectionVersion: 0,
+    eventVersion: 0,
     setStopping: (stopping) => set({ stopping }),
     draft: null,
     setDraft: (draft) => set({ draft }),
@@ -93,7 +97,7 @@ function makeConversation(surface: Surface): ConversationStore {
     setNotice: (notice) => set({ notice }),
     setLive: (update) => set((s) => ({ live: update(s.live ?? { reasoning: "", steps: [], startedAt: Date.now() }) })),
     clearLive: () => set({ live: null }),
-    setActive: (activeId) => set({ activeId, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null }),
+    setActive: (activeId) => set((state) => ({ activeId, selectionVersion: state.selectionVersion + 1, messages: [], streaming: "", loading: false, waiting: null, prompts: [], step: null, agent: "idle", live: null, stopping: false, plan: null, research: null, researchPlan: null, notice: null })),
     setMessages: (messages) => set({ messages }),
     addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
     appendStreaming: (text) => set((s) => ({ streaming: s.streaming + text })),

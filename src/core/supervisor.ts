@@ -50,6 +50,9 @@ export class SubAgentSupervisor {
   /** Bounded auto-resume counter for step-budget pauses, per agent. */
   private stepResumeCounts: Map<string, number> = new Map();
   private pauseResolvers: Map<string, () => void> = new Map();
+  /** Cancellation also fences late delegation and step-budget continuations. */
+  private haltedAgents = new Set<string>();
+  private pendingResumes = new Set<string>();
   /**
    * Lineage: agent id → id of the sub-agent that delegated it (undefined for
    * agents spawned by the main agent or a user command). Kept after an agent
@@ -123,7 +126,13 @@ export class SubAgentSupervisor {
   }
 
   async spawn(config: Omit<SubAgentConfig, 'id'>): Promise<string> {
-    const id = this.taskBoard.nextId();
+    if (config.parentId && this.hasHaltedAncestor(config.parentId)) {
+      throw new Error('Cannot delegate: the parent agent has been stopped.');
+    }
+    let id = this.taskBoard.nextId();
+    // Clearing displayed history must not reuse an id still owned by a live subtree.
+    while (this.parents.has(id)) id = `a${Number(id.slice(1)) + 1}`;
+    this.haltedAgents.delete(id);
     // Snapshot the spawning agent's permission context NOW (spawn runs inside
     // the caller's async context): a queued agent that starts later must not
     // pick up whatever the main agent's context is at that moment.
@@ -271,6 +280,11 @@ export class SubAgentSupervisor {
     this.fileLockManager.releaseAll(agentId);
     this.pausedAgents.delete(agentId);
 
+    if (result.status === 'paused' && this.haltedAgents.has(agentId)) {
+      result = { ...result, status: 'halted', output: 'Task was halted by user.' };
+      this.markQueuedOrResumingHalted(agentId);
+    }
+
     logger.info({ agentId, status: result.status, duration: result.duration }, 'Sub-agent completed');
 
     // Persist final token usage on the task board entry
@@ -283,7 +297,19 @@ export class SubAgentSupervisor {
       },
     });
 
+    if (result.status === 'paused' && this.agentConfigs.has(agentId)
+      && (this.stepResumeCounts.get(agentId) ?? 0) < MAX_SUBAGENT_STEP_RESUMES) {
+      this.pendingResumes.add(agentId);
+    }
     this.fireLifecycleEvent({ type: 'complete', agentId, result });
+
+    // A lifecycle callback can itself stop the session before notification.
+    if (result.status === 'paused' && this.haltedAgents.has(agentId)) {
+      this.markQueuedOrResumingHalted(agentId);
+      this.pendingResumes.delete(agentId);
+      await this.processWaitQueue();
+      return;
+    }
 
     // Completion contract: a step-budget pause is resumable. Auto-resume once
     // with a fresh budget and a continuation prompt; past the bound, report
@@ -302,12 +328,18 @@ export class SubAgentSupervisor {
             channelId,
             `⏳ **Agent ${agentId}** reached its step budget with work pending — resuming with a fresh budget (${resumes + 1}/${MAX_SUBAGENT_STEP_RESUMES})...`,
           ).catch((e) => logger.warn({ e, agentId }, 'Step-budget resume notify failed'));
-          this.taskBoard.update(agentId, {
-            status: 'running',
-            progress: 'Resuming after step budget',
-            completedAt: undefined,
-          });
         }
+        this.pendingResumes.delete(agentId);
+        if (this.haltedAgents.has(agentId)) {
+          this.markQueuedOrResumingHalted(agentId);
+          await this.processWaitQueue();
+          return;
+        }
+        this.taskBoard.update(agentId, {
+          status: 'running',
+          progress: 'Resuming after step budget',
+          completedAt: undefined,
+        });
         // Fresh SubAgent instance re-reads the preserved state from disk; the
         // continuation preamble points it at the remaining work.
         const resumedConfig: SubAgentConfig = {
@@ -394,55 +426,81 @@ export class SubAgentSupervisor {
 
     const agent = this.activeAgents.get(agentId);
     const queued = this.waitQueue.some(c => c.id === agentId);
-    if (!agent && !queued) {
+    if (!agent && !queued && !this.pendingResumes.has(agentId)) {
       logger.warn({ agentId }, 'Cannot halt — agent not found');
       return false;
     }
 
-    agent?.abort();
-
-    this.waitQueue = this.waitQueue.filter(c => c.id !== agentId);
-
-    const entry = this.taskBoard.get(agentId);
-    if (entry && entry.status === 'pending') {
-      this.taskBoard.update(agentId, {
-        status: 'halted',
-        completedAt: Date.now(),
-        progress: 'Halted while queued',
-      });
-    }
-
+    this.haltMatching((id) => id === agentId);
     return true;
   }
 
   /**
    * Halt every agent, or — with `callerId` — only the caller's descendants.
-   * Returns the ids that were signalled.
+   * Returns the ids that were signalled. Locks and permission contexts remain
+   * owned by running agents until their underlying tools have drained.
    */
   async haltAll(callerId?: string): Promise<string[]> {
-    const owned = (id: string) => callerId === undefined || this.isDescendant(id, callerId);
-    const halted: string[] = [];
+    return this.haltMatching((id) => callerId === undefined || this.isDescendant(id, callerId));
+  }
 
-    for (const [agentId, agent] of this.activeAgents.entries()) {
-      if (!owned(agentId)) continue;
-      agent.abort();
-      halted.push(agentId);
-    }
-
-    const remaining: SubAgentConfig[] = [];
-    for (const config of this.waitQueue) {
-      if (!owned(config.id)) {
-        remaining.push(config);
-        continue;
+  /** Halt one conversation and its delegated subtree, including transport aliases. */
+  async haltForSession(sessionId: string, channels: readonly { channelId: string; channelType: string }[] = []): Promise<string[]> {
+    const configs = new Map(this.agentConfigs);
+    for (const config of this.waitQueue) configs.set(config.id, config);
+    const owned = (id: string): boolean => {
+      let current: string | undefined = id;
+      for (let depth = 0; current !== undefined && depth < 1000; depth++) {
+        const config = configs.get(current);
+        const entry = this.taskBoard.get(current);
+        const source = config?.sourceChannelId ?? config?.permissionContext?.channelId ?? entry?.sourceChannelId;
+        const type = config?.sourceChannelType ?? config?.permissionContext?.channelType ?? entry?.sourceChannelType;
+        if (source && (source === sessionId || channels.some((channel) => channel.channelId === source && channel.channelType === type))) return true;
+        current = this.parents.get(current);
       }
-      this.taskBoard.update(config.id, {
-        status: 'halted',
-        completedAt: Date.now(),
-        progress: 'Halted while queued',
-      });
-      halted.push(config.id);
+      return false;
+    };
+    return this.haltMatching(owned);
+  }
+
+  private hasHaltedAncestor(agentId: string): boolean {
+    let current: string | undefined = agentId;
+    for (let depth = 0; current !== undefined && depth < 1000; depth++) {
+      if (this.haltedAgents.has(current)) return true;
+      current = this.parents.get(current);
     }
-    this.waitQueue = remaining;
+    return false;
+  }
+
+  private markQueuedOrResumingHalted(agentId: string): void {
+    this.taskBoard.update(agentId, {
+      status: 'halted',
+      completedAt: Date.now(),
+      progress: this.pendingResumes.has(agentId) ? 'Halted before resuming' : 'Halted before starting',
+    });
+  }
+
+  private haltMatching(owned: (agentId: string) => boolean): string[] {
+    const candidates = new Set([
+      ...this.activeAgents.keys(), ...this.waitQueue.map((config) => config.id), ...this.pendingResumes,
+    ]);
+    const halted = [...candidates].filter(owned);
+    const ids = new Set(halted);
+    for (const id of halted) this.haltedAgents.add(id);
+    // Remove queued work before signalling running agents: their completion
+    // callbacks may free a slot, but must never start a cancelled delegate.
+    this.waitQueue = this.waitQueue.filter((config) => {
+      if (!ids.has(config.id)) return true;
+      this.markQueuedOrResumingHalted(config.id);
+      return false;
+    });
+    for (const id of halted) {
+      if (this.pendingResumes.has(id)) this.markQueuedOrResumingHalted(id);
+      this.activeAgents.get(id)?.abort();
+    }
+    // A cancelled resume may be waiting on notification with no live agent
+    // left to free its slot. Other sessions need not wait for that delivery.
+    void this.processWaitQueue().catch((err) => logger.warn({ err }, 'Failed to advance delegate queue after halt'));
     return halted;
   }
 
@@ -474,12 +532,30 @@ export class SubAgentSupervisor {
   }
 
   clearTaskBoard(): void {
-    this.fileLockManager.clearAll();
+    // Clearing history is not cancellation: live tools retain their locks.
+    for (const lock of this.fileLockManager.getAllLocks()) {
+      if (!this.activeAgents.has(lock.agentId)) this.fileLockManager.releaseAll(lock.agentId);
+    }
     this.taskBoard.clear();
-    // Only forget lineage for agents that are gone; a live subtree keeps its
-    // chain so its stop_agent/list_agents stay confined.
-    for (const id of [...this.parents.keys()]) {
-      if (!this.activeAgents.has(id) && !this.waitQueue.some(c => c.id === id)) this.parents.delete(id);
+    const retained = new Set([
+      ...this.activeAgents.keys(), ...this.waitQueue.map((config) => config.id), ...this.pendingResumes,
+    ]);
+    // Finished ancestors still carry a live descendant's ownership and stop
+    // fence. Preserve the whole chain, including while a resume notification waits.
+    for (const id of [...retained]) {
+      let parent = this.parents.get(id);
+      for (let depth = 0; parent !== undefined && depth < 1000; depth++) {
+        if (retained.has(parent)) break;
+        retained.add(parent);
+        parent = this.parents.get(parent);
+      }
+    }
+    for (const id of this.parents.keys()) {
+      if (retained.has(id)) continue;
+      this.parents.delete(id);
+      this.agentConfigs.delete(id);
+      this.stepResumeCounts.delete(id);
+      this.haltedAgents.delete(id);
     }
   }
 

@@ -45,7 +45,7 @@ function commandThenDone(command: string) {
   });
 }
 
-function makeChild(opts: { model: MockLanguageModelV3; ask?: (prompt: string) => Promise<string>; channelType?: string; allowedTools?: string[] }) {
+function makeChild(opts: { model: MockLanguageModelV3; ask?: (prompt: string) => Promise<string>; channelType?: string; allowedTools?: string[]; workingDirectory?: string }) {
   const registry = new CapabilityRegistry({} as any);
   registry.registerAll();
   const manifest = registry.permissions.getManifest();
@@ -62,6 +62,7 @@ function makeChild(opts: { model: MockLanguageModelV3; ask?: (prompt: string) =>
       id: 'a1',
       task: 'Do the thing',
       allowedTools: opts.allowedTools,
+      workingDirectory: opts.workingDirectory,
       sourceChannelId: opts.channelType ?? 'cli',
       sourceChannelType: opts.channelType ?? 'cli',
     },
@@ -195,6 +196,32 @@ describe('delegated sub-agent shell commands go through the parent\'s approval f
 });
 
 describe('sub-agent tool surface and prompt (#74)', () => {
+  it('keeps its working directory separate from a concurrently running parent', async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const release = new Promise<void>((resolve) => { finish = resolve; });
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        entered();
+        await release;
+        return { content: [{ type: 'text', text: 'done' }], finishReason: { unified: 'stop', raw: 'end_turn' }, usage, warnings: [] };
+      },
+    });
+    const { agent, registry } = makeChild({ model, workingDirectory: join(home, 'child') });
+    const rootCwd = registry.getCwd();
+    await registry.withExecutionContext(async () => {
+      registry.setCwd(join(home, 'parent'));
+      const running = agent.run();
+      await started;
+      expect(registry.getCwd()).toBe(join(home, 'parent'));
+      finish();
+      expect((await running).status).toBe('completed');
+      expect(registry.getCwd()).toBe(join(home, 'parent'));
+    });
+    expect(registry.getCwd()).toBe(rootCwd);
+  });
+
   it('does not receive delegate_task/list_agents/stop_agent unless the parent grants them', () => {
     const model = commandThenDone('true');
     const { agent, registry } = makeChild({ model });

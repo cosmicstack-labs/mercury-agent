@@ -20,11 +20,11 @@ describe("waiting for another chat", () => {
   });
 
   it("clears as soon as its own turn starts", () => {
-    handleEvent(store, "queued", JSON.stringify({ position: 1 }));
-    handleEvent(store, "thinking", JSON.stringify({}));
+    handleEvent(store, "queued", JSON.stringify({ targetId: "jokes", position: 1 }));
+    handleEvent(store, "thinking", JSON.stringify({ targetId: "jokes" }));
     expect(store.getState().waiting).toBeNull();
-    handleEvent(store, "queued", JSON.stringify({ position: 1 }));
-    handleEvent(store, "text_delta", JSON.stringify({ text: "Why did" }));
+    handleEvent(store, "queued", JSON.stringify({ targetId: "jokes", position: 1 }));
+    handleEvent(store, "text_delta", JSON.stringify({ targetId: "jokes", text: "Why did" }));
     expect(store.getState().waiting).toBeNull();
   });
 });

@@ -3343,7 +3343,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
           }
           // Same semantics as the local /stop fast-path command: abort the
           // foreground task, cancel its work-ledger entry, halt sub-agents.
-          const note = await agent.stopAllWork('stopped');
+          const note = await agent.stopSessionWork(suppliedSessionId);
           cloudClient!.sendStream({
             conversationId,
             sessionId: suppliedSessionId,
@@ -3551,7 +3551,7 @@ async function runAgent(isDaemon: boolean = false): Promise<void> {
   // Settings-free skill builder: the default model writes a skill from the owner's description.
   setSkillBuilder({ provider: () => providers.getDefault(), tools: () => Object.keys(capabilities.getTools()).sort() });
   setCloudReload(() => agent.reloadProviders());
-  setWebStop(() => agent.stopAllWork('stopped'));
+  setWebStop((sessionId) => agent.stopSessionWork(sessionId));
   setWebSessionBusy((sessionId) => agent.isBusyWith(sessionId));
   setWebQueueControls({ state: (id) => agent.queueStateFor(id), prioritize: (id) => agent.prioritize(id) });
   setWebResearchControls({

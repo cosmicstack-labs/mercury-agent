@@ -11,14 +11,14 @@ const ref = (id: string) => ({ id, name: `${id}.png`, kind: "image" as const, mi
 
 describe("artifacts in chat", () => {
   beforeEach(() => {
-    store.setState({ messages: [], streaming: "", live: null, agent: "idle", stopping: false, prompts: [], step: null, activeId: null });
+    store.setState({ messages: [], streaming: "", live: null, agent: "idle", stopping: false, prompts: [], step: null, activeId: "fixture-chat" });
   });
 
   it("holds artifacts that arrive mid-turn and attaches them to the reply", () => {
     store.setState({ agent: "working", messages: [{ id: "u", role: "user", content: "draw", timestamp: "" }] });
-    handleEvent(store, "artifacts", JSON.stringify({ items: [ref("a")] }));
+    handleEvent(store, "artifacts", JSON.stringify({ targetId: "fixture-chat", items: [ref("a")] }));
     expect(store.getState().messages).toHaveLength(1);
-    handleEvent(store, "text_done", JSON.stringify({ fullText: "Here it is." }));
+    handleEvent(store, "text_done", JSON.stringify({ targetId: "fixture-chat", fullText: "Here it is." }));
     const last = store.getState().messages.at(-1)!;
     expect(last.role).toBe("assistant");
     expect(last.artifacts?.map((a) => a.id)).toEqual(["a"]);
@@ -26,13 +26,13 @@ describe("artifacts in chat", () => {
 
   it("attaches artifacts that arrive after the reply to that reply", () => {
     store.setState({ agent: "idle", messages: [{ id: "u", role: "user", content: "draw", timestamp: "" }, { id: "r", role: "assistant", content: "Done.", timestamp: "" }] });
-    handleEvent(store, "artifacts", JSON.stringify({ items: [ref("b")] }));
+    handleEvent(store, "artifacts", JSON.stringify({ targetId: "fixture-chat", items: [ref("b")] }));
     expect(store.getState().messages.at(-1)!.artifacts?.map((a) => a.id)).toEqual(["b"]);
   });
 
   it("doesn't leak held artifacts into the next turn", () => {
     store.setState({ agent: "working" });
-    handleEvent(store, "text_done", JSON.stringify({ fullText: "No files." }));
+    handleEvent(store, "text_done", JSON.stringify({ targetId: "fixture-chat", fullText: "No files." }));
     expect(store.getState().messages.at(-1)!.artifacts).toBeUndefined();
   });
 });

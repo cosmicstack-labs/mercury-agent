@@ -415,6 +415,7 @@ function ChatInput({
         </div>
         <Button
           size="icon"
+          aria-label="Send"
           disabled={disabled || !text.trim()}
           onClick={handleSubmit}
           className="h-10 w-10 shrink-0 rounded-xl"
@@ -482,18 +483,28 @@ export function ChatPage() {
       clearMessages();
       return;
     }
+    let cancelled = false;
+    const eventVersion = useChatStore.getState().eventVersion;
+    void api.chat.threads.queue(activeThreadId).then((queue) => {
+      const state = useChatStore.getState();
+      if (!cancelled && state.activeThreadId === activeThreadId && state.eventVersion === eventVersion) {
+        state.setWaiting(queue.state === "running" || queue.state === "queued");
+      }
+    }).catch(() => { /* older runtimes may not report running turns */ });
     (async () => {
       try {
         const thread = await api.chat.threads.get(activeThreadId);
+        if (cancelled || useChatStore.getState().activeThreadId !== activeThreadId || useChatStore.getState().eventVersion !== eventVersion) return;
         clearMessages();
         if (thread.messages && thread.messages.length > 0) {
           thread.messages.forEach((m) => addMessage(m));
         }
       } catch {
-        // Thread doesn't exist yet (new thread) — just clear
-        clearMessages();
+        // Thread doesn't exist yet (new thread) — just clear.
+        if (!cancelled && useChatStore.getState().activeThreadId === activeThreadId && useChatStore.getState().eventVersion === eventVersion) clearMessages();
       }
     })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeThreadId]);
 
@@ -503,11 +514,12 @@ export function ChatPage() {
     if (!threadId) {
       const thread = await api.chat.threads.create();
       threadId = thread.id;
-      setActiveThread(threadId);
+      if (useChatStore.getState().activeThreadId === activeThreadId) setActiveThread(threadId);
     }
+    const selected = () => useChatStore.getState().activeThreadId === threadId;
 
     // Optimistic user message
-    addMessage({
+    if (selected()) addMessage({
       id: crypto.randomUUID(),
       role: "user",
       content,
@@ -515,14 +527,17 @@ export function ChatPage() {
     });
 
     // Immediately show waiting state
-    setWaiting(true);
+    if (selected()) {
+      useChatStore.setState((state) => ({ eventVersion: state.eventVersion + 1 }));
+      setWaiting(true);
+    }
 
     try {
       const res = await api.chat.send(content, threadId);
       // A client-made "web:..." id is rebound to a server session id. Follow
       // it, or the SSE stream stays on the old id and never receives this
       // turn's replies or permission prompts.
-      if (res.sessionId && res.sessionId !== threadId) {
+      if (selected() && res.sessionId && res.sessionId !== threadId) {
         setActiveThread(res.sessionId);
         navigate(`/chat/${res.sessionId}`, { replace: true });
       }
@@ -530,6 +545,7 @@ export function ChatPage() {
       // Reload threads in background to pick up new thread
       reloadThreads();
     } catch {
+      if (!selected()) return;
       setWaiting(false);
       clearStreaming();
       resetSteps();
@@ -796,7 +812,7 @@ export function ChatPage() {
         )}
 
         {/* Chat input */}
-        <ChatInput onSend={handleSend} disabled={isBusy} />
+        <ChatInput key={activeThreadId ?? "new"} onSend={handleSend} disabled={isBusy} />
       </div>
 
       {/* ── Workspace Panel ── */}

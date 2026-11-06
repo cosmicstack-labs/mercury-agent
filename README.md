@@ -68,6 +68,8 @@ Most agents can read files, run commands and fetch pages. The differences are in
 
 **It remembers you without being told to.** After each conversation Mercury extracts a few durable facts (preferences, goals, projects, decisions) with confidence scores, resolves conflicts with what it already knows, and recalls the relevant ones before the next answer. Everything lives in a SQLite file under `~/.mercury`, and `/memory` lets you inspect, pause or clear it.
 
+**Web and desktop chats can work in parallel.** Up to two chats can run at once, with separate working directories, approvals and Stop controls. Messages within a conversation stay ordered. Code sessions using overlapping project folders wait for each other; terminal, scheduled and global command turns remain exclusive. A stopped turn keeps its slot until its tools finish unwinding.
+
 **It respects a budget.** A daily token budget is enforced on every turn. When usage climbs, Token Saver mode trims context and can route routine work to a cheaper model. `/budget` shows where you stand.
 
 **It is one runtime, not a collection of scripts.** A single background process owns your channels, your bots and the web dashboard. Running `mercury` in a terminal attaches to that process instantly, so closing the terminal never stops a running task or a bot.

@@ -19,6 +19,9 @@ import { classifyStreamCompletion } from './stream-completion.js';
 import { resolveChildTools, childMayUse, filterToolsByAllowlist } from '../utils/tool-filter.js';
 import { deriveChildContext, type PermissionContext } from '../capabilities/permission-context.js';
 import { logger } from '../utils/logger.js';
+import { modelSeesImages } from './attachments.js';
+import { setPluginImagesAllowed } from '../plugins/tool-bridge.js';
+import { drainToolExecutions, trackTools } from '../capabilities/tool-execution-scope.js';
 
 export type ProgressCallback = (agentId: string, progress: string) => void;
 export type CompletionCallback = (result: SubAgentResult) => void;
@@ -155,10 +158,11 @@ export class SubAgent {
   async run(): Promise<SubAgentResult> {
     const ctx = this.getPermissionContext();
     const permissions = this.capabilities.permissions as any;
+    const run = () => this.capabilities.withExecutionContext(() => this.runInContext(), { signal: this.abortController.signal });
     if (ctx && typeof permissions?.withContext === 'function') {
-      return permissions.withContext(ctx, () => this.runInContext());
+      return permissions.withContext(ctx, run);
     }
-    return this.runInContext();
+    return run();
   }
 
   private async runInContext(): Promise<SubAgentResult> {
@@ -220,6 +224,7 @@ export class SubAgent {
 
       try {
         const provider = this.providers.getDefault();
+        setPluginImagesAllowed(modelSeesImages(provider.name, provider.getModel(), provider.seesImages));
         const baseMaxSteps = this.config.maxSteps || 25;
         const maxSteps = this.saverMode?.isActive() ? this.saverMode.adjustMaxSteps(baseMaxSteps) : baseMaxSteps;
         let stepsRemaining = maxSteps;
@@ -377,6 +382,9 @@ export class SubAgent {
           break;
         }
 
+        // The SDK can return on cancellation while a tool is still working.
+        // Keep the task running and its locks held until that work settles.
+        await drainToolExecutions();
         const result = lastResult;
 
         if (this.abortController.signal.aborted) {
@@ -476,6 +484,7 @@ export class SubAgent {
 
         return this.result;
       } finally {
+        await drainToolExecutions();
         if (this.config.workingDirectory) {
           this.capabilities.setCwd(originalCwd);
         }
@@ -558,7 +567,7 @@ export class SubAgent {
         tools.stop_agent = createStopAgentTool(this.supervisor, scoped);
       }
     }
-    return tools;
+    return trackTools(tools);
   }
 
   /** Names of the tools this agent actually receives. */

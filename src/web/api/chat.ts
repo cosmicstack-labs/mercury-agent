@@ -78,7 +78,7 @@ export function setCurrentProviderCallback(fn: () => { name: string; model: stri
   currentProviderFn = fn;
 }
 
-let stopFn: (() => Promise<string>) | null = null;
+let stopFn: ((sessionId: string) => Promise<string>) | null = null;
 let busyFn: ((sessionId: string) => boolean) | null = null;
 /** Whether a session has a turn running or queued (undo waits for it). */
 export function setSessionBusyLookup(fn: ((sessionId: string) => boolean) | null): void {
@@ -101,7 +101,7 @@ export function setResearchControls(controls: typeof researchControls): void {
   researchControls = controls;
 }
 /** The same stop the terminal's Esc and `/stop` use: abort the running turn, cancel its work entry. */
-export function setStopCallback(fn: () => Promise<string>): void {
+export function setStopCallback(fn: (sessionId: string) => Promise<string>): void {
   stopFn = fn;
 }
 
@@ -368,11 +368,13 @@ chat.put('/api/chat/settings', async (c) => {
 
 // ─── Permission Resolution ───────────────────────────────────
 
-/** Stop button: interrupt whatever Mercury is doing right now. */
+/** Stop button: interrupt only the selected conversation. */
 chat.post('/api/chat/stop', async (c) => {
   if (!stopFn) return c.json({ error: 'Stop is not available on this runtime' }, 503);
   try {
-    const note = await stopFn();
+    const body = await c.req.json<{ sessionId?: unknown }>().catch(() => ({} as { sessionId?: unknown }));
+    if (typeof body.sessionId !== 'string' || !body.sessionId.trim() || body.sessionId.length > 200) return c.json({ error: 'A sessionId is required to stop a chat' }, 400);
+    const note = await stopFn(body.sessionId);
     return c.json({ ok: true, note });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
