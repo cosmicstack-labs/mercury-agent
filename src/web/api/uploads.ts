@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { getMercuryHome } from '../../utils/config.js';
 import type { ChannelAttachment } from '../../types/channel.js';
-import { decodeTextAttachment, MAX_TEXT_BYTES, textAttachmentMime } from '../../core/text-attachments.js';
+import { decodeTextAttachment, MAX_TEXT_BYTES, textAttachmentMime, textPrefix } from '../../core/text-attachments.js';
 
 /** Same caps as the runtime applies when it hands files to the model. */
 export const MAX_FILES = 4;
@@ -88,7 +88,7 @@ function safeFileName(name: string | undefined, extension: string, text = false)
     // and download route must still recognize this file after it is stored.
     const supplied = extname(cleaned);
     const suffix = /^\.(txt|md|markdown)$/i.test(supplied) ? supplied : extension;
-    const stem = cleaned.slice(0, cleaned.length - supplied.length).slice(0, 80 - suffix.length) || `upload-${randomUUID().slice(0, 8)}`;
+    const stem = textPrefix(cleaned.slice(0, cleaned.length - supplied.length), 80 - suffix.length) || `upload-${randomUUID().slice(0, 8)}`;
     return `${stem}${suffix}`.replace(/^\.+/, '_');
   }
   const shortened = cleaned.slice(0, 80);

@@ -75,11 +75,11 @@ describe('stored uploads', () => {
     expect(await response.text()).toBe(text);
   });
 
-  it('preserves the text extension in long filenames through storage, model input and retrieval', async () => {
+  it.each(['x'.repeat(79) + '.md', '😀'.repeat(40) + '.md'])('preserves long filenames through storage, model input and retrieval: %s', async (name) => {
     const { default: chatRoutes } = await import('./chat.js');
-    const upload = storeInlineAttachments([{ name: 'x'.repeat(79) + '.md', data: Buffer.from('Long name, real text').toString('base64') }]);
+    const upload = storeInlineAttachments([{ name, data: Buffer.from('Long name, real text').toString('base64') }]);
     if (!upload.ok) throw new Error(upload.error);
-    expect(upload.attachments[0].name).toHaveLength(80);
+    expect(upload.attachments[0].name!.length).toBeLessThanOrEqual(80);
     expect(upload.attachments[0].name).toMatch(/\.md$/);
     const message = { id: '1', channelId: 'web', channelType: 'web' as const, senderId: 'owner', content: 'Summarize', timestamp: 0, metadata: { attachments: upload.attachments } };
     const out = withAttachments([{ role: 'user', content: 'Summarize' }], message, 'deepseek', 'deepseek-chat');
