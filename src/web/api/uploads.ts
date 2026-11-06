@@ -15,11 +15,13 @@ import { randomUUID } from 'node:crypto';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { getMercuryHome } from '../../utils/config.js';
 import type { ChannelAttachment } from '../../types/channel.js';
+import { decodeTextAttachment, MAX_TEXT_BYTES, textAttachmentMime } from '../../core/text-attachments.js';
 
 /** Same caps as the runtime applies when it hands files to the model. */
 export const MAX_FILES = 4;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_PDF_BYTES = 15 * 1024 * 1024;
+export { MAX_TEXT_BYTES };
 
 export interface InlineAttachment {
   /** Display name; only its basename is kept. */
@@ -74,26 +76,32 @@ function sniff(bytes: Buffer): { mime: string; kind: 'image' | 'document' } | nu
 }
 
 /** Keeps the basename, drops traversal and control characters, forces an extension. */
-function safeFileName(name: string | undefined, extension: string): string {
+function safeFileName(name: string | undefined, extension: string, text = false): string {
   const base = (name ?? '').split(/[\\/]/).pop() ?? '';
   const cleaned = base
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f<>:"|?*]+/g, '')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80);
-  const useful = cleaned && extname(cleaned).toLowerCase() !== '' ? cleaned : `upload-${randomUUID().slice(0, 8)}${extension}`;
+    .trim();
+  if (text) {
+    // Keep the type-bearing extension when shortening long names: the runtime
+    // and download route must still recognize this file after it is stored.
+    const supplied = extname(cleaned);
+    const suffix = /^\.(txt|md|markdown)$/i.test(supplied) ? supplied : extension;
+    const stem = cleaned.slice(0, cleaned.length - supplied.length).slice(0, 80 - suffix.length) || `upload-${randomUUID().slice(0, 8)}`;
+    return `${stem}${suffix}`.replace(/^\.+/, '_');
+  }
+  const shortened = cleaned.slice(0, 80);
+  const useful = shortened && extname(shortened).toLowerCase() !== '' ? shortened : `upload-${randomUUID().slice(0, 8)}${extension}`;
   return useful.replace(/^\.+/, '_');
 }
 
 function decode(data: string): Buffer | null {
-  const payload = data.startsWith('data:') ? data.slice(data.indexOf(',') + 1) : data;
-  if (!payload) return null;
-  const bytes = Buffer.from(payload, 'base64');
-  // Buffer.from is forgiving and skips bad characters; the magic-byte check
-  // in sniff() rejects anything that did not decode to a real file.
-  if (bytes.length === 0) return null;
-  return bytes;
+  const payload = data.startsWith('data:') ? data.replace(/^data:[^,]*;base64,/, '') : data;
+  // Text has no magic bytes to catch permissive base64 decoding. Require the
+  // standard encoding, including padding, before interpreting any UTF-8.
+  if (payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) return null;
+  return Buffer.from(payload, 'base64');
 }
 
 /**
@@ -115,26 +123,37 @@ export function storeInlineAttachments(input: unknown, now: Date = new Date()): 
     if (!item || typeof item !== 'object' || typeof item.data !== 'string') {
       return { ok: false, error: `attachment ${index + 1} needs base64 "data"` };
     }
+    if ((item.name !== undefined && typeof item.name !== 'string') || (item.mime !== undefined && typeof item.mime !== 'string')) {
+      return { ok: false, error: `attachment ${index + 1} name and mime must be strings` };
+    }
+    if (item.data.length > Math.ceil(MAX_PDF_BYTES / 3) * 4 + 1024) {
+      return { ok: false, error: `attachment ${index + 1} exceeds the maximum upload size (15 MB)` };
+    }
     const bytes = decode(item.data);
     if (!bytes) return { ok: false, error: `attachment ${index + 1} is not valid base64` };
 
-    const sniffed = sniff(bytes);
+    const textMime = textAttachmentMime(item.name, item.mime);
+    const sniffed = sniff(bytes) ?? (textMime ? { mime: textMime, kind: 'document' as const } : null);
     if (!sniffed) {
-      return { ok: false, error: `attachment ${index + 1} is not a supported image (png, jpeg, webp, gif) or PDF` };
+      return { ok: false, error: `attachment ${index + 1} is not a supported image (png, jpeg, webp, gif), PDF, TXT or Markdown file` };
     }
-    const limit = sniffed.kind === 'image' ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+    const isText = sniffed.mime.startsWith('text/');
+    const limit = isText ? MAX_TEXT_BYTES : sniffed.kind === 'image' ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
     if (bytes.length > limit) {
       return {
         ok: false,
-        error: `attachment ${index + 1} is ${Math.round(bytes.length / 1048576)} MB; the limit is ${Math.round(limit / 1048576)} MB`,
+        error: isText ? `attachment ${index + 1} exceeds the text limit of 256 KiB` : `attachment ${index + 1} is ${Math.round(bytes.length / 1048576)} MB; the limit is ${Math.round(limit / 1048576)} MB`,
       };
+    }
+    if (isText && decodeTextAttachment(bytes) === null) {
+      return { ok: false, error: `attachment ${index + 1} must be UTF-8 text without binary control characters` };
     }
     stored.push({
       attachment: {
         kind: sniffed.kind,
         path: '',
         mime: sniffed.mime,
-        name: safeFileName(item.name, IMAGE_EXTENSIONS.get(sniffed.mime) ?? '.pdf'),
+        name: safeFileName(item.name, isText ? (sniffed.mime === 'text/markdown' ? '.md' : '.txt') : IMAGE_EXTENSIONS.get(sniffed.mime) ?? '.pdf', isText),
       },
       bytes,
     });
@@ -210,6 +229,7 @@ export function resolveUploadRef(month: string, file: string): string | null {
 }
 
 /** The served type of a stored upload, from its bytes; null for anything else. */
-export function uploadMime(bytes: Buffer): string | null {
-  return sniff(bytes)?.mime ?? null;
+export function uploadMime(bytes: Buffer, name?: string): string | null {
+  // Markdown is served as inert text, never interpreted as HTML in this origin.
+  return sniff(bytes)?.mime ?? (textAttachmentMime(name) && decodeTextAttachment(bytes) !== null ? 'text/plain; charset=utf-8' : null);
 }

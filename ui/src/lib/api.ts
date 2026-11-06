@@ -194,8 +194,8 @@ export const providers = {
 
 // ── Chat ──
 export const chat = {
-  send: (content: string, threadId?: string) =>
-    post<{ sent: boolean; sessionId: string }>("/api/chat/send", { content, sessionId: threadId }),
+  send: (content: string, threadId?: string, attachments?: InlineChatAttachment[]) =>
+    post<{ sent: boolean; sessionId: string; attachments?: ChatAttachment[] }>("/api/chat/send", { content, sessionId: threadId, attachments }),
   settings: {
     get: () => get<ChatSettings>("/api/chat/settings"),
     update: (data: Partial<ChatSettings>) =>
@@ -667,12 +667,16 @@ export interface ChatThread {
   createdAt: string;
 }
 
+export interface InlineChatAttachment { name: string; mime: string; data: string }
+export interface ChatAttachment { name: string; kind: 'image' | 'document'; mime?: string; url?: string }
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
   steps?: ToolStep[];
+  attachments?: ChatAttachment[];
 }
 
 export interface ToolStep {

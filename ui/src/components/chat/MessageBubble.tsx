@@ -87,6 +87,12 @@ export function MessageBubble({ message, isLast }: MessageBubbleProps) {
             <MarkdownRenderer content={message.content} />
           )}
 
+          {message.attachments?.map((attachment, index) => (
+            <div key={index} className="mt-2 text-xs">
+              {attachment.url ? <a href={attachment.url} target="_blank" rel="noreferrer" className="underline">{attachment.name}</a> : <span>{attachment.name}</span>}
+            </div>
+          ))}
+
           {/* Hover actions */}
           <div
             className={cn(

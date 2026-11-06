@@ -18,7 +18,7 @@ import { DictationNotice, MicButton, RecordingBar, joinText, useDictation } from
 
 /**
  * One box. Enter sends, Shift+Enter breaks a line, Esc clears. Photos and
- * PDFs come in by the paperclip, paste or drag-and-drop (up to 4, the
+ * PDFs, TXT and Markdown come in by the paperclip, paste or drag-and-drop (up to 4, the
  * runtime's limit). The mic dictates: ✓ puts the words in, ↑ sends them. Below: the model and Ask Me / Allow All, one click each.
  * Focus shows as a soft ring on the whole box, never a line inside it.
  */
@@ -34,6 +34,7 @@ interface Pending {
 const MAX_FILES = 4;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
+const MAX_TEXT_BYTES = 256 * 1024;
 
 export interface ComposerProps {
   surface: Surface;
@@ -178,11 +179,12 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
     for (const f of incoming.slice(0, Math.max(0, room))) {
       const isImage = f.type.startsWith("image/");
       const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
-      if (!isImage && !isPdf) { setError(`${f.name}: only images and PDFs can be attached.`); continue; }
-      const limit = isImage ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
-      if (f.size > limit) { setError(`${f.name} is ${Math.round(f.size / 1048576)} MB; the limit is ${limit / 1048576} MB.`); continue; }
+      const isText = /\.(txt|md|markdown)$/i.test(f.name);
+      if (!isImage && !isPdf && !isText) { setError(`${f.name}: attach an image, PDF, TXT or Markdown file.`); continue; }
+      const limit = isText ? MAX_TEXT_BYTES : isImage ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+      if (f.size > limit) { setError(`${f.name}: the limit is ${isText ? "256 KiB" : `${limit / 1048576} MB`}.`); continue; }
       const data = await readBase64(f);
-      accepted.push({ id: crypto.randomUUID(), name: f.name, mime: isImage ? f.type || "image/png" : "application/pdf", size: f.size, data, preview: isImage ? URL.createObjectURL(f) : null });
+      accepted.push({ id: crypto.randomUUID(), name: f.name, mime: isText ? (/\.txt$/i.test(f.name) ? "text/plain" : "text/markdown") : isImage ? f.type || "image/png" : "application/pdf", size: f.size, data, preview: isImage ? URL.createObjectURL(f) : null });
     }
     if (accepted.length) setFiles((cur) => [...cur, ...accepted]);
     ref.current?.focus();
@@ -253,7 +255,7 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
             <div className="flex flex-wrap gap-2 px-4 pt-4">
               {files.map((f) => (
                 <span key={f.id} className="group flex h-12 items-center gap-2 rounded-xl border border-line bg-raised pl-1 pr-2 text-xs text-ink2">
-                  {f.preview ? <img src={f.preview} alt="" className="h-10 w-10 rounded-md object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded-md bg-red/10 font-mono text-2xs text-red">PDF</span>}
+                  {f.preview ? <img src={f.preview} alt="" className="h-10 w-10 rounded-md object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded-md bg-red/10 font-mono text-2xs text-red">{f.mime === "application/pdf" ? "PDF" : f.mime === "text/markdown" ? "MD" : "TXT"}</span>}
                   <span className="max-w-[140px]">
                     <span className="block truncate text-ink">{f.name}</span>
                     <span className="block text-2xs text-ink4">{formatSize(f.size)}</span>
@@ -299,12 +301,12 @@ export function Composer({ surface, placeholder, code, extra, blockedReason, mon
           </div>
           )}
           <div className="flex flex-wrap items-center gap-1 px-3 pb-3 pt-1.5">
-            <Tooltip label="Attach images or PDFs" side="top">
+            <Tooltip label="Attach images, PDFs, TXT or Markdown" side="top">
               <Button variant="ghost" size="md" icon onClick={() => picker.current?.click()} disabled={!connected || files.length >= MAX_FILES} aria-label="Attach">
                 <Paperclip size={17} />
               </Button>
             </Tooltip>
-            <input ref={picker} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.target.value = ""; }} />
+            <input ref={picker} type="file" accept="image/*,application/pdf,.txt,.md,.markdown,text/plain,text/markdown" multiple hidden onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.target.value = ""; }} />
             {extra}
             {modeLabel && (
               <Tooltip label="Switch mode" shortcut="⇧⇥" side="top">
