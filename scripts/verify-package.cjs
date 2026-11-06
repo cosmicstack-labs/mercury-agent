@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-const { execSync } = require('child_process');
-const { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } = require('fs');
+const { execSync, execFileSync } = require('child_process');
+const { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } = require('fs');
+const assert = require('node:assert/strict');
 const { join, resolve } = require('path');
 const { tmpdir } = require('os');
 
 const ROOT = resolve(__dirname, '..');
-const TMP = join(tmpdir(), `mercury-pv-${process.pid}`);
+const TMP = mkdtempSync(join(tmpdir(), 'mercury-pv-'));
+let tarballPath;
 
 let failed = false;
 
@@ -19,23 +21,26 @@ function check(label, fn) {
   }
 }
 
+try {
 console.log('\u263F Mercury Agent \u2014 Pack & Verify\n');
 console.log('1/5 Building...');
 execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 
 console.log('\n2/5 Packing tarball...');
-if (existsSync(TMP)) rmSync(TMP, { recursive: true, force: true });
-mkdirSync(TMP, { recursive: true });
-
-const tarball = execSync('npm pack', { cwd: ROOT, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().split('\n').pop();
-const tarballPath = join(ROOT, tarball);
+const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const tarball = JSON.parse(execFileSync(npm, ['pack', '--json', '--pack-destination', TMP], {
+  cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+}))[0].filename;
+tarballPath = join(TMP, tarball);
 console.log(`  Tarball: ${tarball}`);
 
 console.log('\n3/5 Installing from tarball...');
 const installDir = join(TMP, 'install');
 mkdirSync(installDir, { recursive: true });
 writeFileSync(join(installDir, 'package.json'), '{}');
-execSync(`npm install "${tarballPath}" --omit=dev --no-save`, { cwd: installDir, stdio: 'pipe' });
+execFileSync(npm, ['install', tarballPath, '--omit=dev', '--no-save', '--no-audit', '--no-fund'], {
+  cwd: installDir, stdio: 'pipe', timeout: 300_000,
+});
 
 const modDir = join(installDir, 'node_modules', '@cosmicstack', 'mercury-agent');
 
@@ -115,13 +120,80 @@ check('engines requires >=22', () => {
   }
 });
 
-console.log('\n5/5 Cleaning up...');
-try { rmSync(TMP, { recursive: true, force: true }); } catch {}
-try { rmSync(tarballPath, { force: true }); } catch {}
+// Exercise the installed package, not the checkout. A fresh home prevents
+// accidental access to the owner's daemon, plugin state or skill index.
+const mercuryHome = join(TMP, 'mercury home');
+const cliEnv = {
+  ...process.env, HOME: TMP, USERPROFILE: TMP, MERCURY_HOME: mercuryHome,
+  MERCURY_PLUGIN_CATALOG_URL: 'off', MERCURY_PLUGINS: 'on', NO_COLOR: '1',
+};
+function cli(...args) {
+  return execFileSync(process.execPath, [join(modDir, 'dist', 'index.js'), ...args], {
+    cwd: installDir, env: cliEnv, encoding: 'utf8', timeout: 60_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+check('all 21 packaged skills install and reload byte-identically via the CLI', () => {
+  const sourceRoot = join(ROOT, 'skills', 'mercury-adapted');
+  const shippedRoot = join(modDir, 'skills', 'mercury-adapted');
+  for (const name of ['README.md', 'LICENSE']) {
+    assert.equal(readFileSync(join(shippedRoot, name), 'utf8'), readFileSync(join(sourceRoot, name), 'utf8'));
+  }
+  const slugs = readdirSync(sourceRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  assert.equal(slugs.length, 21);
+  assert.deepEqual(readdirSync(shippedRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(), slugs);
+  const ids = [];
+  for (const slug of slugs) {
+    const source = readFileSync(join(sourceRoot, slug, 'SKILL.md'), 'utf8');
+    const file = join(shippedRoot, slug, 'SKILL.md');
+    assert.equal(readFileSync(file, 'utf8'), source, `packaged bytes: ${slug}`);
+    const installed = JSON.parse(cli('skills', '--json', 'install', '--from', file, '-y'));
+    assert.equal(installed.ok, true, slug);
+    assert.equal(typeof installed.id, 'string', slug);
+    ids.push(installed.id);
+    assert.equal(cli('skills', 'view', installed.id, '--raw'), source, `reloaded bytes: ${slug}`);
+  }
+  const listed = JSON.parse(cli('skills', '--json', 'list'));
+  assert.deepEqual(listed.skills.map((skill) => skill.id).sort(), ids.sort());
+  assert.equal(new Set(ids).size, 21);
+});
+
+check('both packaged plugins validate, install and validate again from their installed paths', () => {
+  for (const id of ['live-time', 'hardlight']) {
+    const folder = join(modDir, 'plugins', id);
+    const source = join(ROOT, 'plugins', id);
+    const files = readdirSync(source).sort();
+    assert.deepEqual(readdirSync(folder).sort(), files, id);
+    for (const file of files) assert.deepEqual(readFileSync(join(folder, file)), readFileSync(join(source, file)), `${id}/${file}`);
+    const report = JSON.parse(cli('plugins', 'validate', folder, '--json'));
+    assert.equal(report.ok, true, JSON.stringify(report));
+    assert.equal(report.id, id);
+    cli('plugins', 'install', folder, '--yes', '--no-setup');
+    const state = JSON.parse(readFileSync(join(mercuryHome, 'plugins', 'state.json'), 'utf8'));
+    assert.equal(state.plugins[id].enabled, true, id);
+    const manifest = JSON.parse(readFileSync(join(folder, 'mercury-plugin.json'), 'utf8'));
+    const installedFolder = join(mercuryHome, 'plugins', id, 'versions', manifest.version);
+    for (const file of files) assert.deepEqual(readFileSync(join(installedFolder, file)), readFileSync(join(source, file)), `installed ${id}/${file}`);
+    const installedReport = JSON.parse(cli('plugins', 'validate', installedFolder, '--json'));
+    assert.equal(installedReport.ok, true, JSON.stringify(installedReport));
+  }
+});
+
+} catch (err) {
+  console.error(`  \u2717 Package verification failed: ${err.stack || err.message}`);
+  failed = true;
+} finally {
+  console.log('\n5/5 Cleaning up...');
+  try { rmSync(TMP, { recursive: true, force: true }); } catch (err) {
+    console.error(`Could not clean ${TMP}: ${err.message}`);
+    failed = true;
+  }
+}
 
 if (failed) {
   console.log('\n\u2717 Verification FAILED \u2014 do not publish!\n');
-  process.exit(1);
+  process.exitCode = 1;
 } else {
-  console.log('\n\u2713 All checks passed \u2014 safe to publish.\n');
+  console.log('\n\u2713 Package checks passed (credentials and release approval are separate).\n');
 }
