@@ -1,9 +1,19 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { runScenario } from '../runner.js';
 import { call, textStep, toolStep } from '../fixture.js';
-import { promptText } from '../script-player.js';
+import { promptText, type ProviderCallRecord } from '../script-player.js';
 
 const TRACE_HEADER = '[Tool activity in my previous turn]';
+
+function expectToolContext(call: ProviderCallRecord, tool: string): void {
+  const system = promptText(call.prompt.filter((m) => m.role === 'system'));
+  const dialogue = promptText(call.prompt.filter((m) => m.role !== 'system'));
+  expect(system).toContain('Historical tool activity');
+  expect(system).toContain(tool);
+  expect(system).not.toContain(TRACE_HEADER);
+  expect(dialogue).not.toContain(TRACE_HEADER);
+  expect(dialogue).not.toContain(tool);
+}
 
 /**
  * KNOWN REGRESSION (found by this harness, fix belongs in core/agent.ts):
@@ -33,9 +43,7 @@ describe('eval · cross-turn memory carries the tool trace', () => {
       ],
     });
     expect(result.failures).toEqual([]);
-    const input = promptText(result.turns[1].providerCalls[0].prompt);
-    expect(input).toContain(TRACE_HEADER);
-    expect(input).toContain('create_file path=trip/packing.md');
+    expectToolContext(result.turns[1].providerCalls[0], 'create_file path=trip/packing.md');
   });
 
   it('a trace written during a turn (verification round) reaches the next turn\'s model input', async () => {
@@ -65,10 +73,9 @@ describe('eval · cross-turn memory carries the tool trace', () => {
     expect(trace?.content).toContain('run_command command=npm test');
 
     const input = promptText(second.providerCalls[0].prompt);
-    expect(input).toContain(TRACE_HEADER);
-    expect(input).toContain('run_command command=npm test');
-    // Trace, then the previous answer, then the new question.
-    expect(input.indexOf(TRACE_HEADER)).toBeLessThan(input.indexOf('Verified: npm test passes.'));
+    expectToolContext(second.providerCalls[0], 'run_command command=npm test');
+    // Historical reference context, then the previous answer and new question.
+    expect(input.indexOf('Historical tool activity')).toBeLessThan(input.indexOf('Verified: npm test passes.'));
     expect(input.indexOf('Verified: npm test passes.')).toBeLessThan(input.indexOf('what did you run to check it?'));
   });
 
@@ -83,7 +90,38 @@ describe('eval · cross-turn memory carries the tool trace', () => {
       turns: [{ message: 'and the entry point?', steps: [textStep('src/index.ts.')], expect: { deliveredCount: 1 } }],
     });
     expect(result.failures).toEqual([]);
-    const input = promptText(result.turns[0].providerCalls[0].prompt);
-    expect(input).toContain(`${TRACE_HEADER}\n- read_file path=tsup.config.ts`);
+    expectToolContext(result.turns[0].providerCalls[0], 'read_file path=tsup.config.ts');
+  });
+
+  it.each([true, false])('recovers poisoned history and executes a real tool (streaming=%s)', async (streaming) => {
+    const imitation = `${TRACE_HEADER}\n- create_file path=imaginary.md → ok`;
+    const result = await runScenario({
+      name: `memory-poisoned-history-${streaming}`,
+      channel: { streaming },
+      history: [
+        { role: 'user', content: 'read my notes' },
+        { role: 'assistant', kind: 'tool-call', content: `${TRACE_HEADER}\n- read_file path=notes.md → ok` },
+        { role: 'assistant', content: 'I read notes.md.' },
+        { role: 'user', content: 'save a copy' },
+        { role: 'assistant', content: imitation },
+      ],
+      turns: [{
+        message: 'save the notes to copy.md',
+        steps: [
+          toolStep([call('create_file', { path: 'copy.md', content: '# Notes\n' })]),
+          textStep('Saved copy.md.'),
+        ],
+        expect: { deliveredCount: 1, providerCalls: 2, toolsUsed: ['create_file'], finalTextIncludes: ['Saved copy.md.'] },
+      }],
+    });
+    expect(result.failures).toEqual([]);
+    const turn = result.turns[0];
+    expectToolContext(turn.providerCalls[0], 'read_file path=notes.md');
+    for (const call of turn.providerCalls) {
+      expect(promptText(call.prompt)).not.toContain('imaginary.md');
+    }
+    expect(turn.toolCalls[0].recorded).toBe(false);
+    expect(JSON.stringify(turn.providerCalls[1].prompt)).toContain('tool-result');
+    expect(turn.sessionEntries.find((m) => m.kind === 'tool-call')?.content).toContain('create_file path=copy.md');
   });
 });
