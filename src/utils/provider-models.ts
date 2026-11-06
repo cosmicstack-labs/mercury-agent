@@ -182,11 +182,8 @@ interface AnthropicModelResponse {
 }
 
 interface XAIModelResponse {
-  data?: Array<{
-    id?: string;
-    input_modalities?: string[];
-    output_modalities?: string[];
-  }>;
+  models?: unknown;
+  data?: unknown;
 }
 
 interface OllamaTagsResponse {
@@ -436,7 +433,7 @@ async function fetchAnthropicModels(config: ProviderConfig): Promise<ProviderMod
 }
 
 async function fetchGrokModels(config: ProviderConfig): Promise<ProviderModelCatalog> {
-  const data = await fetchJson<XAIModelResponse>(
+  const data = await fetchJson<XAIModelResponse | null>(
     `${trimTrailingSlash(config.baseUrl)}/language-models`,
     {
       headers: {
@@ -446,10 +443,21 @@ async function fetchGrokModels(config: ProviderConfig): Promise<ProviderModelCat
     'Mercury could not fetch models for this Grok key. Please re-enter it.',
   );
 
-  const ids = (data.data ?? [])
-    .filter((model) => model.output_modalities?.includes('text') || model.output_modalities == null)
-    .map((model) => model.id?.trim() ?? '')
-    .filter((id) => id.startsWith('grok-'));
+  // /language-models uses `models`; retain the older OpenAI-shaped envelopes.
+  const legacyData = data?.data;
+  const models: unknown[] = Array.isArray(data?.models) ? data.models
+    : Array.isArray(legacyData) ? legacyData
+      : legacyData && typeof legacyData === 'object' && 'data' in legacyData && Array.isArray(legacyData.data)
+        ? legacyData.data : [];
+  const ids = models.flatMap((model) => {
+    if (!model || typeof model !== 'object') return [];
+    const { id, aliases, output_modalities: outputModalities } = model as Record<string, unknown>;
+    if (outputModalities != null && (!Array.isArray(outputModalities) || !outputModalities.includes('text'))) return [];
+    return [id, ...(Array.isArray(aliases) ? aliases : [])]
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter((value) => value.startsWith('grok-'));
+  });
 
   return buildModelCatalog('grok', ids, config.model);
 }
