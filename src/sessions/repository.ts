@@ -71,6 +71,8 @@ export class SessionResolutionError extends Error {
   }
 }
 
+export class SessionTitleError extends Error {}
+
 export class SessionRepository {
   readonly rootDir: string;
   private readonly indexPath: string;
@@ -243,9 +245,18 @@ export class SessionRepository {
    */
   updateTitle(ref: string, title: string, titleSource: Session['titleSource'] = 'user', options: { touch?: boolean } = {}): Session {
     const normalized = title.replace(/\s+/g, ' ').trim();
-    if (!normalized) throw new Error('Session title is required');
-    if (normalized.length > 120) throw new Error('Session title must be 120 characters or fewer');
+    if (!normalized) throw new SessionTitleError('Session title is required');
+    const characters = Array.from(normalized);
+    if (characters.length > 120) throw new SessionTitleError('Session title must be 120 characters or fewer');
+    // for...of leaves unpaired surrogates intact; reject them rather than
+    // persisting a title that changes when encoded by a client or filesystem.
+    if (characters.some((character) => {
+      const point = character.codePointAt(0)!;
+      return point < 32 || (point >= 127 && point <= 159) || (point >= 0xd800 && point <= 0xdfff);
+    })) throw new SessionTitleError('Session title must contain valid text without control characters');
     const session = this.get(ref);
+    // A background generation/repair may finish after the owner renamed it.
+    if (session.titleSource === 'user' && titleSource !== 'user') return session;
     if (session.title === normalized && session.titleSource === titleSource) return session;
     session.title = normalized;
     session.titleSource = titleSource;

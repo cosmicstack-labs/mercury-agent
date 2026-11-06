@@ -5826,6 +5826,8 @@ Is this productive iteration or a stuck loop?`,
     for (const session of this.sessions.list()) {
       const firstUser = session.messages.find((m) => m.role === 'user' && (m.kind ?? 'message') === 'message');
       if (!firstUser) continue;
+      // Voice labels are deterministic timestamps/durations, not model titles.
+      if (typeof session.messages[0]?.metadata?.voiceCall === 'string') continue;
       if (session.titleSource === 'fallback') {
         const title = fallbackSessionTitle(firstUser.content);
         if (title !== session.title) { this.sessions.updateTitle(session.id, title, 'fallback', { touch: false }); recut++; }
