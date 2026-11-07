@@ -64,6 +64,8 @@ export interface BotQueueBackend {
   retry(jobId: string, attempts: number, runAfterMs?: number): void;
   /** Jobs safe to resume: pending (due), or claimed whose lease has expired. */
   rehydratable(): DurableBotJob[];
+  /** Startup only: claimed scheduled jobs and old scheduled retry entries, regardless of lease/backoff. */
+  interruptedSchedules(): DurableBotJob[];
   /** Pending jobs whose run-after time has arrived (retry backoff elapsed). */
   dueJobs(): DurableBotJob[];
   /** All pending jobs for one bot, in creation order — explicit resume (/bots start), ignores retry backoff. */
@@ -147,6 +149,7 @@ function normalizeJob(raw: any): DurableBotJob {
     idempotencyKey: raw.idempotencyKey ?? '',
     reasonCode: raw.reasonCode ?? raw.reason_code ?? undefined,
     settledAt: raw.settledAt ?? raw.settled_at ?? undefined,
+    runAfter: raw.runAfter ?? raw.run_after ?? undefined,
   };
 }
 
@@ -160,6 +163,8 @@ function normalizeJob(raw: any): DurableBotJob {
  */
 export class BotQueue {
   readonly backend: BotQueueBackend;
+  /** The manager pauses future routines when a prior scheduled run is uncertain. */
+  onInterruptedSchedule?: (job: DurableBotJob) => void;
   /** Post-close guard: in-flight turns' queue access degrades to no-ops. */
   private closed = false;
 
@@ -201,15 +206,29 @@ export class BotQueue {
 
   /** Jobs to resume on startup: due pending, plus expired-lease claimed jobs. */
   resumeJobs(): DurableBotJob[] {
+    this.excludeInterruptedSchedules(this.backend.interruptedSchedules());
     const expired = this.backend.requeueExpiredLeases();
     if (expired > 0) logger.info({ expired }, 'Requeued expired bot job leases');
-    return this.backend.rehydratable();
+    return this.excludeInterruptedSchedules(this.backend.rehydratable());
+  }
+
+  private excludeInterruptedSchedules(jobs: DurableBotJob[]): DurableBotJob[] {
+    return jobs.filter((job) => {
+      // A pending first attempt has not acted. Claimed work and old retry/
+      // continuation entries may already have effects and require manual replay.
+      if (job.trigger !== 'cron' || (job.state === 'pending' && job.attempts === 0 && job.runAfter === undefined)) return true;
+      // Persist the routine pause first. If that fails, leave the job eligible
+      // for quarantine again rather than losing the opportunity to stop future ticks.
+      this.onInterruptedSchedule?.(job);
+      this.backend.settle(job.id, 'dead', 'scheduled_interrupted');
+      return false;
+    });
   }
 
   /** Pending jobs whose retry backoff has elapsed (swept periodically). */
   dueJobs(): DurableBotJob[] {
     if (this.closed) return [];
-    return this.backend.dueJobs();
+    return this.excludeInterruptedSchedules(this.backend.dueJobs());
   }
 
   /** All pending jobs for one bot — explicit resume via /bots start. */
@@ -365,27 +384,30 @@ export class SqliteQueueBackend implements BotQueueBackend {
   }
 
   settle(jobId: string, outcome: 'done' | 'dead', reasonCode?: string): void {
-    const row = this.db.prepare(`SELECT * FROM bot_jobs WHERE id = ?`).get(jobId) as any;
-    if (!row) return;
-    if (outcome === 'done') {
+    if (this.closed) return;
+    this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT * FROM bot_jobs WHERE id = ?`).get(jobId) as any;
+      if (!row) return;
+      if (outcome === 'done') {
+        this.db.prepare(`DELETE FROM bot_jobs WHERE id = ?`).run(jobId);
+        return;
+      }
       this.db.prepare(`DELETE FROM bot_jobs WHERE id = ?`).run(jobId);
-      return;
-    }
-    this.db.prepare(`DELETE FROM bot_jobs WHERE id = ?`).run(jobId);
-    this.db.prepare(
-      `INSERT INTO bot_dlq (id, bot_id, trigger, prompt, from_bot, source, attempts, created_at, idempotency_key, reason_code, dead_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      row.id, row.bot_id, row.trigger, row.prompt, row.from_bot, row.source,
-      row.attempts + 1, row.created_at, row.idempotency_key, reasonCode ?? row.reason_code ?? null, Date.now(),
-    );
-    // Cap the DLQ — evict oldest, bounded by design (§2.10).
-    const overflow = this.db.prepare(
-      `SELECT id FROM bot_dlq ORDER BY dead_at DESC, created_at DESC, rowid DESC LIMIT -1 OFFSET ?`,
-    ).all(this.dlqCap) as any[];
-    for (const r of overflow) {
-      this.db.prepare(`DELETE FROM bot_dlq WHERE id = ?`).run(r.id);
-    }
+      this.db.prepare(
+        `INSERT INTO bot_dlq (id, bot_id, trigger, prompt, from_bot, source, attempts, created_at, idempotency_key, reason_code, dead_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        row.id, row.bot_id, row.trigger, row.prompt, row.from_bot, row.source,
+        row.attempts + 1, row.created_at, row.idempotency_key, reasonCode ?? row.reason_code ?? null, Date.now(),
+      );
+      // Cap the DLQ — evict oldest, bounded by design (§2.10).
+      const overflow = this.db.prepare(
+        `SELECT id FROM bot_dlq ORDER BY dead_at DESC, created_at DESC, rowid DESC LIMIT -1 OFFSET ?`,
+      ).all(this.dlqCap) as any[];
+      for (const r of overflow) {
+        this.db.prepare(`DELETE FROM bot_dlq WHERE id = ?`).run(r.id);
+      }
+    });
   }
 
   requeueExpiredLeases(): number {
@@ -400,6 +422,14 @@ export class SqliteQueueBackend implements BotQueueBackend {
     this.db.prepare(
       `UPDATE bot_jobs SET state = 'pending', attempts = ?, lease_expires_at = NULL, run_after = ? WHERE id = ?`,
     ).run(attempts, runAfterMs ?? null, jobId);
+  }
+
+  interruptedSchedules(): DurableBotJob[] {
+    if (this.closed) return [];
+    const rows = this.db.prepare(
+      `SELECT * FROM bot_jobs WHERE trigger = 'cron' AND (state = 'claimed' OR attempts > 0 OR run_after IS NOT NULL) ORDER BY created_at`,
+    ).all() as unknown[];
+    return rows.map(normalizeJob);
   }
 
   rehydratable(): DurableBotJob[] {
@@ -616,6 +646,11 @@ export class JsonFileQueueBackend implements BotQueueBackend {
       job.runAfter = runAfterMs;
       this.flush();
     }
+  }
+
+  interruptedSchedules(): DurableBotJob[] {
+    return this.data.jobs.filter((job) => job.trigger === 'cron'
+      && (job.state === 'claimed' || job.attempts > 0 || job.runAfter !== undefined));
   }
 
   rehydratable(): DurableBotJob[] {

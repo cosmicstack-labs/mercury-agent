@@ -64,3 +64,32 @@ describe('turn grants', () => {
     expect(await pm.approvePluginTool('whatsapp__call_owner', 'x')).toBe(false);
   });
 });
+
+describe('schedule timing policy', () => {
+  it('includes catch-up policy in the approval and saves it', async () => {
+    const { tool, added, asked } = setup();
+    await tool.execute({ delay_seconds: 60, description: 'Brief me', prompt: 'Read the news', missed_run_policy: 'run_once' });
+    expect(asked[0]).toContain('if offline, run once after restart');
+    expect(added[0].missedRunPolicy).toBe('run_once');
+  });
+
+  it('saves and confirms the cron timezone', async () => {
+    const { tool, added, asked } = setup();
+    const result = await tool.execute({ cron: '0 9 * * *', description: 'Brief me', prompt: 'Read the news', timezone: 'America/New_York' });
+    expect(asked[0]).toContain('America/New_York');
+    expect(added[0].timezone).toBe('America/New_York');
+    expect(result).toContain('America/New_York');
+  });
+
+  it.each([
+    { delay_seconds: -1 }, { delay_seconds: Infinity },
+    { cron: 'invalid' }, { cron: '0 9 * * *', timezone: 'Not/A_Zone' },
+    { delay_seconds: 60, missed_run_policy: 'replay_all' },
+    { delay_seconds: 60, timezone: 'UTC' },
+  ])('rejects invalid timing before asking for approval: %o', async (timing) => {
+    const { tool, added, asked } = setup();
+    await tool.execute({ ...timing, description: 'Brief me', prompt: 'Read the news' });
+    expect(asked).toEqual([]);
+    expect(added).toEqual([]);
+  });
+});
