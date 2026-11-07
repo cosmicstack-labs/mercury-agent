@@ -134,3 +134,93 @@ describe('TokenBudget hardening', () => {
     expect(budget.getRemaining()).toBe(0);
   });
 });
+describe('TokenBudget cache weighting (tokens.cachedWeight)', () => {
+  beforeEach(() => {
+    mercuryHome = mkdtempSync(join(tmpdir(), 'mercury-token-test-'));
+  });
+
+  afterEach(() => {
+    if (mercuryHome) rmSync(mercuryHome, { recursive: true, force: true });
+  });
+
+  const turn = {
+    provider: 'litellm',
+    model: 'gpt-5',
+    inputTokens: 100_000,
+    outputTokens: 2_000,
+    totalTokens: 102_000,
+    cachedInputTokens: 90_000,
+    noCacheInputTokens: 10_000,
+    channelType: 'cli',
+  };
+  const withWeight = (cachedWeight: unknown) => ({ tokens: { dailyBudget: 1_000_000, cachedWeight } } as unknown as MercuryConfig);
+
+  it('counts every token when the weight is unset (default 1)', () => {
+    const budget = new TokenBudget(configWith(1_000_000));
+    budget.recordUsage(turn);
+    expect(budget.getDailyUsed()).toBe(102_000);
+  });
+
+  it('counts cache hits at the configured weight', () => {
+    const budget = new TokenBudget(withWeight(0.1));
+    budget.recordUsage(turn);
+    // 10,000 uncached + 2,000 out + 90,000 × 0.1
+    expect(budget.getDailyUsed()).toBe(21_000);
+  });
+
+  it('excludes cache hits at weight 0', () => {
+    const budget = new TokenBudget(withWeight(0));
+    budget.recordUsage(turn);
+    expect(budget.getDailyUsed()).toBe(12_000);
+  });
+
+  it('clamps out-of-range weights and treats non-numbers as 1', () => {
+    const over = new TokenBudget(withWeight(5));
+    over.recordUsage(turn);
+    expect(over.getDailyUsed()).toBe(102_000);
+
+    rmSync(join(mercuryHome, 'token-usage.json'), { force: true });
+    const under = new TokenBudget(withWeight(-2));
+    under.recordUsage(turn);
+    expect(under.getDailyUsed()).toBe(12_000);
+
+    rmSync(join(mercuryHome, 'token-usage.json'), { force: true });
+    const junk = new TokenBudget(withWeight('cheap'));
+    junk.recordUsage(turn);
+    expect(junk.getDailyUsed()).toBe(102_000);
+  });
+
+  it('counts requests without a cache split at their plain total', () => {
+    const budget = new TokenBudget(withWeight(0.1));
+    budget.recordUsage({ provider: 'openai', model: 'm', inputTokens: 400, outputTokens: 100, totalTokens: 500, channelType: 'internal' });
+    expect(budget.getDailyUsed()).toBe(500);
+  });
+
+  it('shows the cache split and the weight in /budget', () => {
+    const budget = new TokenBudget(withWeight(0.1));
+    expect(budget.getCacheSplitText()).toBe('');
+    budget.recordUsage(turn);
+    expect(budget.getCacheSplitText()).toBe('Today: 100,000 in (90,000 cached · 90%, counted at 0.1) · 10,000 uncached · 2,000 out');
+  });
+
+  it('leaves the weight out of the /budget line at the default', () => {
+    const budget = new TokenBudget(configWith(1_000_000));
+    budget.recordUsage(turn);
+    expect(budget.getCacheSplitText()).toBe('Today: 100,000 in (90,000 cached · 90%) · 10,000 uncached · 2,000 out');
+  });
+
+  it('keeps the split and the weighted total across a restart', () => {
+    const first = new TokenBudget(withWeight(0.1));
+    first.recordUsage(turn);
+    const second = new TokenBudget(withWeight(0.1));
+    expect(second.getDailyUsed()).toBe(21_000);
+    expect(second.getDailySplit()).toEqual({ inputTokens: 100_000, cachedInputTokens: 90_000, noCacheInputTokens: 10_000, outputTokens: 2_000 });
+  });
+
+  it('clears the split on reset', () => {
+    const budget = new TokenBudget(withWeight(0.1));
+    budget.recordUsage(turn);
+    budget.resetUsage();
+    expect(budget.getCacheSplitText()).toBe('');
+  });
+});

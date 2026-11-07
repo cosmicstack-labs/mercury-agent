@@ -11,6 +11,18 @@ export interface TokenTracker {
   dailyBudget: number;
   lastResetDate: string;
   requestLog: TokenLogEntry[];
+  /** Today's cache split, for /budget. Absent in files written before it existed. */
+  dailySplit?: DailySplit;
+}
+
+/** Today's input/output split across every recorded request. */
+export interface DailySplit {
+  inputTokens: number;
+  /** Input tokens served from the provider's prompt cache. */
+  cachedInputTokens: number;
+  /** Input tokens billed at the full rate. */
+  noCacheInputTokens: number;
+  outputTokens: number;
 }
 
 export interface TokenLogEntry {
@@ -22,6 +34,15 @@ export interface TokenLogEntry {
   totalTokens: number;
   channelType: string;
   agentId?: string;
+  /** Cache-hit input tokens, when the caller knows the split. */
+  cachedInputTokens?: number;
+  /** Full-rate input tokens, when the caller knows the split. */
+  noCacheInputTokens?: number;
+  /**
+   * What this request added to `dailyUsed`: `totalTokens`, or with a cache
+   * split, uncached input + output + cache hits × `tokens.cachedWeight`.
+   */
+  countedTokens?: number;
 }
 
 const TOKEN_FILE = 'token-usage.json';
@@ -32,8 +53,35 @@ function safeNumber(value: any): number {
   return isNaN(n) ? 0 : n;
 }
 
+const emptySplit = (): DailySplit => ({ inputTokens: 0, cachedInputTokens: 0, noCacheInputTokens: 0, outputTokens: 0 });
+
+/** `tokens.cachedWeight`, clamped to 0–1; anything non-numeric is 1 (count everything). */
+export function cachedWeightOf(config: MercuryConfig): number {
+  const raw = (config.tokens as { cachedWeight?: unknown } | undefined)?.cachedWeight;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 1;
+  return Math.min(1, Math.max(0, raw));
+}
+
+/**
+ * Tokens one request adds to the daily budget. Without a cache split this is
+ * the plain total; with one, cache hits count at `weight`.
+ */
+export function countedTokensFor(
+  entry: { inputTokens: number; outputTokens: number; totalTokens: number; cachedInputTokens?: number },
+  weight: number,
+): number {
+  if (entry.cachedInputTokens === undefined) return entry.totalTokens;
+  const cached = Math.min(entry.inputTokens, Math.max(0, entry.cachedInputTokens));
+  const uncached = Math.max(0, entry.inputTokens - cached);
+  return Math.round(uncached + entry.outputTokens + cached * weight);
+}
+
+const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+
 export class TokenBudget {
   private dailyUsed = 0;
+  /** Today's cache split (resets daily). */
+  private dailySplit: DailySplit = emptySplit();
   private dailyBudget: number;
   private lastResetDate: string;
   private requestLog: TokenLogEntry[] = [];
@@ -95,6 +143,7 @@ export class TokenBudget {
 
   resetUsage(): void {
     this.dailyUsed = 0;
+    this.dailySplit = emptySplit();
     this.requestLog = [];
     this.perAgentUsage.clear();
     this.persist();
@@ -123,15 +172,35 @@ export class TokenBudget {
     const inputTokens = safeNumber(entry.inputTokens);
     const outputTokens = safeNumber(entry.outputTokens);
     const totalTokens = safeNumber(entry.totalTokens) || inputTokens + outputTokens;
-    const safeEntry = { ...entry, inputTokens, outputTokens, totalTokens };
+    const hasSplit = entry.cachedInputTokens !== undefined;
+    const cachedInputTokens = hasSplit ? Math.min(inputTokens, this.sanitizeCount(entry.cachedInputTokens)) : undefined;
+    const noCacheInputTokens = hasSplit
+      ? (entry.noCacheInputTokens !== undefined ? this.sanitizeCount(entry.noCacheInputTokens) : Math.max(0, inputTokens - (cachedInputTokens ?? 0)))
+      : undefined;
+    const countedTokens = countedTokensFor({ inputTokens, outputTokens, totalTokens, cachedInputTokens }, cachedWeightOf(this.config));
+    const safeEntry = {
+      ...entry,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      ...(hasSplit ? { cachedInputTokens, noCacheInputTokens } : {}),
+      countedTokens,
+    };
     const logEntry: TokenLogEntry = { ...safeEntry, timestamp: Date.now() };
-    this.dailyUsed += totalTokens;
+    this.dailyUsed += countedTokens;
+    this.dailySplit.inputTokens += inputTokens;
+    this.dailySplit.outputTokens += outputTokens;
+    if (hasSplit) {
+      this.dailySplit.cachedInputTokens += cachedInputTokens ?? 0;
+      this.dailySplit.noCacheInputTokens += noCacheInputTokens ?? 0;
+    }
     this.requestLog.push(logEntry);
+    // History keeps raw token counts; the weight only shapes the budget.
     recordDay(inputTokens, outputTokens, totalTokens, logEntry.timestamp);
 
     if (entry.agentId) {
       const agentUsed = this.perAgentUsage.get(entry.agentId) ?? 0;
-      this.perAgentUsage.set(entry.agentId, agentUsed + totalTokens);
+      this.perAgentUsage.set(entry.agentId, agentUsed + countedTokens);
     }
 
     this.persist();
@@ -194,6 +263,25 @@ export class TokenBudget {
     return `Token budget: ${formatNumber(used)} / ${formatNumber(this.dailyBudget)} used (${pct}%), ${formatNumber(remaining)} remaining`;
   }
 
+  /** Today's cache split, for display. */
+  getDailySplit(): DailySplit {
+    this.resetIfNewDay();
+    return { ...this.dailySplit };
+  }
+
+  /**
+   * One line for /budget showing what the bar counts: input with its cache
+   * hits and hit rate, uncached input, output, and the cache weight when it
+   * is not 1. Empty when nothing was recorded today.
+   */
+  getCacheSplitText(): string {
+    const s = this.getDailySplit();
+    if (s.inputTokens <= 0 && s.outputTokens <= 0) return '';
+    const weight = cachedWeightOf(this.config);
+    const weightNote = weight !== 1 ? `, counted at ${weight}` : '';
+    return `Today: ${formatNumber(s.inputTokens)} in (${formatNumber(s.cachedInputTokens)} cached · ${pct(s.cachedInputTokens, s.inputTokens)}%${weightNote}) · ${formatNumber(s.noCacheInputTokens)} uncached · ${formatNumber(s.outputTokens)} out`;
+  }
+
   /**
    * Record an estimated savings from Token Saver Mode. Updates both the
    * per-day counter (resets at day rollover) and the lifetime counter
@@ -226,6 +314,7 @@ export class TokenBudget {
     const today = new Date().toISOString().split('T')[0];
     if (today !== this.lastResetDate) {
       this.dailyUsed = 0;
+      this.dailySplit = emptySplit();
       this.lastResetDate = today;
       this.requestLog = [];
       this.perAgentUsage.clear();
@@ -243,6 +332,7 @@ export class TokenBudget {
         dailyBudget: this.dailyBudget,
         lastResetDate: this.lastResetDate,
         requestLog: this.requestLog.slice(-200),
+        dailySplit: this.dailySplit,
       };
       writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
@@ -273,7 +363,7 @@ export class TokenBudget {
           this.dailyUsed = restored;
         } else {
           // Recompute from valid log entries when dailyUsed is corrupted/null
-          this.dailyUsed = restoredLogs.reduce((sum, entry) => sum + entry.totalTokens, 0);
+          this.dailyUsed = restoredLogs.reduce((sum, entry) => sum + (entry.countedTokens ?? entry.totalTokens), 0);
           repaired = true;
         }
         this.requestLog = (data.requestLog ?? []).map((entry: any) => ({
@@ -282,6 +372,15 @@ export class TokenBudget {
           outputTokens: safeNumber(entry.outputTokens),
           totalTokens: safeNumber(entry.totalTokens),
         }));
+        const split = data.dailySplit;
+        if (split && typeof split === 'object') {
+          this.dailySplit = {
+            inputTokens: this.sanitizeCount(split.inputTokens),
+            cachedInputTokens: this.sanitizeCount(split.cachedInputTokens),
+            noCacheInputTokens: this.sanitizeCount(split.noCacheInputTokens),
+            outputTokens: this.sanitizeCount(split.outputTokens),
+          };
+        }
       }
       this.lastResetDate = data.lastResetDate ?? today;
       if (repaired) {
@@ -306,6 +405,11 @@ export class TokenBudget {
     const rawTotal = this.sanitizeCount(entry.totalTokens);
     const totalTokens = rawTotal > 0 ? rawTotal : inputTokens + outputTokens;
 
+    const optional = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+    const cachedInputTokens = optional(entry.cachedInputTokens);
+    const noCacheInputTokens = optional(entry.noCacheInputTokens);
+    const countedTokens = optional(entry.countedTokens);
+
     return {
       timestamp: this.sanitizeTimestamp(timestamp),
       provider: typeof entry.provider === 'string' && entry.provider ? entry.provider : 'unknown',
@@ -314,6 +418,9 @@ export class TokenBudget {
       outputTokens,
       totalTokens,
       channelType: typeof entry.channelType === 'string' && entry.channelType ? entry.channelType : 'unknown',
+      ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+      ...(noCacheInputTokens !== undefined ? { noCacheInputTokens } : {}),
+      ...(countedTokens !== undefined ? { countedTokens } : {}),
     };
   }
 }

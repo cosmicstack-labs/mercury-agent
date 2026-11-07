@@ -12,6 +12,7 @@ website/static/install.ps1
 /soul/
 /memory/
 # Claude Code worktrees / local state
+.worktrees/
 .claude/
 
 # plugin-system tests (src/plugins/test-fixtures.ts)

@@ -218,6 +218,13 @@ export interface MercuryConfig {
     saverAutoEnabled?: boolean;
     /** Lifetime estimated tokens saved by saver mode (informational). */
     saverTokensSavedLifetime?: number;
+    /**
+     * How much one cache-hit input token counts toward `dailyBudget`, 0–1.
+     * Default 1: every token counts. 0.1 roughly tracks cost, since providers
+     * bill cache hits at a fraction of the input price. Out-of-range values
+     * are clamped; anything non-numeric counts as 1.
+     */
+    cachedWeight?: number;
   };
   subagents: {
     enabled: boolean;
