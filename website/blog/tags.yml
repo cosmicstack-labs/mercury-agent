@@ -30,3 +30,19 @@ cloud:
   label: Mercury Cloud
   permalink: /cloud
   description: News and notes about Mercury Cloud.
+ai-agents:
+  label: AI Agents
+  permalink: /ai-agents
+  description: Comparisons and notes on AI agents that run tasks for you.
+ai-agent-comparison:
+  label: AI Agent Comparison
+  permalink: /ai-agent-comparison
+  description: Side-by-side comparisons of AI agent products on memory, permissions, scheduling and price.
+self-hosted-ai:
+  label: Self-Hosted AI
+  permalink: /self-hosted-ai
+  description: Running AI agents on your own machine or server.
+ai-agent-memory:
+  label: AI Agent Memory
+  permalink: /ai-agent-memory
+  description: How AI agents store, show and correct what they remember.
